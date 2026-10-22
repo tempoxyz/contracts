@@ -47,8 +47,9 @@ describe('profile bundles', () => {
 })
 
 // Customer profiles live in a private deployments repository that pins Earn as a submodule, so the
-// tooling must treat any `<root>/profiles/<id>/` exactly like Earn's own.
-describe('profiles outside this repository', () => {
+// tooling must treat any `<root>/profiles/<id>/` exactly like Earn's own. Its test starts
+// `pnpm exec tsx` processes, which can take longer than the default 5s.
+describe('profiles outside this repository', { timeout: 30_000 }, () => {
   const earn = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 
   test('loads the record, dotenv, and drift matrix from the owning repository', () => {
