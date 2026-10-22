@@ -18,7 +18,7 @@
     "test:worker": "CLOUDFLARE_TEST_POOL=true vitest --run"
   },
   "dependencies": {
-    "@privy-io/react-auth": "3.49.0",
+    "@privy-io/react-auth": "3.49.1",
     "@tanstack/react-query": "catalog:",
     "@tempoxyz/earn": "workspace:*",
     "@xyflow/react": "12.12.0",
@@ -40,7 +40,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitest/runner": "^4.1.11",
-    "@vitest/snapshot": "^4.1.11",
+    "@vitest/snapshot": "^4.1.12",
     "localnet": "workspace:*",
     "tailwindcss": "catalog:",
     "tsx": "catalog:",
