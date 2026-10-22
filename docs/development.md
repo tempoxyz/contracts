@@ -186,11 +186,10 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
   environment after Verify. Both smoke-test `/` and `/health` and parse the live `/api/config` with
   `app/deployments/check-live-config.ts`.
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
-  Only the two deploy jobs receive the organization-scoped `DEV_CLOUDFLARE_*` credentials; the
-  benchmark job receives `TEMPO_API_KEY`; the audit and remediation-event jobs receive
-  the `EVENTS_*` intake credentials. `.github/sts/` holds the read-only GitHub STS policies that let
-  Tempo's own workflows in `tempoxyz/cash`, `tempoxyz/earn-deployments`, `tempoxyz/tempo`, and
-  `tempoxyz/tempo-firedrill` check out this repository.
+  Only the two deploy jobs receive the `DEV_CLOUDFLARE_*` credentials, which are secrets of the
+  `production` and `preview` environments, and both environments deploy only from `main`; the
+  benchmark job receives `TEMPO_API_KEY`; the audit and remediation-event jobs receive the
+  `EVENTS_*` intake credentials.
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC
   token, and a read-only `GITHUB_TOKEN`, and can pass every required check. Without an OIDC token,
   each job's secure runner starts Harden Runner with the inline audit egress policy instead of the
