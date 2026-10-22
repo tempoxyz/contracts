@@ -44,9 +44,9 @@ catalog:
   wagmi: 3.7.7
   wrangler: ^4.151.0
 
-# Match the seven-day Dependabot version-update cooldown for manual resolutions.
+# Require releases to be at least one day old for manual resolutions.
 fetchFullMetadata: true
-minimumReleaseAge: 10080
+minimumReleaseAge: 1440
 minimumReleaseAgeIgnoreMissingTime: false
 
 minimumReleaseAgeExclude:
