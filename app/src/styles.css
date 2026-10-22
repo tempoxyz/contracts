@@ -1,0 +1,304 @@
+@import 'tailwindcss';
+@import '@xyflow/react/dist/style.css' layer(base);
+@import 'regen-ui/tailwind.css';
+
+@font-face {
+  font-family: 'Pilat';
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/Pilat-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Pilat';
+  font-weight: 500 700;
+  font-display: swap;
+  src: url('./fonts/Pilat-Demi.woff2') format('woff2');
+}
+
+:root {
+  color-scheme: light dark;
+  --font-body: 'Pilat', ui-sans-serif, system-ui, sans-serif;
+  --regen-accent: var(--regen-accent-neutral);
+  --regen-radius: var(--regen-radius-none);
+  --stack-user: color-mix(in oklch, var(--background-color-surface), var(--regen-accent-blue) 13%);
+  --stack-user-border: color-mix(
+    in oklch,
+    var(--border-color-border),
+    var(--regen-accent-blue) 42%
+  );
+  --stack-core: color-mix(
+    in oklch,
+    var(--background-color-surface),
+    var(--regen-accent-purple) 30%
+  );
+  --stack-core-border: color-mix(
+    in oklch,
+    var(--border-color-border),
+    var(--regen-accent-purple) 78%
+  );
+  --stack-peripheral: color-mix(
+    in oklch,
+    var(--background-color-surface),
+    var(--regen-accent-purple) 12%
+  );
+  --stack-peripheral-border: color-mix(
+    in oklch,
+    var(--border-color-border),
+    var(--regen-accent-purple) 48%
+  );
+  --stack-external: color-mix(
+    in oklch,
+    var(--background-color-surface),
+    var(--regen-accent-green) 15%
+  );
+  --stack-external-border: color-mix(
+    in oklch,
+    var(--border-color-border),
+    var(--regen-accent-green) 52%
+  );
+}
+
+@layer base {
+  html {
+    @apply bg-background text-foreground;
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    margin: 0;
+  }
+}
+
+[data-base-ui-portal] > [data-side]:has(.configuration-tooltip) {
+  z-index: 100;
+}
+
+.configuration-tooltip {
+  display: block;
+  max-width: min(15rem, calc(100vw - 2rem));
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.configuration-choice-group [role='radio'] {
+  background-color: var(--background-color-secondary);
+}
+
+.configuration-choice-group [role='radio']:hover {
+  background-color: var(--background-color-secondary-hover);
+}
+
+.configuration-choice-group [data-checked] {
+  background-color: var(--background-color-accent);
+  color: var(--text-color-on-accent);
+}
+
+.configuration-choice-group [data-checked]:hover {
+  background-color: var(--background-color-accent-hover);
+}
+
+@keyframes transaction-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes transaction-toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes transaction-toast-stack-expand {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.stack-flow-canvas {
+  height: calc(100svh - 92px);
+  min-height: 720px;
+}
+
+.react-flow {
+  --xy-attribution-background-color: transparent;
+  --xy-background-color: var(--background-color-pane);
+  --xy-controls-button-background-color: var(--background-color-surface);
+  --xy-controls-button-background-color-hover: var(--background-color-pane);
+  --xy-controls-button-border-color: var(--border-color-border);
+  --xy-controls-button-color: var(--text-color-foreground);
+  --xy-edge-label-background-color: var(--background-color-pane);
+  --xy-edge-label-color: var(--text-color-foreground-secondary);
+  --xy-edge-stroke: var(--text-color-foreground-secondary);
+  --xy-minimap-background-color: var(--background-color-pane);
+  --xy-node-color: var(--text-color-foreground);
+  --xy-selection-background-color: color-mix(in oklch, var(--regen-accent-purple), transparent 86%);
+  --xy-selection-border: 1px solid var(--regen-accent-purple);
+}
+
+.stack-flow-node {
+  border-color: color-mix(in oklch, var(--border-color-border), transparent 10%);
+  border-radius: 4px;
+  background-color: color-mix(in oklch, var(--background-color-surface), transparent 4%);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 5%);
+  backdrop-filter: blur(8px);
+}
+
+.stack-flow-node[data-active='true'] {
+  border-color: color-mix(in oklch, var(--text-color-foreground), transparent 72%);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 12%);
+}
+
+.stack-flow-handle {
+  width: 1px;
+  height: 1px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.stack-flow-edge-label {
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  filter: drop-shadow(0 6px 12px rgb(0 0 0 / 16%));
+}
+
+.stack-flow-edge-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--text-color-foreground);
+  border-radius: 4px;
+  background-color: var(--text-color-foreground);
+  color: var(--background-color-surface);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.stack-flow-edge-mark {
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+@media (max-width: 1023px) {
+  .stack-flow-canvas {
+    height: auto;
+    min-height: calc(100svh - 92px);
+  }
+}
+
+.transaction-toast {
+  animation: transaction-toast-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: bottom right;
+}
+
+.transaction-toast-expanded,
+.transaction-toast-collapsed {
+  animation: transaction-toast-stack-expand 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: bottom right;
+}
+
+.transaction-toast-stack {
+  --toast-stack-middle-offset: 0px;
+  --toast-stack-back-offset: 0px;
+
+  isolation: isolate;
+  margin-bottom: var(--toast-stack-back-offset);
+}
+
+.transaction-toast-stack[data-stack-size='2'] {
+  --toast-stack-middle-offset: 0.625rem;
+  --toast-stack-back-offset: 0.625rem;
+}
+
+.transaction-toast-stack[data-stack-size='3'] {
+  --toast-stack-middle-offset: 0.5625rem;
+  --toast-stack-back-offset: 1.125rem;
+}
+
+.transaction-toast-stack::before,
+.transaction-toast-stack::after {
+  position: absolute;
+  height: 100%;
+  content: '';
+  border: 1px solid var(--border-color-border);
+  border-radius: var(--radius-body);
+  background-color: var(--background-color-pane);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 16%);
+  opacity: 0;
+  transform-origin: bottom center;
+}
+
+.transaction-toast-stack::before {
+  z-index: -1;
+  top: var(--toast-stack-middle-offset);
+  right: var(--toast-stack-middle-offset);
+  left: var(--toast-stack-middle-offset);
+}
+
+.transaction-toast-stack::after {
+  z-index: -2;
+  top: var(--toast-stack-back-offset);
+  right: var(--toast-stack-back-offset);
+  left: var(--toast-stack-back-offset);
+}
+
+.transaction-toast-stack[data-stack-size='2']::before,
+.transaction-toast-stack[data-stack-size='3']::before,
+.transaction-toast-stack[data-stack-size='3']::after {
+  opacity: 1;
+}
+
+.transaction-toast[data-exiting] {
+  animation: transaction-toast-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+.transaction-toast[data-status='success'] > div {
+  border-color: var(--regen-accent-green);
+  background-color: var(--background-color-positive-subtle);
+  color: var(--text-color-positive);
+}
+
+.transaction-toast > div {
+  transition:
+    border-color 220ms ease,
+    background-color 220ms ease,
+    color 220ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transaction-toast,
+  .transaction-toast[data-exiting],
+  .transaction-toast-expanded,
+  .transaction-toast-collapsed {
+    animation-duration: 1ms;
+  }
+}

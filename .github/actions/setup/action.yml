@@ -1,0 +1,86 @@
+name: Set up the workspace
+description: >-
+  Install the toolchain a job needs after checkout: the public Solidity dependencies and Foundry,
+  an exact-match Forge build cache, and the pnpm workspace.
+inputs:
+  forge-cache:
+    description: >-
+      Forge build cache scope. Non-empty installs Foundry v1.8.5, Earn's one pinned version, with
+      the public Solidity submodules and restores that cache; empty skips all three.
+    default: ''
+  node:
+    description: "'false' skips pnpm, Node, and the frozen workspace install."
+    default: 'true'
+  workspace:
+    description: >-
+      Install only this workspace package and its dependencies (`--filter <name>...`), under its own
+      cache key; empty installs every workspace.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Initialize public Solidity dependencies
+      if: inputs.forge-cache != ''
+      shell: bash
+      run: git submodule update --init --depth 1 lib/forge-std lib/openzeppelin-contracts
+
+    - if: inputs.forge-cache != ''
+      uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      with:
+        version: v1.8.5
+
+    - if: inputs.forge-cache != ''
+      uses: ./.github/actions/forge-cache
+      with:
+        scope: ${{ inputs.forge-cache }}
+
+    - if: inputs.node == 'true'
+      uses: tempoxyz/gh-actions/vendor/pnpm/action-setup@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+    # The installed workspace, keyed by the install filter, the lockfile, the workspace install
+    # policy, and the Node version. A hit skips the pnpm store and the install.
+    - name: Restore installed dependencies
+      id: modules
+      if: inputs.node == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          node_modules
+          app/node_modules
+          deployments/node_modules
+          e2e/node_modules
+          localnet/node_modules
+        key: node-modules-${{ inputs.workspace || 'all' }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.nvmrc', 'pnpm-lock.yaml', 'pnpm-workspace.yaml') }}
+
+    - if: inputs.node == 'true'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: .nvmrc
+        cache: ${{ steps.modules.outputs.cache-hit != 'true' && 'pnpm' || '' }}
+
+    # The frozen install (or the cache entry it saved) already matches the lockfile. CI only: skip
+    # pnpm's pre-run dependency check, which reruns the install on the first `pnpm run` after a
+    # restore and would widen a filtered one.
+    - name: Skip pnpm's pre-run dependency check
+      if: inputs.node == 'true'
+      shell: bash
+      run: echo 'pnpm_config_verify_deps_before_run=false' >> "$GITHUB_ENV"
+
+    - name: Install dependencies
+      if: inputs.node == 'true' && steps.modules.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        WORKSPACE: ${{ inputs.workspace }}
+      run: pnpm install --frozen-lockfile ${WORKSPACE:+--filter "$WORKSPACE..."}
+
+    # Saved straight after the install, before any job step can write tool caches into it.
+    - if: inputs.node == 'true' && steps.modules.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          node_modules
+          app/node_modules
+          deployments/node_modules
+          e2e/node_modules
+          localnet/node_modules
+        key: ${{ steps.modules.outputs.cache-primary-key }}

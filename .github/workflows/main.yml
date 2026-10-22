@@ -1,0 +1,70 @@
+name: Main
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/verify.yml
+
+  deploy:
+    name: Deploy Production
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      WRANGLER_SEND_METRICS: false
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      - name: Build production
+        run: pnpm --filter app build
+
+      - name: Deploy production
+        id: deploy
+        uses: tempoxyz/gh-actions/vendor/cloudflare/wrangler-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        env:
+          CLOUDFLARE_ENV: production
+        with:
+          apiToken: ${{ secrets.DEV_CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.DEV_CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --env production
+          packageManager: pnpm
+          workingDirectory: app
+
+      - name: Smoke test production
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DEPLOYMENT_URL" ]]; then
+            echo "Wrangler did not return a deployment URL" >&2
+            exit 1
+          fi
+          for path in / /health; do
+            curl --fail --silent --show-error "${DEPLOYMENT_URL%/}${path}" >/dev/null
+          done
+          # Parse /api/config with the browser's own loader, so a catalog it cannot read fails the deploy.
+          pnpm --filter app exec tsx deployments/check-live-config.ts "$DEPLOYMENT_URL"

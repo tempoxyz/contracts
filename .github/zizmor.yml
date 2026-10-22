@@ -1,0 +1,5 @@
+rules:
+  # GitHub supports self-repository `uses: $/...` references, but actionlint
+  # 1.7.12 rejects them (rhysd/actionlint#711). Keep `./...` until it does.
+  self-repository:
+    disable: true

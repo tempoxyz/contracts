@@ -1,0 +1,93 @@
+import type { ViteUserConfig } from 'vp'
+
+const ignorePatterns = [
+  'dist/',
+  'worker-configuration.d.ts',
+  '**/.local/',
+  '**/.results/',
+  'deployments/abis/generated.ts',
+]
+
+export default {
+  fmt: {
+    ignorePatterns,
+    printWidth: 100,
+    semi: false,
+    singleQuote: true,
+    tabWidth: 2,
+    trailingComma: 'all',
+  },
+  lint: {
+    ignorePatterns,
+    // Import boundaries. Paths are relative to this file, also for workspaces that spread it.
+    overrides: [
+      {
+        // The generic lifecycle reaches capability modules only through their registries.
+        files: ['deployments/core/**', 'deployments/chain/**'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              patterns: [
+                {
+                  group: [
+                    '**/modules/**',
+                    '!**/modules/index.js',
+                    '!**/modules/module.js',
+                    '!**/modules/slices.js',
+                    '!**/modules/commands.js',
+                    '!**/modules/engines/index.js',
+                  ],
+                  message: 'Import capability modules through their registries.',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        // Harness code dispatches through the case and engine registries, never their internals.
+        files: ['e2e/harness/**'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              patterns: [
+                {
+                  regex: '^(\\.\\./)+(modules|engines/[^/]+)/',
+                  message: 'Use the case and engine registries.',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        // Browser and Worker code loads only the browser-safe deployment entries, never localnet.
+        files: ['app/src/**', 'app/worker/**'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              patterns: [
+                {
+                  regex: '^(@tempoxyz/earn/deployments/(node|operations)|localnet)(/|$)',
+                  message: 'Browser and Worker code uses only the browser-safe deployment entries.',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        // Browser style: `type` over `interface`; PascalCase modules beside the `main.tsx` entry.
+        files: ['app/src/**/*.ts', 'app/src/**/*.tsx'],
+        rules: {
+          'typescript/consistent-type-definitions': ['error', 'type'],
+          'unicorn/filename-case': ['error', { case: 'pascalCase', ignore: ['^main\\.tsx$'] }],
+        },
+      },
+      { files: ['**/*.test.ts'], rules: { 'no-restricted-imports': 'off' } },
+    ],
+  },
+} satisfies ViteUserConfig

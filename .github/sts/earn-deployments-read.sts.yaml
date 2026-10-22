@@ -1,0 +1,8 @@
+# Let the private earn-deployments repository check out its pinned Earn submodule, whose tooling
+# verifies and operates the customer profiles it holds. Read-only; repository IDs are immutable
+# across renames.
+subject_pattern: repo:tempoxyz@211589300/earn-deployments@1427343811:((ref:refs/heads/.+)|pull_request)
+claim_pattern:
+  job_workflow_ref: tempoxyz/earn-deployments/\.github/workflows/[a-z0-9-]+\.yml@refs/(heads/.+|pull/[0-9]+/merge)
+permissions:
+  contents: read

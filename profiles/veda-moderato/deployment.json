@@ -1,0 +1,84 @@
+{
+  "version": 4,
+  "deploymentId": "veda-moderato",
+  "deployer": "0x20b0Adf5bec8Cd881CC1795A04C1F33888769132",
+  "owner": "0x20b0Adf5bec8Cd881CC1795A04C1F33888769132",
+  "factories": {
+    "earn": "0x749a947811764a14CD17fE3C7BcC5c470e2Ac5cC",
+    "erc4626Engine": "0x0d57c10249eb3a92b7d81bBA6221F80F2865448A"
+  },
+  "deploymentIntentHash": "53fd4ace0eab8400a0020c9abf267ecd44733f2a5990717a406e7a6b12f0e48c",
+  "componentDeploymentIntentHashes": {
+    "core": "af86f68cae9d09f62a9db30568c481ca41f95e6c3372caababf7fc57fa357305",
+    "engine": "8c8265afd7baf4087bbc1ac4f9f4eade0b07f5b166f1398859f8da4bf97a2507",
+    "zone": null,
+    "targetYield": null,
+    "boostRewards": null
+  },
+  "target": {
+    "chainId": 42431,
+    "genesisHash": "0xba49153e6f3996a340f3fe3d69e7c0826b717ae672cb115cf0527cada0b78e9e"
+  },
+  "assetDecimals": 6,
+  "deploymentBlock": "40180639",
+  "generatedAt": "2026-10-18T22:46:46.511Z",
+  "source": {
+    "factoryDeploymentId": "0xf2ad21ae7c2b22be1593def9c883dce4efab2a3d1992b7b3ab489f2bd033aac0",
+    "commit": "0x39d3a10d08f86b2ec7ee544febc289193022039e",
+    "treeDirty": true,
+    "foundryVersion": "forge Version: 1.8.1\nCommit SHA: 982849d3140c01fd3b72905759581a132df7aa98\nBuild Timestamp: 2026-08-28T17:50:40.383510000Z (1787939440)\nBuild Profile: dist",
+    "contractVerification": "verified",
+    "verifierUrl": "https://contracts.tempo.xyz",
+    "contracts": {
+      "engine": {
+        "kind": "source",
+        "name": "VedaEngine",
+        "match": "exact_match",
+        "sourceInputsHash": "0xb2bf70467cbccc2c0403bc4e8906db8515f78490c8781d41101210eb7e922f3d"
+      },
+      "earnVault": {
+        "kind": "erc1967-proxy",
+        "name": "ERC1967Proxy",
+        "match": "exact_match",
+        "sourceInputsHash": "0x46349656a8817b8c6dc43f05e8e5dda434f1a712746b87b57f1c2275e5fafc84",
+        "implementation": "0x5E9B9A012b4C8A68A1E48Ebae993F001F1EBf79c",
+        "implementationCodeHash": "0x05d2ac6246faa85aa2e68d755e60d2d17c5a66e0b6e57d1946c49968915c40a8"
+      },
+      "earnFees": {
+        "kind": "minimal-proxy",
+        "implementation": "0x15dF1d07D3F4686cDDE07515901e5a2dbA1fb612",
+        "implementationCodeHash": "0x10f399de31fead6aade2ba55138c8fd6fee3be6ac024c8208b96efdd2fe97b5a"
+      },
+      "earnShare": {
+        "kind": "protocol-native",
+        "factory": "0x20Fc000000000000000000000000000000000000"
+      }
+    }
+  },
+  "runtimeCodeHashes": {
+    "asset": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+    "engine": "0x44af0bd6641a0942b673f7097a093fa8dd98ee165d3257e1448fa1d03a0f2662",
+    "earnFees": "0x70d3f0a433a192d8db9ff956609f9e920faffdedbde819cb20c53faac7eb1602",
+    "earnShare": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+    "earnVault": "0x2267e2e062f38379d4c0a254af36f49c30b5a735f4311dd575958e4c1d87afb1"
+  },
+  "addresses": {
+    "asset": "0x20C0000000000000000000000000000000000000",
+    "engine": "0xDC1150c8F10695E1E1C5dFE3f53997222AAD1D51",
+    "earnFees": "0x35FF8de100fb33bF4786F03AB6525103F653c5C8",
+    "earnShare": "0x20C000000000000000000000F45d580e90eb46E1",
+    "earnVault": "0x5B392A3A59268411676b8965B2aD51AF6442A490"
+  },
+  "actions": {
+    "deploy-core": {
+      "completedAt": "2026-10-18T22:46:43.663Z",
+      "verification": "broadcast",
+      "transactions": ["0xe2f83d1f58843d1161dda48421d788ee87cf6e0113d5df65d533f02f70ef84c3"]
+    },
+    "bind-core": {
+      "completedAt": "2026-10-18T22:46:45.764Z",
+      "verification": "broadcast",
+      "transactions": ["0x3f5822853beb7d0b720523cecec42fdad11e42097199965c6c0e91d4022433e0"]
+    }
+  }
+}

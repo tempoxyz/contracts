@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "types": ["node"],
+    "allowSyntheticDefaultImports": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": ["**/*.ts"]
+}

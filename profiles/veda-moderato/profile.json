@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "id": "veda-moderato",
+  "chainId": 42431,
+  "engine": {
+    "kind": "veda",
+    "address": "0xDC1150c8F10695E1E1C5dFE3f53997222AAD1D51"
+  }
+}

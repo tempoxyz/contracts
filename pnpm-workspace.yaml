@@ -1,0 +1,95 @@
+packages:
+  - app
+  - e2e
+  - localnet
+  - deployments
+
+allowBuilds:
+  '@reown/appkit': false
+  bufferutil: false
+  cpu-features: false
+  esbuild: true
+  keccak: false
+  protobufjs: true
+  sharp: true
+  ssh2: false
+  utf-8-validate: false
+  workerd: true
+
+catalog:
+  '@cloudflare/vite-plugin': ^1.64.0
+  '@cloudflare/vitest-pool-workers': ^0.22.0
+  '@tailwindcss/vite': ^4.3.3
+  '@tanstack/react-query': 5.104.2
+  '@types/node': ^26.6.5
+  '@types/react': ^19.3.0
+  '@types/react-dom': ^19.3.0
+  '@vitejs/plugin-react': ^6.1.2
+  hono: ^4.13.13
+  lucide-react: ^1.57.0
+  ox: 0.14.54
+  react: ^19.3.1
+  react-dom: ^19.3.1
+  regen-ui: ^0.5.0
+  tailwindcss: ^4.3.3
+  tsx: ^4.23.15
+  typescript: 7.0.2
+  # accounts builds access-key managers with `KeyAuthorizationManager.from({ source })`, which viem
+  # 2.57.5 replaced with a store-only API (AccountsCompatibility.test.ts). Hold below 2.57.5 until
+  # accounts adopts it.
+  viem: 2.57.4
+  # Cloudflare's Worker test pool requires Vitest 4; run it independently of vp test.
+  vitest: ^4.1.12
+  vp: npm:vite-plus@~1.3.0
+  wagmi: 3.7.7
+  wrangler: ^4.151.0
+
+# Match the seven-day Dependabot version-update cooldown for manual resolutions.
+fetchFullMetadata: true
+minimumReleaseAge: 10080
+minimumReleaseAgeIgnoreMissingTime: false
+
+minimumReleaseAgeExclude:
+  - '@voidzero-dev/*'
+  - regen-ui
+  - vite-plus
+  # Security backport for the bundled launch-editor advisories.
+  - vite@8.1.6
+
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  # Privy requires jose v4; this reviewed maintenance release lacks v5's provenance.
+  # Remove when Privy accepts an attested release.
+  - jose@4.15.9
+  # react-device-detect requires v1; this reviewed release lacks v2's provenance.
+  # Remove when the parent accepts an attested release.
+  - ua-parser-js@1.0.41
+
+overrides:
+  # Vite bundles launch-editor; override the affected bundle, not launch-editor itself.
+  'vite@>=8.0.0 <8.1.6': 8.1.6
+  'undici@>=7.28.0 <7.29.1': 7.29.1
+  '@base-ui/react': 1.4.1
+  # Privy's x402 dependency still brings Wagmi 2 with this exact, vulnerable WC pin.
+  # Reuse Privy's existing WC version; remove when Wagmi 2 updates the parent.
+  '@wagmi/connectors@6.2.0>@walletconnect/ethereum-provider': 2.22.4
+  # WalletConnect relay-auth 1.1.0 (via Privy) pins @noble/curves 1.8.0 and @noble/hashes 1.7.0,
+  # which lack the provenance of earlier releases; use the attested versions WalletConnect utils
+  # already resolves. Remove when relay-auth (or the WalletConnect version Privy pins) moves to
+  # attested @noble releases.
+  '@walletconnect/relay-auth@1.1.0>@noble/curves': 1.9.7
+  '@walletconnect/relay-auth@1.1.0>@noble/hashes': 1.8.0
+  ox: 'catalog:'
+  # Prool still pins tar 7.2.0; remove when upstream upgrades.
+  'prool>tar': 7.5.22
+  # Miniflare pins older sharp releases that bundle vulnerable libheif and librsvg
+  # (GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w).
+  'sharp@<0.35.5': 0.35.5
+  # Pino accepts 0.3.1; 0.3.2 drops its predecessor's npm provenance.
+  'slow-redact@0.3.2': 0.3.1
+  # MetaMask's latest SDK/utils still require uuid 8/9. Version 11 retains CJS.
+  # Remove when those parents accept the GHSA-w5hq-g745-h8pq fix.
+  'uuid@<11.1.1': 11.1.1
+  viem: 'catalog:'
+
+shellEmulator: true

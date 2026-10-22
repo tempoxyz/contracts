@@ -1,0 +1,39 @@
+{
+  "name": "earn",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "exports": {
+    "./localnet": "./localnet/src/layer.ts"
+  },
+  "scripts": {
+    "build": "pnpm --filter app build",
+    "check": "pnpm --filter @tempoxyz/earn check && pnpm --filter app check && vp lint --deny-warnings e2e localnet vite.config.ts && vp fmt --check '.github/**' README.md SKILL.md SECURITY.md CONTRIBUTING.md 'docs/**' '**/AGENTS.md' '!lib/**' 'profiles/**' 'e2e/**' 'localnet/**' vite.config.ts package.json pnpm-workspace.yaml",
+    "check:types": "pnpm -r --parallel run '/^(typecheck|check:types)$/'",
+    "dev": "pnpm --filter app dev",
+    "dev:local": "pnpm --filter app dev:local",
+    "earn": "pnpm --filter @tempoxyz/earn exec tsx core/cli.ts",
+    "coverage": "mkdir -p out/coverage && FOUNDRY_PROFILE=coverage forge coverage --no-match-coverage '^script/' --report-file out/coverage/lcov.info",
+    "e2e:benchmark": "pnpm --filter e2e exec tsx harness/benchmark.ts",
+    "e2e:profile": "pnpm --filter e2e exec tsx harness/cli.ts --earn-file",
+    "profiles": "pnpm --filter @tempoxyz/earn exec tsx core/profiles.ts",
+    "e2e:fixture": "pnpm --filter e2e exec tsx fixtures/bootstrap.ts",
+    "e2e:devnet": "pnpm --filter e2e run devnet --",
+    "devnet:deploy": "pnpm --filter localnet run devnet:deploy --",
+    "e2e:local": "pnpm --filter e2e run local",
+    "gas:snapshot": "forge snapshot --check --match-path 'test/gas/*'",
+    "gas:update": "forge snapshot --match-path 'test/gas/*'",
+    "test": "pnpm --filter @tempoxyz/earn test --run && pnpm --filter localnet test --run && pnpm --filter e2e test --run && pnpm --filter app test",
+    "test:contracts": "FOUNDRY_PROFILE=ci forge test",
+    "verify": "pnpm run '/^verify:/'",
+    "verify:contracts": "forge fmt --check && forge lint --deny warnings --out out/lint --cache-path cache/lint && forge build src script test localnet/foundry && pnpm --filter @tempoxyz/earn abis:check && FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol && pnpm test:contracts && pnpm gas:snapshot",
+    "verify:typescript": "pnpm check && pnpm check:types && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vp": "catalog:"
+  },
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "packageManager": "pnpm@11.1.0"
+}

@@ -1,0 +1,148 @@
+{
+  "defaultEnvironmentId": "moderato",
+  "environments": [
+    {
+      "id": "moderato",
+      "network": {
+        "name": "moderato",
+        "chainId": 42431,
+        "rpcUrl": "https://rpc.moderato.tempo.xyz",
+        "explorerUrl": "https://explore.testnet.tempo.xyz",
+        "pathUsd": "0x20C0000000000000000000000000000000000000",
+        "zone": {
+          "name": "moderato",
+          "id": 3,
+          "chainId": 1424310003,
+          "rpcUrl": "https://api.tempo.xyz/rpc/1424310003",
+          "portal": "0x5Ad0000000000000000000000000000000000003",
+          "messenger": "0x5A4d000000000000000000000000000000000000",
+          "sequencers": [
+            "0xFdD1C606B498F5fCAAf27bD318B14cAF52E8f6c2",
+            "0x748392fD8457DcB8F27978ce27452391bDcECB0D",
+            "0xDBffDF3A4b2eFcFfE75A37704b07f86B9EbFC8B8"
+          ]
+        }
+      },
+      "defaultStackId": "app-moderato",
+      "stacks": [
+        {
+          "id": "app-moderato",
+          "description": "Canonical customer-agnostic Tempo Earn stack.",
+          "engineKind": "erc4626",
+          "contracts": {
+            "asset": "0x20C0000000000000000000000000000000000000",
+            "earnShare": "0x20C000000000000000000000247C35159Dc122B2",
+            "earnVault": "0x46b81bdFA3f184CC1c02BBbd45eaa3E3dAa25cD9",
+            "earnFees": "0x29537DbcE8a951F010D8Dd9cd22E7887878eD8E6",
+            "earnRouter": "0xD8aBaB19daba6CC624f0E5780c0A8660C5C96Bd8",
+            "engine": "0x4EF27f0C08C9b730A35B8F74CD8000458d17402f",
+            "factories": {
+              "earn": "0xD13ABa5F0cff3De0890e92F7D1B36948c830f522",
+              "erc4626Engine": "0x0d57c10249eb3a92b7d81bBA6221F80F2865448A"
+            },
+            "venue": "0x494b7BD3EffE75ea013125a1F54B4F5C3A48fC8a"
+          },
+          "expectedMetadata": {
+            "asset": {
+              "name": "PathUSD",
+              "symbol": "PathUSD",
+              "decimals": 6
+            },
+            "earnShare": {
+              "name": "Tempo Earn PATHUSD Venue (Earn)",
+              "symbol": "tePATHE",
+              "decimals": 6
+            },
+            "venue": {
+              "name": "Tempo Earn PATHUSD Venue",
+              "symbol": "tePATH",
+              "decimals": 6
+            }
+          },
+          "modes": {
+            "public": {
+              "availability": "available"
+            },
+            "private": {
+              "availability": "available",
+              "privateAsset": "0x20C0000000000000000000000000000000000001"
+            }
+          },
+          "capabilities": {
+            "deposit": true,
+            "inKindDeposit": true,
+            "redeem": true,
+            "boundedRedeem": true,
+            "exactWithdraw": true,
+            "asyncRedeem": false,
+            "privateRouting": true,
+            "routerSwaps": true
+          },
+          "access": {
+            "kind": "open"
+          },
+          "privateAssetMetadata": {
+            "name": "AlphaUSD",
+            "symbol": "AlphaUSD",
+            "decimals": 6
+          }
+        },
+        {
+          "id": "veda-moderato",
+          "description": "Tempo Earn test stack over a Tempo-owned Veda-compatible PATHUSD vault.",
+          "engineKind": "veda",
+          "contracts": {
+            "asset": "0x20C0000000000000000000000000000000000000",
+            "earnShare": "0x20C000000000000000000000F45d580e90eb46E1",
+            "earnVault": "0x5B392A3A59268411676b8965B2aD51AF6442A490",
+            "earnFees": "0x35FF8de100fb33bF4786F03AB6525103F653c5C8",
+            "engine": "0xDC1150c8F10695E1E1C5dFE3f53997222AAD1D51",
+            "venue": "0x8591D8b037879F867C73B9F7c7fCE9B5011eB419",
+            "periphery": {
+              "teller": "0x0aE7E268E23988Af66f8f97386Cbe5D2689c03Bc",
+              "accountant": "0x9DB3e55113DfbE7395B126DC11eb7e9C082C94d5",
+              "queue": "0x6E5f1f7C4fA15e94a2FDdC7250355D8C0e34E6C9",
+              "peripheryRegistry": "0x52467aAaCE7eAe509f549de3868aA48a059B139b",
+              "rolesAuthority": "0x8591D8b037879F867C73B9F7c7fCE9B5011eB419"
+            }
+          },
+          "expectedMetadata": {
+            "asset": {
+              "name": "PathUSD",
+              "symbol": "PathUSD",
+              "decimals": 6
+            },
+            "earnShare": {
+              "name": "Local Veda Vault (Earn)",
+              "symbol": "teVEDAE",
+              "decimals": 6
+            },
+            "venue": {
+              "name": "Local Veda Vault",
+              "symbol": "teVEDA",
+              "decimals": 6
+            }
+          },
+          "modes": {
+            "public": {
+              "availability": "available"
+            }
+          },
+          "capabilities": {
+            "deposit": true,
+            "inKindDeposit": false,
+            "redeem": true,
+            "boundedRedeem": true,
+            "exactWithdraw": true,
+            "asyncRedeem": false,
+            "privateRouting": false,
+            "routerSwaps": false
+          },
+          "access": {
+            "kind": "open"
+          }
+        }
+      ]
+    }
+  ]
+}

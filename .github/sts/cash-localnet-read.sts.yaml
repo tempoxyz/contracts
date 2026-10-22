@@ -1,0 +1,8 @@
+# Let Tempo Cash's localnet lane check out its pinned Earn commit, which boots
+# the Tempo L1 + Zone its Zone money-path scenarios run against.
+# Trust only that workflow; repository IDs are immutable across renames.
+subject_pattern: repo:tempoxyz@211589300/cash@1307824259:((ref:refs/heads/.+)|pull_request)
+claim_pattern:
+  job_workflow_ref: tempoxyz/cash/\.github/workflows/localnet\.yml@refs/(heads/.+|pull/[0-9]+/merge)
+permissions:
+  contents: read

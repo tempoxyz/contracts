@@ -1,0 +1,23 @@
+name: Cache Forge build output
+description: >-
+  Restore Forge artifacts built from exactly these sources, and save them after the job. Forge keeps
+  artifacts of deleted sources, so only an exact source match is restored, never a prefix.
+inputs:
+  scope:
+    description: Cache namespace for the job; jobs that build different profiles or targets must not share one.
+    required: true
+runs:
+  using: composite
+  steps:
+    # Keyed by the installed Forge build, so artifacts are never reused across Foundry versions.
+    - id: forge
+      shell: bash
+      run: echo "version=$(forge --version | head -n 1 | tr -c '[:alnum:].\n' '-')" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          out
+          cache
+        # Localnet compiles no tests, so test-only changes keep its cache.
+        key: forge-${{ inputs.scope }}-${{ runner.os }}-${{ steps.forge.outputs.version }}-${{ hashFiles('foundry.toml', 'foundry.lock', 'src/**/*.sol', 'script/**/*.sol', 'localnet/foundry/**/*.sol') }}-${{ inputs.scope != 'localnet' && hashFiles('test/**/*.sol') || 'no-tests' }}

@@ -1,0 +1,68 @@
+name: Pull request audit
+
+on:
+  pull_request:
+    types: [labeled, opened, synchronize, reopened, ready_for_review]
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  # Label and push audits -> shared reusable workflow. Same-repository PRs only: a fork's
+  # pull_request run receives no EVENTS_* secrets, so a labeled fork PR would fail to publish.
+  # Maintainers audit a fork PR with the comment command below.
+  audit:
+    if: >-
+      contains(fromJSON('["pull_request", "pull_request_target"]'), github.event_name) &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+      statuses: write
+    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+    with:
+      required-labels: |
+        cyclops
+        agentic-audit
+      audit-on-push: true
+      audit-on-command: true
+    secrets:
+      EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+      EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+      EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
+
+  # Comment-command audit -> caller-owned privileged job using the composite. Only trusted
+  # commenters start the job, so its secrets never reach a job an outside commenter triggers.
+  audit-comment:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      (
+        startsWith(github.event.comment.body, 'cyclops audit') ||
+        startsWith(github.event.comment.body, '@decofe cyclops audit') ||
+        startsWith(github.event.comment.body, 'derek audit')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: tempoxyz/gh-actions/actions/pr-audit-comment@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          command-regex: '^(?:@decofe\s+)?(?:cyclops\s+audit|derek\s+audit)\b'
+          permission-check-mode: association
+          organization: tempoxyz
+          events-key: ${{ secrets.EVENTS_KEY }}
+          events-cert: ${{ secrets.EVENTS_CERT }}
+          events-args: ${{ secrets.EVENTS_ARGS }}
+          github-token: ${{ github.token }}

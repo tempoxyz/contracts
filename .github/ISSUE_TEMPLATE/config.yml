@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: mailto:security@tempo.xyz
+    about: Report vulnerabilities privately by email, never in a public issue. See SECURITY.md.

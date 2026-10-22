@@ -1,0 +1,65 @@
+name: Publish remediation event
+description: >-
+  Send a failed main-branch automation run to Tempo's remediation event intake over mutual TLS. The
+  payload carries the event name, the caller's data, and this run's URL.
+inputs:
+  event:
+    description: Remediation event name, e.g. zones_compatibility_failure.
+    required: true
+  data:
+    description: JSON object of event data; the run URL is added as run_url.
+    default: '{}'
+  events-key:
+    description: Client TLS private key (secrets.EVENTS_KEY).
+    required: true
+  events-cert:
+    description: Client TLS certificate (secrets.EVENTS_CERT).
+    required: true
+  events-args:
+    description: Shell-quoted curl arguments naming the intake endpoint (secrets.EVENTS_ARGS).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Publish remediation event
+      shell: bash
+      env:
+        EVENT: ${{ inputs.event }}
+        EVENT_DATA: ${{ inputs.data }}
+        EVENTS_KEY: ${{ inputs.events-key }}
+        EVENTS_CERT: ${{ inputs.events-cert }}
+        EVENTS_ARGS: ${{ inputs.events-args }}
+      run: |
+        set -euo pipefail
+
+        install -m 0700 -d "$RUNNER_TEMP/events"
+        printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/events/key.pem"
+        printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/events/cert.pem"
+        payload=$(jq -cn \
+          --arg event "$EVENT" \
+          --argjson data "$EVENT_DATA" \
+          --arg run_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+          '{
+            repository: "tempoxyz/earn",
+            event: $event,
+            data: ($data + {run_url: $run_url})
+          }')
+        mapfile -t events_args < <(
+          python3 - "$EVENTS_ARGS" <<'PY'
+        import shlex
+        import sys
+
+        for argument in shlex.split(sys.argv[1]):
+            print(argument)
+        PY
+        )
+        (( ${#events_args[@]} > 0 )) || {
+          echo "EVENTS_ARGS is empty" >&2
+          exit 1
+        }
+        curl --fail-with-body --silent --show-error \
+          --key "$RUNNER_TEMP/events/key.pem" \
+          --cert "$RUNNER_TEMP/events/cert.pem" \
+          "${events_args[@]}" \
+          -H "Content-Type: application/json" \
+          -d "$payload"

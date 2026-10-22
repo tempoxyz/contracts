@@ -1,0 +1,72 @@
+name: Select E2E scope
+description: >-
+  The Local E2E path filter. A pull request or push runs the lane only when it changes deployments,
+  the E2E runner, localnet, contracts, deployment scripts, or their shared build configuration; any
+  other event (or a branch-creating push) always runs it. Requires a checkout of this action and
+  `pull-requests: read` on pull requests.
+outputs:
+  run:
+    description: "'true' when the change needs Local E2E."
+    value: ${{ steps.scope.outputs.run }}
+runs:
+  using: composite
+  steps:
+    - id: scope
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      with:
+        script: |
+          let files
+          if (context.eventName === 'pull_request') {
+            files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            })
+          } else if (context.eventName === 'push' && !/^0+$/.test(context.payload.before)) {
+            const { data } = await github.rest.repos.compareCommitsWithBasehead({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              basehead: `${context.payload.before}...${context.payload.after}`,
+            })
+            // The comparison lists at most 300 files; treat a larger push as in scope.
+            files = data.files?.length < 300 ? data.files : undefined
+          }
+          if (!files) {
+            core.info(`E2E is required for ${context.eventName}`)
+            core.setOutput('run', 'true')
+            return
+          }
+
+          const exactPaths = new Set([
+            '.github/workflows/local-zone.yml',
+            '.nvmrc',
+            'foundry.lock',
+            'foundry.toml',
+            'package.json',
+            'pnpm-lock.yaml',
+            'pnpm-workspace.yaml',
+          ])
+          // `lib/` covers submodule gitlinks. Localnet deploys the committed DirectPropAMM fixture;
+          // otherwise E2E, localnet, and the scripts import nothing from `app/` or `test/`.
+          const pathPrefixes = [
+            '.github/actions/',
+            'deployments/',
+            'e2e/',
+            'lib/',
+            'localnet/',
+            'profiles/',
+            'script/',
+            'src/',
+            'test/fixtures/propamm/',
+          ]
+          // A rename lists its old path in `previous_filename`; moving a file out of scope still counts.
+          const inScope = (path) =>
+            exactPaths.has(path) || pathPrefixes.some((prefix) => path.startsWith(prefix))
+          const run = files.some(
+            ({ filename, previous_filename }) =>
+              inScope(filename) || (previous_filename !== undefined && inScope(previous_filename)),
+          )
+
+          core.info(`E2E ${run ? 'is required' : 'is not required'} for this change`)
+          core.setOutput('run', run ? 'true' : 'false')

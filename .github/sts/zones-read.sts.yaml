@@ -1,0 +1,10 @@
+# Allow Zones workflows to read this repository without a long-lived deploy key.
+# Repository IDs are immutable across repository renames.
+subject_pattern:
+  # Zones now lives in Tempo; allow PR, merge-queue, and branch benchmark runs.
+  - repo:tempoxyz@211589300/tempo@994992847:((ref:refs/heads/.+)|pull_request)
+  # Firedrill CI builds the same contract fixtures for its Zones tests.
+  - repo:tempoxyz@211589300/tempo-firedrill@1167619511:((ref:refs/heads/(main|gh-readonly-queue/main/.+))|pull_request)
+
+permissions:
+  contents: read

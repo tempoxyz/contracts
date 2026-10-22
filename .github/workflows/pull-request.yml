@@ -1,0 +1,86 @@
+name: Pull Request
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # SECURITY: pull_request executes contributor-controlled commits. Keep this workflow and every
+  # called job secretless. The workflow_run preview job deploys only this job's inert build artifact.
+  verify:
+    name: Verify
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/verify.yml
+
+  actions-scan:
+    name: Actions security
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+    uses: ./.github/workflows/scan-github-actions.yml
+
+  dependency-scan:
+    # Match the required status context: dependency-scan / Dependency Scan.
+    name: dependency-scan
+    permissions:
+      id-token: write
+      contents: read
+    uses: tempoxyz/gh-actions/.github/workflows/dependency-scan.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+  required-core:
+    name: Required / Core
+    if: ${{ always() }}
+    needs: [verify, actions-scan, dependency-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Require verification and security scans to pass
+        env:
+          ACTIONS_SCAN_RESULT: ${{ needs.actions-scan.result }}
+          DEPENDENCY_SCAN_RESULT: ${{ needs.dependency-scan.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          test "$VERIFY_RESULT" = success
+          test "$ACTIONS_SCAN_RESULT" = success
+          test "$DEPENDENCY_SCAN_RESULT" = success
+
+  preview-artifact:
+    name: Build Preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      - name: Build preview
+        run: pnpm --filter app build:preview
+
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: preview-${{ github.run_id }}
+          path: app/dist/client
+          if-no-files-found: error
+          retention-days: 7

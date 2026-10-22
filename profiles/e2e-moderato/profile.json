@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "e2e-moderato",
+  "chainId": 42431,
+  "engine": {
+    "kind": "erc4626",
+    "venue": "0xB18CBE656CBd8Dbf580DDC91C2E74639E4120a9a"
+  },
+  "core": {
+    "migrationMode": "OperatorEnabled"
+  },
+  "zone": {
+    "id": 3,
+    "enableEarnShare": true,
+    "router": {
+      "privateAsset": "0x20C000000000000000000000DE2E130FF8ac5c17",
+      "pool": "0x3085A8003f340CD51C72D9e1a1298CDafB171B02",
+      "customerId": "0x854d737cc21243623d5cbcb10f5516092756ec95be7dcf7f56693f361f181dba"
+    }
+  }
+}

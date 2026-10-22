@@ -1,0 +1,25 @@
+{
+  "name": "e2e",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "devnet": "tsx harness/cli.ts --devnet",
+    "local": "tsx harness/cli.ts --local"
+  },
+  "dependencies": {
+    "@tempoxyz/earn": "workspace:*",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "localnet": "workspace:*",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "vp": "catalog:"
+  }
+}

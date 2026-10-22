@@ -1,0 +1,134 @@
+name: Zones Compatibility
+
+on:
+  workflow_dispatch:
+  # Tempo builds only Earn's contracts (`forge build --skip test --skip script`); `lib/**` covers
+  # submodule gitlinks.
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'foundry.*'
+      - '.github/workflows/zones-compatibility.yml'
+      - '.github/actions/publish-remediation-event/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zones-compatibility:
+    # Zones live in tempoxyz/tempo; tempoxyz/zones is retired.
+    name: Earn × Tempo Zones
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 45
+    outputs:
+      earn-sha: ${{ steps.revisions.outputs.earn }}
+      tempo-sha: ${{ steps.revisions.outputs.tempo }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout Earn
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: earn
+          persist-credentials: false
+
+      - name: Initialize public Solidity dependencies
+        working-directory: earn
+        run: git submodule update --init --depth 1 lib/forge-std lib/openzeppelin-contracts
+
+      - name: Checkout Tempo main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/tempo
+          ref: main
+          path: tempo
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Record revisions
+        id: revisions
+        run: |
+          echo "earn=$(git -C earn rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tempo=$(git -C tempo rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          toolchain: stable
+
+      - name: Install mold linker
+        uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Enable sccache
+        uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Install nextest
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          tool: nextest@0.9.127
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          # Tempo's own CI pins this nightly for its Zones contracts.
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Build Solidity artifacts
+        id: solidity
+        working-directory: tempo
+        env:
+          EARN_ROOT: ${{ github.workspace }}/earn
+        # Tempo's script builds Earn first so the Zones contracts own the final IZone ABI.
+        run: |
+          bash scripts/build-zones-test-artifacts.sh
+          test -s crates/zones/contracts/out/DemoParPool.sol/DemoParPool.json
+          test -s crates/zones/contracts/out/SingleZoneEarnRouter.sol/SingleZoneEarnRouter.json
+
+      - name: Run Earn Zone integration
+        id: integration
+        working-directory: tempo
+        run: |
+          cargo nextest run \
+            --profile ci \
+            -p zone-node \
+            --test it \
+            -E 'test(/^earn_zone_e2e::/)'
+
+  publish-remediation-event:
+    name: Publish remediation event
+    needs: zones-compatibility
+    # Only main has merged code to remediate; a dispatched branch run must not alert.
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+
+      - name: Publish remediation event
+        uses: ./.github/actions/publish-remediation-event
+        with:
+          event: zones_compatibility_failure
+          data: >-
+            {"earn_sha": "${{ needs.zones-compatibility.outputs.earn-sha || github.sha }}",
+            "tempo_sha": "${{ needs.zones-compatibility.outputs.tempo-sha }}"}
+          events-key: ${{ secrets.EVENTS_KEY }}
+          events-cert: ${{ secrets.EVENTS_CERT }}
+          events-args: ${{ secrets.EVENTS_ARGS }}

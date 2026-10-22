@@ -1,0 +1,31 @@
+{
+  "name": "@tempoxyz/earn",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./abis": "./abis/index.ts",
+    "./deployments": "./index.ts",
+    "./deployments/node": "./node.ts",
+    "./deployments/operations": "./operations.ts",
+    "./tempo/zone": "./chain/zone.ts"
+  },
+  "scripts": {
+    "abis": "tsx abis/generate.ts",
+    "abis:check": "tsx abis/generate.ts --check",
+    "check": "tsx core/profiles.ts && vp lint --deny-warnings && vp fmt --check",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "vp": "catalog:"
+  }
+}

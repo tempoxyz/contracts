@@ -1,0 +1,28 @@
+{
+  "name": "localnet",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "devnet:deploy": "tsx src/devnet-deploy.ts",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tempoxyz/earn": "workspace:*",
+    "prool": "0.2.16",
+    "testcontainers": "12.2.1",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "vp": "catalog:"
+  }
+}

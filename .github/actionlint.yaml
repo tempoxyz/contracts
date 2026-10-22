@@ -1,0 +1,11 @@
+# Register the Depot custom runner labels used by this repository's workflows.
+self-hosted-runner:
+  labels:
+    - depot-ubuntu-latest-16
+
+paths:
+  '.github/workflows/e2e-benchmarks.yml':
+    ignore:
+      # GitHub supports queued concurrency, but actionlint 1.7.12 does not yet
+      # include the `queue` key in its workflow metadata.
+      - 'unexpected key "queue" for "concurrency" section'

@@ -1,0 +1,38 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ['*']
+        update-types: [minor, patch]
+      npm-maintenance:
+        applies-to: version-updates
+        patterns: ['*']
+        update-types: [minor, patch]
+    # viem 2.57.5 changed KeyAuthorizationManager.from to a store-only API that accounts does not
+    # use yet (app/src/private/AccountsCompatibility.test.ts). Drop these once accounts adopts it.
+    ignore:
+      - dependency-name: viem
+        versions: ['>=2.57.5']
+      - dependency-name: ox
+        versions: ['>0.14.54']
+      # @cloudflare/vitest-pool-workers supports only vitest 4. Drop these once it accepts vitest 5.
+      - dependency-name: vitest
+        versions: ['>=5']
+      - dependency-name: '@vitest/*'
+        versions: ['>=5']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      # Buffer the scanner's seven-day minimum: Dependabot reads date-only tag metadata.
+      default-days: 8
+    open-pull-requests-limit: 5

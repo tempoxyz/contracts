@@ -1,0 +1,112 @@
+{
+  "version": 4,
+  "deploymentId": "app-moderato",
+  "deployer": "0x20b0Adf5bec8Cd881CC1795A04C1F33888769132",
+  "owner": "0xcD4145B9944dC215509cB73b93693466989fC132",
+  "factories": {
+    "earn": "0xD13ABa5F0cff3De0890e92F7D1B36948c830f522",
+    "erc4626Engine": "0x0d57c10249eb3a92b7d81bBA6221F80F2865448A"
+  },
+  "deploymentIntentHash": "857db408da4d4ce9b417b00736485d8cf0d01a469aea835663fd6b84d2caf886",
+  "componentDeploymentIntentHashes": {
+    "core": "cb95e7bf36c672944bcc76a6a5a1395fa7a83429006e86fe77058d2a919b9531",
+    "engine": "bdf60e9d9ab608ad9c44b9ef089113d00269b8035ab78a3740978e48aecf7f10",
+    "zone": "d95ba33a47182e883db53fd6f00e4f5ce401fdc7c5d560822d0c41be4f2611f9",
+    "targetYield": null,
+    "boostRewards": null
+  },
+  "target": {
+    "chainId": 42431,
+    "genesisHash": "0xba49153e6f3996a340f3fe3d69e7c0826b717ae672cb115cf0527cada0b78e9e",
+    "zone": {
+      "id": 3,
+      "chainId": 1424310003,
+      "portal": "0x5Ad0000000000000000000000000000000000003",
+      "messenger": "0x5A4d000000000000000000000000000000000000"
+    }
+  },
+  "assetDecimals": 6,
+  "deploymentBlock": "36280859",
+  "generatedAt": "2026-10-19T05:34:57.213Z",
+  "source": {
+    "factoryDeploymentId": "0x195a120425afd4f3e3f3b703432a5fe8ec5389fbdcf29c74fce82013f438e4b1",
+    "commit": "0x9c21f7b66d3b50f21e855fbd04a474f3c5a5e345",
+    "treeDirty": true,
+    "foundryVersion": "forge Version: 1.8.1\nCommit SHA: 982849d3140c01fd3b72905759581a132df7aa98\nBuild Timestamp: 2026-08-28T17:50:40.383510000Z (1787939440)\nBuild Profile: dist",
+    "contractVerification": "verified",
+    "verifierUrl": "https://contracts.tempo.xyz",
+    "contracts": {
+      "engine": {
+        "kind": "source",
+        "name": "ERC4626Engine",
+        "match": "exact_match",
+        "sourceInputsHash": "0x78db489739d631722f7d32791a19c2e00518bcd2a240d067beaf13bf43cc56dc"
+      },
+      "earnVault": {
+        "kind": "erc1967-proxy",
+        "name": "ERC1967Proxy",
+        "match": "exact_match",
+        "sourceInputsHash": "0x46349656a8817b8c6dc43f05e8e5dda434f1a712746b87b57f1c2275e5fafc84",
+        "implementation": "0x7dE600Cb2c4380697c7f9F1C49E6ea5267b12C04",
+        "implementationCodeHash": "0xbb11557746493193a25fd443035291d191b5ebf9df90e386d72780fb060f60e5"
+      },
+      "earnFees": {
+        "kind": "minimal-proxy",
+        "implementation": "0x5a62E2A2eD0f2986c980f3E93f44d2d9d4AD2Ee0",
+        "implementationCodeHash": "0x10f399de31fead6aade2ba55138c8fd6fee3be6ac024c8208b96efdd2fe97b5a"
+      },
+      "earnShare": {
+        "kind": "protocol-native",
+        "factory": "0x20Fc000000000000000000000000000000000000"
+      },
+      "earnRouter": {
+        "kind": "source",
+        "name": "SingleZoneEarnRouter",
+        "match": "exact_match",
+        "sourceInputsHash": "0x6eacfcb04d1a3a249008b0a97e7f037036cce7a854efb81eb76d0e6ec56dc216"
+      }
+    }
+  },
+  "runtimeCodeHashes": {
+    "zonePortal": "0x620678cab8cbffe25fab0e4d29c360ba2f7b55076bad1a7e730e80866211a795",
+    "asset": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+    "engine": "0xcf7e2a2ce629da1d18853cb0a9bd078380603e4ae1e123f697f3d702c7974292",
+    "earnFees": "0x01863e94f8a7575cd335b4906dd3affa0a8b045ffa829cef1be77a1ccc0195ef",
+    "earnShare": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+    "earnVault": "0x2267e2e062f38379d4c0a254af36f49c30b5a735f4311dd575958e4c1d87afb1",
+    "earnRouter": "0x2fb37cb7921bca082d80d6965a15fa25b291e0b6924843041452253eff0a4527"
+  },
+  "addresses": {
+    "zonePortal": "0x5Ad0000000000000000000000000000000000003",
+    "zoneMessenger": "0x5A4d000000000000000000000000000000000000",
+    "zoneOutbox": "0x1c00000000000000000000000000000000000002",
+    "asset": "0x20C0000000000000000000000000000000000000",
+    "engine": "0x4EF27f0C08C9b730A35B8F74CD8000458d17402f",
+    "earnFees": "0x29537DbcE8a951F010D8Dd9cd22E7887878eD8E6",
+    "earnShare": "0x20C000000000000000000000247C35159Dc122B2",
+    "earnVault": "0x46b81bdFA3f184CC1c02BBbd45eaa3E3dAa25cD9",
+    "earnRouter": "0xD8aBaB19daba6CC624f0E5780c0A8660C5C96Bd8"
+  },
+  "actions": {
+    "deploy-engine": {
+      "completedAt": "2026-09-21T14:24:44.229Z",
+      "verification": "broadcast",
+      "transactions": ["0x6a324ac25452cb54ef80d245a73d6f8c60e94822aaa9122bfaf3efd875a8dea6"]
+    },
+    "deploy-core": {
+      "completedAt": "2026-09-21T14:25:21.631Z",
+      "verification": "broadcast",
+      "transactions": ["0x61861eff9f21c5feee93d544558eaaff65dd961c76f6383f58e9badb5869eb21"]
+    },
+    "bind-core": {
+      "completedAt": "2026-09-21T14:25:26.959Z",
+      "verification": "broadcast",
+      "transactions": ["0xf0d762beebb75f45686ae674643f498027d8e4c866d30032a2cb65e5ebbebc66"]
+    },
+    "deploy-router": {
+      "completedAt": "2026-10-19T05:34:55.846Z",
+      "verification": "broadcast",
+      "transactions": ["0x61a35a98572b48ff09c0ee327e831d91aeec219860a4265dbecc8c3406e072fb"]
+    }
+  }
+}

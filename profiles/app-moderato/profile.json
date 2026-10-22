@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "id": "app-moderato",
+  "chainId": 42431,
+  "engine": {
+    "kind": "erc4626",
+    "venue": "0x494b7BD3EffE75ea013125a1F54B4F5C3A48fC8a"
+  },
+  "core": {
+    "migrationMode": "OperatorEnabled",
+    "emergencyGuardian": "0xcD4145B9944dC215509cB73b93693466989fC132",
+    "asyncJanitor": "0xcD4145B9944dC215509cB73b93693466989fC132",
+    "fees": {
+      "fixed": [
+        {
+          "recipient": "0xcD4145B9944dC215509cB73b93693466989fC132",
+          "rateBps": 25
+        },
+        {
+          "recipient": "0x63b0D945d8A81c0162748832a42F43e836A80181",
+          "rateBps": 500
+        }
+      ],
+      "excess": {
+        "recipient": "0xcD4145B9944dC215509cB73b93693466989fC132",
+        "annualTargetRateBps": 300,
+        "rateBps": 5000
+      }
+    }
+  },
+  "owner": "0xcD4145B9944dC215509cB73b93693466989fC132",
+  "zone": {
+    "id": 3,
+    "enableEarnShare": true,
+    "router": {
+      "privateAsset": "0x20C0000000000000000000000000000000000001",
+      "pool": "0x2Bae0DEcE5a742691DeAD560eEc951a2F1Fa604a",
+      "customerId": "0x26b6cb56a7e8549920a4119833be48d2fe38bee88b590d09f1a9bf8fa92fe920"
+    }
+  }
+}

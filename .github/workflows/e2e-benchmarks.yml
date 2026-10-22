@@ -1,0 +1,92 @@
+name: Earn E2E Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Deployed profile to measure (profiles/<id>/profile.json)
+        required: true
+        default: profiles/e2e-moderato/profile.json
+        type: string
+      group:
+        description: Benchmark public flows, private flows, or both
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - public
+          - private
+      samples:
+        description: Number of deposit/redeem samples
+        required: true
+        default: 10
+        type: number
+  schedule:
+    - cron: '17 6 * * *'
+
+permissions: {}
+
+jobs:
+  benchmark:
+    name: User-perceived latency (${{ inputs.group || 'all' }})
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: hosted-contracts-moderato
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      - name: Run benchmarks
+        env:
+          # `inputs` are only populated for workflow_dispatch -- the scheduled
+          # trigger has none, so fall back to the same defaults the dispatch form uses.
+          BENCHMARK_GROUP: ${{ inputs.group || 'all' }}
+          BENCHMARK_PROFILE: ${{ inputs.profile || 'profiles/e2e-moderato/profile.json' }}
+          BENCHMARK_SAMPLES: ${{ inputs.samples || 10 }}
+          TEMPO_API_KEY: ${{ (inputs.group || 'all') != 'public' && secrets.TEMPO_API_KEY || '' }}
+        run: pnpm e2e:benchmark -- --earn-file "$BENCHMARK_PROFILE" --group "$BENCHMARK_GROUP" --samples "$BENCHMARK_SAMPLES"
+
+      # Labels come from the result, which records the environment the profile's chain selects.
+      - name: Summarize benchmarks
+        id: summary
+        if: ${{ always() }}
+        env:
+          BENCHMARK_GROUP: ${{ inputs.group || 'all' }}
+        run: |
+          result="$(find e2e/.results -type f -name '*-benchmark-*' -print -quit 2>/dev/null || true)"
+          if [[ -z "$result" ]]; then
+            echo 'No benchmark result was produced.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "environment=$(jq -r '.environment.id' "$result")" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Earn user-perceived latency · $(jq -r '"\(.environment.id) · \(.deployment.id)"' "$result") · ${BENCHMARK_GROUP}"
+            echo
+            echo '| Flow | Samples | Minimum | p50 | p95 | Maximum |'
+            echo '| --- | ---: | ---: | ---: | ---: | ---: |'
+            jq -r '.summary[] | "| \(.flow) | \(.samples) | \(.minMs / 1000)s | \(.p50Ms / 1000)s | \(.p95Ms / 1000)s | \(.maxMs / 1000)s |"' "$result"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: earn-e2e-benchmarks-${{ steps.summary.outputs.environment || 'unresolved' }}-${{ inputs.group || 'all' }}-${{ github.run_id }}
+          path: e2e/.results/*-benchmark-*.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 90

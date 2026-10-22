@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "protocol": "tip1091-v1",
+  "zoneInfoFields": 9,
+  "l1Image": "ghcr.io/tempoxyz/tempo@sha256:cf4801c1b9d9b244a4efe6d21da3591f14e01db5e316d23c787ed31068234296",
+  "zoneImage": "ghcr.io/tempoxyz/tempo-zone@sha256:9df31e55cfe3825cedb2f3df8d0444df3df3e2a0e1cce47f2753df023152bd54",
+  "runtimeFixture": "tip1091-runtime.json",
+  "runtimeFixtureSha256": "bde3c8a90da662d6e645fead5a0a938391afc7e7f4ab2858bcc4f546c102c778",
+  "sourceCommit": "446e948e60db00b99b6152a69351ff6dac59e67b",
+  "solcVersion": "0.8.35"
+}

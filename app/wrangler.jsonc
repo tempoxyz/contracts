@@ -1,0 +1,51 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tempo-earn",
+
+  // The trusted production CI job supplies DEV_CLOUDFLARE_ACCOUNT_ID through its protected Environment.
+  // Set CLOUDFLARE_ACCOUNT_ID for manual deployments without editing this file.
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-05-07",
+
+  // Static assets serve the React client while API and health routes run through Hono.
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/*", "!/assets/*"],
+  },
+  "upload_source_maps": true,
+
+  // Local dotenv files provide these bindings during development. Cloudflare
+  // secrets provide them to deployed preview and production Workers.
+  "secrets": {
+    "required": ["PRIVY_APP_ID", "TEMPO_API_KEY"],
+  },
+
+  // Local development defaults. Preview and production override ENVIRONMENT below.
+  "vars": {
+    "ENVIRONMENT": "development",
+  },
+  "env": {
+    // PR previews use dedicated preview-only Privy and protected RPC credentials.
+    "preview": {
+      "name": "tempo-earn-preview",
+      "secrets": {
+        "required": ["PRIVY_APP_ID", "TEMPO_API_KEY"],
+      },
+      "vars": {
+        "ENVIRONMENT": "preview",
+      },
+    },
+    // Only the main workflow deploys this Worker after verification succeeds.
+    "production": {
+      "name": "tempo-earn",
+      "secrets": {
+        "required": ["PRIVY_APP_ID", "TEMPO_API_KEY"],
+      },
+      "vars": {
+        "ENVIRONMENT": "production",
+      },
+    },
+  },
+}

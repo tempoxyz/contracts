@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "id": "veda-mainnet",
+  "chainId": 4217,
+  "engine": {
+    "kind": "veda",
+    "address": "0x160FAC4e4011206681AD6A9C1529cD9204904cE6"
+  }
+}

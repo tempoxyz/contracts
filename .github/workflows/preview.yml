@@ -1,0 +1,163 @@
+name: Preview
+
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] same-repository PRs only; trusted Worker code serves the static artifact
+    workflows: [Pull Request]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: preview-${{ github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Preview
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.pull_requests[0] != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: preview
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+      pull-requests: write
+    env:
+      WRANGLER_SEND_METRICS: false
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # workflow_run is privileged, so only trusted default-branch code may execute in this job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      # Trusted default-branch tooling; workflow_run has read-only access to the default-branch cache.
+      - uses: ./.github/actions/setup
+
+      - name: Build trusted preview Worker
+        run: pnpm --filter app build:preview
+
+      - name: Download preview artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: preview-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/preview-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate and install preview assets
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/preview-artifact
+        run: |
+          set -euo pipefail
+          if find "$ARTIFACT_DIR" -type l -print -quit | grep -q .; then
+            echo 'Preview artifact contains a symbolic link' >&2
+            exit 1
+          fi
+          if find "$ARTIFACT_DIR" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
+            echo 'Preview artifact contains a non-regular entry' >&2
+            exit 1
+          fi
+          if [[ -d "$ARTIFACT_DIR/client" ]]; then
+            if find "$ARTIFACT_DIR" -mindepth 1 -maxdepth 1 ! -name client -print -quit | grep -q .; then
+              echo 'Preview artifact contains files outside client/' >&2
+              exit 1
+            fi
+            client_dir="$ARTIFACT_DIR/client"
+          else
+            client_dir="$ARTIFACT_DIR"
+          fi
+          if [[ ! -f "$client_dir/index.html" ]]; then
+            echo 'Preview artifact is missing client/index.html' >&2
+            exit 1
+          fi
+          rm -rf app/dist/client
+          mkdir -p app/dist/client
+          cp -R "$client_dir/." app/dist/client/
+
+      - name: Upload preview version
+        id: deploy
+        uses: tempoxyz/gh-actions/vendor/cloudflare/wrangler-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        env:
+          CLOUDFLARE_ENV: preview
+        with:
+          apiToken: ${{ secrets.DEV_CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.DEV_CLOUDFLARE_ACCOUNT_ID }}
+          preCommands: >-
+            wrangler secret list --config wrangler.jsonc --env preview --format json |
+            jq -e 'map(.name) as $configured |
+            ["PRIVY_APP_ID", "TEMPO_API_KEY"] as $required |
+            ($required - $configured) as $missing |
+            if ($missing | length) == 0 then true else error("Missing preview Worker secrets: \($missing | join(", "))") end'
+          command: >-
+            versions upload dist/tempo_earn/index.js
+            --config wrangler.jsonc
+            --env preview
+            --no-bundle
+            --preview-alias pr-${{ github.event.workflow_run.pull_requests[0].number }}
+          packageManager: pnpm
+          workingDirectory: app
+
+      - name: Resolve preview URL
+        id: preview
+        env:
+          COMMAND_OUTPUT: ${{ steps.deploy.outputs.command-output }}
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          url=$(printf '%s\n' "$COMMAND_OUTPUT" | sed -nE 's/.*Version Preview Alias URL:[[:space:]]*(https:\/\/[a-zA-Z0-9.-]+\.workers\.dev).*/\1/p' | head -1 || true)
+          if [[ -z "$url" ]]; then
+            url="$DEPLOYMENT_URL"
+          fi
+          if [[ -z "$url" ]]; then
+            echo "Wrangler did not return a preview URL" >&2
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test preview
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+        run: |
+          set -euo pipefail
+          for path in / /health; do
+            curl --fail --silent --show-error "${PREVIEW_URL%/}${path}" >/dev/null
+          done
+          pnpm --filter app exec tsx deployments/check-live-config.ts "$PREVIEW_URL"
+
+      - name: Comment preview URL
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+          PREVIEW_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const marker = '<!-- tempo-earn-preview -->'
+            const body = `${marker}\n### Preview\n\n**Deployed:** \`${process.env.PREVIEW_SHA.slice(0, 8)}\`\n\n[Open Preview](${process.env.PREVIEW_URL})`
+            const issue_number = context.payload.workflow_run.pull_requests[0].number
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number,
+            })
+            const existing = comments.find((comment) => comment.body?.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number,
+                body,
+              })
+            }
