@@ -208,10 +208,10 @@ stop when the payee stops submitting them, when the Zone administrator revokes t
 admission (deposits and redemptions continue) or the router's gateway registration (every flow
 stops), or, for EarnShare spends on a conversion router, when the pool cannot convert.
 
-An issuer that approves a payment on the Zone receipt, before the parent-chain callback runs,
-carries the risk that the callback bounces afterwards. Before approving, read the destination's
-admission, the EarnVault's exit state, and for an EarnShare spend on a conversion router
-`liquidityStatus()` and the oracle age, and treat a bounce as an unpaid approval.
+A payee that accepts a payment on the Zone receipt, before the parent-chain callback runs, carries
+the risk that the callback bounces afterwards. Before accepting, read the destination's admission,
+the EarnVault's exit state, and for an EarnShare spend on a conversion router `liquidityStatus()`
+and the oracle age, and treat a bounce as an unpaid payment.
 
 ## Par conversion
 
@@ -231,8 +231,8 @@ There are no partial fills. A paused pool, revoked admission or redirected recip
 (by the pool's own window) stale oracle report, or insufficient inventory reverts the callback and
 bounces the input. Tokens sent directly to the router are never counted or rescued and can remain
 stuck. The `actionId` becomes the pool trade ID, so it appears in public pool memos as well as in
-router events; a payee's spend reference must therefore be an opaque per-payment value that links to
-no account or card.
+router events; a spend's `actionId` must therefore be an opaque per-payment value that links to no
+account.
 
 `liquidityStatus()` returns `(paused, admitted, atPar, depositLiquidity, redeemLiquidity)`: the pool
 pause flag, whether the pool admits the router as taker and recipient and resolves it to itself,
@@ -298,8 +298,8 @@ revoking the destination.
 
 The same Portal reverts any callback that appends no deposit to it (`CallbackDidNotReturnToZone`),
 and rejects a deposit smaller than its deposit fee plus bounce-back fee (`DepositTooSmall`). A spend
-on such a Zone therefore bounces unless its unused input covers both fees, so the issuer withdraws
-that margin on top of the amount it pays. An open-access Zone accepts a spend with nothing to
+on such a Zone therefore bounces unless its unused input covers both fees, so the submitter
+withdraws that margin on top of the amount it pays. An open-access Zone accepts a spend with nothing to
 return.
 
 ## Client integration
@@ -334,9 +334,11 @@ parent-chain `EarnDeposit` or `EarnRedeem` event. `privateRedeem` and `waitForPr
 mirror image. Use the `viem/tempo` helpers rather than building the encrypted return payload or
 authorization by hand.
 
-A spend is submitted by the payee's issuer, not the Earn app. The issuer prepares flow `2` callback
-data with its own opaque `actionId`, sets `maxDepositFee` from the Portal's current fee, submits the
-withdrawal to the router on the Zone, and matches the parent-chain `EarnSpend` event by `actionId`.
+A spend is a Zone withdrawal by the paying account, or by a key it has authorized to submit
+payments, such as one the payee operates; the Earn app does not submit spends. The submitter
+prepares flow `2` callback data with an opaque `actionId` the payee can match, sets `maxDepositFee`
+from the Portal's current fee, submits the withdrawal to the router on the Zone, and the payee
+matches the parent-chain `EarnSpend` event by `actionId`.
 
 ## Failure handling
 
