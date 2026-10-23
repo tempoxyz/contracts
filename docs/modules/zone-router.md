@@ -195,7 +195,8 @@ For each spend the router:
    balance to rise by exactly `amount` (`DestinationNotPaid` otherwise);
 5. returns the unused input (`amountIn - amount` of the private asset, or the EarnShare the vault did
    not burn) through `depositEncrypted`, under the deposit-fee cap, and skips the return when nothing
-   is left; and
+   is left, which only an open-access Zone accepts ([admission](#token-enablement-policy-and-admission));
+   and
 6. requires every touched balance back at its pre-call value and emits `EarnSpend` with the
    `actionId`, the input token and amount, the input spent, the amount paid, and the Portal's
    deposit hash (zero without a return).
@@ -290,9 +291,16 @@ refunds to the user and refuses the action up front when the user is not admitte
 ([`Admission.ts`](../../app/src/private/Admission.ts)).
 
 On a Zone that enforces account admission, a spend also requires the spend destination to hold the
-`Account` role. A direct withdrawal from such a Zone can reach only admitted accounts, so the router,
-as a registered gateway, pays no address the administrator has not admitted, and the administrator
-can stop spends alone by revoking the destination.
+`Account` role. The Portal delivers a plain withdrawal on such a Zone only to an address holding
+`Account`, re-checked when the withdrawal is processed, so the router, as a trusted gateway, pays
+no address a direct withdrawal could not reach, and the administrator can stop spends alone by
+revoking the destination.
+
+The same Portal reverts any callback that appends no deposit to it (`CallbackDidNotReturnToZone`),
+and rejects a deposit smaller than its deposit fee plus bounce-back fee (`DepositTooSmall`). A spend
+on such a Zone therefore bounces unless its unused input covers both fees, so the issuer withdraws
+that margin on top of the amount it pays. An open-access Zone accepts a spend with nothing to
+return.
 
 ## Client integration
 
@@ -334,15 +342,16 @@ withdrawal to the router on the Zone, and matches the parent-chain `EarnSpend` e
 
 Callback failures decode against the router ABI:
 
-| Error                                                                                                                                | Meaning and response                                                                                                          |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                 |
-| `InvalidReturnToken`                                                                                                                 | The return token is not enabled, or its deposits are inactive, on the source Portal                                           |
-| `DepositFeeTooHigh`                                                                                                                  | The Portal's deposit fee rose above the return's `maxDepositFee`; resubmit with the current fee once the bounce is confirmed  |
-| `SpendDestinationNotAdmitted`                                                                                                        | The Portal enforces admission and the spend destination is not admitted; spends are stopped until the administrator admits it |
-| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool  |
-| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, output, or spend bound was missed, or measured conversion output differed from input                |
-| `ResidualBalance`, `InvalidRoutePair`, `DestinationNotPaid`                                                                          | Invariant failure; investigate before retrying                                                                                |
+| Error                                                                                                                                | Meaning and response                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                               |
+| `InvalidReturnToken`                                                                                                                 | The return token is not enabled, or its deposits are inactive, on the source Portal                                                         |
+| `DepositFeeTooHigh`                                                                                                                  | The Portal's deposit fee rose above the return's `maxDepositFee`; resubmit with the current fee once the bounce is confirmed                |
+| `SpendDestinationNotAdmitted`                                                                                                        | The Portal enforces admission and the spend destination is not admitted; spends are stopped until the administrator admits it               |
+| Portal `CallbackDidNotReturnToZone`, `DepositTooSmall`                                                                               | On an access-enforced Zone, a spend left no unused input, or too little to cover the deposit and bounce-back fees; withdraw a larger margin |
+| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool                |
+| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, output, or spend bound was missed, or measured conversion output differed from input                              |
+| `ResidualBalance`, `InvalidRoutePair`, `DestinationNotPaid`                                                                          | Invariant failure; investigate before retrying                                                                                              |
 
 When the Portal reports `callbackSuccess: false`, the Zone protocol bounces the withdrawal back and
 the processing fee may still be consumed. Do not issue a second refund from the application; fix the
