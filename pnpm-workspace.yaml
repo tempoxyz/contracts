@@ -55,6 +55,9 @@ minimumReleaseAgeExclude:
   - vite-plus
   # Security backport for the bundled launch-editor advisories.
   - vite@8.1.6
+  # Security fixes for Undici redirect and proxy handling.
+  - undici@7.30.1
+  - undici@8.12.2
 
 trustPolicy: no-downgrade
 trustPolicyExclude:
@@ -68,7 +71,8 @@ trustPolicyExclude:
 overrides:
   # Vite bundles launch-editor; override the affected bundle, not launch-editor itself.
   'vite@>=8.0.0 <8.1.6': 8.1.6
-  'undici@>=7.28.0 <7.29.1': 7.29.1
+  'undici@>=7.0.0 <7.30.1': 7.30.1
+  'undici@>=8.0.0 <8.12.2': 8.12.2
   '@base-ui/react': 1.4.1
   # Privy's x402 dependency still brings Wagmi 2 with this exact, vulnerable WC pin.
   # Reuse Privy's existing WC version; remove when Wagmi 2 updates the parent.
