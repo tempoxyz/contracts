@@ -33,7 +33,7 @@
     "vp": "catalog:"
   },
   "engines": {
-    "node": ">=22 <23"
+    "node": ">=22.23.4 <23"
   },
   "packageManager": "pnpm@11.1.0"
 }

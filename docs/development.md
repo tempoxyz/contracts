@@ -7,12 +7,12 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
 
 ## Toolchain
 
-- **Solidity** `0.8.36` with `via_ir` and the optimizer at 200 runs, built with **Foundry v1.8.5**.
+- **Solidity** `0.8.36` with `via_ir` and the optimizer at 200 runs, built with **Foundry v1.8.6**.
   CI installs that version through `.github/actions/setup` and the PropAMM fixture job, and the
   deployment tooling refuses an older Forge (`deployments/chain/foundry.ts`). A record's
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version
   deployments target, so tests and the gas snapshot run on the deployed EVM version.
-- **Node.js 22**, pinned by `.nvmrc` and enforced by the root `engines` field.
+- **Node.js 22.23.4 or newer in the 22.x line**, pinned by `.nvmrc` and enforced by the root `engines` field.
 - **pnpm 11** (`packageManager` in the root `package.json`). The workspace holds the app, the
   deployment package (`deployments/`, named `@tempoxyz/earn`), `localnet/`, and `e2e/`; viem,
   Cloudflare, and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
