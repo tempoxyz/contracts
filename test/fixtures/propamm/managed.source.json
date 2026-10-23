@@ -1,0 +1,7 @@
+{
+  "repository": "tempoxyz/propAMM",
+  "commit": "e577f5b06e44e4da4d57b187fbb445bf9d1c99bf",
+  "contract": "contracts/src/ManagedDirectPropAMM.sol:ManagedDirectPropAMM",
+  "solc": "0.8.30",
+  "regenerate": "test/fixtures/propamm/update.sh --source managed.source.json [--check] [<propAMM checkout>]"
+}

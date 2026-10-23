@@ -57,6 +57,9 @@ function client(overrides: Overrides = {}) {
     [`${outputs.earnRouter}.pool`]: address('7'),
     [`${outputs.earnRouter}.customerId`]: customerId,
     [`${outputs.earnRouter}.privateAssetIsBase`]: true,
+    [`${outputs.earnRouter}.poolKind`]: 0,
+    [`${outputs.earnRouter}.pairIndex`]: 0,
+    [`${outputs.earnRouter}.sponsorId`]: 0n,
     [`${outputs.earnRouter}.liquidityStatus`]: [false, true, true, 10n, 20n],
     [`${address('7')}.baseToken`]: address('6'),
     [`${address('7')}.quoteToken`]: outputs.asset,
@@ -102,6 +105,8 @@ describe('SingleZoneEarnRouter inspection', () => {
       [{ [`${outputs.earnRouter}.privateAssetIsBase`]: false }, 'pool base token'],
       [{ [`${address('7')}.quoteToken`]: address('9') }, 'pool quote token'],
       [{ [`${outputs.earnRouter}.privateAsset`]: address('9') }, 'router private asset'],
+      [{ [`${outputs.earnRouter}.poolKind`]: 1 }, 'Router pool kind'],
+      [{ [`${outputs.earnRouter}.sponsorId`]: 1n }, 'Router pool kind'],
     ] as const) {
       await expect(
         inspectEarnDeployment(client(overrides) as never, profile, outputs),
@@ -147,6 +152,9 @@ describe('SingleZoneEarnRouter inspection', () => {
       [`${outputs.earnRouter}.pool`]: zeroAddress,
       [`${outputs.earnRouter}.customerId`]: zeroHash,
       [`${outputs.earnRouter}.privateAssetIsBase`]: false,
+      [`${outputs.earnRouter}.poolKind`]: 0,
+      [`${outputs.earnRouter}.pairIndex`]: 0,
+      [`${outputs.earnRouter}.sponsorId`]: 0n,
       // A pool-less router never needs a pool or liquidity read.
       [`${outputs.earnRouter}.liquidityStatus`]: new Error('unexpected liquidity read'),
     }

@@ -58,10 +58,12 @@ set to `null`; an empty `core` or `core.fees` object is rejected. Top-level keys
 - `zone`: the complete private integration: Zone `id`, `enableEarnShare: true`, and a nested
   `router` with the one immutable route. `router.privateAsset` is singular because one router
   supports exactly one pair; another private asset needs another router. With a conversion pool,
-  `router.pool` is the DirectPropAMM pool that trades exactly that pair with equal decimals, and
-  `router.customerId` is its nonzero bytes32 route identifier. When `privateAsset` is the vault
-  asset, omit both `pool` and `customerId` (setting only one is rejected). The Zone chain ID is
-  derived from `chainId` and `zone.id` using the protocol's reserved ranges.
+  `router.pool` is the PropAMM pool that trades exactly that pair with equal decimals, and
+  `router.customerId` is its nonzero bytes32 route identifier. A ManagedDirectPropAMM pool also sets
+  `router.pair`: the pair's `index` and the `sponsorId` list to trade under (0 for the home list).
+  When `privateAsset` is the vault asset, omit `pool`, `customerId`, and `pair` (setting only one of
+  `pool` and `customerId` is rejected). The Zone chain ID is derived from `chainId` and `zone.id`
+  using the protocol's reserved ranges.
 - `targetYield` and `boostRewards`: optional reward periphery ([rewards](#rewards)).
 
 Profiles are not lifecycle controls: removing a capability cannot disable or erase an

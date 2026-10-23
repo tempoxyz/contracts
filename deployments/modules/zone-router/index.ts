@@ -1,7 +1,7 @@
 import { erc20Abi, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
 import { Addresses } from 'viem/tempo'
 
-import { earnEngineBindingAbi, propAMMPoolAbi } from '../../abis/index.js'
+import { earnEngineBindingAbi } from '../../abis/index.js'
 import { requireCode } from '../../chain/inspect.js'
 import { tempoApiRpcUrl } from '../../chain/tempo.js'
 import { inspectZone, missingZoneTokens, registeredZone } from '../../chain/zone.js'
@@ -13,7 +13,7 @@ import {
 } from '../../core/profile.js'
 import { required, requiredOutput, type CapabilityModule } from '../module.js'
 import { zoneRouterStackFields } from './catalog.js'
-import { inspectRouterBinding, inspectRouterReadiness } from './inspection.js'
+import { inspectRouterBinding, inspectRouterReadiness, poolTokens } from './inspection.js'
 import { discoverZoneOutputs, isZoneSequencerOutput } from './outputs.js'
 import {
   configuredRouterPool,
@@ -64,7 +64,9 @@ export const zoneRouterModule: CapabilityModule = {
     const tokens = zoneRouteTokens(profile, outputs)
     const [conversion, disabled, inactive] = await Promise.all([
       // A router whose private asset is the vault asset has no conversion to inspect or report.
-      pool && pool !== zeroAddress ? inspectRouterReadiness(client, router, pool) : undefined,
+      pool && pool !== zeroAddress
+        ? inspectRouterReadiness(client, router, pool, zone.pair?.index)
+        : undefined,
       missingZoneTokens(client, portal, tokens),
       missingZoneTokens(client, portal, tokens, { depositsActive: true }),
     ])
@@ -165,23 +167,12 @@ async function preflightRouter(
     }
     return
   }
-  const [base, quote] = await Promise.all([
-    client.readContract({
-      address: conversion.pool,
-      abi: propAMMPoolAbi,
-      functionName: 'baseToken',
-    }),
-    client.readContract({
-      address: conversion.pool,
-      abi: propAMMPoolAbi,
-      functionName: 'quoteToken',
-    }),
-  ])
+  const { base, quote } = await poolTokens(client, conversion.pool, conversion.pair?.index)
   const pair = [getAddress(base), getAddress(quote)].sort()
   const expected = [zone.privateAsset, getAddress(vaultAsset)].sort()
   if (pair[0] !== expected[0] || pair[1] !== expected[1] || expected[0] === expected[1]) {
     throw new Error(
-      `PropAMM pool ${conversion.pool} trades ${base}/${quote}; expected private asset ${zone.privateAsset} and vault asset ${vaultAsset}`,
+      `PropAMM pool ${conversion.pool}${conversion.pair ? ` pair ${conversion.pair.index}` : ''} trades ${base}/${quote}; expected private asset ${zone.privateAsset} and vault asset ${vaultAsset}`,
     )
   }
   const [privateDecimals, vaultDecimals] = await Promise.all([

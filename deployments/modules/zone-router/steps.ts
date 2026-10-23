@@ -19,6 +19,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import {
   deployEarnRouterScriptAbi,
   earnVaultAbi,
+  managedPropAMMPoolAbi,
   propAMMPoolAbi,
   propAMMRebalanceControllerAbi,
   safeAbi,
@@ -27,7 +28,12 @@ import {
 import { InspectionMismatchError } from '../../chain/inspect.js'
 import { inspectRouterBinding } from './inspection.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
-import { configuredRouterPool, configuredZone, routerArgs } from './profile.js'
+import {
+  configuredRouterPool,
+  configuredZone,
+  routerArgs,
+  type ManagedPoolPair,
+} from './profile.js'
 import { missingZoneTokens, zoneCallbackGatewayRegistered } from '../../chain/zone.js'
 import { zoneRouteTokens } from './index.js'
 import { envPrivateKey } from '../../chain/runtime.js'
@@ -91,9 +97,18 @@ export const deployRouter = defineFoundryStep({
       const { zoneId, earnVault, privateAsset, route } = routerArgs(profile, outputs)
       return encodeAbiParameters(
         parseAbiParameters(
-          'uint32 zoneId, address earnVault, address privateAsset, address pool, bytes32 customerId',
+          'uint32 zoneId, address earnVault, address privateAsset, address pool, bytes32 customerId, uint8 poolKind, uint16 pairIndex, uint64 sponsorId',
         ),
-        [zoneId, earnVault, privateAsset, route.pool, route.customerId],
+        [
+          zoneId,
+          earnVault,
+          privateAsset,
+          route.pool,
+          route.customerId,
+          route.poolKind,
+          route.pairIndex,
+          route.sponsorId,
+        ],
       )
     },
   },
@@ -120,7 +135,10 @@ export const deployRouter = defineFoundryStep({
   },
 })
 
-/** Admits the router on its DirectPropAMM pool; a router whose private asset is the vault asset has no pool. */
+/**
+ * Admits the router on its PropAMM pool: as taker and recipient on a DirectPropAMM, or on its pair's
+ * list of a ManagedDirectPropAMM. A router whose private asset is the vault asset has no pool.
+ */
 export const authorizeRouter = defineAuthorityStep({
   id: 'authorize-router',
   authority: poolAdministrator,
@@ -132,12 +150,16 @@ export const authorizeRouter = defineAuthorityStep({
   enabled: (profile) => configuredRouterPool(profile) !== undefined,
   async satisfied(client, profile, outputs) {
     const router = requiredOutput(outputs, 'earnRouter')
-    const { pool } = required(configuredRouterPool(profile), 'router conversion pool')
+    const { pool, pair } = required(configuredRouterPool(profile), 'router conversion pool')
+    if (pair) return managedPairListed(client, pool, pair, router)
     const { taker, recipient, resolved } = await poolAdmission(client, pool, router)
     return taker && recipient && getAddress(resolved) === router
   },
-  handoff: (profile, outputs) =>
-    `The owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(${requiredOutput(outputs, 'earnRouter')}, true) and setRecipientAllowed(${requiredOutput(outputs, 'earnRouter')}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`,
+  handoff: (profile, outputs) => {
+    const pair = configuredRouterPool(profile)?.pair
+    if (pair) return managedPairHandoff(configuredZone(profile)?.pool, pair, outputs)
+    return `The owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(${requiredOutput(outputs, 'earnRouter')}, true) and setRecipientAllowed(${requiredOutput(outputs, 'earnRouter')}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
+  },
   signerAvailable: (_profile, environment, proven) =>
     Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) => canAuthorizeRouter(options),
@@ -145,9 +167,23 @@ export const authorizeRouter = defineAuthorityStep({
     const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
     if (!key) return undefined
     const account = privateKeyToAccount(key)
-    const { pool } = required(configuredRouterPool(options.profile), 'router conversion pool')
+    const { pool, pair } = required(configuredRouterPool(options.profile), 'router conversion pool')
     const router = requiredOutput(options.outputs, 'earnRouter')
     const client = dependencies.authorityClient(options, account)
+    if (pair) {
+      if (!(await managedHomeListOwner(client, pool, pair, account.address))) return undefined
+      if (await managedPairListed(client, pool, pair, router)) return { transactions: [] }
+      return await sendAuthorityCalls(client, dependencies, options.profile, [
+        {
+          to: pool,
+          data: encodeFunctionData({
+            abi: managedPropAMMPoolAbi,
+            functionName: 'setMembers',
+            args: [pair.index, BigInt(pair.sponsorId), [router], true],
+          }),
+        },
+      ])
+    }
     const authority = await poolAuthority(client, pool, account.address)
     if (!authority) return undefined
 
@@ -299,7 +335,60 @@ export async function canAuthorizeRouter(
   if (!key || !conversion) return false
   const account = privateKeyToAccount(key)
   const client = dependencies.authorityClient(options, account)
+  if (conversion.pair)
+    return managedHomeListOwner(client, conversion.pool, conversion.pair, account.address)
   return (await poolAuthority(client, conversion.pool, account.address)) !== undefined
+}
+
+/** Whether a Managed pool's pair admits the router under its sponsor list. */
+async function managedPairListed(
+  client: Pick<ChainClient, 'readContract'>,
+  pool: Address,
+  pair: ManagedPoolPair,
+  router: Address,
+) {
+  return client.readContract({
+    address: pool,
+    abi: managedPropAMMPoolAbi,
+    functionName: 'takerAllowed',
+    args: [pair.index, router, BigInt(pair.sponsorId)],
+  })
+}
+
+/**
+ * Whether `account` can list the router: only the pool owner edits a pair's home list (sponsor 0).
+ * A sponsor's list belongs to that sponsor's admin, so it stays a handoff.
+ */
+async function managedHomeListOwner(
+  client: Pick<ChainClient, 'readContract'>,
+  pool: Address,
+  pair: ManagedPoolPair,
+  account: Address,
+) {
+  if (pair.sponsorId !== 0) return false
+  const owner = await client.readContract({
+    address: pool,
+    abi: managedPropAMMPoolAbi,
+    functionName: 'owner',
+  })
+  return getAddress(owner) === account
+}
+
+function managedPairHandoff(
+  pool: Address | undefined,
+  pair: ManagedPoolPair,
+  outputs: Record<string, Address>,
+) {
+  const router = requiredOutput(outputs, 'earnRouter')
+  const lister =
+    pair.sponsorId === 0
+      ? `The owner of ManagedDirectPropAMM pool ${pool}`
+      : `The admin of sponsor ${pair.sponsorId} on ManagedDirectPropAMM pool ${pool}`
+  const admission =
+    pair.sponsorId === 0
+      ? ''
+      : `, and the pool owner must admit sponsor ${pair.sponsorId} on the pair`
+  return `${lister} must list router ${router} on pair ${pair.index} with setMembers(${pair.index}, ${pair.sponsorId}, [${router}], true)${admission}. The pair must be Listed and the pool unpaused. Re-run the same pnpm earn deploy command; it will verify the listing onchain and continue.`
 }
 
 async function poolAdmission(

@@ -14,7 +14,16 @@ import { EarnRouterTestBase } from "../helpers/EarnRouterTestBase.sol";
 contract SingleZoneEarnRouterSameAssetTest is EarnRouterTestBase {
     function setUp() public override {
         super.setUp();
-        router = new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(assetA), address(0), bytes32(0));
+        router = new SingleZoneEarnRouter(
+            ZONE_A,
+            address(earnVaultA),
+            address(assetA),
+            address(0),
+            bytes32(0),
+            SingleZoneEarnRouter.PoolKind.Direct,
+            0,
+            0
+        );
     }
 
     function testOutputBoundsAndEarnVaultFailuresRevertAtomically() public {

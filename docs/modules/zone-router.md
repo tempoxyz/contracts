@@ -18,14 +18,21 @@ same Zone. Each instance is ownerless and immutable to one Zone ID, EarnVault, a
 the vault asset and EarnShare are read from the EarnVault at construction. The private asset decides
 the mode:
 
-- **Conversion router.** A private asset other than the vault asset also binds one DirectPropAMM pool
-  and a nonzero `customerId` (the pool's rounding route and trade-memo identifier). The pool's base
-  and quote tokens must be exactly the private and vault assets, in either order
-  (`privateAssetIsBase` records which), with equal decimals. Otherwise construction reverts
-  `InvalidPool`, `InvalidCustomerId`, or `InvalidRoutePair`.
-- **Same-asset router.** A private asset equal to the vault asset binds a zero pool and customer ID
-  and deposits and redeems that asset directly. A nonzero pool or customer ID reverts
-  `InvalidPrivateAsset`.
+- **Conversion router.** A private asset other than the vault asset also binds one PropAMM pool and a
+  nonzero `customerId` (the pool's rounding route and trade-memo identifier). `poolKind` says which
+  pool: a single-pair DirectPropAMM (`Direct`, with a zero `pairIndex` and `sponsorId`), or one live
+  pair of a ManagedDirectPropAMM (`Managed`), traded under `sponsorId`'s list (0 is the pair's home
+  list). The pool's or pair's base and quote tokens must be exactly the private and vault assets, in
+  either order (`privateAssetIsBase` records which), with equal decimals. Otherwise construction
+  reverts `InvalidPool`, `InvalidCustomerId`, or `InvalidRoutePair`.
+- **Same-asset router.** A private asset equal to the vault asset binds a zero pool, customer ID,
+  pair, and sponsor, a `Direct` kind, and deposits and redeems that asset directly. Any other binding
+  reverts `InvalidPrivateAsset`.
+
+A Managed swap pays its caller, so the router is both taker and recipient. Admission is the pair's
+taker check for the router under its sponsor list, and `liquidityStatus` reports a `Closed` or
+removed pair as paused. Prices, freshness, and inventory are the pair's, priced exactly like a
+DirectPropAMM.
 
 The private asset may never be zero or the EarnShare. Zone ID zero makes every callback revert. The
 router has no owner, registry, setters, public routing method, or rescue; its only state is a
@@ -256,16 +263,17 @@ a Zone does not erase its public history.
 The profile's `zone` block declares the route ([profile schema](../../profiles/README.md#schema)):
 `id` (a nonzero `uint32` Zone ID), `enableEarnShare: true` (the only accepted value), and `router`
 with `privateAsset` plus, for a conversion router, `pool` and a nonzero bytes32 `customerId` (set
-both or neither). The Zone EVM chain ID is derived from the parent chain ID and Zone ID, never
+both or neither). A ManagedDirectPropAMM pool also sets `pair: { "index": <uint16>, "sponsorId":
+<integer> }`, which requires `pool`. The Zone EVM chain ID is derived from the parent chain ID and Zone ID, never
 authored. The [deployment lifecycle](../operations/deployment.md) runs these module steps after the
 core is bound:
 
-| Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                         |
-| ----------------------- | ---------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                 |
-| `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself       |
-| `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                    |
-| `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router holds the Portal callback-gateway role, or the Portal leaves gateways open (`isGatewayOpen()`) |
+| Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                                   |
+| ----------------------- | ---------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                           |
+| `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself, or the Managed pair lists it under its sponsor |
+| `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                              |
+| `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router holds the Portal callback-gateway role, or the Portal leaves gateways open (`isGatewayOpen()`)                                           |
 
 Before any broadcast, preflight requires code at the private asset and pool and, for a conversion
 router, a pool trading exactly the private and vault assets with equal decimals; for a same-asset
@@ -288,7 +296,9 @@ Authorities and handoffs:
 - **Pool owner.** `authorize-router` executes under `DEPLOYER_PRIVATE_KEY` only when planning proves
   that key is the pool's `owner()`, or owns the `DirectPropAMMRebalanceController` that owns the pool
   (calls then go through `controller.execute`). It refuses a pool that redirects the router's
-  recipient, which admission cannot repair. Otherwise it emits a pool-owner handoff.
+  recipient, which admission cannot repair. Otherwise it emits a pool-owner handoff. On a Managed
+  pool it lists the router with `setMembers` only for the home list (`sponsorId` 0) under the pool
+  owner's key; a sponsor's list belongs to that sponsor's admin, so it is always a handoff.
 - **Zone administrator.** When tokens or gateway registration are missing, the command still
   publishes the record and returns the administrator handoff. The administrator checks out the
   committed profile and record and reruns the same command with only `ZONE_ADMIN_PRIVATE_KEY`. That
@@ -307,6 +317,8 @@ administrator or pool owner key.
   (`SingleZoneEarnRouter.t.sol`), par conversion including off-par and stale-oracle rejection
   (`SingleZoneEarnRouterConversion.t.sol`), custody and residual balances
   (`SingleZoneEarnRouterCustody.t.sol`), the same-asset mode (`SingleZoneEarnRouterSameAsset.t.sol`),
+  conversion through a ManagedDirectPropAMM pair over its pinned fixture
+  (`SingleZoneEarnRouterManaged.t.sol`, `test/fixtures/propamm/managed.source.json`),
   and callback ABI fuzzing (`SingleZoneEarnRouterAbiFuzz.t.sol`, repeated over brutalized memory on
   pull requests that change `src/`).
 - E2E, in [`e2e/modules/zone`](../../e2e/modules/zone/module.ts) (group `zone`, cases requiring the

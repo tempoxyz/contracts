@@ -36,7 +36,9 @@ contract SingleZoneEarnRouterConversionTest is EarnRouterTestBase {
         external
         returns (SingleZoneEarnRouter)
     {
-        return new SingleZoneEarnRouter(ZONE_A, earnVault, privateAsset, pool_, customerId);
+        return new SingleZoneEarnRouter(
+            ZONE_A, earnVault, privateAsset, pool_, customerId, SingleZoneEarnRouter.PoolKind.Direct, 0, 0
+        );
     }
 
     function testRejectsOffParPriceAtomically() public {

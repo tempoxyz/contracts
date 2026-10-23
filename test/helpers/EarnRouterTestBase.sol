@@ -187,7 +187,16 @@ abstract contract EarnRouterTestBase is Test {
 
     /// @dev Deploys a Zone A router for the private asset and admits it to the pool.
     function _admittedRouter(IRouterPropAMMPool pool) internal returns (SingleZoneEarnRouter router) {
-        router = new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
+        router = new SingleZoneEarnRouter(
+            ZONE_A,
+            address(earnVaultA),
+            address(alternate),
+            address(pool),
+            CUSTOMER_ID,
+            SingleZoneEarnRouter.PoolKind.Direct,
+            0,
+            0
+        );
         pool.setTakerAllowed(address(router), true);
         pool.setRecipientAllowed(address(router), true);
     }

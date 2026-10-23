@@ -84,7 +84,16 @@ contract SingleZoneEarnRouterCustodyTest is EarnRouterTestBase {
         pool = new MisbehavingParPool(address(alternate), address(assetA), address(oracle));
         alternate.mint(address(pool), POOL_INVENTORY);
         assetA.mint(address(pool), POOL_INVENTORY);
-        router = new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
+        router = new SingleZoneEarnRouter(
+            ZONE_A,
+            address(earnVaultA),
+            address(alternate),
+            address(pool),
+            CUSTOMER_ID,
+            SingleZoneEarnRouter.PoolKind.Direct,
+            0,
+            0
+        );
     }
 
     function testDepositRejectsShortOverpaidOrMissingOutput() public {

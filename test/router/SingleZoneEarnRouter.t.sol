@@ -98,8 +98,16 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
     }
 
     function testZeroZoneBindingIsFailClosed() public {
-        SingleZoneEarnRouter disabledRouter =
-            new SingleZoneEarnRouter(0, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
+        SingleZoneEarnRouter disabledRouter = new SingleZoneEarnRouter(
+            0,
+            address(earnVaultA),
+            address(alternate),
+            address(pool),
+            CUSTOMER_ID,
+            SingleZoneEarnRouter.PoolKind.Direct,
+            0,
+            0
+        );
         bytes memory data = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
 
         vm.prank(ZONE_MESSENGER_ADDRESS);

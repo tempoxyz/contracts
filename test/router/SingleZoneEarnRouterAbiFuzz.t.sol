@@ -107,7 +107,16 @@ contract SingleZoneEarnRouterAbiFuzzTest is EarnRouterTestBase {
         uint128 rawMinSecondLeg,
         bytes32 actionId
     ) public {
-        router = new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(assetA), address(0), bytes32(0));
+        router = new SingleZoneEarnRouter(
+            ZONE_A,
+            address(earnVaultA),
+            address(assetA),
+            address(0),
+            bytes32(0),
+            SingleZoneEarnRouter.PoolKind.Direct,
+            0,
+            0
+        );
         uint128 amount = uint128(bound(rawAmount, 1, LIMIT));
         uint128 minVaultAssets = uint128(bound(rawMinVaultAssets, 1, amount));
         uint128 minSecondLeg = uint128(bound(rawMinSecondLeg, 1, amount));

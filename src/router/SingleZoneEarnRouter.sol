@@ -5,6 +5,7 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 
 import { IEarnVault } from "../interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
+import { IManagedPropAMMVenue } from "../interfaces/external/propamm/IManagedPropAMMVenue.sol";
 import { IPropAMMPriceOracle, IPropAMMVenue } from "../interfaces/external/propamm/IPropAMMVenue.sol";
 import {
     EncryptedDepositPayload,
@@ -18,9 +19,10 @@ import {
 
 /// @title SingleZoneEarnRouter
 /// @notice Ownerless private Earn router scoped to one Zone, EarnVault, and private asset.
-/// @dev A private asset other than the vault asset converts through one immutable DirectPropAMM pool at
-///      the pool's exact par price, with measured output equal to input. A router whose private asset is
-///      the vault asset has no pool and deposits and redeems that asset directly.
+/// @dev A private asset other than the vault asset converts through one immutable PropAMM route at the
+///      route's exact par price, with measured output equal to input: a DirectPropAMM pool, or one pair of a
+///      ManagedDirectPropAMM pool traded under one sponsor list. A router whose private asset is the vault
+///      asset has no pool and deposits and redeems that asset directly.
 ///      Only authenticated callbacks from the selected Zone can execute either route. Callback data
 ///      contains no route, token, vault, or destination selection, and every successful result returns
 ///      through the authenticated source Portal.
@@ -28,6 +30,12 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     enum Flow {
         Deposit,
         Redeem
+    }
+
+    /// @notice How the router reaches its pool: a single-pair DirectPropAMM, or one pair of a ManagedDirectPropAMM.
+    enum PoolKind {
+        Direct,
+        Managed
     }
 
     /// @notice Encrypted return data without a caller-selected Portal.
@@ -63,9 +71,15 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     address public immutable vaultAsset;
     /// @notice The immutable EarnShare accepted on redemption and returned on deposit.
     address public immutable earnShare;
-    /// @notice The only DirectPropAMM pool allowed to convert the private asset pair.
+    /// @notice The only PropAMM pool allowed to convert the private asset pair.
     /// @dev Zero when the private asset is the vault asset and no conversion is needed.
     IPropAMMVenue public immutable pool;
+    /// @notice The pool's kind; `Direct` without a pool.
+    PoolKind public immutable poolKind;
+    /// @notice The converting pair of a Managed pool; zero otherwise.
+    uint16 public immutable pairIndex;
+    /// @notice The Managed pool list the router trades under (0: the pair's home list); zero otherwise.
+    uint64 public immutable sponsorId;
     /// @notice The pool rounding route and trade-memo customer identifier; zero without a pool.
     bytes32 public immutable customerId;
     /// @notice Whether the private asset is the pool's base token; false without a pool.
@@ -119,9 +133,19 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         locked = 1;
     }
 
-    /// @dev Pass `privateAsset_ == earnVault_.asset()` with a zero pool and customer ID for a router
-    ///      without conversion. Any other private asset requires its DirectPropAMM pool and customer ID.
-    constructor(uint32 allowedZoneId_, address earnVault_, address privateAsset_, address pool_, bytes32 customerId_) {
+    /// @dev Pass `privateAsset_ == earnVault_.asset()` with a zero pool, customer ID, pair, and sponsor for a
+    ///      router without conversion. Any other private asset requires its pool and customer ID; a Direct pool
+    ///      takes a zero pair and sponsor, and a Managed pool names a live pair and the list to trade under.
+    constructor(
+        uint32 allowedZoneId_,
+        address earnVault_,
+        address privateAsset_,
+        address pool_,
+        bytes32 customerId_,
+        PoolKind poolKind_,
+        uint16 pairIndex_,
+        uint64 sponsorId_
+    ) {
         (address vaultAsset_, address earnShare_) = _earnVaultTokens(earnVault_);
         if (privateAsset_ == address(0) || privateAsset_ == earnShare_) revert InvalidPrivateAsset();
 
@@ -129,14 +153,27 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         if (privateAsset_ == vaultAsset_) {
             // Nothing to convert: a pool or route identifier would be an unused, misleading binding. Keep
             // the earlier `InvalidPrivateAsset` rejection for every such input; only the pool-less form is new.
-            if (pool_ != address(0) || customerId_ != bytes32(0)) revert InvalidPrivateAsset();
+            if (
+                pool_ != address(0) || customerId_ != bytes32(0) || poolKind_ != PoolKind.Direct || pairIndex_ != 0
+                    || sponsorId_ != 0
+            ) revert InvalidPrivateAsset();
         } else {
             if (pool_ == address(0) || pool_.code.length == 0) revert InvalidPool();
             if (customerId_ == bytes32(0)) revert InvalidCustomerId();
 
-            IPropAMMVenue venue = IPropAMMVenue(pool_);
-            address base = venue.baseToken();
-            address quote = venue.quoteToken();
+            address base;
+            address quote;
+            if (poolKind_ == PoolKind.Direct) {
+                if (pairIndex_ != 0 || sponsorId_ != 0) revert InvalidPool();
+                base = IPropAMMVenue(pool_).baseToken();
+                quote = IPropAMMVenue(pool_).quoteToken();
+            } else {
+                IManagedPropAMMVenue.Pair memory managed = IManagedPropAMMVenue(pool_).pair(pairIndex_);
+                // A removed or unknown pair reads `None`; its index is never reused.
+                if (managed.access == 0) revert InvalidPool();
+                base = managed.base;
+                quote = managed.quote;
+            }
             privateIsBase = base == privateAsset_ && quote == vaultAsset_;
             if (!privateIsBase && !(base == vaultAsset_ && quote == privateAsset_)) revert InvalidRoutePair();
             // Equal units make the pool's par price an exact 1:1 conversion with no rounding remainder.
@@ -151,6 +188,9 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         vaultAsset = vaultAsset_;
         earnShare = earnShare_;
         pool = IPropAMMVenue(pool_);
+        poolKind = poolKind_;
+        pairIndex = pairIndex_;
+        sponsorId = sponsorId_;
         customerId = customerId_;
         privateAssetIsBase = privateIsBase;
     }
@@ -163,11 +203,13 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @dev Zero for a router without a pool, which has no conversion price.
     function parPrice() public view returns (uint256) {
         if (!_converts()) return 0;
-        return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
+        return 10 ** uint256(IPropAMMPriceOracle(_oracle()).decimals());
     }
 
     /// @notice Pool state and output inventory for each flow, not a guaranteed executable conversion.
     /// @dev Execution also depends on the pool's oracle freshness and deviation guard and on token policy.
+    ///      A Managed pool reports its pair `Closed` or removed as paused, and admission as the pair's taker check
+    ///      under the router's sponsor list, since its swaps pay the caller.
     ///      `depositLiquidity` is pool vault-asset inventory; `redeemLiquidity` is pool private-asset inventory.
     ///      A router without a pool reports an unpaused, admitted, at-par route with unlimited liquidity,
     ///      because conversion imposes no limit; EarnVault and Portal limits still apply.
@@ -177,10 +219,18 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         returns (bool paused, bool admitted, bool atPar, uint256 depositLiquidity, uint256 redeemLiquidity)
     {
         if (!_converts()) return (false, true, true, type(uint256).max, type(uint256).max);
-        paused = pool.paused();
-        admitted = pool.takerAllowed(address(this)) && pool.recipientAllowed(address(this))
-            && pool.resolveRecipient(address(this)) == address(this);
-        try IPropAMMPriceOracle(pool.oracle()).latestPrice() returns (uint256 price, uint256) {
+        if (poolKind == PoolKind.Direct) {
+            paused = pool.paused();
+            admitted = pool.takerAllowed(address(this)) && pool.recipientAllowed(address(this))
+                && pool.resolveRecipient(address(this)) == address(this);
+        } else {
+            IManagedPropAMMVenue managed = IManagedPropAMMVenue(address(pool));
+            uint8 access = managed.pair(pairIndex).access;
+            // `None` is a removed pair and `Closed` (1) the pair's own pause.
+            paused = managed.paused() || access <= 1;
+            admitted = managed.takerAllowed(pairIndex, address(this), sponsorId);
+        }
+        try IPropAMMPriceOracle(_oracle()).latestPrice() returns (uint256 price, uint256) {
             atPar = price == parPrice();
         } catch { }
         depositLiquidity = IERC20Like(vaultAsset).balanceOf(address(pool));
@@ -285,9 +335,27 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         // freshness and deviation guards, so this route needs no separate observation-time floor.
         _safeApprove(tokenIn, address(pool), amountIn);
         // The measured output delta below is authoritative, not the pool's reported amount.
-        pool.swapExactInput(
-            baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
-        );
+        if (poolKind == PoolKind.Direct) {
+            pool.swapExactInput(
+                baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
+            );
+        } else {
+            // A Managed swap pays its caller, so the router is both taker and recipient.
+            IManagedPropAMMVenue(address(pool))
+                .swapExactInput(
+                    pairIndex,
+                    baseToQuote,
+                    amountIn,
+                    amountIn,
+                    sponsorId,
+                    customerId,
+                    actionId,
+                    block.timestamp,
+                    parPrice(),
+                    0,
+                    0
+                );
+        }
         _safeApprove(tokenIn, address(pool), 0);
 
         uint256 outputBalanceAfter = IERC20Like(tokenOut).balanceOf(address(this));
@@ -344,6 +412,13 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @dev Whether the private asset differs from the vault asset and converts through the pool.
     function _converts() private view returns (bool) {
         return address(pool) != address(0);
+    }
+
+    /// @dev The converting route's oracle: the Direct pool's, or the Managed pair's, which changes only while
+    ///      the pair is `Closed`.
+    function _oracle() private view returns (address) {
+        if (poolKind == PoolKind.Direct) return pool.oracle();
+        return IManagedPropAMMVenue(address(pool)).pair(pairIndex).oracle;
     }
 
     function _requireRoutePair(address tokenIn, address tokenOut) private view {

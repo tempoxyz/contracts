@@ -2,7 +2,14 @@ import { getAddress, zeroAddress, zeroHash, type Address, type Hex } from 'viem'
 
 import { zoneChainId } from '../../chain/tempo.js'
 import { zoneMessengerAddress, type ZoneIdentity } from '../../chain/zone.js'
-import { address, exactKeys, isBytes32, object, positiveInteger } from '../../core/parse.js'
+import {
+  address,
+  exactKeys,
+  isBytes32,
+  nonnegativeInteger,
+  object,
+  positiveInteger,
+} from '../../core/parse.js'
 import {
   required,
   requiredOutput,
@@ -22,17 +29,22 @@ export type ZoneRouterIntent = {
 
 /**
  * The router's private asset and, when it differs from the vault asset, its conversion pool. A
- * router whose private asset is the vault asset omits both `pool` and `customerId`.
+ * router whose private asset is the vault asset omits `pool`, `customerId`, and `pair`.
  */
 export type ZoneRouterProfile =
   | {
       privateAsset: Address
-      /** DirectPropAMM pool that converts the private asset and vault asset at par. */
+      /** PropAMM pool that converts the private asset and vault asset at par. */
       pool: Address
       /** Nonzero pool route and trade-memo identifier. */
       customerId: Hex
+      /** Set when `pool` is a ManagedDirectPropAMM: the converting pair and the list to trade under. */
+      pair?: ManagedPoolPair
     }
-  | { privateAsset: Address; pool?: undefined; customerId?: undefined }
+  | { privateAsset: Address; pool?: undefined; customerId?: undefined; pair?: undefined }
+
+/** A ManagedDirectPropAMM pair and the sponsor list the router trades under (0: the pair's home list). */
+export type ManagedPoolPair = { index: number; sponsorId: number }
 
 /** The profile fields the router slice owns. */
 export type ZoneRouterFields = { zone: ZoneRouterIntent | null }
@@ -164,7 +176,14 @@ export function routerArgs(profile: ZoneRouterFields, outputs: Record<string, Ad
     zoneId: zone.id,
     earnVault: requiredOutput(outputs, 'earnVault'),
     privateAsset: zone.privateAsset,
-    route: { pool: zone.pool ?? zeroAddress, customerId: zone.customerId ?? zeroHash },
+    route: {
+      pool: zone.pool ?? zeroAddress,
+      customerId: zone.customerId ?? zeroHash,
+      // `SingleZoneEarnRouter.PoolKind`: 0 Direct (or no pool), 1 Managed.
+      poolKind: zone.pair ? 1 : 0,
+      pairIndex: zone.pair?.index ?? 0,
+      sponsorId: BigInt(zone.pair?.sponsorId ?? 0),
+    },
   }
 }
 
@@ -173,13 +192,13 @@ export function configuredRouterPool(profile: ZoneRouterFields) {
   const router = profile.zone?.router
   return router?.pool === undefined
     ? undefined
-    : { pool: router.pool, customerId: router.customerId }
+    : { pool: router.pool, customerId: router.customerId, pair: router.pair }
 }
 
 function parseZone(value: Record<string, unknown>, parentChainId: number, path: string) {
   exactKeys(value, path, ['id', 'enableEarnShare', 'router'])
   const routerValue = object(value.router, `${path}.router`)
-  exactKeys(routerValue, `${path}.router`, ['privateAsset'], ['pool', 'customerId'])
+  exactKeys(routerValue, `${path}.router`, ['privateAsset'], ['pool', 'customerId', 'pair'])
   const id = positiveInteger(value.id, `${path}.id`)
   if (id > 4_294_967_295) throw new Error(`${path}.id must fit uint32`)
   const privateAsset = address(routerValue.privateAsset, `${path}.router.privateAsset`)
@@ -189,6 +208,9 @@ function parseZone(value: Record<string, unknown>, parentChainId: number, path: 
       `${path}.router.pool and ${path}.router.customerId must be set or omitted together`,
     )
   }
+  if (routerValue.pair !== undefined && routerValue.pool === undefined) {
+    throw new Error(`${path}.router.pair requires ${path}.router.pool`)
+  }
   const router: ZoneRouterProfile =
     routerValue.pool === undefined
       ? { privateAsset }
@@ -196,6 +218,9 @@ function parseZone(value: Record<string, unknown>, parentChainId: number, path: 
           privateAsset,
           pool: address(routerValue.pool, `${path}.router.pool`),
           customerId: nonzeroBytes32(routerValue.customerId, `${path}.router.customerId`),
+          ...(routerValue.pair !== undefined && {
+            pair: managedPoolPair(routerValue.pair, `${path}.router.pair`),
+          }),
         }
   if (value.enableEarnShare !== true) throw new Error(`${path}.enableEarnShare must be true`)
   const zone: ZoneRouterIntent = {
@@ -205,6 +230,14 @@ function parseZone(value: Record<string, unknown>, parentChainId: number, path: 
     router,
   }
   return zone
+}
+
+function managedPoolPair(value: unknown, path: string): ManagedPoolPair {
+  const pair = object(value, path)
+  exactKeys(pair, path, ['index', 'sponsorId'])
+  const index = nonnegativeInteger(pair.index, `${path}.index`)
+  if (index > 65_535) throw new Error(`${path}.index must fit uint16`)
+  return { index, sponsorId: nonnegativeInteger(pair.sponsorId, `${path}.sponsorId`) }
 }
 
 function nonzeroBytes32(value: unknown, path: string): Hex {

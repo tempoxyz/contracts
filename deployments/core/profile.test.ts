@@ -15,6 +15,7 @@ import {
   profileCapabilities,
 } from './profile.js'
 import { engineDefinitions } from '../modules/engines/index.js'
+import { routerArgs } from '../modules/zone-router/profile.js'
 import { parseRewardConfiguration } from '../modules/rewards/schema.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as `0x${string}`
@@ -149,6 +150,50 @@ describe('Earn deployment profile', () => {
     expect(members).not.toContain(address('3'))
     expect(members).not.toContain(address('5'))
     expect(members).not.toContain(address('8'))
+  })
+
+  test('binds a Managed pool pair and sponsor list to the router', () => {
+    const router = {
+      privateAsset: address('a'),
+      pool: address('b'),
+      customerId: `0x${'c'.repeat(64)}`,
+    }
+    const zone = (value: Record<string, unknown>) =>
+      parseEarnDeploymentProfile({
+        ...generic,
+        zone: { id: 2, enableEarnShare: true, router: { ...router, ...value } },
+      })
+    const outputs = { earnVault: address('e') }
+
+    expect(routerArgs(zone({}), outputs).route).toMatchObject({
+      poolKind: 0,
+      pairIndex: 0,
+      sponsorId: 0n,
+    })
+    const managed = zone({ pair: { index: 3, sponsorId: 5 } })
+    expect(managed.zone?.router.pair).toEqual({ index: 3, sponsorId: 5 })
+    expect(routerArgs(managed, outputs).route).toEqual({
+      pool: address('b'),
+      customerId: `0x${'c'.repeat(64)}`,
+      poolKind: 1,
+      pairIndex: 3,
+      sponsorId: 5n,
+    })
+    expect(deploymentIntentHash(managed)).not.toBe(deploymentIntentHash(zone({})))
+
+    expect(() => zone({ pair: { index: 65_536, sponsorId: 0 } })).toThrow('must fit uint16')
+    expect(() => zone({ pair: { index: 0 } })).toThrow('pair.sponsorId is required')
+    expect(() => zone({ pair: { index: 0, sponsorId: -1 } })).toThrow('nonnegative integer')
+    expect(() =>
+      parseEarnDeploymentProfile({
+        ...generic,
+        zone: {
+          id: 2,
+          enableEarnShare: true,
+          router: { privateAsset: address('a'), pair: { index: 0, sponsorId: 0 } },
+        },
+      }),
+    ).toThrow('router.pair requires')
   })
 
   test('rejects a builtin TIP-403 policy', () => {

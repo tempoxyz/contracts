@@ -97,6 +97,16 @@ export const propAMMPoolAbi = parseAbi([
   'function withdraw(address token, address recipient, uint256 amount, bytes32 memo)',
 ])
 
+/** `ManagedDirectPropAMM` conversion pool: per-pair configuration, taker lists, and pause. */
+export const managedPropAMMPoolAbi = parseAbi([
+  'struct Pair { address base; address quote; address oracle; uint8 baseDecimals; uint8 quoteDecimals; uint8 oracleDecimals; uint256 priceScale; uint256 maxOracleAge; uint256 maxPriceDeviationBps; uint8 access; }',
+  'function owner() view returns (address)',
+  'function pair(uint16 pairIndex) view returns (Pair)',
+  'function paused() view returns (bool)',
+  'function setMembers(uint16 pairIndex, uint64 sponsorId, address[] accounts, bool allowed)',
+  'function takerAllowed(uint16 pairIndex, address taker, uint64 sponsorId) view returns (bool)',
+])
+
 /** A conversion pool's price oracle, such as `PushPriceOracle`. */
 export const priceOracleAbi = parseAbi([
   'function decimals() view returns (uint8)',

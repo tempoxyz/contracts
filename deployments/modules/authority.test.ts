@@ -11,6 +11,7 @@ import { executeAvailableAuthority } from './index.js'
 import { canAuthorizeRouter } from './zone-router/steps.js'
 import {
   earnEngineBindingAbi,
+  managedPropAMMPoolAbi,
   propAMMPoolAbi,
   propAMMRebalanceControllerAbi,
   safeAbi,
@@ -285,6 +286,65 @@ describe('deployment authority adapters', () => {
       profile,
       authorityAccount,
     )
+  })
+
+  test('lists the router on its Managed pool pair, and leaves a sponsor list to a handoff', async () => {
+    const router = address('d')
+    const managed = (sponsorId: number) =>
+      parseEarnDeploymentProfile(
+        {
+          version: 1,
+          id: 'managed-authority-test',
+          chainId: 42431,
+          owner: address('4'),
+          engine: { kind: 'veda', address: address('1') },
+          zone: {
+            id: 1,
+            enableEarnShare: true,
+            router: {
+              privateAsset: address('6'),
+              pool: address('7'),
+              customerId: `0x${'c'.repeat(64)}`,
+              pair: { index: 2, sponsorId },
+            },
+          },
+          tip403PolicyId: '469',
+        },
+        { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+      )
+    const runtime = mockDependencies([authorityAccount, false])
+    const result = await execute(
+      managed(0),
+      'authorize-router',
+      { DEPLOYER_PRIVATE_KEY: authorityKey },
+      { ...outputs, earnRouter: router },
+      runtime.dependencies,
+    )
+    expect(result).toEqual({ transactions: [receiptHash] })
+    expect(runtime.readContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: 'takerAllowed', args: [2, router, 0n] }),
+    )
+    const sent = runtime.sendTransactionSync.mock.calls[0]![0] as {
+      calls: Array<{ to: string; data: `0x${string}` }>
+    }
+    expect(sent.calls.map((call) => call.to)).toEqual([address('7')])
+    expect(decodeFunctionData({ abi: managedPropAMMPoolAbi, data: sent.calls[0]!.data })).toEqual({
+      functionName: 'setMembers',
+      args: [2, 0n, [router], true],
+    })
+
+    // Only a sponsor's admin edits its list, so the pool owner's key cannot complete it.
+    const sponsored = mockDependencies([authorityAccount, false])
+    await expect(
+      execute(
+        managed(5),
+        'authorize-router',
+        { DEPLOYER_PRIVATE_KEY: authorityKey },
+        { ...outputs, earnRouter: router },
+        sponsored.dependencies,
+      ),
+    ).resolves.toBeUndefined()
+    expect(sponsored.sendTransactionSync).not.toHaveBeenCalled()
   })
 
   test('admits the router through a rebalance controller the deployer owns', async () => {
