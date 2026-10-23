@@ -8,7 +8,8 @@ not hide. Audit coverage is on the [audits page](../audit/README.md).
 
 Tempo Earn limits authority by responsibility ([roles](system.md#roles-and-authority) and
 [invariants](system.md#core-invariants)). The ownerless Zone router authenticates one canonical Zone
-and moves only the value each callback delivers, converting through at most one immutable par pool;
+and moves only the value each callback delivers, to the source Portal or its one immutable spend
+destination, converting through at most one immutable par pool;
 the EarnVault holds no customer-specific conversion policy. This separation limits the effect of a
 defect in one module but does not make the system trustless. The base asset, yield venue, engine
 valuation, EarnVault operator, fee distributor, external TIP-403 policy administrator, Zone protocol,
@@ -84,8 +85,10 @@ forwarding-solver authorities are in [Veda](../modules/veda.md#contracts).
 ### Earn router
 
 The ownerless `SingleZoneEarnRouter` has no authority over EarnVault, its pool, or EarnShare
-issuance and retains no balances or allowances after success. Its authentication, par-conversion
-dependency, and failure behavior are specified in [Tempo Zones](../modules/zone-router.md).
+issuance and retains no balances or allowances after success. A private spend pays only the
+immutable spend destination, which must be admitted on a Zone that enforces admission. Its
+authentication, par-conversion dependency, and failure behavior are specified in
+[Tempo Zones](../modules/zone-router.md).
 
 ### Reward periphery
 

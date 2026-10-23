@@ -16,9 +16,10 @@ accounting specification for contracts, tests, and integrations; this file is no
 - Every installed engine serves one vault, uses its immutable base asset, and advertises a usable
   exit; in-kind entry alone is insufficient. Keep venue-specific behavior behind engine capabilities.
   Veda requests stay bound to their originating Queue; settled assets are not sweepable dust.
-- The router authenticates canonical callbacks, returns through the same source Portal, converts
-  only at exact par with measured 1:1 output, and cleans up temporary balances and approvals. A
-  same-asset router binds no pool. Do not add caller-selected tokens, vaults, or destinations.
+- The router authenticates canonical callbacks, returns through the same source Portal under the
+  caller's deposit-fee cap, pays a spend only to its immutable spend destination, converts only at
+  exact par with measured 1:1 output, and cleans up temporary balances and approvals. A same-asset
+  router binds no pool. Do not add caller-selected tokens, vaults, or destinations.
 - Reward periphery has no issuer authority; preserve measured solvency, domain-separated cumulative
   entitlements, settlement replay protection, and unpaid entitlement after failed transfers.
 - `demo/` is test scaffolding; label experimental integrations honestly.

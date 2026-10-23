@@ -135,9 +135,10 @@ redemption, an EarnVault deposit, and an optional Zone deposit in one Tempo Tran
 
 ## Private callback routing
 
-Private deposits and redemptions run through the stack's `SingleZoneEarnRouter` as authenticated
-Zone withdrawal callbacks that call the EarnVault's public `deposit` and `redeem`. Their sequence,
-par conversion, and failure behavior are in [Tempo Zones](../modules/zone-router.md#private-flows).
+Private deposits, redemptions, and spends run through the stack's `SingleZoneEarnRouter` as
+authenticated Zone withdrawal callbacks that call the EarnVault's public `deposit`, `redeem`, and
+`withdrawExact`. Their sequence, par conversion, and failure behavior are in
+[Tempo Zones](../modules/zone-router.md#private-flows).
 The EarnVault never stores, approves, or executes a swap.
 
 ## Fee accrual and claim
