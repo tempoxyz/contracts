@@ -5,7 +5,7 @@ description: >-
 inputs:
   forge-cache:
     description: >-
-      Forge build cache scope. Non-empty installs Foundry v1.8.5, Earn's one pinned version, with
+      Forge build cache scope. Non-empty installs Foundry v1.8.6, Earn's one pinned version, with
       the public Solidity submodules and restores that cache; empty skips all three.
     default: ''
   node:
@@ -27,7 +27,7 @@ runs:
     - if: inputs.forge-cache != ''
       uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       with:
-        version: v1.8.5
+        version: v1.8.6
 
     - if: inputs.forge-cache != ''
       uses: ./.github/actions/forge-cache

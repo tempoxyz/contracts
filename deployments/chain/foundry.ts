@@ -1,13 +1,13 @@
 import { execFileSync } from 'node:child_process'
 
-/** Earn builds, tests, and deploys with the `forge` on PATH, which must be stable Foundry v1.8.5 or newer. */
+/** Earn builds, tests, and deploys with the `forge` on PATH, which must be stable Foundry v1.8.6 or newer. */
 export function assertFoundryVersion(root: string) {
   const forgeVersion = execFileSync('forge', ['--version'], { cwd: root, encoding: 'utf8' })
   const match = /forge Version:\s*(\d+)\.(\d+)\.(\d+)/i.exec(forgeVersion)
   if (!match) throw new Error(`Could not parse Foundry version from: ${forgeVersion.trim()}`)
   const [major, minor, patch] = match.slice(1).map(Number) as [number, number, number]
-  if (major * 1e6 + minor * 1e3 + patch < 1_008_005) {
-    throw new Error(`Earn requires Foundry v1.8.5 or newer, found ${match[0]}`)
+  if (major * 1e6 + minor * 1e3 + patch < 1_008_006) {
+    throw new Error(`Earn requires Foundry v1.8.6 or newer, found ${match[0]}`)
   }
 }
 
