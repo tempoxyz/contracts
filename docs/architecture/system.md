@@ -13,7 +13,7 @@ Tempo Earn gives every customer the same onchain shape for vault-backed yield. A
 non-rebasing TIP-20 EarnShare represents ownership. A persistent `EarnVault` is its sole issuer and
 keeps accounting stable when the yield venue changes. One current engine holds the venue shares. An
 ownerless `EarnFees` module holds fee state and fee custody. An optional ownerless router adds
-closed-loop private deposits and redemptions, and private payments to one fixed destination, from
+closed-loop private deposits and redemptions, and private payments to admitted destinations, from
 one Tempo Zone.
 
 The architecture has four layers:
@@ -38,8 +38,8 @@ The repository implements:
 - immediate and queued Veda exits through `VedaEngine`;
 - experimental immediate execution against a DirectPropAMM pool through `PropAMMEngine`;
 - same-source-Zone private callbacks through `SingleZoneEarnRouter`, converting a different private
-  asset at exact 1:1 par through one immutable DirectPropAMM pool, and optionally paying one
-  immutable spend destination;
+  asset at exact 1:1 par through one immutable DirectPropAMM pool, and optionally paying admitted
+  parent-chain destinations;
 - optional one-way contribution orchestration; and
 - an optional EarnShare settlement rail for offchain-computed cumulative reward entitlements.
 
@@ -168,7 +168,7 @@ unbound engine, which the engine's setup owner then binds. The creation sequence
 ## Private routing
 
 An optional ownerless `SingleZoneEarnRouter`, deployed after its EarnVault, lets accounts in one
-Tempo Zone deposit, redeem, and optionally pay one immutable spend destination through authenticated
+Tempo Zone deposit, redeem, and optionally pay admitted destinations through authenticated
 withdrawal callbacks, converting a fixed private asset at exact par when it differs from the vault
 asset. It holds no economic state and has no
 authority over the EarnVault, which stores no route configuration. Its contract, flows, and trust

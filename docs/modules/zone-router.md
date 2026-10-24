@@ -15,9 +15,9 @@ DirectPropAMM conversion and its same-asset mode changed after the audits
 
 [`SingleZoneEarnRouter`](../../src/router/SingleZoneEarnRouter.sol) lets an account inside a Zone
 deposit into, or redeem from, one EarnVault on the parent chain and receive the result back in the
-same Zone, or pay one fixed parent-chain destination from its private balance. Each instance is
-ownerless and immutable to one Zone ID, EarnVault, private asset, and optional spend destination;
-the vault asset and EarnShare are read from the EarnVault at construction. The private asset decides
+same Zone, or pay a parent-chain destination from its private balance. Each instance is ownerless
+and immutable to one Zone ID, EarnVault, and private asset, and to whether it accepts spends
+(`spendEnabled`); the vault asset and EarnShare are read from the EarnVault at construction. The private asset decides
 the mode:
 
 - **Conversion router.** A private asset other than the vault asset also binds one PropAMM pool and a
@@ -36,14 +36,14 @@ taker check for the router under its sponsor list, and `liquidityStatus` reports
 removed pair as paused. Prices, freshness, and inventory are the pair's, priced exactly like a
 DirectPropAMM.
 
-`spendDestination` is the only address a [private spend](#private-spend) can pay; zero disables the
-spend flow. It may not be the router, the EarnVault, the EarnShare, either asset, or the pool, and
-construction otherwise reverts `InvalidSpendDestination`.
+`spendEnabled` turns on the [private spend](#private-spend) flow. A spend names its destination in
+callback data, so one router serves every payee on its Zone, and a payee that changes its address
+needs only the Zone's admission, not a new router.
 
 The private asset may never be zero or the EarnShare. Zone ID zero makes every callback revert. The
 router has no owner, registry, setters, public routing method, or rescue; its only state is a
 reentrancy flag, and it holds no user position. Changing the Zone, EarnVault, private asset, pool, or
-spend destination means deploying a new router; an old router stays deployed so callbacks already
+`spendEnabled` means deploying a new router; an old router stays deployed so callbacks already
 submitted to it can complete or bounce.
 
 Router invariants:
@@ -52,8 +52,9 @@ Router invariants:
    or reprice its pool.
 2. Callbacks accept only the canonical Zone Messenger, the immutable source Zone, and that Zone's
    Factory-registered Portal. Every successful callback returns its complete output through that
-   Portal, except a spend's payment, which goes only to the immutable spend destination; a spend's
-   unused input also returns through that Portal.
+   Portal, except a spend's payment. That goes to the spend's destination, which must hold the
+   Portal's `Account` role when the Portal enforces admission, so the router pays no address a plain
+   withdrawal could not reach. A spend's unused input also returns through that Portal.
 3. Conversion happens only at the pool oracle's exact par price with measured output equal to input,
    and the router retains no operation balance or allowance after success.
 4. Every return caps the Portal's deposit fee at the caller's `maxDepositFee`.
@@ -74,27 +75,32 @@ when:
   active, the refund recipient is nonzero, and the Portal's `calculateDepositFee()` is at most the
   return's `maxDepositFee`.
 
-Callback data (`Abis.earnRouterCallbackData` in `viem/tempo`) starts with the flow, which selects
-its layout:
+Callback data (`Abis.earnRouterCallbackData` in `viem/tempo`) is
+`abi.encode(uint8 version, uint8 flow, bytes body)`. This page specifies version `1`. The router
+checks the version and flow before it decodes the body and reverts `BadFlow` for any pair it does
+not support, so a later version or flow can be added without changing how existing
+ones decode. `supportsFlow(version, flow)` applies the same rule: version `1` with flow `0` or `1`,
+and `2` when `spendEnabled`. The body depends on the flow:
 
 - **Deposit (`0`) and redeem (`1`):** independent `minVaultAssets`, `minEarnShares`, and
   `minOutputAmount` bounds, an `actionId`, and a `ZoneReturn`.
-- **Spend (`2`):** the `amount` to pay, a `maxEarnShares` bound (zero for a private-asset spend), an
-  `actionId`, and a `ZoneReturn` for the unused input.
+- **Spend (`2`):** the `destination`, the `payoutToken` (the private asset or the vault asset), the
+  `amount` to pay, a `maxEarnShares` bound (zero for private-asset input), an `actionId`, and a
+  `ZoneReturn` for the unused input.
 
 `ZoneReturn` carries the encryption key index, encrypted recipient payload, refund recipient, and
-`maxDepositFee`. Callback data has no token, vault, route, Portal, or public recipient, so a caller
-cannot redirect the deployment's route. `supportsFlow` accepts `0` and `1`, and `2` only when
-`spendDestination` is nonzero. The router ignores the callback `senderTag` and never emits, stores,
-or forwards it: accounting does not need it, and a stable public label would make private actions
-easier to correlate.
+`maxDepositFee`. Deposit and redeem data have no token, vault, route, Portal, or public recipient,
+so a caller cannot redirect the deployment's route. Spend data names only its destination, which
+admission bounds, and one of the router's two bound assets. Deposits and redemptions ignore the
+callback `senderTag` and never emit, store, or forward it. A spend emits it in `EarnSpend`, where it
+adds nothing the Portal's own `WithdrawalProcessed` does not already publish.
 
-| Delivered token   | Flow | Operation                                                          | Returned to the source Zone |
-| ----------------- | ---- | ------------------------------------------------------------------ | --------------------------- |
-| Private asset     | `0`  | Convert (conversion router), then `deposit`                        | EarnShare                   |
-| Private EarnShare | `1`  | `redeem`, then convert back (conversion router)                    | Private asset               |
-| Private asset     | `2`  | Pay `amount` to the spend destination                              | Unused private asset        |
-| Private EarnShare | `2`  | `withdrawExact(amount)`, convert (conversion router), pay `amount` | Unused EarnShare            |
+| Delivered token   | Flow | Operation                                                                                | Returned to the source Zone |
+| ----------------- | ---- | ---------------------------------------------------------------------------------------- | --------------------------- |
+| Private asset     | `0`  | Convert (conversion router), then `deposit`                                              | EarnShare                   |
+| Private EarnShare | `1`  | `redeem`, then convert back (conversion router)                                          | Private asset               |
+| Private asset     | `2`  | Convert when the payout is the vault asset, then pay `amount`                            | Unused private asset        |
+| Private EarnShare | `2`  | `withdrawExact(amount)`, convert when the payout is the private asset, then pay `amount` | Unused EarnShare            |
 
 Public callers, including public async redemption, use `EarnVault` directly; a public-to-private
 move is a Tempo Transaction that ends with `ZonePortal.depositEncrypted`. Private async redemption is
@@ -150,8 +156,18 @@ recovery path.
 
 ## Private spend
 
-A spend pays exactly `amount` of the private asset to `spendDestination` from a Zone balance of the
-private asset or the EarnShare, and returns the unused input to the source Zone.
+A spend pays exactly `amount` of its `payoutToken` to its `destination` from a Zone balance of the
+private asset or the EarnShare, and returns the unused input to the source Zone. The payout token is
+the private asset or the vault asset, one token on a same-asset router. The router converts through
+its pool only when the payout differs from what the input yields, so a payee that takes the vault
+asset never depends on the pool for an EarnShare spend:
+
+| Input         | Payout        | Operation                                         |
+| ------------- | ------------- | ------------------------------------------------- |
+| Private asset | Private asset | Pay `amount`                                      |
+| Private asset | Vault asset   | Convert `amount` at par, then pay                 |
+| EarnShare     | Vault asset   | `withdrawExact(amount)`, then pay                 |
+| EarnShare     | Private asset | `withdrawExact(amount)`, convert at par, then pay |
 
 ```mermaid
 sequenceDiagram
@@ -161,57 +177,112 @@ sequenceDiagram
     participant R as SingleZoneEarnRouter
     participant A as EarnVault
     participant D as Immutable pool
-    participant S as Spend destination
+    participant S as Destination
 
     Z->>P: composable withdrawal(token, amountIn, spend callbackData)
     P->>M: authenticated callback
-    M->>R: onWithdrawalReceived(..., token, amountIn, data)
-    R->>R: validate messenger, Zone, Portal, token, flow, destination admission
+    M->>R: onWithdrawalReceived(..., senderTag, token, amountIn, data)
+    R->>R: validate messenger, Zone, Portal, version, flow, payout, destination, admission
     opt EarnShare input
         R->>A: withdrawExact(amount, R, maxEarnShares)
-        opt conversion router
-            R->>D: swapExactInput at par
-        end
     end
-    R->>S: transfer(privateAsset, amount)
+    opt payout differs from what the input yields
+        R->>D: swapExactInput at par
+    end
+    R->>R: unused input covers the return's fees
+    R->>S: transfer(payoutToken, amount)
     R->>R: measure destination credit == amount
     opt unused input
         R->>P: depositEncrypted(unused input)
     end
-    R-->>M: callback success
+    R-->>M: callback success, EarnSpend(senderTag, ...)
 ```
 
 For each spend the router:
 
-1. requires a nonzero `amount`; for a private-asset spend, `amount <= amountIn` and a zero
-   `maxEarnShares`; for an EarnShare spend, `maxEarnShares <= amountIn`;
-2. requires the destination to hold the Portal's `Account` role when the source Portal enforces
-   account admission (`isAccessEnforced()`), and otherwise reverts `SpendDestinationNotAdmitted`;
-3. for EarnShare input, approves exactly `maxEarnShares` to the EarnVault, calls
+1. requires `spendEnabled`, a nonzero `amount`, and a `payoutToken` equal to the private or vault
+   asset (`InvalidPayoutToken`);
+2. requires a nonzero `destination` that is none of the router, the EarnVault, the EarnShare, either
+   asset, the pool, the source Portal, or the Messenger (`InvalidSpendDestination`), and, when the
+   source Portal enforces account admission (`isAccessEnforced()`), holds the Portal's `Account`
+   role (`SpendDestinationNotAdmitted`);
+3. bounds the input: for private-asset input, `amount <= amountIn` and a zero `maxEarnShares`; for
+   EarnShare input, `maxEarnShares <= amountIn`;
+4. for EarnShare input, approves exactly `maxEarnShares` to the EarnVault, calls
    `withdrawExact(amount, router, maxEarnShares)`, clears the approval, and requires a measured
-   vault-asset credit of exactly `amount`. A conversion router then converts it to the private asset
-   at par, exactly as a redemption does;
-4. transfers `amount` of the private asset to the destination and requires the destination's measured
+   vault-asset credit of exactly `amount`;
+5. converts `amount` at par when the payout differs from what the input yields, exactly as a deposit
+   or redemption does;
+6. before paying, requires the unused input (`amountIn - amount` of the private asset, or the
+   EarnShare the vault did not burn) to be at least `calculateDepositFee() +
+   calculateBouncebackFee() + 1`, or zero on a Portal that does not enforce admission, and otherwise
+   reverts `ReturnTooSmall(unused, required)`. The Portal would reject that return anyway
+   (`CallbackDidNotReturnToZone` or `DepositTooSmall`), but later and less clearly;
+7. transfers `amount` of the payout token to the destination and requires the destination's measured
    balance to rise by exactly `amount` (`DestinationNotPaid` otherwise);
-5. returns the unused input (`amountIn - amount` of the private asset, or the EarnShare the vault did
-   not burn) through `depositEncrypted`, under the deposit-fee cap, and skips the return when nothing
-   is left, which only an open-access Zone accepts ([admission](#token-enablement-policy-and-admission));
-   and
-6. requires every touched balance back at its pre-call value and emits `EarnSpend` with the
-   `actionId`, the input token and amount, the input spent, the amount paid, and the Portal's
-   deposit hash (zero without a return).
+8. returns the unused input through `depositEncrypted` under the deposit-fee cap, and skips the return
+   when nothing is left; and
+9. requires every touched balance back at its pre-call value and emits:
 
-The router authorizes no spender. Any account in the Zone can pay the destination from its own
-balance, and the payee reconciles payments by `actionId`; a payment it cannot match is the payee's
-to refund with its own encrypted deposit. The payee has no onchain control over the router. Spends
-stop when the payee stops submitting them, when the Zone administrator revokes the destination's
-admission (deposits and redemptions continue) or the router's gateway registration (every flow
-stops), or, for EarnShare spends on a conversion router, when the pool cannot convert.
+```solidity
+event EarnSpend(
+    bytes32 indexed senderTag,
+    address indexed destination,
+    bytes32 indexed actionId,
+    address inputToken,
+    uint256 inputSpent,
+    uint256 inputReturned,
+    address payoutToken,
+    uint256 amount,
+    bytes32 depositHash // zero without a return
+);
+```
+
+### Matching payments
+
+The Portal settles a whole batch of withdrawals in one parent-chain transaction, so several
+`EarnSpend` and `WithdrawalProcessed` logs can share a transaction. `senderTag` pairs each spend with
+its withdrawal. A payee that submits spends, with a key the paying account authorized, recomputes
+`keccak256(abi.encodePacked(sender, txHash, fallbackNonce))` for each withdrawal it sent, with
+`fallbackNonce` from the outbox's withdrawal event, and matches on it. `destination` and `actionId`
+come from callback data any Zone account can write, so they never prove which withdrawal paid. A
+payee that only receives spends matches on `actionId` and tells duplicates apart by `senderTag`.
+
+The router authorizes no spender. Any Zone account can pay an admitted destination from its own
+balance, as a plain withdrawal already can, and a payment the payee cannot match is the payee's to
+refund with its own encrypted deposit. Payees have no onchain control over the router. Spends to a
+destination stop when its payee stops submitting them or the Zone administrator revokes its admission,
+while other destinations, deposits, and redemptions continue. Every flow stops when the router loses
+its gateway registration.
+
+### Readiness
 
 A payee that accepts a payment on the Zone receipt, before the parent-chain callback runs, carries
-the risk that the callback bounces afterwards. Before accepting, read the destination's admission,
-the EarnVault's exit state, and for an EarnShare spend on a conversion router `liquidityStatus()`
-and the oracle age, and treat a bounce as an unpaid payment.
+the risk that the callback bounces afterwards. `spendReadiness(inputToken, payoutToken, amount,
+destination)` returns `bytes4(0)` when a spend on those terms would settle now, and otherwise the
+selector of the first check that fails. It runs the callback's own checks, plus those the callback
+leaves to the tokens and the Portal:
+
+- the flow is enabled, and the payout token, destination, and destination admission are valid;
+- the payout token's TIP-403 policy lets the router send and the destination receive, and the
+  destination's receive policy (`validateReceivePolicy(payoutToken, router, destination)`) accepts
+  it (`PayoutNotDeliverable`);
+- the return token is enabled on the Portal with deposits active, and its policy lets the Zone
+  administrator, who receives the deposit fee, receive it (`ReturnNotDeliverable`);
+- for EarnShare input, the EarnVault's exits are open and `previewWithdraw(amount)` succeeds; and
+- for a converting spend, the pool is unpaused, admits the router, is at par within its oracle age,
+  and holds at least `amount` of the payout token.
+
+It is a snapshot: a fee, policy, pool, or admission change between the read and the callback can
+still bounce the spend, so a payee treats a bounce as an unpaid payment.
+
+### Callback gas
+
+The submitter sets the callback gas limit, and the withdrawal fee scales with it. The paths in
+increasing cost are a private-asset payout from private-asset input, a vault-asset payout from
+EarnShare input (`withdrawExact`), and any spend that converts through the pool. Each is measured on
+a mainnet fork against a production EarnVault and pool, and submitters size the limit from those
+measurements with a margin.
 
 ## Par conversion
 
@@ -236,8 +307,9 @@ account.
 
 `liquidityStatus()` returns `(paused, admitted, atPar, depositLiquidity, redeemLiquidity)`: the pool
 pause flag, whether the pool admits the router as taker and recipient and resolves it to itself,
-whether the oracle price equals par, and the pool's vault-asset (deposit) and private-asset (redeem
-and EarnShare spend) inventory. It is a snapshot, not an execution guarantee, and `atPar` ignores report age, so
+whether the oracle price equals par, and the pool's vault-asset (deposit, and a vault-asset payout
+from private-asset input) and private-asset (redeem, and a private-asset payout from EarnShare input)
+inventory. It is a snapshot, not an execution guarantee, and `atPar` ignores report age, so
 deployment inspection, the app, and E2E preflight also check the latest report against the pool's
 `maxOracleAge`. A same-asset router returns zero for `pool()`, `customerId()`, and `parPrice()`,
 false for `privateAssetIsBase()`, and `(false, true, true, type(uint256).max, type(uint256).max)`
@@ -253,8 +325,9 @@ The router has no authority over its pool. The pool owner controls availability,
 - keep vault-asset inventory for deposits and private-asset inventory for redemptions; and
 - rebalance outside Earn.
 
-Deposits accumulate the private asset in the pool and drain vault-asset inventory; redemptions and
-EarnShare spends do the reverse. To rebalance, the pool owner `pause`s the pool (new private callbacks bounce),
+Deposits, and vault-asset payouts from private-asset input, accumulate the private asset in the pool
+and drain vault-asset inventory; redemptions, and private-asset payouts from EarnShare input, do the
+reverse. To rebalance, the pool owner `pause`s the pool (new private callbacks bounce),
 `withdraw`s the accumulated token, converts it through the issuers' own mint and redemption paths,
 `fund`s the depleted side, and `unpause`s.
 
@@ -290,17 +363,17 @@ refund recipient to an admitted account it controls when the user is not admitte
 refunds to the user and refuses the action up front when the user is not admitted
 ([`Admission.ts`](../../app/src/private/Admission.ts)).
 
-On a Zone that enforces account admission, a spend also requires the spend destination to hold the
+On a Zone that enforces account admission, a spend also requires its destination to hold the
 `Account` role. The Portal delivers a plain withdrawal on such a Zone only to an address holding
 `Account`, re-checked when the withdrawal is processed, so the router, as a trusted gateway, pays
-no address a direct withdrawal could not reach, and the administrator can stop spends alone by
-revoking the destination.
+no address a direct withdrawal could not reach, and the administrator can stop spends to one
+destination by revoking it.
 
 The same Portal reverts any callback that appends no deposit to it (`CallbackDidNotReturnToZone`),
 and rejects a deposit smaller than its deposit fee plus bounce-back fee (`DepositTooSmall`). A spend
-on such a Zone therefore bounces unless its unused input covers both fees, so the submitter
-withdraws that margin on top of the amount it pays. An open-access Zone accepts a spend with nothing to
-return.
+on such a Zone therefore needs unused input that covers both fees, so the submitter withdraws that
+margin on top of the amount it pays, and the router checks it before paying (`ReturnTooSmall`). An
+open-access Zone accepts a spend with nothing to return.
 
 ## Client integration
 
@@ -335,25 +408,30 @@ mirror image. Use the `viem/tempo` helpers rather than building the encrypted re
 authorization by hand.
 
 A spend is a Zone withdrawal by the paying account, or by a key it has authorized to submit
-payments, such as one the payee operates; the Earn app does not submit spends. The submitter
-prepares flow `2` callback data with an opaque `actionId` the payee can match, sets `maxDepositFee`
-from the Portal's current fee, submits the withdrawal to the router on the Zone, and the payee
-matches the parent-chain `EarnSpend` event by `actionId`.
+payments, such as one the payee operates; the Earn app does not submit spends. The submitter:
+
+1. reads `spendReadiness` for the input, payout token, amount, and destination;
+2. prepares version `1`, flow `2` callback data with the destination, payout token, an opaque
+   `actionId`, and `maxDepositFee` from the Portal's current fee;
+3. withdraws `amount` plus the return margin to the router on the Zone, with a callback gas limit
+   sized for the path; and
+4. matches the parent-chain `EarnSpend` by `senderTag` ([matching payments](#matching-payments)).
 
 ## Failure handling
 
 Callback failures decode against the router ABI:
 
-| Error                                                                                                                                | Meaning and response                                                                                                                        |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                               |
-| `InvalidReturnToken`                                                                                                                 | The return token is not enabled, or its deposits are inactive, on the source Portal                                                         |
-| `DepositFeeTooHigh`                                                                                                                  | The Portal's deposit fee rose above the return's `maxDepositFee`; resubmit with the current fee once the bounce is confirmed                |
-| `SpendDestinationNotAdmitted`                                                                                                        | The Portal enforces admission and the spend destination is not admitted; spends are stopped until the administrator admits it               |
-| Portal `CallbackDidNotReturnToZone`, `DepositTooSmall`                                                                               | On an access-enforced Zone, a spend left no unused input, or too little to cover the deposit and bounce-back fees; withdraw a larger margin |
-| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool                |
-| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, output, or spend bound was missed, or measured conversion output differed from input                              |
-| `ResidualBalance`, `InvalidRoutePair`, `DestinationNotPaid`                                                                          | Invariant failure; investigate before retrying                                                                                              |
+| Error                                                                                                                                | Meaning and response                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                |
+| `InvalidReturnToken`                                                                                                                 | The return token is not enabled, or its deposits are inactive, on the source Portal                                          |
+| `DepositFeeTooHigh`                                                                                                                  | The Portal's deposit fee rose above the return's `maxDepositFee`; resubmit with the current fee once the bounce is confirmed |
+| `InvalidPayoutToken`, `InvalidSpendDestination`                                                                                      | The spend names a payout token other than the router's two assets, or a destination the router may not pay                   |
+| `SpendDestinationNotAdmitted`                                                                                                        | The Portal enforces admission and the destination is not admitted; spends to it stop until the administrator admits it       |
+| `ReturnTooSmall`                                                                                                                     | The unused input does not cover the return's deposit and bounce-back fees; withdraw a larger margin                          |
+| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool |
+| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, output, or spend bound was missed, or measured conversion output differed from input               |
+| `ResidualBalance`, `InvalidRoutePair`, `DestinationNotPaid`                                                                          | Invariant failure; investigate before retrying                                                                               |
 
 When the Portal reports `callbackSuccess: false`, the Zone protocol bounces the withdrawal back and
 the processing fee may still be consumed. Do not issue a second refund from the application; fix the
@@ -364,9 +442,9 @@ but Zone credit is slow, watch the returned Zone deposit hash instead of resubmi
 
 Public visibility, sequencer visibility, and amount and timing linkability follow the
 [privacy model](../architecture/security-and-privacy.md#privacy-model). Moving a public position into
-a Zone does not erase its public history. A spend's payment is public: the destination, token,
-amount, `actionId`, and timing appear on the parent chain, while the router's event names no Zone
-account.
+a Zone does not erase its public history. A spend's payment is public: the destination, payout
+token, amount, `actionId`, and timing appear on the parent chain. The router's event names no Zone
+account, and its `senderTag` is the value the Portal already publishes for the withdrawal.
 
 ## Deployment and activation
 
@@ -374,17 +452,16 @@ The profile's `zone` block declares the route ([profile schema](../../profiles/R
 `id` (a nonzero `uint32` Zone ID), `enableEarnShare: true` (the only accepted value), and `router`
 with `privateAsset` plus, for a conversion router, `pool` and a nonzero bytes32 `customerId` (set
 both or neither). A ManagedDirectPropAMM pool also sets `pair: { "index": <uint16>, "sponsorId":
-<integer> }`, which requires `pool`. An optional `spendDestination` address enables the spend flow.
+<integer> }`, which requires `pool`. `spendEnabled` (default `false`) enables the spend flow.
 The Zone EVM chain ID is derived from the parent chain ID and Zone ID, never authored. The [deployment lifecycle](../operations/deployment.md) runs these module steps after the
 core is bound:
 
-| Step                      | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                                   |
-| ------------------------- | ---------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deploy-router`           | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                           |
-| `authorize-router`        | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself, or the Managed pair lists it under its sponsor |
-| `enable-zone-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                              |
-| `register-zone-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router holds the Portal callback-gateway role, or the Portal leaves gateways open (`isGatewayOpen()`)                                           |
-| `admit-spend-destination` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | With a spend destination: it holds the Portal `Account` role, or the Portal does not enforce admission (`isAccessEnforced()`)                       |
+| Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                                   |
+| ----------------------- | ---------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                           |
+| `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself, or the Managed pair lists it under its sponsor |
+| `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                              |
+| `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router holds the Portal callback-gateway role, or the Portal leaves gateways open (`isGatewayOpen()`)                                           |
 
 Before any broadcast, preflight requires code at the private asset and pool and, for a conversion
 router, a pool trading exactly the private and vault assets with equal decimals; for a same-asset
@@ -400,8 +477,9 @@ variables, and `pnpm earn verify --skip-zone` verifies everything else and print
 `Zone: not verified`. Inspection verifies the router's immutable bindings separately from live
 readiness: `deploy` and `verify` report a conversion router's pause, admission, par, oracle
 freshness, and inventory (`Router conversion`), whether the Portal enables both tokens with
-deposits active (`Zone tokens`), and whether the spend destination is admitted (`Router spend`) as
-snapshots that never invalidate the record.
+deposits active (`Zone tokens`), and whether spends are enabled (`Router spend`) as snapshots that
+never invalidate the record. Admitting a payee's destinations is that payee's request to the Zone
+administrator, outside the router's lifecycle.
 
 Authorities and handoffs:
 
@@ -416,9 +494,8 @@ Authorities and handoffs:
   committed profile and record and reruns the same command with only `ZONE_ADMIN_PRIVATE_KEY`. That
   key must be the Portal `admin()` or the sole owner of a threshold-1 Safe that is the admin, in
   which case each call goes through the Safe's `execTransaction`; any other key fails rather than
-  sending a transaction. Only missing tokens are enabled, the gateway is registered only when the
-  Portal restricts gateways, and the spend destination is admitted only when the Portal enforces
-  admission.
+  sending a transaction. Only missing tokens are enabled, and the gateway is registered only when
+  the Portal restricts gateways.
 
 Router authorization and Zone activation reconcile independently, so a missing pool owner does not
 block the Zone administrator. CI, app projection, and hosted E2E never hold a hosted Zone
@@ -430,8 +507,9 @@ administrator or pool owner key.
   (`SingleZoneEarnRouter.t.sol`), par conversion including off-par and stale-oracle rejection
   (`SingleZoneEarnRouterConversion.t.sol`), custody and residual balances
   (`SingleZoneEarnRouterCustody.t.sol`), the same-asset mode (`SingleZoneEarnRouterSameAsset.t.sol`),
-  private spend from both inputs, destination admission, and the deposit-fee cap
-  (`SingleZoneEarnRouterSpend.t.sol`),
+  private spend from both inputs to both payouts, destination validation and admission, the return
+  margin, the deposit-fee cap, `EarnSpend` and its `senderTag`, and `spendReadiness` against every
+  callback check (`SingleZoneEarnRouterSpend.t.sol`), callback version and flow handling,
   conversion through a ManagedDirectPropAMM pair over its pinned fixture
   (`SingleZoneEarnRouterManaged.t.sol`, `test/fixtures/propamm/managed.source.json`),
   and callback ABI fuzzing (`SingleZoneEarnRouterAbiFuzz.t.sol`, repeated over brutalized memory on
@@ -460,21 +538,23 @@ first. For a profile with a Zone, record evidence for each item in the release r
    - [ ] For a conversion router: the pool pair and equal decimals, par oracle and age window,
          deviation guard, inventory owner and funding, and rebalancing process are approved, and the
          pool owner will admit only the final router, with its recipient resolving to itself.
-   - [ ] With spends enabled: the spend destination, its owner, and how the payee reconciles and
-         refunds payments are recorded.
+   - [ ] With spends enabled: each payee, its destinations, how it matches payments by `senderTag`,
+         and how it refunds unmatched ones are recorded, along with the measured callback gas for
+         each spend path.
 2. **Router is deployed and activated.**
    - [ ] The router is deployed only after the EarnVault and Zone are final, and `pnpm earn verify`
          confirms its source and every immutable (Zone ID, EarnVault, private and vault assets,
          EarnShare, pool, orientation, route identifier).
    - [ ] The Portal enables the private asset and EarnShare with deposits active, registers the router
-         as a callback gateway when gateways are restricted, and admits the refund accounts and spend
-         destination when it enforces account admission; a protected EarnShare whitelists every Zone
-         principal.
+         as a callback gateway when gateways are restricted, and admits the refund accounts and each
+         payee's destinations when it enforces account admission; a protected EarnShare whitelists
+         every Zone principal.
 3. **Acceptance is complete.**
    - [ ] Low-value private deposit and redemption complete through the encrypted return and Zone
          credit, including a third-party recipient.
-   - [ ] With spends enabled, a low-value spend from each input pays the destination exactly and
-         returns the unused input to the Zone.
+   - [ ] With spends enabled, a low-value spend from each input to each payout pays the destination
+         exactly, returns the unused input to the Zone, and is matched by `senderTag`, and
+         `spendReadiness` reports each failing check the callback would hit.
    - [ ] A missed bound, a conversion failure, and a deposit fee above its cap bounce safely, and
          router balances and allowances return to their baselines.
    - [ ] Monitoring covers oracle publication, pool pause and admission, both inventories sized from
@@ -495,14 +575,23 @@ first. For a profile with a Zone, record evidence for each item in the release r
 - **No pool for the same asset.** When a Zone already holds the vault asset, a pool would add an
   owner, oracle, inventory, and admission step that protect nothing, plus another way for callbacks
   to bounce.
-- **Spend in the router, to one immutable payee.** A private payment needs the same callback
+- **Spend in the router, to any admitted destination.** A private payment needs the same callback
   authentication, par conversion, and encrypted return as a redemption, so a separate Zone contract
-  would duplicate them along with its gateway registration. Binding the payee at construction keeps
-  public recipients out of callback data; a payee that changes its address gets a new router. The
-  payment does not go through the payee's own contracts, so the router depends on no payee
-  interface.
-- **Payment in the private asset.** An EarnShare spend converts at par like a redemption, so the payee
-  receives one token whichever balance funded the payment.
+  would duplicate them along with its gateway registration. Naming the destination per spend lets
+  one router, and one gateway registration, serve every payee on a Zone. Admission bounds it to what
+  a plain withdrawal can already reach, and a payee that changes its address needs only the new
+  address admitted. The payment does not go through the payee's own contracts, so the router runs no
+  payee code and depends on no payee interface.
+- **Payout in either bound asset.** Paying the vault asset from an EarnShare skips the pool, which
+  removes pool pause, oracle age, and inventory as reasons an accepted payment bounces. Paying the
+  private asset gives the payee one token whichever balance funded the payment.
+- **`senderTag` on `EarnSpend`.** The Portal settles a batch in one transaction and already publishes
+  each withdrawal's `senderTag`, so emitting it again costs no privacy and is the only reliable way
+  to pair a spend with its withdrawal.
+- **A readiness view.** A payee decides before the callback runs, so the router exposes its own
+  checks, and the token and Portal checks it depends on, as one call.
+- **Versioned callback data.** A version and flow ahead of the body let later flows and layouts ship
+  without changing how deployed routers decode existing ones.
 - **A deposit-fee cap on every return.** The Zone administrator sets the Portal fee when the return
   is processed; without a cap, raising it would take a return's value while the callback still
   succeeds.
