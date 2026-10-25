@@ -18,4 +18,4 @@ workarounds, private settlement, and UI layout rules; read the sections relevant
   assertions. Name a namespace import after its file: `import * as Zone from './Zone.js'`.
 
 Update [the typed client examples](public/ClientExamples.test-d.ts) with the
-[client documentation](../../docs/integrations/client.md).
+[client documentation](../../docs/earn/integrations/client.md).
