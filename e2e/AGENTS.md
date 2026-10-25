@@ -1,7 +1,7 @@
 # Integration and hosted validation
 
-[E2E environments](../earn/docs/operations/e2e-environments.md) owns commands, the module layout, case
-selection, and hosted configuration; [profiles](../earn/profiles/README.md#acceptance-and-test-fixtures)
+[E2E environments](../docs/deployment/e2e-environments.md) owns commands, the module layout, case
+selection, and hosted configuration; [profiles](../profiles/README.md#acceptance-and-test-fixtures)
 owns the test fixture bootstrap.
 
 - A capability's cases live only in its self-registering `modules/<group>/` folder and per-engine

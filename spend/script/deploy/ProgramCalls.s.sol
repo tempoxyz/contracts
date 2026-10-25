@@ -41,9 +41,7 @@ contract ProgramCalls is Script {
         returns (Output memory o)
     {
         require(
-            ProgramChecks.isCanonical(
-                address(factory), spenderId, factory.getSpenderAddress(spenderId)
-            ),
+            ProgramChecks.isCanonical(address(factory), spenderId, factory.getSpenderAddress(spenderId)),
             "SPENDER_ID was added to an existing clone, which TS rejects"
         );
         o.factory = address(factory);
@@ -54,12 +52,10 @@ contract ProgramCalls is Script {
         for (uint256 i; i < vaults.length; ++i) {
             require(ITempoEarnVault(vaults[i]).earnShare() != address(0), "not an Earn vault");
             require(
-                ProgramChecks.supportsEarnSpend(vaults[i]),
-                "vault engine lacks exact withdrawals or redeem previews"
+                ProgramChecks.supportsEarnSpend(vaults[i]), "vault engine lacks exact withdrawals or redeem previews"
             );
             o.governanceAllowVaults[i] = abi.encodeCall(
-                SpenderFactory.governorCall,
-                (spenderId, abi.encodePacked(PREFIX, bytes2("UV"), uint8(1), vaults[i]))
+                SpenderFactory.governorCall, (spenderId, abi.encodePacked(PREFIX, bytes2("UV"), uint8(1), vaults[i]))
             );
         }
     }

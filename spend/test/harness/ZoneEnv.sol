@@ -66,9 +66,7 @@ contract ZoneOutboxSim {
         address zoneToken = SEQUENCER.zoneTokenFor(token);
         uint256 total = uint256(amount) + calculateWithdrawalFee(gasLimit);
         require(ITIP20(zoneToken).transferFrom(msg.sender, address(this), total), "zone debit");
-        SEQUENCER.enqueueWithdrawal(
-            msg.sender, token, to, amount, memo, gasLimit, fallbackRecipient, callbackData
-        );
+        SEQUENCER.enqueueWithdrawal(msg.sender, token, to, amount, memo, gasLimit, fallbackRecipient, callbackData);
     }
 
     /// @dev The Zone outbox's recipient policy: closed-loop Zones only withdraw to admitted
@@ -79,10 +77,7 @@ contract ZoneOutboxSim {
         bool isGateway = portal.hasRole(to, Role.CallbackGateway);
         if (gasLimit == 0) {
             require(!(gatewayEnforced && isGateway), "invalid callback target");
-            require(
-                !portal.isAccessEnforced() || portal.hasRole(to, Role.Account),
-                "account not allowed"
-            );
+            require(!portal.isAccessEnforced() || portal.hasRole(to, Role.Account), "account not allowed");
         } else {
             require(!gatewayEnforced || isGateway, "invalid callback target");
         }
@@ -99,8 +94,7 @@ abstract contract ZoneEnv is TempoEnv {
     uint32 internal constant ZONE_ID = 7;
 
     /// @dev Stand-in for the sequencer's encryption key: the secp256k1 generator x-coordinate.
-    bytes32 private constant SEQUENCER_KEY_X =
-        0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798;
+    bytes32 private constant SEQUENCER_KEY_X = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798;
 
     bytes32 private constant WITHDRAWAL_PROCESSED_SIG =
         keccak256("WithdrawalProcessed(address,bytes32,address,uint128,bool)");
@@ -158,11 +152,7 @@ abstract contract ZoneEnv is TempoEnv {
         address proxy = address(uint160(0x5ad0) << 144 | uint160(ZONE_ID));
         vm.etch(
             proxy,
-            abi.encodePacked(
-                hex"363d3d373d3d3d363d73",
-                ZONE_PORTAL_IMPL_ADDRESS,
-                hex"5af43d82803e903d91602b57fd5bf3"
-            )
+            abi.encodePacked(hex"363d3d373d3d3d363d73", ZONE_PORTAL_IMPL_ADDRESS, hex"5af43d82803e903d91602b57fd5bf3")
         );
         portal = ZonePortal(proxy);
         vm.label(proxy, "ZonePortal");
@@ -207,11 +197,7 @@ abstract contract ZoneEnv is TempoEnv {
                 })
             )
         );
-        vm.mockCall(
-            ZONE_FACTORY_ADDRESS,
-            abi.encodeCall(IZoneFactory.isZonePortal, (proxy)),
-            abi.encode(true)
-        );
+        vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.isZonePortal, (proxy)), abi.encode(true));
         vm.mockCall(
             address(StdPrecompiles.SIGNATURE_VERIFIER),
             abi.encodeWithSelector(ISignatureVerifier.recover.selector),
@@ -255,9 +241,7 @@ abstract contract ZoneEnv is TempoEnv {
 
     function _createZoneToken(address l1Token, string memory name) private {
         ITIP20Token zt = ITIP20Token(
-            tip20Factory.createToken(
-                name, "ZT", "USD", ITIP20(PATH_USD), address(this), keccak256(bytes(name))
-            )
+            tip20Factory.createToken(name, "ZT", "USD", ITIP20(PATH_USD), address(this), keccak256(bytes(name)))
         );
         zt.grantRole(ISSUER_ROLE, address(this));
         _zoneToken[l1Token] = address(zt);
@@ -315,19 +299,11 @@ abstract contract ZoneEnv is TempoEnv {
         });
     }
 
-    function _decryptRecipient(bytes memory ciphertext, bytes12 nonce)
-        private
-        pure
-        returns (address)
-    {
+    function _decryptRecipient(bytes memory ciphertext, bytes12 nonce) private pure returns (address) {
         return address(bytes20(_xorKeystream(ciphertext, nonce)));
     }
 
-    function _xorKeystream(bytes memory data, bytes12 nonce)
-        private
-        pure
-        returns (bytes memory out)
-    {
+    function _xorKeystream(bytes memory data, bytes12 nonce) private pure returns (bytes memory out) {
         out = new bytes(data.length);
         for (uint256 i; i < data.length; ++i) {
             bytes32 block_ = keccak256(abi.encode(SEQUENCER_KEY_X, nonce, i / 32));
@@ -416,18 +392,16 @@ abstract contract ZoneEnv is TempoEnv {
             uint64(block.number - 1),
             0,
             BlockTransition({
-                prevBlockHash: prevBlockHash,
-                nextBlockHash: keccak256(abi.encode("zone", _zoneHeight))
+                prevBlockHash: prevBlockHash, nextBlockHash: keccak256(abi.encode("zone", _zoneHeight))
             }),
             DepositQueueTransition({
-                prevProcessedHash: _processedDepositHash,
-                nextProcessedHash: depositHead,
-                prevDepositNumber: _processedDepositNumber,
-                nextDepositNumber: depositCount
-            }),
+                    prevProcessedHash: _processedDepositHash,
+                    nextProcessedHash: depositHead,
+                    prevDepositNumber: _processedDepositNumber,
+                    nextDepositNumber: depositCount
+                }),
             TokenEnablementTransition({
-                prevProcessedTokenCount: _processedTokenCount,
-                nextProcessedTokenCount: _enabledTokenCount
+                prevProcessedTokenCount: _processedTokenCount, nextProcessedTokenCount: _enabledTokenCount
             }),
             queueHash,
             "",
@@ -532,19 +506,7 @@ abstract contract ZoneEnv is TempoEnv {
             } else if (log.topics[0] == DEPOSIT_MADE_SIG) {
                 (address token, uint128 netAmount,,,,, bytes memory ciphertext, bytes12 nonce,,,) = abi.decode(
                     log.data,
-                    (
-                        address,
-                        uint128,
-                        uint128,
-                        uint256,
-                        bytes32,
-                        uint8,
-                        bytes,
-                        bytes12,
-                        bytes16,
-                        address,
-                        uint64
-                    )
+                    (address, uint128, uint128, uint256, bytes32, uint8, bytes, bytes12, bytes16, address, uint64)
                 );
                 _queuedCredits.push(Credit(token, _decryptRecipient(ciphertext, nonce), netAmount));
             }

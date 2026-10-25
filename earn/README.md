@@ -17,7 +17,7 @@
 
 [![Pull Request](https://github.com/tempoxyz/earn/actions/workflows/pull-request.yml/badge.svg)](https://github.com/tempoxyz/earn/actions/workflows/pull-request.yml)
 [![Local E2E](https://github.com/tempoxyz/earn/actions/workflows/local-zone.yml/badge.svg)](https://github.com/tempoxyz/earn/actions/workflows/local-zone.yml)
-[![Audited by Sigma Prime](https://img.shields.io/badge/audited_by-Sigma_Prime-2ea44f)](docs/audit/README.md)
+[![Audited by Sigma Prime](https://img.shields.io/badge/audited_by-Sigma_Prime-2ea44f)](../docs/earn/audit/README.md)
 
 Tempo Earn is vault-backed stablecoin yield for [Tempo](https://tempo.xyz). Users deposit a
 stablecoin into a persistent `EarnVault` and receive EarnShare, a non-rebasing
@@ -34,13 +34,13 @@ flowchart LR
     Vault --> Engine["Engine"] --> Venue["Yield venue"]
 ```
 
-New to the terms? See the [glossary](docs/glossary.md). The
-[system architecture](docs/architecture/system.md) explains the design and its invariants.
+New to the terms? See the [glossary](../docs/earn/glossary.md). The
+[system architecture](../docs/earn/architecture/system.md) explains the design and its invariants.
 
 ## Use it
 
 `viem/tempo` exposes the Earn ABIs, reads, writes, and call builders. This reads the
-[`app-moderato`](profiles/app-moderato/deployment.json) EarnVault, an open PATHUSD vault on the
+[`app-moderato`](../profiles/app-moderato/deployment.json) EarnVault, an open PATHUSD vault on the
 Moderato testnet:
 
 ```ts
@@ -61,11 +61,11 @@ console.log(earnVault.assetToken, earnVault.engine.totalAssets)
 
 This needs viem 2.55.10 or later; the repository pins viem 2.57.4.
 
-- [Client integration](docs/integrations/client.md): deposits, redemptions, quotes, simulation, and
+- [Client integration](../docs/earn/integrations/client.md): deposits, redemptions, quotes, simulation, and
   revert handling.
-- [Tempo Zones](docs/modules/zone-router.md): private deposits and redemptions.
-- [Deployment](docs/operations/deployment.md): deploy your own stack from a reviewed
-  [profile](profiles/README.md) with `pnpm earn deploy`.
+- [Tempo Zones](../docs/earn/modules/zone-router.md): private deposits and redemptions.
+- [Deployment](../docs/deployment/deployment.md): deploy your own stack from a reviewed
+  [profile](../profiles/README.md) with `pnpm earn deploy`.
 
 Tempo is EVM compatible with payment-specific differences; review
 [EVM compatibility](https://docs.tempo.xyz/quickstart/evm-compatibility) before deploying contracts
@@ -74,28 +74,26 @@ or building transaction infrastructure.
 ## Contribute
 
 [CONTRIBUTING.md](../CONTRIBUTING.md) covers setup, per-area commands, and pull requests;
-[development](../docs/development.md) owns the toolchain, checks, and CI. The
-[documentation index](docs/README.md) lists the canonical page for every topic.
+[development](../docs/development/README.md) owns the toolchain, checks, and CI. The
+[documentation index](../docs/earn/README.md) lists the canonical page for every topic.
 
 ## Project layout
 
-Earn is one Foundry project in the [repository](../README.md); paths below are relative to `earn/`.
+Earn's Foundry project; paths below are relative to `earn/`. Its deployment modules
+(`deployments/modules/earn/`), profiles, app, and docs (`docs/earn/`) live at the
+[repository](../README.md) root.
 
-| Path              | Purpose                                                                          |
-| ----------------- | -------------------------------------------------------------------------------- |
-| `src/core/`       | Factory, persistent EarnVault, isolated fees, and fee math.                      |
-| `src/engines/`    | Single-EarnVault [yield engines](docs/integrations/engines.md), one per kind.    |
-| `src/router/`     | Canonical ownerless, deployment-scoped private router.                           |
-| `src/rewards/`    | Optional contribution orchestration and EarnShare-only Merkle reward settlement. |
-| `src/interfaces/` | Public interfaces grouped by core, engines, and external integrations.           |
-| `src/demo/`       | Test-only venues, fixture funders, and par-oracle pool periphery.                |
-| `deployments/`    | Earn profile reconciliation, strict generated records, and runtime registries.   |
-| `profiles/`       | Authored deployment profiles, generated records, and hosted test fixtures.       |
-| `app/`            | React application and Hono Cloudflare Worker.                                    |
-| `script/`         | Foundry deployment scripts the shared profile lifecycle runs.                    |
-| `test/`           | Tests mirroring the Solidity production domains.                                 |
-| `localnet/`       | Local fixture contracts and scripts the root `localnet/` package deploys.        |
-| `docs/`           | Architecture, integration, operations, and development documentation.            |
+| Path              | Purpose                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| `src/core/`       | Factory, persistent EarnVault, isolated fees, and fee math.                           |
+| `src/engines/`    | Single-EarnVault [yield engines](../docs/earn/integrations/engines.md), one per kind. |
+| `src/router/`     | Canonical ownerless, deployment-scoped private router.                                |
+| `src/rewards/`    | Optional contribution orchestration and EarnShare-only Merkle reward settlement.      |
+| `src/interfaces/` | Public interfaces grouped by core, engines, and external integrations.                |
+| `src/demo/`       | Test-only venues, fixture funders, and par-oracle pool periphery.                     |
+| `script/`         | Foundry deployment scripts the shared profile lifecycle runs.                         |
+| `test/`           | Tests mirroring the Solidity production domains.                                      |
+| `script/local/`   | Local fixture contracts and scripts the root `localnet/` package deploys.             |
 
 ## Project status
 
@@ -104,20 +102,20 @@ Earn is one Foundry project in the [repository](../README.md); paths below are r
 - Tempo Zones are early infrastructure; private flows are experimental.
 - `Simple4626Vault`, fixture minting, demo par pools, and permissive test policies are demo
   infrastructure. Production deployments bind an existing external venue and conversion pool.
-- Hosted test deployments are listed in [hosted environments](docs/operations/hosted-environments.md).
+- Hosted test deployments are listed in [hosted environments](../docs/deployment/hosted-environments.md).
 
 ## Audits
 
 [Sigma Prime](https://sigmaprime.io) completed two security reviews in August 2026, the Zones & Earn
 Review v1.1 and the PropAMM & Earn Review v2.0, and every finding that affects Earn is resolved. The
-[audits page](docs/audit/README.md) lists each report's scope, commits, and findings, and every
+[audits page](../docs/earn/audit/README.md) lists each report's scope, commits, and findings, and every
 contract changed or added since, including the experimental `PropAMMEngine`. `src/demo/` and the app
 are outside both reports.
 
 ## Security
 
 Report vulnerabilities privately as described in [SECURITY.md](../SECURITY.md). The
-[security and privacy model](docs/architecture/security-and-privacy.md) documents privileged roles,
+[security and privacy model](../docs/earn/architecture/security-and-privacy.md) documents privileged roles,
 external dependencies, accounting protections, Zone visibility, and the production-readiness
 checklist.
 

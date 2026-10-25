@@ -44,11 +44,7 @@ abstract contract BridgeErc20Rail is BridgeRailBase {
         usd.approve(spender, CARD_BUDGET);
     }
 
-    function _railPull(address user, uint256 amount, bytes32)
-        internal
-        override
-        returns (PullOutcome)
-    {
+    function _railPull(address user, uint256 amount, bytes32) internal override returns (PullOutcome) {
         return _bridgePull(abi.encodePacked(PREFIX_ERC20, user, address(usd), amount));
     }
 
@@ -93,11 +89,7 @@ abstract contract BridgePermit2Rail is BridgeRailBase {
         _permit(user, CARD_BUDGET);
     }
 
-    function _railPull(address user, uint256 amount, bytes32)
-        internal
-        override
-        returns (PullOutcome)
-    {
+    function _railPull(address user, uint256 amount, bytes32) internal override returns (PullOutcome) {
         return _bridgePull(abi.encodePacked(PREFIX_PERMIT2, user, address(usd), amount));
     }
 
@@ -157,11 +149,7 @@ abstract contract BridgeTewfRail is BridgeRailBase {
         vm.stopPrank();
     }
 
-    function _railPull(address user, uint256 amount, bytes32)
-        internal
-        override
-        returns (PullOutcome)
-    {
+    function _railPull(address user, uint256 amount, bytes32) internal override returns (PullOutcome) {
         return _bridgePull(abi.encodePacked(PREFIX_TEWF, user, address(usd), amount));
     }
 
@@ -216,14 +204,8 @@ abstract contract BridgeErc4626Rail is BridgeRailBase {
         vm.stopPrank();
     }
 
-    function _railPull(address user, uint256 amount, bytes32)
-        internal
-        override
-        returns (PullOutcome)
-    {
-        return _bridgePull(
-            abi.encodePacked(PREFIX_ERC4626, user, address(usd), address(venue), amount)
-        );
+    function _railPull(address user, uint256 amount, bytes32) internal override returns (PullOutcome) {
+        return _bridgePull(abi.encodePacked(PREFIX_ERC4626, user, address(usd), address(venue), amount));
     }
 
     function _railValue(address user) internal view override returns (uint256) {

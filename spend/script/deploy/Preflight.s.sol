@@ -137,20 +137,16 @@ contract Preflight is Script {
         } catch { }
         r.programCanonical = ProgramChecks.isCanonical(address(factory), spenderId, r.clone);
         r.handler = address(factory.getSpenderHandler(PREFIX));
-        (bool factoryOk, address handlerFactory) =
-            ProgramChecks.readAddress(r.handler, bytes4(keccak256("FACTORY()")));
+        (bool factoryOk, address handlerFactory) = ProgramChecks.readAddress(r.handler, bytes4(keccak256("FACTORY()")));
         r.handlerValid = factoryOk && handlerFactory == address(factory);
         r.handlerCurrent = r.handlerValid
-            && ProgramChecks.sameLogic(
-                r.handler, address(new SpenderTempoSpend(IFactory(address(factory))))
-            );
+            && ProgramChecks.sameLogic(r.handler, address(new SpenderTempoSpend(IFactory(address(factory)))));
         if (r.clone != address(0) && r.handler != address(0)) {
             try factory.getSpenderHandlerWithCheckedPermissions(PREFIX, r.clone) {
                 r.handlerUsable = true;
             } catch { }
         }
-        r.destinationAuthorized =
-            r.clone != address(0) && factory.isAuthorizedDestination(spenderId, settlement);
+        r.destinationAuthorized = r.clone != address(0) && factory.isAuthorizedDestination(spenderId, settlement);
         r.programWalletAuthorized = r.clone != address(0) && programWallet != address(0)
             && factory.isAuthorizedDestination(spenderId, programWallet);
         r.paused = factory.paused();
@@ -158,11 +154,9 @@ contract Preflight is Script {
         address stablecoin = token;
         address earnVault;
         for (uint256 i; i < vaults.length; ++i) {
-            (bool shareOk, address share) =
-                ProgramChecks.readAddress(vaults[i], ITempoEarnVault.earnShare.selector);
+            (bool shareOk, address share) = ProgramChecks.readAddress(vaults[i], ITempoEarnVault.earnShare.selector);
             if (!shareOk || share != token) continue;
-            (bool assetOk, address asset) =
-                ProgramChecks.readAddress(vaults[i], ITempoEarnVault.asset.selector);
+            (bool assetOk, address asset) = ProgramChecks.readAddress(vaults[i], ITempoEarnVault.asset.selector);
             if (assetOk) {
                 r.tokenIsEarnShare = true;
                 stablecoin = asset;
@@ -174,8 +168,7 @@ contract Preflight is Script {
         // A token that is not a TIP-20 leaves its policy checks false instead of ending the report.
         (bool stableOk, uint64 stablePolicy) = _policy(stablecoin);
         if (stableOk) {
-            r.settlementAllowedByPolicy =
-                StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(stablePolicy, settlement);
+            r.settlementAllowedByPolicy = StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(stablePolicy, settlement);
             r.programWalletAllowedByPolicy = programWallet != address(0)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(stablePolicy, programWallet);
         }
@@ -185,13 +178,12 @@ contract Preflight is Script {
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, receiver)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, receiver);
             r.refundRecipientAllowedByPolicy = refundRecipient != address(0)
-                && StdPrecompiles.TIP403_REGISTRY
-                .isAuthorizedRecipient(tokenPolicy, refundRecipient);
+                && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, refundRecipient);
             r.cloneAllowedByPolicy = r.clone != address(0)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, r.clone)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, r.clone);
-            r.vaultAllowedByPolicy = earnVault != address(0)
-                && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, earnVault);
+            r.vaultAllowedByPolicy =
+                earnVault != address(0) && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, earnVault);
         }
 
         r.vaultsSpendable = new bool[](vaults.length);
@@ -202,33 +194,23 @@ contract Preflight is Script {
         for (uint256 i; i < vaults.length && r.clone != address(0) && r.handlerUsable; ++i) {
             (bool ok, bytes memory data) = r.clone
                 .staticcall(
-                    abi.encodeWithSignature(
-                        "publicGetCall(bytes)", abi.encodePacked(PREFIX, bytes2("GV"), vaults[i])
-                    )
+                    abi.encodeWithSignature("publicGetCall(bytes)", abi.encodePacked(PREFIX, bytes2("GV"), vaults[i]))
                 );
             r.vaultsAllowed[i] = ok && abi.decode(abi.decode(data, (bytes)), (bool));
         }
 
         if (receiver.code.length != 0) {
             ZoneSpendReceiver deployed = ZoneSpendReceiver(receiver);
-            r.receiverMatches = address(deployed.FACTORY()) == address(factory)
-                && deployed.SPENDER_ID() == spenderId && deployed.ZONE_ID() == zoneId;
+            r.receiverMatches = address(deployed.FACTORY()) == address(factory) && deployed.SPENDER_ID() == spenderId
+                && deployed.ZONE_ID() == zoneId;
             r.receiverCurrent = r.receiverMatches
                 && ProgramChecks.sameLogic(
-                    receiver,
-                    address(
-                        new ZoneSpendReceiver(
-                            IBridgeSpenderFactory(address(factory)), spenderId, zoneId
-                        )
-                    )
+                    receiver, address(new ZoneSpendReceiver(IBridgeSpenderFactory(address(factory)), spenderId, zoneId))
                 );
         }
 
         ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(zoneId);
-        if (
-            zone.portal == address(0)
-                || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal)
-        ) {
+        if (zone.portal == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal)) {
             return r;
         }
         r.portal = zone.portal;
@@ -237,12 +219,10 @@ contract Preflight is Script {
         r.depositsActive = portal.areDepositsActive(token);
         r.accessEnforced = portal.isAccessEnforced();
         r.gatewayOpen = portal.isGatewayOpen();
-        r.portalAllowedByPolicy = tokenOk
-            && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, zone.portal)
+        r.portalAllowedByPolicy = tokenOk && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, zone.portal)
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, zone.portal);
         address admin = portal.admin();
-        r.zoneAdminAllowedByPolicy =
-            tokenOk && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, admin);
+        r.zoneAdminAllowedByPolicy = tokenOk && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, admin);
         if (r.tokenIsEarnShare) {
             _checkAssetRefunds(r, portal, stablecoin, receiver, admin, refundRecipient);
         }
@@ -258,16 +238,12 @@ contract Preflight is Script {
                 r.receiverAdmitted = !r.accessEnforced || portal.hasRole(receiver, Role.Account);
             }
         }
-        r.refundRecipientAdmitted = refundRecipient != address(0)
-            && (!r.accessEnforced || portal.hasRole(refundRecipient, Role.Account));
+        r.refundRecipientAdmitted =
+            refundRecipient != address(0) && (!r.accessEnforced || portal.hasRole(refundRecipient, Role.Account));
     }
 
     function print(Report memory r, address[] memory vaults) public view {
-        _line(
-            r.handler != address(0),
-            "TS handler registered",
-            "admin: DeployTempoSpend's adminRegisterHandler"
-        );
+        _line(r.handler != address(0), "TS handler registered", "admin: DeployTempoSpend's adminRegisterHandler");
         _line(
             r.handlerValid,
             "TS handler has code and belongs to this factory",
@@ -278,11 +254,7 @@ contract Preflight is Script {
             "TS handler is this repo's build",
             "deployer: DeployTempoSpend, then admin: its adminRegisterHandler"
         );
-        _line(
-            r.clone != address(0),
-            "program exists",
-            "manager: createSpender(spenderId, destinations)"
-        );
+        _line(r.clone != address(0), "program exists", "manager: createSpender(spenderId, destinations)");
         _line(
             r.programCanonical,
             "program's clone created for this ID",
@@ -329,11 +301,7 @@ contract Preflight is Script {
             "portal takes deposits of the token",
             "Zone admin: unpause the portal or resumeDeposits(token)"
         );
-        _line(
-            r.receiverMatches,
-            "receiver deployed for this program and Zone",
-            "deployer: DeployZoneReceiver"
-        );
+        _line(r.receiverMatches, "receiver deployed for this program and Zone", "deployer: DeployZoneReceiver");
         _line(
             r.receiverCurrent,
             "receiver is this repo's build",
@@ -408,10 +376,7 @@ contract Preflight is Script {
             );
             _line(
                 r.vaultsSpendable[i],
-                string.concat(
-                    "vault engine has exact withdrawals and redeem previews ",
-                    vm.toString(vaults[i])
-                ),
+                string.concat("vault engine has exact withdrawals and redeem previews ", vm.toString(vaults[i])),
                 "use a vault whose engine supports both"
             );
         }

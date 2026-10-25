@@ -6,11 +6,7 @@ import { IAccessControl } from "openzeppelin-contracts/access/IAccessControl.sol
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
 
-import {
-    Spend,
-    SpenderTempoSpend,
-    SpenderTempoSpendStorageLib
-} from "../../src/SpenderTempoSpend.sol";
+import { Spend, SpenderTempoSpend, SpenderTempoSpendStorageLib } from "../../src/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
 import { FeeOnTransferToken, MockToken, PartialBurnEarnVault } from "../harness/Mocks.sol";
 import { TempoEnv } from "../harness/TempoEnv.sol";
@@ -58,31 +54,19 @@ contract SpenderTempoSpendTest is TempoEnv {
         Spend memory s = _stable(1e6);
         s.destination = makeAddr("attacker");
         _expectRevert(
-            alice,
-            s,
-            abi.encodeWithSelector(
-                SpenderTempoSpend.DestinationNotAuthorized.selector, s.destination
-            )
+            alice, s, abi.encodeWithSelector(SpenderTempoSpend.DestinationNotAuthorized.selector, s.destination)
         );
     }
 
     function test_spendBlockedWhenProgramPaused() public {
         vm.prank(bridgePauser);
         bridgeFactory.pause();
-        _expectRevert(
-            alice, _stable(1e6), abi.encodeWithSelector(SpenderBase.FactoryPaused.selector)
-        );
+        _expectRevert(alice, _stable(1e6), abi.encodeWithSelector(SpenderBase.FactoryPaused.selector));
     }
 
     function test_spendRequiresAllowlistedVault() public {
-        _bridgeGovernorCall(
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(0), address(earnVault))
-        );
-        _expectRevert(
-            alice,
-            _earn(10e6, 10e6, 0),
-            abi.encodeWithSelector(SpenderTempoSpend.VaultNotAllowed.selector)
-        );
+        _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(0), address(earnVault)));
+        _expectRevert(alice, _earn(10e6, 10e6, 0), abi.encodeWithSelector(SpenderTempoSpend.VaultNotAllowed.selector));
     }
 
     function test_spendCapsShareCost() public {
@@ -90,9 +74,7 @@ contract SpenderTempoSpendTest is TempoEnv {
         _expectRevert(
             alice,
             _earn(10e6, 10e6, required - 1),
-            abi.encodeWithSelector(
-                SpenderTempoSpend.ShareCostExceeded.selector, required, required - 1
-            )
+            abi.encodeWithSelector(SpenderTempoSpend.ShareCostExceeded.selector, required, required - 1)
         );
     }
 
@@ -100,15 +82,11 @@ contract SpenderTempoSpendTest is TempoEnv {
     function test_spendFromEarnSettlesInTheVaultAsset() public {
         Spend memory s = _earn(10e6, 10e6, 0);
         s.token = address(_createToken("Deel USD", "DLUSD"));
-        _expectRevert(
-            alice, s, abi.encodeWithSelector(SpenderTempoSpend.IncorrectAssetForVault.selector)
-        );
+        _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.IncorrectAssetForVault.selector));
     }
 
     function test_spendRejectsVaultPortionAboveAmount() public {
-        _expectRevert(
-            alice, _earn(10e6, 11e6, 0), abi.encodeWithSelector(SpenderBase.InvalidAmount.selector)
-        );
+        _expectRevert(alice, _earn(10e6, 11e6, 0), abi.encodeWithSelector(SpenderBase.InvalidAmount.selector));
     }
 
     function test_spendRejectsZeroAmount() public {
@@ -130,9 +108,7 @@ contract SpenderTempoSpendTest is TempoEnv {
     function test_spendEmitsTempoSpendExecuted() public {
         Spend memory s = _stable(40e6);
         vm.expectEmit(true, true, true, true, spender);
-        emit SpenderTempoSpend.TempoSpendExecuted(
-            s.ref, alice, settlement, address(usd), 40e6, 40e6, 0, 0
-        );
+        emit SpenderTempoSpend.TempoSpendExecuted(s.ref, alice, settlement, address(usd), 40e6, 40e6, 0, 0);
         _spendAs(alice, s);
     }
 
@@ -140,9 +116,7 @@ contract SpenderTempoSpendTest is TempoEnv {
         uint256 shares = earnVault.previewWithdraw(60e6);
         Spend memory s = _earn(100e6, 60e6, shares);
         vm.expectEmit(true, true, true, true, spender);
-        emit SpenderTempoSpend.TempoSpendExecuted(
-            s.ref, alice, settlement, address(usd), 100e6, 40e6, 60e6, shares
-        );
+        emit SpenderTempoSpend.TempoSpendExecuted(s.ref, alice, settlement, address(usd), 100e6, 40e6, 60e6, shares);
         _spendAs(alice, s);
     }
 
@@ -171,9 +145,7 @@ contract SpenderTempoSpendTest is TempoEnv {
         Spend memory s = _earn(50e6, 50e6, quoted);
         s.vault = address(vault);
         vm.expectEmit(true, true, true, true, spender);
-        emit SpenderTempoSpend.TempoSpendExecuted(
-            s.ref, alice, settlement, address(usd), 50e6, 0, 50e6, burned
-        );
+        emit SpenderTempoSpend.TempoSpendExecuted(s.ref, alice, settlement, address(usd), 50e6, 0, 50e6, burned);
         _spendAs(alice, s);
 
         assertEq(usd.balanceOf(settlement) - before, 50e6, "destination paid");
@@ -230,9 +202,7 @@ contract SpenderTempoSpendTest is TempoEnv {
 
     /// @notice After any yield and time, an Earn spend pays exactly the amount and burns no more
     ///         than the shares quoted for it.
-    function testFuzz_spendFromEarnAfterYield(uint256 amount, uint256 yieldBps, uint256 elapsed)
-        public
-    {
+    function testFuzz_spendFromEarnAfterYield(uint256 amount, uint256 yieldBps, uint256 elapsed) public {
         yieldBps = bound(yieldBps, 0, 5000);
         elapsed = bound(elapsed, 0, 730 days);
         vm.warp(block.timestamp + elapsed);
@@ -251,12 +221,7 @@ contract SpenderTempoSpendTest is TempoEnv {
 
     /// @notice With Tempo Earn's fees at any rate, after any yield and time, an Earn spend pays
     ///         exactly the amount and burns exactly the shares quoted for it in the same block.
-    function testFuzz_spendFromEarnWithFees(
-        uint256 amount,
-        uint256 feeBps,
-        uint256 yieldBps,
-        uint256 elapsed
-    ) public {
+    function testFuzz_spendFromEarnWithFees(uint256 amount, uint256 feeBps, uint256 yieldBps, uint256 elapsed) public {
         FeeConfig memory fees;
         fees.fixedFeeCount = 1;
         fees.fixedFees[0].account = makeAddr("earn.fee-recipient");
@@ -279,9 +244,7 @@ contract SpenderTempoSpendTest is TempoEnv {
     function test_spendBoundToItsProgram() public {
         Spend memory s = _stable(1e6);
         s.spenderId = keccak256("another.program");
-        _expectRevert(
-            alice, s, abi.encodeWithSelector(SpenderTempoSpend.WrongProgram.selector, s.spenderId)
-        );
+        _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.WrongProgram.selector, s.spenderId));
     }
 
     /// @notice A manager can register another ID on the clone, with its own destinations. Only the
@@ -307,9 +270,7 @@ contract SpenderTempoSpendTest is TempoEnv {
     function test_spendPaidByCallerOnly() public {
         address bob = makeAddr("bob");
         uint256 aliceBefore = usd.balanceOf(alice);
-        _expectRevert(
-            bob, _stable(1e6), abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector)
-        );
+        _expectRevert(bob, _stable(1e6), abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector));
         assertEq(usd.balanceOf(alice), aliceBefore);
     }
 
@@ -333,17 +294,14 @@ contract SpenderTempoSpendTest is TempoEnv {
     function test_availableBalance() public {
         uint256 stable = usd.balanceOf(alice);
         assertEq(
-            bridgeFactory.availableBalance(
-                SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, alice, address(usd))
-            ),
+            bridgeFactory.availableBalance(SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, alice, address(usd))),
             stable
         );
     }
 
     function test_availableBalanceIncludesAllowedVault() public {
         uint256 total = bridgeFactory.availableBalance(
-            SPENDER_ID,
-            abi.encodePacked(PREFIX_TEMPO_SPEND, alice, address(usd), address(earnVault))
+            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, alice, address(usd), address(earnVault))
         );
         assertEq(total, usd.balanceOf(alice) + _shareValue(earnShare.balanceOf(alice)));
     }
@@ -364,9 +322,7 @@ contract SpenderTempoSpendTest is TempoEnv {
     /// @notice A vault whose engine cannot preview a redemption adds nothing.
     function test_availableBalanceSkipsVaultWhosePreviewReverts() public {
         vm.mockCallRevert(
-            address(earnVault),
-            abi.encodeWithSelector(ITempoEarnVault.previewRedeem.selector),
-            "engine paused"
+            address(earnVault), abi.encodeWithSelector(ITempoEarnVault.previewRedeem.selector), "engine paused"
         );
         assertEq(_available(address(usd), address(earnVault)), usd.balanceOf(alice));
     }
@@ -374,13 +330,9 @@ contract SpenderTempoSpendTest is TempoEnv {
     /// @notice A vault that cannot report its asset or share adds nothing instead of reverting.
     function test_availableBalanceSkipsVaultWhoseGettersRevert() public {
         uint256 stable = usd.balanceOf(alice);
-        vm.mockCallRevert(
-            address(earnShare), abi.encodeWithSelector(earnShare.balanceOf.selector), "broken"
-        );
+        vm.mockCallRevert(address(earnShare), abi.encodeWithSelector(earnShare.balanceOf.selector), "broken");
         assertEq(_available(address(usd), address(earnVault)), stable, "share balance reverts");
-        vm.mockCallRevert(
-            address(earnVault), abi.encodeCall(ITempoEarnVault.earnShare, ()), "migrating"
-        );
+        vm.mockCallRevert(address(earnVault), abi.encodeCall(ITempoEarnVault.earnShare, ()), "migrating");
         assertEq(_available(address(usd), address(earnVault)), stable, "share reverts");
         vm.mockCallRevert(address(earnVault), abi.encodeCall(ITempoEarnVault.asset, ()), "paused");
         assertEq(_available(address(usd), address(earnVault)), stable, "asset reverts");
@@ -401,16 +353,10 @@ contract SpenderTempoSpendTest is TempoEnv {
         vm.mockCall(address(earnVault), abi.encodeCall(ITempoEarnVault.asset, ()), hex"0102");
         assertEq(_available(address(usd), address(earnVault)), stable, "short asset reply");
         vm.clearMockedCalls();
-        vm.mockCall(
-            address(earnVault),
-            abi.encodeCall(ITempoEarnVault.earnShare, ()),
-            abi.encode(type(uint256).max)
-        );
+        vm.mockCall(address(earnVault), abi.encodeCall(ITempoEarnVault.earnShare, ()), abi.encode(type(uint256).max));
         assertEq(_available(address(usd), address(earnVault)), stable, "share is not an address");
         vm.clearMockedCalls();
-        vm.mockCall(
-            address(earnVault), abi.encodeWithSelector(ITempoEarnVault.previewRedeem.selector), ""
-        );
+        vm.mockCall(address(earnVault), abi.encodeWithSelector(ITempoEarnVault.previewRedeem.selector), "");
         assertEq(_available(address(usd), address(earnVault)), stable, "empty preview reply");
     }
 
@@ -423,9 +369,7 @@ contract SpenderTempoSpendTest is TempoEnv {
 
     function test_availableBalanceRejectsBadLength() public {
         vm.expectRevert(SpenderBase.DataIncorrectLength.selector);
-        bridgeFactory.availableBalance(
-            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, alice, bytes19(0))
-        );
+        bridgeFactory.availableBalance(SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, alice, bytes19(0)));
     }
 
     function test_governorCallRequiresGovernance() public {
@@ -435,9 +379,7 @@ contract SpenderTempoSpendTest is TempoEnv {
         for (uint256 i; i < callers.length; ++i) {
             vm.prank(callers[i]);
             vm.expectRevert(
-                abi.encodeWithSelector(
-                    IAccessControl.AccessControlUnauthorizedAccount.selector, callers[i], role
-                )
+                abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, callers[i], role)
             );
             bridgeFactory.governorCall(SPENDER_ID, data);
         }
@@ -449,9 +391,7 @@ contract SpenderTempoSpendTest is TempoEnv {
     function test_managerCannotAllowAVault() public {
         vm.prank(bridgeManager);
         vm.expectRevert(bytes("This contract does not support manager calls"));
-        bridgeFactory.managerCall(
-            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), alice)
-        );
+        bridgeFactory.managerCall(SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), alice));
         assertFalse(_vaultAllowed(alice));
     }
 
@@ -459,25 +399,21 @@ contract SpenderTempoSpendTest is TempoEnv {
         vm.prank(bridgeGovernor);
         vm.expectRevert(abi.encodeWithSelector(SpenderBase.PrefixUnknown.selector, bytes2("XV")));
         bridgeFactory.governorCall(
-            SPENDER_ID,
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("XV"), uint8(1), address(earnVault))
+            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("XV"), uint8(1), address(earnVault))
         );
     }
 
     function test_governorCallRejectsBadLength() public {
         vm.prank(bridgeGovernor);
         vm.expectRevert(SpenderBase.DataIncorrectLength.selector);
-        bridgeFactory.governorCall(
-            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1))
-        );
+        bridgeFactory.governorCall(SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1)));
     }
 
     function test_governorCallRejectsNonBooleanFlag() public {
         vm.prank(bridgeGovernor);
         vm.expectRevert(SpenderTempoSpend.ExpectedBooleanByte.selector);
         bridgeFactory.governorCall(
-            SPENDER_ID,
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(2), address(earnVault))
+            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(2), address(earnVault))
         );
         assertTrue(_vaultAllowed(address(earnVault)), "allowlist unchanged");
     }
@@ -507,9 +443,8 @@ contract SpenderTempoSpendTest is TempoEnv {
     }
 
     function test_storageSlotIsErc7201() public pure {
-        bytes32 expected = keccak256(
-            abi.encode(uint256(keccak256("tempo.spend.SpenderTempoSpend")) - 1)
-        ) & ~bytes32(uint256(0xff));
+        bytes32 expected =
+            keccak256(abi.encode(uint256(keccak256("tempo.spend.SpenderTempoSpend")) - 1)) & ~bytes32(uint256(0xff));
         assertEq(SpenderTempoSpendStorageLib.SLOT, expected);
     }
 
@@ -530,11 +465,7 @@ contract SpenderTempoSpendTest is TempoEnv {
         });
     }
 
-    function _earn(uint256 amount, uint256 fromVault, uint256 maxShares)
-        internal
-        view
-        returns (Spend memory s)
-    {
+    function _earn(uint256 amount, uint256 fromVault, uint256 maxShares) internal view returns (Spend memory s) {
         s = _stable(amount);
         s.vault = address(earnVault);
         s.fromVault = fromVault;
@@ -542,20 +473,15 @@ contract SpenderTempoSpendTest is TempoEnv {
     }
 
     function _setVault(address vault, bool allowed) internal {
-        _bridgeGovernorCall(
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), allowed ? uint8(1) : uint8(0), vault)
-        );
+        _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), allowed ? uint8(1) : uint8(0), vault));
     }
 
     function _vaultAllowed(address vault) internal returns (bool) {
-        return
-            abi.decode(_cloneGet(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("GV"), vault)), (bool));
+        return abi.decode(_cloneGet(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("GV"), vault)), (bool));
     }
 
     function _available(address token, address vault) internal returns (uint256) {
-        return bridgeFactory.availableBalance(
-            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, alice, token, vault)
-        );
+        return bridgeFactory.availableBalance(SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, alice, token, vault));
     }
 
     function _assertCloneEmpty() internal view {

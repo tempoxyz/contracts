@@ -3,13 +3,13 @@
 This repository holds Tempo's contract projects and the tooling they share. Each project is its own
 Foundry project with its own build settings, dependencies, and guide:
 
-- [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues,
-  with its deployment tooling, profiles, and app.
+- [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues.
 - [spend/](spend/AGENTS.md): Tempo Spend, card spend through Bridge's spender contracts.
 
-Shared at the root: the pnpm workspace, the disposable Tempo L1 and Zone (`localnet/`), the E2E
-harness (`e2e/`), CI, and `scripts/solidity-deps.sh`, which installs each project's pinned Solidity
-dependencies. [README.md](README.md) maps the repository.
+Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with one module
+folder per project) and its `profiles/`, the app (`app/`), the disposable Tempo L1 and Zone
+(`localnet/`), the E2E harness (`e2e/`), the docs (`docs/`), CI, and `scripts/solidity-deps.sh`, which
+installs each project's pinned Solidity dependencies. [README.md](README.md) maps the repository.
 
 ## Find the applicable instructions
 
@@ -17,13 +17,13 @@ Before editing, read the guides along the target file's directory path, from roo
 guides add local rules; they do not repeat their parents. A session started at the repository root
 must explicitly discover descendant guides rather than assume they were loaded.
 
-| Area                                      | Guide                                    |
-| ----------------------------------------- | ---------------------------------------- |
-| Tempo Earn and its subdirectories         | [earn/AGENTS.md](earn/AGENTS.md)         |
-| Tempo Spend (Bridge card spend)           | [spend/AGENTS.md](spend/AGENTS.md)       |
-| Integration cases and hosted environments | [e2e/AGENTS.md](e2e/AGENTS.md)           |
-| Disposable chain lifecycle                | [localnet/AGENTS.md](localnet/AGENTS.md) |
-| CI and repository automation              | [.github/AGENTS.md](.github/AGENTS.md)   |
+| Area                                                            | Guide                                    |
+| --------------------------------------------------------------- | ---------------------------------------- |
+| Tempo Earn, including its app, deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)         |
+| Tempo Spend (Bridge card spend)                                 | [spend/AGENTS.md](spend/AGENTS.md)       |
+| Integration cases and hosted environments                       | [e2e/AGENTS.md](e2e/AGENTS.md)           |
+| Disposable chain lifecycle                                      | [localnet/AGENTS.md](localnet/AGENTS.md) |
+| CI and repository automation                                    | [.github/AGENTS.md](.github/AGENTS.md)   |
 
 ## Keep projects separate
 
@@ -38,7 +38,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
 
 ## Validation and documentation
 
-Use the commands in [docs/development.md](docs/development.md). Start with focused checks; before
+Use the commands in [docs/development.md](docs/development/README.md). Start with focused checks; before
 pushing meaningful implementation changes, run `pnpm verify`, plus the project's own checks for
 `spend/` ([spend/AGENTS.md](spend/AGENTS.md)). Hosted or private behavior changes also need the
 relevant E2E case and composed group. Report unrun checks and external blockers explicitly; after
@@ -46,7 +46,7 @@ pushing a PR update, report with CI pending unless asked to monitor it. For docu
 changes, run the link check (`pnpm --filter @tempoxyz/earn test --run docs`), format changed files,
 and run `git diff --check`.
 
-Follow the [documentation rules](earn/docs/README.md#documentation-rules) and update the page that
+Follow the [documentation rules](docs/earn/README.md#documentation-rules) and update the page that
 owns the changed behavior. Read implementation and tests together; resolve contradictions rather
 than preserving stale text. Removing an integration means removing every reference to it.
 
@@ -63,20 +63,20 @@ the tempoxyz/workflows entry points.
 - **tempoxyz/workflows** runs `pnpm e2e:devnet -- --group zone` and `pnpm devnet:deploy` against an
   existing devnet and reads each case's ID and status from the `e2e/.results/` run result. Their
   inputs and output files are in
-  [existing devnet chains](earn/docs/operations/e2e-environments.md#existing-devnet-chains).
+  [existing devnet chains](docs/deployment/e2e-environments.md#existing-devnet-chains).
 - **tempoxyz/cash** imports `localnet/src/index.ts` and calls
   `Environment.run({ consumer, sameAssetRoute, ready })`.
 - **tempoxyz/earn-deployments** (private) pins this repository as a submodule, installs Earn's
   Solidity dependencies with `pnpm deps`, and runs `pnpm earn`, `pnpm e2e:profile`, and
   `pnpm profiles --profiles profiles` against the profiles it holds
-  ([profiles in another repository](earn/profiles/README.md#profiles-in-another-repository)).
+  ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
 - **tempoxyz/localnet**'s Earn example uses the root `./localnet` export
   ([localnet layer](docs/development/localnet.md#localnet-layer)).
 - **tempoxyz/tempo** builds `earn/src/` (its `EARN_ROOT` is this repository's `earn/`) and consumes
   the `SingleZoneEarnRouter` and `DemoParPool` outputs.
 - **The private customer deployments repository** pins this repository as a submodule and runs
   `pnpm earn`, `pnpm e2e:profile`, and `pnpm profiles` against its own `profiles/`
-  ([profiles in another repository](earn/profiles/README.md#profiles-in-another-repository)).
+  ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
 
 ## Guide maintenance
 

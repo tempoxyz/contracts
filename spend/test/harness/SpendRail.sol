@@ -81,10 +81,7 @@ abstract contract SpendRail is AccessKeys {
     function _railDeclineError(Decline reason) internal view virtual returns (bytes4);
 
     /// @notice Bridge pulls `amount` for a card authorization.
-    function _railPull(address user, uint256 amount, bytes32 actionId)
-        internal
-        virtual
-        returns (PullOutcome);
+    function _railPull(address user, uint256 amount, bytes32 actionId) internal virtual returns (PullOutcome);
 
     /// @notice Bridge returns `amount` to `user` from program liquidity.
     function _railCredit(address user, uint256 amount, bytes32 actionId) internal virtual;
@@ -122,10 +119,7 @@ abstract contract SpendRail is AccessKeys {
     /// @notice Uses Bridge's Zone access key, as if it leaked, to withdraw `amount` of the
     ///         cardholder's Zone balance to `outsider` on Tempo. Returns whether the Zone accepted
     ///         the request. Private rails only.
-    function _railZoneKeyWithdrawTo(address user, address outsider, uint256 amount)
-        internal
-        virtual
-        returns (bool);
+    function _railZoneKeyWithdrawTo(address user, address outsider, uint256 amount) internal virtual returns (bool);
 
     // ------------------------------------------------------------------
     // Shared helpers for rails

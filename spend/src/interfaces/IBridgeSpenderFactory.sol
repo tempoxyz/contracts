@@ -7,10 +7,7 @@ pragma solidity ^0.8.28;
 interface IBridgeSpenderFactory {
     function paused() external view returns (bool);
 
-    function isAuthorizedDestination(bytes32 spenderId, address destination)
-        external
-        view
-        returns (bool);
+    function isAuthorizedDestination(bytes32 spenderId, address destination) external view returns (bool);
 
     function getSpenderAddress(bytes32 spenderId) external view returns (address);
 

@@ -89,7 +89,7 @@ jobs:
           forge-cache: localnet
           node: 'false'
 
-      # Localnet compiles under the deploy profile (earn/deployments/chain/foundry.ts), so the saved
+      # Localnet compiles under the deploy profile (deployments/chain/foundry.ts), so the saved
       # cache matches what E2E restores. One invocation for every source set E2E compiles, without
       # tests: a partial build prunes the others from the cache.
       - name: Build the deploy profile
@@ -97,7 +97,7 @@ jobs:
         working-directory: earn
         env:
           FOUNDRY_PROFILE: deploy
-        run: forge build src script localnet
+        run: forge build src script
 
   test:
     name: Required / Local E2E

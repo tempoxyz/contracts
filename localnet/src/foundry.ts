@@ -61,9 +61,9 @@ export function script<const abi extends Abi>(target: string, abi: abi) {
   })
 }
 
-/** Binds Earn's `localnet/script/<name>.s.sol:<name>Script` fixture. */
+/** Binds Earn's `script/local/<name>.s.sol:<name>Script` fixture. */
 export function fixtureScript<const abi extends Abi>(name: string, abi: abi) {
-  return script(`localnet/script/${name}.s.sol:${name}Script`, abi)
+  return script(`script/local/${name}.s.sol:${name}Script`, abi)
 }
 
 /** The shared factory release, one CREATE per entry point for Tempo batches. */

@@ -62,8 +62,9 @@ import {
  */
 
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-// Earn's Foundry project: profiles, Forge steps, and broadcasts resolve here.
-const root = resolve(dirname(e2eRoot), 'earn')
+const repositoryRoot = dirname(e2eRoot)
+// Earn's Foundry project: Forge steps and broadcasts resolve here.
+const root = resolve(repositoryRoot, 'earn')
 /** PATHUSD the deployer must hold for the fixture broadcasts, from the faucet where there is one. */
 const minimumFeeBalance = 1_000_000n
 const pathUsd = getAddress(Addresses.pathUsd)
@@ -96,7 +97,7 @@ const chainId = hostedEnvironments[network].chainId
 const profilePath =
   args.profile.includes('/') || args.profile.endsWith('.json')
     ? resolveProfilePath(args.profile)
-    : resolve(root, 'profiles', args.profile, 'profile.json')
+    : resolve(repositoryRoot, 'profiles', args.profile, 'profile.json')
 const original = object(JSON.parse(readFileSync(profilePath, 'utf8')), 'profile')
 if (original.chainId !== chainId) {
   throw new Error(`Profile ${profilePath} targets chain ${original.chainId}, not ${network}`)
@@ -275,7 +276,7 @@ const record = parseProfileFixtureRecord({
 writeFileSync(outputPath, `${JSON.stringify(record, null, 2)}\n`)
 if (existsSync(deploymentPath)) rmSync(deploymentPath)
 execFileSync('pnpm', ['exec', 'vp', 'fmt', profilePath, outputPath], {
-  cwd: root,
+  cwd: repositoryRoot,
   stdio: 'inherit',
 })
 
@@ -304,5 +305,7 @@ async function verifyEngine(engine: Address) {
 }
 
 function relative(path: string) {
-  return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : basename(path)
+  return path.startsWith(`${repositoryRoot}/`)
+    ? path.slice(repositoryRoot.length + 1)
+    : basename(path)
 }

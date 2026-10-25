@@ -2,9 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
-import {
-    SpenderFactoryErrorsAndEvents
-} from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
+import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
 import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
@@ -85,9 +83,7 @@ contract AccessKeySecurityTest is AccessKeys {
                 (abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("RF"), attacker, uint256(10e6)))
             )
         );
-        _assertRejected(
-            calls, abi.encodeWithSelector(SpenderBase.PrefixUnknown.selector, bytes2("RF"))
-        );
+        _assertRejected(calls, abi.encodeWithSelector(SpenderBase.PrefixUnknown.selector, bytes2("RF")));
     }
 
     /// @notice The scope names the clone's `publicCall`, not a prefix, so the key also reaches the
@@ -96,8 +92,8 @@ contract AccessKeySecurityTest is AccessKeys {
     function test_publicKey_reachesOtherHandlersPublicActions() public {
         _scopePublicKey(1000e6);
         assertTrue(_exec(_setTewfPreference(address(earnVault))), "TF accepted the key");
-        bytes memory preference = IBridgeSpenderClone(spender)
-            .publicGetCall(abi.encodePacked(PREFIX_TEWF, bytes2("GP"), alice));
+        bytes memory preference =
+            IBridgeSpenderClone(spender).publicGetCall(abi.encodePacked(PREFIX_TEWF, bytes2("GP"), alice));
         assertEq(abi.decode(preference, (address)), address(earnVault));
     }
 
@@ -148,8 +144,7 @@ contract AccessKeySecurityTest is AccessKeys {
         vm.prank(alice);
         keychain.revokeKey(bridgeKey);
         _assertRejected(
-            _approveAndSpend(10e6, _spend(10e6)),
-            abi.encodeWithSelector(IAccountKeychain.KeyAlreadyRevoked.selector)
+            _approveAndSpend(10e6, _spend(10e6)), abi.encodeWithSelector(IAccountKeychain.KeyAlreadyRevoked.selector)
         );
     }
 
@@ -173,16 +168,11 @@ contract AccessKeySecurityTest is AccessKeys {
         vm.stopPrank();
         uint256 bobBefore = usd.balanceOf(bob);
 
-        TxCall[] memory spendOnly = _call(
-            spender, abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(_spend(10e6))))
-        );
+        TxCall[] memory spendOnly =
+            _call(spender, abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(_spend(10e6)))));
+        _assertRejected(spendOnly, abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector));
         _assertRejected(
-            spendOnly, abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector)
-        );
-        _assertRejected(
-            _call(
-                address(usd), abi.encodeCall(ITIP20.transferFrom, (bob, settlement, uint256(10e6)))
-            ),
+            _call(address(usd), abi.encodeCall(ITIP20.transferFrom, (bob, settlement, uint256(10e6)))),
             abi.encodeWithSelector(IAccountKeychain.CallNotAllowed.selector)
         );
         assertEq(usd.balanceOf(bob), bobBefore, "bob's funds untouched");
@@ -199,9 +189,7 @@ contract AccessKeySecurityTest is AccessKeys {
     function test_zoneKey_scopedToOutbox_canRedirectWithdrawal() public {
         _fundZone(500e6);
         address zUsd = address(_zoneTokenOf(address(usd)));
-        _authorizeZoneKey(
-            zUsd, address(zoneOutbox), address(zoneOutbox), zoneOutbox.requestWithdrawal.selector
-        );
+        _authorizeZoneKey(zUsd, address(zoneOutbox), address(zoneOutbox), zoneOutbox.requestWithdrawal.selector);
 
         TxCall[] memory calls = new TxCall[](2);
         calls[0] = TxCall(zUsd, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), 200e6)));
@@ -209,8 +197,7 @@ contract AccessKeySecurityTest is AccessKeys {
             address(zoneOutbox),
             0,
             abi.encodeCall(
-                zoneOutbox.requestWithdrawal,
-                (address(usd), attacker, uint128(200e6), bytes32(0), 0, alice, "", "")
+                zoneOutbox.requestWithdrawal, (address(usd), attacker, uint128(200e6), bytes32(0), 0, alice, "", "")
             )
         );
         assertTrue(_execAsAccessKey(alice, calls), "keychain allowed the redirect");
@@ -227,12 +214,7 @@ contract AccessKeySecurityTest is AccessKeys {
         _zoneSequence();
     }
 
-    function _authorizeZoneKey(
-        address zoneToken,
-        address approveTo,
-        address target,
-        bytes4 selector
-    ) internal {
+    function _authorizeZoneKey(address zoneToken, address approveTo, address target, bytes4 selector) internal {
         address[] memory tokens = new address[](1);
         uint256[] memory limits = new uint256[](1);
         tokens[0] = zoneToken;
@@ -256,11 +238,7 @@ contract AccessKeySecurityTest is AccessKeys {
         });
     }
 
-    function _approveAndSpend(uint256 approval, Spend memory s)
-        internal
-        view
-        returns (TxCall[] memory calls)
-    {
+    function _approveAndSpend(uint256 approval, Spend memory s) internal view returns (TxCall[] memory calls) {
         calls = new TxCall[](3);
         calls[0] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (spender, approval)));
         calls[1] = TxCall(spender, 0, abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(s))));
@@ -270,9 +248,7 @@ contract AccessKeySecurityTest is AccessKeys {
     function _setTewfPreference(address vault) internal view returns (TxCall[] memory) {
         return _call(
             spender,
-            abi.encodeCall(
-                IBridgeSpenderClone.publicCall, (abi.encodePacked(PREFIX_TEWF, bytes2("UP"), vault))
-            )
+            abi.encodeCall(IBridgeSpenderClone.publicCall, (abi.encodePacked(PREFIX_TEWF, bytes2("UP"), vault)))
         );
     }
 

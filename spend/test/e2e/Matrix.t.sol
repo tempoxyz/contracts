@@ -2,12 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { Funding } from "../harness/SpendRail.sol";
-import {
-    BridgeErc20Rail,
-    BridgeErc4626Rail,
-    BridgePermit2Rail,
-    BridgeTewfRail
-} from "../rails/BridgeRails.sol";
+import { BridgeErc20Rail, BridgeErc4626Rail, BridgePermit2Rail, BridgeTewfRail } from "../rails/BridgeRails.sol";
 import { TempoAccessKeyRail, TempoPrivateRail } from "../rails/TempoRails.sol";
 import { CardScenarios } from "./CardScenarios.sol";
 

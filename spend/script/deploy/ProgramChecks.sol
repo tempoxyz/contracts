@@ -3,40 +3,28 @@ pragma solidity ^0.8.36;
 
 import { ERC165Checker } from "openzeppelin-contracts/utils/introspection/ERC165Checker.sol";
 import { LibClone } from "solady/utils/LibClone.sol";
-import {
-    IEarnEngineExactWithdraw
-} from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
+import { IEarnEngineExactWithdraw } from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "tempo-earn/interfaces/engines/IEarnEngineRedeem.sol";
 
 /// @notice Read-only checks the deploy scripts and the preflight share.
 library ProgramChecks {
     /// @dev True when `createSpender(spenderId)` deployed `clone`, which "TS" requires of a program.
-    function isCanonical(address factory, bytes32 spenderId, address clone)
-        internal
-        pure
-        returns (bool)
-    {
+    function isCanonical(address factory, bytes32 spenderId, address clone) internal pure returns (bool) {
         return clone != address(0)
-            && LibClone.predictDeterministicAddressERC1967BeaconProxy(factory, spenderId, factory)
-                == clone;
+            && LibClone.predictDeterministicAddressERC1967BeaconProxy(factory, spenderId, factory) == clone;
     }
 
     /// @dev True when `vault`'s engine supports exact withdrawals, which every Earn spend makes,
     ///      and redeem previews, which `availableBalance` uses to value shares.
     function supportsEarnSpend(address vault) internal view returns (bool) {
         (bool ok, address engine) = readAddress(vault, bytes4(keccak256("engine()")));
-        return ok
-            && ERC165Checker.supportsInterface(engine, type(IEarnEngineExactWithdraw).interfaceId)
+        return ok && ERC165Checker.supportsInterface(engine, type(IEarnEngineExactWithdraw).interfaceId)
             && ERC165Checker.supportsInterface(engine, type(IEarnEngineRedeem).interfaceId);
     }
 
     /// @dev A low-level read, since `try` reverts on return data it cannot decode. False unless the
     ///      call returns a whole word holding an address.
-    function readAddress(address target, bytes4 selector)
-        internal
-        view
-        returns (bool ok, address value)
-    {
+    function readAddress(address target, bytes4 selector) internal view returns (bool ok, address value) {
         if (target.code.length == 0) return (false, address(0));
         (bool success, bytes memory data) = target.staticcall(abi.encodePacked(selector));
         if (!success || data.length < 32) return (false, address(0));
@@ -53,8 +41,7 @@ library ProgramChecks {
 
     function _withoutMetadata(bytes memory code) private pure returns (bytes memory) {
         if (code.length < 2) return code;
-        uint256 metadata =
-            (uint256(uint8(code[code.length - 2])) << 8) | uint256(uint8(code[code.length - 1]));
+        uint256 metadata = (uint256(uint8(code[code.length - 2])) << 8) | uint256(uint8(code[code.length - 1]));
         if (metadata + 2 > code.length) return code;
         uint256 logic = code.length - metadata - 2;
         assembly {

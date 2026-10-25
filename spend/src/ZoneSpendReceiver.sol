@@ -61,11 +61,7 @@ contract ZoneSpendReceiver is IWithdrawalReceiver {
     /// @dev Carries no cardholder address. `senderTag` is the Zone's commitment to the withdrawal's
     ///      sender and transaction, which Bridge can recompute for the withdrawals it sent.
     event PrivateSpendSettled(
-        bytes32 indexed senderTag,
-        bytes32 indexed ref,
-        address inputToken,
-        uint256 inputConsumed,
-        uint256 inputReturned
+        bytes32 indexed senderTag, bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned
     );
     event PrivateRefundCredited(address indexed token, uint256 amount);
 
@@ -110,8 +106,7 @@ contract ZoneSpendReceiver is IWithdrawalReceiver {
 
         address clone = _clone();
         SafeTransferLib.safeApprove(token, clone, amount);
-        IBridgeSpenderClone(clone)
-            .publicCall(abi.encodePacked(HANDLER, bytes2("PS"), abi.encode(spend)));
+        IBridgeSpenderClone(clone).publicCall(abi.encodePacked(HANDLER, bytes2("PS"), abi.encode(spend)));
         SafeTransferLib.safeApprove(token, clone, 0);
 
         uint256 returned = IERC20(token).balanceOf(address(this)) - inputBefore;
@@ -133,10 +128,7 @@ contract ZoneSpendReceiver is IWithdrawalReceiver {
     /// @dev Only one of the program's destinations may pay, and not while the factory is paused.
     ///      On a closed-loop Zone the receiver is a callback gateway, so anyone else could use it
     ///      to deposit without being admitted.
-    function refundPrivate(address token, uint256 amount, ZoneReturn calldata ret)
-        external
-        nonReentrant
-    {
+    function refundPrivate(address token, uint256 amount, ZoneReturn calldata ret) external nonReentrant {
         if (FACTORY.paused()) revert ProgramPaused();
         if (!FACTORY.isAuthorizedDestination(SPENDER_ID, msg.sender)) {
             revert NotProgramDestination(msg.sender);
@@ -159,16 +151,11 @@ contract ZoneSpendReceiver is IWithdrawalReceiver {
         }
     }
 
-    function _depositToZone(address portal, address token, uint256 amount, ZoneReturn memory ret)
-        private
-    {
+    function _depositToZone(address portal, address token, uint256 amount, ZoneReturn memory ret) private {
         uint128 fee = IZonePortal(portal).calculateDepositFee();
         if (fee > ret.maxDepositFee) revert DepositFeeTooHigh(fee);
         SafeTransferLib.safeApprove(token, portal, amount);
-        IZonePortal(portal)
-            .depositEncrypted(
-                token, uint128(amount), ret.keyIndex, ret.encrypted, ret.refundRecipient
-            );
+        IZonePortal(portal).depositEncrypted(token, uint128(amount), ret.keyIndex, ret.encrypted, ret.refundRecipient);
         SafeTransferLib.safeApprove(token, portal, 0);
     }
 }

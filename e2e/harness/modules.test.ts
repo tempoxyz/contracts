@@ -36,14 +36,12 @@ function profileTarget(
 
 describe('launch feature coverage', () => {
   it('lets every committed profile pass --launch with the cases it can select', () => {
-    const profiles = readdirSync(new URL('../../earn/profiles/', import.meta.url), {
+    const profiles = readdirSync(new URL('../../profiles/', import.meta.url), {
       withFileTypes: true,
     }).filter((entry) => entry.isDirectory())
     for (const { name } of profiles) {
       const read = (file: string) =>
-        JSON.parse(
-          readFileSync(new URL(`../../earn/profiles/${name}/${file}`, import.meta.url), 'utf8'),
-        )
+        JSON.parse(readFileSync(new URL(`../../profiles/${name}/${file}`, import.meta.url), 'utf8'))
       const profile = parseEarnDeploymentProfile(read('profile.json'))
       const target = profileTarget(
         profile,

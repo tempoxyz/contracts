@@ -34,8 +34,7 @@ struct SpenderTempoSpendStorage {
 
 library SpenderTempoSpendStorageLib {
     /// @custom:storage-location erc7201:tempo.spend.SpenderTempoSpend
-    bytes32 internal constant SLOT =
-        0xbc7f0a75443d84f208551e2e19a839e794ecf9029344e5d8e1a095f84e555400;
+    bytes32 internal constant SLOT = 0xbc7f0a75443d84f208551e2e19a839e794ecf9029344e5d8e1a095f84e555400;
 
     function load() internal pure returns (SpenderTempoSpendStorage storage $) {
         assembly {
@@ -150,10 +149,7 @@ contract SpenderTempoSpend is SpenderBase {
         IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(FACTORY));
         require(_isCanonical(s.spenderId), WrongProgram(s.spenderId));
         require(factory.getSpenderAddress(s.spenderId) == address(this), WrongProgram(s.spenderId));
-        require(
-            factory.isAuthorizedDestination(s.spenderId, s.destination),
-            DestinationNotAuthorized(s.destination)
-        );
+        require(factory.isAuthorizedDestination(s.spenderId, s.destination), DestinationNotAuthorized(s.destination));
         require(s.amount > 0 && s.fromVault <= s.amount, InvalidAmount());
 
         uint256 fromStable = s.amount - s.fromVault;
@@ -167,19 +163,10 @@ contract SpenderTempoSpend is SpenderBase {
             require(ITempoEarnVault(s.vault).asset() == s.token, IncorrectAssetForVault());
             sharesBurned = _withdrawFromEarn(s.vault, s.destination, s.fromVault, s.maxShares);
         }
-        require(
-            IERC20(s.token).balanceOf(s.destination) == before + s.amount, DestinationNotCredited()
-        );
+        require(IERC20(s.token).balanceOf(s.destination) == before + s.amount, DestinationNotCredited());
 
         emit TempoSpendExecuted(
-            s.ref,
-            msg.sender,
-            s.destination,
-            s.token,
-            s.amount,
-            fromStable,
-            s.fromVault,
-            sharesBurned
+            s.ref, msg.sender, s.destination, s.token, s.amount, fromStable, s.fromVault, sharesBurned
         );
     }
 
@@ -204,11 +191,7 @@ contract SpenderTempoSpend is SpenderBase {
     ///      its asset, share or redemption value adds nothing, so the stablecoin stays readable.
     ///      Reads are low-level: `try` cannot catch a call to an address without code or return
     ///      data it cannot decode, which would revert the whole balance query.
-    function _vaultValue(ITempoEarnVault vault, address from, address token)
-        private
-        view
-        returns (uint256)
-    {
+    function _vaultValue(ITempoEarnVault vault, address from, address token) private view returns (uint256) {
         (bool ok, uint256 word) = _readWord(address(vault), abi.encodeCall(vault.asset, ()));
         if (!ok || word != uint256(uint160(token))) return 0;
         (ok, word) = _readWord(address(vault), abi.encodeCall(vault.earnShare, ()));
@@ -222,11 +205,7 @@ contract SpenderTempoSpend is SpenderBase {
     }
 
     /// @dev False unless `target` has code, the call succeeds and it returns at least one word.
-    function _readWord(address target, bytes memory data)
-        private
-        view
-        returns (bool ok, uint256 word)
-    {
+    function _readWord(address target, bytes memory data) private view returns (bool ok, uint256 word) {
         if (target.code.length == 0) return (false, 0);
         (bool success, bytes memory ret) = target.staticcall(data);
         if (!success || ret.length < 32) return (false, 0);
@@ -236,9 +215,8 @@ contract SpenderTempoSpend is SpenderBase {
     /// @dev True when `createSpender(spenderId)` deployed this clone. A manager can register more
     ///      IDs on an existing clone, each with its own destinations, and those must not pay.
     function _isCanonical(bytes32 spenderId) private view returns (bool) {
-        return LibClone.predictDeterministicAddressERC1967BeaconProxy(
-            address(FACTORY), spenderId, address(FACTORY)
-        ) == address(this);
+        return LibClone.predictDeterministicAddressERC1967BeaconProxy(address(FACTORY), spenderId, address(FACTORY))
+            == address(this);
     }
 
     function _storage() private pure returns (SpenderTempoSpendStorage storage) {

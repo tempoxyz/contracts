@@ -61,51 +61,31 @@ library TempoTx {
     }
 
     /// @notice Sets the chain ID.
-    function withChainId(TxEnvelope memory self, uint64 chainId)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withChainId(TxEnvelope memory self, uint64 chainId) internal pure returns (TxEnvelope memory) {
         self.chainId = chainId;
         return self;
     }
 
     /// @notice Sets the max priority fee per gas.
-    function withMaxPriorityFeePerGas(TxEnvelope memory self, uint256 fee)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withMaxPriorityFeePerGas(TxEnvelope memory self, uint256 fee) internal pure returns (TxEnvelope memory) {
         self.maxPriorityFeePerGas = fee;
         return self;
     }
 
     /// @notice Sets the max fee per gas.
-    function withMaxFeePerGas(TxEnvelope memory self, uint256 fee)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withMaxFeePerGas(TxEnvelope memory self, uint256 fee) internal pure returns (TxEnvelope memory) {
         self.maxFeePerGas = fee;
         return self;
     }
 
     /// @notice Sets the gas limit.
-    function withGasLimit(TxEnvelope memory self, uint64 gasLimit)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withGasLimit(TxEnvelope memory self, uint64 gasLimit) internal pure returns (TxEnvelope memory) {
         self.gasLimit = gasLimit;
         return self;
     }
 
     /// @notice Sets the calls array.
-    function withCalls(TxEnvelope memory self, TxCall[] memory calls)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withCalls(TxEnvelope memory self, TxCall[] memory calls) internal pure returns (TxEnvelope memory) {
         self.calls = calls;
         return self;
     }
@@ -133,53 +113,33 @@ library TempoTx {
     }
 
     /// @notice Sets the 2D nonce key.
-    function withNonceKey(TxEnvelope memory self, uint256 nonceKey)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withNonceKey(TxEnvelope memory self, uint256 nonceKey) internal pure returns (TxEnvelope memory) {
         self.nonceKey = nonceKey;
         return self;
     }
 
     /// @notice Sets the nonce.
-    function withNonce(TxEnvelope memory self, uint64 nonce)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withNonce(TxEnvelope memory self, uint64 nonce) internal pure returns (TxEnvelope memory) {
         self.nonce = nonce;
         return self;
     }
 
     /// @notice Sets the validBefore timestamp.
-    function withValidBefore(TxEnvelope memory self, uint64 timestamp)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withValidBefore(TxEnvelope memory self, uint64 timestamp) internal pure returns (TxEnvelope memory) {
         self.hasValidBefore = true;
         self.validBefore = timestamp;
         return self;
     }
 
     /// @notice Sets the validAfter timestamp.
-    function withValidAfter(TxEnvelope memory self, uint64 timestamp)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withValidAfter(TxEnvelope memory self, uint64 timestamp) internal pure returns (TxEnvelope memory) {
         self.hasValidAfter = true;
         self.validAfter = timestamp;
         return self;
     }
 
     /// @notice Sets the fee token address.
-    function withFeeToken(TxEnvelope memory self, address token)
-        internal
-        pure
-        returns (TxEnvelope memory)
-    {
+    function withFeeToken(TxEnvelope memory self, address token) internal pure returns (TxEnvelope memory) {
         self.hasFeeToken = true;
         self.feeToken = token;
         return self;
@@ -197,10 +157,11 @@ library TempoTx {
     }
 
     /// @notice Sets the authorization list.
-    function withAuthorizationList(
-        TxEnvelope memory self,
-        TxAuthorization[] memory authorizationList
-    ) internal pure returns (TxEnvelope memory) {
+    function withAuthorizationList(TxEnvelope memory self, TxAuthorization[] memory authorizationList)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
         self.authorizationList = authorizationList;
         return self;
     }
@@ -238,15 +199,9 @@ library TempoTx {
         // More scalar fields
         fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
         fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
-        fields[8] = TxRlp.encodeString(
-            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
-        );
-        fields[9] = TxRlp.encodeString(
-            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
-        );
-        fields[10] = TxRlp.encodeString(
-            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
-        );
+        fields[8] = TxRlp.encodeString(self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone());
+        fields[9] = TxRlp.encodeString(self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone());
+        fields[10] = TxRlp.encodeString(self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone());
 
         // Fee payer signature: encoded as RLP list [v, r, s] if present, else 0x80
         fields[11] = self.hasFeePayerSignature
@@ -287,15 +242,9 @@ library TempoTx {
         fields[5] = _encodeAccessList(self.accessList);
         fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
         fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
-        fields[8] = TxRlp.encodeString(
-            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
-        );
-        fields[9] = TxRlp.encodeString(
-            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
-        );
-        fields[10] = TxRlp.encodeString(
-            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
-        );
+        fields[8] = TxRlp.encodeString(self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone());
+        fields[9] = TxRlp.encodeString(self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone());
+        fields[10] = TxRlp.encodeString(self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone());
         fields[11] = self.hasFeePayerSignature
             ? _encodeFeePayerSignature(self.feePayerSignature)
             : TxRlp.encodeString(TxRlp.encodeNone());
@@ -335,15 +284,9 @@ library TempoTx {
         fields[5] = _encodeAccessList(self.accessList);
         fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
         fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
-        fields[8] = TxRlp.encodeString(
-            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
-        );
-        fields[9] = TxRlp.encodeString(
-            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
-        );
-        fields[10] = TxRlp.encodeString(
-            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
-        );
+        fields[8] = TxRlp.encodeString(self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone());
+        fields[9] = TxRlp.encodeString(self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone());
+        fields[10] = TxRlp.encodeString(self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone());
         fields[11] = self.hasFeePayerSignature
             ? _encodeFeePayerSignature(self.feePayerSignature)
             : TxRlp.encodeString(TxRlp.encodeNone());
@@ -374,20 +317,14 @@ library TempoTx {
         fields[5] = _encodeAccessList(self.accessList);
         fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
         fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
-        fields[8] = TxRlp.encodeString(
-            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
-        );
-        fields[9] = TxRlp.encodeString(
-            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
-        );
+        fields[8] = TxRlp.encodeString(self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone());
+        fields[9] = TxRlp.encodeString(self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone());
 
         // When fee payer sig is present, skip fee_token (encode as empty)
         if (self.hasFeePayerSignature) {
             fields[10] = TxRlp.encodeString(TxRlp.encodeNone());
         } else {
-            fields[10] = TxRlp.encodeString(
-                self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
-            );
+            fields[10] = TxRlp.encodeString(self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone());
         }
 
         // Fee payer signature: 0x00 placeholder if present, else 0x80
@@ -411,11 +348,7 @@ library TempoTx {
     /// @dev The fee payer signs this hash to sponsor the transaction. Format:
     ///      keccak256(0x78 || RLP([...all fields with sender address in place of feePayerSignature...]))
     ///      This matches Rust's TxEnvelope::fee_payer_signature_hash().
-    function feePayerSignatureHash(TxEnvelope memory self, VmRlp, address sender)
-        internal
-        pure
-        returns (bytes32)
-    {
+    function feePayerSignatureHash(TxEnvelope memory self, VmRlp, address sender) internal pure returns (bytes32) {
         uint256 fieldCount = self.hasKeyAuthorization ? 14 : 13;
         bytes[] memory fields = new bytes[](fieldCount);
 
@@ -427,15 +360,9 @@ library TempoTx {
         fields[5] = _encodeAccessList(self.accessList);
         fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
         fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
-        fields[8] = TxRlp.encodeString(
-            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
-        );
-        fields[9] = TxRlp.encodeString(
-            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
-        );
-        fields[10] = TxRlp.encodeString(
-            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
-        );
+        fields[8] = TxRlp.encodeString(self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone());
+        fields[9] = TxRlp.encodeString(self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone());
+        fields[10] = TxRlp.encodeString(self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone());
 
         // Sender address in place of fee payer signature (matching Rust)
         fields[11] = TxRlp.encodeString(TxRlp.encodeAddress(sender));
@@ -491,11 +418,7 @@ library TempoTx {
     }
 
     /// @notice Encodes the authorization list as an RLP list.
-    function _encodeAuthorizationList(TxAuthorization[] memory list)
-        private
-        pure
-        returns (bytes memory)
-    {
+    function _encodeAuthorizationList(TxAuthorization[] memory list) private pure returns (bytes memory) {
         bytes[] memory encodedAuths = new bytes[](list.length);
         for (uint256 i = 0; i < list.length; i++) {
             bytes[] memory authFields = new bytes[](6);
@@ -543,20 +466,12 @@ library TempoTx {
     }
 
     /// @notice Encodes the access list as an RLP list (legacy signature).
-    function encodeAccessList(VmRlp, AccessListItem[] memory list)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    function encodeAccessList(VmRlp, AccessListItem[] memory list) internal pure returns (bytes memory) {
         return _encodeAccessList(list);
     }
 
     /// @notice Encodes the authorization list as an RLP list (legacy signature).
-    function encodeAuthorizationList(VmRlp, TxAuthorization[] memory list)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    function encodeAuthorizationList(VmRlp, TxAuthorization[] memory list) internal pure returns (bytes memory) {
         return _encodeAuthorizationList(list);
     }
 }

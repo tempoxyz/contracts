@@ -325,10 +325,8 @@ abstract contract CardScenarios is CardProgram {
         } else {
             // Gap: the card program can pull up to the remaining allowance at any time.
             _gap("the card program can pull up to the remaining allowance at any time");
-            (uint160 viaPermit2,,) =
-                IAllowanceTransfer(permit2).allowance(alice, address(usd), address(spender));
-            uint256 standing = usd.allowance(alice, address(spender))
-                + earnShare.allowance(alice, address(spender))
+            (uint160 viaPermit2,,) = IAllowanceTransfer(permit2).allowance(alice, address(usd), address(spender));
+            uint256 standing = usd.allowance(alice, address(spender)) + earnShare.allowance(alice, address(spender))
                 + venue.allowance(alice, address(spender)) + viaPermit2;
             assertGt(standing, 0, "allowance remains standing");
         }
@@ -543,15 +541,9 @@ abstract contract CardScenarios is CardProgram {
     ///      exactly what it captured, minus what it returned.
     function _assertLedger() internal view {
         assertEq(
-            usd.balanceOf(settlement) - _settlementBefore,
-            settledPulls + reserveDrawn,
-            "settlement = pulls + reserve"
+            usd.balanceOf(settlement) - _settlementBefore, settledPulls + reserveDrawn, "settlement = pulls + reserve"
         );
-        assertEq(
-            _programBefore - usd.balanceOf(programWallet),
-            creditedToCardholders,
-            "program liquidity = credits"
-        );
+        assertEq(_programBefore - usd.balanceOf(programWallet), creditedToCardholders, "program liquidity = credits");
         assertEq(_reserveBefore - usd.balanceOf(reserveWallet), reserveDrawn, "reserve draws");
         for (uint256 id = 1; id <= authCount; ++id) {
             Authorization storage a = auths[id];

@@ -1,6 +1,6 @@
 packages:
-  - earn/app
-  - earn/deployments
+  - app
+  - deployments
   - e2e
   - localnet
 

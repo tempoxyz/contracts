@@ -7,9 +7,7 @@ import { console } from "forge-std/console.sol";
 
 import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
-import {
-    SpenderFactoryErrorsAndEvents
-} from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
+import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
@@ -52,21 +50,18 @@ contract DeployTempoSpend is Script {
     function deploy(address factory, uint256 deployerPk) public returns (Output memory o) {
         require(factory.code.length != 0, "FACTORY has no code");
         SpenderStatus status = _status(SpenderFactory(factory));
-        o.firstRegistration =
-            address(SpenderFactory(factory).getSpenderHandler(PREFIX)) == address(0);
+        o.firstRegistration = address(SpenderFactory(factory).getSpenderHandler(PREFIX)) == address(0);
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
         o.handler = new SpenderTempoSpend(IFactory(factory));
         vm.stopBroadcast();
         o.factory = factory;
         o.status = _name(status);
-        o.adminRegisterHandler = abi.encodeCall(
-            SpenderFactory.setSpenderHandler, (PREFIX, ISpenderHandler(address(o.handler)))
-        );
+        o.adminRegisterHandler =
+            abi.encodeCall(SpenderFactory.setSpenderHandler, (PREFIX, ISpenderHandler(address(o.handler))));
         if (o.firstRegistration && status == SpenderStatus.Disabled) {
-            o.governanceGateHandler = abi.encodeCall(
-                SpenderFactory.updateSpenderHandlerStatus, (PREFIX, SpenderStatus.Gated)
-            );
+            o.governanceGateHandler =
+                abi.encodeCall(SpenderFactory.updateSpenderHandlerStatus, (PREFIX, SpenderStatus.Gated));
         } else if (status == SpenderStatus.Disabled) {
             console.log("TS is Disabled: the new handler stays off until governance changes it");
         }
@@ -102,7 +97,6 @@ contract DeployTempoSpend is Script {
     }
 
     function _broadcasting() private view returns (bool) {
-        return vm.isContext(VmSafe.ForgeContext.ScriptBroadcast)
-            || vm.isContext(VmSafe.ForgeContext.ScriptResume);
+        return vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume);
     }
 }

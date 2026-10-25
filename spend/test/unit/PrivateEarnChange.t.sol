@@ -28,9 +28,7 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
     ///         bounces, nothing is paid and the input returns to the Zone.
     function test_earnLeftoverBelowFeesBounces() public {
         uint256 maxShares = _quote(AMOUNT);
-        assertLt(
-            maxShares - earnVault.previewWithdraw(AMOUNT), _change() - 1, "leftover below fees"
-        );
+        assertLt(maxShares - earnVault.previewWithdraw(AMOUNT), _change() - 1, "leftover below fees");
         uint256 before = usd.balanceOf(settlement);
         uint256 zoneBefore = _zoneBalance(address(earnShare), alice);
 
@@ -76,9 +74,7 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
     ///         which returns them to the cardholder in the Zone with the change.
     function test_earnSharesTheVaultDidNotBurnReturnToTheZone() public {
         OverQuotingEarnVault vault = new OverQuotingEarnVault(ITempoEarnVault(address(earnVault)));
-        _bridgeGovernorCall(
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(vault))
-        );
+        _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(vault)));
         uint256 quoted = vault.previewWithdraw(AMOUNT);
         uint256 burned = earnVault.previewWithdraw(AMOUNT);
         assertGt(quoted, burned, "quote above the burn");
@@ -120,13 +116,9 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
             spend.ref, address(receiver), settlement, address(usd), AMOUNT, 0, AMOUNT, burned
         );
         vm.expectEmit(true, true, true, true, address(receiver));
-        emit ZoneSpendReceiver.PrivateSpendSettled(
-            senderTag, spend.ref, address(earnShare), burned, input - burned
-        );
+        emit ZoneSpendReceiver.PrivateSpendSettled(senderTag, spend.ref, address(earnShare), burned, input - burned);
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        receiver.onWithdrawalReceived(
-            ZONE_ID, address(portal), senderTag, address(earnShare), uint128(input), data
-        );
+        receiver.onWithdrawalReceived(ZONE_ID, address(portal), senderTag, address(earnShare), uint128(input), data);
         _assertNoApprovals(address(earnShare));
     }
 

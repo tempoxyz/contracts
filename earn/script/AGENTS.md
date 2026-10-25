@@ -1,7 +1,7 @@
 # Foundry deployment scripts
 
-Read the [shared deployment guide](../deployments/AGENTS.md) and the
-[deployment runbook](../docs/operations/deployment.md) before changing lifecycle behavior.
+Read the [shared deployment guide](../../deployments/AGENTS.md) and the
+[deployment runbook](../../docs/deployment/deployment.md) before changing lifecycle behavior.
 
 - Scripts implement the shared profile lifecycle; they never introduce a second authored plan or
   bypass typed authority handoffs and source verification.

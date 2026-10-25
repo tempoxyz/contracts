@@ -64,11 +64,7 @@ abstract contract AccessKeys is ZoneEnv {
     }
 
     /// @dev Whether `needle` occurs in `haystack`, and the index just past its first occurrence.
-    function _find(bytes memory haystack, bytes memory needle)
-        private
-        pure
-        returns (bool, uint256)
-    {
+    function _find(bytes memory haystack, bytes memory needle) private pure returns (bool, uint256) {
         if (haystack.length < needle.length) return (false, 0);
         for (uint256 i; i <= haystack.length - needle.length; ++i) {
             bool matched = true;
@@ -92,13 +88,10 @@ abstract contract AccessKeys is ZoneEnv {
             .withMaxFeePerGas(0)
             .withCalls(calls)
             .withNonce(uint64(vm.getNonce(account)));
-        bytes32 digest = keccak256(
-            abi.encodePacked(uint8(0x04), txn.signingHash(VmRlp(address(vm))), account)
-        );
+        bytes32 digest = keccak256(abi.encodePacked(uint8(0x04), txn.signingHash(VmRlp(address(vm))), account));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(keyPk, digest);
-        bytes memory raw = txn.encodeWithRawSignature(
-            VmRlp(address(vm)), abi.encodePacked(uint8(0x04), account, r, s, v)
-        );
+        bytes memory raw =
+            txn.encodeWithRawSignature(VmRlp(address(vm)), abi.encodePacked(uint8(0x04), account, r, s, v));
         try VmExecuteTransaction(address(vm)).executeTransaction(raw) returns (bytes memory) {
             return (true, "");
         } catch (bytes memory err) {
@@ -114,12 +107,10 @@ abstract contract AccessKeys is ZoneEnv {
         uint256[] memory limits,
         IAccountKeychain.CallScope[] memory scopes
     ) internal {
-        IAccountKeychain.TokenLimit[] memory tokenLimits =
-            new IAccountKeychain.TokenLimit[](limitTokens.length);
+        IAccountKeychain.TokenLimit[] memory tokenLimits = new IAccountKeychain.TokenLimit[](limitTokens.length);
         for (uint256 i; i < limitTokens.length; ++i) {
-            tokenLimits[i] = IAccountKeychain.TokenLimit({
-                token: limitTokens[i], amount: limits[i], period: LIMIT_PERIOD
-            });
+            tokenLimits[i] =
+                IAccountKeychain.TokenLimit({ token: limitTokens[i], amount: limits[i], period: LIMIT_PERIOD });
         }
         IAccountKeychain.KeyRestrictions memory restrictions;
         restrictions.expiry = uint64(block.timestamp + 365 days);

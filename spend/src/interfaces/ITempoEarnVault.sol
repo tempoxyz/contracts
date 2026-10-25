@@ -11,9 +11,7 @@ interface ITempoEarnVault {
 
     function previewRedeem(uint256 earnShares) external view returns (uint256 assets);
 
-    function deposit(uint256 assets, address receiver, uint256 minEarnShares)
-        external
-        returns (uint256 earnShares);
+    function deposit(uint256 assets, address receiver, uint256 minEarnShares) external returns (uint256 earnShares);
 
     /// @notice Burns at most `maxEarnShares` from the caller and sends exactly `assets` to
     ///         `receiver`.

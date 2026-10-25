@@ -4,9 +4,7 @@ pragma solidity ^0.8.36;
 import { IAccessControl } from "openzeppelin-contracts/access/IAccessControl.sol";
 
 import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
-import {
-    SpenderFactoryErrorsAndEvents
-} from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
+import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
 import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 
 import { Spend } from "../../src/SpenderTempoSpend.sol";
@@ -61,8 +59,7 @@ contract RolesTest is PrivateSpendFixture {
 
     function test_onlyGovernanceConfiguresTheHandler() public {
         bytes32 role = bridgeFactory.GOVERNANCE_ROLE();
-        bytes memory allowVault =
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), outsider);
+        bytes memory allowVault = abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), outsider);
         address[] memory callers = _everyoneBut(bridgeGovernor);
         for (uint256 i; i < callers.length; ++i) {
             vm.prank(callers[i]);
@@ -169,8 +166,7 @@ contract RolesTest is PrivateSpendFixture {
         vm.prank(bridgeGovernor);
         vm.expectRevert(SpenderFactoryErrorsAndEvents.SpenderHandlerDisabled.selector);
         bridgeFactory.governorCall(
-            SPENDER_ID,
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(earnVault))
+            SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(earnVault))
         );
 
         vm.prank(bridgeGovernor);
@@ -197,8 +193,7 @@ contract RolesTest is PrivateSpendFixture {
 
     /// @dev Every factory role holder and an outsider, except `authorized`.
     function _everyoneBut(address authorized) internal view returns (address[] memory callers) {
-        address[6] memory all =
-            [bridgeAdmin, bridgeGovernor, bridgeManager, bridgePauser, bridgeDebitor, outsider];
+        address[6] memory all = [bridgeAdmin, bridgeGovernor, bridgeManager, bridgePauser, bridgeDebitor, outsider];
         callers = new address[](all.length - 1);
         uint256 n;
         for (uint256 i; i < all.length; ++i) {
@@ -208,9 +203,7 @@ contract RolesTest is PrivateSpendFixture {
     }
 
     function _unauthorized(address account, bytes32 role) internal pure returns (bytes memory) {
-        return abi.encodeWithSelector(
-            IAccessControl.AccessControlUnauthorizedAccount.selector, account, role
-        );
+        return abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, account, role);
     }
 
     function _publicSpend(uint256 amount) internal view returns (Spend memory s) {
@@ -227,8 +220,7 @@ contract RolesTest is PrivateSpendFixture {
         _zoneSettle();
         assertFalse(lastCallbackResults[0], "callback rejected");
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
-        uint256 fees =
-            zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateBouncebackFee();
+        uint256 fees = zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateBouncebackFee();
         assertLe(zoneBefore - _zoneBalance(address(usd), alice), fees, "input bounced back");
     }
 

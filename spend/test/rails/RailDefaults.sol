@@ -21,12 +21,7 @@ abstract contract RailDefaults is CardProgram {
         return earnShare.balanceOf(user);
     }
 
-    function _railPullSplit(address, uint256, uint256, bytes32)
-        internal
-        virtual
-        override
-        returns (PullOutcome)
-    {
+    function _railPullSplit(address, uint256, uint256, bytes32) internal virtual override returns (PullOutcome) {
         revert("split funding unsupported");
     }
 
@@ -34,12 +29,7 @@ abstract contract RailDefaults is CardProgram {
         return bytes4(0);
     }
 
-    function _railZoneKeyWithdrawTo(address, address, uint256)
-        internal
-        virtual
-        override
-        returns (bool)
-    {
+    function _railZoneKeyWithdrawTo(address, address, uint256) internal virtual override returns (bool) {
         revert("no Zone access key");
     }
 }

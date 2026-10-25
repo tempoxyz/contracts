@@ -48,13 +48,12 @@ runs:
             'pnpm-workspace.yaml',
           ])
           // Localnet deploys the committed DirectPropAMM fixture; otherwise E2E, localnet, and the
-          // scripts import nothing from `earn/app/` or `earn/test/`.
+          // scripts import nothing from `app/` or `earn/test/`.
           const pathPrefixes = [
             '.github/actions/',
             'e2e/',
-            'earn/deployments/',
-            'earn/localnet/',
-            'earn/profiles/',
+            'deployments/',
+            'profiles/',
             'earn/script/',
             'earn/src/',
             'earn/test/fixtures/propamm/',

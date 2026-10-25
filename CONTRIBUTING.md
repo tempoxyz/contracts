@@ -6,7 +6,7 @@ an issue or pull request.
 
 ## Set up
 
-Install the tools in the [toolchain](docs/development.md#toolchain): Foundry at the pinned version,
+Install the tools in the [toolchain](docs/development/README.md#toolchain): Foundry at the pinned version,
 Node.js 22, and pnpm 11. Local end-to-end runs also need Docker.
 
 ```bash
@@ -17,40 +17,40 @@ pnpm deps   # each project's Solidity dependencies, at its foundry.lock revision
 ```
 
 The clone needs no private access: Solidity dependencies are public repositories, and contract tests
-and local stacks deploy a committed [DirectPropAMM fixture](earn/docs/modules/propamm.md#pinned-directpropamm-fixture).
+and local stacks deploy a committed [DirectPropAMM fixture](docs/earn/modules/propamm.md#pinned-directpropamm-fixture).
 
 ## Work on one area
 
 | Area                                                                  | Commands                                                                   |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Earn contracts ([`earn/src/`](earn/src/), [`earn/test/`](earn/test/)) | `pnpm test:contracts`, or `forge test --match-path <path> -vvv` in `earn/` |
-| Deployment tooling ([`earn/deployments/`](earn/deployments/))         | `pnpm --filter @tempoxyz/earn test --run`, `check`, and `typecheck`        |
-| App ([`earn/app/`](earn/app/))                                        | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack   |
+| Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/earn test --run`, `check`, and `typecheck`        |
+| App ([`app/`](app/))                                                  | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack   |
 | Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`; `pnpm dev:local -- --smoke` sets up and verifies a stack |
 | Tempo Spend ([`spend/`](spend/))                                      | `forge test` in `spend/`; see [spend/AGENTS.md](spend/AGENTS.md)           |
 
 `pnpm dev` runs the app against the hosted Moderato testnet and needs a Tempo API key
-([app environment](docs/development.md#app-environment)); the local commands need no credentials.
-The [test map](docs/development.md#test-map) shows where existing coverage lives, and
-[development](docs/development.md) owns every other command.
+([app environment](docs/development/README.md#app-environment)); the local commands need no credentials.
+The [test map](docs/development/README.md#test-map) shows where existing coverage lives, and
+[development](docs/development/README.md) owns every other command.
 
 ## Before you open a pull request
 
 1. Run `pnpm verify`. It runs formatting, lint, the contract build, size check, and tests, the ABI
    and gas snapshots, TypeScript checks and tests, the documentation link check, and the app build.
    CI adds the symbolic proofs, the PropAMM fixture rebuild, and local E2E
-   ([required checks](docs/development.md#required-checks)).
+   ([required checks](docs/development/README.md#required-checks)).
 2. Update the one page that owns the behavior you changed; the
-   [documentation index](earn/docs/README.md#document-ownership) names it. Document current behavior
+   [documentation index](docs/earn/README.md#document-ownership) names it. Document current behavior
    only.
-3. For contract changes, answer the [review checklist](docs/development.md#review-checklist) in the
+3. For contract changes, answer the [review checklist](docs/development/README.md#review-checklist) in the
    pull request.
 4. Keep one logical change per commit, with no unrelated formatting or refactoring.
 
 ## Continuous integration
 
 Pull requests run the secretless verification, security scan, and local end-to-end workflows
-described in [continuous integration](docs/development.md#continuous-integration), and a pull
+described in [continuous integration](docs/development/README.md#continuous-integration), and a pull
 request from a fork can pass every required check. A fork gets no preview deployment, and a change
 to `earn/test/fixtures/propamm/` from a fork fails CI until a maintainer re-verifies it from a branch in
 this repository.

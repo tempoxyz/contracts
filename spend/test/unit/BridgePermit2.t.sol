@@ -14,8 +14,7 @@ contract BridgePermit2Test is TempoEnv {
         _mintUsd(alice, 1000e6);
         vm.startPrank(alice);
         usd.approve(permit2, type(uint256).max);
-        IAllowanceTransfer(permit2)
-            .approve(address(usd), spender, 100e6, uint48(vm.getBlockTimestamp() + 1 hours));
+        IAllowanceTransfer(permit2).approve(address(usd), spender, 100e6, uint48(vm.getBlockTimestamp() + 1 hours));
         vm.stopPrank();
     }
 

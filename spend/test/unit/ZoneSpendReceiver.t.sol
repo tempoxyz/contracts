@@ -24,9 +24,7 @@ contract ZoneSpendReceiverTest is AccessKeys {
     function setUp() public {
         _deployTempo();
         _deployZone(false);
-        receiver = new ZoneSpendReceiver(
-            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID
-        );
+        receiver = new ZoneSpendReceiver(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID);
     }
 
     function test_callbackOnlyFromMessenger() public {
@@ -36,18 +34,14 @@ contract ZoneSpendReceiverTest is AccessKeys {
 
     function test_callbackOnlyFromConfiguredZone() public {
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        vm.expectRevert(
-            abi.encodeWithSelector(ZoneSpendReceiver.WrongSourceZone.selector, uint32(8))
-        );
+        vm.expectRevert(abi.encodeWithSelector(ZoneSpendReceiver.WrongSourceZone.selector, uint32(8)));
         receiver.onWithdrawalReceived(8, address(portal), bytes32(0), address(usd), 1, "");
     }
 
     function test_callbackOnlyFromCanonicalPortal() public {
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneSpendReceiver.InvalidSourcePortal.selector);
-        receiver.onWithdrawalReceived(
-            ZONE_ID, makeAddr("fake.portal"), bytes32(0), address(usd), 1, ""
-        );
+        receiver.onWithdrawalReceived(ZONE_ID, makeAddr("fake.portal"), bytes32(0), address(usd), 1, "");
     }
 
     function test_requiresAZone() public {
@@ -69,16 +63,13 @@ contract ZoneSpendReceiverTest is AccessKeys {
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneSpendReceiver.NothingSettled.selector);
-        receiver.onWithdrawalReceived(
-            ZONE_ID, address(portal), bytes32(0), address(usd), 10e6, _spendCallback(10e6)
-        );
+        receiver.onWithdrawalReceived(ZONE_ID, address(portal), bytes32(0), address(usd), 10e6, _spendCallback(10e6));
     }
 
     /// @notice A handler that hands back more input than it was given cannot look settled, even
     ///         when it pays the destination.
     function test_callbackRejectsAHandlerThatReturnsMoreThanItWasGiven() public {
-        OverReturningSpendHandler generous =
-            new OverReturningSpendHandler(IFactory(address(bridgeFactory)));
+        OverReturningSpendHandler generous = new OverReturningSpendHandler(IFactory(address(bridgeFactory)));
         vm.prank(bridgeAdmin);
         bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, ISpenderHandler(address(generous)));
         _mintUsd(spender, 11e6);
@@ -87,17 +78,13 @@ contract ZoneSpendReceiverTest is AccessKeys {
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneSpendReceiver.NothingSettled.selector);
-        receiver.onWithdrawalReceived(
-            ZONE_ID, address(portal), bytes32(0), address(usd), 10e6, callbackData
-        );
+        receiver.onWithdrawalReceived(ZONE_ID, address(portal), bytes32(0), address(usd), 10e6, callbackData);
     }
 
     /// @notice A portal the factory does not register as one cannot settle or take a refund.
     function test_callbackAndRefundRejectAnUnregisteredPortal() public {
         vm.mockCall(
-            ZONE_FACTORY_ADDRESS,
-            abi.encodeCall(IZoneFactory.isZonePortal, (address(portal))),
-            abi.encode(false)
+            ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.isZonePortal, (address(portal))), abi.encode(false)
         );
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneSpendReceiver.InvalidSourcePortal.selector);
@@ -114,19 +101,13 @@ contract ZoneSpendReceiverTest is AccessKeys {
     /// @notice Unused input the portal did not take back makes the callback revert.
     function test_callbackRejectsAResidualBalance() public {
         vm.mockCall(
-            address(portal),
-            abi.encodeWithSelector(IZonePortal.depositEncrypted.selector),
-            abi.encode(bytes32(0))
+            address(portal), abi.encodeWithSelector(IZonePortal.depositEncrypted.selector), abi.encode(bytes32(0))
         );
         _mintUsd(address(receiver), 15e6);
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        vm.expectRevert(
-            abi.encodeWithSelector(ZoneSpendReceiver.ResidualBalance.selector, address(usd))
-        );
-        receiver.onWithdrawalReceived(
-            ZONE_ID, address(portal), bytes32(0), address(usd), 15e6, _spendCallback(10e6)
-        );
+        vm.expectRevert(abi.encodeWithSelector(ZoneSpendReceiver.ResidualBalance.selector, address(usd)));
+        receiver.onWithdrawalReceived(ZONE_ID, address(portal), bytes32(0), address(usd), 15e6, _spendCallback(10e6));
     }
 
     function test_privateRefundEmitsPrivateRefundCredited() public {
@@ -183,9 +164,7 @@ contract ZoneSpendReceiverTest is AccessKeys {
     function test_privateRefundNeedsTheZonesPortal() public {
         ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(ZONE_ID);
         zone.portal = address(0);
-        vm.mockCall(
-            ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (ZONE_ID)), abi.encode(zone)
-        );
+        vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (ZONE_ID)), abi.encode(zone));
         vm.startPrank(programWallet);
         usd.approve(address(receiver), 5e6);
         vm.expectRevert(ZoneSpendReceiver.InvalidSourcePortal.selector);
@@ -197,14 +176,9 @@ contract ZoneSpendReceiverTest is AccessKeys {
     function test_privateRefundRejectsReentrancy() public {
         ReentrantToken token = new ReentrantToken();
         token.mint(programWallet, 5e6);
-        token.arm(
-            address(receiver),
-            abi.encodeCall(ZoneSpendReceiver.refundPrivate, (address(token), 1, _return()))
-        );
+        token.arm(address(receiver), abi.encodeCall(ZoneSpendReceiver.refundPrivate, (address(token), 1, _return())));
         vm.mockCall(
-            address(portal),
-            abi.encodeWithSelector(IZonePortal.depositEncrypted.selector),
-            abi.encode(bytes32(0))
+            address(portal), abi.encodeWithSelector(IZonePortal.depositEncrypted.selector), abi.encode(bytes32(0))
         );
         vm.startPrank(programWallet);
         token.approve(address(receiver), 5e6);
@@ -232,9 +206,7 @@ contract ZoneSpendReceiverTest is AccessKeys {
         _mintUsd(outsider, 5e6);
         vm.startPrank(outsider);
         usd.approve(address(receiver), 5e6);
-        vm.expectRevert(
-            abi.encodeWithSelector(ZoneSpendReceiver.NotProgramDestination.selector, outsider)
-        );
+        vm.expectRevert(abi.encodeWithSelector(ZoneSpendReceiver.NotProgramDestination.selector, outsider));
         receiver.refundPrivate(address(usd), 5e6, _return());
         vm.stopPrank();
     }
@@ -245,9 +217,7 @@ contract ZoneSpendReceiverTest is AccessKeys {
         bridgeFactory.updateSpenderDestination(SPENDER_ID, programWallet, false);
         vm.startPrank(programWallet);
         usd.approve(address(receiver), 5e6);
-        vm.expectRevert(
-            abi.encodeWithSelector(ZoneSpendReceiver.NotProgramDestination.selector, programWallet)
-        );
+        vm.expectRevert(abi.encodeWithSelector(ZoneSpendReceiver.NotProgramDestination.selector, programWallet));
         receiver.refundPrivate(address(usd), 5e6, _return());
         vm.stopPrank();
     }

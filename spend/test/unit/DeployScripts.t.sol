@@ -3,9 +3,7 @@ pragma solidity ^0.8.36;
 
 import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
-import {
-    SpenderFactoryErrorsAndEvents
-} from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
+import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
@@ -21,9 +19,7 @@ import { NoopSpendHandler, OlderZoneSpendReceiver } from "../harness/Mocks.sol";
 import { ZoneEnv } from "../harness/ZoneEnv.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol";
-import {
-    IEarnEngineExactWithdraw
-} from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
+import { IEarnEngineExactWithdraw } from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "tempo-earn/interfaces/engines/IEarnEngineRedeem.sol";
 import {
     IZoneFactory,
@@ -47,21 +43,16 @@ contract DeployScriptsTest is ZoneEnv {
     }
 
     function test_deployHandlerThenTurnItOnForAProgram() public {
-        _bridgeGovernorCall(
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(0), address(earnVault))
-        );
+        _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(0), address(earnVault)));
         _clearTempoSpendHandler();
         DeployTempoSpend deployScript = new DeployTempoSpend();
-        DeployTempoSpend.Output memory handler =
-            deployScript.deploy(address(bridgeFactory), DEPLOYER_PK);
+        DeployTempoSpend.Output memory handler = deployScript.deploy(address(bridgeFactory), DEPLOYER_PK);
         assertEq(address(handler.handler.FACTORY()), address(bridgeFactory));
         assertTrue(handler.firstRegistration);
         assertEq(handler.status, "Disabled");
         _submit(bridgeAdmin, handler.adminRegisterHandler);
         _submit(bridgeGovernor, handler.governanceGateHandler);
-        assertEq(
-            address(bridgeFactory.getSpenderHandler(PREFIX_TEMPO_SPEND)), address(handler.handler)
-        );
+        assertEq(address(bridgeFactory.getSpenderHandler(PREFIX_TEMPO_SPEND)), address(handler.handler));
 
         _approve(10e6);
         vm.prank(alice);
@@ -76,8 +67,7 @@ contract DeployScriptsTest is ZoneEnv {
         assertEq(program.governanceAllowVaults.length, 1);
         _submit(bridgeGovernor, program.governanceAllowVaults[0]);
 
-        bytes memory allowed =
-            _cloneGet(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("GV"), address(earnVault)));
+        bytes memory allowed = _cloneGet(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("GV"), address(earnVault)));
         assertTrue(abi.decode(allowed, (bool)), "vault allowed");
         uint256 before = usd.balanceOf(settlement);
         vm.prank(alice);
@@ -88,8 +78,7 @@ contract DeployScriptsTest is ZoneEnv {
     /// @notice Replacing a live handler writes no gate call, so an `Enabled` handler stays
     ///         enabled for every program and spends keep working without new allowlisting.
     function test_replacementKeepsTheHandlerStatus() public {
-        DeployTempoSpend.Output memory handler =
-            new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
+        DeployTempoSpend.Output memory handler = new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
         assertFalse(handler.firstRegistration);
         assertEq(handler.governanceGateHandler.length, 0, "no gate call");
         _submit(bridgeAdmin, handler.adminRegisterHandler);
@@ -124,17 +113,14 @@ contract DeployScriptsTest is ZoneEnv {
     function test_programCallsRejectUnknownProgram() public {
         ProgramCalls script = new ProgramCalls();
         vm.expectRevert(SpenderFactoryErrorsAndEvents.UnknownSpender.selector);
-        script.calls(
-            SpenderFactory(address(bridgeFactory)), keccak256("unknown.program"), new address[](0)
-        );
+        script.calls(SpenderFactory(address(bridgeFactory)), keccak256("unknown.program"), new address[](0));
     }
 
     function test_deployReceiverForAProgramAndZone() public {
         _deployZone(true);
         DeployZoneReceiver script = new DeployZoneReceiver();
-        DeployZoneReceiver.Output memory o = script.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, DEPLOYER_PK
-        );
+        DeployZoneReceiver.Output memory o =
+            script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, DEPLOYER_PK);
         assertEq(address(o.receiver.FACTORY()), address(bridgeFactory));
         assertEq(o.receiver.SPENDER_ID(), SPENDER_ID);
         assertEq(o.receiver.ZONE_ID(), ZONE_ID);
@@ -220,9 +206,7 @@ contract DeployScriptsTest is ZoneEnv {
     function test_preflightWithoutAPortalStillReportsVaults() public {
         _deployZone(false);
         ZoneInfo memory none;
-        vm.mockCall(
-            ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (uint32(99))), abi.encode(none)
-        );
+        vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (uint32(99))), abi.encode(none));
         address[] memory vaults = new address[](1);
         vaults[0] = address(earnVault);
         Preflight preflight = new Preflight();
@@ -290,9 +274,7 @@ contract DeployScriptsTest is ZoneEnv {
         Preflight preflight = new Preflight();
         vm.mockCall(
             address(StdPrecompiles.TIP403_REGISTRY),
-            abi.encodeCall(
-                ITIP403Registry.isAuthorizedSender, (usd.transferPolicyId(), programWallet)
-            ),
+            abi.encodeCall(ITIP403Registry.isAuthorizedSender, (usd.transferPolicyId(), programWallet)),
             abi.encode(false)
         );
         Preflight.Report memory r = _preflight(preflight, address(0), address(0), new address[](0));
@@ -307,8 +289,7 @@ contract DeployScriptsTest is ZoneEnv {
     function test_preflightReportsAZoneAdminThePolicyBlocks() public {
         _deployZone(false);
         Preflight preflight = new Preflight();
-        uint64 policy = StdPrecompiles.TIP403_REGISTRY
-            .createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
+        uint64 policy = StdPrecompiles.TIP403_REGISTRY.createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
         vm.mockCall(address(usd), abi.encodeCall(ITIP20.transferPolicyId, ()), abi.encode(policy));
 
         Preflight.Report memory r = _preflight(preflight, address(0), address(0), new address[](0));
@@ -334,8 +315,7 @@ contract DeployScriptsTest is ZoneEnv {
         assertTrue(r.assetRefundsAllowedByPolicy, "open asset policy");
         assertTrue(r.assetDepositsActive, "asset enabled on the portal");
 
-        uint64 policy = StdPrecompiles.TIP403_REGISTRY
-            .createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
+        uint64 policy = StdPrecompiles.TIP403_REGISTRY.createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
         vm.mockCall(address(usd), abi.encodeCall(ITIP20.transferPolicyId, ()), abi.encode(policy));
         r = _earnPreflight(preflight, address(o.receiver), vaults);
         assertFalse(r.assetRefundsAllowedByPolicy, "nobody on the asset whitelist");
@@ -375,11 +355,7 @@ contract DeployScriptsTest is ZoneEnv {
         );
         assertTrue(r.assetRefundsAllowedByPolicy, "refund recipient whitelisted");
 
-        vm.mockCall(
-            address(portal),
-            abi.encodeCall(IZonePortal.isTokenEnabled, (address(usd))),
-            abi.encode(false)
-        );
+        vm.mockCall(address(portal), abi.encodeCall(IZonePortal.isTokenEnabled, (address(usd))), abi.encode(false));
         r = _earnPreflight(preflight, address(o.receiver), vaults);
         assertFalse(r.assetDepositsActive, "asset not enabled on the portal");
     }
@@ -392,11 +368,8 @@ contract DeployScriptsTest is ZoneEnv {
         address[] memory vaults = new address[](1);
         vaults[0] = address(earnVault);
         // A whitelist with nobody on it yet.
-        uint64 policy = StdPrecompiles.TIP403_REGISTRY
-            .createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
-        vm.mockCall(
-            address(earnShare), abi.encodeCall(ITIP20.transferPolicyId, ()), abi.encode(policy)
-        );
+        uint64 policy = StdPrecompiles.TIP403_REGISTRY.createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
+        vm.mockCall(address(earnShare), abi.encodeCall(ITIP20.transferPolicyId, ()), abi.encode(policy));
 
         Preflight.Report memory r = _earnPreflight(preflight, address(0), vaults);
         assertTrue(r.tokenIsEarnShare);
@@ -472,12 +445,10 @@ contract DeployScriptsTest is ZoneEnv {
         assertFalse(r.programCanonical);
     }
 
-    function _preflight(
-        Preflight preflight,
-        address receiver,
-        address refund,
-        address[] memory vaults
-    ) internal returns (Preflight.Report memory) {
+    function _preflight(Preflight preflight, address receiver, address refund, address[] memory vaults)
+        internal
+        returns (Preflight.Report memory)
+    {
         return preflight.check(
             SpenderFactory(address(bridgeFactory)),
             SPENDER_ID,
@@ -495,12 +466,7 @@ contract DeployScriptsTest is ZoneEnv {
         _deployZone(true);
         DeployZoneReceiver script = new DeployZoneReceiver();
         vm.expectRevert(SpenderFactoryErrorsAndEvents.UnknownSpender.selector);
-        script.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)),
-            keccak256("unknown.program"),
-            ZONE_ID,
-            DEPLOYER_PK
-        );
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("unknown.program"), ZONE_ID, DEPLOYER_PK);
     }
 
     /// @notice Replacing a handler governance turned off writes no gate call, so the replacement
@@ -508,8 +474,7 @@ contract DeployScriptsTest is ZoneEnv {
     function test_replacementOfADisabledHandlerStaysOff() public {
         vm.prank(bridgeGovernor);
         bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Disabled);
-        DeployTempoSpend.Output memory o =
-            new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
+        DeployTempoSpend.Output memory o = new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
         assertFalse(o.firstRegistration);
         assertEq(o.status, "Disabled");
         assertEq(o.governanceGateHandler.length, 0, "no gate call");
@@ -519,8 +484,7 @@ contract DeployScriptsTest is ZoneEnv {
     function test_zeroedEnabledHandlerKeepsItsStatus() public {
         vm.prank(bridgeAdmin);
         bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, ISpenderHandler(address(0)));
-        DeployTempoSpend.Output memory o =
-            new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
+        DeployTempoSpend.Output memory o = new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
         assertTrue(o.firstRegistration);
         assertEq(o.status, "Enabled");
         assertEq(o.governanceGateHandler.length, 0, "no gate call");
@@ -536,8 +500,7 @@ contract DeployScriptsTest is ZoneEnv {
     ///         governance allowlists the program, which is why ProgramCalls orders them.
     function test_vaultCallRefusedBeforeTheProgramIsAllowlisted() public {
         _clearTempoSpendHandler();
-        DeployTempoSpend.Output memory handler =
-            new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
+        DeployTempoSpend.Output memory handler = new DeployTempoSpend().deploy(address(bridgeFactory), DEPLOYER_PK);
         _submit(bridgeAdmin, handler.adminRegisterHandler);
         _submit(bridgeGovernor, handler.governanceGateHandler);
         address[] memory vaults = new address[](1);
@@ -558,17 +521,13 @@ contract DeployScriptsTest is ZoneEnv {
         calls.calls(SpenderFactory(address(bridgeFactory)), aliasId, new address[](0));
         DeployZoneReceiver receiver = new DeployZoneReceiver();
         vm.expectRevert(bytes("SPENDER_ID was added to an existing clone, which TS rejects"));
-        receiver.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)), aliasId, ZONE_ID, DEPLOYER_PK
-        );
+        receiver.deploy(IBridgeSpenderFactory(address(bridgeFactory)), aliasId, ZONE_ID, DEPLOYER_PK);
     }
 
     function test_deployReceiverRejectsAZoneWithoutAPortal() public {
         _deployZone(false);
         ZoneInfo memory none;
-        vm.mockCall(
-            ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (uint32(99))), abi.encode(none)
-        );
+        vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (uint32(99))), abi.encode(none));
         DeployZoneReceiver script = new DeployZoneReceiver();
         vm.expectRevert(bytes("ZONE_ID has no portal"));
         script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, 99, DEPLOYER_PK);
@@ -612,13 +571,11 @@ contract DeployScriptsTest is ZoneEnv {
     function test_preflightReportsAHandlerThatIsNotThisFactorys() public {
         _deployZone(false);
         Preflight preflight = new Preflight();
-        address[2] memory handlers =
-            [makeAddr("no.code"), address(new SpenderTempoSpend(IFactory(makeAddr("other"))))];
+        address[2] memory handlers = [makeAddr("no.code"), address(new SpenderTempoSpend(IFactory(makeAddr("other"))))];
         for (uint256 i; i < handlers.length; ++i) {
             vm.prank(bridgeAdmin);
             bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, ISpenderHandler(handlers[i]));
-            Preflight.Report memory r =
-                _preflight(preflight, address(0), address(0), new address[](0));
+            Preflight.Report memory r = _preflight(preflight, address(0), address(0), new address[](0));
             assertFalse(r.handlerValid);
             preflight.print(r, new address[](0));
         }
@@ -629,12 +586,10 @@ contract DeployScriptsTest is ZoneEnv {
     function test_preflightReportsAHandlerOrReceiverFromAnotherBuild() public {
         _deployZone(false);
         Preflight preflight = new Preflight();
-        ISpenderHandler other =
-            ISpenderHandler(address(new NoopSpendHandler(IFactory(address(bridgeFactory)))));
+        ISpenderHandler other = ISpenderHandler(address(new NoopSpendHandler(IFactory(address(bridgeFactory)))));
         vm.prank(bridgeAdmin);
         bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, other);
-        address older =
-            address(new OlderZoneSpendReceiver(address(bridgeFactory), SPENDER_ID, ZONE_ID));
+        address older = address(new OlderZoneSpendReceiver(address(bridgeFactory), SPENDER_ID, ZONE_ID));
 
         Preflight.Report memory r = _preflight(preflight, older, address(0), new address[](0));
         assertTrue(r.handlerValid, "handler belongs to the factory");
@@ -650,8 +605,7 @@ contract DeployScriptsTest is ZoneEnv {
         _deployZone(false);
         Preflight preflight = new Preflight();
         bytes memory code = address(bridgeFactory.getSpenderHandler(PREFIX_TEMPO_SPEND)).code;
-        uint256 metadata =
-            (uint256(uint8(code[code.length - 2])) << 8) | uint256(uint8(code[code.length - 1]));
+        uint256 metadata = (uint256(uint8(code[code.length - 2])) << 8) | uint256(uint8(code[code.length - 1]));
 
         bytes memory otherMetadata = bytes.concat(code);
         otherMetadata[code.length - 3] = otherMetadata[code.length - 3] ^ 0x01;
@@ -695,9 +649,7 @@ contract DeployScriptsTest is ZoneEnv {
         new ProgramCalls().run();
         assertEq(
             vm.parseJsonBytes(vm.readFile("reports/test-run.json"), ".governanceAllowlistProgram"),
-            abi.encodeCall(
-                SpenderFactory.updateSpenderHandlerAllowlist, (PREFIX_TEMPO_SPEND, SPENDER_ID, true)
-            )
+            abi.encodeCall(SpenderFactory.updateSpenderHandlerAllowlist, (PREFIX_TEMPO_SPEND, SPENDER_ID, true))
         );
         vm.setEnv("ZONE_ID", vm.toString(uint256(ZONE_ID)));
         assertEq(new DeployZoneReceiver().run().ZONE_ID(), ZONE_ID);
@@ -730,9 +682,7 @@ contract DeployScriptsTest is ZoneEnv {
     function _mockCapability(bytes4 interfaceId, bool supported) internal {
         (, bytes memory data) = address(earnVault).staticcall(abi.encodeWithSignature("engine()"));
         vm.mockCall(
-            abi.decode(data, (address)),
-            abi.encodeCall(IERC165.supportsInterface, (interfaceId)),
-            abi.encode(supported)
+            abi.decode(data, (address)), abi.encodeCall(IERC165.supportsInterface, (interfaceId)), abi.encode(supported)
         );
     }
 

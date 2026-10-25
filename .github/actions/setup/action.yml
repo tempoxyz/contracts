@@ -46,8 +46,8 @@ runs:
       with:
         path: |
           node_modules
-          earn/app/node_modules
-          earn/deployments/node_modules
+          app/node_modules
+          deployments/node_modules
           e2e/node_modules
           localnet/node_modules
         key: node-modules-${{ inputs.workspace || 'all' }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.nvmrc', 'pnpm-lock.yaml', 'pnpm-workspace.yaml') }}
@@ -79,8 +79,8 @@ runs:
       with:
         path: |
           node_modules
-          earn/app/node_modules
-          earn/deployments/node_modules
+          app/node_modules
+          deployments/node_modules
           e2e/node_modules
           localnet/node_modules
         key: ${{ steps.modules.outputs.cache-primary-key }}

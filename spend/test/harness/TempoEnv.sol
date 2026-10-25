@@ -89,14 +89,9 @@ abstract contract TempoEnv is Test {
         usd = _createToken("Open USD", "OUSD");
     }
 
-    function _createToken(string memory name, string memory symbol)
-        internal
-        returns (ITIP20Token token)
-    {
+    function _createToken(string memory name, string memory symbol) internal returns (ITIP20Token token) {
         token = ITIP20Token(
-            tip20Factory.createToken(
-                name, symbol, "USD", ITIP20(PATH_USD), address(this), keccak256(bytes(symbol))
-            )
+            tip20Factory.createToken(name, symbol, "USD", ITIP20(PATH_USD), address(this), keccak256(bytes(symbol)))
         );
         token.grantRole(ISSUER_ROLE, address(this));
         vm.label(address(token), symbol);
@@ -105,9 +100,7 @@ abstract contract TempoEnv is Test {
     function _deployEarn() private {
         venue = new Simple4626Vault(address(usd), "Sentora OUSD", "sOUSD", 6);
         engine = new ERC4626Engine(IERC4626Vault(address(venue)), address(this), "", "");
-        EarnFactory factory = new EarnFactory(
-            address(tip20Factory), address(new EarnVault()), address(new EarnFees())
-        );
+        EarnFactory factory = new EarnFactory(address(tip20Factory), address(new EarnVault()), address(new EarnFees()));
         FeeConfig memory noFees;
         (address share, EarnVault vault,) = factory.deploy(
             EarnFactory.DeployParams({
@@ -148,9 +141,7 @@ abstract contract TempoEnv is Test {
             address(
                 new ERC1967Proxy(
                     address(impl),
-                    abi.encodeCall(
-                        SpenderFactory.initialize, (bridgeAdmin, bridgeGovernor, bridgePauser)
-                    )
+                    abi.encodeCall(SpenderFactory.initialize, (bridgeAdmin, bridgeGovernor, bridgePauser))
                 )
             )
         );
@@ -180,19 +171,14 @@ abstract contract TempoEnv is Test {
         vm.label(spender, "Bridge.SpenderClone");
 
         // Both vault-aware handlers keep their own allowlist in the clone's storage.
-        _bridgeManagerCall(
-            abi.encodePacked(PREFIX_TEWF, bytes2("UV"), uint8(1), address(earnVault))
-        );
-        _bridgeGovernorCall(
-            abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(earnVault))
-        );
+        _bridgeManagerCall(abi.encodePacked(PREFIX_TEWF, bytes2("UV"), uint8(1), address(earnVault)));
+        _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(earnVault)));
     }
 
     /// @dev Permit2 pins solc 0.8.17, so its creation code is built once with its own toolchain and
     ///      committed as a fixture (provenance in the file).
     function _deployPermit2() private returns (address deployed) {
-        bytes memory code =
-            vm.parseJsonBytes(vm.readFile("test/harness/fixtures/Permit2.json"), ".creationCode");
+        bytes memory code = vm.parseJsonBytes(vm.readFile("test/harness/fixtures/Permit2.json"), ".creationCode");
         assembly {
             deployed := create(0, add(code, 0x20), mload(code))
         }
@@ -223,8 +209,7 @@ abstract contract TempoEnv is Test {
 
     /// @dev A pending `vm.prank` applies to this call.
     function _cloneCall(bytes memory data) internal {
-        (bool ok, bytes memory err) =
-            spender.call(abi.encodeCall(IBridgeSpenderClone.publicCall, (data)));
+        (bool ok, bytes memory err) = spender.call(abi.encodeCall(IBridgeSpenderClone.publicCall, (data)));
         if (!ok) {
             assembly {
                 revert(add(err, 0x20), mload(err))

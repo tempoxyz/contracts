@@ -7,7 +7,8 @@ on:
       - 'spend/**'
       - 'earn/src/**'
       - 'scripts/solidity-deps.sh'
-      - 'localnet/fixtures/**'
+      - 'localnet/**'
+      - 'e2e/spend/**'
       - '.github/workflows/spend.yml'
   push:
     branches: [main]
@@ -15,7 +16,8 @@ on:
       - 'spend/**'
       - 'earn/src/**'
       - 'scripts/solidity-deps.sh'
-      - 'localnet/fixtures/**'
+      - 'localnet/**'
+      - 'e2e/spend/**'
       - '.github/workflows/spend.yml'
 
 permissions: {}
@@ -70,10 +72,10 @@ jobs:
         working-directory: .
         run: |
           (cd spend && python3 script/matrix.py --out reports/matrix.md)
-          diff -u spend/docs/matrix.md spend/reports/matrix.md
+          diff -u docs/spend/matrix.md spend/reports/matrix.md
 
-  # A private spend end to end on a disposable Tempo L1 and Zone, from the images
-  # localnet/fixtures/runtime-lock.json pins.
+  # A private spend end to end on a disposable Tempo L1 and Zone started by the shared localnet,
+  # from the images localnet/fixtures/runtime-lock.json pins.
   zone-e2e:
     name: Zone E2E
     runs-on: ubuntu-latest
@@ -84,9 +86,6 @@ jobs:
     env:
       # Runners are discarded after the job, so the testcontainers reaper is unneeded.
       TESTCONTAINERS_RYUK_DISABLED: 'true'
-    defaults:
-      run:
-        working-directory: spend
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -96,37 +95,22 @@ jobs:
           persist-credentials: false
 
       - name: Install spend's Solidity dependencies
-        working-directory: .
         run: scripts/solidity-deps.sh spend
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v1.8.6
 
-      - uses: tempoxyz/gh-actions/vendor/pnpm/action-setup@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: ./.github/actions/setup
         with:
-          version: 11.1.0
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: spend/e2e/zone/pnpm-lock.yaml
+          workspace: e2e
 
       - name: Build contracts
+        working-directory: spend
         run: forge build
 
-      - name: Install
-        working-directory: spend/e2e/zone
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck
-        working-directory: spend/e2e/zone
-        run: pnpm typecheck
-
       - name: Run
-        working-directory: spend/e2e/zone
-        run: pnpm zone
+        run: pnpm e2e:spend
 
   # Public pulls and Bridge's access key on a disposable Tempo dev node.
   smoke:

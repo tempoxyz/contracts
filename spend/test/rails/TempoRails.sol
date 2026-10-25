@@ -9,10 +9,7 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { ZoneSpendReceiver } from "../../src/ZoneSpendReceiver.sol";
-import {
-    IBridgeSpenderClone,
-    IBridgeSpenderFactory
-} from "../../src/interfaces/IBridgeSpenderFactory.sol";
+import { IBridgeSpenderClone, IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { IZoneOutbox } from "../../src/interfaces/IZoneOutbox.sol";
 
 import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.sol";
@@ -93,34 +90,25 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
         _authorizeBridgeKey(user, tokens, limits, scopes);
     }
 
-    function _railPull(address user, uint256 amount, bytes32 actionId)
-        internal
-        override
-        returns (PullOutcome)
-    {
+    function _railPull(address user, uint256 amount, bytes32 actionId) internal override returns (PullOutcome) {
         bool earn = _funding() == Funding.Earn;
         uint256 maxShares = earn ? _quoteShares(amount) : 0;
         Spend memory spend = _spend(amount, actionId, earn ? amount : 0, maxShares);
         return _executeSpend(user, spend, earn ? 0 : amount, maxShares);
     }
 
-    function _executeSpend(
-        address user,
-        Spend memory spend,
-        uint256 stableApproval,
-        uint256 shareApproval
-    ) internal returns (PullOutcome) {
+    function _executeSpend(address user, Spend memory spend, uint256 stableApproval, uint256 shareApproval)
+        internal
+        returns (PullOutcome)
+    {
         bytes memory call_ = abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(spend)));
         TxCall[] memory calls = new TxCall[](5);
         uint256 n;
         if (stableApproval != 0) {
-            calls[n++] =
-                TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (spender, stableApproval)));
+            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (spender, stableApproval)));
         }
         if (shareApproval != 0) {
-            calls[n++] = TxCall(
-                address(earnShare), 0, abi.encodeCall(ITIP20.approve, (spender, shareApproval))
-            );
+            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (spender, shareApproval)));
         }
         calls[n++] = TxCall(spender, 0, call_);
         if (stableApproval != 0) {
@@ -211,9 +199,7 @@ abstract contract TempoPrivateRail is TempoRailBase {
 
     function _railSetUp() internal override {
         _deployZone(_closedLoop());
-        receiver = new ZoneSpendReceiver(
-            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID
-        );
+        receiver = new ZoneSpendReceiver(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID);
         vm.label(address(receiver), "ZoneSpendReceiver");
         _zoneRegisterGateway(address(receiver));
         _zoneAllowAccount(programRefundRecipient);
@@ -239,19 +225,14 @@ abstract contract TempoPrivateRail is TempoRailBase {
         address[] memory tokens = new address[](1);
         uint256[] memory limits = new uint256[](1);
         tokens[0] = zoneToken;
-        limits[0] =
-            _funding() == Funding.Earn ? earnVault.previewWithdraw(CARD_BUDGET) : CARD_BUDGET;
+        limits[0] = _funding() == Funding.Earn ? earnVault.previewWithdraw(CARD_BUDGET) : CARD_BUDGET;
         IAccountKeychain.CallScope[] memory scopes = new IAccountKeychain.CallScope[](2);
         scopes[0] = _scope(zoneToken, ITIP20.approve.selector, address(zoneOutbox));
         scopes[1] = _scope(address(zoneOutbox), IZoneOutbox.requestWithdrawal.selector, address(0));
         _authorizeBridgeKey(user, tokens, limits, scopes);
     }
 
-    function _railPull(address user, uint256 amount, bytes32 actionId)
-        internal
-        override
-        returns (PullOutcome)
-    {
+    function _railPull(address user, uint256 amount, bytes32 actionId) internal override returns (PullOutcome) {
         uint256 change = _returnChange();
         bool earn = _funding() == Funding.Earn;
         uint256 maxShares = earn ? _quoteShares(amount) : 0;
@@ -261,12 +242,10 @@ abstract contract TempoPrivateRail is TempoRailBase {
         return _requestPrivateSpend(user, _inputToken(), input, callbackData);
     }
 
-    function _requestPrivateSpend(
-        address user,
-        address inputToken,
-        uint256 input,
-        bytes memory callbackData
-    ) internal returns (PullOutcome) {
+    function _requestPrivateSpend(address user, address inputToken, uint256 input, bytes memory callbackData)
+        internal
+        returns (PullOutcome)
+    {
         TxCall[] memory calls = _outboxCalls(user, inputToken, input, callbackData);
         (bool accepted, bytes memory reason) = _execAsAccessKeyWithError(user, calls);
         lastPullError = reason;
@@ -282,22 +261,16 @@ abstract contract TempoPrivateRail is TempoRailBase {
         return _tempoDeclineError(reason);
     }
 
-    function _railZoneKeyWithdrawTo(address user, address outsider, uint256 amount)
-        internal
-        override
-        returns (bool)
-    {
+    function _railZoneKeyWithdrawTo(address user, address outsider, uint256 amount) internal override returns (bool) {
         address token = _inputToken();
         address zoneToken = address(_zoneTokenOf(token));
         TxCall[] memory calls = new TxCall[](2);
-        calls[0] =
-            TxCall(zoneToken, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), amount)));
+        calls[0] = TxCall(zoneToken, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), amount)));
         calls[1] = TxCall(
             address(zoneOutbox),
             0,
             abi.encodeCall(
-                IZoneOutbox.requestWithdrawal,
-                (token, outsider, uint128(amount), bytes32(0), 0, user, "", "")
+                IZoneOutbox.requestWithdrawal, (token, outsider, uint128(amount), bytes32(0), 0, user, "", "")
             )
         );
         if (!_execAsAccessKey(user, calls)) return false;
@@ -305,32 +278,21 @@ abstract contract TempoPrivateRail is TempoRailBase {
         return true;
     }
 
-    function _outboxCalls(
-        address user,
-        address inputToken,
-        uint256 input,
-        bytes memory callbackData
-    ) internal view returns (TxCall[] memory calls) {
+    function _outboxCalls(address user, address inputToken, uint256 input, bytes memory callbackData)
+        internal
+        view
+        returns (TxCall[] memory calls)
+    {
         address zoneToken = address(_zoneTokenOf(inputToken));
         uint256 total = input + zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS);
         calls = new TxCall[](2);
-        calls[0] =
-            TxCall(zoneToken, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), total)));
+        calls[0] = TxCall(zoneToken, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), total)));
         calls[1] = TxCall(
             address(zoneOutbox),
             0,
             abi.encodeCall(
                 IZoneOutbox.requestWithdrawal,
-                (
-                    inputToken,
-                    address(receiver),
-                    uint128(input),
-                    bytes32(0),
-                    CALLBACK_GAS,
-                    user,
-                    callbackData,
-                    ""
-                )
+                (inputToken, address(receiver), uint128(input), bytes32(0), CALLBACK_GAS, user, callbackData, "")
             )
         );
     }
@@ -364,8 +326,7 @@ abstract contract TempoPrivateRail is TempoRailBase {
     }
 
     function _railValue(address user) internal view override returns (uint256) {
-        return
-            _zoneBalance(address(usd), user) + _shareValue(_zoneBalance(address(earnShare), user));
+        return _zoneBalance(address(usd), user) + _shareValue(_zoneBalance(address(earnShare), user));
     }
 
     function _railShares(address user) internal view override returns (uint256) {

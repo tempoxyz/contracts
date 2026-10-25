@@ -1,8 +1,8 @@
 # Solidity implementation
 
-For economic changes, read the relevant [system](../docs/architecture/system.md),
-[fee](../docs/architecture/fees.md), and [flow](../docs/architecture/flows.md) sections alongside
-[security assumptions](../docs/architecture/security-and-privacy.md). Those documents are the
+For economic changes, read the relevant [system](../../docs/earn/architecture/system.md),
+[fee](../../docs/earn/architecture/fees.md), and [flow](../../docs/earn/architecture/flows.md) sections alongside
+[security assumptions](../../docs/earn/architecture/security-and-privacy.md). Those documents are the
 accounting specification for contracts, tests, and integrations; this file is not a second one.
 
 - Establish authorization, custody changes, supply changes, rounding, and rollback for every
@@ -23,6 +23,6 @@ accounting specification for contracts, tests, and integrations; this file is no
   entitlements, settlement replay protection, and unpaid entitlement after failed transfers.
 - `demo/` is test scaffolding; label experimental integrations honestly.
 
-Domain references: the [engine contract](../docs/integrations/engines.md) and each capability's
-[module page](../docs/README.md#capability-modules). Read the
+Domain references: the [engine contract](../../docs/earn/integrations/engines.md) and each capability's
+[module page](../../docs/earn/README.md#capability-modules). Read the
 [test guide](../test/AGENTS.md) when changing tests.

@@ -35,8 +35,7 @@ import { IBridgeSpenderClone } from "../src/interfaces/IBridgeSpenderFactory.sol
 ///
 ///      forge script script/LocalSmoke.s.sol --rpc-url http://127.0.0.1:18545 --broadcast --slow
 contract LocalSmoke is Script {
-    string internal constant MNEMONIC =
-        "test test test test test test test test test test test junk";
+    string internal constant MNEMONIC = "test test test test test test test test test test test junk";
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
     bytes32 internal constant SPENDER_ID = keccak256("smoke.card-program");
 
@@ -75,12 +74,7 @@ contract LocalSmoke is Script {
         usd = ITIP20Token(
             ITIP20Factory(StdPrecompiles.TIP20_FACTORY_ADDRESS)
                 .createToken(
-                    "Smoke USD",
-                    "sUSD",
-                    "USD",
-                    ITIP20(PATH_USD),
-                    deployer,
-                    keccak256(abi.encode(block.timestamp))
+                    "Smoke USD", "sUSD", "USD", ITIP20(PATH_USD), deployer, keccak256(abi.encode(block.timestamp))
                 )
         );
         usd.grantRole(keccak256("ISSUER_ROLE"), deployer);
@@ -89,18 +83,15 @@ contract LocalSmoke is Script {
 
         Simple4626Vault venue = new Simple4626Vault(address(usd), "Smoke Venue", "sVEN", 6);
         ERC4626Engine engine = new ERC4626Engine(IERC4626Vault(address(venue)), deployer, "", "");
-        EarnFactory earnFactory = new EarnFactory(
-            StdPrecompiles.TIP20_FACTORY_ADDRESS, address(new EarnVault()), address(new EarnFees())
-        );
+        EarnFactory earnFactory =
+            new EarnFactory(StdPrecompiles.TIP20_FACTORY_ADDRESS, address(new EarnVault()), address(new EarnFees()));
         FeeConfig memory noFees;
         (address share, EarnVault vault,) = earnFactory.deploy(
             EarnFactory.DeployParams({
                 deploymentId: keccak256(abi.encode("smoke", block.timestamp)),
                 engine: address(engine),
                 owner: deployer,
-                controls: EarnVaultControls(
-                    deployer, deployer, 0, EngineMigrationMode.OperatorEnabled
-                ),
+                controls: EarnVaultControls(deployer, deployer, 0, EngineMigrationMode.OperatorEnabled),
                 distributorConfig: DistributorConfig(address(0), 0),
                 fees: noFees,
                 transferPolicyId: 0
@@ -129,9 +120,7 @@ contract LocalSmoke is Script {
         destinations[0] = settlement;
         clone = factory.createSpender(SPENDER_ID, destinations);
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
-        factory.governorCall(
-            SPENDER_ID, abi.encodePacked(bytes2("TS"), bytes2("UV"), uint8(1), address(earnVault))
-        );
+        factory.governorCall(SPENDER_ID, abi.encodePacked(bytes2("TS"), bytes2("UV"), uint8(1), address(earnVault)));
         vm.stopBroadcast();
         console.log("deployed factory", address(factory), "clone", clone);
     }
@@ -160,9 +149,7 @@ contract LocalSmoke is Script {
         usd.approve(clone, 100e6);
         vm.broadcast(debitorPk);
         factory.transferToDestination(
-            SPENDER_ID,
-            settlement,
-            abi.encodePacked(bytes2("EA"), alice, address(usd), uint256(10e6))
+            SPENDER_ID, settlement, abi.encodePacked(bytes2("EA"), alice, address(usd), uint256(10e6))
         );
     }
 
@@ -204,8 +191,7 @@ contract LocalSmoke is Script {
         vm.startBroadcast(alicePk);
         if (stableApproval != 0) usd.approve(clone, stableApproval);
         earnShare.approve(clone, shareApproval);
-        IBridgeSpenderClone(clone)
-            .publicCall(abi.encodePacked(bytes2("TS"), bytes2("PS"), abi.encode(s)));
+        IBridgeSpenderClone(clone).publicCall(abi.encodePacked(bytes2("TS"), bytes2("PS"), abi.encode(s)));
         if (stableApproval != 0) usd.approve(clone, 0);
         earnShare.approve(clone, 0);
         vm.stopBroadcast();

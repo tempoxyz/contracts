@@ -73,10 +73,7 @@ abstract contract CardProgram is SpendRail {
     // Card lifecycle
     // ------------------------------------------------------------------
 
-    function _authorize(address cardholder, uint256 amount, uint16 mcc)
-        internal
-        returns (uint256 id, bool approved)
-    {
+    function _authorize(address cardholder, uint256 amount, uint16 mcc) internal returns (uint256 id, bool approved) {
         return _authorizeWithFee(cardholder, amount, mcc, 0);
     }
 
@@ -163,10 +160,7 @@ abstract contract CardProgram is SpendRail {
     }
 
     /// @notice A capture with no prior authorization (offline or force post).
-    function _forceCapture(address cardholder, uint256 amount, uint16 mcc)
-        internal
-        returns (uint256 id)
-    {
+    function _forceCapture(address cardholder, uint256 amount, uint16 mcc) internal returns (uint256 id) {
         id = ++authCount;
         Authorization storage a = auths[id];
         a.cardholder = cardholder;
@@ -248,10 +242,8 @@ abstract contract CardProgram is SpendRail {
 
     function _holdFor(uint256 amount, uint16 mcc) internal pure returns (uint256) {
         if (mcc == MCC_FUEL_PUMP && amount <= FUEL_PREAUTH_THRESHOLD) return FUEL_PREAUTH_HOLD;
-        if (
-            mcc == MCC_RESTAURANT || mcc == MCC_BAR || mcc == MCC_FAST_FOOD || mcc == MCC_TAXI
-                || mcc == MCC_CAR_RENTAL
-        ) {
+        if (mcc == MCC_RESTAURANT || mcc == MCC_BAR || mcc == MCC_FAST_FOOD || mcc == MCC_TAXI || mcc == MCC_CAR_RENTAL)
+        {
             return amount + amount * TIP_BUFFER_BPS / 10_000;
         }
         return amount;

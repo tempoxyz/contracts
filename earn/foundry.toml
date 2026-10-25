@@ -7,7 +7,7 @@ libs = ["lib"]
 fs_permissions = [
     { access = "read", path = "./test/fixtures/propamm" },
     { access = "read-write", path = "./.earn" },
-    { access = "read-write", path = "./profiles" },
+    { access = "read-write", path = "../profiles" },
     { access = "read-write", path = "../e2e/.local" },
     { access = "read-write", path = "../localnet/.local" },
 ]
@@ -65,7 +65,7 @@ lint_on_build = false
 #   instead of trusting venue return values.
 # - incorrect-strict-equality: exactness checks against balances read in the same transaction.
 # - calls-loop: batch loops call trusted engines and venues; a receiver hook can still spend most
-#   of a batch's gas (see the failure modes in docs/architecture/security-and-privacy.md).
+#   of a batch's gas (see the failure modes in docs/earn/architecture/security-and-privacy.md).
 # - missing-zero-check, missing-events-access-control, missing-events-arithmetic: zero checked in a
 #   helper or deliberately disabling an optional role; events already emitted or demo-only; accrual
 #   checkpoints are derived accounting state.

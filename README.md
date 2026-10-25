@@ -28,14 +28,17 @@ its own build settings, dependencies, documentation, and audits.
 
 ## Repository layout
 
-| Path                       | Purpose                                                                        |
-| -------------------------- | ------------------------------------------------------------------------------ |
-| `earn/`                    | Tempo Earn: contracts, tests, deployment tooling, profiles, app, and docs.     |
-| `spend/`                   | Tempo Spend: Bridge spender handler, Zone receiver, card harness, and docs.    |
-| `localnet/`                | Disposable local Tempo L1 and Zone lifecycle, shared by the projects' tests.   |
-| `e2e/`                     | Shared local and hosted integration harness and cases.                         |
-| `scripts/solidity-deps.sh` | Installs each project's Solidity dependencies at its `foundry.lock` revisions. |
-| `docs/`                    | Repository-wide development, checks, and CI.                                   |
+| Path                       | Purpose                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| `earn/`                    | Tempo Earn Foundry project: contracts, tests, and Forge scripts.                            |
+| `spend/`                   | Tempo Spend Foundry project: Bridge spender handler, Zone receiver, and card harness.       |
+| `deployments/`             | Shared deployment lifecycle (`pnpm earn`), ABIs, and per-project modules (`modules/earn/`). |
+| `profiles/`                | Deployment profiles and generated records.                                                  |
+| `app/`                     | The web app and Cloudflare Worker.                                                          |
+| `e2e/`                     | Shared local and hosted integration harness and cases, including Spend's Zone run.          |
+| `localnet/`                | Disposable local Tempo L1 and Zone, shared by every E2E run.                                |
+| `docs/`                    | `development/`, `deployment/`, `earn/`, and `spend/` documentation.                         |
+| `scripts/solidity-deps.sh` | Installs each Foundry project's Solidity dependencies at its `foundry.lock` revisions.      |
 
 ## Get started
 
@@ -48,7 +51,7 @@ pnpm verify
 ```
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers per-area commands and pull requests, and
-[development](docs/development.md) owns the toolchain, checks, and CI.
+[development](docs/development/README.md) owns the toolchain, checks, and CI.
 
 ## Security
 

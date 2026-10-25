@@ -1,6 +1,6 @@
 # CI and repository automation
 
-[Development](../docs/development.md#continuous-integration) owns the required checks and the
+[Development](../docs/development/README.md#continuous-integration) owns the required checks and the
 workflow trust model, including preview deployment.
 
 - Untrusted PR code never receives deployment or administrative secrets. Privileged `workflow_run`

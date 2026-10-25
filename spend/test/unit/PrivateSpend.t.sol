@@ -89,9 +89,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         vm.expectEmit(true, true, true, true, address(receiver));
         emit ZoneSpendReceiver.PrivateSpendSettled(senderTag, spend.ref, address(usd), 40e6, change);
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        receiver.onWithdrawalReceived(
-            ZONE_ID, address(portal), senderTag, address(usd), uint128(40e6 + change), data
-        );
+        receiver.onWithdrawalReceived(ZONE_ID, address(portal), senderTag, address(usd), uint128(40e6 + change), data);
         _assertNoApprovals(address(usd));
     }
 
@@ -104,9 +102,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         Spend memory spend = _spend(10e6, settlement);
         spend.token = address(_createToken("Deel USD", "DLUSD"));
         _assertBouncesWith(
-            10e6 + _change(),
-            _callbackAsIs(spend),
-            abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector)
+            10e6 + _change(), _callbackAsIs(spend), abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector)
         );
     }
 
@@ -140,8 +136,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         _zoneSettle();
         assertFalse(lastCallbackResults[0], "callback rejected");
         assertEq(usd.balanceOf(attacker), 0);
-        uint256 fees =
-            zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateBouncebackFee();
+        uint256 fees = zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateBouncebackFee();
         assertLe(zoneBefore - _zoneBalance(address(usd), mallory), fees, "input bounced back");
     }
 
@@ -158,8 +153,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
 
         assertFalse(lastCallbackResults[0], "callback rejected");
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
-        uint256 fees =
-            zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateBouncebackFee();
+        uint256 fees = zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateBouncebackFee();
         assertLe(zoneBefore - _zoneBalance(address(usd), alice), fees, "input bounced back");
     }
 
@@ -189,9 +183,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
 
     /// @dev The request is accepted and its callback reverts with `err`: nothing is paid, nothing is
     ///      reported settled, and the input returns to the Zone, losing only the withdrawal fee.
-    function _assertBouncesWith(uint256 input, bytes memory callbackData, bytes memory err)
-        internal
-    {
+    function _assertBouncesWith(uint256 input, bytes memory callbackData, bytes memory err) internal {
         uint256 before = usd.balanceOf(settlement);
         uint256 zoneBefore = _zoneBalance(address(usd), alice);
         assertTrue(_request(alice, input, callbackData), "Zone accepted the request");
@@ -228,18 +220,14 @@ contract PrivateSpendTest is PrivateSpendFixture {
         address thief = makeAddr("thief");
         uint256 input = 40e6 + _change();
         assertTrue(_request(alice, input, _callback(_spend(40e6, settlement))));
-        ISpenderHandler diverting = ISpenderHandler(
-            address(new DivertingSpendHandler(IFactory(address(bridgeFactory)), thief))
-        );
+        ISpenderHandler diverting =
+            ISpenderHandler(address(new DivertingSpendHandler(IFactory(address(bridgeFactory)), thief)));
         vm.prank(bridgeAdmin);
         bridgeFactory.setSpenderHandler("TS", diverting);
         uint256 before = usd.balanceOf(settlement);
         _zoneSettle();
         assertFalse(lastCallbackResults[0], "callback rejected");
-        assertEq(
-            lastCallbackErrors[0],
-            abi.encodeWithSelector(ZoneSpendReceiver.DestinationNotPaid.selector)
-        );
+        assertEq(lastCallbackErrors[0], abi.encodeWithSelector(ZoneSpendReceiver.DestinationNotPaid.selector));
         assertEq(usd.balanceOf(thief), 0, "nothing diverted");
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertFalse(_lastSettlementLogged(ZoneSpendReceiver.PrivateSpendSettled.selector));
@@ -256,10 +244,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         uint256 before = usd.balanceOf(settlement);
         _zoneSettle();
         assertFalse(lastCallbackResults[0], "callback rejected");
-        assertEq(
-            lastCallbackErrors[0],
-            abi.encodeWithSelector(ZoneSpendReceiver.DepositFeeTooHigh.selector, fee)
-        );
+        assertEq(lastCallbackErrors[0], abi.encodeWithSelector(ZoneSpendReceiver.DepositFeeTooHigh.selector, fee));
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
     }
 }

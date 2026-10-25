@@ -33,9 +33,7 @@ abstract contract PrivateSpendFixture is AccessKeys {
     function _setUpPrivateSpend(bool closedLoop) internal {
         _deployTempo();
         _deployZone(closedLoop);
-        receiver = new ZoneSpendReceiver(
-            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID
-        );
+        receiver = new ZoneSpendReceiver(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID);
         _zoneRegisterGateway(address(receiver));
 
         vm.fee(BASE_FEE);
@@ -88,11 +86,7 @@ abstract contract PrivateSpendFixture is AccessKeys {
     }
 
     /// @notice A spend of `amount` paid entirely from the Earn vault, burning at most `maxShares`.
-    function _earnSpend(uint256 amount, address destination, uint256 maxShares)
-        internal
-        view
-        returns (Spend memory s)
-    {
+    function _earnSpend(uint256 amount, address destination, uint256 maxShares) internal view returns (Spend memory s) {
         s = _spend(amount, destination);
         s.vault = address(earnVault);
         s.fromVault = amount;
@@ -129,25 +123,17 @@ abstract contract PrivateSpendFixture is AccessKeys {
     ///         Earn vault, are all cleared.
     function _assertNoApprovals(address token) internal view {
         assertEq(ITIP20(token).allowance(address(receiver), spender), 0, "receiver -> clone");
-        assertEq(
-            ITIP20(token).allowance(address(receiver), address(portal)), 0, "receiver -> portal"
-        );
+        assertEq(ITIP20(token).allowance(address(receiver), address(portal)), 0, "receiver -> portal");
         assertEq(earnShare.allowance(spender, address(earnVault)), 0, "clone -> vault");
     }
 
     /// @dev Bridge's Zone key requests the spend for `user` from the outbox.
-    function _request(address user, uint256 input, bytes memory callbackData)
-        internal
-        returns (bool)
-    {
+    function _request(address user, uint256 input, bytes memory callbackData) internal returns (bool) {
         return _request(user, address(usd), input, callbackData);
     }
 
     /// @dev As `_request`, withdrawing `token` from the Zone.
-    function _request(address user, address token, uint256 input, bytes memory callbackData)
-        internal
-        returns (bool)
-    {
+    function _request(address user, address token, uint256 input, bytes memory callbackData) internal returns (bool) {
         if (keychain.getKey(user, bridgeKey).keyId == address(0)) _authorizeZoneKey(user);
         return _execAsAccessKey(user, _calls(user, token, input, callbackData));
     }
@@ -170,23 +156,13 @@ abstract contract PrivateSpendFixture is AccessKeys {
         address zoneToken = address(_zoneTokenOf(token));
         uint256 total = input + zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS);
         calls = new TxCall[](2);
-        calls[0] =
-            TxCall(zoneToken, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), total)));
+        calls[0] = TxCall(zoneToken, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), total)));
         calls[1] = TxCall(
             address(zoneOutbox),
             0,
             abi.encodeCall(
                 IZoneOutbox.requestWithdrawal,
-                (
-                    token,
-                    address(receiver),
-                    uint128(input),
-                    bytes32(0),
-                    CALLBACK_GAS,
-                    user,
-                    callbackData,
-                    ""
-                )
+                (token, address(receiver), uint128(input), bytes32(0), CALLBACK_GAS, user, callbackData, "")
             )
         );
     }

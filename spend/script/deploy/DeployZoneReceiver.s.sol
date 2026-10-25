@@ -35,10 +35,7 @@ contract DeployZoneReceiver is Script {
             ProgramChecks.zoneId(vm.envUint("ZONE_ID")),
             vm.envOr("DEPLOYER_PK", uint256(0))
         );
-        if (
-            vm.isContext(VmSafe.ForgeContext.ScriptBroadcast)
-                || vm.isContext(VmSafe.ForgeContext.ScriptResume)
-        ) {
+        if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
             write(o, vm.envString("OUT"));
         } else {
             console.log("dry run: OUT is written only with --broadcast");
@@ -47,12 +44,10 @@ contract DeployZoneReceiver is Script {
     }
 
     /// @param deployerPk The deployer's key, or zero to sign with forge's `--account` or `--ledger`.
-    function deploy(
-        IBridgeSpenderFactory factory,
-        bytes32 spenderId,
-        uint32 zoneId,
-        uint256 deployerPk
-    ) public returns (Output memory o) {
+    function deploy(IBridgeSpenderFactory factory, bytes32 spenderId, uint32 zoneId, uint256 deployerPk)
+        public
+        returns (Output memory o)
+    {
         o.clone = factory.getSpenderAddress(spenderId);
         require(
             ProgramChecks.isCanonical(address(factory), spenderId, o.clone),
@@ -60,8 +55,7 @@ contract DeployZoneReceiver is Script {
         );
         ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(zoneId);
         require(
-            zone.portal != address(0)
-                && IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal),
+            zone.portal != address(0) && IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal),
             "ZONE_ID has no portal"
         );
         if (deployerPk == 0) vm.startBroadcast();

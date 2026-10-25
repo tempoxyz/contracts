@@ -124,11 +124,7 @@ contract OverQuotingEarnVault is ITempoEarnVault {
         revert("deposit unsupported");
     }
 
-    function withdrawExact(uint256 assets, address receiver, uint256)
-        external
-        override
-        returns (uint256 burned)
-    {
+    function withdrawExact(uint256 assets, address receiver, uint256) external override returns (uint256 burned) {
         uint256 needed = VAULT.previewWithdraw(assets);
         IERC20 share = IERC20(VAULT.earnShare());
         share.transferFrom(msg.sender, address(this), needed);

@@ -7,4 +7,3 @@
 .env.*
 !.env.example
 /foundry-pp/
-/e2e/zone/node_modules/

@@ -19,19 +19,19 @@ Keep the report confidential until we have confirmed a fix and agreed on disclos
 In scope:
 
 - the contracts in [`src/`](earn/src/), except `src/demo/`; and
-- the deployment tooling: [`deployments/`](earn/deployments/), [`script/`](earn/script/), and the
-  [profile lifecycle](earn/docs/operations/deployment.md) they implement.
+- the deployment tooling: [`deployments/`](deployments/), [`script/`](earn/script/), and the
+  [profile lifecycle](docs/deployment/deployment.md) they implement.
 
 Out of scope:
 
-- the demo application in [`app/`](earn/app/);
+- the demo application in [`app/`](app/);
 - `src/demo/` and test fixtures, including `test/`, `localnet/`, and committed fixture artifacts,
   which are not production code;
 - third-party venues and their contracts, such as ERC-4626 vaults, Veda, and PropAMM. Report issues
   in them to their owners. An Earn bug in how an engine or the router integrates with them is in
   scope.
 
-The [security and privacy model](earn/docs/architecture/security-and-privacy.md) documents the trust
+The [security and privacy model](docs/earn/architecture/security-and-privacy.md) documents the trust
 assumptions, privileged roles, and privacy boundary; behavior it documents as trusted or visible is
 not a vulnerability by itself.
 
@@ -42,4 +42,4 @@ Tempo Earn has no bug bounty.
 ## Audits
 
 Completed audits, their scope, and the contracts changed or added since are listed on the
-[audits page](earn/docs/audit/README.md).
+[audits page](docs/earn/audit/README.md).
