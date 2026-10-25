@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Installs a Foundry project's Solidity dependencies into <project>/lib/ at the revisions its
 # foundry.lock pins. Each project (earn/, spend/) pins its own; they are not Git submodules.
+# A project that compiles with solar (earn/) pins its revision in <project>/solar.lock; this builds
+# that revision once into .solar/<rev>/ with cargo, where the project's solar-solc wrapper finds it.
 # Runs on bash 3.2 (macOS's /bin/bash), so it uses no associative arrays.
 # Usage: scripts/solidity-deps.sh <project>...   (idempotent; a checkout at its pin is kept)
 set -euo pipefail
@@ -33,4 +35,12 @@ for project in "$@"; do
       git -C "$dir" checkout -q FETCH_HEAD
       echo "$dir at $rev"
     done
+  if [[ -f "$project/solar.lock" ]]; then
+    rev=$(tr -d '[:space:]' < "$project/solar.lock")
+    if [[ ! -x ".solar/$rev/bin/solar" ]]; then
+      cargo install --quiet --locked --git https://github.com/paradigmxyz/solar --rev "$rev" \
+        --root "$PWD/.solar/$rev" solar-compiler
+      echo "solar at $rev"
+    fi
+  fi
 done

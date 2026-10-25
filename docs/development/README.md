@@ -7,8 +7,14 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
 
 ## Toolchain
 
-- **Solidity** `0.8.36` with `via_ir` and the optimizer at 200 runs, built with **Foundry v1.8.6**.
-  CI installs that version through `.github/actions/setup` and the PropAMM fixture job, and the
+- **Solidity** `0.8.36`, compiled by [solar](https://github.com/paradigmxyz/solar) at the revision
+  [`earn/solar.lock`](../../earn/solar.lock) pins, with **Foundry v1.8.6**. Forge calls solar through
+  [`earn/solar-solc`](../../earn/solar-solc), which presents it as solc `0.8.36`; solar's code
+  removes most of solc's stack shuffling, internal jumps and address masking, so the same work costs
+  less gas and executes faster. `pnpm deps` builds that revision once with cargo (Rust stable) into
+  the ignored `.solar/`. Forge resolves the wrapper from its working directory: run it from `earn/`,
+  or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. Spend still compiles with solc.
+  CI installs that Foundry version through `.github/actions/setup` and the PropAMM fixture job, and the
   deployment tooling refuses an older Forge (`deployments/chain/foundry.ts`). A record's
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version
   deployments target, so tests and the gas snapshot run on the deployed EVM version.
@@ -94,25 +100,25 @@ transition must still preserve the asserted invariants.
 
 ### Contract size
 
-`EarnVault` is the only contract near a deployable limit. Under `FOUNDRY_PROFILE=deploy` its runtime
-is 24,204 B, a 372 B margin under the EIP-170 limit of 24,576 B, and its initcode is 24,243 B, a
-24,909 B margin under the EIP-3860 limit of 49,152 B. The next-largest runtime, `VedaEngine`, leaves
-an 8,549 B margin, and every other initcode margin is at least 28,861 B.
+`EarnVault` is the largest contract. Under `FOUNDRY_PROFILE=deploy` its runtime is 15,491 B, a 9,085 B
+margin under the EIP-170 limit of 24,576 B, and its initcode is 15,522 B, a 33,630 B margin under the
+EIP-3860 limit of 49,152 B. Every other runtime margin is at least 11,313 B (`EarnFees`).
 
 `FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol` fails only when `EarnVault`
 exceeds either hard limit; no check enforces a margin or sizes the other contracts. After changing
 `src/`, run `FOUNDRY_PROFILE=deploy forge build --sizes src` and read both margin columns. A change
 that would cross a limit moves its logic out of `EarnVault` into `EarnFees`, the engine, or
 periphery, as the [permanent core decision](../earn/decisions.md#permanent-core-versus-optional-offchain-composition)
-assigns it. Compiler settings and remappings stay fixed: they feed every contract's bytecode and
-metadata hash, which the reviewed factory releases pin.
+assigns it. The compiler, its settings and remappings feed every contract's bytecode and metadata
+hash, which the reviewed factory releases pin: changing any of them, including bumping
+`solar.lock`, needs a fresh [shared factory release](../deployment/deployment.md#shared-factory-releases).
 
 ### Gas baseline
 
 [`.gas-snapshot`](../../earn/.gas-snapshot) records only the `test/gas/` benchmarks: fee checkpointing on
 deposit, redeem, and contribution, and the Veda engine and full-stack paths, including
 queued-request forwarding. `pnpm gas:snapshot` checks it. After a material contract change, run
-`forge build --force` and `pnpm gas:update` with the [toolchain](#toolchain) Foundry version. Values
+`forge build --force` and `pnpm gas:update` with the [toolchain](#toolchain) Foundry and solar versions. Values
 are whole test-case gas before EIP-3529 refunds: compare the same row across revisions, not against
 production receipts.
 

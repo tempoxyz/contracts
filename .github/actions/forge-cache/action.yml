@@ -20,4 +20,4 @@ runs:
           earn/out
           earn/cache
         # Localnet compiles no tests, so test-only changes keep its cache.
-        key: forge-${{ inputs.scope }}-${{ runner.os }}-${{ steps.forge.outputs.version }}-${{ hashFiles('earn/foundry.toml', 'earn/foundry.lock', 'earn/src/**/*.sol', 'earn/script/**/*.sol') }}-${{ inputs.scope != 'localnet' && hashFiles('earn/test/**/*.sol') || 'no-tests' }}
+        key: forge-${{ inputs.scope }}-${{ runner.os }}-${{ steps.forge.outputs.version }}-${{ hashFiles('earn/foundry.toml', 'earn/foundry.lock', 'earn/solar.lock', 'earn/solar-solc', 'earn/src/**/*.sol', 'earn/script/**/*.sol') }}-${{ inputs.scope != 'localnet' && hashFiles('earn/test/**/*.sol') || 'no-tests' }}

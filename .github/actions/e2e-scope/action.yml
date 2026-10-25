@@ -43,6 +43,8 @@ runs:
             '.nvmrc',
             'earn/foundry.lock',
             'earn/foundry.toml',
+            'earn/solar-solc',
+            'earn/solar.lock',
             'package.json',
             'pnpm-lock.yaml',
             'pnpm-workspace.yaml',

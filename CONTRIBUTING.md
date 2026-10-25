@@ -13,7 +13,7 @@ Node.js 22, and pnpm 11. Local end-to-end runs also need Docker.
 git clone https://github.com/tempoxyz/earn
 cd earn
 pnpm install
-pnpm deps   # each project's Solidity dependencies, at its foundry.lock revisions
+pnpm deps   # each project's Solidity dependencies at its foundry.lock revisions, and Earn's solar
 ```
 
 The clone needs no private access: Solidity dependencies are public repositories, and contract tests
