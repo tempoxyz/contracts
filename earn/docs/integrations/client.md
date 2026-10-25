@@ -10,7 +10,7 @@ survive engine changes, so they are the integration surface. See
 for terms.
 
 Examples use viem's `viem/tempo` Earn actions, call builders, and ABIs. They are written against
-the viem build pinned in [`pnpm-workspace.yaml`](../../pnpm-workspace.yaml); the actions, parameters,
+the viem build pinned in [`pnpm-workspace.yaml`](../../../pnpm-workspace.yaml); the actions, parameters,
 and return shapes used here are the same in released viem 2.55.10 and later, except where noted.
 
 ## Read the deployment

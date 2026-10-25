@@ -70,7 +70,7 @@ async claim, which could otherwise never be paid. Each change is simulated, sent
 
 ## Tests
 
-E2E cases in [`e2e/modules/access`](../../e2e/modules/access/module.ts) (group `access`) run only on
+E2E cases in [`e2e/modules/access`](../../../e2e/modules/access/module.ts) (group `access`) run only on
 protected stacks: `access-admin-guards`, `access-receiver-policy`,
 `access-ineligible-contributor-does-not-earn`, `access-transfer-policy`, and
 `access-removed-holder`. With a Zone, `zone-ineligible-private-transfer-blocked` and

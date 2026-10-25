@@ -19,7 +19,7 @@ manifest. Local E2E consumes the typed localnet state directly.
 
 ## Cases and selection
 
-Each capability is one module folder, [`e2e/modules/<group>/`](../../e2e/modules/), whose folder
+Each capability is one module folder, [`e2e/modules/<group>/`](../../../e2e/modules/), whose folder
 name is its cases' group (`access`, `controls`, `fees`, `public`, `rewards`, `veda`, `zone`). Its
 `module.ts` exports `cases` and may export `launchFeatures` (the launch features it owns),
 `benchmark` (its part in the [latency benchmark](benchmarks.md)), `validate` (read-only checks of
@@ -39,8 +39,8 @@ pnpm e2e:local -- --list       # every case ID, group, and description
 pnpm e2e:local -- --case public-withdraw-exact-third-party
 pnpm e2e:local -- --variant veda --all
 pnpm e2e:local -- --variant all --launch
-pnpm e2e:profile profiles/<profile-id>/profile.json --group zone
-pnpm e2e:profile profiles/<profile-id>/profile.json --launch
+pnpm e2e:profile earn/profiles/<profile-id>/profile.json --group zone
+pnpm e2e:profile earn/profiles/<profile-id>/profile.json --launch
 ```
 
 A run takes at most one selector:
@@ -134,7 +134,7 @@ fixture funder. A stack without one, such as a customer profile, cannot fund it:
 
 Hosted commands load the profile's ignored `.env.<profile-id>` as
 [deployment commands](deployment.md#commands) do; values in the process environment take
-precedence. Start from the root [`.env.example`](../../.env.example), which documents the
+precedence. Start from Earn's [`.env.example`](../../.env.example), which documents the
 credential surface, and replace its public fixture identities before hosted use. The L1 RPC
 defaults to the hosted network's public RPC unless `TEMPO_RPC_URL` is set.
 
@@ -188,7 +188,7 @@ deployed a fixture on that L1, such as a key derived per workflow run; the deplo
 the stack's TIP-403 whitelist. `--eligible-account` is the one account the caller drives: it joins
 that whitelist and receives the revenue share, and when the Portal enforces access it must already
 hold the `Account` role. A relative `--out` resolves from the directory the command starts in. The
-checkout needs what a local run needs ([development](../development.md)).
+checkout needs what a local run needs ([development](../../../docs/development.md)).
 
 After deploying, it writes one file per value to `--out`, each holding the bare value without a
 trailing newline:

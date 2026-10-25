@@ -17,11 +17,11 @@ outside audit scope.
 One profile JSON drives every command, and `deploy` is the only one an operator must run:
 
 ```sh
-cp .env.example .env.app-moderato
-pnpm earn plan profiles/app-moderato/profile.json
-pnpm earn deploy profiles/app-moderato/profile.json
-pnpm earn status profiles/app-moderato/profile.json
-pnpm earn verify profiles/app-moderato/profile.json
+cp earn/.env.example earn/.env.app-moderato
+pnpm earn plan earn/profiles/app-moderato/profile.json
+pnpm earn deploy earn/profiles/app-moderato/profile.json
+pnpm earn status earn/profiles/app-moderato/profile.json
+pnpm earn verify earn/profiles/app-moderato/profile.json
 ```
 
 | Command   | What it does                                                                                                                                                             | Flags                                                                                    |
@@ -33,8 +33,8 @@ pnpm earn verify profiles/app-moderato/profile.json
 | `deposit` | Quotes, and with `--broadcast` submits, a user deposit into the deployed stack.                                                                                          | see below                                                                                |
 | `access`  | Reads or changes one member of a protected profile's TIP-403 whitelist ([access](../modules/access.md#deployment-and-operations)).                                       | `--earn-file <profile.json> <status\|add\|remove> <address>`                             |
 
-Every command loads only the ignored `.env.<profile-id>` at the root of the repository that owns the
-profile ([profiles in another repository](../../profiles/README.md#profiles-in-another-repository));
+Every command loads only the ignored `.env.<profile-id>` beside the `profiles/` directory that holds
+the profile (`earn/` for Earn's own; [profiles in another repository](../../profiles/README.md#profiles-in-another-repository));
 values already in the process environment take precedence. A command fails, naming that file, when
 neither supplies a value it needs:
 
@@ -52,10 +52,10 @@ The deposit helper quotes through the engine's own module for any engine kind:
 
 ```sh
 # Read-only quote plus deployment and wiring checks
-pnpm earn deposit profiles/app-moderato/profile.json --assets 1
+pnpm earn deposit earn/profiles/app-moderato/profile.json --assets 1
 
 # Submit the atomic approval + deposit transaction
-pnpm earn deposit profiles/app-moderato/profile.json --assets 1 --broadcast
+pnpm earn deposit earn/profiles/app-moderato/profile.json --assets 1 --broadcast
 ```
 
 `--assets` is a decimal amount of the vault asset. The helper signs with `DEPLOYER_PRIVATE_KEY`;
@@ -101,7 +101,7 @@ finish an unpublished deployment before moving to a newer Earn checkout.
 
 Deployment subprocesses use the repository's `deploy` Foundry profile, which compiles for Cancun
 like Tempo's deployment runtime and writes separate artifacts. A hosted broadcast requires the
-[toolchain](../development.md#toolchain) Foundry version on `PATH`, checked when reconciliation
+[toolchain](../../../docs/development.md#toolchain) Foundry version on `PATH`, checked when reconciliation
 first reaches a broadcast. Foundry output files are not proof of deployment, because simulation
 can write them before broadcast: completion and crash recovery accept an output only after the
 expected code and immutable bindings are observed onchain. `EarnFactory.deploy` is permissionless
@@ -180,8 +180,8 @@ verification belongs to the factory release, not to each profile.
 profile against its live chain, run on demand, with no signer:
 
 ```sh
-pnpm earn verify profiles/<profile-id>/profile.json
-pnpm e2e:profile profiles/<profile-id>/profile.json --validate-only
+pnpm earn verify earn/profiles/<profile-id>/profile.json
+pnpm e2e:profile earn/profiles/<profile-id>/profile.json --validate-only
 ```
 
 `verify` checks the record's target, addresses, provenance, and recorded source verification, and

@@ -7,7 +7,7 @@ each term in one line and links its owning page.
 
 ## Reading paths
 
-- **With an agent:** [Tempo Earn skill](../SKILL.md) → [agent guide](integrations/agent-guide.md) →
+- **With an agent:** [Tempo Earn skill](../../SKILL.md) → [agent guide](integrations/agent-guide.md) →
   the reference it selects.
 - **Review architecture and security:** [system](architecture/system.md) →
   [fees](architecture/fees.md) → [flows](architecture/flows.md) →
@@ -21,14 +21,14 @@ each term in one line and links its owning page.
 - **Deploy and operate:** [deployment](operations/deployment.md) →
   [profiles](../profiles/README.md) → the enabled [capability modules](#capability-modules) →
   [hosted environments](operations/hosted-environments.md) → [E2E environments](operations/e2e-environments.md).
-- **Contribute:** [contributing](../CONTRIBUTING.md) → [development](development.md).
+- **Contribute:** [contributing](../../CONTRIBUTING.md) → [development](../../docs/development.md).
 
 ## Capability modules
 
 Each capability is a module: its lifecycle steps, inspection, and reads live under
 [`deployments/modules/`](../deployments/modules/) (an engine kind is one `defineEngine` file in
-`deployments/modules/engines/`), its E2E cases under [`e2e/modules/`](../e2e/modules/) (an engine
-kind's under [`e2e/engines/`](../e2e/engines/)), and one page
+`deployments/modules/engines/`), its E2E cases under [`e2e/modules/`](../../e2e/modules/) (an engine
+kind's under [`e2e/engines/`](../../e2e/engines/)), and one page
 here owns its contracts, flows, trust boundaries, deployment steps, operations, and design
 decisions. The architecture pages describe only the core and link here, so a change to one
 capability updates one page. The shared engine contract and the recipe for a new engine kind are in
@@ -55,7 +55,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 | One engine kind's contracts, valuation, exits, deployment, and operations       | [ERC-4626](modules/erc4626-engine.md), [Veda](modules/veda.md), [PropAMM](modules/propamm.md) |
 | Capability contracts, flows, operations, and rationale                          | [Capability modules](#capability-modules)                                                     |
 | Completed Sigma Prime audit reports, finding status, and post-audit coverage    | [Audits](audit/README.md)                                                                     |
-| Vulnerability reporting and security scope                                      | [Security policy](../SECURITY.md)                                                             |
+| Vulnerability reporting and security scope                                      | [Security policy](../../SECURITY.md)                                                          |
 | Agent entry-point selection, access checks, and integration troubleshooting     | [Agent guide](integrations/agent-guide.md)                                                    |
 | Client integration, approvals, simulation, and revert handling                  | [Client integration](integrations/client.md)                                                  |
 | Shared deployment lifecycle, records, verification, handoffs, factory releases  | [Deployment](operations/deployment.md)                                                        |
@@ -66,16 +66,16 @@ capability updates one page. The shared engine contract and the recipe for a new
 | E2E cases, selection, profile acceptance, credentials, and existing devnets     | [E2E environments](operations/e2e-environments.md)                                            |
 | User-perceived latency benchmarks and Zone withdrawal exit latency              | [Benchmarks](operations/benchmarks.md)                                                        |
 | Browser catalog and app profile projection                                      | [App deployment](operations/app-deployment.md)                                                |
-| Contribution setup, per-area commands, and pull request conventions             | [Contributing](../CONTRIBUTING.md)                                                            |
-| Toolchain, required checks, contract size, gas, coverage, CI, dependency policy | [Development](development.md)                                                                 |
+| Contribution setup, per-area commands, and pull request conventions             | [Contributing](../../CONTRIBUTING.md)                                                         |
+| Toolchain, required checks, contract size, gas, coverage, CI, dependency policy | [Development](../../docs/development.md)                                                      |
 | Browser wallets, sessions, transactions, private settlement, and UI             | [App browser](development/app-browser.md)                                                     |
 | Worker routes, limits, configuration, secrets, build, and Cloudflare tooling    | [App Worker](development/app-runtime.md)                                                      |
-| Localnet consumer API, layer, lifecycle, and image and fixture constraints      | [Localnet](development/localnet.md)                                                           |
-| Agent instruction structure and maintenance                                     | [Guide maintenance](../AGENTS.md#guide-maintenance)                                           |
-| Integrator onboarding for agents                                                | [Tempo Earn skill](../SKILL.md)                                                               |
+| Localnet consumer API, layer, lifecycle, and image and fixture constraints      | [Localnet](../../docs/development/localnet.md)                                                |
+| Agent instruction structure and maintenance                                     | [Guide maintenance](../../AGENTS.md#guide-maintenance)                                        |
+| Integrator onboarding for agents                                                | [Tempo Earn skill](../../SKILL.md)                                                            |
 | One-line term definitions                                                       | [Glossary](glossary.md)                                                                       |
 | Settled rationale for the core stack                                            | [Design decisions](decisions.md)                                                              |
-| Bridge card spend: `TS` handler, Zone receiver, card harness, Bridge deployment | [Tempo Spend](../spend/README.md)                                                             |
+| Bridge card spend: `TS` handler, Zone receiver, card harness, Bridge deployment | [Tempo Spend](../../spend/README.md)                                                          |
 
 ## Documentation rules
 

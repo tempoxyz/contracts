@@ -135,7 +135,7 @@ price-anchor discontinuity, and repeated tiny round trips.
 
 The `propamm` local variant runs every shared E2E case its capabilities allow over the pinned pool,
 a disposable 6-decimal base token, an always-fresh oracle, and a recipient registry
-([localnet PropAMM fixtures](../development/localnet.md#propamm-fixtures)). Its engine
+([localnet PropAMM fixtures](../../../docs/development/localnet.md#propamm-fixtures)). Its engine
 (`maxOracleAge` one day, route identifier `1`) belongs to a separate setup owner, so every local
 PropAMM stack exercises the `bind-core` handoff and resumes unchanged. The always-fresh oracle does
 not exercise stale-rate economics, which stay in Foundry. Unit tests cover interrupted-broadcast
@@ -169,7 +169,7 @@ test/fixtures/propamm/update.sh --check [../propAMM]  # fail on any difference, 
 The `PropAMM fixture` job in the Verify workflow runs the `--check` form for same-repository pull
 requests and `main`. A fork pull request that leaves `test/fixtures/propamm/` unchanged skips the
 rebuild; one that changes it fails until a maintainer re-verifies it from a branch in this
-repository ([CI](../development.md#continuous-integration)).
+repository ([CI](../../../docs/development.md#continuous-integration)).
 
 ## Review scope
 

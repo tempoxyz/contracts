@@ -64,7 +64,7 @@ verified, and resumed by the shared lifecycle; app code only projects its comple
 catalog and never deploys contracts or keeps its own deployment state:
 
 ```bash
-pnpm earn deploy profiles/app-moderato/profile.json
+pnpm earn deploy earn/profiles/app-moderato/profile.json
 pnpm --filter app deployment:catalog
 ```
 
@@ -93,4 +93,4 @@ The catalog ships inside the Worker bundle, so it changes only when the Worker i
 
 Both deploy jobs smoke-test `/` and `/health` and parse the live `/api/config` with the browser's
 own loader (`app/deployments/check-live-config.ts`), so a catalog the app cannot render fails the
-deploy. Credentials and the remaining CI jobs are in [development](../development.md).
+deploy. Credentials and the remaining CI jobs are in [development](../../../docs/development.md).

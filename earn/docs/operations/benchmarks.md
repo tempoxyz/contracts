@@ -13,10 +13,10 @@ shows a summary table on the run page.
 ## User-perceived latency
 
 ```bash
-pnpm e2e:benchmark -- --earn-file profiles/<profile-id>/profile.json --group public --samples 10
+pnpm e2e:benchmark -- --earn-file earn/profiles/<profile-id>/profile.json --group public --samples 10
 
 export TEMPO_API_KEY=...   # Zone access for the profile's Zone; private and all only
-pnpm e2e:benchmark -- --earn-file profiles/<profile-id>/profile.json --group all --samples 10
+pnpm e2e:benchmark -- --earn-file earn/profiles/<profile-id>/profile.json --group all --samples 10
 ```
 
 | `--group`       | Measurements                                                       |

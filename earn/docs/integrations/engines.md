@@ -116,29 +116,29 @@ the ABI module. Every other workspace reads the new kind from those registration
 
 New files:
 
-| File                                              | Contents                                                                                                                                         |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/engines/<kind>/<Name>Engine.sol`             | The engine and any periphery contracts                                                                                                           |
-| `test/engines/<kind>/*.t.sol`                     | Foundry tests ([test guide](../../test/AGENTS.md))                                                                                               |
-| `deployments/modules/engines/<kind>.ts`           | One `defineEngine` ([fields](#definition-fields))                                                                                                |
-| `localnet/src/engines/<kind>.ts`                  | Its `LocalEngine` ([fields](#localnet-and-e2e))                                                                                                  |
-| `localnet/foundry/script/DeployLocal<Kind>.s.sol` | Contract `DeployLocal<Kind>Script is FixtureScript`, one `broadcast` function per fixture; local fixture contracts go in `localnet/foundry/src/` |
-| `e2e/engines/<kind>/engine.ts`                    | `export const engine: E2eEngine` ([fields](#localnet-and-e2e))                                                                                   |
-| `docs/modules/<kind>.md`                          | The kind's one owning page                                                                                                                       |
+| File                                      | Contents                                                                                                                                 |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/engines/<kind>/<Name>Engine.sol`     | The engine and any periphery contracts                                                                                                   |
+| `test/engines/<kind>/*.t.sol`             | Foundry tests ([test guide](../../test/AGENTS.md))                                                                                       |
+| `deployments/modules/engines/<kind>.ts`   | One `defineEngine` ([fields](#definition-fields))                                                                                        |
+| `localnet/src/engines/<kind>.ts`          | Its `LocalEngine` ([fields](#localnet-and-e2e))                                                                                          |
+| `localnet/script/DeployLocal<Kind>.s.sol` | Contract `DeployLocal<Kind>Script is FixtureScript`, one `broadcast` function per fixture; local fixture contracts go in `localnet/src/` |
+| `e2e/engines/<kind>/engine.ts`            | `export const engine: E2eEngine` ([fields](#localnet-and-e2e))                                                                           |
+| `docs/modules/<kind>.md`                  | The kind's one owning page                                                                                                               |
 
 Registrations:
 
 | File                                                                                 | Change                                                                                                                       |
 | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | [`deployments/modules/engines/index.ts`](../../deployments/modules/engines/index.ts) | Import the definition and add it to `registry`                                                                               |
-| [`localnet/src/engines/index.ts`](../../localnet/src/engines/index.ts)               | Import the `LocalEngine` and add it to `localEngines`, typed `Record<EngineKind, LocalEngine>`, so type checking requires it |
-| [`.github/workflows/local-zone.yml`](../../.github/workflows/local-zone.yml)         | Add `<kind>` to `matrix.variant`; `e2e/harness/modules.test.ts` requires the list to equal `engineKinds`                     |
+| [`localnet/src/engines/index.ts`](../../../localnet/src/engines/index.ts)            | Import the `LocalEngine` and add it to `localEngines`, typed `Record<EngineKind, LocalEngine>`, so type checking requires it |
+| [`.github/workflows/local-zone.yml`](../../../.github/workflows/local-zone.yml)      | Add `<kind>` to `matrix.variant`; `e2e/harness/modules.test.ts` requires the list to equal `engineKinds`                     |
 | This page                                                                            | Add a row to the [engine table](#yield-engines)                                                                              |
-| [`deployments/abis/generated.ts`](../../deployments/abis/generated.ts)               | Regenerate: `forge build src script test localnet/foundry`, then `pnpm --filter @tempoxyz/earn abis`                         |
+| [`deployments/abis/generated.ts`](../../deployments/abis/generated.ts)               | Regenerate: `forge build src script test localnet`, then `pnpm --filter @tempoxyz/earn abis`                                 |
 
 [ABI generation](../../deployments/abis/generate.ts) exports every deployable contract under `src/`
 as `<name>Abi` (`PropAMMEngine` becomes `propAMMEngineAbi`) and every `script/deploy/` and
-`localnet/foundry/script/` script's state-changing entry points as `<name>ScriptAbi`, so a new
+`localnet/script/` script's state-changing entry points as `<name>ScriptAbi`, so a new
 contract needs no entry there. Add a venue built in another repository to
 [`deployments/abis/external.ts`](../../deployments/abis/external.ts). Export an engine's helpers from
 [`deployments/index.ts`](../../deployments/index.ts) only when its localnet or E2E module imports

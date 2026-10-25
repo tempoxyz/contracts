@@ -196,6 +196,6 @@ guaranteed Zone settlement after the Portal accepts a deposit.
   the engine suites.
 - E2E: `public-deposit-existing-venue-shares` (group `public`), `controls-operator-authority`
   (group `controls`, including rolled-back invalid migrations), and in group `zone`
-  [`migration-existing-vault-shares-to-zone`](../../e2e/modules/zone/migration.ts) and the local-only
+  [`migration-existing-vault-shares-to-zone`](../../../e2e/modules/zone/migration.ts) and the local-only
   `migration-morpho-fee-wrapper-to-private-earn`, which runs the wrapped-position composition against
   localnet's Morpho fee-wrapper fixture over the ERC-4626 venue.

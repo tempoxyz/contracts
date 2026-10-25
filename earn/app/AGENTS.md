@@ -2,7 +2,7 @@
 
 Rules shared by the React browser, Hono Worker, app catalog, and build configuration. Read the child
 guide before editing [browser](src/AGENTS.md) or [Worker](worker/AGENTS.md) code; for `local/`,
-also read the [localnet guide](../localnet/AGENTS.md).
+also read the [localnet guide](../../localnet/AGENTS.md).
 
 - Signing stays with the browser-owned account. Do not introduce server-side signing, custody,
   hardcoded private keys, databases, or arbitrary RPC proxying.

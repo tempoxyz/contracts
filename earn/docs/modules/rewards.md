@@ -207,7 +207,7 @@ root-version and settlement replay protection, recipient deferral and recovery, 
 post-deadline treasury return.
 
 Foundry tests in [`test/rewards/`](../../test/rewards/) cover both contracts and the factory. In E2E,
-[`rewards-controller`](../../e2e/modules/rewards/module.ts) (group `rewards`) runs on any stack
+[`rewards-controller`](../../../e2e/modules/rewards/module.ts) (group `rewards`) runs on any stack
 with a contribution controller, `fees-waterfall` shows contributed growth following the configured
 fee waterfall, and `access-ineligible-contributor-does-not-earn` shows an ineligible contributor
 receives no position.

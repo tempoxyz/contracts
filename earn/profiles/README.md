@@ -188,8 +188,8 @@ run acceptance with the same profile path. A production profile skips the bootst
 ```bash
 pnpm e2e:fixture --profile <profile-id> --network moderato             # plan only
 pnpm e2e:fixture --profile <profile-id> --network moderato --broadcast
-pnpm earn deploy profiles/<profile-id>/profile.json
-pnpm e2e:profile profiles/<profile-id>/profile.json
+pnpm earn deploy earn/profiles/<profile-id>/profile.json
+pnpm e2e:profile earn/profiles/<profile-id>/profile.json
 ```
 
 Profile E2E derives its target and cases from the profile and its record, and rejects a record

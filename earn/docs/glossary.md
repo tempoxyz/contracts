@@ -36,7 +36,7 @@ One line per term; each links to the page that owns it.
   ([hosted environments](operations/hosted-environments.md#current-availability)).
 - **Localnet vs devnet:** localnet is a disposable L1 and Zone this repository starts in Docker;
   a devnet is an existing non-hosted L1 and Zone run elsewhere that the tooling deploys onto
-  ([localnet](development/localnet.md), [devnet chains](operations/e2e-environments.md#existing-devnet-chains)).
+  ([localnet](../../docs/development/localnet.md), [devnet chains](operations/e2e-environments.md#existing-devnet-chains)).
 - **TIP-20:** Tempo's native token standard, which EarnShare and the base assets implement
   ([Tempo docs](https://docs.tempo.xyz/protocol/tip20/overview)).
 - **TIP-403:** Tempo's transfer-policy registry; a protected EarnShare attaches one whitelist policy,

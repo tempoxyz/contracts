@@ -309,12 +309,12 @@ administrator or pool owner key.
   (`SingleZoneEarnRouterCustody.t.sol`), the same-asset mode (`SingleZoneEarnRouterSameAsset.t.sol`),
   and callback ABI fuzzing (`SingleZoneEarnRouterAbiFuzz.t.sol`, repeated over brutalized memory on
   pull requests that change `src/`).
-- E2E, in [`e2e/modules/zone`](../../e2e/modules/zone/module.ts) (group `zone`, cases requiring the
+- E2E, in [`e2e/modules/zone`](../../../e2e/modules/zone/module.ts) (group `zone`, cases requiring the
   `privateRouting` capability): `zone-lifecycle-swapped`, `zone-third-party-recipient`,
   `zone-swap-slippage-bounces`, the protected-policy cases `zone-ineligible-private-transfer-blocked`
   and `zone-ineligible-private-deposit-bounces`, and the migration cases in
   [existing vault migration](migration.md). Every local stack runs a conversion router over the
-  DirectPropAMM fixture ([localnet PropAMM fixtures](../development/localnet.md#propamm-fixtures));
+  DirectPropAMM fixture ([localnet PropAMM fixtures](../../../docs/development/localnet.md#propamm-fixtures));
   localnet's optional same-asset route deploys a second, pool-less router for consumers.
 - Unit tests: Zone discovery and the `--skip-zone` and RPC-selection rules
   ([`outputs.test.ts`](../../deployments/modules/zone-router/outputs.test.ts)), and the pool-owner,

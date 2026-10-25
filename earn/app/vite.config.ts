@@ -6,7 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import regen from 'regen-ui/vite'
 import { defineConfig } from 'vitest/config'
-import baseConfig from '../vite.config.js'
+import baseConfig from '../../vite.config.js'
 
 const isTest = Boolean(process.env.VITEST)
 const usesCloudflareTestPool = process.env.CLOUDFLARE_TEST_POOL === 'true'

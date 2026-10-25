@@ -90,4 +90,4 @@ Zone RPC and shows no history.
 - Manual deployments use `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; never commit either
   value. Which CI jobs receive the organization-scoped `DEV_CLOUDFLARE_*` secrets, and how preview
   deploys a trusted Worker with PR static assets, is in
-  [continuous integration](../development.md#continuous-integration).
+  [continuous integration](../../../docs/development.md#continuous-integration).

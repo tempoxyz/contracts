@@ -327,7 +327,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
   invariant suite. Rate mutation, periphery rotation, deficit funding, and external-solver recovery
   are covered only here.
 - E2E: the `veda` local variant (`pnpm e2e:local -- --variant veda`) runs every shared case that the
-  engine's capabilities allow, and [`veda-async-redeem`](../../e2e/modules/veda/module.ts) (group
+  engine's capabilities allow, and [`veda-async-redeem`](../../../e2e/modules/veda/module.ts) (group
   `veda`, requires `asyncRedeem`) proves a below-floor rejection, cancellation, and a tracked
   solve-and-finalize through the forwarder.
 - Unit: [`veda-inspection.test.ts`](../../deployments/modules/engines/veda-inspection.test.ts).
@@ -336,7 +336,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
 
 No supported Veda release is deployed for Earn, because Veda's contracts are licensed for evaluation
 only. Tempo-owned stacks therefore run over Veda-compatible fixtures
-([`LocalVeda.sol`](../../localnet/foundry/src/LocalVeda.sol)); they prove nothing about release
+([`LocalVeda.sol`](../../localnet/src/LocalVeda.sol)); they prove nothing about release
 compatibility and never stand in for a production venue. The fixture BoringVault doubles as a
 RolesAuthority that allows every call, the test deployer owns the BoringVault (and so controls the
 ownerless registry), the `VedaEngine`, the `VedaForwardingSolver`, and every fixture, and a hosted

@@ -255,7 +255,7 @@ reveal the private recipient from that correlation alone, but it does not hide t
   capability.
 - `EarnVault` within the EIP-170 runtime and EIP-3860 initcode limits under
   `FOUNDRY_PROFILE=deploy`; its runtime margin is only a few hundred bytes, and CI enforces no
-  margin ([contract size](../development.md#contract-size)).
+  margin ([contract size](../../../docs/development.md#contract-size)).
 - Tested migration rollback, async cancellation, loss recovery, and fee disablement.
 - For a Zone-connected stack, the [Zone go-live checklist](../modules/zone-router.md#go-live-checklist).
 - Verified EarnShare directly uses the intended simple TIP-403 whitelist and every required
