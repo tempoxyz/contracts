@@ -72,6 +72,10 @@ jobs:
 
       - name: Fuzz router callback ABI with brutalized memory
         if: steps.sources.outputs.changed == 'true'
+        env:
+          # --brutalize compiles from a temporary copy, where foundry.toml's relative path to Earn's
+          # compiler does not resolve.
+          FOUNDRY_SOLC: ${{ github.workspace }}/earn/solar-solc
         run: forge test --brutalize --match-contract SingleZoneEarnRouterAbiFuzzTest --fuzz-runs 4096 -vv
 
   # Rebuilds the committed DirectPropAMM fixture from its pinned private source. Forks cannot read
