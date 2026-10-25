@@ -269,7 +269,10 @@ leaves to the tokens and the Portal:
   it (`PayoutNotDeliverable`);
 - the return token is enabled on the Portal with deposits active, and its policy lets the Zone
   administrator, who receives the deposit fee, receive it (`ReturnNotDeliverable`);
-- for EarnShare input, the EarnVault's exits are open and `previewWithdraw(amount)` succeeds; and
+- for EarnShare input, the engine supports exact withdrawals, `previewWithdraw(amount)` succeeds,
+  and the shares it quotes are not the whole EarnShare supply while backing remains, which
+  `withdrawExact` rejects (`ResidualBacking`). A venue can still be short of liquidity when the
+  callback runs, which no view can rule out; and
 - for a converting spend, the pool is unpaused, admits the router, is at par within its oracle age,
   and holds at least `amount` of the payout token.
 
