@@ -3,8 +3,8 @@
 Card spend on Tempo from balances cardholders keep in their own accounts: public or private (in a
 Zone), in stablecoin or in Tempo Earn shares, built on Bridge's existing card contracts.
 
-This is a separate Foundry project inside the Tempo Earn repository. It has its own build settings
-and dependencies, and its tests import Earn's contracts from the repository's [`src/`](../src/)
+This is a separate Foundry project beside [Earn](../earn/README.md). It has its own build settings
+and dependencies, and its tests import Earn's contracts from [`src/`](../earn/src/)
 rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)).
 
 ## What is here
@@ -61,8 +61,9 @@ Three behaviors are decisions, not defects, and the matrix lists them so they st
 
 ```bash
 git clone https://github.com/tempoxyz/earn.git
-cd earn/spend
-script/deps.sh    # Solidity dependencies at the revisions foundry.lock pins
+cd earn
+scripts/solidity-deps.sh spend   # Solidity dependencies at the revisions spend/foundry.lock pins
+cd spend
 forge test
 ```
 

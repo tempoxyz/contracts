@@ -6,6 +6,8 @@ import { zoneFactoryAddress, zoneMessengerAddress } from '@tempoxyz/earn/tempo/z
 
 export const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 export const directory = resolve(root, 'localnet/.local')
+/** Earn's Foundry project, where every fixture and lifecycle Forge step runs. */
+export const earnRoot = resolve(root, 'earn')
 
 export type RuntimeLock = {
   version: 1

@@ -16,7 +16,7 @@ design is in [`design.md`](design.md) and Bridge's side in [`bridge-integration.
 
 Bridge's contracts and the Zone contracts are vendored at the commits in
 [`vendor/VENDORED.md`](../vendor/VENDORED.md), unchanged except for import paths. Tempo Earn is the
-code in this repository's [`src/`](../../src/), audited separately:
+code in [`earn/src/`](../../earn/src/), audited separately:
 - **Bridge's spender contracts:** `SpenderFactory`, `SpenderDelegator`, `SpenderBase` and the EA,
   P2 and TF handlers, plus the EV handler from Bridge's unmerged PR #14.
 - **Tempo Earn:** `EarnVault` and its engines.

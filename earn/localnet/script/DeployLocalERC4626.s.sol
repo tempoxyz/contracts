@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { ISeedFunder, SeededSimple4626Vault } from "../../../src/demo/SeededSimple4626Vault.sol";
-import { Simple4626Vault } from "../../../src/demo/Simple4626Vault.sol";
+import { ISeedFunder, SeededSimple4626Vault } from "../../src/demo/SeededSimple4626Vault.sol";
+import { Simple4626Vault } from "../../src/demo/Simple4626Vault.sol";
 import { FixtureScript } from "./FixtureScript.sol";
 import { ILocalMorphoVault, LocalMorphoFeeWrapper } from "../src/LocalMorphoFeeWrapper.sol";
 

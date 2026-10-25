@@ -8,8 +8,8 @@ fs_permissions = [
     { access = "read", path = "./test/fixtures/propamm" },
     { access = "read-write", path = "./.earn" },
     { access = "read-write", path = "./profiles" },
-    { access = "read-write", path = "./e2e/.local" },
-    { access = "read-write", path = "./localnet/.local" },
+    { access = "read-write", path = "../e2e/.local" },
+    { access = "read-write", path = "../localnet/.local" },
 ]
 solc_version = "0.8.36"
 optimizer = true

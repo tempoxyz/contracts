@@ -17,7 +17,7 @@ runs:
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
-          out
-          cache
+          earn/out
+          earn/cache
         # Localnet compiles no tests, so test-only changes keep its cache.
-        key: forge-${{ inputs.scope }}-${{ runner.os }}-${{ steps.forge.outputs.version }}-${{ hashFiles('foundry.toml', 'foundry.lock', 'src/**/*.sol', 'script/**/*.sol', 'localnet/foundry/**/*.sol') }}-${{ inputs.scope != 'localnet' && hashFiles('test/**/*.sol') || 'no-tests' }}
+        key: forge-${{ inputs.scope }}-${{ runner.os }}-${{ steps.forge.outputs.version }}-${{ hashFiles('earn/foundry.toml', 'earn/foundry.lock', 'earn/src/**/*.sol', 'earn/script/**/*.sol', 'earn/localnet/**/*.sol') }}-${{ inputs.scope != 'localnet' && hashFiles('earn/test/**/*.sol') || 'no-tests' }}

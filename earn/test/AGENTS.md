@@ -1,7 +1,7 @@
 # Contract tests
 
 Tests share the Solidity [implementation rules](../src/AGENTS.md) and their specifications; the
-[test map](../docs/development.md#test-map) locates existing coverage.
+[test map](../../docs/development.md#test-map) locates existing coverage.
 
 - Assert observable custody, supply, authority, rounding, and rollback properties, not merely a
   mocked return value. Exercise the production boundary with adversarial venues where relevant.

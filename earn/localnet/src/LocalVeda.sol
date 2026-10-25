@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { IERC20Like } from "../../../src/interfaces/external/IERC20Like.sol";
-import { IBoringSolver } from "../../../src/interfaces/external/veda/IBoringSolver.sol";
-import { OnChainWithdraw } from "../../../src/interfaces/external/veda/VedaTypes.sol";
+import { IERC20Like } from "../../src/interfaces/external/IERC20Like.sol";
+import { IBoringSolver } from "../../src/interfaces/external/veda/IBoringSolver.sol";
+import { OnChainWithdraw } from "../../src/interfaces/external/veda/VedaTypes.sol";
 
 /// @notice Disposable Veda-compatible contracts for transaction-level local integration tests.
 /// @dev These fixtures reproduce the external surfaces and money movement consumed by `VedaEngine`;

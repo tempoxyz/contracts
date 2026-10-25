@@ -192,7 +192,7 @@ export function resolveHostedPrivateKeys(
 ) {
   const source =
     identities === 'public-fixture'
-      ? parseEnv(readFileSync(new URL('../../.env.example', import.meta.url), 'utf8'))
+      ? parseEnv(readFileSync(new URL('../../earn/.env.example', import.meta.url), 'utf8'))
       : values
   const operator = envPrivateKey(source, 'DEPLOYER_PRIVATE_KEY', { required: true })
   const accessAdministrator =

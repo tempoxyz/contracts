@@ -19,10 +19,10 @@ Local modifications:
 at `cc56ad0f3439c502c246fc5cfcc3db92bb8b7219` with that repository's own `foundry.toml` (solc
 0.8.17, `via_ir`, 1,000,000 optimizer runs), because Permit2's exact pragma cannot compile here.
 
-`lib/tempo-std` (installed by `script/deps.sh` from `foundry.lock`) is pinned to `96f882963ce3b0e0abc7ec2b41d03d42457877bb`, the revision the vendored
+`lib/tempo-std` (installed by `scripts/solidity-deps.sh spend` from `foundry.lock`) is pinned to `96f882963ce3b0e0abc7ec2b41d03d42457877bb`, the revision the vendored
 zones contracts compile against.
 
-Tempo Earn is not vendored: this project lives in Earn's repository and imports its `src/` through
-the `tempo-earn/` remapping. `e2e/zone` and `script/smoke.sh` read the L1 and Zone images and the
+Tempo Earn is not vendored: this project imports `earn/src/` from the same repository through the
+`tempo-earn/` remapping. `e2e/zone` and `script/smoke.sh` read the L1 and Zone images and the
 TIP-1091 runtime bytecode from Earn's [`localnet/fixtures/`](../../localnet/fixtures/) (checked by
 SHA-256 at startup); `e2e/zone/src/network.ts` is adapted from Earn's `localnet/src/network.ts`.

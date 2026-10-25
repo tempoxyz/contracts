@@ -94,7 +94,35 @@ importers:
         specifier: 'catalog:'
         version: vite-plus@1.3.0(@types/node@26.6.5)(@vitest/ui@5.0.5)(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(typescript@7.0.2)(utf-8-validate@5.0.10)(yaml@2.9.1)
 
-  app:
+  e2e:
+    dependencies:
+      '@tempoxyz/earn':
+        specifier: workspace:*
+        version: link:../earn/deployments
+      viem:
+        specifier: 2.57.4
+        version: 2.57.4(bufferutil@4.1.0)(typescript@7.0.2)(utf-8-validate@5.0.10)(zod@4.6.7)
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.5
+      localnet:
+        specifier: workspace:*
+        version: link:../localnet
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.15
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.12(@types/node@26.6.5)(@vitest/browser-preview@5.0.5(@voidzero-dev/vite-plus-core@1.3.0(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(typescript@7.0.2)(yaml@2.9.1))(bufferutil@4.1.0)(utf-8-validate@5.0.10)(vitest@5.0.5))(@vitest/ui@5.0.5)(vite@8.1.6(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      vp:
+        specifier: 'catalog:'
+        version: vite-plus@1.3.0(@types/node@26.6.5)(@vitest/ui@5.0.5)(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(typescript@7.0.2)(utf-8-validate@5.0.10)(yaml@2.9.1)
+
+  earn/app:
     dependencies:
       '@privy-io/react-auth':
         specifier: 3.49.1
@@ -162,7 +190,7 @@ importers:
         version: 4.1.12
       localnet:
         specifier: workspace:*
-        version: link:../localnet
+        version: link:../../localnet
       tailwindcss:
         specifier: 'catalog:'
         version: 4.3.3
@@ -182,7 +210,7 @@ importers:
         specifier: 'catalog:'
         version: 4.151.0(@types/node@26.6.5)(bufferutil@4.1.0)(utf-8-validate@5.0.10)
 
-  deployments:
+  earn/deployments:
     dependencies:
       viem:
         specifier: 2.57.4
@@ -191,34 +219,6 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.5
-      tsx:
-        specifier: 'catalog:'
-        version: 4.23.15
-      typescript:
-        specifier: 'catalog:'
-        version: 7.0.2
-      vitest:
-        specifier: 'catalog:'
-        version: 4.1.12(@types/node@26.6.5)(@vitest/browser-preview@5.0.5(@voidzero-dev/vite-plus-core@1.3.0(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(typescript@7.0.2)(yaml@2.9.1))(bufferutil@4.1.0)(utf-8-validate@5.0.10)(vitest@5.0.5))(@vitest/ui@5.0.5)(vite@8.1.6(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-      vp:
-        specifier: 'catalog:'
-        version: vite-plus@1.3.0(@types/node@26.6.5)(@vitest/ui@5.0.5)(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(typescript@7.0.2)(utf-8-validate@5.0.10)(yaml@2.9.1)
-
-  e2e:
-    dependencies:
-      '@tempoxyz/earn':
-        specifier: workspace:*
-        version: link:../deployments
-      viem:
-        specifier: 2.57.4
-        version: 2.57.4(bufferutil@4.1.0)(typescript@7.0.2)(utf-8-validate@5.0.10)(zod@4.6.7)
-    devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 26.6.5
-      localnet:
-        specifier: workspace:*
-        version: link:../localnet
       tsx:
         specifier: 'catalog:'
         version: 4.23.15
@@ -236,7 +236,7 @@ importers:
     dependencies:
       '@tempoxyz/earn':
         specifier: workspace:*
-        version: link:../deployments
+        version: link:../earn/deployments
       prool:
         specifier: 0.2.16
         version: 0.2.16(testcontainers@12.2.1)

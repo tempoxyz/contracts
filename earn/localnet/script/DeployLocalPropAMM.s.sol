@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { PropAMMEngine } from "../../../src/engines/propamm/PropAMMEngine.sol";
+import { PropAMMEngine } from "../../src/engines/propamm/PropAMMEngine.sol";
 import { FixtureScript, IDirectPropAMMAdmin } from "./FixtureScript.sol";
 import { LocalPropAMMOracle, LocalPropAMMToken } from "../src/LocalPropAMM.sol";
 

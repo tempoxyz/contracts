@@ -1,8 +1,8 @@
 packages:
-  - app
+  - earn/app
+  - earn/deployments
   - e2e
   - localnet
-  - deployments
 
 allowBuilds:
   '@reown/appkit': false

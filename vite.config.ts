@@ -5,7 +5,7 @@ const ignorePatterns = [
   'worker-configuration.d.ts',
   '**/.local/',
   '**/.results/',
-  'deployments/abis/generated.ts',
+  'earn/deployments/abis/generated.ts',
 ]
 
 export default {
@@ -23,7 +23,7 @@ export default {
     overrides: [
       {
         // The generic lifecycle reaches capability modules only through their registries.
-        files: ['deployments/core/**', 'deployments/chain/**'],
+        files: ['earn/deployments/core/**', 'earn/deployments/chain/**'],
         rules: {
           'no-restricted-imports': [
             'error',
@@ -64,7 +64,7 @@ export default {
       },
       {
         // Browser and Worker code loads only the browser-safe deployment entries, never localnet.
-        files: ['app/src/**', 'app/worker/**'],
+        files: ['earn/app/src/**', 'earn/app/worker/**'],
         rules: {
           'no-restricted-imports': [
             'error',
@@ -81,7 +81,7 @@ export default {
       },
       {
         // Browser style: `type` over `interface`; PascalCase modules beside the `main.tsx` entry.
-        files: ['app/src/**/*.ts', 'app/src/**/*.tsx'],
+        files: ['earn/app/src/**/*.ts', 'earn/app/src/**/*.tsx'],
         rules: {
           'typescript/consistent-type-definitions': ['error', 'type'],
           'unicorn/filename-case': ['error', { case: 'pascalCase', ignore: ['^main\\.tsx$'] }],

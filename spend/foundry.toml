@@ -4,9 +4,9 @@ test = "test"
 script = "script"
 out = "out"
 libs = ["lib", "vendor"]
-# Tempo Earn is the parent project: tests import its sources (`tempo-earn/`) directly. They compile
-# here with this project's remappings and Tempo hardfork; Earn's own build settings are unaffected.
-allow_paths = [".."]
+# Tests import Earn's sources (`tempo-earn/` = ../earn/src) directly. They compile here with this
+# project's remappings and Tempo hardfork; Earn's own build settings are unaffected.
+allow_paths = ["../earn"]
 # Real Tempo precompiles (TIP-20, AccountKeychain, TIP-403, ...) in the test EVM.
 hardfork = "tempo:T8"
 solc_version = "0.8.36"
@@ -28,7 +28,7 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
     "bridge-spender/=vendor/bridge-spender/",
-    "tempo-earn/=../src/",
+    "tempo-earn/=../earn/src/",
     "tempo-zones/=vendor/tempo-zones/src/runtime/",
 ]
 

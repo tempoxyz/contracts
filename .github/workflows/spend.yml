@@ -5,14 +5,16 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - 'spend/**'
-      - 'src/**'
+      - 'earn/src/**'
+      - 'scripts/solidity-deps.sh'
       - 'localnet/fixtures/**'
       - '.github/workflows/spend.yml'
   push:
     branches: [main]
     paths:
       - 'spend/**'
-      - 'src/**'
+      - 'earn/src/**'
+      - 'scripts/solidity-deps.sh'
       - 'localnet/fixtures/**'
       - '.github/workflows/spend.yml'
 
@@ -45,7 +47,8 @@ jobs:
           persist-credentials: false
 
       - name: Install spend's Solidity dependencies
-        run: bash script/deps.sh
+        working-directory: .
+        run: scripts/solidity-deps.sh spend
 
       # Needs native Tempo precompiles (hardfork = "tempo:T8").
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -93,7 +96,8 @@ jobs:
           persist-credentials: false
 
       - name: Install spend's Solidity dependencies
-        run: bash script/deps.sh
+        working-directory: .
+        run: scripts/solidity-deps.sh spend
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -144,7 +148,8 @@ jobs:
           persist-credentials: false
 
       - name: Install spend's Solidity dependencies
-        run: bash script/deps.sh
+        working-directory: .
+        run: scripts/solidity-deps.sh spend
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 
-const foundryRoot = new URL('../foundry/', import.meta.url)
+const foundryRoot = new URL('../../earn/localnet/', import.meta.url)
 
 // `run` passes Forge only the deployer key, so a fixture script must take every other input as
 // typed calldata: any other environment read would see nothing.

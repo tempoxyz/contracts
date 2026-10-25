@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { DemoPropAMMParOracle, DemoPropAMMRecipientRegistry } from "../../../src/demo/DemoPropAMMPeriphery.sol";
-import { DemoStablecoinFunder } from "../../../src/demo/DemoStablecoinFunder.sol";
-import { Simple4626Vault } from "../../../src/demo/Simple4626Vault.sol";
+import { DemoPropAMMParOracle, DemoPropAMMRecipientRegistry } from "../../src/demo/DemoPropAMMPeriphery.sol";
+import { DemoStablecoinFunder } from "../../src/demo/DemoStablecoinFunder.sol";
+import { Simple4626Vault } from "../../src/demo/Simple4626Vault.sol";
 import { FixtureScript, IDirectPropAMMAdmin } from "./FixtureScript.sol";
 
 /// @notice The engine-independent fixtures: stablecoins, the router pool, and the same-asset venue.

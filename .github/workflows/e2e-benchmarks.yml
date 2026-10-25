@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: Deployed profile to measure (profiles/<id>/profile.json)
+        description: Deployed profile to measure (earn/profiles/<id>/profile.json)
         required: true
-        default: profiles/e2e-moderato/profile.json
+        default: earn/profiles/e2e-moderato/profile.json
         type: string
       group:
         description: Benchmark public flows, private flows, or both
@@ -55,7 +55,7 @@ jobs:
           # `inputs` are only populated for workflow_dispatch -- the scheduled
           # trigger has none, so fall back to the same defaults the dispatch form uses.
           BENCHMARK_GROUP: ${{ inputs.group || 'all' }}
-          BENCHMARK_PROFILE: ${{ inputs.profile || 'profiles/e2e-moderato/profile.json' }}
+          BENCHMARK_PROFILE: ${{ inputs.profile || 'earn/profiles/e2e-moderato/profile.json' }}
           BENCHMARK_SAMPLES: ${{ inputs.samples || 10 }}
           TEMPO_API_KEY: ${{ (inputs.group || 'all') != 'public' && secrets.TEMPO_API_KEY || '' }}
         run: pnpm e2e:benchmark -- --earn-file "$BENCHMARK_PROFILE" --group "$BENCHMARK_GROUP" --samples "$BENCHMARK_SAMPLES"

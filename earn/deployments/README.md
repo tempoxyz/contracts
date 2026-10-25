@@ -36,7 +36,7 @@ runs every capability module's inspection, is exported from `/node` only.
   `<name>ScriptAbi`; and
 - the derived `earnEngineBindingAbi`.
 
-After a contract interface change, run `forge build src script test localnet/foundry` and
+After a contract interface change, run `forge build src script test localnet` and
 `pnpm --filter @tempoxyz/earn abis`, and commit the result; `abis:check` fails on drift.
 `abis/external.ts` hand-maintains contracts built elsewhere: Tempo Zone predeploys, the PropAMM
 pool, oracle, and controller, the Veda periphery, the Morpho fee wrapper, and the Safe. Use
@@ -125,5 +125,5 @@ release pipeline, or hosted E2E fixture lifecycle.
 - Default helpers are lookup primitives and do not select an app environment. Consumers must honor
   deployment and mode availability rather than attempt zero-address writes.
 
-Per-package commands are in [CONTRIBUTING.md](../CONTRIBUTING.md#work-on-one-area); `check` also
+Per-package commands are in [CONTRIBUTING.md](../../CONTRIBUTING.md#work-on-one-area); `check` also
 validates every checked-in profile (`core/profiles.ts`).

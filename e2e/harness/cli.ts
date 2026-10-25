@@ -51,7 +51,7 @@ if (args.mode === 'list') {
   } else {
     if (!profile) {
       throw new Error(
-        'Hosted E2E runs against a deployed profile: pass --earn-file profiles/<id>/profile.json',
+        'Hosted E2E runs against a deployed profile: pass --earn-file earn/profiles/<id>/profile.json',
       )
     }
     const result = await runHosted(profile, (context, manifest) =>

@@ -14,6 +14,10 @@ jobs:
   contracts:
     name: Contracts
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Earn's Foundry project; composite actions still run from the repository root.
+        working-directory: earn
     permissions:
       id-token: write
       contents: read
@@ -21,7 +25,7 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      # Depth 2 includes a pull request merge commit's base parent, so a later step can diff `src/`.
+      # Depth 2 includes a pull request merge commit's base parent, so a later step can diff `earn/src/`.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
@@ -39,7 +43,7 @@ jobs:
 
       # One invocation for every source set: a partial build prunes the others from the cache.
       - name: Build
-        run: forge build src script test localnet/foundry
+        run: forge build src script test localnet
 
       - name: Check generated contract ABIs
         run: pnpm --filter @tempoxyz/earn abis:check
@@ -100,8 +104,8 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [[ -n "$(git diff --name-only "$BASE_SHA" HEAD -- test/fixtures/propamm)" ]]; then
-            echo "::error::A fork cannot rebuild the private PropAMM source, so this change to test/fixtures/propamm/ is unverified. A maintainer must re-verify it from a branch in this repository."
+          if [[ -n "$(git diff --name-only "$BASE_SHA" HEAD -- earn/test/fixtures/propamm)" ]]; then
+            echo "::error::A fork cannot rebuild the private PropAMM source, so this change to earn/test/fixtures/propamm/ is unverified. A maintainer must re-verify it from a branch in this repository."
             exit 1
           fi
           echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -116,7 +120,7 @@ jobs:
         if: steps.fork.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          commit=$(jq -er .commit test/fixtures/propamm/source.json)
+          commit=$(jq -er .commit earn/test/fixtures/propamm/source.json)
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
@@ -141,11 +145,15 @@ jobs:
 
       - name: Check the fixture matches the pinned build
         if: steps.fork.outputs.skip != 'true'
-        run: test/fixtures/propamm/update.sh --check .propamm
+        run: earn/test/fixtures/propamm/update.sh --check .propamm
 
   symbolic:
     name: Symbolic
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Earn's Foundry project; composite actions still run from the repository root.
+        working-directory: earn
     permissions:
       id-token: write
       contents: read

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { VedaEngine } from "../../../src/engines/veda/VedaEngine.sol";
-import { VedaForwardingSolver, IForwardingEngine } from "../../../src/engines/veda/VedaForwardingSolver.sol";
-import { VedaPeripheryRegistry } from "../../../src/engines/veda/VedaPeripheryRegistry.sol";
-import { IAccountant } from "../../../src/interfaces/external/veda/IAccountant.sol";
-import { IBoringQueue } from "../../../src/interfaces/external/veda/IBoringQueue.sol";
-import { IBoringSolver } from "../../../src/interfaces/external/veda/IBoringSolver.sol";
-import { IBoringVault } from "../../../src/interfaces/external/veda/IBoringVault.sol";
-import { ITeller } from "../../../src/interfaces/external/veda/ITeller.sol";
+import { VedaEngine } from "../../src/engines/veda/VedaEngine.sol";
+import { VedaForwardingSolver, IForwardingEngine } from "../../src/engines/veda/VedaForwardingSolver.sol";
+import { VedaPeripheryRegistry } from "../../src/engines/veda/VedaPeripheryRegistry.sol";
+import { IAccountant } from "../../src/interfaces/external/veda/IAccountant.sol";
+import { IBoringQueue } from "../../src/interfaces/external/veda/IBoringQueue.sol";
+import { IBoringSolver } from "../../src/interfaces/external/veda/IBoringSolver.sol";
+import { IBoringVault } from "../../src/interfaces/external/veda/IBoringVault.sol";
+import { ITeller } from "../../src/interfaces/external/veda/ITeller.sol";
 import { FixtureScript } from "./FixtureScript.sol";
 import {
     LocalVedaAccountant,

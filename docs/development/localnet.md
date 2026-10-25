@@ -7,7 +7,7 @@ API and the constraints behind it; [development](../development.md#local-tempo-a
 commands, and the [localnet guide](../../localnet/AGENTS.md) the package rules. Exact image and
 protocol versions are owned by `localnet/src/config.ts` and `localnet/fixtures/runtime-lock.json`.
 Deploying onto an existing devnet instead is documented in
-[existing devnet chains](../operations/e2e-environments.md#existing-devnet-chains).
+[existing devnet chains](../../earn/docs/operations/e2e-environments.md#existing-devnet-chains).
 
 ## Consumer API
 
@@ -15,15 +15,15 @@ Deploying onto an existing devnet instead is documented in
 `Environment`, `Foundry`, and `Devnet` namespaces, `localEngines`, `defaultEngineKind`, and
 `localStack`. A consumer calls `Environment.run(options)`:
 
-| Option           | Meaning                                                                                                                                                                 |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `consumer`       | Required name, printed when the environment is ready.                                                                                                                   |
-| `ready`          | Required `async (environment) => result`. The containers stop and the run directory is removed when it settles, so the environment is valid only inside it.             |
-| `engineKind`     | The [engine kind](../integrations/engines.md) whose venue fixtures to deploy; `erc4626` by default. With `earnProfile`, it must match the profile's kind or be omitted. |
-| `access`         | `'tip403-whitelist'` (default) or `'open'` EarnShare for the default profile. Not allowed with `earnProfile`, which defines its own access.                             |
-| `earnProfile`    | An authored `EarnDeploymentProfile` to deploy instead of the default ([profiles](#profiles-and-the-shared-lifecycle)).                                                  |
-| `sameAssetRoute` | Also deploy a PATHUSD stack with a pool-less router (off by default).                                                                                                   |
-| `containers`     | `{ name?, labels? }`: name the containers `<name>.l1` and `<name>.zone` and label the L1 container (Prool does not expose Zone container labels).                       |
+| Option           | Meaning                                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `consumer`       | Required name, printed when the environment is ready.                                                                                                                                |
+| `ready`          | Required `async (environment) => result`. The containers stop and the run directory is removed when it settles, so the environment is valid only inside it.                          |
+| `engineKind`     | The [engine kind](../../earn/docs/integrations/engines.md) whose venue fixtures to deploy; `erc4626` by default. With `earnProfile`, it must match the profile's kind or be omitted. |
+| `access`         | `'tip403-whitelist'` (default) or `'open'` EarnShare for the default profile. Not allowed with `earnProfile`, which defines its own access.                                          |
+| `earnProfile`    | An authored `EarnDeploymentProfile` to deploy instead of the default ([profiles](#profiles-and-the-shared-lifecycle)).                                                               |
+| `sameAssetRoute` | Also deploy a PATHUSD stack with a pool-less router (off by default).                                                                                                                |
+| `containers`     | `{ name?, labels? }`: name the containers `<name>.l1` and `<name>.zone` and label the L1 container (Prool does not expose Zone container labels).                                    |
 
 `ready(environment)` receives:
 
@@ -70,14 +70,14 @@ The layer writes two manifest sections:
   privateRpcUrl }` (public and private RPC), the run's `accounts`, and `images { l1, zone }`.
 - `earn`: `{ version: 1, deployment }`, the `Deployment.State` with bigints as decimal strings.
 
-A consumer needs everything a local run needs: this checkout with submodules (Prool supplies
-containers, not Solidity dependencies), its `pnpm install`, Foundry, and Docker.
+A consumer needs everything a local run needs: this checkout, its `pnpm install`, Foundry, and Docker.
+Localnet installs Earn's pinned Solidity dependencies on first use; Prool supplies only containers.
 
 ## Profiles and the shared lifecycle
 
 Every local Earn stack is an `EarnDeploymentProfile` deployed through the same plan and lifecycle as
 hosted profiles: `planEarnDeployment` derives the actions, `reconcileEarnProfileActions` runs the
-shared `script/deploy/` Forge scripts and the typed authority steps (engine binding, router
+shared `earn/script/deploy/` Forge scripts and the typed authority steps (engine binding, router
 admission, Zone token enablement, all held by local accounts), and `verifyEarnDeploymentState`
 inspects the result, including the factory-predicted EarnShare, EarnFees, and engine addresses.
 Localnet skips only what needs a hosted chain: the reviewed factory runtime check, source
@@ -100,9 +100,9 @@ factory) leaves that engine with a separate funded setup owner, so the lifecycle
 Each kind's `LocalEngine` lives in `localnet/src/engines/<kind>.ts`: venue `provision`, an optional
 fixture `validate`, the `profileEngine` target, token `metadata`, and `hostedFixture` (whether the
 kind runs over canonical PATHUSD and how its engine's constructor arguments are read for source
-verification). Its fixture contracts deploy from `localnet/foundry/script/DeployLocal<Kind>.s.sol`;
+verification). Its fixture contracts deploy from `earn/localnet/script/DeployLocal<Kind>.s.sol`;
 shared engine facts come from `engineDefinitions`. [Adding an
-engine](../integrations/engines.md#adding-an-engine) lists every file a new kind needs.
+engine](../../earn/docs/integrations/engines.md#adding-an-engine) lists every file a new kind needs.
 
 The hosted fixture bootstrap (`e2e/fixtures/bootstrap.ts`) runs the same
 `Deployment.provisionFixtures` and `localEngines` steps against a hosted chain with
@@ -117,21 +117,21 @@ and prices at par with the full pool inventory.
 - Each fixture step is its own `forge script --sig <calldata>` call of one entry point:
   `DeployLocalEarn.s.sol` for engine-independent fixtures, one `DeployLocal<Kind>.s.sol` per engine,
   or a shared release step. Localnet deploys the EarnVault and EarnFees implementations and
-  `EarnFactory` from `script/deploy/DeployFactoryRelease.s.sol` and every engine factory from its
-  engine's deploy script (`erc4626EngineFactory` in `script/deploy/DeployERC4626Engine.s.sol`); it
+  `EarnFactory` from `earn/script/deploy/DeployFactoryRelease.s.sol` and every engine factory from its
+  engine's deploy script (`erc4626EngineFactory` in `earn/script/deploy/DeployERC4626Engine.s.sol`); it
   deploys no rewards factory. `Foundry.script` binds a script to its generated ABI from
   `@tempoxyz/earn/abis`, so step names and arguments are checked against the Solidity signatures.
 - Forge receives `DEPLOYER_PRIVATE_KEY` as its only secret, alongside an allowlist of ordinary
   process variables and `FOUNDRY_PROFILE=deploy`, the profile hosted deployments use. Fixture and
   lifecycle steps run with `--batch` and the PATHUSD fee token; Tempo batches allow a top-level
   CREATE only in the first slot.
-- Fixture scripts extend `localnet/foundry/script/FixtureScript.sol`, shared with the hosted fixture
+- Fixture scripts extend `earn/localnet/script/FixtureScript.sol`, shared with the hosted fixture
   bootstrap, so the stablecoin pair (`DemoStablecoinFunder`) and the DirectPropAMM pool deployment
-  have one definition. `DeployLocalEarn.s.sol` deploys the `src/demo/` par oracle and recipient
+  have one definition. `DeployLocalEarn.s.sol` deploys the `earn/src/demo/` par oracle and recipient
   registry.
 - Each `Environment.run` gets a temporary run directory `localnet/.local/run-*` holding its
   `FOUNDRY_BROADCAST` directory (`broadcast/`) and lifecycle resume state (each profile's
-  `deployment.pending.json` beside a nominal `profiles/<id>/profile.json`; no record is written),
+  `deployment.pending.json` beside a nominal `earn/profiles/<id>/profile.json`; no record is written),
   and removes it during cleanup. Local app and E2E processes use the same dev chain ID and must never
   share `*-latest.json` broadcasts.
 - Large CREATE steps (the EarnVault and EarnFees implementations, `EarnFactory`, the stablecoin
@@ -206,6 +206,6 @@ and prices at par with the full pool inventory.
   as taker and recipient. Off-par and stale-oracle rejection remain covered by the Foundry router
   conversion tests.
 - Local PropAMM engine stacks use the unmodified
-  [pinned DirectPropAMM fixture](../modules/propamm.md#pinned-directpropamm-fixture) with disposable
+  [pinned DirectPropAMM fixture](../../earn/docs/modules/propamm.md#pinned-directpropamm-fixture) with disposable
   token, oracle, and registry fixtures. The always-fresh local oracle does not cover stale-rate
   economics; retain the Foundry regression suite.

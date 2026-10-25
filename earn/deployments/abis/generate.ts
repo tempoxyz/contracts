@@ -17,7 +17,7 @@ const camel = (name: string) =>
 
 /**
  * Writes `generated.ts` from this repository's Foundry artifacts so TypeScript never hand-copies an
- * Earn contract ABI. Run `forge build src script test localnet/foundry` first; pass `--check` to
+ * Earn contract ABI. Run `forge build src script test localnet` first; pass `--check` to
  * fail when the committed module no longer matches the artifacts. Contracts from other
  * repositories belong in `external.ts`.
  *
@@ -69,7 +69,7 @@ const contracts = sourceContracts
  * Foundry scripts called with typed calldata; only their state-changing entry points are exported.
  * Every `<Name>.s.sol` deployment and fixture script exports `<name>ScriptAbi`.
  */
-const scripts = ['script/deploy/', 'localnet/foundry/script/'].flatMap((directory) =>
+const scripts = ['script/deploy/', 'localnet/script/'].flatMap((directory) =>
   solidityFiles(directory, '.s.sol').map(({ file }) => {
     const script = file.slice(0, -'.s.sol'.length)
     const name = `${script[0]!.toLowerCase()}${script.slice(1)}ScriptAbi`
@@ -156,7 +156,7 @@ const target = fileURLToPath(new URL('generated.ts', import.meta.url))
 if (process.argv.includes('--check')) {
   if (readFileSync(target, 'utf8') !== output) {
     throw new Error(
-      'Contract ABIs drifted; run `pnpm --filter @tempoxyz/earn abis` after `forge build src script test localnet/foundry`',
+      'Contract ABIs drifted; run `pnpm --filter @tempoxyz/earn abis` after `forge build src script test localnet`',
     )
   }
 } else {

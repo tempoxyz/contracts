@@ -41,24 +41,25 @@ runs:
           const exactPaths = new Set([
             '.github/workflows/local-zone.yml',
             '.nvmrc',
-            'foundry.lock',
-            'foundry.toml',
+            'earn/foundry.lock',
+            'earn/foundry.toml',
             'package.json',
             'pnpm-lock.yaml',
             'pnpm-workspace.yaml',
           ])
-          // `lib/` covers submodule gitlinks. Localnet deploys the committed DirectPropAMM fixture;
-          // otherwise E2E, localnet, and the scripts import nothing from `app/` or `test/`.
+          // Localnet deploys the committed DirectPropAMM fixture; otherwise E2E, localnet, and the
+          // scripts import nothing from `earn/app/` or `earn/test/`.
           const pathPrefixes = [
             '.github/actions/',
-            'deployments/',
             'e2e/',
-            'lib/',
+            'earn/deployments/',
+            'earn/localnet/',
+            'earn/profiles/',
+            'earn/script/',
+            'earn/src/',
+            'earn/test/fixtures/propamm/',
             'localnet/',
-            'profiles/',
-            'script/',
-            'src/',
-            'test/fixtures/propamm/',
+            'scripts/solidity-deps.sh',
           ]
           // A rename lists its old path in `previous_filename`; moving a file out of scope still counts.
           const inScope = (path) =>

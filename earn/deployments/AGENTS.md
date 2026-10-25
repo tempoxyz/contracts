@@ -21,5 +21,5 @@ Use [the package reference](README.md), [profiles](../profiles/README.md), and t
   per-contract, or `engine.kind` branch to a generic file. Lint limits `core/` and `chain/` to the
   module registries, and `modules/engines/boundary.test.ts` rejects engine-kind literals.
 
-Dependency pins and exceptions live in [pnpm-workspace.yaml](../pnpm-workspace.yaml). When changing
+Dependency pins and exceptions live in [pnpm-workspace.yaml](../../pnpm-workspace.yaml). When changing
 the viem pin, verify Earn ABI/error parity and Zone behavior.

@@ -4,7 +4,7 @@ import { dirname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 
-const root = fileURLToPath(new URL('../', import.meta.url))
+const root = fileURLToPath(new URL('../../', import.meta.url))
 // Membership in the Git file list is case-sensitive, like Linux CI and GitHub, unlike macOS.
 const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
   cwd: root,
@@ -43,7 +43,7 @@ function anchors(path: string) {
 }
 
 /** Nested projects whose sources cite their own `docs/` by project-relative path. */
-const projects = ['spend/']
+const projects = ['earn/', 'spend/']
 
 /**
  * Why `target`, relative to `from`'s directory (or, when `fromRoot`, the root of the project that

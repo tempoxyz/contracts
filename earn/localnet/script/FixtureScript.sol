@@ -3,9 +3,9 @@ pragma solidity ^0.8.36;
 
 import { Script } from "forge-std/Script.sol";
 
-import { DemoStablecoinFunder } from "../../../src/demo/DemoStablecoinFunder.sol";
-import { ITIP20Factory, ITIP20IssuerAccess } from "../../../src/interfaces/external/tempo/ITIP20Factory.sol";
-import { ALWAYS_ALLOW_POLICY_ID, ITIP20PolicyAccess } from "../../../src/interfaces/external/tempo/ITIP403Registry.sol";
+import { DemoStablecoinFunder } from "../../src/demo/DemoStablecoinFunder.sol";
+import { ITIP20Factory, ITIP20IssuerAccess } from "../../src/interfaces/external/tempo/ITIP20Factory.sol";
+import { ALWAYS_ALLOW_POLICY_ID, ITIP20PolicyAccess } from "../../src/interfaces/external/tempo/ITIP403Registry.sol";
 
 /// @notice The owner controls of the pinned DirectPropAMM artifact that fixture setup uses.
 interface IDirectPropAMMAdmin {

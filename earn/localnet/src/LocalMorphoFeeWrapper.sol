@@ -3,7 +3,7 @@ pragma solidity ^0.8.36;
 
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import { IERC20Like } from "../../../src/interfaces/external/IERC20Like.sol";
+import { IERC20Like } from "../../src/interfaces/external/IERC20Like.sol";
 
 interface ILocalMorphoVault {
     function asset() external view returns (address);

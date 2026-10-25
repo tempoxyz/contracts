@@ -2,14 +2,13 @@ name: Zones Compatibility
 
 on:
   workflow_dispatch:
-  # Tempo builds only Earn's contracts (`forge build --skip test --skip script`); `lib/**` covers
-  # submodule gitlinks.
+  # Tempo builds only Earn's contracts (`forge build --skip test --skip script`).
   push:
     branches: [main]
     paths:
-      - 'src/**'
-      - 'lib/**'
-      - 'foundry.*'
+      - 'earn/src/**'
+      - 'earn/foundry.*'
+      - 'scripts/solidity-deps.sh'
       - '.github/workflows/zones-compatibility.yml'
       - '.github/actions/publish-remediation-event/**'
 
@@ -42,9 +41,9 @@ jobs:
           path: earn
           persist-credentials: false
 
-      - name: Initialize public Solidity dependencies
+      - name: Install Earn's Solidity dependencies
         working-directory: earn
-        run: git submodule update --init --depth 1 lib/forge-std lib/openzeppelin-contracts
+        run: scripts/solidity-deps.sh earn
 
       - name: Checkout Tempo main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,7 +86,8 @@ jobs:
         id: solidity
         working-directory: tempo
         env:
-          EARN_ROOT: ${{ github.workspace }}/earn
+          # Earn's Foundry project inside this repository's checkout.
+          EARN_ROOT: ${{ github.workspace }}/earn/earn
         # Tempo's script builds Earn first so the Zones contracts own the final IZone ABI.
         run: |
           bash scripts/build-zones-test-artifacts.sh

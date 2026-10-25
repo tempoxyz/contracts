@@ -30,7 +30,7 @@ test('a hosted run of a Zone profile fails before any read without Zone RPC acce
   vi.stubEnv('ZONE_RPC_URL', '')
   try {
     const id = 'e2e-moderato'
-    cpSync(new URL(`../../profiles/${id}`, import.meta.url), join(root, 'profiles', id), {
+    cpSync(new URL(`../../earn/profiles/${id}`, import.meta.url), join(root, 'profiles', id), {
       recursive: true,
     })
     const execute = vi.fn()

@@ -5,17 +5,18 @@ harness, and Bridge's deploy scripts. [README.md](README.md) maps the project an
 [docs/design.md](docs/design.md) owns the design.
 
 - This is its own Foundry project. Run every `forge` command from `spend/`, after
-  `script/deps.sh` installs `lib/` at the revisions `foundry.lock` pins (they are not submodules). Never add its
-  remappings, dependencies, or hardfork to the root `foundry.toml`: the root remappings feed the
-  metadata hash of Earn's reviewed releases, and tempoxyz/tempo builds the root `src/`.
-- Import Earn through `tempo-earn/` (the root `src/`), never a copy. A change to Earn's interfaces
+  `scripts/solidity-deps.sh spend` (from the repository root) installs `lib/` at the revisions
+  `foundry.lock` pins. Never add its
+  remappings, dependencies, or hardfork to `earn/foundry.toml`: Earn's remappings feed the
+  metadata hash of its reviewed releases, and tempoxyz/tempo builds `earn/src/`.
+- Import Earn through `tempo-earn/` (`earn/src/`), never a copy. A change to Earn's interfaces
   that breaks this project is fixed in the same pull request.
-- Bridge-specific code stays here; Earn's root `src/` stays customer-agnostic and never imports
-  from `spend/`.
+- Bridge-specific code stays here; `earn/` stays customer-agnostic and never imports from
+  `spend/`.
 - `vendor/` holds unmodified Bridge and Zone sources at the commits in
   [vendor/VENDORED.md](vendor/VENDORED.md); refresh them only by re-copying.
 - `ZoneSpendReceiver` emits the callback `senderTag`, which Bridge matches settlements by. This is a
-  known exception to Earn's [privacy model](../docs/architecture/security-and-privacy.md#privacy-model);
+  known exception to Earn's [privacy model](../earn/docs/architecture/security-and-privacy.md#privacy-model);
   do not extend it to other contracts.
 
 Validate with `forge fmt --check src test script`, `forge build`, and `forge test` here, plus
