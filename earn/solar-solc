@@ -3,7 +3,7 @@
 # solc 0.8.36, the language version Earn targets. scripts/solidity-deps.sh earn (pnpm deps) installs it.
 set -eu
 project=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-rev=$(cat "$project/solar.lock")
+rev=$(tr -d '[:space:]' < "$project/solar.lock")
 solar="$project/../.solar/$rev/bin/solar"
 if [ ! -x "$solar" ]; then
   echo "solar $rev is not installed; run scripts/solidity-deps.sh earn" >&2

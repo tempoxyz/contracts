@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { basename } from 'node:path'
 
 /** Earn builds, tests, and deploys with the `forge` on PATH, which must be stable Foundry v1.8.6 or newer. */
 export function assertFoundryVersion(root: string) {
@@ -56,4 +57,32 @@ export function foundryVerificationEnvironment(
   const sanitized = foundryProcessEnvironment(environment)
   delete sanitized.DEPLOYER_PRIVATE_KEY
   return sanitized
+}
+
+/**
+ * Tempo's source verifier (contracts.tempo.xyz, a Sourcify instance) rebuilds each contract with solc,
+ * and hosted deployments require that match. A solar build cannot be reproduced there, so a hosted
+ * deployment compiled with solar would broadcast and then fail verification.
+ */
+export function isSourceVerifiableCompiler(solc: string | null | undefined) {
+  return !solc || !/solar/i.test(basename(solc))
+}
+
+/** Refuses a hosted deployment before it broadcasts when the deploy profile compiles with solar. */
+export function assertSourceVerifiableCompiler(
+  root: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+) {
+  const config = JSON.parse(
+    execFileSync('forge', ['config', '--json'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: foundryVerificationEnvironment(environment),
+    }),
+  ) as { solc?: string | null }
+  if (!isSourceVerifiableCompiler(config.solc)) {
+    throw new Error(
+      `Earn compiles with solar (${config.solc}), which Tempo's source verifier cannot reproduce; hosted deployments need a source match, so they stay on solc until the verifier supports solar`,
+    )
+  }
 }

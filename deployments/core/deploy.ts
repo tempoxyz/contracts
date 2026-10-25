@@ -10,7 +10,11 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { inspectEngineBindings } from '../modules/earn/engines/index.js'
 import { capabilityModules, executeAvailableAuthority } from '../../deployments/modules/index.js'
 import type { DiscoveryOptions, InspectionReport } from '../../deployments/modules/module.js'
-import { assertFoundryVersion, foundryVerificationEnvironment } from '../chain/foundry.js'
+import {
+  assertFoundryVersion,
+  assertSourceVerifiableCompiler,
+  foundryVerificationEnvironment,
+} from '../chain/foundry.js'
 import { activationActions, deploymentActions, type EarnDeploymentAction } from './plan.js'
 import {
   loadPendingDeployment,
@@ -272,9 +276,19 @@ export async function reconcileEarnProfileActions(
     profile: EarnDeploymentProfile
   },
 ): Promise<Extract<ReconciliationStep, { kind: 'complete' | 'handoff' }>> {
+  let compilerChecked = false
   for (;;) {
     const step = await prepareLifecycleStep(options)
     if (step.kind === 'complete') return step
+    // Before the first transaction: a hosted deployment must stay source-verifiable.
+    if (
+      !compilerChecked &&
+      !options.executeFoundry &&
+      isHostedDeploymentChain(options.profile.chainId)
+    ) {
+      assertSourceVerifiableCompiler(options.root, options.environment)
+      compilerChecked = true
+    }
     if (step.kind === 'handoff') {
       const execution = await executeAvailableAuthority({
         action: step.action,

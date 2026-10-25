@@ -94,9 +94,8 @@ jobs:
         env:
           # Earn's Foundry project inside this repository's checkout.
           EARN_ROOT: ${{ github.workspace }}/earn/earn
-          # Tempo runs Forge from its own checkout with --root, so give Earn's compiler absolutely.
-          FOUNDRY_SOLC: ${{ github.workspace }}/earn/earn/solar-solc
-        # Tempo's script builds Earn first so the Zones contracts own the final IZone ABI.
+        # Tempo's script builds Earn first so the Zones contracts own the final IZone ABI. It passes
+        # Earn's solar-solc as FOUNDRY_SOLC to that build only; the Zones contracts keep their solc.
         run: |
           bash scripts/build-zones-test-artifacts.sh
           test -s crates/zones/contracts/out/DemoParPool.sol/DemoParPool.json

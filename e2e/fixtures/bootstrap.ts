@@ -15,6 +15,7 @@ import {
 } from '@tempoxyz/earn/deployments'
 import {
   assertFoundryVersion,
+  assertSourceVerifiableCompiler,
   configuredRpcTransport,
   envPrivateKey,
   loadEarnProfile,
@@ -174,6 +175,8 @@ if (!args.broadcast) {
 }
 
 assertFoundryVersion(root)
+// The fixture's engine is source verified on the hosted network.
+assertSourceVerifiableCompiler(root)
 if ((await feeBalance()) < minimumFeeBalance) {
   if (!hostedEnvironments[network].faucet) {
     throw new Error(`Fund ${deployer} with PATHUSD on ${network} before bootstrapping`)
