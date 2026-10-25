@@ -7,7 +7,6 @@ on:
       - 'spend/**'
       - 'src/**'
       - 'localnet/fixtures/**'
-      - '.gitmodules'
       - '.github/workflows/spend.yml'
   push:
     branches: [main]
@@ -15,7 +14,6 @@ on:
       - 'spend/**'
       - 'src/**'
       - 'localnet/fixtures/**'
-      - '.gitmodules'
       - '.github/workflows/spend.yml'
 
 permissions: {}
@@ -46,9 +44,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize spend's Solidity dependencies
-        working-directory: .
-        run: git submodule update --init --depth 1 $(git config -f .gitmodules --get-regexp '^submodule\.spend/.*\.path$' | cut -d' ' -f2)
+      - name: Install spend's Solidity dependencies
+        run: bash script/deps.sh
 
       # Needs native Tempo precompiles (hardfork = "tempo:T8").
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -95,9 +92,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize spend's Solidity dependencies
-        working-directory: .
-        run: git submodule update --init --depth 1 $(git config -f .gitmodules --get-regexp '^submodule\.spend/.*\.path$' | cut -d' ' -f2)
+      - name: Install spend's Solidity dependencies
+        run: bash script/deps.sh
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -147,9 +143,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize spend's Solidity dependencies
-        working-directory: .
-        run: git submodule update --init --depth 1 $(git config -f .gitmodules --get-regexp '^submodule\.spend/.*\.path$' | cut -d' ' -f2)
+      - name: Install spend's Solidity dependencies
+        run: bash script/deps.sh
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:

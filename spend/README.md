@@ -60,8 +60,9 @@ Three behaviors are decisions, not defects, and the matrix lists them so they st
 ## Running it
 
 ```bash
-git clone --recurse-submodules https://github.com/tempoxyz/earn.git
+git clone https://github.com/tempoxyz/earn.git
 cd earn/spend
+script/deps.sh    # Solidity dependencies at the revisions foundry.lock pins
 forge test
 ```
 

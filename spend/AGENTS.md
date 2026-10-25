@@ -4,7 +4,8 @@ Card spend through Bridge's spender contracts: the `TS` handler, the Zone receiv
 harness, and Bridge's deploy scripts. [README.md](README.md) maps the project and
 [docs/design.md](docs/design.md) owns the design.
 
-- This is its own Foundry project. Run every `forge` command from `spend/`. Never add its
+- This is its own Foundry project. Run every `forge` command from `spend/`, after
+  `script/deps.sh` installs `lib/` at the revisions `foundry.lock` pins (they are not submodules). Never add its
   remappings, dependencies, or hardfork to the root `foundry.toml`: the root remappings feed the
   metadata hash of Earn's reviewed releases, and tempoxyz/tempo builds the root `src/`.
 - Import Earn through `tempo-earn/` (the root `src/`), never a copy. A change to Earn's interfaces
