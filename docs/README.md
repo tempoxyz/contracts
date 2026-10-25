@@ -75,6 +75,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 | Integrator onboarding for agents                                                | [Tempo Earn skill](../SKILL.md)                                                               |
 | One-line term definitions                                                       | [Glossary](glossary.md)                                                                       |
 | Settled rationale for the core stack                                            | [Design decisions](decisions.md)                                                              |
+| Bridge card spend: `TS` handler, Zone receiver, card harness, Bridge deployment | [Tempo Spend](../spend/README.md)                                                             |
 
 ## Documentation rules
 

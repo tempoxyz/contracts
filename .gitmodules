@@ -4,3 +4,21 @@
 [submodule "lib/openzeppelin-contracts"]
 	path = lib/openzeppelin-contracts
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "spend/lib/forge-std"]
+	path = spend/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "spend/lib/openzeppelin-contracts"]
+	path = spend/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "spend/lib/openzeppelin-contracts-upgradeable"]
+	path = spend/lib/openzeppelin-contracts-upgradeable
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
+[submodule "spend/lib/solady"]
+	path = spend/lib/solady
+	url = https://github.com/Vectorized/solady
+[submodule "spend/lib/permit2"]
+	path = spend/lib/permit2
+	url = https://github.com/Uniswap/permit2
+[submodule "spend/lib/tempo-std"]
+	path = spend/lib/tempo-std
+	url = https://github.com/tempoxyz/tempo-std

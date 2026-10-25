@@ -42,12 +42,19 @@ function anchors(path: string) {
   return found
 }
 
-/** Why `target`, relative to `from`'s directory (or the root when `fromRoot`), does not resolve. */
+/** Nested projects whose sources cite their own `docs/` by project-relative path. */
+const projects = ['spend/']
+
+/**
+ * Why `target`, relative to `from`'s directory (or, when `fromRoot`, the root of the project that
+ * contains `from`), does not resolve.
+ */
 function broken(from: string, target: string, fromRoot = false) {
   const [pathPart = '', anchor] = target.split('#')
-  const path = pathPart
-    ? normalize(join(fromRoot ? '' : dirname(from), decodeURI(pathPart))).replace(/\/$/, '')
-    : from
+  const base = fromRoot
+    ? (projects.find((project) => from.startsWith(project)) ?? '')
+    : dirname(from)
+  const path = pathPart ? normalize(join(base, decodeURI(pathPart))).replace(/\/$/, '') : from
   if (!paths.has(path)) return `${target} does not exist`
   if (anchor && path.endsWith('.md') && !anchors(path).has(anchor))
     return `${target} has no #${anchor}`

@@ -22,6 +22,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
 | Integration cases and hosted environments          | [e2e/AGENTS.md](e2e/AGENTS.md)                               |
 | Disposable chain lifecycle                         | [localnet/AGENTS.md](localnet/AGENTS.md)                     |
 | CI and repository automation                       | [.github/AGENTS.md](.github/AGENTS.md)                       |
+| Bridge card spend (separate Foundry project)       | [spend/AGENTS.md](spend/AGENTS.md)                           |
 
 For application onboarding, use [SKILL.md](SKILL.md) and the
 [integrator guide](docs/integrations/agent-guide.md).

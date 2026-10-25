@@ -1,0 +1,562 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copied from tempo-std `src/tx/TempoTransactionLib.sol` (MIT OR Apache-2.0) at
+// 96f882963ce3b0e0abc7ec2b41d03d42457877bb. Types are renamed to avoid clashing with tempo-std, and
+// `encodeWithRawSignature` is added so an access key can sign with a keychain signature.
+pragma solidity >=0.8.13 <0.9.0;
+
+import { VmRlp } from "tempo-std/StdVm.sol";
+import { AccessListItem } from "tempo-std/tx/AccessListTypes.sol";
+import { TxRlp } from "tempo-std/tx/TxRlp.sol";
+
+/// @notice A single call in a Tempo transaction batch.
+struct TxCall {
+    address to;
+    uint256 value;
+    bytes data;
+}
+
+/// @notice A signed authorization for Tempo transactions.
+struct TxAuthorization {
+    uint256 chainId;
+    address authority;
+    uint64 nonce;
+    uint8 yParity;
+    bytes32 r;
+    bytes32 s;
+}
+
+/// @notice A Tempo transaction (type 0x76).
+struct TxEnvelope {
+    uint64 chainId;
+    uint256 maxPriorityFeePerGas;
+    uint256 maxFeePerGas;
+    uint64 gasLimit;
+    TxCall[] calls;
+    AccessListItem[] accessList;
+    uint256 nonceKey;
+    uint64 nonce;
+    bool hasValidBefore;
+    uint64 validBefore;
+    bool hasValidAfter;
+    uint64 validAfter;
+    bool hasFeeToken;
+    address feeToken;
+    bool hasFeePayerSignature;
+    bytes feePayerSignature;
+    TxAuthorization[] authorizationList;
+    bool hasKeyAuthorization;
+    bytes keyAuthorization;
+}
+
+/// @title Builder and RLP encoder for Tempo transactions (type 0x76).
+/// @dev Encoding follows the Tempo spec where signed transactions have 15 fields:
+///      14 transaction fields + 1 signature field (65-byte secp256k1: r || s || v)
+library TempoTx {
+    /// @notice Tempo transaction type prefix.
+    uint8 internal constant TX_TYPE = 0x76;
+
+    /// @notice Creates a new Tempo transaction with default values.
+    function create() internal pure returns (TxEnvelope memory tx_) {
+        tx_.gasLimit = 21_000;
+    }
+
+    /// @notice Sets the chain ID.
+    function withChainId(TxEnvelope memory self, uint64 chainId)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.chainId = chainId;
+        return self;
+    }
+
+    /// @notice Sets the max priority fee per gas.
+    function withMaxPriorityFeePerGas(TxEnvelope memory self, uint256 fee)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.maxPriorityFeePerGas = fee;
+        return self;
+    }
+
+    /// @notice Sets the max fee per gas.
+    function withMaxFeePerGas(TxEnvelope memory self, uint256 fee)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.maxFeePerGas = fee;
+        return self;
+    }
+
+    /// @notice Sets the gas limit.
+    function withGasLimit(TxEnvelope memory self, uint64 gasLimit)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.gasLimit = gasLimit;
+        return self;
+    }
+
+    /// @notice Sets the calls array.
+    function withCalls(TxEnvelope memory self, TxCall[] memory calls)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.calls = calls;
+        return self;
+    }
+
+    /// @notice Convenience method to set a single call.
+    function withCall(TxEnvelope memory self, address to, uint256 value, bytes memory data)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        TxCall[] memory calls = new TxCall[](1);
+        calls[0] = TxCall({ to: to, value: value, data: data });
+        self.calls = calls;
+        return self;
+    }
+
+    /// @notice Sets the access list.
+    function withAccessList(TxEnvelope memory self, AccessListItem[] memory accessList)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.accessList = accessList;
+        return self;
+    }
+
+    /// @notice Sets the 2D nonce key.
+    function withNonceKey(TxEnvelope memory self, uint256 nonceKey)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.nonceKey = nonceKey;
+        return self;
+    }
+
+    /// @notice Sets the nonce.
+    function withNonce(TxEnvelope memory self, uint64 nonce)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.nonce = nonce;
+        return self;
+    }
+
+    /// @notice Sets the validBefore timestamp.
+    function withValidBefore(TxEnvelope memory self, uint64 timestamp)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.hasValidBefore = true;
+        self.validBefore = timestamp;
+        return self;
+    }
+
+    /// @notice Sets the validAfter timestamp.
+    function withValidAfter(TxEnvelope memory self, uint64 timestamp)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.hasValidAfter = true;
+        self.validAfter = timestamp;
+        return self;
+    }
+
+    /// @notice Sets the fee token address.
+    function withFeeToken(TxEnvelope memory self, address token)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.hasFeeToken = true;
+        self.feeToken = token;
+        return self;
+    }
+
+    /// @notice Sets the fee payer signature.
+    function withFeePayerSignature(TxEnvelope memory self, bytes memory signature)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.hasFeePayerSignature = true;
+        self.feePayerSignature = signature;
+        return self;
+    }
+
+    /// @notice Sets the authorization list.
+    function withAuthorizationList(
+        TxEnvelope memory self,
+        TxAuthorization[] memory authorizationList
+    ) internal pure returns (TxEnvelope memory) {
+        self.authorizationList = authorizationList;
+        return self;
+    }
+
+    /// @notice Sets the key authorization.
+    function withKeyAuthorization(TxEnvelope memory self, bytes memory keyAuthorization)
+        internal
+        pure
+        returns (TxEnvelope memory)
+    {
+        self.hasKeyAuthorization = true;
+        self.keyAuthorization = keyAuthorization;
+        return self;
+    }
+
+    /// @notice RLP encodes the unsigned transaction with type prefix 0x76.
+    /// @dev Format: 0x76 || RLP([chainId, maxPriorityFeePerGas, maxFeePerGas, gasLimit, calls, accessList,
+    ///              nonceKey, nonce, validBefore, validAfter, feeToken, feePayerSignature, authorizationList, keyAuthorization])
+    ///      Note: keyAuthorization is truly optional (no bytes if not present)
+    function encode(TxEnvelope memory self, VmRlp) internal pure returns (bytes memory) {
+        // 13 mandatory fields + 1 optional keyAuthorization
+        uint256 fieldCount = self.hasKeyAuthorization ? 14 : 13;
+        bytes[] memory fields = new bytes[](fieldCount);
+
+        // Scalar fields: encode value then wrap with RLP string prefix
+        fields[0] = TxRlp.encodeString(TxRlp.encodeUint(self.chainId));
+        fields[1] = TxRlp.encodeString(TxRlp.encodeUint(self.maxPriorityFeePerGas));
+        fields[2] = TxRlp.encodeString(TxRlp.encodeUint(self.maxFeePerGas));
+        fields[3] = TxRlp.encodeString(TxRlp.encodeUint(self.gasLimit));
+
+        // Nested lists: already fully RLP encoded, pass directly
+        fields[4] = _encodeCalls(self.calls);
+        fields[5] = _encodeAccessList(self.accessList);
+
+        // More scalar fields
+        fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
+        fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
+        fields[8] = TxRlp.encodeString(
+            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
+        );
+        fields[9] = TxRlp.encodeString(
+            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
+        );
+        fields[10] = TxRlp.encodeString(
+            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
+        );
+
+        // Fee payer signature: encoded as RLP list [v, r, s] if present, else 0x80
+        fields[11] = self.hasFeePayerSignature
+            ? _encodeFeePayerSignature(self.feePayerSignature)
+            : TxRlp.encodeString(TxRlp.encodeNone());
+
+        // Authorization list (always present, can be empty)
+        fields[12] = _encodeAuthorizationList(self.authorizationList);
+
+        // Key authorization is truly optional (no bytes if not present)
+        if (self.hasKeyAuthorization) {
+            fields[13] = TxRlp.encodeString(self.keyAuthorization);
+        }
+
+        bytes memory rlpPayload = TxRlp.encodeRawList(fields);
+        return abi.encodePacked(TX_TYPE, rlpPayload);
+    }
+
+    /// @notice RLP encodes the signed transaction with type prefix 0x76.
+    /// @dev Format: 0x76 || RLP([...14 fields, signature_bytes])
+    ///      The signature is a 65-byte secp256k1 signature: r (32) || s (32) || v (1)
+    /// @param v The recovery parameter (27 or 28 from vm.sign). Will be stored as-is in the signature bytes.
+    function encodeWithSignature(TxEnvelope memory self, VmRlp, uint8 v, bytes32 r, bytes32 s)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        // 13 or 14 tx fields + 1 signature field
+        uint256 fieldCount = self.hasKeyAuthorization ? 15 : 14;
+        bytes[] memory fields = new bytes[](fieldCount);
+
+        // Encode all transaction fields (same as unsigned)
+        fields[0] = TxRlp.encodeString(TxRlp.encodeUint(self.chainId));
+        fields[1] = TxRlp.encodeString(TxRlp.encodeUint(self.maxPriorityFeePerGas));
+        fields[2] = TxRlp.encodeString(TxRlp.encodeUint(self.maxFeePerGas));
+        fields[3] = TxRlp.encodeString(TxRlp.encodeUint(self.gasLimit));
+        fields[4] = _encodeCalls(self.calls);
+        fields[5] = _encodeAccessList(self.accessList);
+        fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
+        fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
+        fields[8] = TxRlp.encodeString(
+            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
+        );
+        fields[9] = TxRlp.encodeString(
+            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
+        );
+        fields[10] = TxRlp.encodeString(
+            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
+        );
+        fields[11] = self.hasFeePayerSignature
+            ? _encodeFeePayerSignature(self.feePayerSignature)
+            : TxRlp.encodeString(TxRlp.encodeNone());
+        fields[12] = _encodeAuthorizationList(self.authorizationList);
+
+        uint256 sigFieldIdx;
+        if (self.hasKeyAuthorization) {
+            fields[13] = TxRlp.encodeString(self.keyAuthorization);
+            sigFieldIdx = 14;
+        } else {
+            sigFieldIdx = 13;
+        }
+
+        // Signature field: 65 bytes (r || s || v) encoded as RLP bytes string
+        // Note: For secp256k1, the format is r (32 bytes) || s (32 bytes) || v (1 byte)
+        bytes memory sigBytes = abi.encodePacked(r, s, v);
+        fields[sigFieldIdx] = TxRlp.encodeString(sigBytes);
+
+        bytes memory rlpPayload = TxRlp.encodeRawList(fields);
+        return abi.encodePacked(TX_TYPE, rlpPayload);
+    }
+
+    /// @notice RLP encodes the signed transaction with an arbitrary signature field, such as a
+    ///         keychain signature `0x04 || account || innerSignature`.
+    function encodeWithRawSignature(TxEnvelope memory self, VmRlp, bytes memory sigBytes)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        uint256 fieldCount = self.hasKeyAuthorization ? 15 : 14;
+        bytes[] memory fields = new bytes[](fieldCount);
+        fields[0] = TxRlp.encodeString(TxRlp.encodeUint(self.chainId));
+        fields[1] = TxRlp.encodeString(TxRlp.encodeUint(self.maxPriorityFeePerGas));
+        fields[2] = TxRlp.encodeString(TxRlp.encodeUint(self.maxFeePerGas));
+        fields[3] = TxRlp.encodeString(TxRlp.encodeUint(self.gasLimit));
+        fields[4] = _encodeCalls(self.calls);
+        fields[5] = _encodeAccessList(self.accessList);
+        fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
+        fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
+        fields[8] = TxRlp.encodeString(
+            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
+        );
+        fields[9] = TxRlp.encodeString(
+            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
+        );
+        fields[10] = TxRlp.encodeString(
+            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
+        );
+        fields[11] = self.hasFeePayerSignature
+            ? _encodeFeePayerSignature(self.feePayerSignature)
+            : TxRlp.encodeString(TxRlp.encodeNone());
+        fields[12] = _encodeAuthorizationList(self.authorizationList);
+        uint256 sigFieldIdx = 13;
+        if (self.hasKeyAuthorization) {
+            fields[13] = self.keyAuthorization;
+            sigFieldIdx = 14;
+        }
+        fields[sigFieldIdx] = TxRlp.encodeString(sigBytes);
+        return abi.encodePacked(TX_TYPE, TxRlp.encodeRawList(fields));
+    }
+
+    /// @notice Computes the user signing hash for the transaction.
+    /// @dev When a fee payer signature is present:
+    ///      - fee_token is SKIPPED (user doesn't commit to fee token)
+    ///      - fee payer signature field is encoded as a 0x00 placeholder byte
+    ///      This matches Rust's TxEnvelope::encode_for_signing / signature_hash.
+    function signingHash(TxEnvelope memory self, VmRlp) internal pure returns (bytes32) {
+        uint256 fieldCount = self.hasKeyAuthorization ? 14 : 13;
+        bytes[] memory fields = new bytes[](fieldCount);
+
+        fields[0] = TxRlp.encodeString(TxRlp.encodeUint(self.chainId));
+        fields[1] = TxRlp.encodeString(TxRlp.encodeUint(self.maxPriorityFeePerGas));
+        fields[2] = TxRlp.encodeString(TxRlp.encodeUint(self.maxFeePerGas));
+        fields[3] = TxRlp.encodeString(TxRlp.encodeUint(self.gasLimit));
+        fields[4] = _encodeCalls(self.calls);
+        fields[5] = _encodeAccessList(self.accessList);
+        fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
+        fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
+        fields[8] = TxRlp.encodeString(
+            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
+        );
+        fields[9] = TxRlp.encodeString(
+            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
+        );
+
+        // When fee payer sig is present, skip fee_token (encode as empty)
+        if (self.hasFeePayerSignature) {
+            fields[10] = TxRlp.encodeString(TxRlp.encodeNone());
+        } else {
+            fields[10] = TxRlp.encodeString(
+                self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
+            );
+        }
+
+        // Fee payer signature: 0x00 placeholder if present, else 0x80
+        if (self.hasFeePayerSignature) {
+            fields[11] = TxRlp.encodeString(abi.encodePacked(uint8(0)));
+        } else {
+            fields[11] = TxRlp.encodeString(TxRlp.encodeNone());
+        }
+
+        fields[12] = _encodeAuthorizationList(self.authorizationList);
+
+        if (self.hasKeyAuthorization) {
+            fields[13] = TxRlp.encodeString(self.keyAuthorization);
+        }
+
+        bytes memory rlpPayload = TxRlp.encodeRawList(fields);
+        return keccak256(abi.encodePacked(TX_TYPE, rlpPayload));
+    }
+
+    /// @notice Computes the fee payer signature hash.
+    /// @dev The fee payer signs this hash to sponsor the transaction. Format:
+    ///      keccak256(0x78 || RLP([...all fields with sender address in place of feePayerSignature...]))
+    ///      This matches Rust's TxEnvelope::fee_payer_signature_hash().
+    function feePayerSignatureHash(TxEnvelope memory self, VmRlp, address sender)
+        internal
+        pure
+        returns (bytes32)
+    {
+        uint256 fieldCount = self.hasKeyAuthorization ? 14 : 13;
+        bytes[] memory fields = new bytes[](fieldCount);
+
+        fields[0] = TxRlp.encodeString(TxRlp.encodeUint(self.chainId));
+        fields[1] = TxRlp.encodeString(TxRlp.encodeUint(self.maxPriorityFeePerGas));
+        fields[2] = TxRlp.encodeString(TxRlp.encodeUint(self.maxFeePerGas));
+        fields[3] = TxRlp.encodeString(TxRlp.encodeUint(self.gasLimit));
+        fields[4] = _encodeCalls(self.calls);
+        fields[5] = _encodeAccessList(self.accessList);
+        fields[6] = TxRlp.encodeString(TxRlp.encodeUint(self.nonceKey));
+        fields[7] = TxRlp.encodeString(TxRlp.encodeUint(self.nonce));
+        fields[8] = TxRlp.encodeString(
+            self.hasValidBefore ? TxRlp.encodeUint(self.validBefore) : TxRlp.encodeNone()
+        );
+        fields[9] = TxRlp.encodeString(
+            self.hasValidAfter ? TxRlp.encodeUint(self.validAfter) : TxRlp.encodeNone()
+        );
+        fields[10] = TxRlp.encodeString(
+            self.hasFeeToken ? TxRlp.encodeAddress(self.feeToken) : TxRlp.encodeNone()
+        );
+
+        // Sender address in place of fee payer signature (matching Rust)
+        fields[11] = TxRlp.encodeString(TxRlp.encodeAddress(sender));
+
+        fields[12] = _encodeAuthorizationList(self.authorizationList);
+
+        if (self.hasKeyAuthorization) {
+            fields[13] = TxRlp.encodeString(self.keyAuthorization);
+        }
+
+        bytes memory rlpPayload = TxRlp.encodeRawList(fields);
+        return keccak256(abi.encodePacked(uint8(0x78), rlpPayload));
+    }
+
+    /// @notice Encodes the calls array as an RLP list.
+    /// @dev Each call is encoded as [to, value, data].
+    ///      For CREATE calls (to == address(0)), `to` is encoded as empty string (0x80)
+    ///      to match Rust's TxKind::Create encoding.
+    function _encodeCalls(TxCall[] memory calls) private pure returns (bytes memory) {
+        bytes[] memory encodedCalls = new bytes[](calls.length);
+        for (uint256 i = 0; i < calls.length; i++) {
+            bytes[] memory callFields = new bytes[](3);
+            // CREATE is encoded as empty string, CALL is encoded as 20-byte address
+            if (calls[i].to == address(0)) {
+                callFields[0] = TxRlp.encodeString(TxRlp.encodeNone()); // CREATE: empty string
+            } else {
+                callFields[0] = TxRlp.encodeString(TxRlp.encodeAddress(calls[i].to));
+            }
+            callFields[1] = TxRlp.encodeString(TxRlp.encodeUint(calls[i].value));
+            callFields[2] = TxRlp.encodeString(calls[i].data);
+            encodedCalls[i] = TxRlp.encodeRawList(callFields);
+        }
+        return TxRlp.encodeRawList(encodedCalls);
+    }
+
+    /// @notice Encodes the access list as an RLP list.
+    /// @dev Each item is encoded as [address, [storageKey1, storageKey2, ...]].
+    function _encodeAccessList(AccessListItem[] memory list) private pure returns (bytes memory) {
+        bytes[] memory encodedItems = new bytes[](list.length);
+        for (uint256 i = 0; i < list.length; i++) {
+            bytes[] memory keys = new bytes[](list[i].storageKeys.length);
+            for (uint256 j = 0; j < list[i].storageKeys.length; j++) {
+                keys[j] = TxRlp.encodeString(TxRlp.encodeBytes32Full(list[i].storageKeys[j]));
+            }
+            bytes memory keysList = TxRlp.encodeRawList(keys);
+
+            bytes[] memory itemFields = new bytes[](2);
+            itemFields[0] = TxRlp.encodeString(TxRlp.encodeAddress(list[i].target));
+            itemFields[1] = keysList; // Already a fully encoded list
+            encodedItems[i] = TxRlp.encodeRawList(itemFields);
+        }
+        return TxRlp.encodeRawList(encodedItems);
+    }
+
+    /// @notice Encodes the authorization list as an RLP list.
+    function _encodeAuthorizationList(TxAuthorization[] memory list)
+        private
+        pure
+        returns (bytes memory)
+    {
+        bytes[] memory encodedAuths = new bytes[](list.length);
+        for (uint256 i = 0; i < list.length; i++) {
+            bytes[] memory authFields = new bytes[](6);
+            authFields[0] = TxRlp.encodeString(TxRlp.encodeUint(list[i].chainId));
+            authFields[1] = TxRlp.encodeString(TxRlp.encodeAddress(list[i].authority));
+            authFields[2] = TxRlp.encodeString(TxRlp.encodeUint(list[i].nonce));
+            authFields[3] = TxRlp.encodeString(TxRlp.encodeUint(list[i].yParity));
+            authFields[4] = TxRlp.encodeString(TxRlp.encodeBytes32(list[i].r));
+            authFields[5] = TxRlp.encodeString(TxRlp.encodeBytes32(list[i].s));
+            encodedAuths[i] = TxRlp.encodeRawList(authFields);
+        }
+        return TxRlp.encodeRawList(encodedAuths);
+    }
+
+    /// @notice Encodes fee payer signature as RLP list [v, r, s]
+    function _encodeFeePayerSignature(bytes memory sig) private pure returns (bytes memory) {
+        require(sig.length == 65, "Invalid fee payer signature length");
+
+        // Parse signature: first 32 bytes = r, next 32 = s, last byte = v
+        bytes32 r = bytes32(0);
+        bytes32 s = bytes32(0);
+        uint8 v = 0;
+        assembly {
+            r := mload(add(sig, 32))
+            s := mload(add(sig, 64))
+            v := byte(0, mload(add(sig, 96)))
+        }
+
+        // Normalize v from 27/28 to 0/1 parity (Rust decodes as bool)
+        uint8 parity = v >= 27 ? v - 27 : v;
+
+        // Encode as RLP list [v, r, s] matching Rust's Signature::write_rlp_vrs order
+        bytes[] memory sigFields = new bytes[](3);
+        sigFields[0] = TxRlp.encodeString(TxRlp.encodeUint(parity));
+        sigFields[1] = TxRlp.encodeString(TxRlp.encodeBytes32(r));
+        sigFields[2] = TxRlp.encodeString(TxRlp.encodeBytes32(s));
+        return TxRlp.encodeRawList(sigFields);
+    }
+
+    // ============ Legacy function signatures for backwards compatibility ============
+
+    /// @notice Encodes the calls array as an RLP list (legacy signature).
+    function encodeCalls(VmRlp, TxCall[] memory calls) internal pure returns (bytes memory) {
+        return _encodeCalls(calls);
+    }
+
+    /// @notice Encodes the access list as an RLP list (legacy signature).
+    function encodeAccessList(VmRlp, AccessListItem[] memory list)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return _encodeAccessList(list);
+    }
+
+    /// @notice Encodes the authorization list as an RLP list (legacy signature).
+    function encodeAuthorizationList(VmRlp, TxAuthorization[] memory list)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return _encodeAuthorizationList(list);
+    }
+}

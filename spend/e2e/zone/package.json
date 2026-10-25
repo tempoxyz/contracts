@@ -1,0 +1,21 @@
+{
+  "name": "spend-zone-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "zone": "tsx src/run.ts",
+    "typecheck": "tsc --noEmit",
+    "zone:moderato": "tsx src/run.ts --target moderato"
+  },
+  "dependencies": {
+    "ox": "0.14.45",
+    "prool": "0.2.8",
+    "testcontainers": "12.0.4",
+    "viem": "2.57.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0"
+  }
+}

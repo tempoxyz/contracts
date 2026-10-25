@@ -95,6 +95,7 @@ or building transaction infrastructure.
 | `localnet/`       | Disposable local Tempo L1 and Zone lifecycle.                                    |
 | `test/`           | Tests mirroring the Solidity production domains.                                 |
 | `docs/`           | Architecture, integration, operations, and development documentation.            |
+| `spend/`          | Bridge card spend: a separate Foundry project over Bridge's spender contracts.   |
 
 ## Project status
 

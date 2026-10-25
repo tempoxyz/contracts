@@ -160,6 +160,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 | `pr-audit.yml`            | Pull request label, push, or comment                                                                 | The Cyclops audit                                                                                                                                       |
 | `zones-compatibility.yml` | Push to `main` touching `src/`, `lib/`, `foundry.*`, itself, or the remediation-event action; manual | Builds Earn's contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                          |
 | `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                          | Hosted [user-perceived latency benchmarks](operations/benchmarks.md#ci)                                                                                 |
+| `spend.yml`               | Pull request or push to `main` touching `spend/` or its inputs                                       | The separate [`spend/`](../spend/README.md) project's format, build, tests, card matrix, Zone E2E, and smoke run; not a required check                  |
 
 - **Verify jobs.** Contracts runs the same steps as `verify:contracts`, except that its Forge test
   step skips `test/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
