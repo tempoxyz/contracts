@@ -7,7 +7,7 @@ allowBuilds:
 overrides:
   ox: 0.14.45
   'prool@0.2.8>tar': 7.5.22
-  # Socket blocks releases younger than two weeks. These match tempoxyz/earn's lockfile, and
-  # undici 8.10.2 carries every published advisory fix.
-  undici: 8.10.2
+  # Socket blocks releases younger than two weeks. These match the root workspace's lockfile;
+  # undici 8.12.2 is the root's security override for redirect and proxy handling.
+  undici: 8.12.2
   bare-url: 2.5.4

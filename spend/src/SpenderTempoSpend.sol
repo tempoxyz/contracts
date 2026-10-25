@@ -202,35 +202,35 @@ contract SpenderTempoSpend is SpenderBase {
 
     /// @dev Value of `from`'s shares in `vault` when it holds `token`. A vault that cannot report
     ///      its asset, share or redemption value adds nothing, so the stablecoin stays readable.
+    ///      Reads are low-level: `try` cannot catch a call to an address without code or return
+    ///      data it cannot decode, which would revert the whole balance query.
     function _vaultValue(ITempoEarnVault vault, address from, address token)
         private
         view
         returns (uint256)
     {
-        try vault.asset() returns (address asset) {
-            if (asset != token) return 0;
-        } catch {
-            return 0;
-        }
-        address share;
-        try vault.earnShare() returns (address s) {
-            share = s;
-        } catch {
-            return 0;
-        }
-        if (share.code.length == 0) return 0;
+        (bool ok, uint256 word) = _readWord(address(vault), abi.encodeCall(vault.asset, ()));
+        if (!ok || word != uint256(uint160(token))) return 0;
+        (ok, word) = _readWord(address(vault), abi.encodeCall(vault.earnShare, ()));
+        if (!ok || word >> 160 != 0) return 0;
+        address share = address(uint160(word));
         uint256 shares;
-        try IERC20(share).balanceOf(from) returns (uint256 b) {
-            shares = b;
-        } catch {
-            return 0;
-        }
-        if (shares == 0) return 0;
-        try vault.previewRedeem(shares) returns (uint256 value) {
-            return value;
-        } catch {
-            return 0;
-        }
+        (ok, shares) = _readWord(share, abi.encodeCall(IERC20.balanceOf, (from)));
+        if (!ok || shares == 0) return 0;
+        (ok, word) = _readWord(address(vault), abi.encodeCall(vault.previewRedeem, (shares)));
+        return ok ? word : 0;
+    }
+
+    /// @dev False unless `target` has code, the call succeeds and it returns at least one word.
+    function _readWord(address target, bytes memory data)
+        private
+        view
+        returns (bool ok, uint256 word)
+    {
+        if (target.code.length == 0) return (false, 0);
+        (bool success, bytes memory ret) = target.staticcall(data);
+        if (!success || ret.length < 32) return (false, 0);
+        return (true, abi.decode(ret, (uint256)));
     }
 
     /// @dev True when `createSpender(spenderId)` deployed this clone. A manager can register more

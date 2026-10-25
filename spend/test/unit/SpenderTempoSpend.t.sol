@@ -386,6 +386,34 @@ contract SpenderTempoSpendTest is TempoEnv {
         assertEq(_available(address(usd), address(earnVault)), stable, "asset reverts");
     }
 
+    /// @notice An allowed vault address without code adds nothing instead of reverting.
+    function test_availableBalanceSkipsVaultWithoutCode() public {
+        address empty = makeAddr("no-code-vault");
+        _setVault(empty, true);
+        assertEq(_available(address(usd), empty), usd.balanceOf(alice));
+    }
+
+    /// @notice A vault that returns nothing, a short reply, or a non-address word adds nothing.
+    function test_availableBalanceSkipsVaultWithMalformedReplies() public {
+        uint256 stable = usd.balanceOf(alice);
+        vm.mockCall(address(earnVault), abi.encodeCall(ITempoEarnVault.asset, ()), "");
+        assertEq(_available(address(usd), address(earnVault)), stable, "empty asset reply");
+        vm.mockCall(address(earnVault), abi.encodeCall(ITempoEarnVault.asset, ()), hex"0102");
+        assertEq(_available(address(usd), address(earnVault)), stable, "short asset reply");
+        vm.clearMockedCalls();
+        vm.mockCall(
+            address(earnVault),
+            abi.encodeCall(ITempoEarnVault.earnShare, ()),
+            abi.encode(type(uint256).max)
+        );
+        assertEq(_available(address(usd), address(earnVault)), stable, "share is not an address");
+        vm.clearMockedCalls();
+        vm.mockCall(
+            address(earnVault), abi.encodeWithSelector(ITempoEarnVault.previewRedeem.selector), ""
+        );
+        assertEq(_available(address(usd), address(earnVault)), stable, "empty preview reply");
+    }
+
     function test_strictPullPipelineIsDisabled() public {
         bytes memory data = abi.encodePacked(PREFIX_TEMPO_SPEND, alice, address(usd), uint256(1e6));
         vm.prank(bridgeDebitor);

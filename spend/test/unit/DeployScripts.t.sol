@@ -347,6 +347,34 @@ contract DeployScriptsTest is ZoneEnv {
         r = _earnPreflight(preflight, address(o.receiver), vaults);
         assertTrue(r.assetRefundsAllowedByPolicy, "receiver, portal and admin whitelisted");
 
+        // A bounced refund goes to the refund recipient, so it must be on the asset's policy too.
+        address refundRecipient = makeAddr("refund-recipient");
+        r = preflight.check(
+            SpenderFactory(address(bridgeFactory)),
+            SPENDER_ID,
+            settlement,
+            address(earnShare),
+            ZONE_ID,
+            address(o.receiver),
+            refundRecipient,
+            programWallet,
+            vaults
+        );
+        assertFalse(r.assetRefundsAllowedByPolicy, "refund recipient not on the asset whitelist");
+        StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(policy, refundRecipient, true);
+        r = preflight.check(
+            SpenderFactory(address(bridgeFactory)),
+            SPENDER_ID,
+            settlement,
+            address(earnShare),
+            ZONE_ID,
+            address(o.receiver),
+            refundRecipient,
+            programWallet,
+            vaults
+        );
+        assertTrue(r.assetRefundsAllowedByPolicy, "refund recipient whitelisted");
+
         vm.mockCall(
             address(portal),
             abi.encodeCall(IZonePortal.isTokenEnabled, (address(usd))),

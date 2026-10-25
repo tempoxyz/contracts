@@ -243,7 +243,9 @@ contract Preflight is Script {
         address admin = portal.admin();
         r.zoneAdminAllowedByPolicy =
             tokenOk && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, admin);
-        if (r.tokenIsEarnShare) _checkAssetRefunds(r, portal, stablecoin, receiver, admin);
+        if (r.tokenIsEarnShare) {
+            _checkAssetRefunds(r, portal, stablecoin, receiver, admin, refundRecipient);
+        }
         address messenger = portal.messenger();
         r.messengerAllowedByPolicy = tokenOk && messenger == ZONE_MESSENGER_ADDRESS
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, messenger)
@@ -416,13 +418,15 @@ contract Preflight is Script {
     }
 
     /// @dev An Earn program's refunds are in the vault asset, so its policy and the portal's
-    ///      deposits are checked for the asset as well.
+    ///      deposits are checked for the asset as well, including the refund recipient that
+    ///      receives a bounced refund (an unset one is reported by its own check).
     function _checkAssetRefunds(
         Report memory r,
         IZonePortal portal,
         address asset,
         address receiver,
-        address admin
+        address admin,
+        address refundRecipient
     ) private view {
         (bool ok, uint64 policy) = _policy(asset);
         r.assetRefundsAllowedByPolicy = ok && receiver != address(0)
@@ -430,7 +434,9 @@ contract Preflight is Script {
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(policy, receiver)
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, address(portal))
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(policy, address(portal))
-            && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, admin);
+            && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, admin)
+            && (refundRecipient == address(0)
+                || StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, refundRecipient));
         r.assetDepositsActive = portal.isTokenEnabled(asset) && portal.areDepositsActive(asset);
     }
 

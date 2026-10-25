@@ -52,7 +52,7 @@ jobs:
           accountId: ${{ secrets.DEV_CLOUDFLARE_ACCOUNT_ID }}
           command: deploy --env production
           packageManager: pnpm
-          workingDirectory: app
+          workingDirectory: earn/app
 
       - name: Smoke test production
         env:

@@ -1,10 +1,10 @@
-out/
-lib/
-cache/
-broadcast/
-reports/
+/out/
+/lib/
+/cache/
+/broadcast/
+/reports/
 .env
 .env.*
 !.env.example
-foundry-pp/
-e2e/zone/node_modules/
+/foundry-pp/
+/e2e/zone/node_modules/
