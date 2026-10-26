@@ -9,7 +9,7 @@ not hide. Audit coverage is on the [audits page](../audit/README.md).
 Tempo Earn limits authority by responsibility ([roles](system.md#roles-and-authority) and
 [invariants](system.md#core-invariants)). The ownerless Zone router authenticates one canonical Zone
 and moves only the value each callback delivers, converting through at most one immutable par pool;
-the EarnVault holds no customer-specific conversion policy. This separation limits the effect of a
+the EarnVault holds no integrator-specific conversion policy. This separation limits the effect of a
 defect in one module but does not make the system trustless. The base asset, yield venue, engine
 valuation, EarnVault operator, fee distributor, external TIP-403 policy administrator, Zone protocol,
 DirectPropAMM pool operator and oracle, and stablecoins remain explicit trust boundaries.
@@ -208,18 +208,18 @@ reveal the private recipient from that correlation alone, but it does not hide t
 
 ## Operational failure modes
 
-| Failure                                     | Onchain result                                                                                                                                                       | Recovery                                                                                 |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Deposit pause                               | New exposure reverts; exits stay open                                                                                                                                | Operator reviews and unpauses                                                            |
-| Broken valuation with fees active           | Fee-checkpointed action may revert                                                                                                                                   | Operator disables fees on a stack without a distributor; otherwise restore the valuation |
-| Immediate venue liquidity exhausted         | Immediate exit reverts                                                                                                                                               | Use public async request where supported                                                 |
-| Async request stalls                        | Entitlement stays open                                                                                                                                               | Veda: solve through the forwarding solver; or requester/janitor cancels                  |
-| Swap misses bound                           | Complete route reverts                                                                                                                                               | Refresh quote or deploy/select a compatible router                                       |
-| Zone callback fails                         | Original private withdrawal bounces under protocol rules                                                                                                             | Fix cause and submit a new withdrawal                                                    |
-| Engine valuation becomes stale              | Veda and PropAMM deposits revert; fee crystallization is deferred                                                                                                    | Publish a fresh report; exits remain available                                           |
-| Veda receiver hook spends a batch's gas     | Later claims in a solve stay claimable, or the solve reverts                                                                                                         | Omit that request from the batch; anyone pays out with `claimRedeem`                     |
-| Receiver's TIP-1028 policy blocks EarnShare | A deposit or cancellation mint, or an `EarnFees` claim, lands in the receive-policy guard, which only the sending contract could reclaim and which has no claim path | None; name only receivers that accept EarnShare                                          |
-| Cancellation after active backing is lost   | `cancelRedeem` re-anchors all supply over only the returned engine shares, moving part of the claimant's backing to other holders                                    | Finalize the queued claim instead of cancelling                                          |
+| Failure                                     | Onchain result                                                                                                                    | Recovery                                                                                 |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Deposit pause                               | New exposure reverts; exits stay open                                                                                             | Operator reviews and unpauses                                                            |
+| Broken valuation with fees active           | Fee-checkpointed action may revert                                                                                                | Operator disables fees on a stack without a distributor; otherwise restore the valuation |
+| Immediate venue liquidity exhausted         | Immediate exit reverts                                                                                                            | Use public async request where supported                                                 |
+| Async request stalls                        | Entitlement stays open                                                                                                            | Veda: solve through the forwarding solver; or requester/janitor cancels                  |
+| Swap misses bound                           | Complete route reverts                                                                                                            | Refresh quote or deploy/select a compatible router                                       |
+| Zone callback fails                         | Original private withdrawal bounces under protocol rules                                                                          | Fix cause and submit a new withdrawal                                                    |
+| Engine valuation becomes stale              | Veda and PropAMM deposits revert; fee crystallization is deferred                                                                 | Publish a fresh report; exits remain available                                           |
+| Veda receiver hook spends a batch's gas     | Later claims in a solve stay claimable, or the solve reverts                                                                      | Omit that request from the batch; anyone pays out with `claimRedeem`                     |
+| Receiver's TIP-1028 policy blocks EarnShare | A deposit or cancellation mint, or an `EarnFees` claim, does not reach the receiver                                               | Name only receivers that accept EarnShare                                                |
+| Cancellation after active backing is lost   | `cancelRedeem` re-anchors all supply over only the returned engine shares, moving part of the claimant's backing to other holders | Finalize the queued claim instead of cancelling                                          |
 
 ## Production readiness checklist
 
@@ -238,8 +238,7 @@ reveal the private recipient from that correlation alone, but it does not hide t
 - Verified that the installed engine advertises at least one redeem, exact-withdraw, or async-redeem
   capability.
 - `EarnVault` within the EIP-170 runtime and EIP-3860 initcode limits under
-  `FOUNDRY_PROFILE=deploy`; its runtime margin is only a few hundred bytes, and CI enforces no
-  margin ([contract size](../development.md#contract-size)).
+  `FOUNDRY_PROFILE=deploy` ([contract size](../development.md#contract-size)).
 - Tested async cancellation, loss recovery, and fee disablement.
 - For a Zone-connected stack, the [Zone go-live checklist](../modules/zone-router.md#go-live-checklist).
 - Verified EarnShare directly uses the intended simple TIP-403 whitelist and every required

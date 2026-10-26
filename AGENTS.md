@@ -32,8 +32,8 @@ For application onboarding, use [SKILL.md](SKILL.md) and the
   quarantined surplus, and pending claims remain separate. The canonical rules live in
   [system](docs/architecture/system.md), [fees](docs/architecture/fees.md), and
   [flows](docs/architecture/flows.md).
-- Core contracts and shared tooling are customer-agnostic. Venue behavior belongs in engines,
-  private conversion in the scoped router, and customer configuration in deployment profiles.
+- Core contracts and shared tooling are integrator-agnostic. Venue behavior belongs in engines,
+  private conversion in the scoped router, and per-deployment configuration in deployment profiles.
 - Tempo API owns offchain reward policy and operations. This repository owns reward contracts,
   deployment surfaces, and contract-focused tests; do not recreate an offchain reward service.
 - Use `viem/tempo` for shared Earn client capabilities. Keep browser signing, Worker transport,
@@ -74,24 +74,20 @@ wider follow-ups separately.
 
 Other repositories depend on these surfaces; keep them stable or change them together with their
 consumers. [`e2e/harness/workflows-contract.test.ts`](e2e/harness/workflows-contract.test.ts) pins
-the tempoxyz/workflows entry points.
+the automation entry points.
 
-- **tempoxyz/workflows** runs `pnpm e2e:devnet -- --group zone` and `pnpm devnet:deploy` against an
+- Devnet automation runs `pnpm e2e:devnet -- --group zone` and `pnpm devnet:deploy` against an
   existing devnet and reads each case's ID and status from the `e2e/.results/` run result. Their
   inputs and output files are in
   [existing devnet chains](docs/operations/e2e-environments.md#existing-devnet-chains).
-- **tempoxyz/cash** imports `localnet/src/index.ts` and calls
-  `Environment.run({ consumer, sameAssetRoute, ready })`.
-- **tempoxyz/earn-deployments** (private) pins Earn as a submodule and runs `pnpm earn`,
-  `pnpm e2e:profile`, and `pnpm profiles --profiles profiles` against the profiles it holds
-  ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
-- **tempoxyz/localnet**'s Earn example uses the root `./localnet` export
+- Localnet consumers import `localnet/src/index.ts` and call
+  `Environment.run({ consumer, sameAssetRoute, ready })`, or use the root `./localnet` export
   ([localnet layer](docs/development/localnet.md#localnet-layer)).
-- **tempoxyz/tempo** builds Earn `src/` and consumes the `SingleZoneEarnRouter` and `DemoParPool`
-  outputs.
-- **The private customer deployments repository** pins Earn as a submodule and runs `pnpm earn`,
-  `pnpm e2e:profile`, and `pnpm profiles` against its own `profiles/`
+- Deployment repositories pin Earn as a submodule and run `pnpm earn`, `pnpm e2e:profile`, and
+  `pnpm profiles --profiles profiles` against the profiles they hold
   ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
+- Tempo node builds compile Earn `src/` and consume the `SingleZoneEarnRouter` and `DemoParPool`
+  outputs.
 
 ## Guide maintenance
 

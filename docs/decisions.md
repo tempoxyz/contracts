@@ -5,11 +5,11 @@ This page records why the core stack is shaped as it is. The rules themselves ar
 [module page](README.md#capability-modules). Rationale does not replace contract-level security
 review.
 
-## Customer-agnostic core
+## Integrator-agnostic core
 
-**Decision:** keep customer policy, names, and custom flows outside EarnShare, `EarnVault`, and engine interfaces.
+**Decision:** keep integrator policy, names, and custom flows outside EarnShare, `EarnVault`, and engine interfaces.
 
-**Why:** the same ownership and custody model should support public Earn, private Zone access, and future integrations. Customer-specific contracts would fragment liquidity and make security review non-reusable.
+**Why:** the same ownership and custody model should support public Earn, private Zone access, and future integrations. Integrator-specific contracts would fragment liquidity and make security review non-reusable.
 
 ## Native TIP-20 EarnShare
 
@@ -117,7 +117,7 @@ under the external policy administrator; factory attachment does not create or m
 
 **Decision:** retain only issuance, conversion anchors, engine coordination, async entitlement,
 and pause controls in `EarnVault`. Put fee state in `EarnFees`, venue custody in engines,
-customer-specific swap and cross-domain execution in the scoped Earn router, and optional funding
+integrator-specific swap and cross-domain execution in the scoped Earn router, and optional funding
 orchestration in `EarnContributionController`.
 
 **Why:** every EarnVault is a permanent accounting contract and its bytecode budget should be

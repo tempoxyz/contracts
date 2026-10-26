@@ -108,9 +108,7 @@ or building transaction infrastructure.
 
 [Sigma Prime](https://sigmaprime.io) completed two security reviews in August 2026, the Zones & Earn
 Review v1.1 and the PropAMM & Earn Review v2.0, and every finding that affects Earn is resolved. The
-[audits page](docs/audit/README.md) lists each report's scope, commits, and findings, and every
-contract changed or added since, including the experimental `PropAMMEngine`. `src/demo/` and the app
-are outside both reports.
+[audits page](docs/audit/README.md) lists each report's scope.
 
 ## Security
 

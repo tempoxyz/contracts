@@ -6,7 +6,7 @@ owned by [system architecture](../architecture/system.md) and [Earn fees](../arc
 ordering by [flows](../architecture/flows.md), and trust assumptions by
 [security and privacy](../architecture/security-and-privacy.md). TypeScript consumers import the
 ABIs from `@tempoxyz/earn/abis` ([deployments README](../../deployments/README.md#exports)). Audit
-scope and later changes are in [audits](../audit/README.md#coverage-after-the-audits).
+scope is in [audits](../audit/README.md#scope).
 
 ## Deployment inventory
 

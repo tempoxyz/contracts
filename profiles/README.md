@@ -27,7 +27,7 @@ The smallest useful configuration is:
 ```json
 {
   "version": 1,
-  "id": "customer-mainnet",
+  "id": "example-mainnet",
   "chainId": 4217,
   "engine": {
     "kind": "erc4626",
@@ -107,7 +107,7 @@ and records it but does not fetch or persist rate observations. A minimal boost 
 Rates are basis points, timestamps are UTC Unix seconds, and asset values are base-asset atomic
 units as decimal strings (for a six-decimal asset, `$25,000` and `$10,000,000` above). Every
 interval is 60 to 300 seconds, and each window must contain a whole positive number of intervals.
-Optional `excludedAddresses` contains only customer custody not derivable from the stack. The
+Optional `excludedAddresses` contains only integrator custody not derivable from the stack. The
 per-user cap cannot exceed the total cap. The campaign ID derives from chain, profile ID, and
 version, and the claim deadline is fixed at 30 days after `endTimestamp`.
 
@@ -160,7 +160,7 @@ going live with a Zone-integrated profile, use the
 
 ## Profiles in another repository
 
-Customer profiles live in a private deployments repository that pins Earn as a Git submodule and
+Profiles can also live in another repository that pins Earn as a Git submodule and
 runs this tooling against its own `profiles/` directory. The tooling treats any
 `<root>/profiles/<id>/profile.json` exactly like the profiles here: the record, pending state, and
 `fixture.json` sit beside the profile, and `.env.<id>` sits at that `<root>`; Forge outputs are
@@ -175,7 +175,7 @@ pnpm --dir earn profiles --profiles profiles
 
 `pnpm profiles --profiles <directory>` applies the checked-in-profile validation to that
 directory; `--matrix` instead prints every recorded profile with its hosted chain's public RPC as
-one line of JSON (the `profiles` output under GitHub Actions). Onboarding a customer adds only
+one line of JSON (the `profiles` output under GitHub Actions). Adding a profile there takes only
 `<id>/profile.json`, its generated `deployment.json`, and the operator's ignored `.env.<id>` in
 that repository.
 

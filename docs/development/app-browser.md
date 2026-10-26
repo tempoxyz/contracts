@@ -61,7 +61,7 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
 ## Public transaction preparation
 
 - Derive the asset, share token, and current engine from the selected earnVault and verify them against the selected catalog stack before enabling writes.
-- Direct public deposits accept only `earnVault.asset()`. Customer-token swaps belong to the
+- Direct public deposits accept only `earnVault.asset()`. Integrator-token swaps belong to the
   deployment-scoped router's immutable private-asset and backend bindings; the EarnVault owns no
   route policy.
 - Direct public deposits must refresh the expected EarnShare output at submission time and pass a nonzero tolerance-adjusted `minEarnShares` to the earnVault; a display-only preview is not transaction protection.

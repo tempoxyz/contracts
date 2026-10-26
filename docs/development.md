@@ -27,7 +27,7 @@ pnpm install
 
 Both submodules (`lib/forge-std`, `lib/openzeppelin-contracts`) are public. Contract tests and every
 local stack deploy the committed [DirectPropAMM fixture](modules/propamm.md#pinned-directpropamm-fixture),
-so no private checkout or PropAMM build is needed.
+so no PropAMM checkout or build is needed.
 
 ## App environment
 
@@ -78,8 +78,7 @@ CI also runs the bounded symbolic fee proofs, the PropAMM fixture rebuild, the b
 router fuzz, and local E2E ([continuous integration](#continuous-integration)); `pnpm verify` does
 not. While iterating, use `forge test --match-path <path> -vvv`, then finish with the full suite.
 
-`forge build` does not lint. [`foundry.toml`](../foundry.toml) excludes only the lints whose every
-finding on the audited contracts was triaged as a false positive or an accepted pattern, with the
+`forge build` does not lint. [`foundry.toml`](../foundry.toml) excludes a small set of lints, with the
 reason for each; every other lint, including reentrancy with value, unchecked calls, delegatecall,
 and divide-before-multiply, stays enabled and fails on any new finding. Contracts are not changed to
 fix lints, so a lint category is enabled only when it passes clean.
@@ -168,8 +167,8 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
   `EarnFeeMathFuzzTest` `prove*` properties with z3 at a loop bound of 32. TypeScript checks and
   build typechecks one workspace at a time (local `pnpm check:types` runs them in parallel).
 - **PropAMM fixture.** The job checks out the
-  [pinned PropAMM commit](modules/propamm.md#pinned-directpropamm-fixture) with a five-minute
-  read-only GitHub STS token from PropAMM's `earn-ci-read` policy and fails when the committed
+  [pinned PropAMM commit](modules/propamm.md#pinned-directpropamm-fixture) with a short-lived
+  read-only token and fails when the committed
   fixture differs from its build (`test/fixtures/propamm/update.sh --check`).
 - **Local E2E scope.** Each shard runs `pnpm e2e:local -- --variant <kind> --all --shard <n>/2` over
   the pinned images and installs only the `e2e` workspace closure. `.github/actions/e2e-scope` runs

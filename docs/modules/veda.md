@@ -12,7 +12,7 @@ Veda is an `IEarnEngine` backend, not a separate Earn deployment type: the Veda 
 reviewed, unbound `VedaEngine`, and the profile lifecycle deploys the standard core around it. No
 Earn deployment script deploys or administers BoringVault, Teller, Queue, Accountant,
 RolesAuthority, or a Veda solver; only test fixtures stand in for them ([test stacks](#test-stacks)).
-Veda source is externally owned and license-restricted, so it is not vendored here.
+Veda source is externally owned and is not vendored here.
 
 ## Contracts
 
@@ -333,8 +333,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
 
 ### Test stacks
 
-No supported Veda release is deployed for Earn, because Veda's contracts are licensed for evaluation
-only. Tempo-owned stacks therefore run over Veda-compatible fixtures
+Tempo-owned test stacks run over Veda-compatible fixtures
 ([`LocalVeda.sol`](../../localnet/foundry/src/LocalVeda.sol)); they prove nothing about release
 compatibility and never stand in for a production venue. The fixture BoringVault doubles as a
 RolesAuthority that allows every call, the test deployer owns the BoringVault (and so controls the

@@ -9,7 +9,7 @@ signatures in the [contract reference](../reference/contracts.md). Audit coverag
 
 ## Goal
 
-Tempo Earn gives every customer the same onchain shape for vault-backed yield. A native,
+Tempo Earn gives every integrator the same onchain shape for vault-backed yield. A native,
 non-rebasing TIP-20 EarnShare represents ownership. A persistent `EarnVault` is its sole issuer and
 keeps accounting stable when the yield venue changes. One current engine holds the venue shares. An
 ownerless `EarnFees` module holds fee state and fee custody. An optional ownerless router adds
@@ -40,7 +40,7 @@ The repository implements:
 - optional one-way contribution orchestration; and
 - an optional EarnShare settlement rail for offchain-computed cumulative reward entitlements.
 
-It does not implement an end-user API, identity provider, portfolio allocator, or customer-specific
+It does not implement an end-user API, identity provider, portfolio allocator, or integrator-specific
 commercial policy. Contracts in `src/demo/` are test infrastructure.
 
 ## Units
@@ -250,13 +250,9 @@ against it: exits keep all remaining holder backing managed even if rounding mov
 yield does not move the rate, because it raises the value of each engine share rather than their
 number. Rewards compounding at 7% a year would take about 68 years to reach 100×.
 
-Exit rounding can be compounded deliberately. `withdrawExact` rounds the EarnShare it burns up, so
-a holder of the whole active supply can alternate exact withdrawals with `depositVenueShares` and
-ratchet the rate: with a 6-decimal asset over an 18-decimal venue, 25 rounds raise it about 16.7
-million×. Rewards are then blocked, and a later deposit reverts with `ExcessiveConversionLoss` once
-one EarnShare unit is worth more than its 1-basis-point loss bound allows. The holder keeps the value
-it moved, so this costs only gas, but it needs the whole supply: it affects a new or emptied pool
-before other holders enter.
+A holder of the whole active supply can also raise the rate through exit rounding, which can block
+rewards and later deposits on that pool. It moves no value from other holders and needs the whole
+supply, so it affects only a new or emptied pool before other holders enter.
 
 An async request removes its EarnShare and engine shares from the active pool. A request that
 empties the pool resets the baseline like any empty anchor, and a cancellation that reopens the pool

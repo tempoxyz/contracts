@@ -62,7 +62,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 | Authored profile JSON, rewards configuration, and test fixture bootstrap        | [Profiles](../profiles/README.md)                                                             |
 | Deployment package exports, ABIs, modules, and registries                       | [`deployments/README.md`](../deployments/README.md)                                           |
 | Current hosted state and troubleshooting                                        | [Hosted environments](operations/hosted-environments.md)                                      |
-| Deployed customer stacks and customer-specific runbooks                         | [Customer deployments](operations/hosted-environments.md#customer-deployments)                |
+| Stacks deployed outside this repository                                         | [External deployments](operations/hosted-environments.md#external-deployments)                |
 | E2E cases, selection, profile acceptance, credentials, and existing devnets     | [E2E environments](operations/e2e-environments.md)                                            |
 | User-perceived latency benchmarks and Zone withdrawal exit latency              | [Benchmarks](operations/benchmarks.md)                                                        |
 | Browser catalog and app profile projection                                      | [App deployment](operations/app-deployment.md)                                                |

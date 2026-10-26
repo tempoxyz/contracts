@@ -85,7 +85,7 @@ to this profile's EarnVault and owned by an accepted owner. `bind-core` then cal
 `initializeEarnVault(earnVault, owner)` when the deployer key holds the engine, or emits a handoff
 for the current engine owner.
 
-Customer ownership handoffs are two-step and leave the profile and record unchanged: the nominee
+Ownership handoffs are two-step and leave the profile and record unchanged: the nominee
 accepts the EarnVault operator role and engine ownership separately. Reconciliation, `verify`, and
 inspection therefore accept a bound engine owned either by the profile owner or by the EarnVault's
 current operator.

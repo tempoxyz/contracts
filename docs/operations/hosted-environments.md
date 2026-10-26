@@ -12,8 +12,8 @@ availability from transaction history.
 
 ## Current availability
 
-These are Tempo-owned test profiles; customer stacks are under
-[customer deployments](#customer-deployments).
+These are Tempo-owned test profiles; other stacks are under
+[external deployments](#external-deployments).
 
 - [`app-moderato`](../../profiles/app-moderato/profile.json) is the Moderato app's default PATHUSD
   ERC-4626 stack with open access, listed with public and private modes. Its Zone 3 router converts
@@ -31,11 +31,8 @@ These are Tempo-owned test profiles; customer stacks are under
   stack for hosted Zone E2E and the scheduled [benchmark](benchmarks.md), with a bootstrapped
   `fixture.json`; it is not listed in the app. Protected policies and alternate stablecoins remain
   E2E-only fixtures.
-- [`veda-mainnet`](../../profiles/veda-mainnet/profile.json) is a retired test fixture. It is not
-  listed in the app and must not be refilled or reused; its profile and record remain for
-  provenance.
 
-The app lists only Moderato; mainnet has no listed stack.
+The app lists only Moderato.
 
 ## Adding a hosted network
 
@@ -57,12 +54,11 @@ sponsor from it. To add a network:
    [regenerate the catalog](app-deployment.md#regenerating-the-catalog). A network with no active
    stack stays out of the catalog.
 
-## Customer deployments
+## External deployments
 
-Customer stacks are not in this repository. Their profiles, generated records, and runbooks live in a
-private deployments repository that pins Earn as a submodule and runs this tooling against them
-([profiles in another repository](../../profiles/README.md#profiles-in-another-repository)), so Earn
-lists no customers. Recheck one on demand with `pnpm earn verify <profile.json>` and
+Stacks deployed outside this repository keep their profiles, generated records, and runbooks in a
+separate deployments repository that pins Earn as a submodule and runs this tooling against them
+([profiles in another repository](../../profiles/README.md#profiles-in-another-repository)). Recheck one on demand with `pnpm earn verify <profile.json>` and
 `pnpm e2e:profile <profile.json> --validate-only`, with `TEMPO_API_KEY` or `ZONE_RPC_URL` set for
 the live Zone check ([rechecking deployed profiles](deployment.md#rechecking-deployed-profiles)).
 

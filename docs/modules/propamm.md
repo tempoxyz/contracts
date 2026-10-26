@@ -5,9 +5,6 @@ deployment, authorities, failure modes, tests, and the pinned DirectPropAMM fixt
 engine's tests and the [Zone router](zone-router.md)'s par conversion use. The shared engine
 contract is in [yield engines](../integrations/engines.md).
 
-`PropAMMEngine` is experimental: it is outside the completed [audits](../audit/README.md)
-([review scope](#review-scope)), and no hosted PropAMM profile exists.
-
 ## Contract
 
 [`PropAMMEngine`](../../src/engines/propamm/PropAMMEngine.sol) puts one fixed Tempo DirectPropAMM
@@ -152,13 +149,13 @@ read them through the engine definition and the generated ABIs in `@tempoxyz/ear
 Contract tests and localnet deploy `DirectPropAMM` from the committed
 [`test/fixtures/propamm/DirectPropAMM.json`](../../test/fixtures/propamm/DirectPropAMM.json), which
 holds only its ABI, creation bytecode, and runtime bytecode from an unmodified solc `0.8.30` build.
-Building and testing Earn never needs the private PropAMM source repository.
+Building and testing Earn never needs the PropAMM source repository.
 [`source.json`](../../test/fixtures/propamm/source.json) records the repository, full commit,
 contract, and compiler of that build.
 
 To move the pin, change `commit` in `source.json` and regenerate the fixture with
 [`update.sh`](../../test/fixtures/propamm/update.sh), which needs Git, Foundry, `jq`, and read
-access to the private repository:
+access to the source repository:
 
 ```bash
 test/fixtures/propamm/update.sh                       # clone the pinned commit with your Git credentials
@@ -171,10 +168,9 @@ requests and `main`. A fork pull request that leaves `test/fixtures/propamm/` un
 rebuild; one that changes it fails until a maintainer re-verifies it from a branch in this
 repository ([CI](../development.md#continuous-integration)).
 
-## Review scope
+## Review
 
-`PropAMMEngine` has engineering review and automated coverage, not an independent audit or
-production approval. Review it together with the pinned DirectPropAMM execution behavior, oracle,
+Review `PropAMMEngine` together with the pinned DirectPropAMM execution behavior, oracle,
 recipient registry, and the actual token implementations; production configuration and
 independent sign-off are outside local CI.
 

@@ -20,8 +20,7 @@ There are two reward mechanisms, each with an optional contract:
 Neither contract has EarnShare issuer, EarnVault or EarnFees configuration, engine, router, or
 policy-administrator authority. The core `contribute` sequence is in
 [flows](../architecture/flows.md#contribution) and fee treatment in [fees](../architecture/fees.md).
-`EarnContributionController` and `EarnMerkleRewardDistributor` were audited and have changed since;
-`EarnRewardsFactory` is new after the audits ([coverage](../audit/README.md#coverage-after-the-audits)).
+Audit coverage is in [audits](../audit/README.md#scope).
 
 ## Exchange-rate contributions
 
