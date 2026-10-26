@@ -17,16 +17,6 @@ review.
 
 **Why:** it composes with Tempo policies and Zones while keeping balances stable. Yield appears in redemption value, which avoids per-holder reward accounting and private reward claims.
 
-## Persistent EarnVault, replaceable engine
-
-**Decision:** integrations target one `EarnVault`; its operator may atomically replace the yield
-engine only when the deployment-fixed migration mode permits it.
-
-**Why:** venue selection will evolve faster than the public share address. A narrow engine seam permits a venue migration without changing EarnShare balances or downstream integrations.
-
-**Consequence:** the transferable EarnVault operator is highly trusted and migration must be atomic,
-same-asset, bounded by caller-supplied outputs, and blocked while async exits are open.
-
 ## Engine-owned venue shares
 
 **Decision:** the engine, not the EarnVault, is the sole custodian of venue shares.
@@ -41,7 +31,7 @@ capabilities.
 
 **Why:** an engine is not a user-facing ERC-4626 vault. ERC-4626-shaped receiver and owner parameters would be ignored and make engines appear to support behavior they might not have. Capability discovery gives the chain a small extensible seam without inventing version numbers or venue-specific branches in `EarnVault`.
 
-**Consequence:** initial installation and migration require the base interface plus at least one
+**Consequence:** engine installation requires the base interface plus at least one
 advertised exit capability: immediate redemption, exact withdrawal, or async redemption. Async
 request terms cross the EarnVault as opaque bytes and are decoded at the concrete engine edge.
 `VedaEngine` uses the typed `VedaRedeemRequest` payload. The request lifecycle follows established
@@ -53,9 +43,9 @@ async-vault terminology where useful, but the EarnVault does not claim ERC-7540 
 
 **Why:** integrations may report values inconsistently, levy fees, or behave unexpectedly. Measurement anchors accounting to assets actually received.
 
-## Re-anchor on migration or contribution
+## Re-anchor on contribution
 
-**Decision:** preserve EarnShare supply, then record the new engine-share conversion anchor after migration or a shareless contribution.
+**Decision:** preserve EarnShare supply, then record the new engine-share conversion anchor after a shareless contribution.
 
 **Why:** venue share units are arbitrary, and a reward must increase the backing of existing EarnShare without minting claims to the funder. A fee-enabled contribution may still mint claimable fee EarnShare.
 
@@ -67,7 +57,7 @@ async-vault terminology where useful, but the EarnVault does not claim ERC-7540 
 Finalization pays the fixed claim without another burn; cancellation re-enters at current value
 under the [queued-withdrawal fee rules](architecture/fees.md#queued-withdrawals).
 
-**Consequence:** active fees and contributions continue while claims are queued and benefit only live EarnShare. Engine migration stays blocked until every queued request closes.
+**Consequence:** active fees and contributions continue while claims are queued and benefit only live EarnShare.
 
 ## Isolated positive-accrual fees
 
@@ -126,7 +116,7 @@ under the external policy administrator; factory attachment does not create or m
 ## Permanent core versus optional offchain composition
 
 **Decision:** retain only issuance, conversion anchors, engine coordination, async entitlement,
-migration, and pause controls in `EarnVault`. Put fee state in `EarnFees`, venue custody in engines,
+and pause controls in `EarnVault`. Put fee state in `EarnFees`, venue custody in engines,
 customer-specific swap and cross-domain execution in the scoped Earn router, and optional funding
 orchestration in `EarnContributionController`.
 

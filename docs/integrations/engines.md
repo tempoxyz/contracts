@@ -52,8 +52,8 @@ Optional behavior is advertised through ERC-165:
 | [`IEarnEngineFeeValuation`](../../src/interfaces/engines/IEarnEngineFeeValuation.sol)   | Expiring fee valuation               |
 
 Every installed engine must advertise `IEarnEngine` and at least one of `IEarnEngineRedeem`,
-`IEarnEngineExactWithdraw`, or `IEarnEngineAsyncRedeem`. `EarnVault.initialize` and `migrateEngine`
-enforce this exit invariant: an engine that only accepts deposits, or adds only in-kind entry, would
+`IEarnEngineExactWithdraw`, or `IEarnEngineAsyncRedeem`. `EarnVault.initialize`
+enforces this exit invariant: an engine that only accepts deposits, or adds only in-kind entry, would
 leave holders no discoverable path to recover backing. An engine without the fee-valuation
 capability is treated as never stale, so an engine backed by timestamped reports must advertise it.
 
@@ -72,7 +72,7 @@ Production valuations must be fresh, manipulation-resistant, and consistent with
 redeemable value; a bad or reverting valuation stops fee-enabled actions rather than reusing stale
 data. An engine is only as safe as its venue: pause controls, fee behavior, illiquidity, share
 inflation, oracle manipulation, report staleness, and insolvency can affect deposits, exits,
-migration, and fee calculation.
+and fee calculation.
 
 ## Installation
 
@@ -214,6 +214,6 @@ them. CI runs `pnpm e2e:local -- --variant <kind> --all` for each kind.
 
 ### Related pages
 
-Whole-pool engine replacement and per-holder moves between stacks are in
+Per-holder moves into and between stacks are in
 [existing vault migration](../modules/migration.md). Venue review and launch checks are in the
 [production readiness checklist](../architecture/security-and-privacy.md#production-readiness-checklist).

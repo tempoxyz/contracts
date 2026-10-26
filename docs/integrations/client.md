@@ -154,9 +154,8 @@ EarnShare spend; keep the approval and action in the same composed transaction w
 the [agent integration guide](agent-guide.md#check-contract-owned-approvals-and-settlement) for
 application-level validation.
 
-In-kind deposits are the exception: the engine pulls the venue token directly from the caller, and
-an engine migration changes that address. Read `engine()` when building the approval, not at
-application start.
+In-kind deposits are the exception: the engine pulls the venue token directly from the caller, so
+approve the address `engine()` returns.
 
 ## Output bounds
 

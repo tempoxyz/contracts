@@ -45,7 +45,6 @@ set to `null`; an empty `core` or `core.fees` object is rejected. Top-level keys
 - `owner`: the final engine owner, core operator, and optional periphery owner. Omitted, it
   defaults to the deployer; when explicit, the deployer binds and transfers atomically.
 - `core`, omitted when it has no nondefault configuration, may contain:
-  - `migrationMode`: only `OperatorEnabled` is authored; the default `UserOnly` is omitted;
   - `emergencyGuardian` and `asyncJanitor`;
   - `fees`: `fixed` lists operator-controlled fixed fees, `excess` the excess-return fee, and
     `protectedFixed` groups the one fee, distributor, and delay that form the protected unit; at

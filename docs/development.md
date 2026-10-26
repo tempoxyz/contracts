@@ -217,6 +217,5 @@ For contract changes, reviewers should be able to answer:
 3. Does active EarnShare supply remain aligned with active engine shares, with pending claims excluded from both?
 4. Can a failed external call leave accounted funds rescueable or double-claimable?
 5. Does the change create a new public link between private actions?
-6. Does migration still complete atomically or revert completely?
-7. Is the behavior tested at the real venue boundary, not only with a permissive mock?
-8. Can any deposit, loss, valuation spike, rounding cadence, or configuration change overcharge positive-accrual fees?
+6. Is the behavior tested at the real venue boundary, not only with a permissive mock?
+7. Can any deposit, loss, valuation spike, rounding cadence, or configuration change overcharge positive-accrual fees?

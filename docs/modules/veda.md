@@ -55,8 +55,7 @@ BoringVault and proposed Accountant, a nonzero Queue reports the same two, and t
 reports the BoringVault and base asset. It increments `version` without activating the tuple in the
 engine, and may precede binding so the engine constructor can validate the initial tuple. Binding
 requires an engine that points back to this registry, BoringVault, and base asset. The engine
-cannot bind its EarnVault until the registry points back to it, and the binding cannot change, so a
-replacement engine needs a fresh registry.
+cannot bind its EarnVault until the registry points back to it, and the binding cannot change.
 
 ### VedaForwardingSolver
 
@@ -111,7 +110,7 @@ reads `lastStrategistUpdateTimestamp()` (YieldStreaming Accountant) or, failing 
 result as `accountantRateUpdatedAt()`, and fails closed before assets move on a missing, future,
 expired, or unsupported timestamp (`InvalidRateTimestamp`, `StaleAccountantRate`,
 `UnsupportedAccountantFreshness`). Activating a rotated Accountant applies the same check.
-Contributions and inbound migrations inherit it through `engine.deposit`; staleness never blocks
+Contributions inherit it through `engine.deposit`; staleness never blocks
 exits.
 
 `isFeeValuationFresh()` applies the same timestamp and age, so an expired report defers fee
@@ -256,7 +255,7 @@ grants the engine Queue request and ID-based cancellation, configures the stock 
 forwarder, and publishes the existing Teller with the new Queue.
 
 Rotation changes periphery around the same BoringVault; it does not move EarnShare supply or engine
-custody, so it works on `UserOnly` stacks. Its checks catch mixed wiring and unexpected rate jumps;
+custody. Its checks catch mixed wiring and unexpected rate jumps;
 they cannot show that implementation bytecode is benign, permissions sufficient, or future reports
 honest. Those remain deployment-review responsibilities.
 

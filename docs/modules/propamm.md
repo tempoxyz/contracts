@@ -53,8 +53,8 @@ re-reads the oracle afterwards and reverts `QuoteMismatch` if either changed.
 For deposits and contributions, the EarnVault checkpoints fees before calling the engine. The engine
 then validates the pinned oracle and price and reverts `InvalidOracle` when the report is older than
 its own `maxOracleAge` (exactly the maximum age is accepted), before pulling assets or approving the
-pool; the whole transaction, including the fee checkpoint, rolls back. Migration into this engine
-uses the same check. The pool may accept older reports; its longer window never permits stale entry
+pool; the whole transaction, including the fee checkpoint, rolls back.
+The pool may accept older reports; its longer window never permits stale entry
 through the engine, which keeps a new depositor from paying for pre-entry yield after a fresh report.
 `isFeeValuationFresh()` applies the same age.
 
@@ -74,7 +74,7 @@ review the pool's token policy and recipient registry, not just its address.
    repository. An existing deployment does not gain new behavior when the repository changes;
    replace it rather than editing a record.
 2. Write a profile whose engine is `{ "kind": "propamm", "address": "0x…" }`
-   ([profile schema](../../profiles/README.md#schema)) with explicit fees, migration mode, owner, and
+   ([profile schema](../../profiles/README.md#schema)) with explicit fees, owner, and
    any protected access, and review `pnpm earn plan`.
 3. Have the pool administrators admit the engine as taker and recipient with recipient resolution
    back to itself, refresh the oracle, and fund inventory for the intended flows.
@@ -98,21 +98,21 @@ simulate each complete transaction before signing.
 | Oracle publication and cadence                                | External oracle administrator         |
 | Pool admission, pause, inventory, and execution configuration | External pool administrators          |
 | Engine binding and final-owner transfer                       | Engine setup owner                    |
-| Earn controls, fees, and permitted migration                  | EarnVault operator                    |
+| Earn controls and fees                                        | EarnVault operator                    |
 | Protected EarnShare membership                                | Existing TIP-403 policy administrator |
 | Private token enablement (with a Zone)                        | Zone administrator                    |
 
 ## Failure modes
 
-| Signal or error                                                                               | Response                                                                                                                      |
-| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Fee valuation stale; deposit reverts `InvalidOracle`                                          | Restore oracle publication; deposits and contributions stay blocked until then                                                |
-| Pool paused, admission revoked, or recipient redirected (`InvalidConfiguration` on any trade) | Confirm administrator intent before restoring access; exits are blocked too                                                   |
-| Low base-token inventory                                                                      | Replenish before deposits                                                                                                     |
-| Low quote-token inventory                                                                     | Replenish before exits; previews are not liquidity guarantees                                                                 |
-| Pool oracle changed or its decimals changed (`InvalidOracle` on every path)                   | Restore the pinned oracle; migration away needs a working exit, so prepare a replacement engine while the old one still exits |
-| TIP-403 transfer denied                                                                       | Repair the denied path with its policy administrator                                                                          |
-| Source or runtime verification changed                                                        | Stop release promotion and investigate provenance                                                                             |
+| Signal or error                                                                               | Response                                                                       |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Fee valuation stale; deposit reverts `InvalidOracle`                                          | Restore oracle publication; deposits and contributions stay blocked until then |
+| Pool paused, admission revoked, or recipient redirected (`InvalidConfiguration` on any trade) | Confirm administrator intent before restoring access; exits are blocked too    |
+| Low base-token inventory                                                                      | Replenish before deposits                                                      |
+| Low quote-token inventory                                                                     | Replenish before exits; previews are not liquidity guarantees                  |
+| Pool oracle changed or its decimals changed (`InvalidOracle` on every path)                   | Restore the pinned oracle                                                      |
+| TIP-403 transfer denied                                                                       | Repair the denied path with its policy administrator                           |
+| Source or runtime verification changed                                                        | Stop release promotion and investigate provenance                              |
 
 Choose inventory thresholds from expected deposit and redemption sizes, and monitor both freshness
 windows. Earn's guardian pause cannot unpause the pool, change its permissions, or create exit
@@ -130,7 +130,7 @@ pnpm e2e:local -- --variant propamm --all
 Foundry (`PropAMMEngine.t.sol`, and `PropAMMIntegration.t.sol` against the pinned pool) covers
 future and zero prices, oracle replacement, fee-on-transfer tokens, reentrancy and mid-trade reads,
 decimal configurations, the two freshness windows, rounding credit, donations and quarantined
-surplus, migration and its rollback, illiquidity, revoked admission, pause and recipient blocks,
+surplus, illiquidity, revoked admission, pause and recipient blocks,
 price-anchor discontinuity, and repeated tiny round trips.
 
 The `propamm` local variant runs every shared E2E case its capabilities allow over the pinned pool,

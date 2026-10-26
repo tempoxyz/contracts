@@ -38,15 +38,10 @@ The operator may:
 - pause or unpause deposits, in-kind entry, contributions, and surplus absorption;
 - update the managed-assets limit, including setting zero for unlimited capacity;
 - rotate or clear the emergency guardian and async janitor;
-- configure ordinary positive-accrual fees, and disable all fees on a stack without a distributor;
-- migrate the complete pool only if the deployment-fixed mode is `OperatorEnabled`; and
+- configure ordinary positive-accrual fees, and disable all fees on a stack without a distributor; and
 - hand the operator role to a successor.
 
-It cannot change EarnShare, `EarnFees`, the base asset, the migration mode, or the distributor's
-item, delay, or role. An enabled migration is still highly privileged because the operator selects
-replacement engine code. It is same-asset, blocked by open async exits, and bounded by
-caller-supplied share and retained-asset floors, but a malicious engine may still misrepresent
-future value.
+It cannot change EarnShare, `EarnFees`, the base asset, or the distributor's item, delay, or role.
 
 The handoff is two-step: the operator nominates a nonzero successor, which must accept; until then
 the operator may cancel or replace the nomination.
@@ -57,7 +52,7 @@ The guardian can only reduce exposure by pausing deposits, in-kind entry, contri
 surplus absorption. It cannot unpause or block exits.
 
 The janitor can only cancel an already open async request to its stored receiver. It cannot select a
-receiver, migrate backing, or request a new exit.
+receiver or request a new exit.
 
 ### Stack operator, fee distributor, and EarnFees
 
@@ -105,7 +100,7 @@ in [access policy](../modules/access.md).
 
 The contracts do not rely on external return values where a balance delta is available:
 
-- every engine deposit, in-kind entry, and migration deposit must report exactly the measured
+- every engine deposit and in-kind entry must report exactly the measured
   raw-share increase, or the EarnVault reverts. The ERC-4626 engine does not measure how much base
   asset the venue pulls, so a venue that pulls less than requested strands the rest in the engine;
   venue soundness is a trust boundary;
@@ -113,8 +108,7 @@ The contracts do not rely on external return values where a balance delta is ava
   balance deltas rather than trusting venue return values, and Veda queued requests verify the
   exact venue-share decrease;
 - async cancellation credits the measured raw-share increase;
-- swap output uses the router's measured output-token delta;
-- migrations measure redeemed assets and replacement shares; and
+- swap output uses the router's measured output-token delta; and
 - Veda forwarding credits only measured solve deltas.
 
 This limits dishonest or nonstandard return values, but cannot make an insolvent token, venue, or
@@ -126,7 +120,7 @@ reward-admission limit are specified under [accounting anchors](system.md#accoun
 ### Managed-assets capacity
 
 The optional `maxManagedAssets` limit ([accounting anchors](system.md#accounting-anchors)) blocks only
-voluntary inflows; exits, cancellation, and migration remain available. It is only as sound as the
+voluntary inflows; exits and cancellation remain available. It is only as sound as the
 engine's valuation: it is a vault exposure control, not a per-user allocation, reward budget, or
 protection against a dishonest venue or oracle. Integrators must treat the operator as the
 capacity-policy trust boundary and monitor `MaxManagedAssetsChanged`.
@@ -139,7 +133,6 @@ Every value-changing path has explicit units and independent bounds:
 - redemption requires nonzero `minAssets`;
 - exact withdrawal checks `maxEarnShares` against both the preview and the measured charge;
 - private swap paths separately bound base assets and final output;
-- migration bounds new engine shares and retained base-asset value;
 - async cancellation requires a nonzero `minReceiverEarnShares`; and
 - async request conversion rejects more than one basis point of unrepresented EarnShare before burn;
   Veda requests also require the tracking Queue's fixed payout to meet a nonzero absolute asset floor.
@@ -163,18 +156,11 @@ EarnShare burns when a request is created; the pending entitlement is not active
 Finalization and cancellation use one stored receiver. The request's fee snapshot pins its
 configuration ID, so active fee changes cannot rewrite prior cancellation terms, and a crossed
 disable transition permanently waives it ([queued withdrawals](fees.md#queued-withdrawals)).
-Before any migration, cancellation cannot expand the contribution limit; after one, a full
-request/cancel cycle resets the reward baseline ([reward-admission limit](system.md#reward-admission-limit)).
-Migration cannot proceed until every request closes.
+Cancellation cannot expand the contribution limit
+([reward-admission limit](system.md#reward-admission-limit)).
 
 Engine-specific claim protections, such as Veda's Queue pinning, earmarks, and external-solver
 recovery, are in [Veda queued exits](../modules/veda.md#queued-exits).
-
-### Atomic migration
-
-Whole-pool migration either completes with unchanged EarnShare supply and balances or rolls back;
-atomicity does not establish the replacement engine's safety
-([existing vault migration](../modules/migration.md#whole-pool-engine-migration)).
 
 ## External dependency risk
 
@@ -230,7 +216,6 @@ reveal the private recipient from that correlation alone, but it does not hide t
 | Async request stalls                        | Entitlement stays open                                                                                                                                               | Veda: solve through the forwarding solver; or requester/janitor cancels                  |
 | Swap misses bound                           | Complete route reverts                                                                                                                                               | Refresh quote or deploy/select a compatible router                                       |
 | Zone callback fails                         | Original private withdrawal bounces under protocol rules                                                                                                             | Fix cause and submit a new withdrawal                                                    |
-| Migration leg fails                         | Old engine and backing remain current                                                                                                                                | Resolve venue/engine issue and retry                                                     |
 | Engine valuation becomes stale              | Veda and PropAMM deposits revert; fee crystallization is deferred                                                                                                    | Publish a fresh report; exits remain available                                           |
 | Veda receiver hook spends a batch's gas     | Later claims in a solve stay claimable, or the solve reverts                                                                                                         | Omit that request from the batch; anyone pays out with `claimRedeem`                     |
 | Receiver's TIP-1028 policy blocks EarnShare | A deposit or cancellation mint, or an `EarnFees` claim, lands in the receive-policy guard, which only the sending contract could reclaim and which has no claim path | None; name only receivers that accept EarnShare                                          |
@@ -244,19 +229,18 @@ reveal the private recipient from that correlation alone, but it does not hide t
 - Reviewed base asset, venue, engine, and valuation behavior against the real venue:
   - a dedicated or gated venue, so unrelated shareholders do not receive Earn contributions;
   - share and asset decimals, including first-deposit rounding;
-  - deposit, redeem, exact withdrawal, illiquidity, and full migration;
+  - deposit, redeem, exact withdrawal, and illiquidity;
   - contributions under the venue's fees, rate caps, and accounting rules;
   - `totalAssets` and `previewRedeem` under stale, inflated, illiquid, and fee-bearing states; and
   - venue pause, loss, and insolvency as explicit runbook cases.
-- Engine owner and EarnVault operator assigned to the intended production accounts, and the
-  immutable migration mode verified.
+- Engine owner and EarnVault operator assigned to the intended production accounts.
 - Verified immutable EarnVault–EarnFees and EarnVault–engine bindings.
 - Verified that the installed engine advertises at least one redeem, exact-withdraw, or async-redeem
   capability.
 - `EarnVault` within the EIP-170 runtime and EIP-3860 initcode limits under
   `FOUNDRY_PROFILE=deploy`; its runtime margin is only a few hundred bytes, and CI enforces no
   margin ([contract size](../development.md#contract-size)).
-- Tested migration rollback, async cancellation, loss recovery, and fee disablement.
+- Tested async cancellation, loss recovery, and fee disablement.
 - For a Zone-connected stack, the [Zone go-live checklist](../modules/zone-router.md#go-live-checklist).
 - Verified EarnShare directly uses the intended simple TIP-403 whitelist and every required
   protocol member remains authorized.

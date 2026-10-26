@@ -73,7 +73,6 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
   safe Accountant base-asset rate plus the yield-streaming Teller's conservative denominator unit,
   and the active Teller's asset-specific share premium before
   applying the EarnVault anchor. Never call ERC-4626 `convertToShares` on a BoringVault.
-- Engine migration is operator-only and must not appear in the end-user application.
 - Enable public writes only for the current app deployment after relationship verification, selected-chain validation, complete-batch simulation, and deterministic exact approval-plus-action construction. Keep private writes separate.
 
 ## Zone identity and private execution

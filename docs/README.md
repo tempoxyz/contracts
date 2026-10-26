@@ -34,13 +34,13 @@ decisions. The architecture pages describe only the core and link here, so a cha
 capability updates one page. The shared engine contract and the recipe for a new engine kind are in
 [yield engines](integrations/engines.md).
 
-| Module          | Page                                             | Covers                                                                                 |
-| --------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `engines`       | [Yield engines](integrations/engines.md)         | One page per engine kind, listed in its engine table                                   |
-| `zone-router`   | [Zone router](modules/zone-router.md)            | `SingleZoneEarnRouter`, par conversion, Zone activation, go-live                       |
-| `access-policy` | [Access policy](modules/access.md)               | EarnShare TIP-403 whitelist, required members, `pnpm earn access`                      |
-| `rewards`       | [Rewards](modules/rewards.md)                    | Contribution controller, Merkle distributor, `EarnRewardsFactory`                      |
-| none            | [Existing vault migration](modules/migration.md) | Holder opt-in, source-vault composition, engine migration, replacement (E2E in `zone`) |
+| Module          | Page                                             | Covers                                                                     |
+| --------------- | ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `engines`       | [Yield engines](integrations/engines.md)         | One page per engine kind, listed in its engine table                       |
+| `zone-router`   | [Zone router](modules/zone-router.md)            | `SingleZoneEarnRouter`, par conversion, Zone activation, go-live           |
+| `access-policy` | [Access policy](modules/access.md)               | EarnShare TIP-403 whitelist, required members, `pnpm earn access`          |
+| `rewards`       | [Rewards](modules/rewards.md)                    | Contribution controller, Merkle distributor, `EarnRewardsFactory`          |
+| none            | [Existing vault migration](modules/migration.md) | Holder opt-in, source-vault composition, stack replacement (E2E in `zone`) |
 
 ## Document ownership
 

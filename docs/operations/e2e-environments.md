@@ -98,7 +98,7 @@ inspects the profile's live Zone when `TEMPO_API_KEY` or `ZONE_RPC_URL` is set
 
 `--local` deploys the profile on the disposable stack through the shared lifecycle, replacing only
 external dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router assets and pool) with
-local equivalents; fees, migration mode, access kind, principals, the router, and the reward
+local equivalents; fees, access kind, principals, the router, and the reward
 contracts its `targetYield` and `boostRewards` imply are deployed as authored, at different
 deterministic addresses. Variant runs without a profile deploy both reward contracts so
 `--group rewards` exercises the controller. Tempo API owns campaign calculation, registration,
