@@ -280,15 +280,6 @@ export async function reconcileEarnProfileActions(
   for (;;) {
     const step = await prepareLifecycleStep(options)
     if (step.kind === 'complete') return step
-    // Before the first transaction: a hosted deployment must stay source-verifiable.
-    if (
-      !compilerChecked &&
-      !options.executeFoundry &&
-      isHostedDeploymentChain(options.profile.chainId)
-    ) {
-      assertSourceVerifiableCompiler(options.root, options.environment)
-      compilerChecked = true
-    }
     if (step.kind === 'handoff') {
       const execution = await executeAvailableAuthority({
         action: step.action,
@@ -307,6 +298,12 @@ export async function reconcileEarnProfileActions(
     } else {
       if (isHostedDeploymentChain(options.profile.chainId)) {
         assertFoundryVersion(options.root)
+        // Only a Forge step compiles and broadcasts contracts, which hosted chains must be able to
+        // source verify; authority handoffs above deploy nothing.
+        if (!compilerChecked) {
+          assertSourceVerifiableCompiler(options.root, options.environment)
+          compilerChecked = true
+        }
       }
       executeFoundry(options.root, step)
     }

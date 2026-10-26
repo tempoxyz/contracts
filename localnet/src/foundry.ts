@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/earn/abis'
 import { foundryProcessEnvironment } from '@tempoxyz/earn/deployments/node'
@@ -193,12 +193,16 @@ type LifecycleStep = {
  * Installs Earn's pinned Solidity dependencies the first time a step needs them, so a consumer that
  * holds this repository as a submodule needs no separate install step.
  */
+let earnDependenciesReady = false
 function ensureEarnDependencies() {
-  if (existsSync(resolve(Config.earnRoot, 'lib/forge-std/src'))) return
+  if (earnDependenciesReady) return
+  // The script is idempotent: it keeps libraries already at their pins and builds the solar revision
+  // earn/solar.lock names only when that binary is missing, so an older checkout picks up a new pin.
   execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), ['earn'], {
     cwd: Config.root,
     stdio: 'inherit',
   })
+  earnDependenciesReady = true
 }
 
 /** Runs Forge from Earn's Foundry project with Tempo batch flags and a private broadcast directory. */
