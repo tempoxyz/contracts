@@ -31,7 +31,7 @@ From [Stripe Issuing Smart Contracts on Tempo](https://docs.google.com/document/
 | Funds only reach a secure Stripe wallet                                      | `TS` checks the program's allowlist and the settler checks the destination was paid; unused input only returns to the Zone                    |
 | Program setup: vault allowlist, 1:1 conversion route, a receiver per Zone    | Governance's `"UV"` allows funding sources, including Earn with par conversion; one router and settler per program and Zone                   |
 | Access keys only; exact approval, cleared after each debit                   | Unchanged for public spend. In the Zone, the router approves at most `maxInput` to the settler and resets it                                  |
-| Debit from stablecoin, Earn shares, or both, converting 1:1                  | Public: `TS` splits a spend between `token` and a source. Private: one balance per spend (decision 15, see below)                             |
+| Debit from stablecoin, Earn shares, or both, converting 1:1                  | Public: `TS` splits a spend between `token` and a source. Private: one balance, or both as two withdrawals (decision 15, see below)           |
 | Approve once the Zone accepts the withdrawal; change returns encrypted       | Unchanged: Bridge approves on the Zone receipt; `Pay` returns change by encrypted deposit with a fee cap                                      |
 | A spend blocked after approval must not land back in the cardholder's wallet | Bridge sets the withdrawal's `zoneFallbackRecipient` to the program's Stripe-owned Zone account                                               |
 | Refunds through Bridge's orchestration                                       | `refund()` is the on-chain leg, callable only by a program destination                                                                        |
@@ -179,10 +179,13 @@ reach.
   requirements' program setup asks for.
 - **Decision 3** stays: `Pay` carries no action ID.
 - **Decision 6** stays: one router and settler per program and Zone.
-- **Decision 15** stays: a private spend uses one balance, Earn shares or stablecoin, because one
-  withdrawal carries one token. The requirements describe "both" for every debit; Bridge has to
-  accept this for private spend, or split one authorization across two withdrawals and lose
-  atomicity.
+- **Decision 15** changes: a private spend uses Earn shares if they cover it, otherwise stablecoin,
+  otherwise both, otherwise Bridge declines. One withdrawal carries one token, so "both" is two
+  withdrawals in the cardholder's same Zone transaction, each a `Pay` with its own `Spend` for its
+  part of the amount. The contracts need no change for this. The two callbacks are independent: if
+  one bounces after approval, the reserve covers its part, as for any failed callback. A split pays
+  two withdrawal fees and two change returns, uses about 3M callback gas in total, and gives Bridge
+  two `senderTag`s to match to one authorization.
 - **Earn's router rules** in [earn/src/AGENTS.md](../../earn/src/AGENTS.md) and router invariant 2 in
   [zone-router.md](../earn/modules/zone-router.md#router-contract): "every successful callback returns
   its complete output through that Portal" and "no caller-selected destinations" become "or pays
