@@ -35,7 +35,7 @@ From [Stripe Issuing Smart Contracts on Tempo](https://docs.google.com/document/
 | Approve once the Zone accepts the withdrawal; change returns encrypted       | Unchanged: Bridge approves on the Zone receipt; `Pay` returns change by encrypted deposit with a fee cap                                      |
 | A spend blocked after approval must not land back in the cardholder's wallet | Bridge sets the withdrawal's `zoneFallbackRecipient` to the program's Stripe-owned Zone account                                               |
 | Refunds through Bridge's orchestration                                       | `refund()` is the on-chain leg, callable only by a program destination                                                                        |
-| 2 s authorization budget, 3M callback gas, 1,024-byte callback data          | No new wait before approval; one more token hop in the callback; `Pay` data is 832 bytes                                                      |
+| 2 s authorization budget, 3M callback gas, 1,024-byte callback data          | No new wait before approval; one more token hop in the callback; the largest callback (`WithdrawExact`) is 960 bytes                          |
 
 ## Two layers
 
@@ -49,59 +49,93 @@ factory stays in `spend/`.
 
 ## `ZoneRouter`
 
-`SingleZoneEarnRouter`, renamed, with one more immutable and one more op. It keeps everything the
-router has today:
+`SingleZoneEarnRouter`, renamed, with a settler, an optional EarnVault and three more ops. It keeps
+everything the router has today:
 
-- one Zone, one EarnVault, one private asset, and an optional par pool;
+- one Zone, an optional EarnVault and private asset, and an optional par pool;
 - authentication through the Zone Messenger, the Zone ID and the Factory-registered Portal;
 - no owner, measured balances around every step, and no balances or approvals left behind.
 
-The new immutable is `settler`, an `ISpendSettler` fixed at deployment. Zero turns `Pay` and
-`refund` off, which gives today's router exactly. A router with a settler belongs to that settler's
-program: a program has one router per Zone and private asset, as many gateways as it has receivers
-today.
+Three immutables are new or change:
+
+- **`settler`**, an `ISpendSettler` fixed at deployment. Zero turns `Pay` and `refund` off.
+- **`earnVault`** may be zero, for a program that spends only stablecoin. Then the private asset,
+  pool and customer ID must be zero too, and the Earn ops (0, 1 and 4) revert `EarnDisabled`.
+- **`externalSends`**, set at deployment. When false, `Send` only delivers inside the source Zone.
+  Deploy it false on a closed-loop Zone, whose Portal trusts its gateway to keep funds in the Zone.
+
+A router with a settler belongs to that settler's program: one router per program and Zone, however
+many stablecoins the program spends. A router with no settler, no external sends and an EarnVault is
+exactly today's router.
 
 ### Ops
 
 The router already reads the first callback word before decoding, so ops 0 and 1 keep their exact
 layout and `viem/tempo`'s `earnRouterCallbackData` keeps working.
 
-| Op                  | Input                                       | What the router does                                                              | Back to the Zone        |
-| ------------------- | ------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------- |
-| 0 Deposit           | Private asset                               | Unchanged                                                                         | EarnShare               |
-| 1 Redeem            | EarnShare                                   | Unchanged                                                                         | Private asset           |
-| 2 Pay               | Private asset or EarnShare                  | Approves at most `maxInput` to the settler, calls `settle`, measures what it used | Unused input, encrypted |
-| `refund()` (public) | Stablecoin from a payer the settler accepts | Deposits it into the Zone for the encrypted recipient                             | The refund              |
+| Op                  | Input                                       | What the router does                                                                    | Back to the Zone                 |
+| ------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------- |
+| 0 Deposit           | Private asset                               | Unchanged                                                                               | EarnShare                        |
+| 1 Redeem            | EarnShare                                   | Unchanged                                                                               | Private asset                    |
+| 2 Pay               | Any token the source Portal enables         | Approves at most `maxInput` to the settler, calls `settle`, measures what it used       | Unused input                     |
+| 3 Send              | Any token the source Portal enables         | Delivers the whole input to one recipient                                               | The send, or nothing             |
+| 4 WithdrawExact     | EarnShare                                   | Withdraws exactly `assets` from the vault, burning at most the input, converting at par | The assets and the unused shares |
+| `refund()` (public) | Stablecoin from a payer the settler accepts | Deposits it into the Zone for the encrypted recipient                                   | The refund                       |
 
-`Pay` callback data, 832 bytes with a 64-byte ciphertext (today's receiver data is 672):
+Every return to a Zone is an encrypted deposit with its own `ZoneReturn` (key index, encrypted
+recipient, refund recipient and `maxDepositFee`), and reverts if that Portal's deposit fee is above
+the cap. Every op requires the return token to be enabled with deposits active on the Portal it goes
+to. Any revert bounces the whole input to the withdrawal's `zoneFallbackRecipient` in the source
+Zone.
 
-```text
-PayData {
-    uint8 op               // 2
-    uint128 maxInput       // the most input the settler may use
-    bytes settlerData      // opaque to the router; Bridge's Spend
-    PayReturn zoneReturn   // keyIndex, encrypted, refundRecipient, maxDepositFee
-}
-```
+Callback data sizes, with a 64-byte ciphertext, against the outbox's 1,024 bytes:
 
-A `Pay` callback:
+| Op            | Bytes | Fields                                                                                |
+| ------------- | ----- | ------------------------------------------------------------------------------------- |
+| Pay           | 832   | `op`, `maxInput`, `settlerData` (Bridge's `Spend`), `ZoneReturn`                      |
+| Send          | 576   | `op`, `kind`, `zoneId`, `recipient`, `ZoneReturn`                                     |
+| WithdrawExact | 960   | `op`, `assets`, `minOutput`, `ZoneReturn` for the assets, `ZoneReturn` for the shares |
 
-1. authenticates exactly as ops 0 and 1, and requires the input to be the private asset or the
-   EarnShare;
-2. approves `maxInput` (never more than the withdrawn amount) to the settler and calls
-   `settle(token, maxInput, settlerData)`, then resets the approval;
-3. requires `0 < used <= maxInput`, measured from its own balance;
-4. returns `amount - used` to the source Portal as an encrypted deposit, reverting if the Portal's
-   deposit fee is above `maxDepositFee`;
-5. emits `Paid(settler, token, used, change, zoneDepositHash)`, with no `senderTag`, no action ID and
+### `Pay`
+
+1. Authenticates exactly as ops 0 and 1.
+2. Approves `maxInput` (never more than the withdrawn amount) to the settler and calls
+   `settle(token, maxInput, settlerData)`, then resets the approval.
+3. Requires `0 < used <= maxInput`, measured from its own balance.
+4. Returns `amount - used` to the source Zone.
+5. Emits `Paid(settler, token, used, change, zoneDepositHash)`, with no `senderTag`, no action ID and
    no cardholder address.
 
-Any revert bounces the whole input to the withdrawal's `zoneFallbackRecipient` in the Zone.
+The router accepts any enabled token and leaves it to the settler to refuse one it cannot pay with.
+`BridgeSettler` requires the token to be its `Spend`'s input, and `TS` checks it against the spend.
 
 `maxInput` is what closes the Cyclops finding. It is set in the cardholder's Zone transaction, not
 by the settler or the handler, so a replaced handler can take at most the spend itself. Bridge sets
 it to the spend amount for a stablecoin spend and to `maxShares` for an Earn spend, and withdraws
 the change on top.
+
+### `Send`
+
+Zone transfers are disabled while Zones are permissioned (decision 8), so `Send` is how a Zone
+account pays another one. `kind` picks the recipient:
+
+- **Same Zone:** an encrypted deposit back to the source Portal, for the recipient the `ZoneReturn`
+  encrypts.
+- **Another Zone:** an encrypted deposit to the Factory-registered Portal of `zoneId`, which must not
+  be the source Zone. The `ZoneReturn` is encrypted to that Zone's key.
+- **Public address:** a transfer to `recipient`.
+
+The last two need `externalSends`. Each emits `Sent(token, amount, kind, zoneId, zoneDepositHash)`;
+a public send names its recipient, since the transfer already does.
+
+### `WithdrawExact`
+
+Redeems EarnShares for an exact amount of the private asset, such as a known payment, rather than
+an exact number of shares. The router calls `withdrawExact(assets, router, input)` on the vault,
+converts the vault asset to the private asset at par when they differ (the same pool, checks and
+1:1 measured output as op 1), and requires at least `minOutput`. It returns the assets and the
+unused shares as two deposits, each with its own `ZoneReturn`, so they need no shared payload. When
+nothing is left over it skips the shares deposit.
 
 ### `ISpendSettler`
 
@@ -189,7 +223,8 @@ reach.
 - **Earn's router rules** in [earn/src/AGENTS.md](../../earn/src/AGENTS.md) and router invariant 2 in
   [zone-router.md](../earn/modules/zone-router.md#router-contract): "every successful callback returns
   its complete output through that Portal" and "no caller-selected destinations" become "or pays
-  through the deploy-bound settler, using at most the callback's `maxInput`".
+  through the deploy-bound settler, using at most the callback's `maxInput`, or sends to the
+  recipient the cardholder chose, outside the source Zone only when `externalSends` allows it".
 
 ## Phases
 
@@ -205,7 +240,7 @@ cardholder's access keys stay the same through every phase.
 
 ## Rollout
 
-1. **Earn:** `ZoneRouter` with ops 0 and 1 byte-identical and their tests carried over. The rename
+1. **Earn:** `ZoneRouter` with ops 0 and 1 byte-identical and their tests carried over, plus `Send`, `WithdrawExact` and stablecoin-only routers. The rename
    lands with its consumers: tempoxyz/tempo (which builds `earn/src/` and reads the router outputs),
    `viem/tempo`, and the zone-router deployment module.
 2. **Spend:** `BridgeSettler`, a "ZoneRouter" setup in the 35-scenario matrix, and `e2e/zone` on the
@@ -215,11 +250,3 @@ cardholder's access keys stay the same through every phase.
 4. **Cutover:** each Zone admits the program's router as its gateway and Bridge switches its callback
    data, `to` address, fallback recipient and event parsing. Old receivers stay deployed so in-flight
    spends finish or bounce.
-
-## Open questions
-
-- **Input tokens.** `Pay` accepts the router's private asset and EarnShare, and a router needs an
-  EarnVault even for a stablecoin-only program. A program with several card stablecoins on one Zone
-  needs a router for each.
-- **More ops.** Sends and asset-denominated Earn withdrawals fit the same op table but are not needed
-  for card spend.
