@@ -215,8 +215,6 @@ cardholder's access keys stay the same through every phase.
 
 ## Open questions
 
-- **Lead Bank.** Bridge approves on the Zone receipt. If Lead requires L1 settlement before
-  approval, no design meets the 2 s budget: L1 settlement on mainnet Zone 2 takes 6.46 s at p50.
 - **Input tokens.** `Pay` accepts the router's private asset and EarnShare, and a router needs an
   EarnVault even for a stablecoin-only program. A program with several card stablecoins on one Zone
   needs a router for each.
