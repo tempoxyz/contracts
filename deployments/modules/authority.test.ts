@@ -7,8 +7,8 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test, vi } from 'vitest'
 
-import { executeAvailableAuthority } from './index.js'
-import { canAuthorizeRouter } from './zone-router/steps.js'
+import { executeAvailableAuthority } from '../../deployments/modules/index.js'
+import { canAuthorizeRouter } from './earn/zone-router/steps.js'
 import {
   earnEngineBindingAbi,
   propAMMPoolAbi,

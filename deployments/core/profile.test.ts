@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 import { getAddress } from 'viem'
 
-import { accessMembers } from '../modules/access-policy/membership.js'
+import { accessMembers } from '../modules/earn/access-policy/membership.js'
 import { loadEarnProfileBundle } from './bundle.js'
 import {
   authoredProfile,
@@ -14,8 +14,8 @@ import {
   parseEarnDeploymentProfile as parseProfile,
   profileCapabilities,
 } from './profile.js'
-import { engineDefinitions } from '../modules/engines/index.js'
-import { parseRewardConfiguration } from '../modules/rewards/schema.js'
+import { engineDefinitions } from '../modules/earn/engines/index.js'
+import { parseRewardConfiguration } from '../modules/earn/rewards/schema.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as `0x${string}`
 const deployer = address('3')

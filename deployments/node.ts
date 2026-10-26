@@ -19,7 +19,7 @@ export {
   rpcTransport,
 } from './chain/runtime.js'
 export { verifyContractSource } from './core/verify.js'
-export { missingZoneRpcError, zoneRpcConfiguration } from './modules/zone-router/outputs.js'
+export { missingZoneRpcError, zoneRpcConfiguration } from './modules/earn/zone-router/outputs.js'
 export {
   preflightEarnDeployment,
   prepareLifecycleStep,

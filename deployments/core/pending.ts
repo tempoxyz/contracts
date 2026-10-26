@@ -6,7 +6,7 @@ import type { Address } from 'viem'
 import { address, object } from './parse.js'
 
 import { deploymentActions, planEarnDeployment, type EarnDeploymentActionId } from './plan.js'
-import { capabilityModules, deploymentStep } from '../modules/index.js'
+import { capabilityModules, deploymentStep } from '../../deployments/modules/index.js'
 import { pendingDeploymentPath } from './bundle.js'
 import {
   componentDeploymentIntentHashes,

@@ -94,9 +94,10 @@ jobs:
       # tests: a partial build prunes the others from the cache.
       - name: Build the deploy profile
         if: ${{ steps.scope.outputs.run == 'true' }}
+        working-directory: earn
         env:
           FOUNDRY_PROFILE: deploy
-        run: forge build src script localnet/foundry
+        run: forge build src script
 
   test:
     name: Required / Local E2E

@@ -8,7 +8,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "devnet": "tsx harness/cli.ts --devnet",
-    "local": "tsx harness/cli.ts --local"
+    "local": "tsx harness/cli.ts --local",
+    "spend": "tsx spend/src/run.ts",
+    "spend:moderato": "tsx spend/src/run.ts --target moderato"
   },
   "dependencies": {
     "@tempoxyz/earn": "workspace:*",

@@ -2,8 +2,8 @@ import type { Address } from 'viem'
 
 import { deploymentActions, type EarnDeploymentActionId } from './plan.js'
 import { isHostedDeploymentChain } from '../chain/tempo.js'
-import { deploymentSteps } from '../modules/index.js'
-import { slices, type SliceTargets } from '../modules/slices.js'
+import { deploymentSteps } from '../../deployments/modules/index.js'
+import { slices, type SliceTargets } from '../../deployments/modules/slices.js'
 import {
   deploymentAddressComponents,
   deploymentAddressKeys,

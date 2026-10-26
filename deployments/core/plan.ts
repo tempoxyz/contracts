@@ -3,11 +3,11 @@ import {
   type EarnDeploymentActionId,
   type EarnDeploymentAuthority,
   type SignerEnvironment,
-} from '../modules/index.js'
-import { stepSignerAvailable } from '../modules/module.js'
+} from '../../deployments/modules/index.js'
+import { stepSignerAvailable } from '../../deployments/modules/module.js'
 import { type EarnDeploymentProfile } from './profile.js'
 
-export type { EarnDeploymentActionId } from '../modules/index.js'
+export type { EarnDeploymentActionId } from '../../deployments/modules/index.js'
 
 export type EarnDeploymentAction = {
   id: EarnDeploymentActionId

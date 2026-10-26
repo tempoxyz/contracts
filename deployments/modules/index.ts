@@ -7,20 +7,28 @@ import {
 } from '../core/components.js'
 import { unique } from '../core/parse.js'
 import type { EarnDeploymentProfile } from '../core/profile.js'
-import { accessPolicyModule } from './access-policy/index.js'
-import { validateAccess } from './access-policy/steps.js'
-import { bindCore, deployCore } from './core/steps.js'
-import { deployEngine } from './engines/steps.js'
-import type { AuthorityStep, CapabilityModule, DeploymentStep } from './module.js'
-import { deployContributionController, deployMerkleDistributor } from './rewards/steps.js'
-import { authorityClient, fundFromFaucet, type AuthorityDependencies } from './signer.js'
-import { zoneRouterModule } from './zone-router/index.js'
+import { accessPolicyModule } from './earn/access-policy/index.js'
+import { validateAccess } from './earn/access-policy/steps.js'
+import { bindCore, deployCore } from './earn/core/steps.js'
+import { deployEngine } from './earn/engines/steps.js'
+import type {
+  AuthorityStep,
+  CapabilityModule,
+  DeploymentStep,
+} from '../../deployments/modules/module.js'
+import { deployContributionController, deployMerkleDistributor } from './earn/rewards/steps.js'
+import {
+  authorityClient,
+  fundFromFaucet,
+  type AuthorityDependencies,
+} from '../../deployments/modules/signer.js'
+import { zoneRouterModule } from './earn/zone-router/index.js'
 import {
   authorizeRouter,
   deployRouter,
   enableZoneTokens,
   registerZoneGateway,
-} from './zone-router/steps.js'
+} from './earn/zone-router/steps.js'
 
 /**
  * Every deployment step, in execution order; a profile's plan is the enabled subset. Each step

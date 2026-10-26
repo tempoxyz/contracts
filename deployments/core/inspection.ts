@@ -2,10 +2,10 @@ import { zeroHash, type Address, type PublicClient } from 'viem'
 import { Abis } from 'viem/tempo'
 
 import { earnFactoryAbi } from '../abis/index.js'
-import { inspectEngineBindings, readEngineBinding } from '../modules/engines/index.js'
+import { inspectEngineBindings, readEngineBinding } from '../modules/earn/engines/index.js'
 import { equalAddress, requireCode, type LatestBlockClient } from '../chain/inspect.js'
-import { capabilityModules } from '../modules/index.js'
-import { requiredOutput, type InspectionReport } from '../modules/module.js'
+import { capabilityModules } from '../../deployments/modules/index.js'
+import { requiredOutput, type InspectionReport } from '../../deployments/modules/module.js'
 import {
   engineAddress,
   deploysEngine,

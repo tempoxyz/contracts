@@ -7,7 +7,7 @@ import {
   engineFactories,
   type EngineFactory,
   type EngineFactoryKey,
-} from '../modules/engines/index.js'
+} from '../modules/earn/engines/index.js'
 import {
   address,
   array,

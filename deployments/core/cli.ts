@@ -6,15 +6,15 @@ import { parseArgs } from 'node:util'
 
 import { formatUnits } from 'viem'
 
-import { capabilityCommands } from '../modules/commands.js'
+import { capabilityCommands } from '../../deployments/modules/commands.js'
 import {
   capabilityModules,
   deploymentStep,
   provenSigners,
   type EarnDeploymentActionId,
-} from '../modules/index.js'
+} from '../../deployments/modules/index.js'
 import { deployEarnProfile, verifyEarnProfile } from './deploy.js'
-import type { InspectionReport } from '../modules/module.js'
+import type { InspectionReport } from '../../deployments/modules/module.js'
 import { depositEarnProfile, type ProfileDepositResult } from './deposit.js'
 import { loadPendingDeployment } from './pending.js'
 import { activationActions, presentEarnDeploymentPlan } from './plan.js'
@@ -49,7 +49,7 @@ type Output = Pick<Console, 'log' | 'warn'>
 export async function main(
   argv: string[] = process.argv.slice(2),
   output: Output = console,
-  repositoryRoot = resolve(fileURLToPath(new URL('../..', import.meta.url))),
+  repositoryRoot = resolve(fileURLToPath(new URL('../../earn', import.meta.url))),
 ) {
   const help = argv.includes('--help') || argv.includes('-h')
   const capabilityCommand = capabilityCommands.find((command) => command.name === argv[0])

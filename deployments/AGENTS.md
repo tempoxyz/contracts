@@ -1,7 +1,7 @@
 # Shared deployment tooling
 
 Use [the package reference](README.md), [profiles](../profiles/README.md), and the
-[deployment runbook](../docs/operations/deployment.md) for exports, schemas, and lifecycle behavior.
+[deployment runbook](../docs/deployment/deployment.md) for exports, schemas, and lifecycle behavior.
 
 - `@tempoxyz/earn` owns repository deployment data and generated ABIs, not a parallel client SDK.
   Keep browser-safe code in the deployments export, Node tooling in `/node`, and operational

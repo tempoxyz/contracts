@@ -2,7 +2,7 @@ import {
   engineDefinitions,
   inspectEngineBindings,
   readEngineBinding,
-} from '../modules/engines/index.js'
+} from '../modules/earn/engines/index.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { getAbiItem, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
@@ -34,8 +34,12 @@ import {
 } from './pending.js'
 import { pendingDeploymentPath } from './bundle.js'
 import { rpcClient } from '../chain/runtime.js'
-import { authorityStep, capabilityModules, deploymentStep } from '../modules/index.js'
-import { foundryScript, required } from '../modules/module.js'
+import {
+  authorityStep,
+  capabilityModules,
+  deploymentStep,
+} from '../../deployments/modules/index.js'
+import { foundryScript, required } from '../../deployments/modules/module.js'
 import { earnEngineBindingAbi, earnFactoryAbi, earnFeesAbi, earnVaultAbi } from '../abis/index.js'
 
 export type ReconciliationStep =

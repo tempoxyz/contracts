@@ -16,3 +16,4 @@ localnet/.local/
 !/.env.example
 !/app/.env.example
 *.log
+/earn/lib/

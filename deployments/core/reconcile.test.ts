@@ -15,7 +15,7 @@ import {
   syncFoundryOutputs,
 } from './pending.js'
 import { validateSharedFactoryRelease } from './releases.js'
-import { resolvedEngineStateSatisfied } from '../modules/engines/steps.js'
+import { resolvedEngineStateSatisfied } from '../modules/earn/engines/steps.js'
 import { componentDeploymentIntentHashes, engineOwnerAccepted } from './profile.js'
 import { prepareLifecycleStep, recordAuthorityAction } from './reconcile.js'
 import { pendingDeploymentPath } from './bundle.js'

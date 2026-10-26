@@ -1,7 +1,7 @@
 import { createClient, custom } from 'viem'
 import { describe, expect, test } from 'vitest'
 
-import { pinnedAuthorityTransport } from './signer.js'
+import { pinnedAuthorityTransport } from '../../deployments/modules/signer.js'
 
 /** A client whose RPC answers `eth_chainId` and `eth_fillTransaction` with `filled`. */
 function clientFilling(filled: { chainId: string; nonceKey?: string }) {

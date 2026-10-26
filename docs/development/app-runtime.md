@@ -3,7 +3,7 @@
 This reference owns the Hono Cloudflare Worker in `app/worker/` (its routes, limits,
 configuration, and secrets) and the app's build and Cloudflare deployment tooling. Browser signing,
 sessions, and UI live in [the browser reference](app-browser.md); the browser catalog the Worker
-serves is owned by [app deployment](../operations/app-deployment.md).
+serves is owned by [app deployment](../deployment/app-deployment.md).
 
 ## Routes and limits
 
@@ -90,4 +90,4 @@ Zone RPC and shows no history.
 - Manual deployments use `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; never commit either
   value. Which CI jobs receive the organization-scoped `DEV_CLOUDFLARE_*` secrets, and how preview
   deploys a trusted Worker with PR static assets, is in
-  [continuous integration](../development.md#continuous-integration).
+  [continuous integration](README.md#continuous-integration).

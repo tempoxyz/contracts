@@ -4,7 +4,7 @@ Each `<id>/profile.json` is one complete, non-secret deployment intent, consumed
 `pnpm earn deploy` and profile E2E. This page owns the authored JSON, profiles kept in another
 repository, and the hosted test-fixture bootstrap. The lifecycle, the generated `deployment.json`
 beside each profile, verification, and authority handoffs are in the
-[deployment runbook](../docs/operations/deployment.md). RPC URLs, keys, receipts, generated
+[deployment runbook](../docs/deployment/deployment.md). RPC URLs, keys, receipts, generated
 addresses, and progress never belong in the authored file.
 
 ## Identity
@@ -16,7 +16,7 @@ Directory IDs follow `<deployment>-<l1-network>[-<zone>]`, for example `e2e-mode
 `veda-moderato`, and `app-moderato`; the Zone suffix is omitted without a `zone`.
 
 `chainId` selects Tempo mainnet (`4217`) or Moderato (`42431`); no other chain parses. Runtime
-values come from `.env.<id>` ([commands](../docs/operations/deployment.md#commands)). The deployer
+values come from `.env.<id>` ([commands](../docs/deployment/deployment.md#commands)). The deployer
 is derived from `DEPLOYER_PRIVATE_KEY` and the shared factory release from the reviewed per-chain
 registry; both are pinned in the generated record, never authored.
 
@@ -41,19 +41,19 @@ set to `null`; an empty `core` or `core.fees` object is rejected. Top-level keys
 
 - `engine`: `{ "kind": "erc4626", "venue": "0x..." }` provisions a factory-created ERC-4626 engine
   that inherits the venue's metadata. `{ "kind": "<kind>", "address": "0x..." }` reuses an
-  existing, reviewed, unbound engine of any [engine kind](../docs/integrations/engines.md).
+  existing, reviewed, unbound engine of any [engine kind](../docs/earn/integrations/engines.md).
 - `owner`: the final engine owner, core operator, and optional periphery owner. Omitted, it
   defaults to the deployer; when explicit, the deployer binds and transfers atomically.
 - `core`, omitted when it has no nondefault configuration, may contain:
   - `emergencyGuardian` and `asyncJanitor`;
   - `fees`: `fixed` lists operator-controlled fixed fees, `excess` the excess-return fee, and
     `protectedFixed` groups the one fee, distributor, and delay that form the protected unit; at
-    most four fixed recipients in total ([fees](../docs/architecture/fees.md)).
+    most four fixed recipients in total ([fees](../docs/earn/architecture/fees.md)).
 
   Deployments start without a managed-asset limit; the operator sets one onchain when needed.
 
 - `tip403PolicyId`: attaches an existing simple whitelist; omission means open access. Its
-  [required members](../docs/modules/access.md#required-members) are derived from the deployment.
+  [required members](../docs/earn/modules/access.md#required-members) are derived from the deployment.
 - `zone`: the complete private integration: Zone `id`, `enableEarnShare: true`, and a nested
   `router` with the one immutable route. `router.privateAsset` is singular because one router
   supports exactly one pair; another private asset needs another router. With a conversion pool,
@@ -83,7 +83,7 @@ protected-item and three-slot rules.
 ## Rewards
 
 `targetYield` deploys the contribution controller and `boostRewards` the Merkle distributor
-([rewards](../docs/modules/rewards.md)). Presence makes the vault-bound contract part of
+([rewards](../docs/earn/modules/rewards.md)). Presence makes the vault-bound contract part of
 deployment intent. Tempo API interprets and operates the configuration; this repository validates
 and records it but does not fetch or persist rate observations. A minimal boost addition is:
 
@@ -154,9 +154,9 @@ Each directory here is one deployment, and its generated `deployment.json` is th
 for what is deployed. `pnpm check` (through `pnpm profiles`) rejects a profile without one unless
 its deployment is in progress (`deployment.pending.json`), and rejects duplicate IDs. The
 Tempo-owned test profiles are described in
-[current availability](../docs/operations/hosted-environments.md#current-availability). Before
+[current availability](../docs/deployment/hosted-environments.md#current-availability). Before
 going live with a Zone-integrated profile, use the
-[go-live checklist](../docs/modules/zone-router.md#go-live-checklist).
+[go-live checklist](../docs/earn/modules/zone-router.md#go-live-checklist).
 
 ## Profiles in another repository
 
@@ -164,7 +164,7 @@ Profiles can also live in another repository that pins Earn as a Git submodule a
 runs this tooling against its own `profiles/` directory. The tooling treats any
 `<root>/profiles/<id>/profile.json` exactly like the profiles here: the record, pending state, and
 `fixture.json` sit beside the profile, and `.env.<id>` sits at that `<root>`; Forge outputs are
-[staged inside Earn](../docs/operations/deployment.md#lifecycle) and synced back there. Relative paths
+[staged inside Earn](../docs/deployment/deployment.md#lifecycle) and synced back there. Relative paths
 resolve from the directory the command starts in (pnpm's `INIT_CWD`), so from such a repository:
 
 ```bash
@@ -193,7 +193,7 @@ pnpm e2e:profile profiles/<profile-id>/profile.json
 
 Profile E2E derives its target and cases from the profile and its record, and rejects a record
 whose intent no longer matches the profile
-([profile acceptance](../docs/operations/e2e-environments.md#profile-acceptance)). Run a reward
+([profile acceptance](../docs/deployment/e2e-environments.md#profile-acceptance)). Run a reward
 profile with `--local --group rewards` to exercise the reward contracts it configures.
 
 `pnpm e2e:fixture --profile <id|path> --network <moderato|mainnet> [--broadcast]`

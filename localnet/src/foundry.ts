@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/earn/abis'
 import { foundryProcessEnvironment } from '@tempoxyz/earn/deployments/node'
@@ -61,9 +61,9 @@ export function script<const abi extends Abi>(target: string, abi: abi) {
   })
 }
 
-/** Binds `localnet/foundry/script/<name>.s.sol:<name>Script`. */
+/** Binds Earn's `script/local/<name>.s.sol:<name>Script` fixture. */
 export function fixtureScript<const abi extends Abi>(name: string, abi: abi) {
-  return script(`localnet/foundry/script/${name}.s.sol:${name}Script`, abi)
+  return script(`script/local/${name}.s.sol:${name}Script`, abi)
 }
 
 /** The shared factory release, one CREATE per entry point for Tempo batches. */
@@ -189,13 +189,26 @@ type LifecycleStep = {
   rawGasEstimate: boolean
 }
 
-/** Runs Forge from the repository root with Tempo batch flags and a private broadcast directory. */
+/**
+ * Installs Earn's pinned Solidity dependencies the first time a step needs them, so a consumer that
+ * holds this repository as a submodule needs no separate install step.
+ */
+function ensureEarnDependencies() {
+  if (existsSync(resolve(Config.earnRoot, 'lib/forge-std/src'))) return
+  execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), ['earn'], {
+    cwd: Config.root,
+    stdio: 'inherit',
+  })
+}
+
+/** Runs Forge from Earn's Foundry project with Tempo batch flags and a private broadcast directory. */
 function spawnForge(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   broadcastDirectory: string,
   rawGasEstimate: boolean | undefined,
 ) {
+  ensureEarnDependencies()
   return spawnSync(
     'forge',
     [
@@ -208,7 +221,7 @@ function spawnForge(
       '--disable-labels',
     ],
     {
-      cwd: Config.root,
+      cwd: Config.earnRoot,
       encoding: 'utf8',
       env: { ...environment, FOUNDRY_BROADCAST: broadcastDirectory },
       maxBuffer: 32 * 1024 * 1024,

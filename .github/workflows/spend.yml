@@ -1,0 +1,143 @@
+name: Spend
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - 'spend/**'
+      - 'earn/src/**'
+      - 'scripts/solidity-deps.sh'
+      - 'localnet/**'
+      - 'e2e/spend/**'
+      - '.github/workflows/spend.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'spend/**'
+      - 'earn/src/**'
+      - 'scripts/solidity-deps.sh'
+      - 'localnet/**'
+      - 'e2e/spend/**'
+      - '.github/workflows/spend.yml'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Bridge card spend (spend/), a separate Foundry project that imports Earn's src/. Not a required
+# check: it covers customer-specific code and runs only when spend/, src/, or the pinned images change.
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Required by tempoxyz/gh-actions secure-runner.
+      id-token: write
+    defaults:
+      run:
+        working-directory: spend
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install spend's Solidity dependencies
+        working-directory: .
+        run: scripts/solidity-deps.sh spend
+
+      # Needs native Tempo precompiles (hardfork = "tempo:T8").
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - name: Format
+        run: forge fmt --check src test script
+
+      - name: Build
+        run: forge build
+
+      - name: Test
+        env:
+          FOUNDRY_PROFILE: ci
+        run: forge test
+
+      - name: Matrix is current
+        working-directory: .
+        run: |
+          (cd spend && python3 script/matrix.py --out reports/matrix.md)
+          diff -u docs/spend/matrix.md spend/reports/matrix.md
+
+  # A private spend end to end on a disposable Tempo L1 and Zone started by the shared localnet,
+  # from the images localnet/fixtures/runtime-lock.json pins.
+  zone-e2e:
+    name: Zone E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Runners are discarded after the job, so the testcontainers reaper is unneeded.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install spend's Solidity dependencies
+        run: scripts/solidity-deps.sh spend
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: e2e
+
+      - name: Build contracts
+        working-directory: spend
+        run: forge build
+
+      - name: Run
+        run: pnpm e2e:spend
+
+  # Public pulls and Bridge's access key on a disposable Tempo dev node.
+  smoke:
+    name: Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: spend
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install spend's Solidity dependencies
+        working-directory: .
+        run: scripts/solidity-deps.sh spend
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - name: Smoke
+        run: bash script/smoke.sh

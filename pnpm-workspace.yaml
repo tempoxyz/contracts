@@ -1,8 +1,8 @@
 packages:
   - app
+  - deployments
   - e2e
   - localnet
-  - deployments
 
 allowBuilds:
   '@reown/appkit': false

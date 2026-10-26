@@ -10,7 +10,7 @@ import * as Devnet from './devnet.js'
 /**
  * `pnpm devnet:deploy -- --out <dir> --eligible-account <address>`: the supported entry point for
  * external workflows that need a fresh Earn stack on an existing devnet. See
- * docs/operations/e2e-environments.md#deploying-a-stack-for-another-workflow.
+ * docs/deployment/e2e-environments.md#deploying-a-stack-for-another-workflow.
  */
 const { values: args } = parseArgs({
   // pnpm forwards each `--` separator.

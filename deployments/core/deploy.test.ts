@@ -8,7 +8,7 @@ import { assertNoPublicFixtureAuthority, publicFixtureAddresses } from './deploy
 import type { EarnDeploymentProfile } from './profile.js'
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-const fixtures = publicFixtureAddresses(root)
+const fixtures = publicFixtureAddresses()
 const profiles = readdirSync(resolve(root, 'profiles'), { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map(

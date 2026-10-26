@@ -6,7 +6,7 @@ import {
   type PeripheryComponent,
   type SliceAddressComponent,
   type SliceAddressKey,
-} from '../modules/slices.js'
+} from '../../deployments/modules/slices.js'
 
 export type { OptionalPeripheryKey, PeripheryComponent }
 

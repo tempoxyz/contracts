@@ -9,10 +9,14 @@ import {
   type Engine,
   type EngineKind,
   type PeripheryContract,
-} from '../modules/engines/index.js'
+} from '../modules/earn/engines/index.js'
 import { parseFactoryRelease, type EarnFactoryRelease } from './releases.js'
 import { equalAddress } from '../chain/inspect.js'
-import { slices, type SliceCapabilityKey, type SliceStackFields } from '../modules/slices.js'
+import {
+  slices,
+  type SliceCapabilityKey,
+  type SliceStackFields,
+} from '../../deployments/modules/slices.js'
 import {
   array,
   checksummedAddress,

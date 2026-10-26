@@ -24,9 +24,9 @@ import {
   type DeploymentSource,
   type EarnDeploymentRecord,
 } from './record.js'
-import { engineDefinitions } from '../modules/engines/index.js'
-import { deploymentSteps } from '../modules/index.js'
-import { requiredOutput } from '../modules/module.js'
+import { engineDefinitions } from '../modules/earn/engines/index.js'
+import { deploymentSteps } from '../../deployments/modules/index.js'
+import { requiredOutput } from '../../deployments/modules/module.js'
 
 export const tempoVerifierUrl = 'https://contracts.tempo.xyz'
 

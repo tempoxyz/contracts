@@ -10,7 +10,7 @@ import type {
   EarnStack,
 } from '../core/stack.js'
 import type { profileStack } from '../core/profile-stack.js'
-import type { AuthorityDependencies, AuthorityOptions } from './signer.js'
+import type { AuthorityDependencies, AuthorityOptions } from '../../deployments/modules/signer.js'
 import type { LatestBlockClient } from '../chain/inspect.js'
 
 /** The core profile fields plus one slice's own fields: everything a slice reads. */

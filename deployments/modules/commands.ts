@@ -1,5 +1,5 @@
-import { accessCommand } from './access-policy/cli.js'
-import type { CapabilityCommand } from './module.js'
+import { accessCommand } from './earn/access-policy/cli.js'
+import type { CapabilityCommand } from '../../deployments/modules/module.js'
 
 /**
  * Every capability's `pnpm earn <name>` subcommand. Node-only, so it is registered apart from

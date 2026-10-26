@@ -3,10 +3,10 @@
 `@tempoxyz/earn` is a private workspace package for this repository's deployment registries,
 generated ABIs, and operator tooling. It is not published as a client dependency. Earn actions,
 TIP-403 policy actions, Earn math, and client decoration come from the upstream `viem/tempo`
-preview; see the [client integration guide](../docs/integrations/client.md).
+preview; see the [client integration guide](../docs/earn/integrations/client.md).
 
 The lifecycle that `pnpm earn` drives (records, verification, activation, and authority handoffs) is
-documented in the [deployment runbook](../docs/operations/deployment.md); the authored JSON is
+documented in the [deployment runbook](../docs/deployment/deployment.md); the authored JSON is
 documented in [deployment profiles](../profiles/README.md).
 
 ## Exports
@@ -36,7 +36,7 @@ runs every capability module's inspection, is exported from `/node` only.
   `<name>ScriptAbi`; and
 - the derived `earnEngineBindingAbi`.
 
-After a contract interface change, run `forge build src script test localnet/foundry` and
+After a contract interface change, run `forge build src script test localnet` and
 `pnpm --filter @tempoxyz/earn abis`, and commit the result; `abis:check` fails on drift.
 `abis/external.ts` hand-maintains contracts built elsewhere: Tempo Zone predeploys, the PropAMM
 pool, oracle, and controller, the Veda periphery, the Morpho fee wrapper, and the Safe. Use
@@ -97,7 +97,7 @@ Node-only code.
 - **Engine-kind behavior** (reads, quotes, inspection, factory provisioning, and the in-kind
   deposit and exit capabilities its stacks advertise) is a field of that kind's `defineEngine`
   module in `modules/engines/`; the cross-workspace recipe is
-  [adding an engine](../docs/integrations/engines.md#adding-an-engine).
+  [adding an engine](../docs/earn/integrations/engines.md#adding-an-engine).
 - **A new contract or script** needs no ABI entry: [generation](#exports) picks up every deployable
   `src/` contract and every `.s.sol` script.
 
@@ -114,10 +114,10 @@ and `publicStack` allowlists its browser-safe fields. It does not own a concrete
 release pipeline, or hosted E2E fixture lifecycle.
 
 - The app's browser catalog list, generator, and generated `generated.json` live under
-  `app/deployments/`; [app deployment](../docs/operations/app-deployment.md#catalog-boundaries)
+  `app/deployments/`; [app deployment](../docs/deployment/app-deployment.md#catalog-boundaries)
   owns what the catalog carries.
 - Hosted E2E builds its stack from a deployed profile's record and attaches its own test fixture
-  ([E2E environments](../docs/operations/e2e-environments.md)). Fixtures, roles, receipts, and
+  ([E2E environments](../docs/deployment/e2e-environments.md)). Fixtures, roles, receipts, and
   source metadata never enter the browser catalog.
 - `network.explorerUrl` is an optional explorer base URL; consumers append the resource route,
   such as `/receipt/<hash>` or `/address/<address>`, and show no link when it is absent (local

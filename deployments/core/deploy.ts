@@ -2,13 +2,14 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { parseEnv } from 'node:util'
+import { fileURLToPath } from 'node:url'
 
 import { erc20Abi, getAddress, isHex, type Address, type Hex, type PublicClient } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import { inspectEngineBindings } from '../modules/engines/index.js'
-import { capabilityModules, executeAvailableAuthority } from '../modules/index.js'
-import type { DiscoveryOptions, InspectionReport } from '../modules/module.js'
+import { inspectEngineBindings } from '../modules/earn/engines/index.js'
+import { capabilityModules, executeAvailableAuthority } from '../../deployments/modules/index.js'
+import type { DiscoveryOptions, InspectionReport } from '../../deployments/modules/module.js'
 import { assertFoundryVersion, foundryVerificationEnvironment } from '../chain/foundry.js'
 import { activationActions, deploymentActions, type EarnDeploymentAction } from './plan.js'
 import {
@@ -105,7 +106,7 @@ type LifecycleOptions = {
 /** Reconciles one authored profile until it is complete or reaches external authority. */
 export async function deployEarnProfile(options: LifecycleOptions): Promise<EarnDeploymentResult> {
   const profile = loadEarnProfileForEnvironment(options.profilePath, options.environment)
-  assertNoPublicFixtureAuthority(profile, publicFixtureAddresses(options.root))
+  assertNoPublicFixtureAuthority(profile, publicFixtureAddresses())
   const client = rpcClient(options.rpcUrl)
   const summary = (addresses: Record<string, Address>): DeploymentSummary => ({
     profile,
@@ -511,8 +512,11 @@ export function assertNoPublicFixtureAuthority(
   }
 }
 
-export function publicFixtureAddresses(root: string) {
-  const values = parseEnv(readFileSync(resolve(root, '.env.example'), 'utf8'))
+/** The checked-in deployment environment template at the repository root. */
+const environmentTemplate = fileURLToPath(new URL('../../.env.example', import.meta.url))
+
+export function publicFixtureAddresses() {
+  const values = parseEnv(readFileSync(environmentTemplate, 'utf8'))
   return new Set(
     Object.entries(values).flatMap(([name, value]) =>
       name.endsWith('_PRIVATE_KEY') &&

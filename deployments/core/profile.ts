@@ -14,9 +14,13 @@ import {
   engineKinds,
   type EngineKind,
   type FactoryEngineKind,
-} from '../modules/engines/index.js'
-import type { CoreDeployParams, PrivilegedPrincipal } from '../modules/module.js'
-import { slices, type SliceAuthoredFields, type SliceProfileFields } from '../modules/slices.js'
+} from '../modules/earn/engines/index.js'
+import type { CoreDeployParams, PrivilegedPrincipal } from '../../deployments/modules/module.js'
+import {
+  slices,
+  type SliceAuthoredFields,
+  type SliceProfileFields,
+} from '../../deployments/modules/slices.js'
 import type { PeripheryComponent } from './components.js'
 import {
   address,

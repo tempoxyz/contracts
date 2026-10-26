@@ -1,6 +1,6 @@
 # Integration and hosted validation
 
-[E2E environments](../docs/operations/e2e-environments.md) owns commands, the module layout, case
+[E2E environments](../docs/deployment/e2e-environments.md) owns commands, the module layout, case
 selection, and hosted configuration; [profiles](../profiles/README.md#acceptance-and-test-fixtures)
 owns the test fixture bootstrap.
 
