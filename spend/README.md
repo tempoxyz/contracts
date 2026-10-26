@@ -150,6 +150,7 @@ vendor/                     Pinned Bridge and Zones sources (VENDORED.md); Earn 
 ## Documents
 
 - [`docs/design.md`](../docs/spend/design.md): the design, flows, security model and decisions.
+- [`docs/zone-router.md`](../docs/spend/zone-router.md): the proposed ZoneRouter `Pay` op and `BridgeSettler` that replace `ZoneSpendReceiver`.
 - [`docs/deploy.md`](../docs/spend/deploy.md): deploying into Bridge's factory, and the calls each role submits.
 - [`docs/audit-scope.md`](../docs/spend/audit-scope.md): what an audit covers, the invariants to check and where to look hardest.
 - [`docs/bridge-integration.md`](../docs/spend/bridge-integration.md): how Bridge's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
