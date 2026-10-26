@@ -98,7 +98,7 @@ inspects the profile's live Zone when `TEMPO_API_KEY` or `ZONE_RPC_URL` is set
 
 `--local` deploys the profile on the disposable stack through the shared lifecycle, replacing only
 external dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router assets and pool) with
-local equivalents; fees, migration mode, access kind, principals, the router, and the reward
+local equivalents; fees, access kind, principals, the router, and the reward
 contracts its `targetYield` and `boostRewards` imply are deployed as authored, at different
 deterministic addresses. Variant runs without a profile deploy both reward contracts so
 `--group rewards` exercises the controller. Tempo API owns campaign calculation, registration,
@@ -121,13 +121,13 @@ On an access-enforced Zone, each router return's Tempo refund recipient must hol
 `Account` role. The first time a hosted case needs a refund recipient, E2E reads the Portal's
 `isAccessEnforced()` and each acting account's `hasRole(account, 2)`. An admitted account refunds
 to itself. Only the primary E2E user may instead refund to the admitted EarnVault operator or
-pending operator, which the customer controls; the first router case fails when neither is
+pending operator, which the integrator controls; the first router case fails when neither is
 admitted, and any other unadmitted actor cannot submit a return. A delegated refund leaves the
 user's custody, so cases that reclaim a bounced refund, such as
 `zone-ineligible-private-deposit-bounces`, are blocked unless the user is admitted.
 
 A case whose user lacks enough private balance is funded through a Portal entry by the stack's
-fixture funder. A stack without one, such as a customer profile, cannot fund it: the case throws
+fixture funder. A stack without one, such as a production profile, cannot fund it: the case throws
 `E2ePrerequisiteError` asking for a manual Zone top-up of that account, then a rerun.
 
 ## Hosted configuration
@@ -159,7 +159,7 @@ E2E fixture, role, receipt, or transaction history.
 ## Existing devnet chains
 
 `pnpm e2e:devnet -- --group zone` runs the cases against an existing non-hosted L1 and Zone; this
-is the entry point tempoxyz/workflows runs. `deploy` in `localnet/src/devnet.ts` deploys the default
+is the entry point devnet automation runs. `deploy` in `localnet/src/devnet.ts` deploys the default
 ERC-4626 fixture and profile through the same `createBase` and `create` path a local run uses, and
 `e2e/harness/devnet.ts` reuses the local run's validation and context. Beyond enabling its fixture
 tokens and registering its router as a callback gateway, it never starts, stops, or reconfigures

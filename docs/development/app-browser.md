@@ -61,7 +61,7 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
 ## Public transaction preparation
 
 - Derive the asset, share token, and current engine from the selected earnVault and verify them against the selected catalog stack before enabling writes.
-- Direct public deposits accept only `earnVault.asset()`. Customer-token swaps belong to the
+- Direct public deposits accept only `earnVault.asset()`. Integrator-token swaps belong to the
   deployment-scoped router's immutable private-asset and backend bindings; the EarnVault owns no
   route policy.
 - Direct public deposits must refresh the expected EarnShare output at submission time and pass a nonzero tolerance-adjusted `minEarnShares` to the earnVault; a display-only preview is not transaction protection.
@@ -73,7 +73,6 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
   safe Accountant base-asset rate plus the yield-streaming Teller's conservative denominator unit,
   and the active Teller's asset-specific share premium before
   applying the EarnVault anchor. Never call ERC-4626 `convertToShares` on a BoringVault.
-- Engine migration is operator-only and must not appear in the end-user application.
 - Enable public writes only for the current app deployment after relationship verification, selected-chain validation, complete-batch simulation, and deterministic exact approval-plus-action construction. Keep private writes separate.
 
 ## Zone identity and private execution

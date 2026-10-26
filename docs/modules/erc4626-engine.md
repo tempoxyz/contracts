@@ -3,8 +3,7 @@
 This page owns the `erc4626` engine kind: `ERC4626Engine`, its venue requirements, the
 `ERC4626EngineFactory` that provisions it, deployment, failure modes, and tests. The shared engine
 contract, capabilities, and installation checks are in [yield engines](../integrations/engines.md).
-`ERC4626Engine` is in the Zones & Earn audit scope and `ERC4626EngineFactory` is not; both changed
-after the audits ([coverage](../audit/README.md#coverage-after-the-audits)).
+Audit coverage is in [audits](../audit/README.md#scope).
 
 ## Contract
 

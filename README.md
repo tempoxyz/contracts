@@ -22,9 +22,8 @@
 Tempo Earn is vault-backed stablecoin yield for [Tempo](https://tempo.xyz). Users deposit a
 stablecoin into a persistent `EarnVault` and receive EarnShare, a non-rebasing
 [TIP-20](https://docs.tempo.xyz/protocol/tip20/overview) token whose redemption value grows with the
-yield. The vault's operator can replace the yield engine underneath (an ERC-4626 vault, Veda, or a
-PropAMM pool) without changing the vault, the token, or integrations, and EarnShare can also be held
-and used privately inside a Tempo Zone.
+yield. An engine contract holds the vault's position in its yield venue (an ERC-4626 vault, Veda, or
+a PropAMM pool), and EarnShare can also be held and used privately inside a Tempo Zone.
 
 ```mermaid
 flowchart LR
@@ -109,9 +108,7 @@ or building transaction infrastructure.
 
 [Sigma Prime](https://sigmaprime.io) completed two security reviews in August 2026, the Zones & Earn
 Review v1.1 and the PropAMM & Earn Review v2.0, and every finding that affects Earn is resolved. The
-[audits page](docs/audit/README.md) lists each report's scope, commits, and findings, and every
-contract changed or added since, including the experimental `PropAMMEngine`. `src/demo/` and the app
-are outside both reports.
+[audits page](docs/audit/README.md) lists each report's scope.
 
 ## Security
 

@@ -12,7 +12,7 @@ Veda is an `IEarnEngine` backend, not a separate Earn deployment type: the Veda 
 reviewed, unbound `VedaEngine`, and the profile lifecycle deploys the standard core around it. No
 Earn deployment script deploys or administers BoringVault, Teller, Queue, Accountant,
 RolesAuthority, or a Veda solver; only test fixtures stand in for them ([test stacks](#test-stacks)).
-Veda source is externally owned and license-restricted, so it is not vendored here.
+Veda source is externally owned and is not vendored here.
 
 ## Contracts
 
@@ -55,8 +55,7 @@ BoringVault and proposed Accountant, a nonzero Queue reports the same two, and t
 reports the BoringVault and base asset. It increments `version` without activating the tuple in the
 engine, and may precede binding so the engine constructor can validate the initial tuple. Binding
 requires an engine that points back to this registry, BoringVault, and base asset. The engine
-cannot bind its EarnVault until the registry points back to it, and the binding cannot change, so a
-replacement engine needs a fresh registry.
+cannot bind its EarnVault until the registry points back to it, and the binding cannot change.
 
 ### VedaForwardingSolver
 
@@ -111,7 +110,7 @@ reads `lastStrategistUpdateTimestamp()` (YieldStreaming Accountant) or, failing 
 result as `accountantRateUpdatedAt()`, and fails closed before assets move on a missing, future,
 expired, or unsupported timestamp (`InvalidRateTimestamp`, `StaleAccountantRate`,
 `UnsupportedAccountantFreshness`). Activating a rotated Accountant applies the same check.
-Contributions and inbound migrations inherit it through `engine.deposit`; staleness never blocks
+Contributions inherit it through `engine.deposit`; staleness never blocks
 exits.
 
 `isFeeValuationFresh()` applies the same timestamp and age, so an expired report defers fee
@@ -256,7 +255,7 @@ grants the engine Queue request and ID-based cancellation, configures the stock 
 forwarder, and publishes the existing Teller with the new Queue.
 
 Rotation changes periphery around the same BoringVault; it does not move EarnShare supply or engine
-custody, so it works on `UserOnly` stacks. Its checks catch mixed wiring and unexpected rate jumps;
+custody. Its checks catch mixed wiring and unexpected rate jumps;
 they cannot show that implementation bytecode is benign, permissions sufficient, or future reports
 honest. Those remain deployment-review responsibilities.
 
@@ -334,8 +333,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
 
 ### Test stacks
 
-No supported Veda release is deployed for Earn, because Veda's contracts are licensed for evaluation
-only. Tempo-owned stacks therefore run over Veda-compatible fixtures
+Tempo-owned test stacks run over Veda-compatible fixtures
 ([`LocalVeda.sol`](../../localnet/foundry/src/LocalVeda.sol)); they prove nothing about release
 compatibility and never stand in for a production venue. The fixture BoringVault doubles as a
 RolesAuthority that allows every call, the test deployer owns the BoringVault (and so controls the

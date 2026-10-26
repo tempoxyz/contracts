@@ -9,7 +9,7 @@ signatures in the [contract reference](../reference/contracts.md). Audit coverag
 
 ## Goal
 
-Tempo Earn gives every customer the same onchain shape for vault-backed yield. A native,
+Tempo Earn gives every integrator the same onchain shape for vault-backed yield. A native,
 non-rebasing TIP-20 EarnShare represents ownership. A persistent `EarnVault` is its sole issuer and
 keeps accounting stable when the yield venue changes. One current engine holds the venue shares. An
 ownerless `EarnFees` module holds fee state and fee custody. An optional ownerless router adds
@@ -32,7 +32,6 @@ The repository implements:
 - base-asset deposit, EarnShare redemption, exact-asset withdrawal, and permissionless contribution;
 - an optional operator-set cap on active managed assets after voluntary inflows;
 - in-kind entry with the current venue's shares, which only `ERC4626Engine` supports;
-- deployment-fixed, same-asset whole-pool engine migration;
 - immediate ERC-4626 execution through `ERC4626Engine`;
 - immediate and queued Veda exits through `VedaEngine`;
 - experimental immediate execution against a DirectPropAMM pool through `PropAMMEngine`;
@@ -41,7 +40,7 @@ The repository implements:
 - optional one-way contribution orchestration; and
 - an optional EarnShare settlement rail for offchain-computed cumulative reward entitlements.
 
-It does not implement an end-user API, identity provider, portfolio allocator, or customer-specific
+It does not implement an end-user API, identity provider, portfolio allocator, or integrator-specific
 commercial policy. Contracts in `src/demo/` are test infrastructure.
 
 ## Units
@@ -64,7 +63,7 @@ flowchart TB
     Factory["EarnFactory"]
     RewardsFactory["EarnRewardsFactory"]
     Token["EarnShare<br/>native TIP-20"]
-    EarnVault["EarnVault<br/>issuer, anchor, migration"]
+    EarnVault["EarnVault<br/>issuer, anchor"]
     Fees["EarnFees<br/>fee state and claim custody"]
     Engine["Current IEarnEngine<br/>single EarnVault"]
     Venue["Yield venue"]
@@ -126,15 +125,14 @@ always-allow policy `1`.
 `EarnVault` is the persistent per-stack state boundary. It:
 
 - fixes the base asset, EarnShare, and `EarnFees` at initialization;
-- stores the operator, optional fee distributor and its protected fixed-fee item, the
-  deployment-fixed distributor update delay, and the deployment-fixed migration mode;
+- stores the operator, optional fee distributor and its protected fixed-fee item, and the
+  deployment-fixed distributor update delay;
 - exclusively mints and burns EarnShare;
 - holds the engine-share conversion anchor and the managed engine-share count;
 - checkpoints fees before every economic action;
 - coordinates deposits, in-kind entry, exits, contributions, and surplus absorption;
 - rejects voluntary inflows that would exceed its managed-assets limit;
-- stores each open async claim's requester, receiver, burned EarnShare, and queued engine shares;
-- coordinates whole-pool engine migration when the deployment permits it; and
+- stores each open async claim's requester, receiver, burned EarnShare, and queued engine shares; and
 - holds the emergency guardian and async janitor seats.
 
 It does not hold venue shares, store route policy, or execute swaps, and between calls it holds no
@@ -213,7 +211,7 @@ convertToEngineShares(totalEarnShares()) == engineShares()
 
 `isAccountingAligned()` reports this equality. Deposits and exits change backing and supply
 proportionally. Fee mints add supply without backing; contributions and surplus absorption add
-backing without supply; engine migration changes the engine-share count without changing supply.
+backing without supply.
 Each restates the anchor against the resulting pair.
 
 ### Managed backing and quarantined surplus
@@ -233,8 +231,6 @@ so surplus does not affect fees, quotes, deposits, or exits.
   `EngineShareShortfallReconciled` with the previous managed count, observed custody, shortfall, and
   EarnShare supply. Treat that event as a critical engine-custody signal: pause new exposure and
   investigate while preserving exits. A falling share price alone does not emit it.
-- Migration moves surplus with managed backing and preserves the managed/surplus split in the new
-  engine's units ([whole-pool migration](../modules/migration.md#whole-pool-engine-migration)).
 
 If managed backing is worth zero while EarnShare supply is nonzero, `deposit` and
 `depositVenueShares` revert with `ActiveSupplyWithoutBacking` rather than recapitalize existing
@@ -244,8 +240,7 @@ intentionally restores backing.
 ### Reward-admission limit
 
 `normalizedRewardRate()` is managed engine shares per whole EarnShare, rounded up.
-`rewardRateBaseline()` records that rate at initialization, at every reset to an empty anchor, and
-after every migration. A `contribute` or `absorbEngineShareSurplus` call that leaves the rate, after
+`rewardRateBaseline()` records that rate at initialization and at every reset to an empty anchor. A `contribute` or `absorbEngineShareSurplus` call that leaves the rate, after
 its fee checkpoint, above `MAX_REWARD_RATE_MULTIPLIER` (100) times the baseline reverts with
 `RewardRateLimitExceeded`. The multiplier is a constant with no setter.
 
@@ -255,21 +250,13 @@ against it: exits keep all remaining holder backing managed even if rounding mov
 yield does not move the rate, because it raises the value of each engine share rather than their
 number. Rewards compounding at 7% a year would take about 68 years to reach 100×.
 
-Exit rounding can be compounded deliberately. `withdrawExact` rounds the EarnShare it burns up, so
-a holder of the whole active supply can alternate exact withdrawals with `depositVenueShares` and
-ratchet the rate: with a 6-decimal asset over an 18-decimal venue, 25 rounds raise it about 16.7
-million×. Rewards are then blocked, and a later deposit reverts with `ExcessiveConversionLoss` once
-one EarnShare unit is worth more than its 1-basis-point loss bound allows. The holder keeps the value
-it moved, so this costs only gas, but it needs the whole supply: it affects a new or emptied pool
-before other holders enter.
+A holder of the whole active supply can also raise the rate through exit rounding, which can block
+rewards and later deposits on that pool. It moves no value from other holders and needs the whole
+supply, so it affects only a new or emptied pool before other holders enter.
 
 An async request removes its EarnShare and engine shares from the active pool. A request that
 empties the pool resets the baseline like any empty anchor, and a cancellation that reopens the pool
-keeps that reset baseline. Before any migration the reopened rate matches it, so the cycle creates no
-headroom. After a migration to an engine that counts its shares differently, the migrated baseline
-is lost: the reopened rate stays at the migrated level against the reset baseline, which blocks
-rewards when the new engine issues more shares per EarnShare and widens headroom when it issues
-fewer.
+keeps that reset baseline. The reopened rate matches it, so the cycle creates no headroom.
 
 ### Managed-assets limit
 
@@ -278,24 +265,24 @@ When `maxManagedAssets` is nonzero, `deposit`, `depositVenueShares`, `contribute
 it. The operator may change it at any time; zero means unlimited. A limit below current backing
 forces no exit; voluntary inflows stop until exits create room or the operator raises or removes
 it. Passive yield may carry backing above the limit. Redemption, exact withdrawal, async requests
-and cancellation, and migration never check it. `remainingDepositCapacity()` quotes the room left.
+and cancellation never check it. `remainingDepositCapacity()` quotes the room left.
 
 Fee treatment of checkpoints, stale valuation, and queued claims is in [Earn fees](fees.md);
 transaction order is in [flows](flows.md).
 
 ## Roles and authority
 
-| Authority                    | Scope                                                                                                                                                             |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| EarnShare issuer             | EarnVault only; membership is frozen once factory creation returns                                                                                                |
-| TIP-403 policy administrator | Whitelist membership only; cannot alter EarnShare issuer membership                                                                                               |
-| EarnVault operator           | Pause and unpause, managed-assets limit, emergency seats, ordinary fees, global fee disable without a distributor, permitted migration, two-step operator handoff |
-| Fee distributor              | Delayed updates to its protected fixed-fee item, two-step distributor handoff                                                                                     |
-| Emergency guardian           | Pause deposits, in-kind entry, contributions, and surplus absorption; never unpause                                                                               |
-| Async janitor                | Cancel an open request; the result goes only to its stored receiver                                                                                               |
-| Engine setup owner           | One-time EarnVault binding, optionally with an atomic transfer to the final owner                                                                                 |
-| Final engine owner           | Engine-specific operational settings                                                                                                                              |
-| Anyone                       | `accrueFees`, `contribute`, `absorbEngineShareSurplus`, and a ready `executeDistributorFeeUpdate`                                                                 |
+| Authority                    | Scope                                                                                                                                        |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| EarnShare issuer             | EarnVault only; membership is frozen once factory creation returns                                                                           |
+| TIP-403 policy administrator | Whitelist membership only; cannot alter EarnShare issuer membership                                                                          |
+| EarnVault operator           | Pause and unpause, managed-assets limit, emergency seats, ordinary fees, global fee disable without a distributor, two-step operator handoff |
+| Fee distributor              | Delayed updates to its protected fixed-fee item, two-step distributor handoff                                                                |
+| Emergency guardian           | Pause deposits, in-kind entry, contributions, and surplus absorption; never unpause                                                          |
+| Async janitor                | Cancel an open request; the result goes only to its stored receiver                                                                          |
+| Engine setup owner           | One-time EarnVault binding, optionally with an atomic transfer to the final owner                                                            |
+| Final engine owner           | Engine-specific operational settings                                                                                                         |
+| Anyone                       | `accrueFees`, `contribute`, `absorbEngineShareSurplus`, and a ready `executeDistributorFeeUpdate`                                            |
 
 `EarnFees` and `SingleZoneEarnRouter` have no owner. The role-bearing seats need not share one
 account; a zero guardian or janitor leaves that seat empty. Engine-specific roles, such as Veda's
@@ -319,15 +306,13 @@ page](../integrations/engines.md).
 9. Immediate exits enforce caller bounds, and EarnShare burns follow measured receiver-asset and
    venue-share deltas, not venue return values.
 10. An async request pays its finalization and cancellation only to its one stored receiver.
-11. Whole-pool migration is same-asset, atomic, bounded, preserves EarnShare supply and balances, and
-    is blocked while claims are open.
-12. Contributions mint no funder EarnShare, checkpoint fees before and after, and re-anchor measured
+11. Contributions mint no funder EarnShare, checkpoint fees before and after, and re-anchor measured
     backing.
-13. In-kind entry works only through an engine advertising `IEarnEngineInKindDeposit` and checkpoints
+12. In-kind entry works only through an engine advertising `IEarnEngineInKindDeposit` and checkpoints
     fees before principal enters.
-14. Async request conversion and nonempty-pool cancellation re-entry leave at most one basis point of
+13. Async request conversion and nonempty-pool cancellation re-entry leave at most one basis point of
     their input unrepresented and never over-represent returned engine shares.
-15. Fees never exceed positive accrual above the high-water mark, so deposited principal is never a
+14. Fees never exceed positive accrual above the high-water mark, so deposited principal is never a
     fee base, and fee EarnShare allocations sum exactly to the amount minted.
 
 ### Enforcing tests
@@ -343,7 +328,7 @@ call; the E2E case runs against a deployed stack ([E2E environments](../operatio
 | 3   | Invariant | [`EarnVaultInvariant.t.sol`](../../test/core/EarnVaultInvariant.t.sol): `FeeEarnVaultInvariantTest.invariant_feeCustodyEqualsRecordedClaims`; [`ERC4626CompositionInvariant.t.sol`](../../test/engines/erc4626/ERC4626CompositionInvariant.t.sol): `invariant_feeCustodyEqualsRecordedClaims`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 3   | Unit      | [`EarnFactory.t.sol`](../../test/core/EarnFactory.t.sol): `testDeployCreatesEarnStackAndRelinquishesEarnAdmin` (no `EarnFees` issuer role); [`EarnVaultFees.t.sol`](../../test/core/EarnVaultFees.t.sol): `testEarnFeesMutationsAreRestrictedToItsImmutableEarnVault`, `testFixedFeeUsesCombinedYieldAndContributionsAndCanBeClaimed`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 4   | Unit      | [`EarnVaultFees.t.sol`](../../test/core/EarnVaultFees.t.sol): `testDistributorFeeIsProtectedFromOperatorUpdates`, `testEitherAuthorityCannotExceedAggregateFixedFeeLimit`, `testGlobalFeeDisableIsUnavailableWhenDistributorConfigured`, `testDistributorCanDisableAndLaterRestoreItsReservedItem`, `testConfigurationIsOperatorOnlyAndClaimsAreBounded` (operator bound without a distributor)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| 5   | Unit      | [`EarnFactory.t.sol`](../../test/core/EarnFactory.t.sol): `testDeployRejectsAlreadyBoundEngine`, `testERC4626EngineSetupOwnerBindsFactoryStack`; [`ERC4626EngineFactory.t.sol`](../../test/engines/erc4626/ERC4626EngineFactory.t.sol): `testSetupOwnerBindsOnceAndHandsOff`; [`EarnVaultMigration.t.sol`](../../test/core/EarnVaultMigration.t.sol): `testMigrateRejectsAssetMismatch`, `testEmptyMigrationRejectsReplacementNotBoundToThisVault`; [`PropAMMEngine.t.sol`](../../test/engines/propamm/PropAMMEngine.t.sol): `testBindingIsOwnerOnlyOnceAndAssetChecked`                                                                                                                                                                                                                                                                                                               |
+| 5   | Unit      | [`EarnFactory.t.sol`](../../test/core/EarnFactory.t.sol): `testDeployRejectsAlreadyBoundEngine`, `testERC4626EngineSetupOwnerBindsFactoryStack`; [`ERC4626EngineFactory.t.sol`](../../test/engines/erc4626/ERC4626EngineFactory.t.sol): `testSetupOwnerBindsOnceAndHandsOff`; [`PropAMMEngine.t.sol`](../../test/engines/propamm/PropAMMEngine.t.sol): `testBindingIsOwnerOnlyOnceAndAssetChecked`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 6   | Invariant | [`ERC4626CompositionInvariant.t.sol`](../../test/engines/erc4626/ERC4626CompositionInvariant.t.sol): `invariant_engineOwnsAllVenueShares`, `invariant_intermediateContractsRetainNoTokensOrApprovals`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 7   | Invariant | [`EarnVaultInvariant.t.sol`](../../test/core/EarnVaultInvariant.t.sol): `AsyncEarnVaultInvariantTest.invariant_activeSupplyExcludesPendingClaims`, `AsyncEarnVaultInvariantTest.invariant_engineAssetsCoverActiveAndPendingShares`, `FeeEarnVaultInvariantTest.invariant_feeAccrualPreservesBackingAlignment`; [`ERC4626CompositionInvariant.t.sol`](../../test/engines/erc4626/ERC4626CompositionInvariant.t.sol): `invariant_projectedEarnSupplyRedeemsToActualVenueAssets`                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 7   | Unit      | [`EarnVaultAsync.t.sol`](../../test/core/EarnVaultAsync.t.sol): `testAsyncBurnAtRequestInvariantAcrossRequestFinalizeCancel`, `testContributionWhileAsyncRequestOpenBenefitsOnlyActivePool`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -351,14 +336,13 @@ call; the E2E case runs against a deployed stack ([E2E environments](../operatio
 | 8   | E2E       | [`controls`](../../e2e/modules/controls/module.ts) case `controls-operator-authority` (exact withdrawal and redemption while paused)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | 9   | Unit      | [`ERC4626Engine.t.sol`](../../test/engines/erc4626/ERC4626Engine.t.sol): `testRedeemPaysMeasuredAssetsInsteadOfVenueReport`, `testRedeemRollsBackWhenVenueOverreportsReceiverDelivery`, `testRedeemRejectsUnexpectedVenueShareBurn`, `testWithdrawRejectsUnexpectedReceiverDelivery`, `testWithdrawChargesMeasuredVenueShareConsumption`; [`VedaEngineAccounting.t.sol`](../../test/engines/veda/VedaEngineAccounting.t.sol): `testRedeemRejectsTellerReturnWithoutReceiverDelivery`, `testRedeemRejectsFeeOnTransferUnderDelivery`, `testRedeemRejectsUnexpectedVenueShareBurn`, `testExactWithdrawRejectsFeeOnTransferDelivery`; [`EarnVaultCore.t.sol`](../../test/core/EarnVaultCore.t.sol): `testBoundedRedeemRevertsBelowMinimumAndRollsBack` (caller bound), `testExceedsMaxEarnSharesPreviewAndActual`, `testWithdrawExactBurnsOnlyConsumedEarnSharesAndLeavesUnusedEarnShare` |
 | 10  | Unit      | [`EarnVaultAsync.t.sol`](../../test/core/EarnVaultAsync.t.sol): `testAsyncBurnAtRequestInvariantAcrossRequestFinalizeCancel`, `testCancelIsRequesterOrJanitorOnly`, `testFinalizeSucceedsEvenWhenReceiverCallbackReverts`; [`EarnVaultControls.t.sol`](../../test/core/EarnVaultControls.t.sol): `testDepositPauseLeavesAsyncRequestsAvailableAndJanitorIsSeparateFromGovernance`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| 11  | Unit      | [`EarnVaultMigration.t.sol`](../../test/core/EarnVaultMigration.t.sol): `testMigrateRejectsAssetMismatch`, `testMigrateRevertsIfDepositLegFailsAndPoolStaysOnOldEngine`, `testMigrateRejectsReplacementThatDoesNotConsumeAllAssets`, `testMigrateRejectsResidualOldEngineCustody`, `testMigrateRequiresAndEnforcesOutputBounds`, `testMigrateRejectsInflatedDestinationBelowRetainedAssetMinimum`, `testMigratePreservesSupplyNavAndBalancesAndReAnchors`; [`EarnVaultAsync.t.sol`](../../test/core/EarnVaultAsync.t.sol): `testMigrateRevertsWhileAsyncRequestsPending`                                                                                                                                                                                                                                                                                                               |
-| 12  | Invariant | [`EarnVaultInvariant.t.sol`](../../test/core/EarnVaultInvariant.t.sol): `FeeEarnVaultInvariantTest.invariant_feeAccrualPreservesBackingAlignment` (re-anchor; the handler contributes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 12  | Unit      | [`EarnVaultCore.t.sol`](../../test/core/EarnVaultCore.t.sol): `testDepositMinimumEarnSharesPreventsContributionInflationAttack` (funder balance unchanged, backing recognized); [`EarnVaultVenueShares.t.sol`](../../test/core/EarnVaultVenueShares.t.sol): `testExistingVenueSharesMintAtCurrentEarnRate` (supply unchanged by the contribution); [`EarnVaultFees.t.sol`](../../test/core/EarnVaultFees.t.sol): `testFixedFeeUsesCombinedYieldAndContributionsAndCanBeClaimed` (fee checkpoint); [`EarnVaultAsync.t.sol`](../../test/core/EarnVaultAsync.t.sol): `testContributionWhileAsyncRequestOpenBenefitsOnlyActivePool` (re-anchor with an open claim)                                                                                                                                                                                                                         |
-| 13  | Unit      | [`EarnVaultVenueShares.t.sol`](../../test/core/EarnVaultVenueShares.t.sol): `testExistingVenueSharesArePrincipalNotFeeableAccrual` (checkpoint before entry), `testExistingVenueSharesMintAtCurrentEarnRate`, `testInKindEntryRejectsEngineWithoutInKindCapability` (capability gate); [`EarnVaultFees.t.sol`](../../test/core/EarnVaultFees.t.sol): `testHigherPrecisionEngineNormalizesFirstInKindEntry`; [`ERC4626Engine.t.sol`](../../test/engines/erc4626/ERC4626Engine.t.sol): `testMutatingCallsAreOnlyEarnVault` (`depositInKind` is EarnVault-only)                                                                                                                                                                                                                                                                                                                           |
-| 14  | Unit      | [`EarnVaultAsync.t.sol`](../../test/core/EarnVaultAsync.t.sol): `testAsyncRequestRejectsExcessiveFloorLossBeforeBurning` (request conversion), `testNonemptyPoolCancellationRejectsExcessiveFloorLoss` (cancellation re-entry), `testContributionWhileAsyncRequestOpenBenefitsOnlyActivePool` (the unrepresented returned engine share stays surplus)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 15  | Invariant | [`EarnVaultInvariant.t.sol`](../../test/core/EarnVaultInvariant.t.sol): `FeeEarnVaultInvariantTest.invariant_previewNeverChargesMoreThanPositiveAccrual`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 15  | Fuzz      | [`EarnFeeMathFuzz.t.sol`](../../test/core/EarnFeeMathFuzz.t.sol): `testFuzzPreviewFeesStayWithinPositiveAccrualAndAllocateExactly`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| 15  | Unit      | [`EarnFeeMathFuzz.t.sol`](../../test/core/EarnFeeMathFuzz.t.sol): `testCarriedFixedFeesCannotExceedPositiveAccrual`, `testPreviewCapsAggregateWhenCarriedRoundingExceedsAccrual`; [`EarnVaultVenueShares.t.sol`](../../test/core/EarnVaultVenueShares.t.sol): `testExistingVenueSharesArePrincipalNotFeeableAccrual` (principal entry)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 11  | Invariant | [`EarnVaultInvariant.t.sol`](../../test/core/EarnVaultInvariant.t.sol): `FeeEarnVaultInvariantTest.invariant_feeAccrualPreservesBackingAlignment` (re-anchor; the handler contributes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 11  | Unit      | [`EarnVaultCore.t.sol`](../../test/core/EarnVaultCore.t.sol): `testDepositMinimumEarnSharesPreventsContributionInflationAttack` (funder balance unchanged, backing recognized); [`EarnVaultVenueShares.t.sol`](../../test/core/EarnVaultVenueShares.t.sol): `testExistingVenueSharesMintAtCurrentEarnRate` (supply unchanged by the contribution); [`EarnVaultFees.t.sol`](../../test/core/EarnVaultFees.t.sol): `testFixedFeeUsesCombinedYieldAndContributionsAndCanBeClaimed` (fee checkpoint); [`EarnVaultAsync.t.sol`](../../test/core/EarnVaultAsync.t.sol): `testContributionWhileAsyncRequestOpenBenefitsOnlyActivePool` (re-anchor with an open claim)                                                                                                                                                                                                                         |
+| 12  | Unit      | [`EarnVaultVenueShares.t.sol`](../../test/core/EarnVaultVenueShares.t.sol): `testExistingVenueSharesArePrincipalNotFeeableAccrual` (checkpoint before entry), `testExistingVenueSharesMintAtCurrentEarnRate`, `testInKindEntryRejectsEngineWithoutInKindCapability` (capability gate); [`EarnVaultFees.t.sol`](../../test/core/EarnVaultFees.t.sol): `testHigherPrecisionEngineNormalizesFirstInKindEntry`; [`ERC4626Engine.t.sol`](../../test/engines/erc4626/ERC4626Engine.t.sol): `testMutatingCallsAreOnlyEarnVault` (`depositInKind` is EarnVault-only)                                                                                                                                                                                                                                                                                                                           |
+| 13  | Unit      | [`EarnVaultAsync.t.sol`](../../test/core/EarnVaultAsync.t.sol): `testAsyncRequestRejectsExcessiveFloorLossBeforeBurning` (request conversion), `testNonemptyPoolCancellationRejectsExcessiveFloorLoss` (cancellation re-entry), `testContributionWhileAsyncRequestOpenBenefitsOnlyActivePool` (the unrepresented returned engine share stays surplus)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 14  | Invariant | [`EarnVaultInvariant.t.sol`](../../test/core/EarnVaultInvariant.t.sol): `FeeEarnVaultInvariantTest.invariant_previewNeverChargesMoreThanPositiveAccrual`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 14  | Fuzz      | [`EarnFeeMathFuzz.t.sol`](../../test/core/EarnFeeMathFuzz.t.sol): `testFuzzPreviewFeesStayWithinPositiveAccrualAndAllocateExactly`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 14  | Unit      | [`EarnFeeMathFuzz.t.sol`](../../test/core/EarnFeeMathFuzz.t.sol): `testCarriedFixedFeesCannotExceedPositiveAccrual`, `testPreviewCapsAggregateWhenCarriedRoundingExceedsAccrual`; [`EarnVaultVenueShares.t.sol`](../../test/core/EarnVaultVenueShares.t.sol): `testExistingVenueSharesArePrincipalNotFeeableAccrual` (principal entry)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Configuration boundaries
 
@@ -366,13 +350,12 @@ Fixed per stack:
 
 - the EarnShare, EarnVault, and `EarnFees` pairing;
 - the base asset;
-- the EarnVault implementation, migration mode, and distributor update delay; and
+- the EarnVault implementation and distributor update delay; and
 - each engine's EarnVault, venue, and base asset.
 
 Changeable only through the named role:
 
 - the operator, through its two-step handoff;
-- the current engine, through `migrateEngine` when the migration mode is `OperatorEnabled`;
 - the managed-assets limit, deposit pause, and emergency seats;
 - ordinary fee configuration, prospectively;
 - the distributor, through its two-step handoff, and its protected fee item, through delayed

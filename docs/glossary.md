@@ -5,11 +5,11 @@ One line per term; each links to the page that owns it.
 ## Core stack
 
 - **EarnVault:** the persistent contract users deposit into and redeem from; the sole EarnShare
-  issuer, it keeps accounting stable across engine changes ([system](architecture/system.md#earnvault)).
+  issuer ([system](architecture/system.md#earnvault)).
 - **EarnShare:** the native, non-rebasing TIP-20 token EarnVault mints for a deposit; yield raises
   the assets each EarnShare redeems for, not balances ([system](architecture/system.md#earnshare)).
 - **Engine:** the single-EarnVault contract that holds the venue shares and adapts one venue to the
-  shared engine interface; the operator can migrate to another ([yield engines](integrations/engines.md)).
+  shared engine interface ([yield engines](integrations/engines.md)).
 - **Venue:** the external yield source an engine holds shares of: an ERC-4626 vault, a Veda
   BoringVault, or a DirectPropAMM pool ([yield engines](integrations/engines.md)).
 - **Managed backing:** the engine shares EarnVault counts as backing active EarnShare

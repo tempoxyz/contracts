@@ -10,7 +10,7 @@ accounting specification for contracts, tests, and integrations; this file is no
   Preserve caller output bounds and atomic rollback when the last external call fails.
 - EarnVault owns issuance and the conversion anchor; EarnFees mutates only through its paired vault
   and pays only recorded claims. Never add an upgrade entrypoint to the fixed EarnVault proxy, and
-  never let a setter broaden a deployment-fixed migration mode or protected fee choice.
+  never let a setter broaden a deployment-fixed control or protected fee choice.
 - Keep active managed backing, raw surplus, and queued claims separate. Capacity and reward-admission
   checks must never become exit restrictions or reclassify remaining holder backing.
 - Every installed engine serves one vault, uses its immutable base asset, and advertises a usable
