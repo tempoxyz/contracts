@@ -3,9 +3,9 @@
 This page is for developers building a wallet, backend, or contract that deposits into and exits a
 Tempo Earn deployment. An application integrates two contracts: the `EarnVault`, which executes
 deposits and exits, and EarnShare, the non-rebasing TIP-20 it mints and burns. The vault's backing
-sits in a replaceable engine contract that integrates one venue; the
-[engine table](engines.md#yield-engines) lists the kinds. The EarnVault and EarnShare addresses
-survive engine changes, so they are the integration surface. See
+sits in an engine contract that integrates one venue; the
+[engine table](engines.md#yield-engines) lists the kinds. The EarnVault and EarnShare addresses are
+the integration surface. See
 [system architecture](../architecture/system.md) for the layout and the [glossary](../glossary.md)
 for terms.
 

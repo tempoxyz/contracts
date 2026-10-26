@@ -22,9 +22,8 @@
 Tempo Earn is vault-backed stablecoin yield for [Tempo](https://tempo.xyz). Users deposit a
 stablecoin into a persistent `EarnVault` and receive EarnShare, a non-rebasing
 [TIP-20](https://docs.tempo.xyz/protocol/tip20/overview) token whose redemption value grows with the
-yield. The vault's operator can replace the yield engine underneath (an ERC-4626 vault, Veda, or a
-PropAMM pool) without changing the vault, the token, or integrations, and EarnShare can also be held
-and used privately inside a Tempo Zone.
+yield. An engine contract holds the vault's position in its yield venue (an ERC-4626 vault, Veda, or
+a PropAMM pool), and EarnShare can also be held and used privately inside a Tempo Zone.
 
 ```mermaid
 flowchart LR

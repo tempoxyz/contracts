@@ -1,7 +1,6 @@
 # Yield engines
 
-A yield engine is the replaceable contract that holds an Earn deployment's position in one venue.
-`EarnVault` and EarnShare stay fixed while the engine can be selected or migrated. This page is for
+A yield engine is the contract that holds an Earn deployment's position in one venue. This page is for
 integrators choosing an engine and for contributors adding one. It owns the shared engine contract,
 installation checks, and the recipe for a new engine kind. Each kind is a module with its own page:
 

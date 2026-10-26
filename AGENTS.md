@@ -1,6 +1,6 @@
 # Working on Tempo Earn
 
-Tempo Earn provides a stable EarnVault and native TIP-20 EarnShare over replaceable yield venues.
+Tempo Earn provides a stable EarnVault and native TIP-20 EarnShare over a yield venue.
 Use [README.md](README.md) for the repository map and [docs/README.md](docs/README.md) to find the
 one canonical page for each topic. Read what the task needs.
 
