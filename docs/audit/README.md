@@ -17,7 +17,6 @@ The Earn scope was:
 - `ERC4626Engine`
 - `SingleZoneEarnRouter`
 - `EarnContributionController`
-- the ERC-4626 stack, router, EarnShare-policy, and contribution-controller deployment scripts
 
 ## PropAMM & Earn Review
 
@@ -31,11 +30,21 @@ The review also covered the DirectPropAMM pool contract.
 
 ## Scope
 
-Each report covers its listed components at the version it reviewed. Components not listed above,
-and changes made after a report's review, are not covered by it. Neither report covers contracts
-under `src/demo/`, the browser app, Worker, or offchain services, or the external venue, Zone,
-token, oracle, and pool dependencies. Before a release, review anything outside that coverage and
-record the review alongside the deployment's operational evidence.
+Each report covers its listed components at the version it reviewed. Changes made after a report's
+review are not covered by it; `EarnVault`, `EarnFees`, `ERC4626Engine`, `SingleZoneEarnRouter`,
+`EarnContributionController`, and `EarnMerkleRewardDistributor` have all changed since.
+
+Neither report covers:
+
+- `PropAMMEngine`, which is experimental;
+- `EarnRewardsFactory`, `EarnFactory`, and `ERC4626EngineFactory`;
+- the current Foundry deployment scripts and the profile lifecycle tooling;
+- the oracle and rebalance controller used with a DirectPropAMM pool; and
+- contracts under `src/demo/`, the browser app, Worker, offchain services, or the external venue,
+  Zone, token, oracle, and pool dependencies.
+
+Before a release, review anything outside that coverage and record the review alongside the
+deployment's operational evidence.
 
 Veda's own BoringVault audits are published at
 [docs.veda.tech](https://docs.veda.tech/security-and-risk-controls/audits).

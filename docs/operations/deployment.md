@@ -7,8 +7,8 @@ verification, authority handoffs, and shared factory releases. The authored prof
 [yield engines](../integrations/engines.md#installation), and package exports in the
 [deployment package reference](../../deployments/README.md).
 
-Audit coverage of the Foundry scripts is in [audits](../audit/README.md#scope). This profile
-lifecycle tooling is outside audit scope.
+The current Foundry deployment scripts and this profile lifecycle tooling are outside audit scope
+([audits](../audit/README.md#scope)).
 
 ## Commands
 
