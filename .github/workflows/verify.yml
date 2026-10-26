@@ -72,6 +72,10 @@ jobs:
 
       - name: Fuzz router callback ABI with brutalized memory
         if: steps.sources.outputs.changed == 'true'
+        env:
+          # --brutalize compiles from a temporary copy, where foundry.toml's relative path to Earn's
+          # compiler does not resolve.
+          FOUNDRY_SOLC: ${{ github.workspace }}/earn/solar-solc
         run: forge test --brutalize --match-contract SingleZoneEarnRouterAbiFuzzTest --fuzz-runs 4096 -vv
 
   # Rebuilds the committed DirectPropAMM fixture from its pinned private source. Forks cannot read
@@ -173,11 +177,12 @@ jobs:
       - name: Install symbolic solver
         run: sudo apt-get update && sudo apt-get install --yes z3
 
-      # Include compiler-generated ABI and memory initialization loops in the proof bound.
+      # Include compiler-generated ABI and memory initialization loops in the proof bound. Solar's
+      # output takes z3 longer: proveFixedFeeRemainderConservation needs about 210 s of solver time.
       - name: Prove fee arithmetic and conversion properties
         run: >-
           forge test --symbolic --match-contract EarnFeeMathFuzzTest --match-test '^prove'
-          --symbolic-solver z3 --symbolic-timeout 60 --symbolic-loop 32 -vv
+          --symbolic-solver z3 --symbolic-timeout 600 --symbolic-loop 32 -vv
 
   typescript:
     name: TypeScript checks

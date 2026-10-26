@@ -705,7 +705,8 @@ contract EarnVaultDistributorTest is Test {
 
         vm.prank(DISTRIBUTOR);
         earnVault.scheduleDistributorFeeUpdate(NEW_RECIPIENT, 5_000);
-        vm.warp(block.timestamp + UPDATE_DELAY);
+        // The optimizer may reuse the block.timestamp read before the first warp; read the warped one.
+        vm.warp(vm.getBlockTimestamp() + UPDATE_DELAY);
         earnVault.executeDistributorFeeUpdate();
 
         FeeConfig memory restored = fees.feeConfig(fees.currentFeeConfigId());

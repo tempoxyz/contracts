@@ -8,6 +8,7 @@ on:
     paths:
       - 'earn/src/**'
       - 'earn/foundry.*'
+      - 'earn/solar*'
       - 'scripts/solidity-deps.sh'
       - '.github/workflows/zones-compatibility.yml'
       - '.github/actions/publish-remediation-event/**'
@@ -41,7 +42,12 @@ jobs:
           path: earn
           persist-credentials: false
 
-      - name: Install Earn's Solidity dependencies
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: earn/.solar
+          key: solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/earn/solar.lock') }}
+
+      - name: Install Earn's Solidity dependencies and solar
         working-directory: earn
         run: scripts/solidity-deps.sh earn
 
@@ -88,7 +94,8 @@ jobs:
         env:
           # Earn's Foundry project inside this repository's checkout.
           EARN_ROOT: ${{ github.workspace }}/earn/earn
-        # Tempo's script builds Earn first so the Zones contracts own the final IZone ABI.
+        # Tempo's script builds Earn first so the Zones contracts own the final IZone ABI. It passes
+        # Earn's solar-solc as FOUNDRY_SOLC to that build only; the Zones contracts keep their solc.
         run: |
           bash scripts/build-zones-test-artifacts.sh
           test -s crates/zones/contracts/out/DemoParPool.sol/DemoParPool.json

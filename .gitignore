@@ -17,3 +17,4 @@ localnet/.local/
 !/app/.env.example
 *.log
 /earn/lib/
+/.solar/

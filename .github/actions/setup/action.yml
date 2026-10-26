@@ -6,7 +6,8 @@ inputs:
   forge-cache:
     description: >-
       Forge build cache scope. Non-empty installs Foundry v1.8.6, Earn's one pinned version, with
-      Earn's pinned Solidity dependencies and restores that cache; empty skips all three.
+      Earn's pinned Solidity dependencies and solar compiler, and restores that cache; empty skips
+      all of them.
     default: ''
   node:
     description: "'false' skips pnpm, Node, and the frozen workspace install."
@@ -19,7 +20,15 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install Earn's Solidity dependencies
+    # Earn compiles with the solar revision earn/solar.lock pins; building it takes minutes, so the
+    # binary is cached by that revision.
+    - if: inputs.forge-cache != ''
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .solar
+        key: solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/solar.lock') }}
+
+    - name: Install Earn's Solidity dependencies and solar
       if: inputs.forge-cache != ''
       shell: bash
       run: scripts/solidity-deps.sh earn

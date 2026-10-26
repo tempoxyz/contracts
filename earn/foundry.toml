@@ -11,7 +11,13 @@ fs_permissions = [
     { access = "read-write", path = "../e2e/.local" },
     { access = "read-write", path = "../localnet/.local" },
 ]
-solc_version = "0.8.36"
+# Compiled with solar (https://github.com/paradigmxyz/solar) at the revision solar.lock pins, through
+# the solar-solc wrapper, which presents it to Forge as solc 0.8.36. Forge resolves this path from its
+# working directory, so run it from earn/ or set FOUNDRY_SOLC to the wrapper's absolute path.
+solc = "./solar-solc"
+# Forge's cache does not record which compiler built an artifact, so solar output keeps its own
+# cache; after bumping solar.lock, rebuild with --force.
+cache_path = "cache/solar"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
@@ -36,7 +42,7 @@ fuzz = { runs = 10000 }
 invariant = { runs = 512, depth = 128, fail_on_revert = false }
 
 [profile.coverage]
-cache_path = "cache/coverage"
+cache_path = "cache/solar-coverage"
 out = "out/coverage"
 invariant = { runs = 64, depth = 32 }
 # Coverage compiles with minimal IR optimization, under which this test's fuzz entrypoint is too
@@ -49,7 +55,7 @@ ir_minimum = true
 exclude_tests = true
 
 [profile.deploy]
-cache_path = "cache/deploy"
+cache_path = "cache/solar-deploy"
 out = "out/deploy"
 
 [lint]

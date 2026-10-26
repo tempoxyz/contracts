@@ -247,7 +247,12 @@ Releases create EarnShare with empty currency metadata (`""`) and the underlying
 token: an EarnShare is not a USD stablecoin or a 1:1 claim on another EarnShare. Shared factories
 are ownerless, and their constructors impose no PATHUSD transfer-policy ID. The deployer must be
 funded and authorized to pay fees under its chosen fee token's live policy; a custom PATHUSD policy
-does not by itself block a release. Deploy a core release with:
+does not by itself block a release.
+
+Earn compiles with solar ([`earn/solar.lock`](../../earn/solar.lock)), whose bytecode Tempo's source
+verifier cannot reproduce. The profile lifecycle refuses hosted Forge steps for that reason, but the
+release entry points below are plain Forge scripts that it does not run: do not broadcast them to a
+hosted chain until the verifier supports solar. Deploy a core release with:
 
 ```bash
 FOUNDRY_PROFILE=deploy forge script \

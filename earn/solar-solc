@@ -1,0 +1,12 @@
+#!/bin/sh
+# Earn's compiler (foundry.toml `solc`): the solar build pinned in solar.lock, presented to Forge as
+# solc 0.8.36, the language version Earn targets. scripts/solidity-deps.sh earn (pnpm deps) installs it.
+set -eu
+project=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+rev=$(tr -d '[:space:]' < "$project/solar.lock")
+solar="$project/../.solar/$rev/bin/solar"
+if [ ! -x "$solar" ]; then
+  echo "solar $rev is not installed; run scripts/solidity-deps.sh earn" >&2
+  exit 127
+fi
+SOLC_WRAPPER=1 SOLC_WRAPPER_VERSION=0.8.36 exec "$solar" "$@"
