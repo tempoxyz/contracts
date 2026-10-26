@@ -1,7 +1,7 @@
 # End-to-end flows
 
 This page is the transaction-order reference for the core stack. Capability sequences (private
-routing, Veda queues, rewards, and migration) are on their
+routing, Veda queues, rewards, and holder migration) are on their
 [capability module pages](../README.md#capability-modules). Amounts are named by unit
 ([units](system.md#units)).
 
@@ -253,8 +253,7 @@ nonzero minimum. The EarnVault:
 Neither caller can redirect the result. The re-entry formula, snapshot waiver, and empty-pool
 baselines are in [queued withdrawals](fees.md#queued-withdrawals).
 
-## Engine migration and stack replacement
+## Stack replacement
 
-Whole-pool `migrateEngine` on `OperatorEnabled` stacks and per-holder stack replacement on
-`UserOnly` stacks are sequenced in
-[existing vault migration](../modules/migration.md#whole-pool-engine-migration).
+Per-holder moves to a replacement stack are sequenced in
+[existing vault migration](../modules/migration.md#stack-replacement).

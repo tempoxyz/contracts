@@ -180,8 +180,7 @@ The EarnVault checkpoints fees before every action that could mix holders or fee
 
 - `deposit`, `depositVenueShares`, `redeem`, and `withdrawExact`;
 - `contribute` and `absorbEngineShareSurplus`, before and again after the new backing is recognized;
-- `requestRedeem` and `cancelRedeem`;
-- `migrateEngine`; and
+- `requestRedeem` and `cancelRedeem`; and
 - `setFeeConfig` and `executeDistributorFeeUpdate`, which settle the old terms before installing new
   ones.
 
@@ -297,8 +296,7 @@ When a cancellation reopens an empty pool with fees active:
 - a stale one sets `feeBaselinesPending`, and the next fresh checkpoint sets both baselines to the
   then-current value without charging it.
 
-Later checkpoints therefore treat the returned position as principal. Engine migration stays blocked
-until every queued claim closes.
+Later checkpoints therefore treat the returned position as principal.
 
 ## Privacy
 

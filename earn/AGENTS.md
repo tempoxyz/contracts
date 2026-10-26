@@ -1,6 +1,6 @@
 # Working on Tempo Earn
 
-Tempo Earn provides a stable EarnVault and native TIP-20 EarnShare over replaceable yield venues.
+Tempo Earn provides a stable EarnVault and native TIP-20 EarnShare over a yield venue.
 This is its own Foundry project: run `forge` from `earn/`. Use [README.md](README.md) for the
 project map and [docs/README.md](../docs/earn/README.md) to find the one canonical page for each topic.
 Paths in Earn's guides and docs are relative to `earn/` unless they start with `../`. Read what the
@@ -33,8 +33,8 @@ For application onboarding, use [SKILL.md](../SKILL.md) and the
   quarantined surplus, and pending claims remain separate. The canonical rules live in
   [system](../docs/earn/architecture/system.md), [fees](../docs/earn/architecture/fees.md), and
   [flows](../docs/earn/architecture/flows.md).
-- Core contracts and shared tooling are customer-agnostic. Venue behavior belongs in engines,
-  private conversion in the scoped router, and customer configuration in deployment profiles.
+- Core contracts and shared tooling are integrator-agnostic. Venue behavior belongs in engines,
+  private conversion in the scoped router, and per-deployment configuration in deployment profiles.
 - Tempo API owns offchain reward policy and operations. This repository owns reward contracts,
   deployment surfaces, and contract-focused tests; do not recreate an offchain reward service.
 - Use `viem/tempo` for shared Earn client capabilities. Keep browser signing, Worker transport,

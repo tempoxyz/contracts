@@ -5,9 +5,7 @@ par conversion, Zone token enablement and admission, router deployment and activ
 integration, failure handling, tests, and the Zone go-live gate. Readers are integrators building
 private deposits and redemptions, operators activating a router, and reviewers.
 
-Zones are external infrastructure. Sigma Prime audited the DirectPropAMM pool contract; the router's
-DirectPropAMM conversion and its same-asset mode changed after the audits
-([coverage](../audit/README.md#coverage-after-the-audits)). Hosted Zone stacks are listed in
+Zones are external infrastructure. Audit coverage is in [audits](../audit/README.md#scope). Hosted Zone stacks are listed in
 [hosted environments](../../deployment/hosted-environments.md).
 
 ## Router contract

@@ -32,7 +32,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
   the metadata hash of its reviewed releases.
 - A project imports another's contracts through a remapping to its `src/`, never a copy. Shared
   Solidity belongs in the project that owns it until a second owner needs it.
-- Customer-specific code stays in its own project; `earn/` stays customer-agnostic and never
+- Integrator-specific code stays in its own project; `earn/` stays integrator-agnostic and never
   imports from `spend/`.
 - Secrets and funded private keys stay out of source, logs, and generated records.
 
@@ -58,25 +58,21 @@ wider follow-ups separately.
 
 Other repositories depend on these surfaces; keep them stable or change them together with their
 consumers. [`e2e/harness/workflows-contract.test.ts`](e2e/harness/workflows-contract.test.ts) pins
-the tempoxyz/workflows entry points.
+the automation entry points.
 
-- **tempoxyz/workflows** runs `pnpm e2e:devnet -- --group zone` and `pnpm devnet:deploy` against an
+- Devnet automation runs `pnpm e2e:devnet -- --group zone` and `pnpm devnet:deploy` against an
   existing devnet and reads each case's ID and status from the `e2e/.results/` run result. Their
   inputs and output files are in
   [existing devnet chains](docs/deployment/e2e-environments.md#existing-devnet-chains).
-- **tempoxyz/cash** imports `localnet/src/index.ts` and calls
-  `Environment.run({ consumer, sameAssetRoute, ready })`.
-- **tempoxyz/earn-deployments** (private) pins this repository as a submodule, installs Earn's
-  Solidity dependencies with `pnpm deps`, and runs `pnpm earn`, `pnpm e2e:profile`, and
-  `pnpm profiles --profiles profiles` against the profiles it holds
-  ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
-- **tempoxyz/localnet**'s Earn example uses the root `./localnet` export
+- Localnet consumers import `localnet/src/index.ts` and call
+  `Environment.run({ consumer, sameAssetRoute, ready })`, or use the root `./localnet` export
   ([localnet layer](docs/development/localnet.md#localnet-layer)).
-- **tempoxyz/tempo** builds `earn/src/` (its `EARN_ROOT` is this repository's `earn/`) and consumes
-  the `SingleZoneEarnRouter` and `DemoParPool` outputs.
-- **The private customer deployments repository** pins this repository as a submodule and runs
-  `pnpm earn`, `pnpm e2e:profile`, and `pnpm profiles` against its own `profiles/`
+- Deployment repositories pin this repository as a submodule, install Earn's Solidity dependencies
+  with `pnpm deps`, and run `pnpm earn`, `pnpm e2e:profile`, and `pnpm profiles --profiles profiles`
+  against the profiles they hold
   ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
+- Tempo node builds compile `earn/src/` (their `EARN_ROOT` is this repository's `earn/`) and consume
+  the `SingleZoneEarnRouter` and `DemoParPool` outputs.
 
 ## Guide maintenance
 

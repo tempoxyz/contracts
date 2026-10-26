@@ -1,21 +1,9 @@
 # Existing vault migration
 
 This page owns migration into and between Earn stacks: holder opt-in from an existing ERC-4626
-vault, holder-composed exits from other source vaults, whole-pool engine migration, and per-holder
-replacement of a `UserOnly` stack. It has no deployment module of its own: it uses the core
-`EarnVault` (`depositVenueShares`, `migrateEngine`), the [ERC-4626 engine](erc4626-engine.md)'s
-in-kind entry, and optionally the [Zone router](zone-router.md).
-
-Two operations are easy to conflate:
-
-- **Holder migration:** each holder opts in by exchanging existing vault shares, or the base assets
-  they redeem to, for EarnShare.
-- **Engine migration:** on an `OperatorEnabled` stack, the EarnVault operator moves the entire active
-  pool from one engine to another without changing EarnShare balances.
-
-The choice is fixed at deployment by the profile's `core.migrationMode` (`UserOnly` by default; only
-`OperatorEnabled` is authored, see the [profile schema](../../../profiles/README.md#schema)). `UserOnly`
-permanently disables `migrateEngine`, and no setter can enable it later.
+vault, holder-composed exits from other source vaults, and per-holder moves to a replacement stack.
+It has no deployment module of its own: it uses the core `EarnVault` (`depositVenueShares`), the
+[ERC-4626 engine](erc4626-engine.md)'s in-kind entry, and optionally the [Zone router](zone-router.md).
 
 ## Entry with existing venue shares
 
@@ -56,8 +44,7 @@ part of Earn and must be reviewed against the source deployment.
 **Close the window.** Define the opt-in deadline, late-holder treatment, and reward cutoff before
 announcing the migration. Earn cannot disable an external vault; close its rules, rewards, or fees
 through its own controls. Late holders can keep using `depositVenueShares` while that vault is the
-current engine's and accepts transfers. On an `OperatorEnabled` stack, the operator may then
-[move the active pool](#whole-pool-engine-migration).
+current engine's and accepts transfers.
 
 ## Source-vault composition
 
@@ -88,54 +75,9 @@ for the Portal call. If execution no longer matches the simulation, the batch re
 one-unit rounding remainder stays fully backed and owned by the holder and can be moved privately
 later.
 
-## Whole-pool engine migration
+## Stack replacement
 
-Only `OperatorEnabled` stacks permit `migrateEngine(newEngine, minNewEngineShares,
-minAssetsRetained)`. The replacement must already be bound to this EarnVault.
-
-```mermaid
-sequenceDiagram
-    participant O as EarnVault operator
-    participant A as EarnVault
-    participant F as EarnFees
-    participant Old as Old engine
-    participant New as New engine
-
-    O->>A: migrateEngine(newEngine, minNewEngineShares, minAssetsRetained)
-    A->>A: require OperatorEnabled and zero open requests
-    A->>New: require base interface, this EarnVault binding, nonzero share scale, same asset, and an exit capability
-    A->>F: accrueFees()
-    A->>Old: redeem(all raw engine shares, A, 0)
-    Old-->>A: measured assets
-    A->>New: deposit(all assets)
-    New-->>A: measured newEngineShares
-    A->>A: require exact asset consumption and zero old custody; preserve managed/surplus value split within 1 bp
-    A->>A: enforce managed-share floor and retained-value floor
-    A->>A: switch engine and re-anchor unchanged EarnShare supply
-```
-
-When the old engine holds custody, it must advertise immediate redemption, and both bounds must be
-nonzero (`ZeroMinimumEngineShares`, `ZeroMinimumAssets`). Derive them from a fresh quote and the
-operator's explicit loss tolerance, and simulate the full redemption and replacement deposit against
-real venue state first. Both the whole replacement position and its managed portion must meet the
-bounds. EarnShare balances, including those held privately in a Zone, and total supply do not
-change; the managed/surplus split carries over within one basis point, and the re-anchor starts a
-new reward-rate baseline ([accounting anchors](../architecture/system.md#accounting-anchors)).
-
-The migration is atomic. It reverts, leaving the old engine current and its position intact, if an
-async request is open (`PendingRedeemsOpen`), the replacement's binding, share scale, asset, or exit
-capability is invalid, the old position cannot be fully redeemed, the replacement does not consume
-the full measured amount, its share granularity cannot preserve the split, or either bound is
-missed. The retained-assets bound matters when the replacement venue's share price can be
-manipulated before migration; a share-count bound alone does not prove the new shares preserve NAV.
-
-The operator can point the EarnVault at arbitrary engine code, so on `OperatorEnabled` stacks it
-must be a timelock or multisig. Atomicity does not prove the replacement stays safe afterwards: its
-code, permissions, valuation, liquidity, and venue behavior need separate review.
-
-## User-only stack replacement
-
-A `UserOnly` stack is replaced by deploying a separate engine, EarnShare, and EarnVault. Each holder
+A stack is replaced by deploying a separate engine, EarnShare, and EarnVault. Each holder
 chooses whether to move:
 
 - if the old engine redeems immediately, batch the old redemption and the new deposit with
@@ -156,13 +98,12 @@ public account.
 
 ## Accounting
 
-| Action                | Input                                      | EarnShare minted                                      | Who benefits                           |
-| --------------------- | ------------------------------------------ | ----------------------------------------------------- | -------------------------------------- |
-| `depositVenueShares`  | Shares of the current ERC-4626 vault       | Proportional, to the chosen receiver                  | Depositing holder                      |
-| Wrapped-position exit | Wrapper shares redeemed in one transaction | Proportional, from the EarnVault deposit              | Only the consenting holder moves       |
-| `contribute`          | Base asset                                 | None to the funder; fee crystallization may mint fees | Existing active holders, net of fees   |
-| `migrateEngine`       | The whole active engine position           | None                                                  | No ownership change; the venue changes |
-| User-only replacement | Old EarnShare, redeemed to the base asset  | New EarnShare from the replacement EarnVault          | Only the consenting holder moves       |
+| Action                | Input                                      | EarnShare minted                                      | Who benefits                         |
+| --------------------- | ------------------------------------------ | ----------------------------------------------------- | ------------------------------------ |
+| `depositVenueShares`  | Shares of the current ERC-4626 vault       | Proportional, to the chosen receiver                  | Depositing holder                    |
+| Wrapped-position exit | Wrapper shares redeemed in one transaction | Proportional, from the EarnVault deposit              | Only the consenting holder moves     |
+| `contribute`          | Base asset                                 | None to the funder; fee crystallization may mint fees | Existing active holders, net of fees |
+| User-only replacement | Old EarnShare, redeemed to the base asset  | New EarnShare from the replacement EarnVault          | Only the consenting holder moves     |
 
 Existing vault shares are holder principal, so their entry mints EarnShare; reward funding mints
 nothing and raises the value of existing EarnShare instead. `minEarnShares` protects a holder from
@@ -184,18 +125,15 @@ the [privacy model](../architecture/security-and-privacy.md#privacy-model).
 | Portal call fails in an atomic batch      | Every earlier leg and approval in the batch reverts                | Fix Zone enablement, policy, payload, balance, or allowance and retry     |
 | Portal accepts but Zone credit is delayed | The public Portal deposit stays accepted while the Zone catches up | Follow the Zone protocol's deposit status                                 |
 
-Out of scope: forced migration of nonconsenting `UserOnly` holders (they stay redeemable in the old
+Out of scope: forced migration of nonconsenting holders (they stay redeemable in the old
 stack), migration across base assets, transfer of private identity or history from another privacy
 system, source reward claims, tax treatment, holder communications, offchain eligibility, and
 guaranteed Zone settlement after the Portal accepts a deposit.
 
 ## Tests
 
-- Foundry: [`EarnVaultVenueShares.t.sol`](../../../earn/test/core/EarnVaultVenueShares.t.sol) and
-  [`EarnVaultMigration.t.sol`](../../../earn/test/core/EarnVaultMigration.t.sol), plus migration cases in
-  the engine suites.
-- E2E: `public-deposit-existing-venue-shares` (group `public`), `controls-operator-authority`
-  (group `controls`, including rolled-back invalid migrations), and in group `zone`
+- Foundry: [`EarnVaultVenueShares.t.sol`](../../../earn/test/core/EarnVaultVenueShares.t.sol).
+- E2E: `public-deposit-existing-venue-shares` (group `public`), and in group `zone`
   [`migration-existing-vault-shares-to-zone`](../../../e2e/modules/zone/migration.ts) and the local-only
   `migration-morpho-fee-wrapper-to-private-earn`, which runs the wrapped-position composition against
   localnet's Morpho fee-wrapper fixture over the ERC-4626 venue.

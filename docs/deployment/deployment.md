@@ -7,10 +7,8 @@ verification, authority handoffs, and shared factory releases. The authored prof
 [yield engines](../earn/integrations/engines.md#installation), and package exports in the
 [deployment package reference](../../deployments/README.md).
 
-Sigma Prime audited the ERC-4626 stack, router, EarnShare-policy, and contribution-controller
-Foundry scripts at `d0160d2` ([audit reports](../earn/audit/README.md),
-[later changes](../earn/audit/README.md#coverage-after-the-audits)). This profile lifecycle tooling was
-outside audit scope.
+The current Foundry deployment scripts and this profile lifecycle tooling are outside audit scope
+([audits](../earn/audit/README.md#scope)).
 
 ## Commands
 
@@ -190,8 +188,8 @@ also requires `TEMPO_API_KEY` or `ZONE_RPC_URL` to confirm the live Zone; `--ski
 everything else and reports the Zone as not verified. `--validate-only` fails on what `verify` only
 reports: engine or capability readiness, custody, EarnShare issuer exclusivity, accounting
 alignment, and required TIP-403 members ([profile acceptance](e2e-environments.md#profile-acceptance)).
-Nothing reruns these checks on a schedule, in Earn or in the deployments repository that holds
-customer stacks ([profiles in another repository](../../profiles/README.md#profiles-in-another-repository)).
+Nothing reruns these checks on a schedule, in Earn or in a deployments repository that holds
+other stacks ([profiles in another repository](../../profiles/README.md#profiles-in-another-repository)).
 
 ## Authority boundaries
 
@@ -233,7 +231,7 @@ an adapter may satisfy only authority it legitimately owns before invoking it ag
 
 ## Shared factory releases
 
-Customer profiles consume a reviewed release from the per-chain
+Production profiles consume a reviewed release from the per-chain
 [release registry](../../deployments/core/releases.ts); they never deploy shared implementations.
 A release names the `EarnFactory` (`earn`) and, under each engine's `factory.releaseKey`, the engine
 factories it carries. Each chain has exactly one current release: an unpublished pending deployment

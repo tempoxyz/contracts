@@ -34,13 +34,13 @@ decisions. The architecture pages describe only the core and link here, so a cha
 capability updates one page. The shared engine contract and the recipe for a new engine kind are in
 [yield engines](integrations/engines.md).
 
-| Module          | Page                                             | Covers                                                                                 |
-| --------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `engines`       | [Yield engines](integrations/engines.md)         | One page per engine kind, listed in its engine table                                   |
-| `zone-router`   | [Zone router](modules/zone-router.md)            | `SingleZoneEarnRouter`, par conversion, Zone activation, go-live                       |
-| `access-policy` | [Access policy](modules/access.md)               | EarnShare TIP-403 whitelist, required members, `pnpm earn access`                      |
-| `rewards`       | [Rewards](modules/rewards.md)                    | Contribution controller, Merkle distributor, `EarnRewardsFactory`                      |
-| none            | [Existing vault migration](modules/migration.md) | Holder opt-in, source-vault composition, engine migration, replacement (E2E in `zone`) |
+| Module          | Page                                             | Covers                                                                     |
+| --------------- | ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `engines`       | [Yield engines](integrations/engines.md)         | One page per engine kind, listed in its engine table                       |
+| `zone-router`   | [Zone router](modules/zone-router.md)            | `SingleZoneEarnRouter`, par conversion, Zone activation, go-live           |
+| `access-policy` | [Access policy](modules/access.md)               | EarnShare TIP-403 whitelist, required members, `pnpm earn access`          |
+| `rewards`       | [Rewards](modules/rewards.md)                    | Contribution controller, Merkle distributor, `EarnRewardsFactory`          |
+| none            | [Existing vault migration](modules/migration.md) | Holder opt-in, source-vault composition, stack replacement (E2E in `zone`) |
 
 ## Document ownership
 
@@ -62,7 +62,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 | Authored profile JSON, rewards configuration, and test fixture bootstrap        | [Profiles](../../profiles/README.md)                                                          |
 | Deployment package exports, ABIs, modules, and registries                       | [`deployments/README.md`](../../deployments/README.md)                                        |
 | Current hosted state and troubleshooting                                        | [Hosted environments](../deployment/hosted-environments.md)                                   |
-| Deployed customer stacks and customer-specific runbooks                         | [Customer deployments](../deployment/hosted-environments.md#customer-deployments)             |
+| Stacks deployed outside this repository                                         | [External deployments](../deployment/hosted-environments.md#external-deployments)             |
 | E2E cases, selection, profile acceptance, credentials, and existing devnets     | [E2E environments](../deployment/e2e-environments.md)                                         |
 | User-perceived latency benchmarks and Zone withdrawal exit latency              | [Benchmarks](../deployment/benchmarks.md)                                                     |
 | Browser catalog and app profile projection                                      | [App deployment](../deployment/app-deployment.md)                                             |

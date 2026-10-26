@@ -6,7 +6,7 @@ owned by [system architecture](../architecture/system.md) and [Earn fees](../arc
 ordering by [flows](../architecture/flows.md), and trust assumptions by
 [security and privacy](../architecture/security-and-privacy.md). TypeScript consumers import the
 ABIs from `@tempoxyz/earn/abis` ([deployments README](../../../deployments/README.md#exports)). Audit
-scope and later changes are in [audits](../audit/README.md#coverage-after-the-audits).
+scope is in [audits](../audit/README.md#scope).
 
 ## Deployment inventory
 
@@ -14,7 +14,7 @@ scope and later changes are in [audits](../audit/README.md#coverage-after-the-au
 | ------------- | --------- | ------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------ |
 | `EarnFactory` | Network   | No mutable business state | Ownerless                                                   | Atomic deterministic core creation, transfer policy, and event           |
 | EarnShare     | Per stack | Yes                       | No administrator; EarnVault is the sole issuer              | Non-rebasing user ownership                                              |
-| `EarnVault`   | Per stack | Yes                       | Two-step operator; guardian, janitor, and distributor seats | Issuance, anchors, engine coordination, async claims, migration          |
+| `EarnVault`   | Per stack | Yes                       | Two-step operator; guardian, janitor, and distributor seats | Issuance, anchors, engine coordination, async claims                     |
 | `EarnFees`    | Per stack | Yes                       | Ownerless; mutable only by its EarnVault                    | Fee state, calculations, snapshots, claim ledgers, fee EarnShare custody |
 
 | Capability contracts                                          | Scope              | Reference                                                  |
@@ -39,7 +39,7 @@ one locked `EarnVault` implementation, and one locked `EarnFees` implementation,
 | `deploymentId`      | Nonzero logical stack namespace                                                |
 | `engine`            | Already-deployed, unbound initial engine                                       |
 | `owner`             | EarnVault operator; cannot be the factory                                      |
-| `controls`          | Guardian, async janitor, managed-assets limit, and fixed migration mode        |
+| `controls`          | Guardian, async janitor, and managed-assets limit                              |
 | `distributorConfig` | Optional distributor and its fixed fee-update delay                            |
 | `fees`              | Initial complete fee configuration                                             |
 | `transferPolicyId`  | Optional existing simple TIP-403 whitelist; zero means always-allow policy `1` |
@@ -75,7 +75,7 @@ different or missing binding or an unexpected engine owner.
 
 [`EarnVault`](../../../earn/src/core/EarnVault.sol) is the persistent public integration point. Its
 `initialize` runs once, from the factory, and emits `EarnVaultInitialized` with the engine,
-EarnShare, fee module, operator, emergency seats, asset limit, migration mode, distributor, update
+EarnShare, fee module, operator, emergency seats, asset limit, distributor, update
 delay, and distributor fee. The factory's later `EarnStackDeployed` is the signal that issuer and
 transfer-policy setup completed.
 
@@ -85,10 +85,9 @@ transfer-policy setup completed.
 | --------------------------------------------- | ----------------------------------------------------------------------- |
 | `asset()`                                     | Immutable base asset, read from the initial engine                      |
 | `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                         |
-| `engine()`                                    | Current engine; changes only through `migrateEngine`                    |
+| `engine()`                                    | Current engine                                                          |
 | `operator()` / `pendingOperator()`            | Operator and nominated successor                                        |
 | `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                        |
-| `engineMigrationMode()`                       | Fixed `UserOnly` or `OperatorEnabled`                                   |
 | `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                                |
 | `engineShares()`                              | Managed engine shares backing active EarnShare, capped at raw custody   |
 | `rawEngineShares()`                           | Raw current-engine custody, including surplus                           |
@@ -98,7 +97,7 @@ transfer-policy setup completed.
 | `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares                |
 | `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability         |
 | `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution   |
-| `rewardRateBaseline()`                        | Rate at the last empty reset or migration                               |
+| `rewardRateBaseline()`                        | Rate at initialization or the last empty reset                          |
 | `MAX_REWARD_RATE_MULTIPLIER()`                | Fixed reward-admission ceiling: `100`                                   |
 | `openRedeemRequestCount()`                    | Number of open async claims                                             |
 | `pendingRedeem(requestId)`                    | Stored receiver, requester, burned EarnShare, engine shares, and `open` |
@@ -163,17 +162,15 @@ receiver of an async claim may implement
 
 ### Controls
 
-| Function                                                          | Authority                              |
-| ----------------------------------------------------------------- | -------------------------------------- |
-| `setDepositsPaused(paused)`                                       | Operator; guardian may only set `true` |
-| `setMaxManagedAssets(newMaxManagedAssets)`                        | Operator                               |
-| `setEmergencyRoles(newGuardian, newJanitor)`                      | Operator; zero empties a seat          |
-| `migrateEngine(newEngine, minNewEngineShares, minAssetsRetained)` | Operator, only in `OperatorEnabled`    |
+| Function                                     | Authority                              |
+| -------------------------------------------- | -------------------------------------- |
+| `setDepositsPaused(paused)`                  | Operator; guardian may only set `true` |
+| `setMaxManagedAssets(newMaxManagedAssets)`   | Operator                               |
+| `setEmergencyRoles(newGuardian, newJanitor)` | Operator; zero empties a seat          |
 
 `setDepositsPaused` checks authorization first, then does nothing and emits no event when the value
 already matches. The managed-assets limit and reward-admission limit are specified under
-[accounting anchors](../architecture/system.md#accounting-anchors); migration preconditions and
-bounds under [whole-pool engine migration](../modules/migration.md#whole-pool-engine-migration).
+[accounting anchors](../architecture/system.md#accounting-anchors).
 
 ### Events
 
@@ -184,7 +181,6 @@ bounds under [whole-pool engine migration](../modules/migration.md#whole-pool-en
 | `Contributed`, `EngineShareSurplusAbsorbed`                                               | A reward is recognized, with the new anchor                    |
 | `EngineShareShortfallReconciled`                                                          | Raw custody fell below the managed count and the count was cut |
 | `RedeemRequested`, `RedeemFinalized`, `RedeemCancelled`                                   | An async claim opens or closes                                 |
-| `EngineMigrated`                                                                          | Migration completes, with moved assets and the new anchor      |
 | `DepositPauseChanged`, `MaxManagedAssetsChanged`, `EmergencyRolesChanged`                 | A control changes                                              |
 | `OperatorTransferStarted`, `OperatorTransferCancelled`, `OperatorTransferred`             | The operator handoff progresses                                |
 | `DistributorFeeUpdateScheduled`, `DistributorFeeUpdateCancelled`, `DistributorFeeUpdated` | A distributor fee update progresses                            |
@@ -201,10 +197,9 @@ bounds under [whole-pool engine migration](../modules/migration.md#whole-pool-en
 | `RewardRateLimitExceeded`                                                                             | A reward would exceed 100× the reward-rate baseline                                          |
 | `NoEarnShares`, `InsufficientEngineShareSurplus`                                                      | A reward needs holders and enough surplus                                                    |
 | `InsufficientOutput`                                                                                  | A conversion or measured delta is zero, or a measured delta differs from the reported amount |
-| `ResidualBacking`                                                                                     | An exact withdrawal or migration would strand backing                                        |
+| `ResidualBacking`                                                                                     | An exact withdrawal would strand backing                                                     |
 | `MinimumEarnSharesNotMet`, `MinimumAssetsNotMet`, `MinimumEngineSharesNotMet`, `ExceedsMaxEarnShares` | A caller bound is missed                                                                     |
 | `EngineCapabilityUnsupported`, `EngineExitUnsupported`                                                | The engine lacks the called capability, or any exit capability                               |
-| `PendingRedeemsOpen`, `OperatorMigrationDisabled`, `ExcessiveMigrationClassificationError`            | Migration preconditions and the 1-bp managed/surplus split                                   |
 | `FeeValuationStale`                                                                                   | A fee configuration change needs a fresh valuation                                           |
 | `GlobalFeeDisableUnavailable`, `InvalidDistributorFeeConfiguration`                                   | The distributor item is protected                                                            |
 

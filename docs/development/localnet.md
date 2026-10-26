@@ -2,7 +2,7 @@
 
 `localnet/` starts a disposable Tempo L1 and Zone in Docker, deploys Earn onto them through the
 shared profile lifecycle, and hands the running environment to a consumer: the app's
-`pnpm dev:local`, local E2E, tempoxyz/cash, and tempoxyz/localnet's Earn example. This page owns its
+`pnpm dev:local`, local E2E, and downstream localnet consumers. This page owns its
 API and the constraints behind it; [development](README.md#local-tempo-and-zone) has the
 commands, and the [localnet guide](../../localnet/AGENTS.md) the package rules. Exact image and
 protocol versions are owned by `localnet/src/config.ts` and `localnet/fixtures/runtime-lock.json`.
@@ -84,7 +84,7 @@ Localnet skips only what needs a hosted chain: the reviewed factory runtime chec
 verification, and the published deployment record.
 
 Without `earnProfile`, each variant deploys its default profile (`variantProfile`): the deployer as
-owner, guardian, and janitor, the fixed and excess fees, `OperatorEnabled` migration, both reward
+owner, guardian, and janitor, the fixed and excess fees, both reward
 contracts, and a router through the local conversion pool, with `access` selecting a protected or
 open EarnShare. With `earnProfile`, `localizeProfile` replaces only the profile's external
 dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router private asset and pool) and
