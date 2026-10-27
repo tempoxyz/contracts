@@ -249,10 +249,13 @@ are ownerless, and their constructors impose no PATHUSD transfer-policy ID. The 
 funded and authorized to pay fees under its chosen fee token's live policy; a custom PATHUSD policy
 does not by itself block a release.
 
-Earn compiles with solar ([`earn/solar.lock`](../../earn/solar.lock)), whose bytecode Tempo's source
-verifier cannot reproduce. The profile lifecycle refuses hosted Forge steps for that reason, but the
-release entry points below are plain Forge scripts that it does not run: do not broadcast them to a
-hosted chain until the verifier supports solar. Deploy a core release with:
+Earn compiles with solar ([`earn/solar.lock`](../../earn/solar.lock)). Tempo's source verifier
+rebuilds only the solar builds it pins in tempo-apps'
+[`solar-builds.json`](https://github.com/tempoxyz/tempo-apps/blob/main/apps/contract-verification/container/solar-builds.json),
+so a new `solar.lock` revision must be added there and deployed before a hosted deployment built
+with it. Source verification passes Forge the solar build (`--compiler-version`, from
+`earn/solar-solc --version`, with `--compilation-profile default`); a manual
+`forge verify-contract` needs the same two flags. Deploy a core release with:
 
 ```bash
 FOUNDRY_PROFILE=deploy forge script \
@@ -273,6 +276,35 @@ Reconcile the receipt before continuing after a failed broadcast. Source-verify 
 before updating the registry. Localnet deploys the same release through the single-CREATE entry
 points `earnVaultImplementation`, `earnFeesImplementation`, and `earnFactory`, plus every
 registered engine factory's entry point.
+
+### Releasing from CI
+
+The **Factory Release** workflow ([`factory-release.yml`](../../.github/workflows/factory-release.yml))
+releases from `main` in one run. Choose the networks (`both` runs Moderato, then mainnet only after
+Moderato succeeds), the releases (`all` is the core release and every engine factory the registry
+names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
+that one), and whether to broadcast. Each network's job runs
+`pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
+which runs each release's entry point below with the `deploy` profile, checks that it created exactly
+the release's contracts, each from the locally compiled creation bytecode, and, after a broadcast,
+source-verifies each one on Tempo's verifier. Without broadcast, Forge only simulates, and each
+release simulates from the deployer's current nonce, so only the first release's addresses are the
+ones a broadcast creates. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
+addresses, transactions, and source matches; a run that stops keeps the releases before it.
+
+After a broadcast, the last job records every release whose contracts all source verified, from
+every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
+`factory-release/<run>-<attempt>` branch (`pnpm factory-release registry`) and links it in the job summary with
+the pull request description; a maintainer opens that pull request, so the registry changes only
+through its review.
+
+Each network's job runs in the `factory-release-<network>` environment, which requires a reviewer's
+approval and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
+`TEMPO_RPC_PASSWORD`). Both environments hold the same deployer key that local profile deployments
+use; releases are ownerless, so it only pays fees. Rotating it updates both environments. The
+network's `hosted-contracts-<network>` queue orders only CI jobs, so do not broadcast with that key
+locally while a release runs. The same command runs locally with `DEPLOYER_PRIVATE_KEY` exported,
+for example from a profile's `.env.<id>`; it does not load dotenv files itself.
 
 An engine factory release is independent: the `<releaseKey>Factory` entry point of the engine's
 deploy script (for example `erc4626EngineFactory` in `DeployERC4626Engine`) deploys it. Deploy one

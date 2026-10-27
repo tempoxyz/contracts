@@ -14,7 +14,10 @@ import {
   type PublicClient,
 } from 'viem'
 
-import { foundryVerificationEnvironment } from '../chain/foundry.js'
+import {
+  foundryVerificationEnvironment,
+  sourceVerificationCompilerArguments,
+} from '../chain/foundry.js'
 import { deploymentAddressKeys } from './components.js'
 import { readEarnFactory, runtimeCodeHash } from './releases.js'
 import { isHostedDeploymentChain } from '../chain/tempo.js'
@@ -48,6 +51,8 @@ export type VerificationDependencies = {
   pause: (milliseconds: number) => Promise<void>
   readSource: (path: string) => string
   spawn: typeof spawnSync
+  /** Extra `forge verify-contract` arguments naming the deploy profile's compiler build. */
+  compilerArguments: (root: string, environment: NodeJS.ProcessEnv) => string[]
 }
 
 type SourceVerificationOptions<Record = Pick<EarnDeploymentRecord, 'actions' | 'addresses'>> = {
@@ -242,6 +247,7 @@ function verificationRuntime(
     pause: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     readSource: (path) => readFileSync(path, 'utf8'),
     spawn: spawnSync,
+    compilerArguments: sourceVerificationCompilerArguments,
     ...dependencies,
   }
 }
@@ -276,6 +282,7 @@ async function verifySource(
     throw new Error(`${target.name} ${target.address} does not have a source match`)
   }
 
+  context.compilerArguments ??= context.runtime.compilerArguments(context.root, context.environment)
   let lastError = 'verification did not complete'
   const maximumAttempts = 6
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
@@ -296,6 +303,7 @@ async function verifySource(
         '--verifier-url',
         context.verifierUrl,
         '--skip-is-verified-check',
+        ...context.compilerArguments,
         ...(target.constructorArgs ? ['--constructor-args', target.constructorArgs] : []),
         ...(target.creationTransactionHash
           ? ['--creation-transaction-hash', target.creationTransactionHash]
@@ -483,4 +491,6 @@ type VerificationContext = {
   verifierUrl: string
   runtime: VerificationDependencies
   submitMissing: boolean
+  /** Resolved once, on the first submission. */
+  compilerArguments?: string[]
 }

@@ -2,8 +2,8 @@
 export { discoverOutputs, reconcileEarnProfileActions } from './core/deploy.js'
 export {
   assertFoundryVersion,
-  assertSourceVerifiableCompiler,
   foundryProcessEnvironment,
+  sourceVerificationCompilerArguments,
 } from './chain/foundry.js'
 export {
   loadDeploymentEnvironment,

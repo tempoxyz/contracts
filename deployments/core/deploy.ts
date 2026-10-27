@@ -12,8 +12,8 @@ import { capabilityModules, executeAvailableAuthority } from '../../deployments/
 import type { DiscoveryOptions, InspectionReport } from '../../deployments/modules/module.js'
 import {
   assertFoundryVersion,
-  assertSourceVerifiableCompiler,
   foundryVerificationEnvironment,
+  sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
 import { activationActions, deploymentActions, type EarnDeploymentAction } from './plan.js'
 import {
@@ -298,10 +298,10 @@ export async function reconcileEarnProfileActions(
     } else {
       if (isHostedDeploymentChain(options.profile.chainId)) {
         assertFoundryVersion(options.root)
-        // Only a Forge step compiles and broadcasts contracts, which hosted chains must be able to
-        // source verify; authority handoffs above deploy nothing.
+        // Hosted contracts must source verify after broadcast, so resolve the compiler build the
+        // verifier needs before the first Forge step rather than after it.
         if (!compilerChecked) {
-          assertSourceVerifiableCompiler(options.root, options.environment)
+          sourceVerificationCompilerArguments(options.root, options.environment)
           compilerChecked = true
         }
       }
