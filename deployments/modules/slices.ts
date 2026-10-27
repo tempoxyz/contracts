@@ -3,13 +3,19 @@ import type { ProfileSlice } from '../../deployments/modules/module.js'
 import { accessPolicyProfile } from './earn/access-policy/profile.js'
 import { rewardsProfile } from './earn/rewards/profile.js'
 import { zoneRouterProfile } from './earn/zone-router/profile.js'
+import { zoneRouterModeProfile } from './router/profile.js'
 
 /**
  * Every capability's browser-safe slice, in authored, record, and published-stack order. Core
  * derives the profile envelope, intent components, recorded addresses, record target, advertised
  * capabilities, and published stack fields from this list alone.
  */
-export const profileSlices = [accessPolicyProfile, zoneRouterProfile, rewardsProfile] as const
+export const profileSlices = [
+  accessPolicyProfile,
+  zoneRouterProfile,
+  rewardsProfile,
+  zoneRouterModeProfile,
+] as const
 
 /** The registry as core iterates it: every slice over the whole profile. */
 export const slices = profileSlices as unknown as readonly ProfileSlice<SliceProfileFields>[]

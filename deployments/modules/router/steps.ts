@@ -1,0 +1,276 @@
+import { encodeFunctionData, getAddress, zeroAddress, type Address } from 'viem'
+
+import {
+  deployZoneRouterFactoryScriptAbi,
+  deployZoneRouterScriptAbi,
+  zonePortalAbi,
+  zoneRouterFactoryAbi,
+} from '../../abis/index.js'
+import { InspectionMismatchError } from '../../chain/inspect.js'
+import { missingZoneTokens, zoneCallbackGatewayRegistered } from '../../chain/zone.js'
+import type { EarnDeploymentProfile } from '../../core/profile.js'
+import {
+  admitPoolRouter,
+  canAdministerPool,
+  poolAdministrator,
+  poolAdmission,
+  zoneAdministrator,
+  zoneAdministratorAuthority,
+} from '../earn/zone-router/steps.js'
+import {
+  defineAuthorityStep,
+  defineFoundryStep,
+  deployedOutputs,
+  deployerAuthority,
+  required,
+  requiredOutput,
+  type ChainClient,
+} from '../module.js'
+import { inspectZoneRouterBinding } from './inspection.js'
+import {
+  configuredZoneRouter,
+  zoneRouterConstructorArgs,
+  zoneRouterFactory,
+  zoneRouterMode,
+} from './profile.js'
+
+const hasZoneRouter = (profile: EarnDeploymentProfile) => profile.zoneRouter !== null
+
+/** The router's conversion pool, when its Earn binding converts the private asset. */
+const routerPool = (profile: EarnDeploymentProfile) => profile.zoneRouter?.earn?.pool
+
+export const deployZoneRouterFactory = defineFoundryStep({
+  id: 'deploy-zone-router-factory',
+  authority: deployerAuthority,
+  execution: 'foundry',
+  project: 'router',
+  summary: 'Deploy the ownerless ZoneRouterFactory the profile does not name.',
+  phase: 'deployment',
+  intent: ['zoneRouterFactory'],
+  script: 'script/deploy/DeployZoneRouterFactory.s.sol:DeployZoneRouterFactoryScript',
+  enabled: (profile) => profile.zoneRouter !== null && profile.zoneRouter.factory === undefined,
+  input: (profile, _outputs, outputPath) =>
+    encodeFunctionData({
+      abi: deployZoneRouterFactoryScriptAbi,
+      functionName: 'run',
+      args: [{ expectedChainId: BigInt(profile.chainId), outputPath }],
+    }),
+  source: {
+    output: 'zoneRouterFactory',
+    contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    constructorArgs: () => '0x',
+  },
+  async satisfied(client, _profile, outputs) {
+    if (!(await deployedOutputs(client, outputs, ['zoneRouterFactory']))) return false
+    // Source verification identifies the contract; this only rejects an obviously different one.
+    return client
+      .readContract({
+        address: requiredOutput(outputs, 'zoneRouterFactory'),
+        abi: zoneRouterFactoryAbi,
+        functionName: 'isRouter',
+        args: [zeroAddress],
+      })
+      .then(
+        (deployed) => !deployed,
+        () => false,
+      )
+  },
+})
+
+/** Deploys the profile's mode through the factory, which returns an existing router for it. */
+export const deployZoneRouter = defineFoundryStep({
+  id: 'deploy-zone-router',
+  authority: deployerAuthority,
+  execution: 'foundry',
+  project: 'router',
+  summary: 'Deploy the ZoneRouter for the profile mode through its ZoneRouterFactory.',
+  phase: 'deployment',
+  // A new factory deploys the same mode at a new address.
+  intent: ['zoneRouterFactory', 'zoneRouter'],
+  script: 'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
+  rawGasEstimate: true,
+  enabled: hasZoneRouter,
+  input: (profile, outputs, outputPath) =>
+    encodeFunctionData({
+      abi: deployZoneRouterScriptAbi,
+      functionName: 'run',
+      args: [
+        {
+          expectedChainId: BigInt(profile.chainId),
+          factory: zoneRouterFactory(profile, outputs),
+          mode: zoneRouterMode(profile, outputs),
+          outputPath,
+        },
+      ],
+    }),
+  source: {
+    output: 'zoneRouter',
+    contract: 'src/ZoneRouter.sol:ZoneRouter',
+    // An Earn mode moves EarnShare; a Spend-only router never holds it, and membership grants it nothing.
+    accessMember: true,
+    constructorArgs: (profile, outputs) =>
+      zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
+  },
+  async satisfied(client, profile, outputs) {
+    if (!(await deployedOutputs(client, outputs, ['zoneRouter']))) return false
+    return zoneRouterBound(client, profile, outputs)
+  },
+})
+
+/** Admits the router on its DirectPropAMM pool; an Earn binding without a pool has nothing to admit. */
+export const authorizeZoneRouter = defineAuthorityStep({
+  id: 'authorize-zone-router',
+  authority: poolAdministrator,
+  execution: 'authority',
+  summary: 'Admit the ZoneRouter as a taker and recipient on its PropAMM pool.',
+  handoffSummary: 'Verify PropAMM pool admission and emit a pool-owner handoff if it is missing.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  enabled: (profile) => routerPool(profile) !== undefined,
+  async satisfied(client, profile, outputs) {
+    const router = requiredOutput(outputs, 'zoneRouter')
+    const pool = required(routerPool(profile), 'Zone router conversion pool')
+    const { taker, recipient, resolved } = await poolAdmission(client, pool, router)
+    return taker && recipient && getAddress(resolved) === router
+  },
+  handoff: (profile, outputs) => {
+    const router = requiredOutput(outputs, 'zoneRouter')
+    return `The owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
+  },
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) => {
+    const pool = routerPool(options.profile)
+    return pool ? canAdministerPool(options, pool) : Promise.resolve(false)
+  },
+  execute: (options, dependencies) =>
+    admitPoolRouter(
+      options,
+      dependencies,
+      required(routerPool(options.profile), 'Zone router conversion pool'),
+      requiredOutput(options.outputs, 'zoneRouter'),
+    ),
+})
+
+export const enableZoneRouterTokens = defineAuthorityStep({
+  id: 'enable-zone-router-tokens',
+  authority: zoneAdministratorAuthority,
+  execution: 'authority',
+  summary: "Enable EarnShare and the private asset on the ZoneRouter's Zone.",
+  handoffSummary:
+    'Verify Zone token readiness and emit a Zone administrator handoff if tokens are missing.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  // Spend returns whatever token the Portal already enables; only Earn ops need their pair.
+  enabled: (profile) => profile.zoneRouter?.earn !== undefined,
+  satisfied: async (client, profile, outputs) =>
+    (
+      await missingZoneTokens(
+        client,
+        requiredOutput(outputs, 'zoneRouterPortal'),
+        zoneRouterTokens(profile, outputs),
+      )
+    ).length === 0,
+  handoff: (profile, outputs) =>
+    `Core Zones must enable ${zoneRouterTokens(profile, outputs)
+      .map(([, token]) => token)
+      .join(
+        ', ',
+      )} on Zone ${configuredZoneRouter(profile).zoneId}. Re-run the same pnpm earn deploy command; it will verify every token and continue.`,
+  async execute(options, dependencies) {
+    const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
+    const administrator = await zoneAdministrator(options, dependencies, portal)
+    if (!administrator) return undefined
+    const tokens = zoneRouterTokens(options.profile, options.outputs)
+    const missing = new Set(await missingZoneTokens(administrator.client, portal, tokens))
+    const calls = tokens.flatMap(([label, token]) =>
+      missing.has(label)
+        ? [
+            {
+              to: portal,
+              data: encodeFunctionData({
+                abi: zonePortalAbi,
+                functionName: 'enableToken',
+                args: [token],
+              }),
+            },
+          ]
+        : [],
+    )
+    if (calls.length === 0) return { transactions: [] }
+    return administrator.send(calls)
+  },
+})
+
+export const registerZoneRouterGateway = defineAuthorityStep({
+  id: 'register-zone-router-gateway',
+  authority: zoneAdministratorAuthority,
+  execution: 'authority',
+  summary: 'Register the ZoneRouter as a Portal callback gateway when the Zone restricts gateways.',
+  handoffSummary:
+    'Verify callback-gateway registration and emit a Zone administrator handoff if it is missing.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  enabled: hasZoneRouter,
+  satisfied: (client, _profile, outputs) =>
+    zoneCallbackGatewayRegistered(
+      client,
+      requiredOutput(outputs, 'zoneRouterPortal'),
+      requiredOutput(outputs, 'zoneRouter'),
+    ),
+  handoff: (profile, outputs) => {
+    const router = requiredOutput(outputs, 'zoneRouter')
+    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, then call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
+  },
+  async execute(options, dependencies) {
+    const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
+    const administrator = await zoneAdministrator(options, dependencies, portal)
+    if (!administrator) return undefined
+    const router = requiredOutput(options.outputs, 'zoneRouter')
+    if (await zoneCallbackGatewayRegistered(administrator.client, portal, router))
+      return { transactions: [] }
+    return administrator.send([
+      {
+        to: portal,
+        data: encodeFunctionData({
+          abi: zonePortalAbi,
+          functionName: 'setGateway',
+          args: [router, true],
+        }),
+      },
+    ])
+  },
+})
+
+/** The tokens an Earn mode moves in and out of its Zone, labeled for readiness reports. */
+export function zoneRouterTokens(
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address>,
+): [label: string, token: Address][] {
+  const earn = required(configuredZoneRouter(profile).earn, 'Zone router Earn binding')
+  return [
+    ['EarnShare', requiredOutput(outputs, 'earnShare')],
+    ['private asset', earn.privateAsset],
+  ]
+}
+
+/** Whether the recorded router is the factory's router for the profile mode, bound as configured. */
+export async function zoneRouterBound(
+  client: Pick<ChainClient, 'readContract'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address>,
+) {
+  return inspectZoneRouterBinding(client, {
+    router: requiredOutput(outputs, 'zoneRouter'),
+    factory: zoneRouterFactory(profile, outputs),
+    mode: zoneRouterMode(profile, outputs),
+    earnShare: requiredOutput(outputs, 'earnShare'),
+    vaultAsset: requiredOutput(outputs, 'asset'),
+  }).then(
+    () => true,
+    (error: unknown) => {
+      if (error instanceof InspectionMismatchError) return false
+      throw error
+    },
+  )
+}

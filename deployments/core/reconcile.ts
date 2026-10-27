@@ -22,7 +22,7 @@ import {
   type SharedFactoryRuntimeCodeHashes,
 } from './releases.js'
 import { inspectEarnDeployment } from './inspection.js'
-import { foundryProcessEnvironment } from '../chain/foundry.js'
+import { foundryProcessEnvironment, foundryProjectRoot } from '../chain/foundry.js'
 import {
   completeAction,
   foundryOutputPath,
@@ -53,6 +53,8 @@ export type ReconciliationStep =
   | {
       kind: 'foundry'
       action: EarnDeploymentAction
+      /** The Foundry project directory Forge runs in: Earn's, or the sibling `FoundryStep.project`. */
+      root: string
       arguments: string[]
       environment: Record<string, string>
       /** Whether the step needs Forge's raw gas estimate; see `FoundryStep.rawGasEstimate`. */
@@ -163,6 +165,7 @@ export async function prepareLifecycleStep(options: {
     return {
       kind: 'foundry',
       action,
+      root: foundryProjectRoot(options.root, step.project),
       arguments: [
         'script',
         foundryScript(step, profile),
@@ -174,8 +177,12 @@ export async function prepareLifecycleStep(options: {
         '--rpc-url',
         options.rpcUrl,
       ],
-      // Only the deployer key reaches Forge; every other input is typed calldata.
-      environment: foundryProcessEnvironment(options.environment),
+      // Only the deployer key reaches Forge; every other input is typed calldata. A sibling project's
+      // receipts go to `<root>/broadcast` too, where they are read back.
+      environment: {
+        ...foundryProcessEnvironment(options.environment),
+        ...(step.project ? { FOUNDRY_BROADCAST: resolve(options.root, 'broadcast') } : {}),
+      },
       calldata,
       rawGasEstimate: step.rawGasEstimate === true,
       pending,

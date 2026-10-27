@@ -51,15 +51,15 @@ import {
 
 const hasZone = (profile: EarnDeploymentProfile) => configuredZone(profile) !== undefined
 
-/** The router's PropAMM pool owner; planning proves whether the deployer key holds this role. */
-const poolAdministrator = {
+/** A router's PropAMM pool owner; planning proves whether the deployer key holds this role. */
+export const poolAdministrator = {
   id: 'pool-administrator',
   label: 'PropAMM pool owner',
   signer: 'DEPLOYER_PRIVATE_KEY',
 } as const satisfies StepAuthority
 
 /** The Zone Portal administrator, or the key that solely owns its threshold-1 Safe. */
-const zoneAdministratorAuthority = {
+export const zoneAdministratorAuthority = {
   id: 'zone-administrator',
   label: 'Zone Portal administrator',
   signer: 'ZONE_ADMIN_PRIVATE_KEY',
@@ -141,60 +141,75 @@ export const authorizeRouter = defineAuthorityStep({
   signerAvailable: (_profile, environment, proven) =>
     Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) => canAuthorizeRouter(options),
-  async execute(options, dependencies) {
-    const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
-    if (!key) return undefined
-    const account = privateKeyToAccount(key)
-    const { pool } = required(configuredRouterPool(options.profile), 'router conversion pool')
-    const router = requiredOutput(options.outputs, 'earnRouter')
-    const client = dependencies.authorityClient(options, account)
-    const authority = await poolAuthority(client, pool, account.address)
-    if (!authority) return undefined
-
-    const { taker, recipient, resolved } = await poolAdmission(client, pool, router)
-    // Admission cannot repair a recipient redirect; fail before spending a transaction on it.
-    if (getAddress(resolved) !== router) {
-      throw new Error(
-        `PropAMM pool ${pool} resolves router ${router} to ${resolved}; remove the recipient redirect before admitting the router`,
-      )
-    }
-    const poolCalls = [
-      ...(taker
-        ? []
-        : [
-            encodeFunctionData({
-              abi: propAMMPoolAbi,
-              functionName: 'setTakerAllowed',
-              args: [router, true],
-            }),
-          ]),
-      ...(recipient
-        ? []
-        : [
-            encodeFunctionData({
-              abi: propAMMPoolAbi,
-              functionName: 'setRecipientAllowed',
-              args: [router, true],
-            }),
-          ]),
-    ]
-    if (poolCalls.length === 0) return { transactions: [] }
-    // A DirectPropAMMRebalanceController owns its pool and forwards owner calls through `execute`.
-    const calls = poolCalls.map((data) =>
-      authority.controller
-        ? {
-            to: authority.controller,
-            data: encodeFunctionData({
-              abi: propAMMRebalanceControllerAbi,
-              functionName: 'execute',
-              args: [data],
-            }),
-          }
-        : { to: pool, data },
-    )
-    return await sendAuthorityCalls(client, dependencies, options.profile, calls)
-  },
+  execute: (options, dependencies) =>
+    admitPoolRouter(
+      options,
+      dependencies,
+      required(configuredRouterPool(options.profile), 'router conversion pool').pool,
+      requiredOutput(options.outputs, 'earnRouter'),
+    ),
 })
+
+/**
+ * Admits `router` as a taker and recipient on `pool` as the deployer, when it owns the pool directly
+ * or through its rebalance controller; `undefined` when it holds neither.
+ */
+export async function admitPoolRouter(
+  options: AuthorityOptions,
+  dependencies: AuthorityDependencies,
+  pool: Address,
+  router: Address,
+): Promise<{ transactions: Hex[] } | undefined> {
+  const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
+  if (!key) return undefined
+  const account = privateKeyToAccount(key)
+  const client = dependencies.authorityClient(options, account)
+  const authority = await poolAuthority(client, pool, account.address)
+  if (!authority) return undefined
+
+  const { taker, recipient, resolved } = await poolAdmission(client, pool, router)
+  // Admission cannot repair a recipient redirect; fail before spending a transaction on it.
+  if (getAddress(resolved) !== router) {
+    throw new Error(
+      `PropAMM pool ${pool} resolves router ${router} to ${resolved}; remove the recipient redirect before admitting the router`,
+    )
+  }
+  const poolCalls = [
+    ...(taker
+      ? []
+      : [
+          encodeFunctionData({
+            abi: propAMMPoolAbi,
+            functionName: 'setTakerAllowed',
+            args: [router, true],
+          }),
+        ]),
+    ...(recipient
+      ? []
+      : [
+          encodeFunctionData({
+            abi: propAMMPoolAbi,
+            functionName: 'setRecipientAllowed',
+            args: [router, true],
+          }),
+        ]),
+  ]
+  if (poolCalls.length === 0) return { transactions: [] }
+  // A DirectPropAMMRebalanceController owns its pool and forwards owner calls through `execute`.
+  const calls = poolCalls.map((data) =>
+    authority.controller
+      ? {
+          to: authority.controller,
+          data: encodeFunctionData({
+            abi: propAMMRebalanceControllerAbi,
+            functionName: 'execute',
+            args: [data],
+          }),
+        }
+      : { to: pool, data },
+  )
+  return await sendAuthorityCalls(client, dependencies, options.profile, calls)
+}
 
 export const enableZoneTokens = defineAuthorityStep({
   id: 'enable-zone-tokens',
@@ -294,15 +309,29 @@ export async function canAuthorizeRouter(
   },
   dependencies: Pick<AuthorityDependencies, 'authorityClient'> = { authorityClient },
 ) {
-  const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
   const conversion = configuredRouterPool(options.profile)
-  if (!key || !conversion) return false
-  const account = privateKeyToAccount(key)
-  const client = dependencies.authorityClient(options, account)
-  return (await poolAuthority(client, conversion.pool, account.address)) !== undefined
+  return conversion ? canAdministerPool(options, conversion.pool, dependencies) : false
 }
 
-async function poolAdmission(
+/** Proves whether the configured deployer owns `pool`, directly or through its rebalance controller. */
+export async function canAdministerPool(
+  options: {
+    environment: NodeJS.ProcessEnv
+    profile: EarnDeploymentProfile
+    rpcUrl: string
+  },
+  pool: Address,
+  dependencies: Pick<AuthorityDependencies, 'authorityClient'> = { authorityClient },
+) {
+  const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
+  if (!key) return false
+  const account = privateKeyToAccount(key)
+  const client = dependencies.authorityClient(options, account)
+  return (await poolAuthority(client, pool, account.address)) !== undefined
+}
+
+/** Whether `pool` admits `router` as a taker and a recipient, and where it sends its output. */
+export async function poolAdmission(
   client: Pick<ChainClient, 'readContract'>,
   pool: Address,
   router: Address,
@@ -381,15 +410,19 @@ function notRebalanceController(error: unknown) {
 }
 
 /**
- * The configured Portal administrator, or `undefined` when none is configured. The key either is the
- * Portal admin or solely owns a threshold-1 Safe that is; `send` submits Portal calls either way.
+ * The configured administrator of `portal` (the profile Zone's by default), or `undefined` when none
+ * is configured. The key either is the Portal admin or solely owns a threshold-1 Safe that is;
+ * `send` submits Portal calls either way.
  */
-async function zoneAdministrator(options: AuthorityOptions, dependencies: AuthorityDependencies) {
+export async function zoneAdministrator(
+  options: AuthorityOptions,
+  dependencies: AuthorityDependencies,
+  portal: Address = requiredOutput(options.outputs, 'zonePortal'),
+) {
   const variable = zoneAdministratorAuthority.signer
   const key = envPrivateKey(options.environment, variable)
   if (!key) return undefined
   const account = privateKeyToAccount(key)
-  const portal = requiredOutput(options.outputs, 'zonePortal')
   const client = dependencies.authorityClient(options, account)
   const administrator = getAddress(
     await client.readContract({ address: portal, abi: zonePortalAbi, functionName: 'admin' }),

@@ -16,6 +16,8 @@ and Spend's settlers implement its [`ISpendSettler`](src/interfaces/ISpendSettle
 - [`ZoneRouterFactory`](src/ZoneRouterFactory.sol): permissionless CREATE2 deployment at an address
   fixed by the mode, with `predict`, `isRouter` and `RouterDeployed` for Zone admins.
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
+- [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
+  [`zoneRouter`](../profiles/README.md#zone-routers).
 
 ## Running it
 

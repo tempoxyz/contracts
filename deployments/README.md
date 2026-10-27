@@ -35,10 +35,11 @@ runs every capability module's inspection, is exported from `/node` only.
 - the state-changing entry points of every deployment and localnet fixture script as
   `<name>ScriptAbi`; and
 - the derived `earnEngineBindingAbi`; and
-- `zoneRouterAbi` and `zoneRouterFactoryAbi`, from the separate [`router/`](../router/README.md) project.
+- `zoneRouterAbi`, `zoneRouterFactoryAbi` and the `router/` deployment scripts' `<name>ScriptAbi`,
+  from the separate [`router/`](../router/README.md) project.
 
 After a contract interface change, run `forge build src script test localnet` in `earn/` and
-`forge build src` in `router/`, then
+`forge build src script` in `router/`, then
 `pnpm --filter @tempoxyz/earn abis`, and commit the result; `abis:check` fails on drift.
 `abis/external.ts` hand-maintains contracts built elsewhere: Tempo Zone predeploys, the PropAMM
 pool, oracle, and controller, the Veda periphery, the Morpho fee wrapper, and the Safe. Use
@@ -50,11 +51,11 @@ The root holds the three deployment entry points (`index.ts`, `node.ts`, `operat
 and the documentation link test (`docs.test.ts`). Everything else lives in one of three layers;
 the `./tempo/zone` entry is `chain/zone.ts`.
 
-| Directory  | Ownership                                                                                                                                                                                                                                                                                                                                                      |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chain/`   | Chain plumbing with no Earn policy: RPC transport and credentials (`runtime.ts`), the Foundry version and process environment (`foundry.ts`), Tempo chain identity and the hosted network table (`tempo.ts`), canonical Zone predeploys and discovery (`zone.ts`), and shared onchain assertions (`inspect.ts`)                                                |
-| `core/`    | The capability-neutral lifecycle: the strict parser kit (`parse.ts`), the profile envelope and its hashes, intent components, records, pending state, the profile bundle and its dotenv, reviewed factory releases and their runtime-hash review (`releases.ts`), plan, reconcile, deploy, verify, the `EarnStack` model, and the `pnpm earn` CLI              |
-| `modules/` | One directory per capability: `core/` and `engines/` steps, `zone-router/`, `access-policy/`, and `rewards/`. `module.ts` defines the slice, capability-module, and step interfaces; `slices.ts` registers the browser-safe slices, `index.ts` the steps in execution order and the lifecycle modules, and `commands.ts` the Node-only `pnpm earn` subcommands |
+| Directory  | Ownership                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chain/`   | Chain plumbing with no Earn policy: RPC transport and credentials (`runtime.ts`), the Foundry version and process environment (`foundry.ts`), Tempo chain identity and the hosted network table (`tempo.ts`), canonical Zone predeploys and discovery (`zone.ts`), and shared onchain assertions (`inspect.ts`)                                                                                                                           |
+| `core/`    | The capability-neutral lifecycle: the strict parser kit (`parse.ts`), the profile envelope and its hashes, intent components, records, pending state, the profile bundle and its dotenv, reviewed factory releases and their runtime-hash review (`releases.ts`), plan, reconcile, deploy, verify, the `EarnStack` model, and the `pnpm earn` CLI                                                                                         |
+| `modules/` | One directory per capability: under `earn/`, `core/` and `engines/` steps, `zone-router/`, `access-policy/`, and `rewards/`; and `router/`, the `ZoneRouter` from the `router/` project. `module.ts` defines the slice, capability-module, and step interfaces; `slices.ts` registers the browser-safe slices, `index.ts` the steps in execution order and the lifecycle modules, and `commands.ts` the Node-only `pnpm earn` subcommands |
 
 `core/` and `chain/` name no capability. A capability declares itself in two registered objects:
 
@@ -85,7 +86,9 @@ Node-only code.
 - **A deployment step** is one `defineFoundryStep` or `defineAuthorityStep` object in its
   capability's `modules/<capability>/steps.ts`, listed in execution order in `modules/index.ts`; its
   literal ID becomes an `EarnDeploymentActionId`. A contract it creates is declared by its `source`,
-  with `source.accessMember` (and any principals it pays) when it moves EarnShare or the asset.
+  with `source.accessMember` (and any principals it pays) when it moves EarnShare or the asset. A
+  step whose script and contract belong to a sibling Foundry project, such as `router/`, names it
+  in `project`; Forge then runs, and source verification compiles, from that project.
 - **A recorded address** names its owning intent component in one of its slice's address maps.
   **A profile field** belongs to one slice and its intent hash. **A published stack field** is a
   parser in its slice's `stack` section.

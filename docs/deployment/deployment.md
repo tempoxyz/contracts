@@ -84,7 +84,9 @@ recorded as a completed action.
 Forge may write only inside the Earn checkout, so for a profile outside Earn's `profiles/` each
 Forge step writes its outputs to a staging copy under the ignored `.earn/external/<id>/`, which the
 tooling moves back into the profile's `deployment.pending.json` after the step or, if the run
-stopped, on the next run.
+stopped, on the next run. A step whose contracts live in a sibling Foundry project, such as the
+Zone router's in `router/` (solc), names it as its `project`: Forge compiles, broadcasts and
+source-verifies from that project, and writes its outputs to the same place as Earn's steps.
 
 The profile declares immutable creation intent and the external readiness it requires; the chain
 is authoritative, and later operator-authorized changes are operational state. The ignored
@@ -125,7 +127,8 @@ The record (`version: 4`) contains:
 
 - `deploymentId`, `deployer`, `owner`, and `factories`, the resolved shared factory release;
 - `deploymentIntentHash` and `componentDeploymentIntentHashes`, one hash per intent component
-  (`core`, `engine`, `zone`, `targetYield`, `boostRewards`, `null` when not configured);
+  (`core`, `engine`, `zone`, `targetYield`, `boostRewards`, `zoneRouterFactory`, `zoneRouter`,
+  `null` when not configured; a record written before a component existed omits it);
 - `target`: the chain ID, L1 genesis hash, and each capability's external identity, such as the
   Zone's ID, chain ID, Portal, and Messenger;
 - `addresses`, `assetDecimals`, and `deploymentBlock`, the earliest block of a deployment
@@ -139,7 +142,7 @@ Changing intent, replacing code, or restoring state across a regenesis therefore
 reuse stale addresses. Publication is strict: the record must contain exactly the addresses and
 completed deployment steps derived from the plan. Activation steps are not recorded; their state is
 always read from the pool and Portal. Changing an optional component (`zone`, `targetYield`,
-`boostRewards`) redeploys only that component's contracts and republishes the record; core and
+`boostRewards`, `zoneRouterFactory`, `zoneRouter`) redeploys only that component's contracts and republishes the record; core and
 engine never change in place, so a record whose `core` or `engine` hash differs from the profile is
 refused.
 
@@ -162,7 +165,11 @@ a stale or edited record is rejected before it can drive an authority transactio
 For hosted deployments the command submits missing source to `https://contracts.tempo.xyz`, waits
 for a bytecode and source match, and records the result. A verifier outage never causes a
 rebroadcast or loses the record: rerunning resumes at verification after rechecking deployed state.
-Hosted completion cannot opt out of source verification.
+Hosted completion cannot opt out of source verification. A contract from a sibling project, such
+as `router/`'s solc-built `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
+its own compiler settings; its sources may include Earn's through `../earn/`, and each must resolve
+inside the checkout and match it. The factory-created `ZoneRouter` records the `factory.deploy`
+transaction as its creation transaction.
 
 The record classifies actual code forms instead of treating every output as an ordinary Solidity
 deployment. Ordinary contracts keep the verifier's `exact_match` or normalized `match`; the
@@ -209,12 +216,17 @@ the reward treasury.
 | `deploy-core`                    | deployment | deployer                                                             | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
 | `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role) | Bind EarnVault and atomically transfer the engine to the configured final owner |
 | `deploy-router`                  | deployment | deployer                                                             | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../router/zone-router.md#deployment)                              |
+| `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../router/zone-router.md#deployment)                              |
 | `deploy-merkle-distributor`      | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `validate-access`                | deployment | deployer                                                             | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
 | `deploy-contribution-controller` | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `authorize-router`               | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `enable-zone-tokens`             | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `register-zone-gateway`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../router/zone-router.md#deployment)                              |
+| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
+| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
 
 Forge receives only `DEPLOYER_PRIVATE_KEY`; it never receives another authority key. Each typed
 authority step first proves with read-only calls that its signer holds the exact authority (the

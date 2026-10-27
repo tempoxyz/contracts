@@ -19,12 +19,7 @@ import {
 import { zoneRouterStackFields } from './catalog.js'
 import { inspectRouterBinding, inspectRouterReadiness } from './inspection.js'
 import { discoverZoneOutputs, isZoneSequencerOutput } from './outputs.js'
-import {
-  configuredRouterPool,
-  configuredZone,
-  routerArgs,
-  zoneIdentityAddresses,
-} from './profile.js'
+import { configuredZone, routerArgs, zoneIdentityAddresses } from './profile.js'
 
 /**
  * The single-Zone router capability: an immutable `SingleZoneEarnRouter` bound to one canonical
@@ -148,6 +143,24 @@ async function preflightRouter(
 ) {
   const zone = configuredZone(profile)
   if (!zone) return
+  await preflightRouterRoute(client, profile, {
+    privateAsset: zone.privateAsset,
+    pool: zone.pool,
+    path: 'zone.router',
+  })
+}
+
+/**
+ * Checks one Earn router route against the profile's vault asset before deployment: the private
+ * asset and pool hold code, and the pool trades exactly the private asset and vault asset with equal
+ * decimals, or there is no pool and the private asset is the vault asset. `path` names the route's
+ * authored object in errors.
+ */
+export async function preflightRouterRoute(
+  client: Pick<PublicClient, 'getCode' | 'readContract'>,
+  profile: EarnDeploymentProfile,
+  zone: { privateAsset: Address; pool?: Address | undefined; path: string },
+) {
   await requireCode(client, {
     'Zone private asset': zone.privateAsset,
     ...(zone.pool ? { 'PropAMM pool': zone.pool } : {}),
@@ -160,11 +173,11 @@ async function preflightRouter(
         abi: earnEngineBindingAbi,
         functionName: 'asset',
       })
-  const conversion = configuredRouterPool(profile)
+  const conversion = zone.pool === undefined ? undefined : { pool: zone.pool }
   if (!conversion) {
     if (getAddress(vaultAsset) !== zone.privateAsset) {
       throw new Error(
-        `Router private asset ${zone.privateAsset} is not the vault asset ${vaultAsset}; configure zone.router.pool and zone.router.customerId to convert it`,
+        `Router private asset ${zone.privateAsset} is not the vault asset ${vaultAsset}; configure ${zone.path}.pool and ${zone.path}.customerId to convert it`,
       )
     }
     return

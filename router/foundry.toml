@@ -1,6 +1,7 @@
 [profile.default]
 src = "src"
 test = "test"
+script = "script"
 out = "out"
 libs = ["lib"]
 # Compiled with solc, not Earn's solar, so hosted deployments can source-verify it. It imports only
@@ -9,7 +10,15 @@ libs = ["lib"]
 allow_paths = ["../earn"]
 # Earn's own custody suite is imported for its pool mock; it runs in earn/, not here.
 no_match_contract = "SingleZoneEarnRouterCustodyTest"
-fs_permissions = [{ access = "read", path = "../earn/test/fixtures/propamm" }]
+# The deployment lifecycle runs script/deploy/ from here and writes each step's outputs where Earn's
+# own steps do (earn/foundry.toml).
+fs_permissions = [
+    { access = "read", path = "../earn/test/fixtures/propamm" },
+    { access = "read-write", path = "../earn/.earn" },
+    { access = "read-write", path = "../profiles" },
+    { access = "read-write", path = "../e2e/.local" },
+    { access = "read-write", path = "../localnet/.local" },
+]
 solc_version = "0.8.36"
 optimizer = true
 optimizer_runs = 200
@@ -26,6 +35,11 @@ remappings = [
 
 [profile.ci]
 fuzz = { runs = 1024 }
+
+# The deployment lifecycle's profile (FOUNDRY_PROFILE=deploy), with its own artifacts as in Earn.
+[profile.deploy]
+cache_path = "cache/deploy"
+out = "out/deploy"
 
 [fmt]
 line_length = 120

@@ -228,6 +228,11 @@ type BaseStep<Id extends string, Authority extends StepAuthority> = {
 /** A step a Foundry script executes with the deployer key. */
 export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deployerAuthority> & {
   execution: 'foundry'
+  /**
+   * The Foundry project beside `earn/` that compiles and runs the script and the contract it
+   * creates, such as `router`, which builds with solc; Earn's own project when omitted.
+   */
+  project?: string
   /** `path:Contract` of the script, or the profile's script when it depends on the profile. */
   script: string | ((profile: EarnDeploymentProfile) => string)
   /** Calldata for the script's typed `run(Input)`; Forge receives it with `--sig`. */

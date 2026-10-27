@@ -80,6 +80,10 @@ whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. L
 `zoneId`, `portal`, `settler`, `routerFactory` and `router`, and is written only with
 `--broadcast`.
 
+Once the settler exists, the router can instead come from an Earn deployment profile's
+`zoneRouter`, which lists the settler and deploys, verifies and records the router through the same
+factory with `pnpm earn deploy` ([Zone router deployment](../router/zone-router.md#deployment)).
+
 Neither contract has an owner or needs configuration. The Zone admin checks the router with the
 factory's `isRouter(router)`, then grants roles:
 

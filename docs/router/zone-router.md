@@ -47,6 +47,26 @@ the factory and having the Zone's Portal admin admit it as a gateway; the old ro
 so callbacks already on their way finish or bounce. The only authority is the one Zones already
 have: which gateways they admit.
 
+## Deployment
+
+A deployment profile's [`zoneRouter`](../../profiles/README.md#zone-routers) deploys one router
+with `pnpm earn deploy` beside its Earn stack. The lifecycle runs [`router/`](../../router/README.md)'s
+own `script/deploy/` scripts from `router/`, compiled with solc and source-verified like Earn's
+contracts:
+
+1. `deploy-zone-router-factory`, unless the profile names a factory;
+2. `deploy-zone-router`: `factory.deploy(mode)`, which returns the existing router for a mode
+   already deployed, then a check of `isRouter`, `predict` and every immutable against the mode;
+3. activation, each verified onchain and otherwise handed off to its owner: `authorize-zone-router`
+   (the PropAMM pool owner admits a converting Earn mode), `enable-zone-router-tokens` (the Zone
+   enables EarnShare and the private asset for Earn ops) and `register-zone-router-gateway` (the
+   Portal administrator admits the router when the Zone restricts callback gateways).
+
+`pnpm earn verify` rechecks the factory provenance and mode and reports gateway, token and
+conversion readiness. A card program's `BridgeSettler` is deployed by Bridge with Spend's
+[scripts](../spend/deploy.md#3-deploy-the-settler-and-router-for-each-zone); the profile lists it
+in `settlers`.
+
 ## Ops
 
 The router reads the first callback word before decoding, so ops 0 and 1 keep

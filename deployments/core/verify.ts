@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { resolve, sep } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import {
@@ -15,6 +15,7 @@ import {
 } from 'viem'
 
 import {
+  foundryProjectRoot,
   foundryVerificationEnvironment,
   sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
@@ -113,6 +114,7 @@ async function inspectDeploymentSources(
     verifierUrl: tempoVerifierUrl,
     runtime: verificationRuntime(dependencies),
     submitMissing,
+    compilerArguments: new Map(),
   }
   const addresses = options.record.addresses as Record<string, Address>
   const engine = requiredOutput(addresses, 'engine')
@@ -190,15 +192,16 @@ async function inspectDeploymentSources(
   const created = deploymentSteps
     .flatMap((step) =>
       step.execution === 'foundry' && step.source && step.enabled(options.profile)
-        ? [{ id: step.id, ...step.source }]
+        ? [{ id: step.id, project: step.project, ...step.source }]
         : [],
     )
     .sort(
       (left, right) =>
         deploymentAddressKeys.indexOf(left.output) - deploymentAddressKeys.indexOf(right.output),
     )
-  for (const { id, output, contract, constructorArgs } of created) {
+  for (const { id, project, output, contract, constructorArgs } of created) {
     contracts[output] = await verifySource(context, {
+      root: foundryProjectRoot(options.root, project),
       address: requiredOutput(addresses, output),
       constructorArgs: constructorArgs(options.profile, addresses),
       contract,
@@ -234,6 +237,7 @@ export async function verifyContractSource(
       verifierUrl: tempoVerifierUrl,
       runtime: verificationRuntime(dependencies),
       submitMissing: true,
+      compilerArguments: new Map(),
     },
     { address, constructorArgs, contract, name: contract.slice(contract.lastIndexOf(':') + 1) },
   )
@@ -267,6 +271,8 @@ async function requireExistingSource(
 async function verifySource(
   context: VerificationContext,
   target: {
+    /** The Foundry project that built the contract; Earn's when omitted. */
+    root?: string | undefined
     address: Address
     constructorArgs?: Hex | undefined
     contract: string
@@ -274,6 +280,7 @@ async function verifySource(
     name: string
   },
 ): Promise<Extract<ContractSourceVerification, { kind: 'source' }>> {
+  const root = target.root ?? context.root
   const existing = await lookupContract(context, target.address)
   if (existing?.match) {
     return sourceMatch(context, existing, target)
@@ -282,7 +289,11 @@ async function verifySource(
     throw new Error(`${target.name} ${target.address} does not have a source match`)
   }
 
-  context.compilerArguments ??= context.runtime.compilerArguments(context.root, context.environment)
+  let compilerArguments = context.compilerArguments.get(root)
+  if (!compilerArguments) {
+    compilerArguments = context.runtime.compilerArguments(root, context.environment)
+    context.compilerArguments.set(root, compilerArguments)
+  }
   let lastError = 'verification did not complete'
   const maximumAttempts = 6
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
@@ -293,7 +304,7 @@ async function verifySource(
         target.address,
         target.contract,
         '--root',
-        context.root,
+        root,
         '--chain',
         String(context.chainId),
         '--rpc-url',
@@ -303,14 +314,16 @@ async function verifySource(
         '--verifier-url',
         context.verifierUrl,
         '--skip-is-verified-check',
-        ...context.compilerArguments,
-        ...(target.constructorArgs ? ['--constructor-args', target.constructorArgs] : []),
+        ...compilerArguments,
+        ...(target.constructorArgs && target.constructorArgs !== '0x'
+          ? ['--constructor-args', target.constructorArgs]
+          : []),
         ...(target.creationTransactionHash
           ? ['--creation-transaction-hash', target.creationTransactionHash]
           : []),
       ],
       {
-        cwd: context.root,
+        cwd: root,
         encoding: 'utf8',
         env: foundryVerificationEnvironment(context.environment) as NodeJS.ProcessEnv,
       },
@@ -382,6 +395,7 @@ function sourceMatch(
   context: VerificationContext,
   contract: VerifiedContract,
   target: {
+    root?: string | undefined
     address: Address
     contract: string
     creationTransactionHash?: Hex | undefined
@@ -413,7 +427,12 @@ function sourceMatch(
       `Verifier creation transaction for ${target.name} does not match the recorded deployment transaction`,
     )
   }
-  const sourceInputsHash = requireCanonicalSources(context, contract, target.contract)
+  const sourceInputsHash = requireCanonicalSources(
+    context,
+    contract,
+    target.contract,
+    target.root ?? context.root,
+  )
   return {
     kind: 'source',
     name: target.name,
@@ -426,19 +445,24 @@ function requireCanonicalSources(
   context: VerificationContext,
   contract: VerifiedContract,
   fullyQualifiedName: string,
+  projectRoot: string,
 ) {
   const sources = contract.sources
   const sourcePath = fullyQualifiedName.slice(0, fullyQualifiedName.lastIndexOf(':'))
   if (!sources || !sources[sourcePath]) {
     throw new Error(`Verifier did not return canonical source ${sourcePath}`)
   }
-  const root = resolve(context.root)
+  // Source paths are relative to the contract's Foundry project, and a sibling project may import
+  // Earn's sources (`../earn/src/...`); every one must resolve inside this checkout.
+  const project = resolve(projectRoot)
+  const root = resolve(context.root, '..')
   const entries = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right))
   for (const [relativePath, source] of entries) {
     if (typeof source.content !== 'string')
       throw new Error(`Verifier did not return source content for ${relativePath}`)
-    const localPath = resolve(root, relativePath)
-    if (localPath !== root && !localPath.startsWith(`${root}${sep}`)) {
+    const localPath = resolve(project, relativePath)
+    const fromRoot = relative(root, localPath)
+    if (fromRoot === '' || fromRoot.startsWith('..') || isAbsolute(fromRoot)) {
       throw new Error(`Verifier source path ${relativePath} escapes the repository root`)
     }
     if (!context.submitMissing) continue
@@ -491,6 +515,6 @@ type VerificationContext = {
   verifierUrl: string
   runtime: VerificationDependencies
   submitMissing: boolean
-  /** Resolved once, on the first submission. */
-  compilerArguments?: string[]
+  /** Each project's compiler arguments, resolved on its first submission. */
+  compilerArguments: Map<string, string[]>
 }

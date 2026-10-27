@@ -22,6 +22,8 @@ const record: EarnDeploymentRecord = {
     zone: null,
     targetYield: null,
     boostRewards: null,
+    zoneRouterFactory: null,
+    zoneRouter: null,
   },
   target: { chainId: 4217, genesisHash: `0x${'2'.repeat(64)}` },
   assetDecimals: 6,

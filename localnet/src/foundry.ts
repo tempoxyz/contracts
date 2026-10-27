@@ -174,6 +174,7 @@ export function runLifecycleStep(step: LifecycleStep, broadcastDirectory: string
     step.environment,
     broadcastDirectory,
     step.rawGasEstimate,
+    step.root,
   )
   if (forge.error || forge.status !== 0) {
     reportOutput(step.action.id, `Shared ${step.action.id} step failed`, forge)
@@ -183,6 +184,8 @@ export function runLifecycleStep(step: LifecycleStep, broadcastDirectory: string
 
 type LifecycleStep = {
   action: { id: string }
+  /** The step's Foundry project, Earn's or a sibling such as `router/`. */
+  root: string
   arguments: string[]
   environment: Record<string, string>
   /** Set by the shared step for a large CREATE; see `Step.rawGasEstimate`. */
@@ -190,29 +193,30 @@ type LifecycleStep = {
 }
 
 /**
- * Installs Earn's pinned Solidity dependencies the first time a step needs them, so a consumer that
- * holds this repository as a submodule needs no separate install step.
+ * Installs a Foundry project's pinned Solidity dependencies the first time a step needs them, so a
+ * consumer that holds this repository as a submodule needs no separate install step.
  */
-let earnDependenciesReady = false
-function ensureEarnDependencies() {
-  if (earnDependenciesReady) return
+const dependenciesReady = new Set<string>()
+function ensureDependencies(project: string) {
+  if (dependenciesReady.has(project)) return
   // The script is idempotent: it keeps libraries already at their pins and builds the solar revision
   // earn/solar.lock names only when that binary is missing, so an older checkout picks up a new pin.
-  execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), ['earn'], {
+  execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), [project], {
     cwd: Config.root,
     stdio: 'inherit',
   })
-  earnDependenciesReady = true
+  dependenciesReady.add(project)
 }
 
-/** Runs Forge from Earn's Foundry project with Tempo batch flags and a private broadcast directory. */
+/** Runs Forge from a Foundry project (Earn's by default) with Tempo batch flags and a private broadcast directory. */
 function spawnForge(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   broadcastDirectory: string,
   rawGasEstimate: boolean | undefined,
+  root = Config.earnRoot,
 ) {
-  ensureEarnDependencies()
+  ensureDependencies(basename(root))
   return spawnSync(
     'forge',
     [
@@ -225,7 +229,7 @@ function spawnForge(
       '--disable-labels',
     ],
     {
-      cwd: Config.earnRoot,
+      cwd: root,
       encoding: 'utf8',
       env: { ...environment, FOUNDRY_BROADCAST: broadcastDirectory },
       maxBuffer: 32 * 1024 * 1024,

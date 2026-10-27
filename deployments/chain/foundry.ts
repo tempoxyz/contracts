@@ -12,6 +12,14 @@ export function assertFoundryVersion(root: string) {
   }
 }
 
+/**
+ * The directory of the Foundry project that compiles and runs a step: Earn's `root`, or the sibling
+ * project the step names, such as `router`, which builds with its own settings.
+ */
+export function foundryProjectRoot(root: string, project?: string) {
+  return project ? resolve(root, '..', project) : root
+}
+
 /** Forge receives only the deployment signer; independent authority keys stay in this process. */
 export function foundryProcessEnvironment(
   environment: Readonly<Record<string, string | undefined>>,

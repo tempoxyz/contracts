@@ -17,6 +17,7 @@ import {
 import { validateSharedFactoryRelease } from './releases.js'
 import { resolvedEngineStateSatisfied } from '../modules/earn/engines/steps.js'
 import { componentDeploymentIntentHashes, engineOwnerAccepted } from './profile.js'
+import { planEarnDeployment } from './plan.js'
 import { prepareLifecycleStep, recordAuthorityAction } from './reconcile.js'
 import { pendingDeploymentPath } from './bundle.js'
 
@@ -184,6 +185,7 @@ describe('Earn deployment lifecycle', () => {
       access: _access,
       core: _core,
       zone: _zone,
+      zoneRouter: _zoneRouter,
       ...authoredProfile
     } = profile
     const authored = {
@@ -327,6 +329,47 @@ describe('Earn deployment lifecycle', () => {
       }
     },
   )
+
+  test('runs a step of a sibling Foundry project from that project', async () => {
+    const routerProfile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'project-test',
+        chainId: 4217,
+        owner: address('4'),
+        engine: { kind: 'veda', address: address('1') },
+        zoneRouter: {
+          zoneId: 7,
+          ops: ['spend'],
+          settlers: [address('5e')],
+          factory: address('fa'),
+        },
+      },
+      { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+    )
+    chain.getCode.mockImplementation(async () => '0x')
+    const checkout = mkdtempSync(join(tmpdir(), 'earn-project-'))
+    try {
+      const step = await prepareLifecycleStep({
+        root: join(checkout, 'earn'),
+        profilePath: join(checkout, 'profiles', routerProfile.id, 'profile.json'),
+        profile: routerProfile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: planEarnDeployment(routerProfile).filter(({ id }) => id === 'deploy-zone-router'),
+      })
+      if (step.kind !== 'foundry') throw new Error(`planned ${step.kind}`)
+      expect(step.root).toBe(join(checkout, 'router'))
+      expect(step.arguments.slice(0, 2)).toEqual([
+        'script',
+        'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
+      ])
+      // Every project's Forge writes outputs to the same staging path, beside Earn's.
+      expect(step.outputPath.startsWith(join(checkout, 'earn', '.earn'))).toBe(true)
+    } finally {
+      rmSync(checkout, { recursive: true, force: true })
+    }
+  })
 
   test('adopts a stack another account created from the profile instead of wedging deploy-core', async () => {
     const core = { earnVault: address('21'), earnShare: address('22'), earnFees: address('23') }
