@@ -44,14 +44,14 @@ type CanonicalReleases = {
 const canonicalReleases: Readonly<Record<HostedEnvironmentId, CanonicalReleases>> = {
   mainnet: {
     factories: {
-      earn: getAddress('0x3085a8003f340cd51c72d9e1a1298cdafb171b02'),
-      erc4626Engine: getAddress('0xd43D00981222a8db444A528E69f19E3cE5A7D2Ff'),
+      earn: getAddress('0xADef56D9Fa2dd2DBc73a2a366057415F1Ab30e31'),
+      erc4626Engine: getAddress('0x5C6E9B7E84500c2bdc483774553D17fFF43dBaB2'),
     },
   },
   moderato: {
     factories: {
-      earn: getAddress('0x749a947811764a14CD17fE3C7BcC5c470e2Ac5cC'),
-      erc4626Engine: getAddress('0x0d57c10249eb3a92b7d81bBA6221F80F2865448A'),
+      earn: getAddress('0xADef56D9Fa2dd2DBc73a2a366057415F1Ab30e31'),
+      erc4626Engine: getAddress('0x5C6E9B7E84500c2bdc483774553D17fFF43dBaB2'),
     },
   },
 }
