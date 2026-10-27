@@ -17,19 +17,23 @@ import {
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 
+import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
+
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
-import { ZoneSpendReceiver } from "../../src/ZoneSpendReceiver.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
+import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice Read-only check of one card program before private spend goes live: the "TS" handler,
-///         the program and its destination, the Zone's portal and token, and the receiver and
-///         refund account's Zone roles. Nothing is sent: the script deploys copies of the handler
-///         and receiver only in its own simulation, to compare their code. `run` reads FACTORY, SPENDER_ID,
-///         SETTLEMENT, TOKEN, ZONE_ID, RECEIVER (optional), REFUND_RECIPIENT (optional),
-///         PROGRAM_WALLET (optional) and VAULTS (comma separated, optional), and prints each
-///         missing step with who submits it. For an Earn spend, TOKEN is the EarnShare of one of
+///         the program and its destination, the Zone's portal and token, the program's Spend-mode
+///         router and its settler, and the Zone roles of the router, the refund recipient and the
+///         program wallet that deposits refunds. Nothing is sent: the script deploys copies of the
+///         handler and settler only in its own simulation, to compare their code. `run` reads
+///         FACTORY, SPENDER_ID, SETTLEMENT, TOKEN, ZONE_ID, ROUTER_FACTORY and ROUTER (optional),
+///         REFUND_RECIPIENT (optional), PROGRAM_WALLET (optional) and VAULTS (comma separated,
+///         optional), and prints each missing step with who submits it. For an Earn spend, TOKEN is the EarnShare of one of
 ///         VAULTS, and the settlement wallet and program wallet are checked against its asset.
 contract Preflight is Script {
     bytes2 internal constant PREFIX = "TS";
@@ -48,21 +52,20 @@ contract Preflight is Script {
         /// @dev The factory runs "TS" for this program: enabled, or gated with the program allowed.
         bool handlerUsable;
         bool destinationAuthorized;
-        /// @dev The wallet that pays private refunds is a program destination, which
-        ///      `refundPrivate` requires of its caller.
-        bool programWalletAuthorized;
         bool paused;
         /// @dev TOKEN is the EarnShare of one of VAULTS.
         bool tokenIsEarnShare;
         /// @dev The policy of the stablecoin the destination receives lets the settlement wallet
         ///      receive it: TOKEN's, or the vault asset's when TOKEN is an EarnShare.
         bool settlementAllowedByPolicy;
-        /// @dev The policy lets the receiver receive the withdrawal and send it on.
-        bool receiverAllowedByPolicy;
+        /// @dev The policy lets the router receive the withdrawal and send it on and back.
+        bool routerAllowedByPolicy;
+        /// @dev The policy lets the settler receive the input it uses and send it on and back.
+        bool settlerAllowedByPolicy;
         /// @dev The policy lets the refund recipient receive a rejected Zone return.
         bool refundRecipientAllowedByPolicy;
-        /// @dev The stablecoin's policy lets the program wallet send, which `refundPrivate`'s pull
-        ///      needs.
+        /// @dev The stablecoin's policy lets the program wallet send, which its refund deposits into
+        ///      the Zone need.
         bool programWalletAllowedByPolicy;
         /// @dev The EarnShare's policy lets the clone receive and send, since an Earn spend moves
         ///      shares through it.
@@ -75,7 +78,7 @@ contract Preflight is Script {
         ///      deposit fee of every Zone return and private refund.
         bool zoneAdminAllowedByPolicy;
         /// @dev For an EarnShare TOKEN, the vault asset's policy lets a private refund reach the
-        ///      Zone: the receiver and portal receive and send, and the Zone admin receives.
+        ///      Zone: the portal receives and sends, and the Zone admin and refund recipient receive.
         bool assetRefundsAllowedByPolicy;
         /// @dev For an EarnShare TOKEN, the portal takes deposits of the vault asset, which
         ///      refunds are paid in.
@@ -87,15 +90,22 @@ contract Preflight is Script {
         bool depositsActive;
         bool accessEnforced;
         bool gatewayOpen;
-        /// @dev A receiver exists at RECEIVER for this factory, program and Zone.
-        bool receiverMatches;
-        /// @dev The receiver runs this repo's code, ignoring solc's metadata. An older receiver
-        ///      still decodes newer callback data and skips the checks it lacks.
-        bool receiverCurrent;
-        /// @dev The receiver has the Zone role its callbacks need: callback gateway when the
+        /// @dev ROUTER_FACTORY deployed ROUTER, so its mode is fixed and public.
+        bool routerFromFactory;
+        /// @dev ROUTER takes Spend callbacks from this Zone and lists a settler for this program.
+        bool routerMatches;
+        /// @dev The settler ROUTER lists for this factory and program; zero when it lists none.
+        address settler;
+        /// @dev The settler runs this repo's code, ignoring solc's metadata, so it has every check
+        ///      this version makes.
+        bool settlerCurrent;
+        /// @dev The router has the Zone role its callbacks need: callback gateway when the
         ///      gateway is closed, the account role when it is open and access is enforced.
-        bool receiverAdmitted;
+        bool routerAdmitted;
         bool refundRecipientAdmitted;
+        /// @dev The program wallet may deposit refunds into the Zone: it holds the account role
+        ///      when access is enforced.
+        bool programWalletAdmitted;
         /// @dev The portal's messenger is the canonical one and the token's policy lets it send and
         ///      receive, since every withdrawal passes through it.
         bool messengerAllowedByPolicy;
@@ -113,7 +123,8 @@ contract Preflight is Script {
             vm.envAddress("SETTLEMENT"),
             vm.envAddress("TOKEN"),
             ProgramChecks.zoneId(vm.envUint("ZONE_ID")),
-            vm.envOr("RECEIVER", address(0)),
+            ZoneRouterFactory(vm.envOr("ROUTER_FACTORY", address(0))),
+            vm.envOr("ROUTER", address(0)),
             vm.envOr("REFUND_RECIPIENT", address(0)),
             vm.envOr("PROGRAM_WALLET", address(0)),
             vaults
@@ -127,7 +138,8 @@ contract Preflight is Script {
         address settlement,
         address token,
         uint32 zoneId,
-        address receiver,
+        ZoneRouterFactory routerFactory,
+        address router,
         address refundRecipient,
         address programWallet,
         address[] memory vaults
@@ -147,8 +159,6 @@ contract Preflight is Script {
             } catch { }
         }
         r.destinationAuthorized = r.clone != address(0) && factory.isAuthorizedDestination(spenderId, settlement);
-        r.programWalletAuthorized = r.clone != address(0) && programWallet != address(0)
-            && factory.isAuthorizedDestination(spenderId, programWallet);
         r.paused = factory.paused();
 
         address stablecoin = token;
@@ -174,9 +184,7 @@ contract Preflight is Script {
         }
         (bool tokenOk, uint64 tokenPolicy) = _policy(token);
         if (tokenOk) {
-            r.receiverAllowedByPolicy = receiver != address(0)
-                && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, receiver)
-                && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, receiver);
+            r.routerAllowedByPolicy = _sendsAndReceives(tokenPolicy, router);
             r.refundRecipientAllowedByPolicy = refundRecipient != address(0)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, refundRecipient);
             r.cloneAllowedByPolicy = r.clone != address(0)
@@ -199,15 +207,8 @@ contract Preflight is Script {
             r.vaultsAllowed[i] = ok && abi.decode(abi.decode(data, (bytes)), (bool));
         }
 
-        if (receiver.code.length != 0) {
-            ZoneSpendReceiver deployed = ZoneSpendReceiver(receiver);
-            r.receiverMatches = address(deployed.FACTORY()) == address(factory) && deployed.SPENDER_ID() == spenderId
-                && deployed.ZONE_ID() == zoneId;
-            r.receiverCurrent = r.receiverMatches
-                && ProgramChecks.sameLogic(
-                    receiver, address(new ZoneSpendReceiver(IBridgeSpenderFactory(address(factory)), spenderId, zoneId))
-                );
-        }
+        _checkRouter(r, address(factory), spenderId, zoneId, routerFactory, router);
+        r.settlerAllowedByPolicy = tokenOk && _sendsAndReceives(tokenPolicy, r.settler);
 
         ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(zoneId);
         if (zone.portal == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal)) {
@@ -224,22 +225,24 @@ contract Preflight is Script {
         address admin = portal.admin();
         r.zoneAdminAllowedByPolicy = tokenOk && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, admin);
         if (r.tokenIsEarnShare) {
-            _checkAssetRefunds(r, portal, stablecoin, receiver, admin, refundRecipient);
+            _checkAssetRefunds(r, portal, stablecoin, admin, refundRecipient);
         }
         address messenger = portal.messenger();
         r.messengerAllowedByPolicy = tokenOk && messenger == ZONE_MESSENGER_ADDRESS
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, messenger)
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, messenger);
 
-        if (r.receiverMatches) {
+        if (r.routerMatches) {
             if (!r.gatewayOpen) {
-                r.receiverAdmitted = portal.hasRole(receiver, Role.CallbackGateway);
+                r.routerAdmitted = portal.hasRole(router, Role.CallbackGateway);
             } else {
-                r.receiverAdmitted = !r.accessEnforced || portal.hasRole(receiver, Role.Account);
+                r.routerAdmitted = !r.accessEnforced || portal.hasRole(router, Role.Account);
             }
         }
         r.refundRecipientAdmitted =
             refundRecipient != address(0) && (!r.accessEnforced || portal.hasRole(refundRecipient, Role.Account));
+        r.programWalletAdmitted =
+            programWallet != address(0) && (!r.accessEnforced || portal.hasRole(programWallet, Role.Account));
     }
 
     function print(Report memory r, address[] memory vaults) public view {
@@ -271,11 +274,6 @@ contract Preflight is Script {
             "governance: add the destination to the program"
         );
         _line(
-            r.programWalletAuthorized,
-            "program wallet can pay private refunds",
-            "governance: updateSpenderDestination(spenderId, programWallet, true)"
-        );
-        _line(
             r.programWalletAllowedByPolicy,
             r.tokenIsEarnShare
                 ? "vault asset's policy lets the program wallet send"
@@ -301,28 +299,47 @@ contract Preflight is Script {
             "portal takes deposits of the token",
             "Zone admin: unpause the portal or resumeDeposits(token)"
         );
-        _line(r.receiverMatches, "receiver deployed for this program and Zone", "deployer: DeployZoneReceiver");
         _line(
-            r.receiverCurrent,
-            "receiver is this repo's build",
-            "deployer: DeployZoneReceiver, then grant the new receiver its Zone role and use it"
+            r.routerFromFactory,
+            "router deployed by the router factory",
+            "deployer: DeployZoneRouter, then use its router and factory"
         );
         _line(
-            r.receiverAdmitted,
-            "receiver has its Zone role",
+            r.routerMatches,
+            "router takes this Zone's spends through this program's settler",
+            "deployer: DeployZoneRouter for this program and Zone"
+        );
+        _line(
+            r.settlerCurrent,
+            "settler is this repo's build",
+            "deployer: DeployZoneRouter, then grant the new router its Zone role and use it"
+        );
+        _line(
+            r.routerAdmitted,
+            "router has its Zone role",
             r.gatewayOpen
-                ? "Zone admin: setAllowedAccount(receiver, true)"
-                : "Zone admin: setGateway(receiver, true), after setAllowedAccount(receiver, false) if it holds the account role"
+                ? "Zone admin: setAllowedAccount(router, true)"
+                : "Zone admin: setGateway(router, true), after setAllowedAccount(router, false) if it holds the account role"
         );
         _line(
-            r.receiverAllowedByPolicy,
-            "token policy lets the receiver receive and send",
-            "policy admin: authorize the receiver under the token's TIP-403 policy"
+            r.routerAllowedByPolicy,
+            "token policy lets the router receive and send",
+            "policy admin: authorize the router under the token's TIP-403 policy"
+        );
+        _line(
+            r.settlerAllowedByPolicy,
+            "token policy lets the settler receive and send",
+            "policy admin: authorize the settler under the token's TIP-403 policy"
         );
         _line(
             r.refundRecipientAdmitted,
             "refund recipient admitted",
             "Zone admin: setAllowedAccount(refundRecipient, true)"
+        );
+        _line(
+            r.programWalletAdmitted,
+            "program wallet can deposit refunds into the Zone",
+            "Zone admin: setAllowedAccount(programWallet, true)"
         );
         _line(
             r.refundRecipientAllowedByPolicy,
@@ -355,7 +372,7 @@ contract Preflight is Script {
             _line(
                 r.assetRefundsAllowedByPolicy,
                 "vault asset's policy lets private refunds reach the Zone",
-                "policy admin: authorize the receiver, portal and Zone admin under the vault asset's TIP-403 policy"
+                "policy admin: authorize the portal, Zone admin and refund recipient under the vault asset's TIP-403 policy"
             );
             _line(
                 r.assetDepositsActive,
@@ -382,27 +399,63 @@ contract Preflight is Script {
         }
     }
 
+    /// @dev Finds the settler ROUTER lists for this program. Only a router ROUTER_FACTORY deployed
+    ///      is read, so an arbitrary address cannot make the report look complete.
+    function _checkRouter(
+        Report memory r,
+        address factory,
+        bytes32 spenderId,
+        uint32 zoneId,
+        ZoneRouterFactory routerFactory,
+        address router
+    ) private {
+        if (address(routerFactory).code.length == 0 || router == address(0)) return;
+        try routerFactory.isRouter(router) returns (bool deployed) {
+            r.routerFromFactory = deployed;
+        } catch { }
+        if (!r.routerFromFactory) return;
+        ZoneRouter zoneRouter = ZoneRouter(router);
+        if (zoneRouter.allowedZoneId() != zoneId || zoneRouter.enabledOps() & zoneRouter.OP_SPEND() == 0) return;
+        address[] memory settlers = zoneRouter.settlers();
+        for (uint256 i; i < settlers.length; ++i) {
+            (bool factoryOk, address settlerFactory) =
+                ProgramChecks.readAddress(settlers[i], bytes4(keccak256("FACTORY()")));
+            (bool ok, bytes memory id) = settlers[i].staticcall(abi.encodeWithSignature("SPENDER_ID()"));
+            if (!factoryOk || settlerFactory != factory || !ok || id.length != 32) continue;
+            if (abi.decode(id, (bytes32)) != spenderId) continue;
+            r.routerMatches = true;
+            r.settler = settlers[i];
+            r.settlerCurrent = ProgramChecks.sameLogic(
+                settlers[i], address(new BridgeSettler(IBridgeSpenderFactory(factory), spenderId))
+            );
+            return;
+        }
+    }
+
     /// @dev An Earn program's refunds are in the vault asset, so its policy and the portal's
     ///      deposits are checked for the asset as well, including the refund recipient that
-    ///      receives a bounced refund (an unset one is reported by its own check).
+    ///      receives a bounced refund (an unset one is reported by its own check). The program
+    ///      wallet that sends them is checked by `programWalletAllowedByPolicy`.
     function _checkAssetRefunds(
         Report memory r,
         IZonePortal portal,
         address asset,
-        address receiver,
         address admin,
         address refundRecipient
     ) private view {
         (bool ok, uint64 policy) = _policy(asset);
-        r.assetRefundsAllowedByPolicy = ok && receiver != address(0)
-            && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, receiver)
-            && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(policy, receiver)
+        r.assetRefundsAllowedByPolicy = ok
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, address(portal))
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(policy, address(portal))
             && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, admin)
             && (refundRecipient == address(0)
                 || StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, refundRecipient));
         r.assetDepositsActive = portal.isTokenEnabled(asset) && portal.areDepositsActive(asset);
+    }
+
+    function _sendsAndReceives(uint64 policy, address account) private view returns (bool) {
+        return account != address(0) && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, account)
+            && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(policy, account);
     }
 
     /// @dev `try` cannot catch a call to an address without code, so that is checked first.

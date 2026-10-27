@@ -9,18 +9,21 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 import { DeployTempoSpend } from "../../script/deploy/DeployTempoSpend.s.sol";
-import { DeployZoneReceiver } from "../../script/deploy/DeployZoneReceiver.s.sol";
+import { DeployZoneRouter } from "../../script/deploy/DeployZoneRouter.s.sol";
 import { Preflight } from "../../script/deploy/Preflight.s.sol";
 import { ProgramCalls } from "../../script/deploy/ProgramCalls.s.sol";
 import { Spend } from "../../src/SpenderTempoSpend.sol";
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
-import { NoopSpendHandler, OlderZoneSpendReceiver } from "../harness/Mocks.sol";
+import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";
+import { NoopSpendHandler, OlderBridgeSettler } from "../harness/Mocks.sol";
 import { ZoneEnv } from "../harness/ZoneEnv.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol";
 import { IEarnEngineExactWithdraw } from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "tempo-earn/interfaces/engines/IEarnEngineRedeem.sol";
+import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import {
     IZoneFactory,
     IZonePortal,
@@ -35,6 +38,8 @@ contract DeployScriptsTest is ZoneEnv {
     uint256 internal constant DEPLOYER_PK = uint256(keccak256("tempo.deployer"));
 
     address internal alice = makeAddr("alice");
+    /// @dev The factory the last `_deployRouter` used, which the preflight checks routers against.
+    ZoneRouterFactory internal routerFactory;
 
     function setUp() public {
         _deployTempo();
@@ -116,64 +121,133 @@ contract DeployScriptsTest is ZoneEnv {
         script.calls(SpenderFactory(address(bridgeFactory)), keccak256("unknown.program"), new address[](0));
     }
 
-    function test_deployReceiverForAProgramAndZone() public {
+    function test_deployRouterForAProgramAndZone() public {
         _deployZone(true);
-        DeployZoneReceiver script = new DeployZoneReceiver();
-        DeployZoneReceiver.Output memory o =
-            script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, DEPLOYER_PK);
-        assertEq(address(o.receiver.FACTORY()), address(bridgeFactory));
-        assertEq(o.receiver.SPENDER_ID(), SPENDER_ID);
-        assertEq(o.receiver.ZONE_ID(), ZONE_ID);
+        DeployZoneRouter script = _newDeployZoneRouter();
+        DeployZoneRouter.Output memory o = script.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)),
+            SPENDER_ID,
+            ZONE_ID,
+            ZoneRouterFactory(address(0)),
+            DEPLOYER_PK
+        );
+        assertEq(address(o.settler.FACTORY()), address(bridgeFactory));
+        assertEq(o.settler.SPENDER_ID(), SPENDER_ID);
+        assertTrue(o.routerFactory.isRouter(address(o.router)), "deployed by the factory");
+        assertEq(o.router.allowedZoneId(), ZONE_ID);
+        assertEq(o.router.enabledOps(), o.router.OP_SPEND(), "Spend only");
+        assertEq(o.router.earnVault(), address(0), "no Earn bindings");
+        address[] memory settlers = o.router.settlers();
+        assertEq(settlers.length, 1);
+        assertEq(settlers[0], address(o.settler));
 
-        string memory path = "reports/test-deploy-zone-receiver.json";
+        string memory path = "reports/test-deploy-zone-router.json";
         script.write(o, path);
         string memory json = vm.readFile(path);
-        assertEq(vm.parseJsonAddress(json, ".receiver"), address(o.receiver));
+        assertEq(vm.parseJsonAddress(json, ".router"), address(o.router));
+        assertEq(vm.parseJsonAddress(json, ".settler"), address(o.settler));
+        assertEq(vm.parseJsonAddress(json, ".routerFactory"), address(o.routerFactory));
         assertEq(vm.parseJsonAddress(json, ".clone"), spender);
         assertEq(vm.parseJsonAddress(json, ".portal"), address(portal));
+
+        // An existing factory is reused.
+        DeployZoneRouter.Output memory again = script.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, o.routerFactory, DEPLOYER_PK
+        );
+        assertEq(address(again.routerFactory), address(o.routerFactory));
+        assertTrue(o.routerFactory.isRouter(address(again.router)));
     }
 
-    /// @notice The preflight reports a deployed receiver and refund account that still lack their
-    ///         closed-loop Zone roles, then passes once the Zone admin grants them.
+    function test_deployRouterRejectsAFactoryWithoutCode() public {
+        _deployZone(true);
+        DeployZoneRouter script = _newDeployZoneRouter();
+        vm.expectRevert(bytes("ROUTER_FACTORY has no code"));
+        script.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)),
+            SPENDER_ID,
+            ZONE_ID,
+            ZoneRouterFactory(makeAddr("no.factory")),
+            DEPLOYER_PK
+        );
+    }
+
+    /// @notice The preflight reports a deployed router, refund account and program wallet that still
+    ///         lack their closed-loop Zone roles, then passes once the Zone admin grants them.
     function test_preflightReportsZoneRolesStillMissing() public {
         _deployZone(true);
-        DeployZoneReceiver.Output memory o = new DeployZoneReceiver()
-            .deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, DEPLOYER_PK);
+        address router = _deployRouter();
         address refund = makeAddr("bridge.refund-recipient");
         address[] memory vaults = new address[](1);
         vaults[0] = address(earnVault);
         Preflight preflight = new Preflight();
 
-        Preflight.Report memory r = _preflight(preflight, address(o.receiver), refund, vaults);
+        Preflight.Report memory r = _preflight(preflight, router, refund, vaults);
         assertTrue(r.programCanonical, "clone created for the ID");
         assertTrue(r.handlerValid, "handler has code and belongs to the factory");
         assertTrue(r.handlerCurrent, "handler is this repo's build");
-        assertTrue(r.receiverCurrent, "receiver is this repo's build");
+        assertTrue(r.routerFromFactory, "router deployed by the factory");
+        assertTrue(r.routerMatches, "router matches");
+        assertTrue(r.settler != address(0), "program's settler found");
+        assertTrue(r.settlerCurrent, "settler is this repo's build");
         assertTrue(r.messengerAllowedByPolicy, "messenger allowed by policy");
         assertTrue(r.portalAllowedByPolicy, "portal allowed by policy");
         assertTrue(r.vaultsSpendable[0], "vault engine supports Earn spends");
         assertTrue(r.handlerUsable, "TS usable");
         assertTrue(r.destinationAuthorized, "destination");
-        assertTrue(r.programWalletAuthorized, "program wallet can pay refunds");
         assertTrue(r.tokenEnabled, "token enabled");
         assertTrue(r.accessEnforced && !r.gatewayOpen, "closed loop");
-        assertTrue(r.receiverMatches, "receiver matches");
         assertTrue(r.vaultsAllowed[0], "vault allowed");
         assertTrue(r.depositsActive, "deposits active");
         assertTrue(r.settlementAllowedByPolicy, "settlement allowed by policy");
-        assertTrue(r.receiverAllowedByPolicy, "receiver allowed by policy");
+        assertTrue(r.routerAllowedByPolicy, "router allowed by policy");
+        assertTrue(r.settlerAllowedByPolicy, "settler allowed by policy");
         assertTrue(r.refundRecipientAllowedByPolicy, "refund recipient allowed by policy");
         assertTrue(r.programWalletAllowedByPolicy, "program wallet allowed by policy");
         assertTrue(r.zoneAdminAllowedByPolicy, "Zone admin allowed by policy");
         assertFalse(r.tokenIsEarnShare, "a stablecoin TOKEN");
-        assertFalse(r.receiverAdmitted, "receiver not yet a gateway");
+        assertFalse(r.routerAdmitted, "router not yet a gateway");
         assertFalse(r.refundRecipientAdmitted, "refund account not yet admitted");
+        assertFalse(r.programWalletAdmitted, "program wallet not yet admitted");
+        preflight.print(r, vaults);
 
-        _zoneRegisterGateway(address(o.receiver));
+        _zoneRegisterGateway(router);
         _zoneAllowAccount(refund);
-        r = _preflight(preflight, address(o.receiver), refund, vaults);
-        assertTrue(r.receiverAdmitted, "receiver is a gateway");
+        _zoneAllowAccount(programWallet);
+        r = _preflight(preflight, router, refund, vaults);
+        assertTrue(r.routerAdmitted, "router is a gateway");
         assertTrue(r.refundRecipientAdmitted, "refund account admitted");
+        assertTrue(r.programWalletAdmitted, "program wallet admitted");
+    }
+
+    /// @notice A router the given factory did not deploy, one for another Zone, and one whose only
+    ///         settler serves another program are each reported, and none is read as the program's.
+    function test_preflightReportsARouterThatIsNotTheProgramsOwn() public {
+        _deployZone(false);
+        Preflight preflight = new Preflight();
+        address router = _deployRouter();
+
+        // The same mode deployed by another factory.
+        ZoneRouter.Mode memory mode = _spendMode(ZONE_ID, ZoneRouter(router).settlers()[0]);
+        address direct = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode);
+        Preflight.Report memory r = _preflight(preflight, direct, address(0), new address[](0));
+        assertFalse(r.routerFromFactory, "not from the given factory");
+        assertFalse(r.routerMatches);
+        preflight.print(r, new address[](0));
+
+        // Another Zone.
+        address elsewhere = routerFactory.deploy(_spendMode(ZONE_ID + 1, mode.settlers[0]));
+        r = _preflight(preflight, elsewhere, address(0), new address[](0));
+        assertTrue(r.routerFromFactory);
+        assertFalse(r.routerMatches, "another Zone");
+
+        // Another program's settler.
+        BridgeSettler other = new BridgeSettler(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("other"));
+        address otherProgram = routerFactory.deploy(_spendMode(ZONE_ID, address(other)));
+        r = _preflight(preflight, otherProgram, address(0), new address[](0));
+        assertTrue(r.routerFromFactory);
+        assertFalse(r.routerMatches, "another program");
+        assertEq(r.settler, address(0));
+        assertFalse(r.settlerAllowedByPolicy, "no settler to check");
     }
 
     function test_preflightReportsAnUnknownProgramAndAPause() public {
@@ -187,6 +261,7 @@ contract DeployScriptsTest is ZoneEnv {
                 settlement,
                 address(usd),
                 ZONE_ID,
+                ZoneRouterFactory(address(0)),
                 address(0),
                 address(0),
                 programWallet,
@@ -196,9 +271,8 @@ contract DeployScriptsTest is ZoneEnv {
         assertFalse(r.programCanonical);
         assertFalse(r.handlerUsable);
         assertFalse(r.destinationAuthorized);
-        assertFalse(r.programWalletAuthorized);
         assertTrue(r.paused);
-        assertFalse(r.receiverMatches);
+        assertFalse(r.routerMatches);
     }
 
     /// @notice A Zone without a portal still yields one vault entry per vault, so `print` reports
@@ -216,6 +290,7 @@ contract DeployScriptsTest is ZoneEnv {
             settlement,
             address(usd),
             99,
+            ZoneRouterFactory(address(0)),
             address(0),
             address(0),
             programWallet,
@@ -240,6 +315,7 @@ contract DeployScriptsTest is ZoneEnv {
                 settlement,
                 tokens[i],
                 ZONE_ID,
+                ZoneRouterFactory(address(0)),
                 address(0),
                 makeAddr("bridge.refund-recipient"),
                 programWallet,
@@ -254,21 +330,8 @@ contract DeployScriptsTest is ZoneEnv {
         }
     }
 
-    /// @notice A program wallet that is not a destination is reported, since `refundPrivate` would
-    ///         reject every refund it pays.
-    function test_preflightReportsAProgramWalletThatCannotPayRefunds() public {
-        _deployZone(false);
-        Preflight preflight = new Preflight();
-        vm.prank(bridgeGovernor);
-        bridgeFactory.updateSpenderDestination(SPENDER_ID, programWallet, false);
-        Preflight.Report memory r = _preflight(preflight, address(0), address(0), new address[](0));
-        assertFalse(r.programWalletAuthorized);
-        assertTrue(r.destinationAuthorized, "settlement is still a destination");
-        preflight.print(r, new address[](0));
-    }
-
-    /// @notice A program wallet the token's policy will not let send is reported, since
-    ///         `refundPrivate` pulls each refund from it.
+    /// @notice A program wallet the token's policy will not let send is reported, since it pays
+    ///         every refund into the Zone.
     function test_preflightReportsAProgramWalletThePolicyBlocks() public {
         _deployZone(false);
         Preflight preflight = new Preflight();
@@ -278,7 +341,6 @@ contract DeployScriptsTest is ZoneEnv {
             abi.encode(false)
         );
         Preflight.Report memory r = _preflight(preflight, address(0), address(0), new address[](0));
-        assertTrue(r.programWalletAuthorized, "still a destination");
         assertFalse(r.programWalletAllowedByPolicy);
         assertTrue(r.settlementAllowedByPolicy, "settlement unaffected");
         preflight.print(r, new address[](0));
@@ -301,31 +363,29 @@ contract DeployScriptsTest is ZoneEnv {
         assertTrue(r.zoneAdminAllowedByPolicy, "admin on the whitelist");
     }
 
-    /// @notice An Earn program's refunds are in the vault asset, so the receiver, portal and Zone
-    ///         admin are checked against the asset's policy as well.
+    /// @notice An Earn program's refunds are in the vault asset, so the portal, Zone admin and
+    ///         refund recipient are checked against the asset's policy as well.
     function test_preflightForAnEarnShareChecksTheRefundPath() public {
         _deployZone(false);
-        DeployZoneReceiver.Output memory o = new DeployZoneReceiver()
-            .deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, DEPLOYER_PK);
+        address router = _deployRouter();
         Preflight preflight = new Preflight();
         address[] memory vaults = new address[](1);
         vaults[0] = address(earnVault);
 
-        Preflight.Report memory r = _earnPreflight(preflight, address(o.receiver), vaults);
+        Preflight.Report memory r = _earnPreflight(preflight, router, vaults);
         assertTrue(r.assetRefundsAllowedByPolicy, "open asset policy");
         assertTrue(r.assetDepositsActive, "asset enabled on the portal");
 
         uint64 policy = StdPrecompiles.TIP403_REGISTRY.createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
         vm.mockCall(address(usd), abi.encodeCall(ITIP20.transferPolicyId, ()), abi.encode(policy));
-        r = _earnPreflight(preflight, address(o.receiver), vaults);
+        r = _earnPreflight(preflight, router, vaults);
         assertFalse(r.assetRefundsAllowedByPolicy, "nobody on the asset whitelist");
         preflight.print(r, vaults);
 
-        StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(policy, address(o.receiver), true);
         StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(policy, address(portal), true);
         StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(policy, portal.admin(), true);
-        r = _earnPreflight(preflight, address(o.receiver), vaults);
-        assertTrue(r.assetRefundsAllowedByPolicy, "receiver, portal and admin whitelisted");
+        r = _earnPreflight(preflight, router, vaults);
+        assertTrue(r.assetRefundsAllowedByPolicy, "portal and admin whitelisted");
 
         // A bounced refund goes to the refund recipient, so it must be on the asset's policy too.
         address refundRecipient = makeAddr("refund-recipient");
@@ -335,7 +395,8 @@ contract DeployScriptsTest is ZoneEnv {
             settlement,
             address(earnShare),
             ZONE_ID,
-            address(o.receiver),
+            routerFactory,
+            router,
             refundRecipient,
             programWallet,
             vaults
@@ -348,7 +409,8 @@ contract DeployScriptsTest is ZoneEnv {
             settlement,
             address(earnShare),
             ZONE_ID,
-            address(o.receiver),
+            routerFactory,
+            router,
             refundRecipient,
             programWallet,
             vaults
@@ -356,7 +418,7 @@ contract DeployScriptsTest is ZoneEnv {
         assertTrue(r.assetRefundsAllowedByPolicy, "refund recipient whitelisted");
 
         vm.mockCall(address(portal), abi.encodeCall(IZonePortal.isTokenEnabled, (address(usd))), abi.encode(false));
-        r = _earnPreflight(preflight, address(o.receiver), vaults);
+        r = _earnPreflight(preflight, router, vaults);
         assertFalse(r.assetDepositsActive, "asset not enabled on the portal");
     }
 
@@ -404,7 +466,7 @@ contract DeployScriptsTest is ZoneEnv {
         preflight.print(r, vaults);
     }
 
-    function _earnPreflight(Preflight preflight, address receiver, address[] memory vaults)
+    function _earnPreflight(Preflight preflight, address router, address[] memory vaults)
         internal
         returns (Preflight.Report memory)
     {
@@ -414,7 +476,8 @@ contract DeployScriptsTest is ZoneEnv {
             settlement,
             address(earnShare),
             ZONE_ID,
-            receiver,
+            routerFactory,
+            router,
             address(0),
             programWallet,
             vaults
@@ -436,6 +499,7 @@ contract DeployScriptsTest is ZoneEnv {
                 settlement,
                 address(usd),
                 ZONE_ID,
+                ZoneRouterFactory(address(0)),
                 address(0),
                 address(0),
                 programWallet,
@@ -445,7 +509,7 @@ contract DeployScriptsTest is ZoneEnv {
         assertFalse(r.programCanonical);
     }
 
-    function _preflight(Preflight preflight, address receiver, address refund, address[] memory vaults)
+    function _preflight(Preflight preflight, address router, address refund, address[] memory vaults)
         internal
         returns (Preflight.Report memory)
     {
@@ -455,18 +519,25 @@ contract DeployScriptsTest is ZoneEnv {
             settlement,
             address(usd),
             ZONE_ID,
-            receiver,
+            routerFactory,
+            router,
             refund,
             programWallet,
             vaults
         );
     }
 
-    function test_deployReceiverRejectsUnknownProgram() public {
+    function test_deployRouterRejectsUnknownProgram() public {
         _deployZone(true);
-        DeployZoneReceiver script = new DeployZoneReceiver();
+        DeployZoneRouter script = _newDeployZoneRouter();
         vm.expectRevert(SpenderFactoryErrorsAndEvents.UnknownSpender.selector);
-        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("unknown.program"), ZONE_ID, DEPLOYER_PK);
+        script.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)),
+            keccak256("unknown.program"),
+            ZONE_ID,
+            ZoneRouterFactory(address(0)),
+            DEPLOYER_PK
+        );
     }
 
     /// @notice Replacing a handler governance turned off writes no gate call, so the replacement
@@ -512,25 +583,29 @@ contract DeployScriptsTest is ZoneEnv {
     }
 
     /// @notice A spender ID a manager added to an existing clone cannot spend, so neither script
-    ///         writes calls or deploys a receiver for it.
+    ///         writes calls or deploys a settler and router for it.
     function test_scriptsRejectAnIdAddedToAnExistingClone() public {
         _deployZone(false);
         bytes32 aliasId = _aliasOfTheClone();
         ProgramCalls calls = new ProgramCalls();
         vm.expectRevert(bytes("SPENDER_ID was added to an existing clone, which TS rejects"));
         calls.calls(SpenderFactory(address(bridgeFactory)), aliasId, new address[](0));
-        DeployZoneReceiver receiver = new DeployZoneReceiver();
+        DeployZoneRouter router = _newDeployZoneRouter();
         vm.expectRevert(bytes("SPENDER_ID was added to an existing clone, which TS rejects"));
-        receiver.deploy(IBridgeSpenderFactory(address(bridgeFactory)), aliasId, ZONE_ID, DEPLOYER_PK);
+        router.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)), aliasId, ZONE_ID, ZoneRouterFactory(address(0)), DEPLOYER_PK
+        );
     }
 
-    function test_deployReceiverRejectsAZoneWithoutAPortal() public {
+    function test_deployRouterRejectsAZoneWithoutAPortal() public {
         _deployZone(false);
         ZoneInfo memory none;
         vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (uint32(99))), abi.encode(none));
-        DeployZoneReceiver script = new DeployZoneReceiver();
+        DeployZoneRouter script = _newDeployZoneRouter();
         vm.expectRevert(bytes("ZONE_ID has no portal"));
-        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, 99, DEPLOYER_PK);
+        script.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, 99, ZoneRouterFactory(address(0)), DEPLOYER_PK
+        );
     }
 
     function test_programCallsRejectAVaultThatIsNotAnEarnVault() public {
@@ -581,21 +656,24 @@ contract DeployScriptsTest is ZoneEnv {
         }
     }
 
-    /// @notice A handler or receiver built from other code is reported, even when it answers the
+    /// @notice A handler or settler built from other code is reported, even when it answers the
     ///         identity checks, since an older build lacks checks this one makes.
-    function test_preflightReportsAHandlerOrReceiverFromAnotherBuild() public {
+    function test_preflightReportsAHandlerOrSettlerFromAnotherBuild() public {
         _deployZone(false);
         Preflight preflight = new Preflight();
         ISpenderHandler other = ISpenderHandler(address(new NoopSpendHandler(IFactory(address(bridgeFactory)))));
         vm.prank(bridgeAdmin);
         bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, other);
-        address older = address(new OlderZoneSpendReceiver(address(bridgeFactory), SPENDER_ID, ZONE_ID));
+        address older = address(new OlderBridgeSettler(address(bridgeFactory), SPENDER_ID));
+        routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
+        address router = routerFactory.deploy(_spendMode(ZONE_ID, older));
 
-        Preflight.Report memory r = _preflight(preflight, older, address(0), new address[](0));
+        Preflight.Report memory r = _preflight(preflight, router, address(0), new address[](0));
         assertTrue(r.handlerValid, "handler belongs to the factory");
         assertFalse(r.handlerCurrent, "handler is another build");
-        assertTrue(r.receiverMatches, "receiver answers for the program and Zone");
-        assertFalse(r.receiverCurrent, "receiver is another build");
+        assertTrue(r.routerMatches, "settler answers for the program");
+        assertEq(r.settler, older);
+        assertFalse(r.settlerCurrent, "settler is another build");
         preflight.print(r, new address[](0));
     }
 
@@ -652,19 +730,51 @@ contract DeployScriptsTest is ZoneEnv {
             abi.encodeCall(SpenderFactory.updateSpenderHandlerAllowlist, (PREFIX_TEMPO_SPEND, SPENDER_ID, true))
         );
         vm.setEnv("ZONE_ID", vm.toString(uint256(ZONE_ID)));
-        assertEq(new DeployZoneReceiver().run().ZONE_ID(), ZONE_ID);
+        ZoneRouter router = _newDeployZoneRouter().run();
+        assertEq(router.allowedZoneId(), ZONE_ID);
         new Preflight().run();
 
-        DeployZoneReceiver receiver = new DeployZoneReceiver();
+        DeployZoneRouter deployRouter = _newDeployZoneRouter();
         Preflight preflight = new Preflight();
+        vm.setEnv("ROUTER", vm.toString(address(router)));
+        preflight.run();
         vm.setEnv("ZONE_ID", vm.toString(uint256(type(uint32).max) + uint256(ZONE_ID)));
         vm.expectRevert(bytes("ZONE_ID out of range"));
-        receiver.run();
+        deployRouter.run();
         vm.expectRevert(bytes("ZONE_ID out of range"));
         preflight.run();
         vm.setEnv("ZONE_ID", "0");
         vm.expectRevert(bytes("ZONE_ID out of range"));
         preflight.run();
+    }
+
+    /// @dev Deploys the program's settler and Spend-mode router for ZONE_ID with the deploy script,
+    ///      remembering its router factory for `_preflight`.
+    function _deployRouter() internal returns (address) {
+        DeployZoneRouter.Output memory o = _newDeployZoneRouter()
+            .deploy(
+                IBridgeSpenderFactory(address(bridgeFactory)),
+                SPENDER_ID,
+                ZONE_ID,
+                ZoneRouterFactory(address(0)),
+                DEPLOYER_PK
+            );
+        routerFactory = o.routerFactory;
+        return address(o.router);
+    }
+
+    /// @dev The deploy script, the router factory and the router are deployed from their artifacts:
+    ///      their creation code nests the router's, and inlined here it would push this test past
+    ///      what the compiler can assemble.
+    function _newDeployZoneRouter() internal returns (DeployZoneRouter) {
+        return DeployZoneRouter(deployCode("DeployZoneRouter.s.sol:DeployZoneRouter"));
+    }
+
+    function _spendMode(uint32 zoneId, address settler) internal pure returns (ZoneRouter.Mode memory mode) {
+        mode.zoneId = zoneId;
+        mode.enabledOps = uint8(1 << 2);
+        mode.settlers = new address[](1);
+        mode.settlers[0] = settler;
     }
 
     function submitAs(address role, bytes memory data) external {

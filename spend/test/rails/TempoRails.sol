@@ -4,13 +4,17 @@ pragma solidity ^0.8.36;
 import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { EncryptedDepositPayload } from "tempo-earn/interfaces/external/tempo/IZone.sol";
+import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
+import { DepositPayload } from "tempo-zones/interfaces/IZone.sol";
 
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
-import { ZoneSpendReceiver } from "../../src/ZoneSpendReceiver.sol";
 import { IBridgeSpenderClone, IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { IZoneOutbox } from "../../src/interfaces/IZoneOutbox.sol";
+import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";
 
 import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.sol";
 import { TxCall } from "../harness/lib/TempoTx.sol";
@@ -175,13 +179,16 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
 }
 
 /// @notice Private spend: balances sit in a Zone. Bridge's Zone access key requests a withdrawal to
-///         the program's `ZoneSpendReceiver`, which settles the spend through the clone and returns
-///         unused input to the Zone encrypted, so the cardholder never appears on Tempo.
+///         the program's Spend-mode `ZoneRouter`, which lets the program's `BridgeSettler` settle
+///         the spend through the clone from at most `maxInput` and returns the rest to the Zone
+///         encrypted, so the cardholder never appears on Tempo. Refunds are the program wallet's
+///         own encrypted deposits into the Zone.
 /// @dev The key is scoped to the outbox, which cannot pin the withdrawal recipient.
 abstract contract TempoPrivateRail is TempoRailBase {
     uint64 internal constant CALLBACK_GAS = 3_000_000;
 
-    ZoneSpendReceiver internal receiver;
+    ZoneRouter internal zoneRouter;
+    BridgeSettler internal settler;
 
     function _closedLoop() internal pure virtual returns (bool);
 
@@ -199,10 +206,20 @@ abstract contract TempoPrivateRail is TempoRailBase {
 
     function _railSetUp() internal override {
         _deployZone(_closedLoop());
-        receiver = new ZoneSpendReceiver(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID);
-        vm.label(address(receiver), "ZoneSpendReceiver");
-        _zoneRegisterGateway(address(receiver));
+        settler = new BridgeSettler(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID);
+        ZoneRouter.Mode memory mode;
+        mode.zoneId = ZONE_ID;
+        mode.enabledOps = uint8(1 << 2);
+        mode.settlers = new address[](1);
+        mode.settlers[0] = address(settler);
+        // From its artifact: inlining the factory, which nests the router, would bloat every matrix suite.
+        zoneRouter = ZoneRouter(ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode));
+        vm.label(address(settler), "BridgeSettler");
+        vm.label(address(zoneRouter), "ZoneRouter");
+        _zoneRegisterGateway(address(zoneRouter));
         _zoneAllowAccount(programRefundRecipient);
+        // Refunds: the program wallet deposits into the Zone itself, as an admitted account.
+        _zoneAllowAccount(programWallet);
     }
 
     function _inputToken() internal view returns (address) {
@@ -238,7 +255,15 @@ abstract contract TempoPrivateRail is TempoRailBase {
         uint256 maxShares = earn ? _quoteShares(amount) : 0;
         uint256 input = (earn ? maxShares : amount) + change;
         Spend memory spend = _spend(amount, actionId, earn ? amount : 0, maxShares);
-        bytes memory callbackData = abi.encode(spend, _zoneReturnTo(user));
+        bytes memory callbackData = abi.encode(
+            ZoneRouter.SpendData({
+                op: ZoneRouter.Op.Spend,
+                settler: address(settler),
+                maxInput: uint128(earn ? maxShares : amount),
+                settlerData: abi.encode(spend),
+                zoneReturn: _zoneReturnTo(user)
+            })
+        );
         return _requestPrivateSpend(user, _inputToken(), input, callbackData);
     }
 
@@ -292,7 +317,7 @@ abstract contract TempoPrivateRail is TempoRailBase {
             0,
             abi.encodeCall(
                 IZoneOutbox.requestWithdrawal,
-                (inputToken, address(receiver), uint128(input), bytes32(0), CALLBACK_GAS, user, callbackData, "")
+                (inputToken, address(zoneRouter), uint128(input), bytes32(0), CALLBACK_GAS, user, callbackData, "")
             )
         );
     }
@@ -305,20 +330,26 @@ abstract contract TempoPrivateRail is TempoRailBase {
         return uint256(portal.calculateDepositFee()) + portal.calculateBouncebackFee() + 1;
     }
 
-    function _zoneReturnTo(address user) internal returns (ZoneSpendReceiver.ZoneReturn memory) {
-        return ZoneSpendReceiver.ZoneReturn({
+    function _zoneReturnTo(address user) internal returns (ZoneRouter.SpendReturn memory) {
+        // The vendored Zone payload and Earn's are the same struct under two names.
+        EncryptedDepositPayload memory encrypted = abi.decode(abi.encode(_encryptedTo(user)), (EncryptedDepositPayload));
+        return ZoneRouter.SpendReturn({
             keyIndex: 0,
-            encrypted: _encryptedTo(user),
+            encrypted: encrypted,
             refundRecipient: programRefundRecipient,
             maxDepositFee: portal.calculateDepositFee()
         });
     }
 
     function _railCredit(address user, uint256 amount, bytes32) internal override {
+        // Bridge's orchestration: the program wallet deposits the refund to the cardholder encrypted,
+        // with the program's refund recipient taking it back if the Zone rejects it.
+        DepositPayload memory encrypted = _encryptedTo(user);
         vm.startPrank(programWallet);
-        usd.approve(address(receiver), amount);
+        usd.approve(address(portal), amount);
         vm.recordLogs();
-        receiver.refundPrivate(address(usd), amount, _zoneReturnTo(user));
+        portal.depositEncrypted(address(usd), uint128(amount), 0, encrypted, programRefundRecipient);
+        usd.approve(address(portal), 0);
         vm.stopPrank();
         Vm.Log[] memory logs = vm.getRecordedLogs();
         _zoneObserveDeposits(logs);

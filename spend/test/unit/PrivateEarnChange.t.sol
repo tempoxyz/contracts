@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
 import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
-import { ZoneSpendReceiver } from "../../src/ZoneSpendReceiver.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
+import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";
 import { OverQuotingEarnVault } from "../harness/Mocks.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 
@@ -24,8 +25,9 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         assertGt(portal.calculateDepositFee(), 0, "deposit fee on");
     }
 
-    /// @notice Leftover shares below the portal's fees cannot be deposited back, so the spend
-    ///         bounces, nothing is paid and the input returns to the Zone.
+    /// @notice A withdrawal of exactly `maxShares` leaves only the quote's margin as change, below
+    ///         the portal's fees, so it cannot be deposited back: the spend bounces, nothing is paid
+    ///         and the input returns to the Zone.
     function test_earnLeftoverBelowFeesBounces() public {
         uint256 maxShares = _quote(AMOUNT);
         assertLt(maxShares - earnVault.previewWithdraw(AMOUNT), _change() - 1, "leftover below fees");
@@ -41,7 +43,7 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertEq(
             zoneBefore - _zoneBalance(address(earnShare), alice),
-            zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS),
+            zoneOutbox.calculateWithdrawalFee(callbackGas),
             "input returned to the Zone"
         );
     }
@@ -62,18 +64,18 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         assertEq(usd.balanceOf(settlement) - before, AMOUNT, "destination paid");
         assertEq(
             zoneBefore - _zoneBalance(address(earnShare), alice),
-            burned + zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateDepositFee(),
+            burned + zoneOutbox.calculateWithdrawalFee(callbackGas) + portal.calculateDepositFee(),
             "charged the burned shares and fees only"
         );
-        assertEq(earnShare.balanceOf(address(receiver)), 0, "nothing left in the receiver");
-        assertEq(earnShare.balanceOf(spender), 0, "nothing left in the clone");
-        _assertNoApprovals(address(earnShare));
+        _assertNothingHeld(address(earnShare));
     }
 
-    /// @notice A vault that burns fewer shares than it quoted leaves the rest with the receiver,
-    ///         which returns them to the cardholder in the Zone with the change.
+    /// @notice A vault that burns fewer shares than it quoted leaves the rest with the settler,
+    ///         which hands them back to the router to return to the cardholder with the change.
     function test_earnSharesTheVaultDidNotBurnReturnToTheZone() public {
         OverQuotingEarnVault vault = new OverQuotingEarnVault(ITempoEarnVault(address(earnVault)));
+        // The mock vault's extra share hops cost about 0.8M gas on top of a spend's 2.4M.
+        callbackGas = 4_000_000;
         _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(vault)));
         uint256 quoted = vault.previewWithdraw(AMOUNT);
         uint256 burned = earnVault.previewWithdraw(AMOUNT);
@@ -91,35 +93,38 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         assertEq(usd.balanceOf(settlement) - before, AMOUNT, "destination paid");
         assertEq(
             zoneBefore - _zoneBalance(address(earnShare), alice),
-            burned + zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateDepositFee(),
+            burned + zoneOutbox.calculateWithdrawalFee(callbackGas) + portal.calculateDepositFee(),
             "charged the burned shares and fees only"
         );
-        assertEq(earnShare.balanceOf(address(receiver)), 0, "nothing left in the receiver");
-        assertEq(earnShare.balanceOf(spender), 0, "nothing left in the clone");
         assertEq(earnShare.balanceOf(address(vault)), 0, "nothing left in the vault");
-        _assertNoApprovals(address(earnShare));
+        _assertNothingHeld(address(earnShare));
     }
 
-    /// @notice The clone reports the receiver as the payer and the shares it burned, and the
-    ///         receiver reports the shares consumed and returned.
+    /// @notice The clone reports the settler as the payer and the shares it burned, the settler the
+    ///         shares consumed and handed back, and the router the shares returned to the Zone.
     function test_earnSpendEmitsEvents() public {
-        bytes32 senderTag = keccak256("zone.sender-tag");
         uint256 burned = earnVault.previewWithdraw(AMOUNT);
-        uint256 input = _quote(AMOUNT) + _change();
-        Spend memory spend = _earnSpend(AMOUNT, settlement, _quote(AMOUNT));
+        uint256 maxShares = _quote(AMOUNT);
+        uint256 input = maxShares + _change();
+        Spend memory spend = _earnSpend(AMOUNT, settlement, maxShares);
         spend.ref = keccak256("card.auth");
-        _fundReceiver(address(earnShare), input);
+        _fundRouter(address(earnShare), input);
 
         bytes memory data = _callback(spend);
         vm.expectEmit(true, true, true, true, spender);
         emit SpenderTempoSpend.TempoSpendExecuted(
-            spend.ref, address(receiver), settlement, address(usd), AMOUNT, 0, AMOUNT, burned
+            spend.ref, address(settler), settlement, address(usd), AMOUNT, 0, AMOUNT, burned
         );
-        vm.expectEmit(true, true, true, true, address(receiver));
-        emit ZoneSpendReceiver.PrivateSpendSettled(senderTag, spend.ref, address(earnShare), burned, input - burned);
+        vm.expectEmit(true, true, true, true, address(settler));
+        emit BridgeSettler.SpendSettled(spend.ref, address(earnShare), burned, maxShares - burned);
+        // The Zone deposit hash is the portal's; the rest is checked.
+        vm.expectEmit(true, true, false, false, address(zoneRouter));
+        emit ZoneRouter.Spent(address(settler), address(earnShare), burned, input - burned, bytes32(0));
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        receiver.onWithdrawalReceived(ZONE_ID, address(portal), senderTag, address(earnShare), uint128(input), data);
-        _assertNoApprovals(address(earnShare));
+        zoneRouter.onWithdrawalReceived(
+            ZONE_ID, address(portal), keccak256("zone.sender-tag"), address(earnShare), uint128(input), data
+        );
+        _assertNothingHeld(address(earnShare));
     }
 
     /// @dev Bridge's Earn quote: the live share cost plus 0.5% and one unit.

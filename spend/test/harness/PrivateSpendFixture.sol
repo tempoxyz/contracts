@@ -1,24 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { EncryptedDepositPayload } from "tempo-earn/interfaces/external/tempo/IZone.sol";
+import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 import { Spend } from "../../src/SpenderTempoSpend.sol";
-import { ZoneSpendReceiver } from "../../src/ZoneSpendReceiver.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { IZoneOutbox } from "../../src/interfaces/IZoneOutbox.sol";
+import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";
 import { AccessKeys } from "./AccessKeys.sol";
 import { TxCall } from "./lib/TempoTx.sol";
 
-/// @notice A Zone with portal and outbox fees switched on, the program's receiver, and cardholders
-///         enrolled with Bridge's Zone key, for private spend tests.
+/// @notice A Zone with portal and outbox fees switched on, the program's BridgeSettler behind a
+///         factory-deployed Spend-mode ZoneRouter registered as the Zone's callback gateway, and
+///         cardholders enrolled with Bridge's Zone key, for private spend tests.
 abstract contract PrivateSpendFixture is AccessKeys {
-    uint64 internal constant CALLBACK_GAS = 3_000_000;
+    /// @dev The callback gas Bridge requests (docs/spend/bridge-integration.md).
+    uint64 internal callbackGas = 3_000_000;
     /// @dev Tempo base fee, which prices the portal's bounce-back fee.
     uint256 internal constant BASE_FEE = 20 gwei;
 
-    ZoneSpendReceiver internal receiver;
+    ZoneRouterFactory internal routerFactory;
+    ZoneRouter internal zoneRouter;
+    BridgeSettler internal settler;
     address internal alice = makeAddr("alice");
     address internal mallory = makeAddr("mallory");
     /// @dev Bridge-controlled Tempo account, one per program and admitted on the Zone, that
@@ -33,8 +40,10 @@ abstract contract PrivateSpendFixture is AccessKeys {
     function _setUpPrivateSpend(bool closedLoop) internal {
         _deployTempo();
         _deployZone(closedLoop);
-        receiver = new ZoneSpendReceiver(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID);
-        _zoneRegisterGateway(address(receiver));
+        settler = new BridgeSettler(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID);
+        // From its artifact: inlining the factory, which nests the router, would bloat every test.
+        routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
+        zoneRouter = _deployRouter(_settlers(address(settler)));
 
         vm.fee(BASE_FEE);
         vm.startPrank(zoneAdmin);
@@ -52,6 +61,22 @@ abstract contract PrivateSpendFixture is AccessKeys {
     // Helpers
     // ------------------------------------------------------------------
 
+    /// @notice Deploys the Spend-mode router for this Zone and `settlers` through the factory and
+    ///         registers it as the Zone's callback gateway.
+    function _deployRouter(address[] memory settlers) internal returns (ZoneRouter router) {
+        ZoneRouter.Mode memory mode;
+        mode.zoneId = ZONE_ID;
+        mode.enabledOps = uint8(1 << 2);
+        mode.settlers = settlers;
+        router = ZoneRouter(routerFactory.deploy(mode));
+        _zoneRegisterGateway(address(router));
+    }
+
+    function _settlers(address one) internal pure returns (address[] memory list) {
+        list = new address[](1);
+        list[0] = one;
+    }
+
     function _enrollInZone(address user, uint256 amount) internal {
         _zoneAllowAccount(user);
         _mintUsd(user, amount);
@@ -68,6 +93,8 @@ abstract contract PrivateSpendFixture is AccessKeys {
         _zoneSequence();
     }
 
+    /// @notice The least change a withdrawal can carry above `maxInput`: the portal's deposit and
+    ///         bounce-back fees plus one unit.
     function _change() internal view returns (uint256) {
         return uint256(portal.calculateDepositFee()) + portal.calculateBouncebackFee() + 1;
     }
@@ -93,37 +120,61 @@ abstract contract PrivateSpendFixture is AccessKeys {
         s.maxShares = maxShares;
     }
 
+    /// @notice Callback data for `spend` in the stablecoin, through the program's settler.
     function _callback(Spend memory spend) internal returns (bytes memory) {
         spend.token = address(usd);
         return _callbackAsIs(spend);
     }
 
-    /// @notice Callback data carrying `spend` unchanged, with unused input returned to alice.
+    /// @notice Callback data carrying `spend` unchanged through the program's settler, with
+    ///         `maxInput` the spend's amount, or its `maxShares` for an Earn spend, and unused input
+    ///         returned to alice.
     function _callbackAsIs(Spend memory spend) internal returns (bytes memory) {
-        return abi.encode(spend, _zoneReturn(alice));
+        uint256 maxInput = spend.fromVault == 0 ? spend.amount : spend.maxShares;
+        return _spendData(address(settler), maxInput, spend);
     }
 
-    function _zoneReturn(address user) internal returns (ZoneSpendReceiver.ZoneReturn memory) {
-        return ZoneSpendReceiver.ZoneReturn({
+    /// @notice Spend-op callback data: `settler_` may use at most `maxInput` to settle `spend`, and
+    ///         the router returns the rest of the withdrawal to alice in the Zone.
+    function _spendData(address settler_, uint256 maxInput, Spend memory spend) internal returns (bytes memory) {
+        return abi.encode(
+            ZoneRouter.SpendData({
+                op: ZoneRouter.Op.Spend,
+                settler: settler_,
+                maxInput: uint128(maxInput),
+                settlerData: abi.encode(spend),
+                zoneReturn: _zoneReturn(alice)
+            })
+        );
+    }
+
+    function _zoneReturn(address user) internal returns (ZoneRouter.SpendReturn memory) {
+        // The vendored Zone payload and Earn's are the same struct under two names.
+        EncryptedDepositPayload memory encrypted = abi.decode(abi.encode(_encryptedTo(user)), (EncryptedDepositPayload));
+        return ZoneRouter.SpendReturn({
             keyIndex: 0,
-            encrypted: _encryptedTo(user),
+            encrypted: encrypted,
             refundRecipient: programRefundRecipient,
             maxDepositFee: portal.calculateDepositFee()
         });
     }
 
-    /// @notice Moves `input` of `token` from the portal's escrow into the receiver, as the
-    ///         messenger does before it calls `onWithdrawalReceived`.
-    function _fundReceiver(address token, uint256 input) internal {
+    /// @notice Moves `input` of `token` from the portal's escrow into the router, as the messenger
+    ///         does before it calls `onWithdrawalReceived`.
+    function _fundRouter(address token, uint256 input) internal {
         vm.prank(address(portal));
-        ITIP20(token).transfer(address(receiver), input);
+        ITIP20(token).transfer(address(zoneRouter), input);
     }
 
-    /// @notice The receiver's approvals to the clone and the portal, and the clone's approval to the
-    ///         Earn vault, are all cleared.
-    function _assertNoApprovals(address token) internal view {
-        assertEq(ITIP20(token).allowance(address(receiver), spender), 0, "receiver -> clone");
-        assertEq(ITIP20(token).allowance(address(receiver), address(portal)), 0, "receiver -> portal");
+    /// @notice The router, settler and clone hold none of `token`, and every approval a spend
+    ///         makes is cleared: router to settler and portal, settler to clone, clone to vault.
+    function _assertNothingHeld(address token) internal view {
+        assertEq(ITIP20(token).balanceOf(address(zoneRouter)), 0, "nothing left in the router");
+        assertEq(ITIP20(token).balanceOf(address(settler)), 0, "nothing left in the settler");
+        assertEq(ITIP20(token).balanceOf(spender), 0, "nothing left in the clone");
+        assertEq(ITIP20(token).allowance(address(zoneRouter), address(settler)), 0, "router -> settler");
+        assertEq(ITIP20(token).allowance(address(zoneRouter), address(portal)), 0, "router -> portal");
+        assertEq(ITIP20(token).allowance(address(settler), spender), 0, "settler -> clone");
         assertEq(earnShare.allowance(spender, address(earnVault)), 0, "clone -> vault");
     }
 
@@ -154,7 +205,7 @@ abstract contract PrivateSpendFixture is AccessKeys {
         returns (TxCall[] memory calls)
     {
         address zoneToken = address(_zoneTokenOf(token));
-        uint256 total = input + zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS);
+        uint256 total = input + zoneOutbox.calculateWithdrawalFee(callbackGas);
         calls = new TxCall[](2);
         calls[0] = TxCall(zoneToken, 0, abi.encodeCall(ITIP20.approve, (address(zoneOutbox), total)));
         calls[1] = TxCall(
@@ -162,7 +213,7 @@ abstract contract PrivateSpendFixture is AccessKeys {
             0,
             abi.encodeCall(
                 IZoneOutbox.requestWithdrawal,
-                (token, address(receiver), uint128(input), bytes32(0), CALLBACK_GAS, user, callbackData, "")
+                (token, address(zoneRouter), uint128(input), bytes32(0), callbackGas, user, callbackData, "")
             )
         );
     }

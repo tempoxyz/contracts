@@ -6,7 +6,7 @@ multisig that holds each role, instead of sending them.
 
 Against a live chain, set the chain's current hardfork (`tempo_forkSchedule`) in
 `FOUNDRY_HARDFORK`, for example `FOUNDRY_HARDFORK=tempo:T12`. The repo's tests pin `tempo:T8`, and forge cannot run the Zone factory
-under it. The receiver deploy and
+under it. The router deploy and
 the preflight both read the Zone factory.
 
 ## 1. Deploy the handler (once)
@@ -43,7 +43,7 @@ Run the same script to replace a live handler. The factory keeps the prefix's st
 ## 2. Turn it on for a program
 
 The program exists already: Bridge's manager created it with `createSpender(spenderId,
-destinations)`, with the settlement wallet and the program wallet as destinations. `TS` must be
+destinations)`, with the settlement wallet as a destination. `TS` must be
 registered, that is the admin's `setSpenderHandler` has executed.
 
 ```bash
@@ -63,64 +63,76 @@ previews, which `availableBalance` uses. Submit the calls in this order:
 The allowlist call goes first: while the handler is gated, the factory refuses the program's vault
 calls until it is allowlisted. Leave `VAULTS` unset for a stablecoin-only program.
 
-## 3. Deploy a receiver for each Zone
+## 3. Deploy the settler and router for each Zone
 
 ```bash
-FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... ZONE_ID=7 OUT=reports/receiver-7.json \
-  forge script script/deploy/DeployZoneReceiver.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
+FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... ZONE_ID=7 ROUTER_FACTORY=0x... \
+  OUT=reports/zone-router-7.json \
+  forge script script/deploy/DeployZoneRouter.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
 ```
 
 The script checks that the program's clone was created for its ID, that `ZONE_ID` is a valid Zone
-ID, and that the Zone has a registered portal. The receiver has no owner and needs no
-configuration. Then the Zone admin grants roles:
+ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program's
+`BridgeSettler`, then, through the `ZoneRouterFactory`, a [`ZoneRouter`](../router/zone-router.md)
+whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. Leave
+`ROUTER_FACTORY` unset to deploy a new factory. `OUT` holds `factory`, `spenderId`, `clone`,
+`zoneId`, `portal`, `settler`, `routerFactory` and `router`, and is written only with
+`--broadcast`.
 
-- if the callback gateway is closed, `setGateway(receiver, true)`;
-- if the gateway is open and access is enforced, `setAllowedAccount(receiver, true)`;
+Neither contract has an owner or needs configuration. The Zone admin checks the router with the
+factory's `isRouter(router)`, then grants roles:
+
+- if the callback gateway is closed, `setGateway(router, true)`;
+- if the gateway is open and access is enforced, `setAllowedAccount(router, true)`;
 - if access is enforced, `setAllowedAccount(refundRecipient, true)` for the program's refund
-  recipient.
+  recipient, and `setAllowedAccount(programWallet, true)` for the program wallet, which deposits
+  private refunds into the Zone.
 
-An address holds one Zone role at a time. To move the receiver from the account role to the
-gateway role, `setAllowedAccount(receiver, false)` first.
+An address holds one Zone role at a time. To move the router from the account role to the gateway
+role, `setAllowedAccount(router, false)` first.
 
 ## 4. Check the program before it goes live
 
 ```bash
 FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... SETTLEMENT=0x... TOKEN=0x... ZONE_ID=2 \
-  RECEIVER=0x... REFUND_RECIPIENT=0x... PROGRAM_WALLET=0x... VAULTS=0xVault1 \
+  ROUTER_FACTORY=0x... ROUTER=0x... REFUND_RECIPIENT=0x... PROGRAM_WALLET=0x... VAULTS=0xVault1 \
   forge script script/deploy/Preflight.s.sol --rpc-url $TEMPO_RPC
 ```
 
-Nothing is sent. `RECEIVER`, `REFUND_RECIPIENT`, `PROGRAM_WALLET` and `VAULTS` are optional, and
-each one left out reports `todo`. It prints `ok` or `todo` for each item, with who submits the fix:
+Nothing is sent. `ROUTER_FACTORY`, `ROUTER`, `REFUND_RECIPIENT`, `PROGRAM_WALLET` and `VAULTS` are
+optional, and each one left out reports `todo`; the router checks need both `ROUTER_FACTORY` and
+`ROUTER`. It prints `ok` or `todo` for each item, with who submits the fix:
 
 - the program's clone was created for `SPENDER_ID`, which `TS` requires;
 - `TS` is registered, has code, was built for this factory, and is usable by the program;
-- the `TS` handler and `RECEIVER` are this repo's build: their code matches copies the script
-  deploys in its own simulation, so one deployed from older code reads `todo`. Solc's metadata
-  hash is left out, so a build from source that differs only in comments still matches;
+- the `TS` handler and the router's settler are this repo's build: their code matches copies the
+  script deploys in its own simulation, so one deployed from older code reads `todo`. Solc's
+  metadata hash is left out, so a build from source that differs only in comments still matches;
 - the settlement destination is authorized, and the factory is not paused;
-- `PROGRAM_WALLET`, which pays private refunds, is also a destination, since `refundPrivate`
-  rejects any other caller;
-- the token's TIP-403 policy lets the settlement wallet receive, the receiver receive and send,
-  the refund recipient receive, the program wallet send, the portal and its messenger send and
-  receive, and the Zone admin, which the portal pays its deposit fee, receive. Under a blacklist this passes unless an address is listed. Under a whitelist the policy
-  admin adds each one;
+- the token's TIP-403 policy lets the settlement wallet receive, the router and settler receive and
+  send, the refund recipient receive, the program wallet send, the portal and its messenger send
+  and receive, and the Zone admin, which the portal pays its deposit fee, receive. Under a
+  blacklist this passes unless an address is listed. Under a whitelist the policy admin adds each
+  one;
 - the Zone has a registered portal, with `TOKEN` enabled and its deposits not paused, and its
   messenger is the canonical one;
-- `RECEIVER` was deployed for this factory, program and Zone, and has its Zone role. That is
-  the callback gateway role when the gateway is closed, or the account role when it is open and
-  access is enforced;
-- `REFUND_RECIPIENT` is admitted;
+- `ROUTER_FACTORY` deployed `ROUTER`, and `ROUTER` takes Spend callbacks from `ZONE_ID` through a
+  settler for this factory and program. Only a router the factory deployed is read, so an
+  arbitrary address cannot pass;
+- `ROUTER` has its Zone role. That is the callback gateway role when the gateway is closed, or the
+  account role when it is open and access is enforced;
+- `REFUND_RECIPIENT` is admitted, and `PROGRAM_WALLET` can deposit refunds into the Zone, which
+  needs the account role when access is enforced;
 - each vault in `VAULTS` is allowed, which reads `todo` until `TS` is usable, and its engine
   supports exact withdrawals and redeem previews.
 
 For Earn, run it again with `TOKEN` set to the vault's EarnShare and the vault in `VAULTS`. It then
 checks the settlement and program wallets against the vault asset's policy, and that a private
-refund in the asset can reach the Zone: the receiver and portal receive and send, the Zone admin
-receives, and the portal takes deposits of the asset. Against the share's policy it checks the same addresses as for a stablecoin, and
-that the clone receives and sends and the vault receives. EarnShare policies are whitelists, so the
-policy admin adds whichever of the clone, vault, receiver, refund recipient, portal, messenger and
-Zone admin are missing.
+refund in the asset can reach the Zone: the portal receives and sends, the Zone admin and refund
+recipient receive, and the portal takes deposits of the asset. Against the share's policy it checks
+the same addresses as for a stablecoin, and that the clone receives and sends and the vault
+receives. EarnShare policies are whitelists, so the policy admin adds whichever of the clone,
+vault, router, settler, refund recipient, portal, messenger and Zone admin are missing.
 
 ## Testing the scripts
 

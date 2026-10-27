@@ -32,7 +32,7 @@ its own build settings, dependencies, documentation, and audits.
 | Path                       | Purpose                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------- |
 | `earn/`                    | Tempo Earn Foundry project: contracts, tests, and Forge scripts.                            |
-| `spend/`                   | Tempo Spend Foundry project: Bridge spender handler, Zone receiver, and card harness.       |
+| `spend/`                   | Tempo Spend Foundry project: Bridge spender handler, `BridgeSettler`, and card harness.     |
 | `router/`                  | Zone router Foundry project (solc): `ZoneRouter`, its factory, and `ISpendSettler`.         |
 | `deployments/`             | Shared deployment lifecycle (`pnpm earn`), ABIs, and per-project modules (`modules/earn/`). |
 | `profiles/`                | Deployment profiles and generated records.                                                  |

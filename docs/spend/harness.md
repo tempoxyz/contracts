@@ -15,7 +15,7 @@ a small set of hooks, so a new design gets the whole suite by writing one adapte
 | Zone, Zone side                          | `ZoneEnv`: shadow TIP-20 balances, outbox, sequencer, encrypted deposits                       | Modeled                        |
 | Stripe Issuing and Bridge's card backend | `CardProgram`                                                                                  | Modeled                        |
 
-`e2e/zone` runs the private path on a real L1 and Zone, so it covers what the model cannot, such
+`e2e/spend` runs the private path on a real L1 and Zone, so it covers what the model cannot, such
 as the Zone's ban on contract creation.
 
 **The Zone model.** The Zone side runs in the same EVM. Zone balances are shadow TIP-20s, so the
@@ -94,5 +94,5 @@ TempoEnv        tokens, Earn, Bridge factory with EA/P2/TF/EV/TS
   `tokenTransferPolicyId`, as the zones test suite does.
 - The messenger replaces every callback revert with `CallbackRejected()`. `ZoneEnv` re-runs each
   callback in a snapshot to record the real reason in `lastCallbackErrors`, so a `vm.expectEmit`
-  placed before `_zoneSettle()` matches the re-run. Test events by calling the receiver as the
+  placed before `_zoneSettle()` matches the re-run. Test events by calling the router as the
   messenger instead.

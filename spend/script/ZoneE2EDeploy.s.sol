@@ -12,12 +12,17 @@ import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandl
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 
-import { SpenderTempoSpend } from "../src/SpenderTempoSpend.sol";
-import { ZoneSpendReceiver } from "../src/ZoneSpendReceiver.sol";
-import { IBridgeSpenderFactory } from "../src/interfaces/IBridgeSpenderFactory.sol";
+import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 
-/// @notice Deploys a Bridge card program with the "TS" handler and its Zone receiver to an L1 for
-///         the Zone E2E (`e2e/zone`), plus a TIP-20 with a transfer policy to launch the Zone with.
+import { SpenderTempoSpend } from "../src/SpenderTempoSpend.sol";
+import { IBridgeSpenderFactory } from "../src/interfaces/IBridgeSpenderFactory.sol";
+import { BridgeSettler } from "../src/settler/BridgeSettler.sol";
+import { SpendMode } from "./deploy/DeployZoneRouter.s.sol";
+
+/// @notice Deploys a Bridge card program with the "TS" handler, its `BridgeSettler`, and the
+///         Spend-mode `ZoneRouter` for ZONE_ID through a new `ZoneRouterFactory` to an L1 for the
+///         Zone E2E (`e2e/spend`), plus a TIP-20 with a transfer policy to launch the Zone with. The
+///         router needs no Zone at deployment, so it can be deployed before the Zone launches.
 ///         "TS" is registered and gated with the program allowlisted, as docs/spend/deploy.md sets it up,
 ///         and the program pays the settlement wallet and the program wallet.
 ///         Reads DEPLOYER_PK, SETTLEMENT, PROGRAM_WALLET, ZONE_ID and OUT from the env.
@@ -52,7 +57,9 @@ contract ZoneE2EDeploy is Script {
         destinations[1] = programWallet;
         address clone = factory.createSpender(SPENDER_ID, destinations);
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
-        ZoneSpendReceiver receiver = new ZoneSpendReceiver(IBridgeSpenderFactory(address(factory)), SPENDER_ID, zoneId);
+        BridgeSettler settler = new BridgeSettler(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
+        ZoneRouterFactory routerFactory = new ZoneRouterFactory();
+        address router = routerFactory.deploy(SpendMode.forSettler(zoneId, address(settler)));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
         address zoneToken = StdPrecompiles.TIP20_FACTORY
             .createToken(
@@ -72,7 +79,9 @@ contract ZoneE2EDeploy is Script {
         vm.serializeBytes32(key, "spenderId", SPENDER_ID);
         vm.serializeAddress(key, "programWallet", programWallet);
         vm.serializeAddress(key, "zoneToken", zoneToken);
-        string memory json = vm.serializeAddress(key, "receiver", address(receiver));
+        vm.serializeAddress(key, "settler", address(settler));
+        vm.serializeAddress(key, "routerFactory", address(routerFactory));
+        string memory json = vm.serializeAddress(key, "router", router);
         vm.writeJson(json, vm.envString("OUT"));
     }
 }

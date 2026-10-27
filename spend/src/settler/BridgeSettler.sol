@@ -16,8 +16,8 @@ import { ITempoEarnVault } from "../interfaces/ITempoEarnVault.sol";
 ///      never pay through another's. It has no owner and holds no Zone code: the router
 ///      authenticates the withdrawal, caps the input at `maxInput` and returns unused input to the
 ///      Zone. The settler pulls `maxInput` from the router, pays the spend through the "TS"
-///      handler, and hands the rest straight back, keeping nothing. It emits no Zone sender
-///      commitment: the receiver's privacy exception does not extend to it.
+///      handler, and hands the rest straight back, keeping nothing. Like the router, it neither
+///      emits nor stores the Zone's sender commitment.
 contract BridgeSettler is ISpendSettler {
     bytes2 private constant HANDLER = "TS";
 

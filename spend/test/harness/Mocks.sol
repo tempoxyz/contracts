@@ -191,17 +191,18 @@ contract OverReturningSpendHandler is SpenderBase {
     }
 }
 
-/// @notice Answers a receiver's identity getters with different code, as an older build would.
-contract OlderZoneSpendReceiver {
+/// @notice Answers a settler's identity getters with other code, as an older build would, and
+///         settles nothing.
+contract OlderBridgeSettler {
     address public immutable FACTORY;
     bytes32 public immutable SPENDER_ID;
-    uint32 public immutable ZONE_ID;
 
-    constructor(address factory_, bytes32 spenderId_, uint32 zoneId_) {
+    constructor(address factory_, bytes32 spenderId_) {
         FACTORY = factory_;
         SPENDER_ID = spenderId_;
-        ZONE_ID = zoneId_;
     }
+
+    function settle(address, uint256, bytes calldata) external { }
 }
 
 /// @notice A replacement handler that takes a spend's amount from the payer but pays the

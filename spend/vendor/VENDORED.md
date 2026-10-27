@@ -23,6 +23,6 @@ at `cc56ad0f3439c502c246fc5cfcc3db92bb8b7219` with that repository's own `foundr
 zones contracts compile against.
 
 Tempo Earn is not vendored: this project imports `earn/src/` from the same repository through the
-`tempo-earn/` remapping. `e2e/zone` and `script/smoke.sh` read the L1 and Zone images and the
+`tempo-earn/` remapping. `e2e/spend` and `script/smoke.sh` read the L1 and Zone images and the
 TIP-1091 runtime bytecode from Earn's [`localnet/fixtures/`](../../localnet/fixtures/) (checked by
-SHA-256 at startup); `e2e/zone/src/network.ts` is adapted from Earn's `localnet/src/network.ts`.
+SHA-256 at startup); `e2e/spend/src/network.ts` is adapted from Earn's `localnet/src/network.ts`.

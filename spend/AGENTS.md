@@ -1,6 +1,6 @@
 # Tempo Spend (Bridge card spend)
 
-Card spend through Bridge's spender contracts: the `TS` handler, the Zone receiver, the card E2E
+Card spend through Bridge's spender contracts: the `TS` handler, `BridgeSettler`, the card E2E
 harness, and Bridge's deploy scripts. [README.md](README.md) maps the project and
 [docs/design.md](../docs/spend/design.md) owns the design.
 
@@ -16,11 +16,10 @@ harness, and Bridge's deploy scripts. [README.md](README.md) maps the project an
   `spend/`.
 - `vendor/` holds unmodified Bridge and Zone sources at the commits in
   [vendor/VENDORED.md](vendor/VENDORED.md); refresh them only by re-copying.
-- `ZoneSpendReceiver` emits the callback `senderTag`, which Bridge matches settlements by. This is a
-  known exception to Earn's [privacy model](../docs/earn/architecture/security-and-privacy.md#privacy-model);
-  do not extend it to other contracts.
+- No contract here emits or stores the Zone callback `senderTag` or a cardholder address; Bridge
+  matches private spends by the Portal's own events.
 
 Validate with `forge fmt --check src test script`, `forge build`, and `forge test` here, plus
 `python3 script/matrix.py --out reports/matrix.md` and a diff against `../docs/spend/matrix.md` when card
-scenarios or setups change. `script/smoke.sh` and `e2e/zone` need Docker
+scenarios or setups change. `script/smoke.sh` and `pnpm e2e:spend` need Docker
 ([Running it](README.md#running-it)).
