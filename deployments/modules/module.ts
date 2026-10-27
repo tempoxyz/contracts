@@ -228,6 +228,11 @@ type BaseStep<Id extends string, Authority extends StepAuthority> = {
 /** A step a Foundry script executes with the deployer key. */
 export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deployerAuthority> & {
   execution: 'foundry'
+  /**
+   * The Foundry project beside `earn/` that compiles and runs the script and the contract it
+   * creates, such as `router`, which builds with solc; Earn's own project when omitted.
+   */
+  project?: string
   /** `path:Contract` of the script, or the profile's script when it depends on the profile. */
   script: string | ((profile: EarnDeploymentProfile) => string)
   /** Calldata for the script's typed `run(Input)`; Forge receives it with `--sig`. */
@@ -238,6 +243,18 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
    * localnet's batched Forge call applies it; `pnpm earn deploy` runs Forge's default estimate.
    */
   rawGasEstimate?: true
+  /**
+   * The outputs and creation transaction of a contract another deployer already created through a
+   * permissionless factory the step calls, which would otherwise return it without creating
+   * anything; undefined when there is none. Adopted outputs are recorded only once `satisfied`.
+   * After the step's own run, its creation transaction comes from here too, so a contract someone
+   * created between planning and broadcast keeps its real provenance.
+   */
+  adopt?(
+    client: ChainClient,
+    profile: EarnDeploymentProfile,
+    outputs: Record<string, Address>,
+  ): Promise<{ outputs: Record<string, Address>; transaction: Hex } | undefined>
   /**
    * The contract this step creates, recorded under `output` and source-verified against the step's
    * creation transaction. Core and engine outputs (proxies, protocol-native, or factory-made) are

@@ -2,14 +2,15 @@
 // hands the same flow in run.ts the clients and accounts it needs.
 //
 // - local: a disposable L1 and Zone in Docker (network.ts). The run deploys a fresh program and,
-//   as the Zone's admin, enables pathUSD, registers the receiver and admits its accounts, then runs
-//   the deployment preflight against it.
+//   as the Zone's admin, enables pathUSD, registers the program's ZoneRouter as a gateway and admits
+//   its accounts, then runs the deployment preflight against it.
 // - moderato: Tempo's testnet L1 and its hosted Zone 3, reached through Tempo API. The program is
-//   deployed once (`--deploy`) and recorded in targets/moderato.json. A run changes the Zone's
-//   Portal only with `--admit`: otherwise, when the receiver or the cardholder lacks the role the
-//   Portal requires, the private steps report BLOCKED with the call the Zone administrator must make.
+//   deployed once (`--deploy`) and recorded in targets/moderato.json; a record without a settler
+//   and router gets them from script/deploy/DeployZoneRouter.s.sol. A run changes the Zone's Portal
+//   only with `--admit`: otherwise, when the router, cardholder, program wallet or refund recipient
+//   lacks the role the Portal requires, the private steps report BLOCKED with the call the Zone administrator must make.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   BaseError,
@@ -33,6 +34,8 @@ import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 
 import { createClient as createTempoClient, Store, http as zoneHttp } from 'viem/tempo'
 import { tempoModerato } from 'viem/tempo/chains'
 
+import { Deployment as Localnet } from 'localnet'
+import { loadProfile } from '../../harness/profile.js'
 import * as Network from './network.js'
 
 /** Spend's Foundry project: Forge runs, artifacts and reports live here. */
@@ -62,7 +65,12 @@ const ROLE = { account: 2, callbackGateway: 3 } as const
 export type Program = {
   factory: Address
   clone: Address
-  receiver: Address
+  /** The program's BridgeSettler: pays a router Spend through the clone. */
+  settler: Address
+  /** The factory-deployed ZoneRouter in Spend mode that lists `settler`: the Zone's gateway. */
+  router: Address
+  /** The ZoneRouterFactory that deployed `router`. */
+  routerFactory: Address
   spenderId: Hex
   settlement: Address
   /** The program destination that pays private refunds, when the record has one. */
@@ -149,7 +157,8 @@ const FORGE_WITHHELD = [
   'SETTLEMENT',
   'TOKEN',
   'ZONE_ID',
-  'RECEIVER',
+  'ROUTER',
+  'ROUTER_FACTORY',
   'REFUND_RECIPIENT',
   'PROGRAM_WALLET',
   'VAULTS',
@@ -208,6 +217,50 @@ function deployProgram(
   }
 }
 
+/** The settler and Spend router script/deploy/DeployZoneRouter.s.sol deploys for a program. */
+type RouterDeployment = Pick<Program, 'settler' | 'router' | 'routerFactory'>
+
+/** Deploys a program's BridgeSettler and its Spend-mode ZoneRouter through the router factory. */
+async function deployRouter(
+  l1Public: PublicClient,
+  rpcUrl: string,
+  env: { deployerPk: Hex; factory: Address; spenderId: Hex; zoneId: number },
+): Promise<RouterDeployment> {
+  // The script reads the Zone factory, which forge runs only at the L1's hardfork.
+  const foundryHardfork = await hardfork(l1Public)
+  mkdirSync(resolve(root, 'reports'), { recursive: true })
+  const out = `reports/zone-e2e-router-${env.zoneId}.json`
+  execFileSync(
+    'forge',
+    [
+      'script',
+      'script/deploy/DeployZoneRouter.s.sol',
+      '--rpc-url',
+      rpcUrl,
+      '--broadcast',
+      '--slow',
+      '--gas-estimate-multiplier',
+      '105',
+    ],
+    {
+      cwd: root,
+      stdio: 'ignore',
+      env: forgeEnv({
+        FOUNDRY_HARDFORK: foundryHardfork,
+        DEPLOYER_PK: env.deployerPk,
+        FACTORY: env.factory,
+        SPENDER_ID: env.spenderId,
+        ZONE_ID: String(env.zoneId),
+        OUT: out,
+      }),
+    },
+  )
+  const { settler, router, routerFactory } = JSON.parse(
+    readFileSync(resolve(root, out), 'utf8'),
+  ) as RouterDeployment
+  return { settler, router, routerFactory }
+}
+
 /** The L1's active hardfork as forge names it, which forge needs to run the Zone factory. */
 async function hardfork(l1Public: PublicClient) {
   const schedule = (await l1Public.request({ method: 'tempo_forkSchedule' } as never)) as {
@@ -247,7 +300,8 @@ async function preflight(
           SETTLEMENT: program.settlement,
           TOKEN: inputs.token,
           ZONE_ID: String(inputs.zoneId),
-          RECEIVER: program.receiver,
+          ROUTER_FACTORY: program.routerFactory,
+          ROUTER: program.router,
           REFUND_RECIPIENT: inputs.refundRecipient,
           PROGRAM_WALLET: program.programWallet,
         }),
@@ -274,9 +328,17 @@ async function preflight(
 // local
 // ---------------------------------------------------------------------------------------------
 
-export async function local(step: Step): Promise<Prepared> {
+/**
+ * The Earn stack the local target deploys with `earn`: Tempo Earn's e2e-moderato profile, the one
+ * the moderato target spends from, localized to the disposable L1 and Zone.
+ */
+const localEarnProfile = resolve(e2eRoot, '../../profiles/e2e-moderato/profile.json')
+
+export async function local(step: Step, options: { earn?: boolean } = {}): Promise<Prepared> {
   const zoneAdminPk = generatePrivateKey()
   const deployerPk = generatePrivateKey()
+  const earnDeployerPk = generatePrivateKey()
+  const earnEngineOwnerPk = generatePrivateKey()
   const zoneAdmin = privateKeyToAccount(zoneAdminPk)
   const cardholder = privateKeyToAccount(generatePrivateKey())
   const refundRecipient = privateKeyToAccount(generatePrivateKey()).address
@@ -295,6 +357,12 @@ export async function local(step: Step): Promise<Prepared> {
       zoneAdmin.address,
       privateKeyToAccount(deployerPk).address,
       cardholder.address,
+      ...(options.earn
+        ? [
+            privateKeyToAccount(earnDeployerPk).address,
+            privateKeyToAccount(earnEngineOwnerPk).address,
+          ]
+        : []),
     ]) {
       await l1Public.faucet.fundSync({ account: a, timeout: 180_000 })
     }
@@ -303,7 +371,7 @@ export async function local(step: Step): Promise<Prepared> {
     const program = { ...deployed, settlement, programWallet }
     step(
       2,
-      `Bridge program (clone ${program.clone}) and ZoneSpendReceiver deployed on L1 (${program.receiver})`,
+      `Bridge program (clone ${program.clone}), BridgeSettler (${program.settler}) and Spend ZoneRouter (${program.router}) deployed on L1`,
     )
 
     zone = await Network.startZone({
@@ -338,12 +406,16 @@ export async function local(step: Step): Promise<Prepared> {
         feeToken: Network.address.pathUsd,
       } as never)
     if (!pathUsdEnabled) await send('enableToken', [Network.address.pathUsd])
-    if (!gatewayOpen) await send('setGateway', [program.receiver, true])
-    // With the gateway open, the receiver deposits change back as an ordinary depositor, which an
-    // access-enforced Portal admits only with the account role.
-    const admitted = gatewayOpen
-      ? [cardholder.address, refundRecipient, program.receiver]
-      : [cardholder.address, refundRecipient]
+    if (!gatewayOpen) await send('setGateway', [program.router, true])
+    // With the gateway open, the router deposits change back as an ordinary depositor, which an
+    // access-enforced Portal admits only with the account role. The program wallet deposits refunds
+    // into the Zone through the Portal, so it is admitted too.
+    const admitted = [
+      cardholder.address,
+      refundRecipient,
+      programWallet,
+      ...(gatewayOpen ? [program.router] : []),
+    ]
     if (accessEnforced) for (const a of admitted) await send('setAllowedAccount', [a, true])
     step(
       4,
@@ -357,6 +429,18 @@ export async function local(step: Step): Promise<Prepared> {
       refundRecipient,
     })
     step(4, `Preflight: ${checks.length} checks ok, none todo`)
+    const earn = options.earn
+      ? await localEarn(l1Public, l1Wallet, {
+          l1,
+          zone,
+          program,
+          deployerPk,
+          earnDeployerPk,
+          earnEngineOwnerPk,
+          zoneAdminPk,
+        })
+      : undefined
+    if (earn) step(4, `Earn: e2e-moderato stack, vault ${earn.vault}, EarnShare ${earn.earnShare}`)
 
     const localZoneChain = zoneChain(zone.chainId, zone.rpcUrl, 'Local Tempo Zone', l1.chainId)
     const localZone = zone
@@ -373,6 +457,7 @@ export async function local(step: Step): Promise<Prepared> {
       cardholder,
       refundRecipient,
       disposable: true,
+      ...(earn ? { earn } : {}),
       blocked: [],
       l1Public,
       l1Wallet,
@@ -399,6 +484,76 @@ export async function local(step: Step): Promise<Prepared> {
     await Promise.allSettled([zone?.container.stop(), l1.container.stop()])
     throw error
   }
+}
+
+/**
+ * Deploys the e2e-moderato Earn profile on the local L1 and Zone through localnet's shared
+ * lifecycle, which enables its EarnShare on the Portal and waits for the Zone to mirror it, then
+ * allows the vault for the program as on Moderato.
+ */
+async function localEarn(
+  l1Public: PublicClient,
+  l1Wallet: (account: ViemAccount) => WalletClient,
+  inputs: {
+    l1: Network.L1
+    zone: Network.Zone
+    program: Program
+    deployerPk: Hex
+    earnDeployerPk: Hex
+    earnEngineOwnerPk: Hex
+    zoneAdminPk: Hex
+  },
+): Promise<EarnTarget> {
+  const { l1, zone } = inputs
+  const deployer = privateKeyToAccount(inputs.earnDeployerPk)
+  // localnet's lifecycle keeps receipts and resume state in <run directory>/broadcast, inside
+  // localnet's own directory, which its Forge projects may write.
+  const localnetDirectory = resolve(e2eRoot, '../../localnet/.local')
+  mkdirSync(localnetDirectory, { recursive: true })
+  const runDirectory = mkdtempSync(resolve(localnetDirectory, 'spend-earn-'))
+  const broadcastDirectory = resolve(runDirectory, 'broadcast')
+  const profile = loadProfile(localEarnProfile).profile
+  const common = {
+    account: deployer.address,
+    broadcastDirectory,
+    chainId: l1.chainId,
+    client: l1.client,
+    privateKey: inputs.earnDeployerPk,
+    rpcUrl: l1.rpcUrl,
+    engineOwnerPrivateKey: inputs.earnEngineOwnerPk,
+  }
+  const { state } = await (async () => {
+    try {
+      const base = await Localnet.createBase({ ...common, engineKind: profile.engine.kind })
+      return await Localnet.create({
+        ...common,
+        base,
+        earnProfile: profile,
+        accessAdministrator: deployer.address,
+        revenueShareRecipient: deployer.address,
+        zone: { ...zone, id: zone.zoneId },
+        zonePrivateKey: inputs.zoneAdminPk,
+      })
+    } finally {
+      rmSync(runDirectory, { force: true, recursive: true })
+    }
+  })()
+  if (!state.stablecoinFixture) throw new Error('the local Earn stack has no stablecoin funder')
+  const earn = await prepareEarn(
+    l1Public,
+    l1Wallet,
+    inputs.program,
+    zone.portal,
+    {
+      vault: state.earnVault,
+      asset: state.baseAsset,
+      earnShare: state.earnShare,
+      funder: state.stablecoinFixture,
+    },
+    { DEPLOYER_PRIVATE_KEY: inputs.deployerPk },
+  )
+  if (!earn) throw new Error('the local Earn stack is not ready for the program')
+  return earn
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -434,7 +589,7 @@ function tempoApiRpcUrl(chainId: number) {
   return `https://api.tempo.xyz/rpc/${chainId}`
 }
 
-/** A Portal role grant the receiver or cardholder lacks. */
+/** A Portal role grant the router, cardholder, refund recipient or program wallet lacks. */
 type Grant = { functionName: 'setGateway' | 'setAllowedAccount'; account: Address; what: string }
 
 const safeAbi = parseAbi([
@@ -550,16 +705,39 @@ export async function hosted(
   }
   if (!existsSync(moderatoRecord))
     throw new Error(
-      'targets/moderato.json is missing: deploy once with `pnpm zone:moderato --deploy`',
+      'targets/moderato.json is missing: deploy once with `pnpm --filter e2e spend:moderato --deploy`',
     )
-  const { refundRecipient, ...program } = JSON.parse(
-    readFileSync(moderatoRecord, 'utf8'),
-  ) as Program & {
-    refundRecipient: Address
+  const record = JSON.parse(readFileSync(moderatoRecord, 'utf8')) as Omit<
+    Program,
+    keyof RouterDeployment
+  > &
+    Partial<RouterDeployment> & { refundRecipient: Address; receiver?: Address }
+  // A record from before the router has no settler or router: deploy them for its program and
+  // record them, dropping the retired receiver.
+  if (!record.settler || !record.router || !record.routerFactory) {
+    const deployerPk = required(env, 'DEPLOYER_PRIVATE_KEY', 'moderato') as Hex
+    await l1Public.faucet.fundSync({
+      account: privateKeyToAccount(deployerPk).address,
+      timeout: 180_000,
+    })
+    const routed = await deployRouter(l1Public, moderato.rpcUrl, {
+      deployerPk,
+      factory: record.factory,
+      spenderId: record.spenderId,
+      zoneId: moderato.zone.id,
+    })
+    const { receiver: _receiver, ...rest } = record
+    writeFileSync(moderatoRecord, `${JSON.stringify({ ...rest, ...routed }, null, 2)}\n`)
+    Object.assign(record, routed)
+    console.log(
+      `    deployed: BridgeSettler ${routed.settler} and Spend ZoneRouter ${routed.router}`,
+    )
   }
+  const { refundRecipient, receiver: _receiver, ...recorded } = record
+  const program: Program = { ...recorded, ...(record as RouterDeployment) }
   step(
     2,
-    `Bridge program (clone ${program.clone}) and ZoneSpendReceiver (${program.receiver}) on Moderato`,
+    `Bridge program (clone ${program.clone}), BridgeSettler (${program.settler}) and Spend ZoneRouter (${program.router}) on Moderato`,
   )
 
   const zoneInfo = await l1Public.readContract({
@@ -612,20 +790,20 @@ export async function hosted(
     throw new Error('the refund recipient must not be the cardholder')
   const missing = async () => {
     const grants: Grant[] = []
-    if (!gatewayOpen && !(await hasRole(program.receiver, ROLE.callbackGateway))) {
+    if (!gatewayOpen && !(await hasRole(program.router, ROLE.callbackGateway))) {
       grants.push({
         functionName: 'setGateway',
-        account: program.receiver,
-        what: `receiver ${program.receiver} is not a callback gateway`,
+        account: program.router,
+        what: `router ${program.router} is not a callback gateway`,
       })
     }
-    // With the gateway open, the receiver deposits change back as an ordinary depositor, which an
+    // With the gateway open, the router deposits change back as an ordinary depositor, which an
     // access-enforced Portal admits only with the account role.
-    if (gatewayOpen && accessEnforced && !(await hasRole(program.receiver, ROLE.account))) {
+    if (gatewayOpen && accessEnforced && !(await hasRole(program.router, ROLE.account))) {
       grants.push({
         functionName: 'setAllowedAccount',
-        account: program.receiver,
-        what: `receiver ${program.receiver} is not admitted`,
+        account: program.router,
+        what: `router ${program.router} is not admitted`,
       })
     }
     if (accessEnforced && !(await hasRole(cardholder.address, ROLE.account))) {
@@ -633,6 +811,15 @@ export async function hosted(
         functionName: 'setAllowedAccount',
         account: cardholder.address,
         what: `cardholder ${cardholder.address} is not admitted`,
+      })
+    }
+    // The program wallet deposits refunds into the Zone through the Portal.
+    const { programWallet } = program
+    if (programWallet && accessEnforced && !(await hasRole(programWallet, ROLE.account))) {
+      grants.push({
+        functionName: 'setAllowedAccount',
+        account: programWallet,
+        what: `program wallet ${programWallet} is not admitted`,
       })
     }
     if (accessEnforced && !(await hasRole(refundRecipient, ROLE.account))) {
@@ -663,7 +850,7 @@ export async function hosted(
   )
   step(
     4,
-    `Portal access ${accessEnforced ? 'enforced' : 'open'}, gateway ${gatewayOpen ? 'open' : 'closed'}; ${blocked.length === 0 ? 'receiver, cardholder and refund recipient have the roles they need' : `${blocked.length} role(s) missing`}`,
+    `Portal access ${accessEnforced ? 'enforced' : 'open'}, gateway ${gatewayOpen ? 'open' : 'closed'}; ${blocked.length === 0 ? 'router, cardholder, refund recipient and program wallet have the roles they need' : `${blocked.length} role(s) missing`}`,
   )
 
   await l1Public.faucet.fundSync({ account: cardholder.address, timeout: 180_000 })

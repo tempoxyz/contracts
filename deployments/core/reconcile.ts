@@ -22,7 +22,7 @@ import {
   type SharedFactoryRuntimeCodeHashes,
 } from './releases.js'
 import { inspectEarnDeployment } from './inspection.js'
-import { foundryProcessEnvironment } from '../chain/foundry.js'
+import { foundryProcessEnvironment, foundryProjectRoot } from '../chain/foundry.js'
 import {
   completeAction,
   foundryOutputPath,
@@ -53,6 +53,8 @@ export type ReconciliationStep =
   | {
       kind: 'foundry'
       action: EarnDeploymentAction
+      /** The Foundry project directory Forge runs in: Earn's, or the sibling `FoundryStep.project`. */
+      root: string
       arguments: string[]
       environment: Record<string, string>
       /** Whether the step needs Forge's raw gas estimate; see `FoundryStep.rawGasEstimate`. */
@@ -147,6 +149,14 @@ export async function prepareLifecycleStep(options: {
       }
     }
 
+    // Another deployer created this step's contract through the same factory: adopt it.
+    const adopted = step.adopt ? await step.adopt(client, profile, pending.outputs) : undefined
+    if (adopted && (await step.satisfied(client, profile, adopted.outputs))) {
+      pending = { ...pending, outputs: adopted.outputs }
+      complete(action, [adopted.transaction])
+      continue
+    }
+
     // The prediction is occupied, so the factory call could only revert: adopt that stack.
     if (action.id === 'deploy-core') {
       const adopted = await adoptPredictedCore(client, profile, pending.outputs)
@@ -163,6 +173,7 @@ export async function prepareLifecycleStep(options: {
     return {
       kind: 'foundry',
       action,
+      root: foundryProjectRoot(options.root, step.project),
       arguments: [
         'script',
         foundryScript(step, profile),
@@ -174,8 +185,12 @@ export async function prepareLifecycleStep(options: {
         '--rpc-url',
         options.rpcUrl,
       ],
-      // Only the deployer key reaches Forge; every other input is typed calldata.
-      environment: foundryProcessEnvironment(options.environment),
+      // Only the deployer key reaches Forge; every other input is typed calldata. A sibling project's
+      // receipts go to `<root>/broadcast` too, where they are read back.
+      environment: {
+        ...foundryProcessEnvironment(options.environment),
+        ...(step.project ? { FOUNDRY_BROADCAST: resolve(options.root, 'broadcast') } : {}),
+      },
       calldata,
       rawGasEstimate: step.rawGasEstimate === true,
       pending,
@@ -199,16 +214,25 @@ export async function recordFoundryAction(options: {
     ...readActionOutputs(pendingDeploymentPath(options.profilePath)),
   }
   await requireSatisfied(options, outputs, 'exited successfully')
+  // A factory call can return a contract someone created after planning; record the transaction
+  // that created it, which the factory's event names, rather than this run's call.
+  const step = deploymentStep(options.step.action.id)
+  const created =
+    step.execution === 'foundry' && step.adopt
+      ? await step.adopt(rpcClient(options.rpcUrl), options.profile, outputs)
+      : undefined
   const pending = completeAction(
     { ...options.step.pending, outputs },
     options.step.action.id,
     'broadcast',
-    successfulBroadcastTransactions(
-      options.root,
-      required(options.step.arguments[1], 'Foundry target'),
-      options.step.calldata,
-      options.profile.chainId,
-    ),
+    created
+      ? [created.transaction]
+      : successfulBroadcastTransactions(
+          options.root,
+          required(options.step.arguments[1], 'Foundry target'),
+          options.step.calldata,
+          options.profile.chainId,
+        ),
   )
   savePendingDeployment(options.profilePath, options.profile, pending)
   return pending

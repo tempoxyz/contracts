@@ -333,6 +333,100 @@ describe('deployment source verification', () => {
     expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
   })
 
+  test('verifies a sibling project contract from its own root, allowing Earn imports', async () => {
+    const router = address('70')
+    const routerProfile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'router-source-test',
+        chainId: 42431,
+        owner: address('a'),
+        engine: { kind: 'veda', address: engine },
+        zoneRouter: {
+          zoneId: 7,
+          ops: ['spend'],
+          settlers: [address('5e')],
+          factory: address('fac'),
+        },
+      },
+      { deployer: address('9'), factories: { earn: coreFactory, erc4626Engine: address('c') } },
+    )
+    const verifiedRouter = (sources: Record<string, string>) => ({
+      address: router,
+      fullyQualifiedName: 'src/ZoneRouter.sol:ZoneRouter',
+      match: 'match',
+      name: 'ZoneRouter',
+      sources: Object.fromEntries(
+        Object.entries(sources).map(([path, content]) => [path, { content }]),
+      ),
+      transactionHash: transaction,
+    })
+    const verify = (sources: Record<string, string>) => {
+      const runtime = dependencies()
+      let routerLookups = 0
+      runtime.fetch = vi.fn(async (input) => {
+        const url = String(input)
+        if (url.endsWith('/v2/verify/job')) {
+          return Response.json({ isJobCompleted: true, contract: { address: router }, error: null })
+        }
+        if (url.toLowerCase().includes(router.toLowerCase())) {
+          return ++routerLookups === 1
+            ? new Response('{}', { status: 404 })
+            : Response.json(verifiedRouter(sources))
+        }
+        return dependencies().fetch(input)
+      }) as unknown as typeof fetch
+      runtime.readSource = vi.fn(
+        (path: string) => `canonical:${path.replace(/^\/checkout\/(earn\/)?/, '')}`,
+      )
+      runtime.spawn = vi.fn(() => ({
+        status: 0,
+        stdout: '',
+        stderr: 'Verification Job ID: `job`',
+      })) as unknown as typeof runtime.spawn
+      const result = verifyDeploymentSources(
+        run({
+          root: '/checkout/earn',
+          profile: routerProfile,
+          record: {
+            actions: {
+              ...actions,
+              'deploy-zone-router': {
+                completedAt: '2026-01-01T00:00:00.000Z',
+                verification: 'broadcast',
+                transactions: [transaction],
+              },
+            },
+            addresses: { ...addresses, zoneRouter: router },
+          },
+        }),
+        runtime,
+      )
+      return { result, runtime }
+    }
+
+    const { result, runtime } = verify({
+      'src/ZoneRouter.sol': 'canonical:router/src/ZoneRouter.sol',
+      '../earn/src/interfaces/core/IEarnVault.sol': 'canonical:src/interfaces/core/IEarnVault.sol',
+    })
+    await expect(result).resolves.toMatchObject({
+      contracts: { zoneRouter: { name: 'ZoneRouter', match: 'match' } },
+    })
+    const [, arguments_, spawnOptions] = vi.mocked(runtime.spawn).mock.calls[0]!
+    expect(arguments_).toEqual(
+      expect.arrayContaining(['--root', '/checkout/router', 'src/ZoneRouter.sol:ZoneRouter']),
+    )
+    expect(spawnOptions?.cwd).toBe('/checkout/router')
+    expect(runtime.compilerArguments).toHaveBeenCalledWith('/checkout/router', expect.any(Object))
+
+    await expect(
+      verify({
+        'src/ZoneRouter.sol': 'canonical:router/src/ZoneRouter.sol',
+        '../../outside/Secret.sol': 'canonical:outside',
+      }).result,
+    ).rejects.toThrow('Verifier source path ../../outside/Secret.sol escapes the repository root')
+  })
+
   test('read-only verification never submits a missing source', async () => {
     const runtime = dependencies()
     const verified = await verifyDeploymentSources(run(), runtime)

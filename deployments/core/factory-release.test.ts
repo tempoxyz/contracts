@@ -29,12 +29,14 @@ import {
   registryReleaseKinds,
   registryUpdates,
   releaseKindsFor,
+  main,
   releaseSalt,
   updateReleaseRegistry,
   type FactoryReleaseRun,
   type FactoryReleaseDependencies,
   type PredictedContract,
 } from './factory-release.js'
+import { routerReleaseKinds } from './router-release.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
 const bytecode = (contract: string) =>
@@ -89,6 +91,19 @@ describe('planFactoryRelease', () => {
 
   test('refuses an unknown release', () => {
     expect(() => planFactoryRelease('vault', 4217)).toThrow('Unknown factory release vault')
+  })
+
+  test("plans only Earn's releases, from Earn's project and without parameters", () => {
+    for (const kind of factoryReleaseKinds) {
+      expect(planFactoryRelease(kind, 4217)).toMatchObject({
+        kind,
+        project: 'earn',
+        parameters: {},
+      })
+    }
+    for (const kind of ['zoneRouterFactory', 'sendSettler', 'zoneRouter']) {
+      expect(() => planFactoryRelease(kind, 4217)).toThrow(`Unknown factory release ${kind}`)
+    }
   })
 })
 
@@ -155,7 +170,7 @@ describe('createdContracts', () => {
     const file = broadcastFile(predicted)
     file.transactions[1]!.contractAddress = address('5')
     expect(() => createdContracts(core, file, predicted, new Set(), true)).toThrow(
-      'EarnFees was created at 0x0000000000000000000000000000000000000005, not its deterministic address',
+      'The core release created EarnFactory, EarnFees at 0x0000000000000000000000000000000000000005, EarnVault, expected EarnFactory, EarnFees, EarnVault',
     )
   })
 
@@ -366,6 +381,12 @@ describe('factory release workflow', () => {
     expect(options('release')?.sort()).toEqual(['all', ...factoryReleaseKinds].sort())
     expect(workflow).toContain('["moderato","mainnet"]')
   })
+
+  test("releases only Earn's contracts: no parameters and nothing from the router project", () => {
+    expect(workflow).not.toMatch(/^ {6}parameters:/m)
+    expect(workflow).not.toContain('--parameters')
+    expect(workflow).not.toContain('router')
+  })
 })
 
 describe('redactRpcCredentials', () => {
@@ -396,6 +417,27 @@ describe('release selection', () => {
     expect(registryReleaseKinds).not.toContain('rewards')
     expect(releaseKindsFor('rewards')).toEqual(['rewards'])
     expect(() => releaseKindsFor('vault')).toThrow('Unknown factory release vault')
+  })
+
+  test('refuses the router releases, pointing to their own CLI', () => {
+    for (const kind of routerReleaseKinds) {
+      expect(() => releaseKindsFor(kind)).toThrow(
+        `Unknown factory release ${kind}; expected all or one of ${factoryReleaseKinds.join(', ')} (router contracts release with pnpm router-release)`,
+      )
+    }
+  })
+})
+
+describe('factory release CLI', () => {
+  test('refuses a router release and parameters before deploying anything', async () => {
+    for (const kind of routerReleaseKinds) {
+      await expect(main(['moderato', kind], '/nonexistent/earn')).rejects.toThrow(
+        'router contracts release with pnpm router-release',
+      )
+    }
+    await expect(
+      main(['moderato', 'core', '--parameters', '{}'], '/nonexistent/earn'),
+    ).rejects.toThrow("Unknown option '--parameters'")
   })
 })
 

@@ -211,7 +211,7 @@ contract RolesTest is PrivateSpendFixture {
         s.token = address(usd);
     }
 
-    /// @dev A Zone withdrawal to the receiver whose callback reverts: nothing is paid and the input,
+    /// @dev A Zone withdrawal to the router whose callback reverts: nothing is paid and the input,
     ///      less the withdrawal and bounce-back fees, returns to the Zone.
     function _assertPrivateSpendBounces() internal {
         uint256 before = usd.balanceOf(settlement);
@@ -220,7 +220,7 @@ contract RolesTest is PrivateSpendFixture {
         _zoneSettle();
         assertFalse(lastCallbackResults[0], "callback rejected");
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
-        uint256 fees = zoneOutbox.calculateWithdrawalFee(CALLBACK_GAS) + portal.calculateBouncebackFee();
+        uint256 fees = zoneOutbox.calculateWithdrawalFee(callbackGas) + portal.calculateBouncebackFee();
         assertLe(zoneBefore - _zoneBalance(address(usd), alice), fees, "input bounced back");
     }
 

@@ -1,0 +1,142 @@
+name: Router Release
+
+# Deploys one of the router project's ownerless contracts (router/) from main on the hosted networks:
+# the ZoneRouterFactory, a SendSettler, or a ZoneRouter its factory creates. Each lands at its
+# deterministic address, and one already there is reused. After a broadcast it is source verified on
+# Tempo's verifier. These contracts are in no release registry, so nothing is recorded afterwards; the
+# job summary and artifact hold the addresses. Earn's shared factory releases run in factory-release.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Hosted networks; both runs Moderato first, and mainnet only after it succeeds
+        required: true
+        type: choice
+        # The router release unit test asserts these lists match the hosted networks and releases.
+        options: [both, moderato, mainnet]
+      release:
+        description: Router contract to deploy
+        required: true
+        type: choice
+        options: [zoneRouterFactory, sendSettler, zoneRouter]
+      parameters:
+        description: 'JSON parameters: sendSettler {"vault", "pool", "customerId"} (all three, or {} for none); zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for zoneRouterFactory'
+        required: false
+        type: string
+        default: '{}'
+      broadcast:
+        description: Broadcast and source verify; unchecked only simulates
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: ${{ inputs.release }} on ${{ matrix.network }}${{ inputs.broadcast && ' (broadcast)' || ' (dry run)' }}
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      # One network at a time, in order; a failure stops the networks after it.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        network: ${{ fromJSON(inputs.network == 'both' && '["moderato","mainnet"]' || format('["{0}"]', inputs.network)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Dispatching from main is the approval: the environment has no required reviewer, accepts only
+    # main, and holds the deployer key the factory releases use. The contracts
+    # are ownerless, so the key only pays fees.
+    environment: factory-release-${{ matrix.network }}
+    # Shares the network's hosted-contracts queue with the factory and spend releases, so the deployer
+    # key never sends from two CI jobs at once. It orders only CI jobs, so do not broadcast with the
+    # deployer key locally while a release runs.
+    concurrency:
+      group: hosted-contracts-${{ matrix.network }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: '@tempoxyz/earn'
+
+      # router/ is a separate solc Foundry project with its own pinned dependencies; it needs neither
+      # Earn's solar nor its Forge build cache.
+      - name: Install the router's Solidity dependencies
+        run: scripts/solidity-deps.sh router
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      # Inputs reach the command only through the environment; it validates the parameters.
+      - name: Deploy and verify
+        env:
+          NETWORK: ${{ matrix.network }}
+          RELEASE: ${{ inputs.release }}
+          PARAMETERS: ${{ inputs.parameters }}
+          BROADCAST: ${{ inputs.broadcast }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          arguments=("$NETWORK" "$RELEASE" --parameters "$PARAMETERS" --output "$RUNNER_TEMP/router-release.json")
+          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
+          pnpm router-release "${arguments[@]}"
+
+      # Forge records the authenticated RPC URL in its script sequences under router/cache; the command
+      # deletes them, and this removes any it could not, whatever the outcome.
+      - name: Remove Forge script sequences
+        if: ${{ always() }}
+        run: |
+          if [[ -d router/cache ]]; then
+            find router/cache -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+          fi
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          NETWORK: ${{ matrix.network }}
+        run: |
+          result="$RUNNER_TEMP/router-release.json"
+          if [[ ! -f "$result" ]]; then
+            echo "No release ran on ${NETWORK}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Router release on ${NETWORK} · $(jq -r 'if .broadcast then "broadcast" else "dry run" end' "$result") · ${GITHUB_SHA::7}"
+            echo
+            echo '| Release | Contract | Address | Transaction | Source match |'
+            echo '| --- | --- | --- | --- | --- |'
+            jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" else "already deployed" end) | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
+            if jq -e 'any(.releases[]; .parameters)' "$result" >/dev/null; then
+              echo
+              jq -r '.releases[] | select(.parameters) | "- \(.kind) parameters: `\(.parameters | tojson)`"' "$result"
+            fi
+            if jq -e '.failed' "$result" >/dev/null; then
+              echo
+              echo "Stopped at the $(jq -r '.failed.kind' "$result") release."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          # One artifact per attempt, so a rerun that gets less far keeps what an earlier attempt verified.
+          name: router-release-${{ matrix.network }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/router-release.json
+            router/broadcast/
+          if-no-files-found: ignore

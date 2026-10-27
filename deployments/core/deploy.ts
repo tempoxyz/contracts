@@ -276,7 +276,7 @@ export async function reconcileEarnProfileActions(
     profile: EarnDeploymentProfile
   },
 ): Promise<Extract<ReconciliationStep, { kind: 'complete' | 'handoff' }>> {
-  let compilerChecked = false
+  const compilersChecked = new Set<string>()
   for (;;) {
     const step = await prepareLifecycleStep(options)
     if (step.kind === 'complete') return step
@@ -299,13 +299,13 @@ export async function reconcileEarnProfileActions(
       if (isHostedDeploymentChain(options.profile.chainId)) {
         assertFoundryVersion(options.root)
         // Hosted contracts must source verify after broadcast, so resolve the compiler build the
-        // verifier needs before the first Forge step rather than after it.
-        if (!compilerChecked) {
-          sourceVerificationCompilerArguments(options.root, options.environment)
-          compilerChecked = true
+        // verifier needs before each project's first Forge step rather than after it.
+        if (!compilersChecked.has(step.root)) {
+          sourceVerificationCompilerArguments(step.root, options.environment)
+          compilersChecked.add(step.root)
         }
       }
-      executeFoundry(options.root, step)
+      executeFoundry(step)
     }
     await recordFoundryAction({ ...options, step })
   }
@@ -442,9 +442,9 @@ export async function verifyEarnProfile(
   }
 }
 
-function executeFoundry(root: string, step: Extract<ReconciliationStep, { kind: 'foundry' }>) {
+function executeFoundry(step: Extract<ReconciliationStep, { kind: 'foundry' }>) {
   const result = spawnSync('forge', step.arguments, {
-    cwd: root,
+    cwd: step.root,
     // Wrangler augments NodeJS.ProcessEnv with app-only required bindings. This child intentionally
     // receives the smaller deployment allowlist instead.
     env: step.environment as NodeJS.ProcessEnv,

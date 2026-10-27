@@ -6,6 +6,8 @@ on:
     paths:
       - 'spend/**'
       - 'earn/src/**'
+      - 'earn/script/deploy/DeterministicRelease.sol'
+      - 'router/src/**'
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/spend/**'
@@ -15,6 +17,8 @@ on:
     paths:
       - 'spend/**'
       - 'earn/src/**'
+      - 'earn/script/deploy/DeterministicRelease.sol'
+      - 'router/src/**'
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/spend/**'
@@ -26,8 +30,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Bridge card spend (spend/), a separate Foundry project that imports Earn's src/. Not a required
-# check: it covers customer-specific code and runs only when spend/, src/, or the pinned images change.
+# Bridge card spend (spend/), a separate Foundry project that imports Earn's earn/src/. Not a required
+# check: it covers customer-specific code and runs only when spend/, earn/src/, Earn's
+# DeterministicRelease, router/src/, e2e/spend/,
+# localnet/ (with its pinned images) or scripts/solidity-deps.sh change.
 jobs:
   test:
     name: Test
@@ -74,8 +80,8 @@ jobs:
           (cd spend && python3 script/matrix.py --out reports/matrix.md)
           diff -u docs/spend/matrix.md spend/reports/matrix.md
 
-  # A private spend end to end on a disposable Tempo L1 and Zone started by the shared localnet,
-  # from the images localnet/fixtures/runtime-lock.json pins.
+  # A private spend end to end, from pathUSD and from Earn shares, on a disposable Tempo L1 and Zone
+  # started by the shared localnet, from the images localnet/fixtures/runtime-lock.json pins.
   zone-e2e:
     name: Zone E2E
     runs-on: ubuntu-latest
@@ -109,8 +115,9 @@ jobs:
         working-directory: spend
         run: forge build
 
+      # --earn also deploys Tempo Earn's e2e-moderato stack locally, so the Earn spend steps run.
       - name: Run
-        run: pnpm e2e:spend
+        run: pnpm e2e:spend -- --earn
 
   # Public pulls and Bridge's access key on a disposable Tempo dev node.
   smoke:

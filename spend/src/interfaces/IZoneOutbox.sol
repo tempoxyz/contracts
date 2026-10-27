@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 /// @notice The Zone outbox, at `0x1c00000000000000000000000000000000000002` in every Zone.
 ///         Bridge's Zone access key calls `requestWithdrawal` with `to` set to the program's
-///         `ZoneSpendReceiver`.
+///         Spend-mode `ZoneRouter`.
 interface IZoneOutbox {
     /// @notice Fee charged on top of `amount`, in the withdrawn token, to the caller or to a
     ///         sponsoring fee payer.

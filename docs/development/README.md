@@ -13,7 +13,8 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   removes most of solc's stack shuffling, internal jumps and address masking, so the same work costs
   less gas and executes faster. `pnpm deps` builds that revision once with cargo (Rust stable) into
   the ignored `.solar/`. Forge resolves the wrapper from its working directory: run it from `earn/`,
-  or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. Spend still compiles with solc.
+  or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. Spend and the router compile
+  with solc.
   CI installs that Foundry version through `.github/actions/setup` and the PropAMM fixture job, and the
   deployment tooling refuses an older Forge (`deployments/chain/foundry.ts`). A record's
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version
@@ -25,12 +26,12 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   Cloudflare, and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
 - **Docker**, for local end-to-end runs only.
 
-Each Foundry project (`earn/`, `spend/`) pins its Solidity dependencies in its own `foundry.lock`; they
+Each Foundry project (`earn/`, `spend/`, `router/`) pins its Solidity dependencies in its own `foundry.lock`; they
 are not submodules. A fresh clone or Git worktree installs them before working:
 
 ```bash
 pnpm install
-pnpm deps   # scripts/solidity-deps.sh earn spend
+pnpm deps   # scripts/solidity-deps.sh earn spend router
 ```
 
 Every dependency is public. Contract tests and every
@@ -71,13 +72,14 @@ are in the [localnet reference](localnet.md).
 ## Required checks
 
 Run `pnpm verify` before pushing a meaningful change. Its contract checks run in Earn's Foundry
-project (`earn/`); `spend/` has its own checks ([spend/AGENTS.md](../../spend/AGENTS.md)), which the
-`spend.yml` workflow runs. It runs the root
+project (`earn/`); `spend/` and `router/` have their own checks ([spend/AGENTS.md](../../spend/AGENTS.md),
+[router/AGENTS.md](../../router/AGENTS.md)), which the `spend.yml` and `router.yml` workflows run. It runs the root
 [`package.json`](../../package.json) `verify:contracts` and `verify:typescript` scripts in parallel, and
 those scripts are the list of checks:
 
 - `verify:contracts`: `forge fmt --check`, `forge lint --deny warnings`, one `forge build` of `src`,
-  `script`, `test`, and `localnet` in `earn/`, the generated-ABI check (`abis:check`), the
+  `script`, and `test` in `earn/`, a `forge build src script` in `router/`, the generated-ABI check
+  (`abis:check`), the
   [EarnVault size check](#contract-size), `pnpm test:contracts` (every Forge test under
   `FOUNDRY_PROFILE=ci`), and the [gas snapshot](#gas-baseline).
 - `verify:typescript`: `pnpm check` (lint, formatting, and profile validation), `pnpm check:types`,
@@ -158,19 +160,22 @@ Branch protection on `main` requires `Required / Core` and `Required / Local E2E
 ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Actions` and
 `dependency-scan / Dependency Scan`.
 
-| Workflow                  | Trigger                                                                                                                 | Runs                                                                                                                                                                                                             |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pull-request.yml`        | Pull request                                                                                                            | Verify, Actions security, dependency scan, `Required / Core` over those three, and Build Preview, which uploads the static `app/dist/client` artifact                                                            |
-| `verify.yml`              | Called by Pull Request and Main; manual                                                                                 | Contracts, PropAMM fixture, Symbolic, TypeScript checks, the app and Worker build, and TypeScript tests, under `FOUNDRY_PROFILE=ci`                                                                              |
-| `local-zone.yml`          | Pull request; push to `main`                                                                                            | On a pull request, two shards per engine kind and `Required / Local E2E` over them; on `main`, only a `deploy`-profile build that warms the Forge cache                                                          |
-| `preview.yml`             | `workflow_run` after Pull Request succeeds                                                                              | Deploy Preview for same-repository pull requests                                                                                                                                                                 |
-| `main.yml`                | Push to `main`                                                                                                          | Verify, then Deploy Production                                                                                                                                                                                   |
-| `scan-github-actions.yml` | Called by Pull Request; weekly; manual                                                                                  | The shared GitHub Actions scan                                                                                                                                                                                   |
-| `pr-audit.yml`            | Pull request label, push, or comment                                                                                    | The Cyclops audit                                                                                                                                                                                                |
-| `zones-compatibility.yml` | Push to `main` touching `earn/src/`, `earn/foundry.*`, the deps script, itself, or the remediation-event action; manual | Builds `earn/`'s contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                                                                                |
-| `factory-release.yml`     | Manual (`main` only)                                                                                                    | The [shared factory releases](../deployment/deployment.md#releasing-from-ci) on Moderato, mainnet, or both, simulated or broadcast and source verified, then a branch recording them in `releases.ts` for review |
-| `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                             | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                                                                                       |
-| `spend.yml`               | Pull request or push to `main` touching `spend/` or its inputs                                                          | The separate [`spend/`](../../spend/README.md) project's format, build, tests, card matrix, Zone E2E, and smoke run; not a required check                                                                        |
+| Workflow                  | Trigger                                                                                                                                | Runs                                                                                                                                                                                                                                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pull-request.yml`        | Pull request                                                                                                                           | Verify, Actions security, dependency scan, `Required / Core` over those three, and Build Preview, which uploads the static `app/dist/client` artifact                                                                                                                                                         |
+| `verify.yml`              | Called by Pull Request and Main; manual                                                                                                | Contracts, PropAMM fixture, Symbolic, TypeScript checks, the app and Worker build, and TypeScript tests, under `FOUNDRY_PROFILE=ci`                                                                                                                                                                           |
+| `local-zone.yml`          | Pull request; push to `main`                                                                                                           | On a pull request, two shards per engine kind and `Required / Local E2E` over them; on `main`, only a `deploy`-profile build that warms the Forge cache                                                                                                                                                       |
+| `preview.yml`             | `workflow_run` after Pull Request succeeds                                                                                             | Deploy Preview for same-repository pull requests                                                                                                                                                                                                                                                              |
+| `main.yml`                | Push to `main`                                                                                                                         | Verify, then Deploy Production                                                                                                                                                                                                                                                                                |
+| `scan-github-actions.yml` | Called by Pull Request; weekly; manual                                                                                                 | The shared GitHub Actions scan                                                                                                                                                                                                                                                                                |
+| `pr-audit.yml`            | Pull request label, push, or comment                                                                                                   | The Cyclops audit                                                                                                                                                                                                                                                                                             |
+| `zones-compatibility.yml` | Push to `main` touching `earn/src/`, `earn/foundry.*`, `earn/solar*`, the deps script, itself, or the remediation-event action; manual | Builds `earn/`'s contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                                                                                                                                                                             |
+| `factory-release.yml`     | Manual (`main` only)                                                                                                                   | The [shared factory releases](../deployment/deployment.md#releasing-from-ci) on Moderato, mainnet, or both, simulated or broadcast and source verified, then a branch recording them in `releases.ts` for review                                                                                              |
+| `router-release.yml`      | Manual (`main` only)                                                                                                                   | One of [`router/`](../../router/README.md)'s [ownerless contracts](../deployment/deployment.md#router-releases), the `ZoneRouterFactory`, a `SendSettler`, or a `ZoneRouter`, with its parameters, on Moderato, mainnet, or both, simulated or broadcast and source verified                                  |
+| `spend-release.yml`       | Manual (`main` only)                                                                                                                   | One of [`spend/`](../../spend/README.md)'s ownerless contracts, the "TS" handler or a program's `BridgeSettler`, at its [deterministic address](../spend/deploy.md#deploying-from-ci) on Moderato or mainnet, simulated or broadcast and source verified, with the calls Bridge's roles submit in its summary |
+| `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                                            | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                                                                                                                                                                                    |
+| `spend.yml`               | Pull request or push to `main` touching `spend/` or its inputs                                                                         | The separate [`spend/`](../../spend/README.md) project's format, build, tests, card matrix, Zone E2E, and smoke run; not a required check                                                                                                                                                                     |
+| `router.yml`              | Pull request or push to `main` touching `router/` or its Earn inputs                                                                   | The separate [`router/`](../../router/README.md) project's format, lint, build with sizes, and tests; not a required check                                                                                                                                                                                    |
 
 - **Verify jobs.** Contracts runs the same steps as `verify:contracts`, except that its Forge test
   step skips `test/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
@@ -200,9 +205,9 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
   Only the two deploy jobs receive the `DEV_CLOUDFLARE_*` credentials, which are secrets of the
   `production` and `preview` environments, and both environments deploy only from `main`; the
-  benchmark job receives `TEMPO_API_KEY`; the factory release job receives the shared
-  `DEPLOYER_PRIVATE_KEY` and RPC credentials from the reviewer-gated `factory-release-<network>`
-  environment, and its registry job, with no secrets, gets a `GITHUB_TOKEN` that may push a
+  benchmark job receives `TEMPO_API_KEY`; the factory release, router release and spend release jobs receive the shared
+  `DEPLOYER_PRIVATE_KEY` and RPC credentials from the `factory-release-<network>` environment, which
+  accepts only `main` and has no required reviewer, so dispatching a release is its approval; the factory release's registry job, with no secrets, gets a `GITHUB_TOKEN` that may push a
   `factory-release/<run>-<attempt>` branch; the audit and remediation-event jobs receive the
   `EVENTS_*` intake credentials.
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC

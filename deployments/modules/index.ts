@@ -23,6 +23,15 @@ import {
   type AuthorityDependencies,
 } from '../../deployments/modules/signer.js'
 import { zoneRouterModule } from './earn/zone-router/index.js'
+import { zoneRouterModeModule } from './router/index.js'
+import {
+  authorizeZoneRouter,
+  deployZoneRouter,
+  deployZoneRouterFactory,
+  enableZoneRouterTokens,
+  registerZoneRouterGateway,
+  admitZoneRouterAccount,
+} from './router/steps.js'
 import {
   authorizeRouter,
   deployRouter,
@@ -39,12 +48,18 @@ const steps = [
   deployCore,
   bindCore,
   deployRouter,
+  deployZoneRouterFactory,
+  deployZoneRouter,
   deployMerkleDistributor,
   validateAccess,
   deployContributionController,
   authorizeRouter,
   enableZoneTokens,
   registerZoneGateway,
+  authorizeZoneRouter,
+  enableZoneRouterTokens,
+  registerZoneRouterGateway,
+  admitZoneRouterAccount,
 ] as const
 
 unique(
@@ -82,7 +97,11 @@ export type RegisteredStep = DeploymentStep & {
 }
 
 /** Capabilities with lifecycle hooks, in the order the core lifecycle runs them. */
-export const capabilityModules: readonly CapabilityModule[] = [accessPolicyModule, zoneRouterModule]
+export const capabilityModules: readonly CapabilityModule[] = [
+  accessPolicyModule,
+  zoneRouterModule,
+  zoneRouterModeModule,
+]
 
 /** Every step-created contract a protected EarnShare must whitelist, in step order. */
 export const accessMemberContracts = steps.flatMap((step) =>

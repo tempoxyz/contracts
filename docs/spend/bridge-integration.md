@@ -70,7 +70,8 @@ Before signing, decline if any of these fail. Each is a read:
 - **Key headroom:** the spend fits the key's remaining periodic limit.
 - **Zone health, private only**, read on the L1:
   - the portal is not paused and `areDepositsActive(token)` is true;
-  - the receiver still has its Zone role, and the refund recipient is still admitted;
+  - the router still has its Zone role, and the refund recipient and program wallet are still
+    admitted;
   - `calculateDepositFee() + calculateBouncebackFee()` is within the change Bridge adds;
   - batches are still posting, and Bridge's oldest unsettled withdrawal is younger than its
     threshold, so a request will settle.
@@ -103,20 +104,25 @@ One Zone transaction from the cardholder's Zone account, signed by Bridge's Zone
 
 ```text
 inputToken.approve(outbox, input)
-outbox.requestWithdrawal(inputToken, receiver, input, memo, callbackGas,
+outbox.requestWithdrawal(inputToken, router, input, memo, callbackGas,
                          fallbackRecipient = cardholder, callbackData, revealTo = "")
 ```
+
+`router` is the program's Spend-mode `ZoneRouter` for that Zone (see [`deploy.md`](deploy.md)).
 
 Bridge sponsors the transaction, and the outbox then takes the withdrawal fee from Bridge's fee
 payer in the input token: stablecoin, or EarnShare for an Earn spend. The fee payer holds and
 approves those tokens. Unsponsored, the cardholder approves `input + withdrawalFee` and pays it.
 
 - `inputToken` is the stablecoin, or EarnShare for an Earn spend. A withdrawal carries one token,
-  so a private spend is all stablecoin (`fromVault = 0`) or all Earn (`fromVault = amount`), never
-  split as a public spend can be. Its preflight balance is that one token's. Use Earn shares if
-  they cover the spend, otherwise the stablecoin, otherwise decline.
+  so one withdrawal is all stablecoin (`fromVault = 0`) or all Earn (`fromVault = amount`), never
+  split as a public spend can be. Use Earn shares if they cover the spend, otherwise the
+  stablecoin, otherwise both as two withdrawals in the same Zone transaction, each a `Spend` for its
+  part, otherwise decline ([decision 15](design.md#decisions)). The two settle independently: if
+  one bounces after approval, the reserve covers its part.
 - An Earn spend settles in the vault's asset.
-- `input` is the amount, or `maxShares` for Earn, plus change. A callback that deposits anything
+- `input` is `maxInput` plus change. `maxInput` is the amount, or `maxShares` for Earn: the
+  settler uses no more, and the router returns the rest to the cardholder. A callback that deposits anything
   back must deposit at least the portal's fees, or the portal rejects it and the spend bounces. So
   add at least `calculateDepositFee() + calculateBouncebackFee() + 1` whenever something comes back:
   on an access-enforced portal, which requires a return, and on every Earn spend, which returns its
@@ -124,8 +130,10 @@ approves those tokens. Unsponsored, the cardholder approves `input + withdrawalF
   stablecoin spend on an open portal adds nothing.
 - `withdrawalFee` is the outbox's `calculateWithdrawalFee(callbackGas)`. Use 3M callback gas (see
   [`design.md`](design.md#callback-gas)).
-- `callbackData` is `abi.encode(Spend, ZoneReturn)`. `ZoneReturn` is the encrypted deposit that
-  sends unused input back to the cardholder, a public `refundRecipient` for when the Zone rejects
+- `callbackData` is `abi.encode(SpendData)`: `op = 2` (Spend), `settler` (the program's
+  `BridgeSettler`), `maxInput`, `settlerData = abi.encode(Spend)` and `zoneReturn`. That
+  `SpendReturn` is the encrypted deposit (`keyIndex`, `encrypted`) that sends unused input back to
+  the cardholder, a public `refundRecipient` for when the Zone rejects
   it, and `maxDepositFee`, the most the portal may keep, which is the fee the change covers. Build a
   fresh encrypted deposit for each spend, so no two returns match on the L1. Encrypt it to the portal's sequencer key, as `prepareRecipient` does in the E2E.
   monorail builds encrypted Zone deposits in `packs/hot_wallet/.../tempo_zone/encrypt_deposit_payload.rb`.
@@ -139,24 +147,26 @@ Approve the card on the Zone receipt. Settlement on the L1 follows once the Zone
 
 A private spend ends in one of three ways:
 
-| Outcome | What Bridge sees                                                                                                                              | Bridge records                                                                                       |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Settled | `PrivateSpendSettled(senderTag, ref, inputToken, inputConsumed, inputReturned)` from the receiver, which has checked the destination was paid | Pull `Completed`                                                                                     |
-| Bounced | The portal's `WithdrawalProcessed` for the receiver and `senderTag` with `callbackSuccess = false`, and no `PrivateSpendSettled`              | Failed after approval: draw the reserve, record cardholder debt, as the double-spend path does today |
-| Pending | Neither, past Bridge's timeout: the portal is paused, the Zone stopped posting batches, or the Zone dropped the receipt                       | Unresolved: hold the authorization's exposure and escalate to the Zone operator                      |
+| Outcome | What Bridge sees                                                                                                                                                                                                                                                                                                                     | Bridge records                                                                                       |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Settled | The portal's `WithdrawalProcessed(to = router, senderTag, token, amount, callbackSuccess = true)`, and in the same transaction the router's `Spent(settler, token, used, change, zoneDepositHash)` and the settler's `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`. The settler has checked the destination was paid | Pull `Completed`                                                                                     |
+| Bounced | The portal's `WithdrawalProcessed` for the router and `senderTag` with `callbackSuccess = false`, and no `Spent` or `SpendSettled`                                                                                                                                                                                                   | Failed after approval: draw the reserve, record cardholder debt, as the double-spend path does today |
+| Pending | Neither, past Bridge's timeout: the portal is paused, the Zone stopped posting batches, or the Zone dropped the receipt                                                                                                                                                                                                              | Unresolved: hold the authorization's exposure and escalate to the Zone operator                      |
 
-- Match both outcomes by `senderTag`: `keccak256(abi.encodePacked(sender, txHash,
-  fallbackNonce))`, where `fallbackNonce` is in the outbox's withdrawal event in Bridge's own Zone
-  receipt. Trust only events emitted by the program's receiver and portal. `ref` and the `Spend`
+- Match both outcomes by the `senderTag` in the portal's `WithdrawalProcessed`:
+  `keccak256(abi.encodePacked(sender, txHash, fallbackNonce))`, where `fallbackNonce` is in the
+  outbox's withdrawal event in Bridge's own Zone receipt. Neither the router nor the settler emits
+  it, so read `Spent` and `SpendSettled` from the same transaction. Trust only events emitted by the
+  program's portal, router and settler. `ref` and the `Spend`
   fields come from callback data anyone can write, so never match on `ref` alone.
 - A spend can bounce after approval for:
   - **The program:** a paused factory, a disabled or un-allowlisted `TS` handler, a destination
     removed while the spend was in flight (add the new one before removing the old), or a vault
     governance disallowed.
   - **The Zone admin:** paused deposits of the token, a deposit or bounce-back fee raised above the
-    change or `maxDepositFee`, the receiver's gateway role removed, the refund recipient
+    change or `maxDepositFee`, the router's gateway role removed, the refund recipient
     de-admitted, or an encryption key expired during a stall.
-  - **Token and vault admins:** a TIP-403 policy change that blocks the receiver, clone, vault,
+  - **Token and vault admins:** a TIP-403 policy change that blocks the router, settler, clone, vault,
     portal, messenger, Zone admin (which receives the deposit fee), settlement wallet or refund
     recipient, or an Earn engine or venue that stops withdrawals.
   - **Earn spends:** a price move past `maxShares`, or an illiquid venue.
@@ -173,13 +183,12 @@ A private spend ends in one of three ways:
 Refunds are stablecoin, as today's crypto-return trips are:
 
 - **Public:** a transfer from the program wallet to the cardholder's account.
-- **Private:** the program wallet approves the receiver and calls
-  `refundPrivate(token, amount, ZoneReturn)`. Only a program destination may call it, so the
-  program wallet must be one. The receiver deposits it into the Zone encrypted to
-  the cardholder and emits `PrivateRefundCredited(token, amount)`, which names no cardholder.
-  The cardholder receives `amount` less the portal's deposit fee, and an amount below the deposit
-  and bounce-back fees reverts. So does a deposit fee above the `ZoneReturn`'s `maxDepositFee`.
-  Refunds revert while the factory is paused.
+- **Private:** the program wallet, admitted on the Zone, approves the portal and calls its own
+  `depositEncrypted(token, amount, keyIndex, encrypted, refundRecipient)` with a fresh deposit
+  encrypted to the cardholder and the program's `refundRecipient`. No contract of this project is
+  involved, and nothing on the L1 names the cardholder. The cardholder receives `amount` less the
+  portal's deposit fee, and the portal reverts `DepositTooSmall` for an amount below the deposit and
+  bounce-back fees.
 - **Returns the Zone rejects:** a change return or refund the Zone side rejects comes back to the
   program's `refundRecipient`, with no deposit ID. Bridge matches it by token, amount and time, and
   pays the cardholder again. `amount` is net of the bounce-back fee. It arrives one of two ways:
@@ -198,7 +207,8 @@ Refunds are stablecoin, as today's crypto-return trips are:
 `external_id`, and must not resubmit a spend whose first attempt may have landed:
 
 - **Public:** look up the transaction hash.
-- **Private:** look up the Zone receipt, or the `senderTag` on the L1. Set `validBefore` on the Zone
+- **Private:** look up the Zone receipt, or the `senderTag` in the portal's `WithdrawalProcessed`
+  on the L1. Set `validBefore` on the Zone
   request, so a request Bridge gave up on cannot land after the card was declined.
 
 ## Events and errors
@@ -206,13 +216,15 @@ Refunds are stablecoin, as today's crypto-return trips are:
 Events Bridge reads:
 
 - `TempoSpendExecuted(ref, from, destination, token, amount, fromStable, fromVault, sharesBurned)`
-  from the clone, on every spend. `from` is the cardholder for a public spend and the receiver for a
+  from the clone, on every spend. `from` is the cardholder for a public spend and the settler for a
   private one. Anyone can call `publicCall "PS"` with any token, so reconcile public spends by the
   transaction hash Bridge sent, never by this event alone.
-- `PrivateSpendSettled` and `PrivateRefundCredited` from the receiver.
+- `Spent(settler, token, used, change, zoneDepositHash)` from the router and
+  `SpendSettled(ref, inputToken, inputConsumed, inputReturned)` from the settler, on every settled
+  private spend. Neither carries the `senderTag` or a cardholder address.
 - `SpendVaultUpdated(vault, allowed)` from the clone, on governance's `"UV"` call.
 - From the program's portal: `WithdrawalProcessed(to, senderTag, token, amount, callbackSuccess)`
-  for every settlement, `DepositBounceBack` and `DepositBounceBackPending` for rejected returns, and
+  for every settlement, which carries the `senderTag` Bridge matches, `DepositBounceBack` and `DepositBounceBackPending` for rejected returns, and
   `RefundClaimed` when a parked return is claimed.
 
 Reverts a spend can hit. A public spend reverts with them in Bridge's transaction. A private spend
@@ -223,10 +235,12 @@ only bounces, so they show up when Bridge simulates the callback or traces the s
 - **The handler:** `WrongProgram`, `DestinationNotAuthorized`, `DestinationNotCredited`,
   `InvalidAmount`, `VaultNotAllowed`, `IncorrectAssetForVault`, `ShareCostExceeded`, and
   `PipelineDisabled` on the pull path.
-- **The receiver:** `NotZoneMessenger`, `WrongSourceZone`, `InvalidSourcePortal`,
-  `NothingSettled`, `DestinationNotPaid`, `DepositFeeTooHigh` and `ResidualBalance`. A refund also
-  hits `InvalidAmount`, `NotProgramDestination` and `ProgramPaused`, in the program wallet's own
-  transaction.
+- **The router:** `NotZoneMessenger`, `WrongSourceZone`, `InvalidSourcePortal`, `BadFlow`,
+  `OpDisabled`, `UnknownSettler`, `InvalidMaxInput`, `InvalidSettlement`, `InvalidReturnToken`,
+  `DepositFeeTooHigh`, `TokenCallFailed` (a token transfer that reverts, such as one a policy
+  blocks), `ResidualBalance`, `ReentrantCall` and `ZeroAddress` (no refund recipient).
+- **The settler:** `WrongProgram`, `WrongInputToken`, `InvalidAmount`, `InsufficientInput`,
+  `NothingSettled`, `DestinationNotPaid`, `ResidualBalance` and `Reentrancy`.
 - **The portal, on the return deposit:** `DepositTooSmall` when change does not cover its fees,
   and on an access-enforced portal `CallbackDidNotReturnToZone` when nothing comes back.
 - **The keychain, on a public spend:** `SpendingLimitExceeded` and `CallNotAllowed`.
@@ -241,7 +255,9 @@ Reads:
 
 ## Accepted behavior
 
-- Tokens sent to a receiver outside a callback stay there. It has no owner and moves only the
-  current call's input.
-- The withdrawer writes the `ZoneReturn`, so whoever sends a withdrawal to the receiver chooses
+- Tokens sent to the router outside a callback stay there: it moves only the current call's input.
+  Tokens sent to the settler outside a `settle` call are not rescued either, but any later `settle`
+  call can spend them, only to pay a destination the program authorizes, and gets back what that
+  spend did not use. Neither has an owner.
+- The withdrawer writes the `SpendReturn`, so whoever sends a withdrawal to the router chooses
   where its change goes.

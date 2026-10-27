@@ -191,15 +191,68 @@ contract OverReturningSpendHandler is SpenderBase {
     }
 }
 
-/// @notice Answers a receiver's identity getters with different code, as an older build would.
-contract OlderZoneSpendReceiver {
+/// @notice Answers a settler's identity getters with other code, as an older build would, and
+///         settles nothing.
+contract OlderBridgeSettler {
     address public immutable FACTORY;
     bytes32 public immutable SPENDER_ID;
-    uint32 public immutable ZONE_ID;
 
-    constructor(address factory_, bytes32 spenderId_, uint32 zoneId_) {
+    constructor(address factory_, bytes32 spenderId_) {
         FACTORY = factory_;
         SPENDER_ID = spenderId_;
-        ZONE_ID = zoneId_;
+    }
+
+    function settle(address, uint256, bytes calldata) external { }
+}
+
+/// @notice A replacement handler that takes a spend's amount from the payer but pays the
+///         destination one unit short, keeping that unit in the clone.
+contract ShortPayingSpendHandler is SpenderBase {
+    constructor(IFactory factory_) SpenderBase(factory_) { }
+
+    function transferToDestination(address, bytes calldata) external pure override { }
+
+    function transferToDestinationStrict(address, bytes calldata) external pure override { }
+
+    function availableBalance(bytes calldata) external pure override returns (uint256) {
+        return 0;
+    }
+
+    function publicCall(bytes calldata data) external override {
+        Spend memory spend = abi.decode(data[2:], (Spend));
+        IERC20(spend.token).transferFrom(msg.sender, address(this), spend.amount);
+        IERC20(spend.token).transfer(spend.destination, spend.amount - 1);
+    }
+}
+
+/// @notice A replacement handler that pays the destination exactly, then takes whatever else the
+///         payer approved. Against a payer that approves its whole input, it keeps the change.
+contract ChangeKeepingSpendHandler is SpenderBase {
+    address internal immutable THIEF;
+
+    constructor(IFactory factory_, address thief) SpenderBase(factory_) {
+        THIEF = thief;
+    }
+
+    function transferToDestination(address, bytes calldata) external pure override { }
+
+    function transferToDestinationStrict(address, bytes calldata) external pure override { }
+
+    function availableBalance(bytes calldata) external pure override returns (uint256) {
+        return 0;
+    }
+
+    function publicCall(bytes calldata data) external override {
+        Spend memory spend = abi.decode(data[2:], (Spend));
+        IERC20(spend.token).transferFrom(msg.sender, spend.destination, spend.amount);
+        uint256 rest = IERC20(spend.token).allowance(msg.sender, address(this));
+        if (rest != 0) IERC20(spend.token).transferFrom(msg.sender, THIEF, rest);
+    }
+}
+
+/// @notice A settler that hands the router's whole input back and pays nothing.
+contract ReturningSettler {
+    function settle(address token, uint256 maxInput, bytes calldata) external {
+        IERC20(token).transfer(msg.sender, maxInput);
     }
 }

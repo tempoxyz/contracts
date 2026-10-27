@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the card stack against a real Tempo dev node: deploys and broadcasts public pulls with forge
 # and checks their balances with cast, then exercises Bridge's access key with cast (keychain
-# authorize, atomic batch spend, and the calls a leaked key must not be able to make).
+# authorize, atomic batch spend, and the calls a leaked key must not be able to make), and deploys
+# the private path's settler and Spend-mode Zone router.
 #
 # Usage: script/smoke.sh            starts and stops a node in Docker
 #        RPC=http://... script/smoke.sh   uses an existing dev node
@@ -145,4 +146,33 @@ echo "deployment scripts: replacement handler registered, still gated, program a
 
 expect_revert "SpendingLimitExceeded" spend 30000000 "$SETTLEMENT"
 echo "access key stops at its 50 USD limit"
+
+# The private path's contracts on a real node: the program's BridgeSettler and its Spend-mode
+# ZoneRouter, deployed through a ZoneRouterFactory as script/deploy/DeployZoneRouter.s.sol does.
+# The node runs no Zone, so this checks deployment, the router's fixed mode and its messenger gate;
+# e2e/spend runs a private spend through them.
+create() {
+  # Flags first: --constructor-args takes every argument after it.
+  forge create --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --broadcast "$@" 2>&1 | awk '/Deployed to:/ {print $3}'
+}
+ZERO=0x0000000000000000000000000000000000000000
+ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
+MODE_T="(uint32,uint8,address,address,address,bytes32,address[])"
+SETTLER=$(create src/settler/BridgeSettler.sol:BridgeSettler --constructor-args "$FACTORY" "$SPENDER_ID")
+ROUTER_FACTORY=$(create ../router/src/ZoneRouterFactory.sol:ZoneRouterFactory)
+[[ -n "$SETTLER" && -n "$ROUTER_FACTORY" ]] || { echo "settler or router factory not deployed"; exit 1; }
+MODE="(1,4,$ZERO,$ZERO,$ZERO,$ZERO32,[$SETTLER])"
+cast send "$ROUTER_FACTORY" "deploy($MODE_T)" "$MODE" --private-key "$DEPLOYER_PK" --rpc-url "$RPC" >/dev/null
+ROUTER=$(cast call "$ROUTER_FACTORY" "predict($MODE_T)(address)" "$MODE" --rpc-url "$RPC")
+expect "router deployed by the factory" "$(cast call "$ROUTER_FACTORY" "isRouter(address)(bool)" "$ROUTER" --rpc-url "$RPC")" true
+expect "router lists the settler" "$(cast call "$ROUTER" "isSettler(address)(bool)" "$SETTLER" --rpc-url "$RPC")" true
+expect "router takes Spend only" "$(cast call "$ROUTER" "enabledOps()(uint8)" --rpc-url "$RPC")" 4
+expect "settler's program" "$(cast call "$SETTLER" "SPENDER_ID()(bytes32)" --rpc-url "$RPC")" "$SPENDER_ID"
+expect "settler's factory" "$(cast call "$SETTLER" "FACTORY()(address)" --rpc-url "$RPC" | tr '[:upper:]' '[:lower:]')" \
+  "$(tr '[:upper:]' '[:lower:]' <<<"$FACTORY")"
+expect_revert "$(cast sig "NotZoneMessenger()")" cast call "$ROUTER" \
+  "onWithdrawalReceived(uint32,address,bytes32,address,uint128,bytes)(bytes4)" 1 "$ZERO" \
+  $ZERO32 "$USD" 1 0x --rpc-url "$RPC"
+echo "private path: settler and Spend-mode router deployed through the factory, callbacks only from the Zone messenger"
+
 echo "smoke: real-node checks passed"

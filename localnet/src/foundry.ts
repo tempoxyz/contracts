@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/earn/abis'
 import {
   foundryProcessEnvironment,
@@ -82,7 +82,7 @@ export const release = script(
  * factory, which the release entry points create there or reuse when they already exist.
  */
 export function releaseAddresses(releaseKeys: readonly string[]): Record<string, Address> {
-  ensureEarnDependencies()
+  ensureDependencies('earn')
   const environment = foundryProcessEnvironment(process.env)
   delete environment.DEPLOYER_PRIVATE_KEY
   const creationBytecode = (contract: string) =>
@@ -202,6 +202,7 @@ export function runLifecycleStep(step: LifecycleStep, broadcastDirectory: string
     step.environment,
     broadcastDirectory,
     step.rawGasEstimate,
+    projectRoot(step.root, broadcastDirectory),
   )
   if (forge.error || forge.status !== 0) {
     reportOutput(step.action.id, `Shared ${step.action.id} step failed`, forge)
@@ -209,8 +210,22 @@ export function runLifecycleStep(step: LifecycleStep, broadcastDirectory: string
   }
 }
 
+/**
+ * The checkout's Foundry project for a step. The lifecycle runs with this environment's run directory
+ * as Earn's root, so its sibling projects resolve beside that directory; map both back into the
+ * checkout, where the sources and dependencies are.
+ */
+function projectRoot(stepRoot: string, broadcastDirectory: string) {
+  const runRoot = dirname(broadcastDirectory)
+  return resolve(stepRoot) === resolve(runRoot)
+    ? Config.earnRoot
+    : resolve(Config.root, basename(stepRoot))
+}
+
 type LifecycleStep = {
   action: { id: string }
+  /** The step's Foundry project, Earn's or a sibling such as `router/`. */
+  root: string
   arguments: string[]
   environment: Record<string, string>
   /** Set by the shared step for a large CREATE; see `Step.rawGasEstimate`. */
@@ -218,29 +233,30 @@ type LifecycleStep = {
 }
 
 /**
- * Installs Earn's pinned Solidity dependencies the first time a step needs them, so a consumer that
- * holds this repository as a submodule needs no separate install step.
+ * Installs a Foundry project's pinned Solidity dependencies the first time a step needs them, so a
+ * consumer that holds this repository as a submodule needs no separate install step.
  */
-let earnDependenciesReady = false
-function ensureEarnDependencies() {
-  if (earnDependenciesReady) return
+const dependenciesReady = new Set<string>()
+function ensureDependencies(project: string) {
+  if (dependenciesReady.has(project)) return
   // The script is idempotent: it keeps libraries already at their pins and builds the solar revision
   // earn/solar.lock names only when that binary is missing, so an older checkout picks up a new pin.
-  execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), ['earn'], {
+  execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), [project], {
     cwd: Config.root,
     stdio: 'inherit',
   })
-  earnDependenciesReady = true
+  dependenciesReady.add(project)
 }
 
-/** Runs Forge from Earn's Foundry project with Tempo batch flags and a private broadcast directory. */
+/** Runs Forge from a Foundry project (Earn's by default) with Tempo batch flags and a private broadcast directory. */
 function spawnForge(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   broadcastDirectory: string,
   rawGasEstimate: boolean | undefined,
+  root = Config.earnRoot,
 ) {
-  ensureEarnDependencies()
+  ensureDependencies(basename(root))
   return spawnSync(
     'forge',
     [
@@ -253,7 +269,7 @@ function spawnForge(
       '--disable-labels',
     ],
     {
-      cwd: Config.earnRoot,
+      cwd: root,
       encoding: 'utf8',
       env: { ...environment, FOUNDRY_BROADCAST: broadcastDirectory },
       maxBuffer: 32 * 1024 * 1024,

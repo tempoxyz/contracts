@@ -437,8 +437,10 @@ function parseContractVerifications(value: unknown, path: string): DeploymentSou
 }
 
 function parseComponentIntentHashes(value: unknown, path: string) {
-  const hashes = object(value, path)
-  exactKeys(hashes, path, intentComponents)
+  const raw = object(value, path)
+  exactKeys(raw, path, ['core', 'engine'], peripheryComponents)
+  // A record written before a capability existed omits its component, which it never configured.
+  const hashes = Object.fromEntries(intentComponents.map((key) => [key, raw[key] ?? null]))
   for (const key of intentComponents) {
     const optional = (peripheryComponents as readonly IntentComponent[]).includes(key)
     if (!digest(hashes[key]) && !(optional && hashes[key] === null)) mismatch(`${path}.${key}`)

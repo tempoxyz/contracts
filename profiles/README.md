@@ -61,12 +61,15 @@ set to `null`; an empty `core` or `core.fees` object is rejected. Top-level keys
   `router.customerId` is its nonzero bytes32 route identifier. When `privateAsset` is the vault
   asset, omit both `pool` and `customerId` (setting only one is rejected). The Zone chain ID is
   derived from `chainId` and `zone.id` using the protocol's reserved ranges.
+- `zoneRouter`: one [`ZoneRouter`](../docs/router/zone-router.md) mode and the factory that deploys
+  it ([Zone routers](#zone-routers)).
 - `targetYield` and `boostRewards`: optional reward periphery ([rewards](#rewards)).
 
 Profiles are not lifecycle controls: removing a capability cannot disable or erase an
 already-deployed immutable contract. Retire its Tempo API operations separately and preserve any
-outstanding Merkle claim path. A changed optional component (`zone`, `targetYield`, or
-`boostRewards`) redeploys only that component's contracts; core and engine never change in place.
+outstanding Merkle claim path. A changed optional component (`zone`, `targetYield`, `boostRewards`,
+`zoneRouter`, or `zoneRouterFactory`) redeploys only that component's contracts; core and engine
+never change in place.
 Profiles that bind existing production infrastructure name only that infrastructure (venue,
 private asset, pool, and customer ID); E2E derives the deployed base asset from `deployment.json`.
 
@@ -79,6 +82,44 @@ fixed-fee entries, and no fee-recipient policy membership is needed while the fe
 distributor selects a recipient when it schedules activation. Omit initial operator fixed fees in
 this configuration; the operator can configure its own fees after deployment, subject to the
 protected-item and three-slot rules.
+
+## Zone routers
+
+`zoneRouter` deploys one [`ZoneRouter`](../docs/router/zone-router.md#modes) through a
+`ZoneRouterFactory`, from the separate [`router/`](../router/README.md) project. It sits beside
+`zone`, whose `SingleZoneEarnRouter` it does not replace. Card and Earn on one Zone:
+
+```json
+{
+  "zoneRouter": {
+    "zoneId": 7,
+    "ops": ["deposit", "redeem", "spend"],
+    "earn": {
+      "privateAsset": "0x...",
+      "pool": "0x...",
+      "customerId": "0x..."
+    },
+    "settlers": ["0x..."],
+    "factory": "0x..."
+  }
+}
+```
+
+- `zoneId` is the one Zone whose callbacks it takes; its Factory-registered Portal is discovered and
+  recorded as `zoneRouterPortal`.
+- `ops` lists `deposit`, `redeem` and `spend` in that order, at least one; it is the mode's
+  `enabledOps` bitmask.
+- `earn` is required with `deposit` or `redeem` and rejected otherwise. The router binds the
+  profile's own EarnVault; `privateAsset`, `pool` and `customerId` follow `zone.router`'s rules
+  (omit both `pool` and `customerId` when the private asset is the vault asset).
+- `settlers`, required with `spend` and rejected otherwise, lists the deployed `ISpendSettler`
+  contracts, such as a card program's `BridgeSettler`, without repeats. Their order is part of the
+  mode, so of the router's address.
+- `factory` names an existing `ZoneRouterFactory`. Omitted, the lifecycle deploys one as its own
+  `zoneRouterFactory` component, so a later mode change deploys only a new router through it.
+
+A different mode is a new router at a new address, which the Zone must admit again
+([lifecycle](../docs/router/zone-router.md#deployment)).
 
 ## Rewards
 

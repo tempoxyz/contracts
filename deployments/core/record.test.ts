@@ -204,6 +204,7 @@ describe('deployment records', () => {
       access: _access,
       core: _core,
       zone: _zone,
+      zoneRouter: _zoneRouter,
       ...authoredProfile
     } = profile
     const withBoost = parseEarnDeploymentProfile(

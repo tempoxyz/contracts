@@ -1,26 +1,33 @@
 // Card spend on a real Tempo L1 and a real Tempo Zone, against a target (targets.ts):
 //
-//   pnpm zone                       local: a disposable L1 and Zone in Docker
-//   pnpm zone:moderato              Moderato and its hosted Zone 3, with the recorded program
-//   pnpm zone:moderato --deploy     deploys that program first and records it
-//   pnpm zone:moderato --admit      grants the receiver and cardholder the Portal roles they lack,
-//                                   with ZONE_ADMIN_PRIVATE_KEY
+//   pnpm e2e:spend                              local: a disposable L1 and Zone in Docker
+//   pnpm e2e:spend -- --earn                    local, plus the e2e-moderato Earn stack for the
+//                                               Earn steps
+//   pnpm --filter e2e spend:moderato            Moderato and its hosted Zone 3, with the recorded
+//                                               program
+//   pnpm --filter e2e spend:moderato --deploy   deploys that program first and records it
+//   pnpm --filter e2e spend:moderato --admit    grants the router, cardholder, program wallet and
+//                                               refund recipient the Portal roles they lack, with
+//                                               ZONE_ADMIN_PRIVATE_KEY
 //
-// 1. Prepares the target: its L1, its Zone, and a Bridge card program with the "TS" handler and a
-//    ZoneSpendReceiver (script/ZoneE2EDeploy.s.sol). The local target then requires
-//    script/deploy/Preflight.s.sol to report no todo.
+// 1. Prepares the target: its L1, its Zone, and a Bridge card program with the "TS" handler, its
+//    BridgeSettler, and a factory-deployed ZoneRouter in Spend mode listing that settler
+//    (script/ZoneE2EDeploy.s.sol). The local target then requires script/deploy/Preflight.s.sol to
+//    report no todo.
 // 2. The cardholder moves pathUSD into the Zone with an encrypted deposit and authorizes Bridge's
 //    access key, scoped to an approval of the outbox and the outbox's requestWithdrawal.
-// 3. Bridge requests the withdrawal with its Zone access key. The Zone batches it to the L1, where
-//    the portal calls the receiver, which settles the spend through Bridge's spender clone.
+// 3. Bridge requests the withdrawal to the router with its Zone access key and Spend callback data.
+//    The Zone batches it to the L1, where the portal calls the router, which transfers maxInput
+//    to the BridgeSettler. The settler pays through Bridge's spender clone and the router
+//    returns the change to the Zone.
 // 4. Checks: a Zone token transfer reverts, the settlement wallet is paid on the L1, no L1 log of
 //    the settlement names the cardholder, the cardholder's private balance ends exactly the spend
 //    and fees lower once any change is back, and a spend to an address outside the program bounces
 //    back into the Zone in full. On a disposable Zone it also shows the outbox-scoped key
 //    withdrawing to an address outside the program, an accepted risk.
-// 5. Where the target has a Tempo Earn vault (Moderato), spends from Earn shares in the Zone: the
+// 5. Where the target has a Tempo Earn vault (Moderato, or local with --earn), spends from Earn shares in the Zone: the
 //    cardholder deposits into the vault and moves the EarnShare into the Zone, Bridge withdraws
-//    shares to the receiver, and the handler redeems exactly the spend for the settlement wallet.
+//    shares to the router, and the handler redeems exactly the spend for the settlement wallet.
 //    Checks: the settlement wallet is paid in the vault's asset, the shares spent stay within
 //    Bridge's quote, the unused shares come back to the Zone, and no L1 log names the cardholder.
 // 6. Times the card-approval path: Zone request to Zone receipt (what Bridge waits for before it
@@ -95,12 +102,78 @@ const spendType = parseAbiParameters([
   'struct Spend { bytes32 spenderId; address token; uint256 amount; address destination; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
 ])
 const cloneAbi = parseAbi(['function publicCall(bytes data)'])
-const callbackType = parseAbiParameters([
-  'Spend spend, ZoneReturn ret',
-  'struct Spend { bytes32 spenderId; address token; uint256 amount; address destination; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
-  'struct ZoneReturn { uint256 keyIndex; DepositPayload encrypted; address refundRecipient; uint128 maxDepositFee; }',
+/** `ZoneRouter.SpendData`, the callback data of the router's Spend op. */
+const spendDataType = parseAbiParameters([
+  'SpendData data',
+  'struct SpendData { uint8 op; address settler; uint128 maxInput; bytes settlerData; SpendReturn zoneReturn; }',
+  'struct SpendReturn { uint256 keyIndex; DepositPayload encrypted; address refundRecipient; uint128 maxDepositFee; }',
   'struct DepositPayload { bytes32 ephemeralPubkeyX; uint8 ephemeralPubkeyYParity; bytes ciphertext; bytes12 nonce; bytes16 tag; }',
 ])
+/** `ZoneRouter.Op.Spend`. */
+const OP_SPEND = 2
+
+type SpendArgs = {
+  spenderId: Hex
+  token: Address
+  amount: bigint
+  destination: Address
+  vault: Address
+  fromVault: bigint
+  maxShares: bigint
+  ref: Hex
+}
+
+/**
+ * The router's Spend callback data: the settler may use at most `maxInput` of the withdrawal, paying
+ * `spend`, and the router returns the rest to `recipient` in the Zone.
+ */
+function spendCallback(
+  program: Prepared['program'],
+  spend: SpendArgs,
+  maxInput: bigint,
+  zoneReturn: {
+    recipient: Awaited<ReturnType<typeof Actions.zone.encryptedDeposit.prepareRecipient>>
+    refundRecipient: Address
+    maxDepositFee: bigint
+  },
+) {
+  const { recipient } = zoneReturn
+  return encodeAbiParameters(spendDataType, [
+    {
+      op: OP_SPEND,
+      settler: program.settler,
+      maxInput,
+      settlerData: encodeAbiParameters(spendType, [spend]),
+      zoneReturn: {
+        keyIndex: recipient.keyIndex,
+        encrypted: {
+          ephemeralPubkeyX: recipient.encrypted.ephemeralPubkeyX,
+          ephemeralPubkeyYParity: recipient.encrypted.ephemeralPubkeyYParity,
+          ciphertext: recipient.encrypted.ciphertext,
+          nonce: recipient.encrypted.nonce,
+          tag: recipient.encrypted.tag,
+        },
+        refundRecipient: zoneReturn.refundRecipient,
+        maxDepositFee: zoneReturn.maxDepositFee,
+      },
+    },
+  ])
+}
+
+/** The router's `Spent` event in `logs`, which must hold exactly one. */
+function routerSpent(logs: readonly Log[], router: Address) {
+  const events = parseEventLogs({
+    abi: artifact('ZoneRouter').abi,
+    eventName: 'Spent',
+    logs: logs.filter((log) => isAddressEqual(log.address, router)),
+  })
+  assert(events.length === 1, 'one router Spent event in the settlement transaction')
+  return (
+    events[0] as unknown as {
+      args: { settler: Address; token: Address; used: bigint; change: bigint }
+    }
+  ).args
+}
 
 function artifact(name: string) {
   const json = JSON.parse(readFileSync(resolve(root, `out/${name}.sol/${name}.json`), 'utf8'))
@@ -207,7 +280,7 @@ function withdrawalRequested(receipt: { logs: Log[]; transactionHash: Hex }) {
 
 /** Steps 5 to 12: a private spend, a bounce, and (on a disposable Zone) the leaked-key withdrawal. */
 async function privateSpend(t: Prepared, run: string) {
-  const receiverArtifact = artifact('ZoneSpendReceiver')
+  const settlerArtifact = artifact('BridgeSettler')
   const { cardholder, program, refundRecipient } = t
   const l1Public = t.l1Public
   const bridgeKeyPk = generatePrivateKey()
@@ -294,30 +367,25 @@ async function privateSpend(t: Prepared, run: string) {
   })
   step(6, 'Cardholder authorized Bridge access key: 100 pathUSD per 30 days, outbox only')
 
-  const [accessEnforced, bouncebackFee] = await Promise.all([
-    l1Public.readContract({
-      address: t.zone.portal,
-      abi: portalAbi,
-      functionName: 'isAccessEnforced',
-    }),
-    l1Public.readContract({
-      address: t.zone.portal,
-      abi: portalAbi,
-      functionName: 'calculateBouncebackFee',
-    }),
-  ])
+  const bouncebackFee = await l1Public.readContract({
+    address: t.zone.portal,
+    abi: portalAbi,
+    functionName: 'calculateBouncebackFee',
+  })
   const withdrawalFee = await userZone.readContract({
     address: outbox,
     abi: outboxAbi,
     functionName: 'calculateWithdrawalFee',
     args: [CALLBACK_GAS],
   })
-  const change = accessEnforced ? depositFee + bouncebackFee + 1n : 0n
+  // The router returns what the settler did not use as an encrypted deposit, which the Portal
+  // rejects below its fees, so the withdrawal carries the spend plus change that covers them.
+  const change = depositFee + bouncebackFee + 1n
 
   async function callback(spendRef: Hex, destination: Address) {
     const recipient = await Actions.zone.encryptedDeposit.prepareRecipient(l1Public, {
       recipient: cardholder.address,
-      sender: program.receiver,
+      sender: program.router,
       portalAddress: t.zone.portal,
       zoneId: t.zone.id,
     })
@@ -331,20 +399,13 @@ async function privateSpend(t: Prepared, run: string) {
       maxShares: 0n,
       ref: spendRef,
     }
-    const zoneReturn = {
-      keyIndex: recipient.keyIndex,
-      encrypted: {
-        ephemeralPubkeyX: recipient.encrypted.ephemeralPubkeyX,
-        ephemeralPubkeyYParity: recipient.encrypted.ephemeralPubkeyYParity,
-        ciphertext: recipient.encrypted.ciphertext,
-        nonce: recipient.encrypted.nonce,
-        tag: recipient.encrypted.tag,
-      },
+    // A stablecoin spend uses exactly its amount. The change already covers the deposit fee, so a
+    // higher one at processing time bounces the spend.
+    return spendCallback(program, spend, SPEND, {
+      recipient,
       refundRecipient,
-      // The change already covers this fee, so a higher one at processing time bounces the spend.
       maxDepositFee: depositFee,
-    }
-    return encodeAbiParameters(callbackType, [spend, zoneReturn])
+    })
   }
 
   const bridgeZone = await t.zoneClient(
@@ -389,15 +450,15 @@ async function privateSpend(t: Prepared, run: string) {
     })
   }
   const requestSpend = (callbackData: Hex) =>
-    requestWithdrawal(program.receiver, SPEND + change, callbackData)
+    requestWithdrawal(program.router, SPEND + change, callbackData)
 
   // Settlement checks key on this run's `ref` and its own receipts, not the shared settlement
   // wallet's balance, so overlapping runs against one program do not trip each other.
   const settledEvents = (spendRef: Hex, fromBlock: bigint) =>
     l1Public.getContractEvents({
-      address: program.receiver,
-      abi: receiverArtifact.abi,
-      eventName: 'PrivateSpendSettled',
+      address: program.settler,
+      abi: settlerArtifact.abi,
+      eventName: 'SpendSettled',
       args: { ref: spendRef },
       fromBlock,
     })
@@ -422,7 +483,7 @@ async function privateSpend(t: Prepared, run: string) {
     100,
   )
   const l1SettlementMs = since(zoneAccepted)
-  assert(events.length === 1, 'one PrivateSpendSettled event for the spend')
+  assert(events.length === 1, 'one settler SpendSettled event for the spend')
   const settlementReceipt = await l1Public.getTransactionReceipt({
     hash: events[0]!.transactionHash,
   })
@@ -430,7 +491,17 @@ async function privateSpend(t: Prepared, run: string) {
     paid(settlementReceipt.logs, program.settlement),
     'the settlement transaction paid the settlement wallet',
   )
-  step(8, 'Settlement wallet paid on the L1')
+  const routed = routerSpent(settlementReceipt.logs, program.router)
+  assert(
+    isAddressEqual(routed.settler, program.settler) &&
+      routed.used === SPEND &&
+      routed.change === change,
+    `the router used exactly the spend and returned the change (used ${routed.used}, change ${routed.change})`,
+  )
+  step(
+    8,
+    `Settlement wallet paid on the L1; the router used ${formatUnits(routed.used, 6)} pathUSD and returned ${formatUnits(routed.change, 6)} to the Zone`,
+  )
   console.log(
     `    latency: Zone request to Zone receipt ${zoneReceiptMs} ms, Zone receipt to L1 settlement ${l1SettlementMs} ms`,
   )
@@ -455,10 +526,10 @@ async function privateSpend(t: Prepared, run: string) {
     const onWithdrawal = toFunctionSelector(
       'onWithdrawalReceived(uint32,address,bytes32,address,uint128,bytes)',
     )
-    const callbackFrame = findCall(trace, program.receiver, onWithdrawal)
-    assert(callbackFrame?.gasUsed !== undefined, 'settlement trace contains the receiver callback')
+    const callbackFrame = findCall(trace, program.router, onWithdrawal)
+    assert(callbackFrame?.gasUsed !== undefined, 'settlement trace contains the router callback')
     console.log(
-      `    receiver callback used ${BigInt(callbackFrame.gasUsed)} gas (limit ${CALLBACK_GAS}, settlement tx ${settlementReceipt.gasUsed})`,
+      `    router callback used ${BigInt(callbackFrame.gasUsed)} gas (limit ${CALLBACK_GAS}, settlement tx ${settlementReceipt.gasUsed})`,
     )
   }
 
@@ -473,9 +544,8 @@ async function privateSpend(t: Prepared, run: string) {
     spendTxFee >= 0n,
     'the request took no more than its amount, withdrawal fee and transaction fee',
   )
-  // The receiver deposits the change back, which the portal credits net of its deposit fee.
-  const expectedAfterSpend =
-    zoneBefore - SPEND - withdrawalFee - spendTxFee - (change > 0n ? depositFee : 0n)
+  // The router deposits the change back, which the portal credits net of its deposit fee.
+  const expectedAfterSpend = zoneBefore - SPEND - withdrawalFee - spendTxFee - depositFee
   const zoneAfter = await waitFor(
     'the Zone balance after the spend and its change',
     balance,
@@ -484,7 +554,7 @@ async function privateSpend(t: Prepared, run: string) {
   step(
     10,
     `Private balance down exactly ${formatUnits(zoneBefore - zoneAfter, 6)} pathUSD: spend ${formatUnits(SPEND, 6)}, withdrawal fee ${formatUnits(withdrawalFee, 6)}, ` +
-      `${change > 0n ? `change back less its deposit fee ${formatUnits(depositFee, 6)}` : 'no change sent'}, Zone transaction fee ${formatUnits(spendTxFee, 6)}`,
+      `change back less its deposit fee ${formatUnits(depositFee, 6)}, Zone transaction fee ${formatUnits(spendTxFee, 6)}`,
   )
 
   const zoneBeforeBounce = zoneAfter
@@ -503,7 +573,7 @@ async function privateSpend(t: Prepared, run: string) {
         address: t.zone.portal,
         abi: portalEventsAbi,
         eventName: 'WithdrawalProcessed',
-        args: { to: program.receiver, senderTag: bounceRequest.senderTag },
+        args: { to: program.router, senderTag: bounceRequest.senderTag },
         fromBlock: bounceFrom,
       }),
     (found) => found.length > 0,
@@ -511,7 +581,7 @@ async function privateSpend(t: Prepared, run: string) {
   )
   assert(
     processed!.args.callbackSuccess === false,
-    'the receiver rejected the spend outside the program',
+    'the router callback reverted for the spend outside the program',
   )
   assert(processed!.args.amount === SPEND + change, 'the portal processed the whole withdrawal')
   // The portal bounces the whole withdrawal back, so the cardholder is out only the fees.
@@ -571,10 +641,11 @@ const SHARE_TOLERANCE_BPS = 50n
 
 /**
  * Steps 13 to 16: a private spend from Earn shares. Bridge's Zone key withdraws EarnShare to the
- * receiver, and the handler redeems exactly the spend from the vault for the settlement wallet.
+ * router with maxInput = maxShares, and the handler redeems exactly the spend from the vault for the
+ * settlement wallet.
  */
 async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
-  const receiverArtifact = artifact('ZoneSpendReceiver')
+  const settlerArtifact = artifact('BridgeSettler')
   const { cardholder, program, refundRecipient } = t
   const l1Public = t.l1Public
   const userL1 = t.l1Wallet(cardholder)
@@ -702,12 +773,13 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   })
   const recipient = await Actions.zone.encryptedDeposit.prepareRecipient(l1Public, {
     recipient: cardholder.address,
-    sender: program.receiver,
+    sender: program.router,
     portalAddress: t.zone.portal,
     zoneId: t.zone.id,
   })
   const spendRef = keccak256(toHex(`zone-e2e.${run}.earn`))
-  const callbackData = encodeAbiParameters(callbackType, [
+  const callbackData = spendCallback(
+    program,
     {
       spenderId: program.spenderId,
       token: earn.asset,
@@ -718,19 +790,9 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
       maxShares,
       ref: spendRef,
     },
-    {
-      keyIndex: recipient.keyIndex,
-      encrypted: {
-        ephemeralPubkeyX: recipient.encrypted.ephemeralPubkeyX,
-        ephemeralPubkeyYParity: recipient.encrypted.ephemeralPubkeyYParity,
-        ciphertext: recipient.encrypted.ciphertext,
-        nonce: recipient.encrypted.nonce,
-        tag: recipient.encrypted.tag,
-      },
-      refundRecipient,
-      maxDepositFee: depositFee,
-    },
-  ])
+    maxShares,
+    { recipient, refundRecipient, maxDepositFee: depositFee },
+  )
   const bridgeZone = await t.zoneClient(
     Account.fromSecp256k1(bridgeKeyPk, { access: cardholder.address }),
     true,
@@ -755,7 +817,7 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
           functionName: 'requestWithdrawal',
           args: [
             earn.earnShare,
-            program.receiver,
+            program.router,
             input,
             zeroHash,
             CALLBACK_GAS,
@@ -779,9 +841,9 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
     'Earn settlement on L1',
     () =>
       l1Public.getContractEvents({
-        address: program.receiver,
-        abi: receiverArtifact.abi,
-        eventName: 'PrivateSpendSettled',
+        address: program.settler,
+        abi: settlerArtifact.abi,
+        eventName: 'SpendSettled',
         args: { ref: spendRef },
         fromBlock,
       }),
@@ -801,6 +863,11 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   assert(
     settled.inputConsumed <= maxShares,
     "the handler burned no more shares than Bridge's quote",
+  )
+  const routed = routerSpent(settlement.logs, program.router)
+  assert(
+    routed.used === settled.inputConsumed && routed.change === input - settled.inputConsumed,
+    'the router used what the settler consumed and returned the rest of the withdrawal',
   )
   const after = await waitFor(
     'EarnShare change back in the Zone',
@@ -917,7 +984,7 @@ async function main() {
 
   const t =
     target === 'local'
-      ? await local(step)
+      ? await local(step, { earn: args.includes('--earn') })
       : await hosted(step, { deploy: args.includes('--deploy'), admit: args.includes('--admit') })
   const run = `${t.name}.${Date.now()}`
   try {

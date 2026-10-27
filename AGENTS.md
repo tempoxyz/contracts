@@ -5,6 +5,7 @@ Foundry project with its own build settings, dependencies, and guide:
 
 - [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues.
 - [spend/](spend/AGENTS.md): Tempo Spend, card spend through Bridge's spender contracts.
+- [router/](router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and spends.
 
 Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with one module
 folder per project) and its `profiles/`, the app (`app/`), the disposable Tempo L1 and Zone
@@ -21,6 +22,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
 | --------------------------------------------------------------- | ---------------------------------------- |
 | Tempo Earn, including its app, deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)         |
 | Tempo Spend (Bridge card spend)                                 | [spend/AGENTS.md](spend/AGENTS.md)       |
+| Zone router                                                     | [router/AGENTS.md](router/AGENTS.md)     |
 | Integration cases and hosted environments                       | [e2e/AGENTS.md](e2e/AGENTS.md)           |
 | Disposable chain lifecycle                                      | [localnet/AGENTS.md](localnet/AGENTS.md) |
 | CI and repository automation                                    | [.github/AGENTS.md](.github/AGENTS.md)   |
@@ -38,10 +40,10 @@ must explicitly discover descendant guides rather than assume they were loaded.
 
 ## Validation and documentation
 
-Use the commands in [docs/development.md](docs/development/README.md). Start with focused checks; before
+Use the commands in [development](docs/development/README.md). Start with focused checks; before
 pushing meaningful implementation changes, run `pnpm verify`, plus the project's own checks for
-`spend/` ([spend/AGENTS.md](spend/AGENTS.md)). Hosted or private behavior changes also need the
-relevant E2E case and composed group. Report unrun checks and external blockers explicitly; after
+`spend/` ([spend/AGENTS.md](spend/AGENTS.md)) and `router/` ([router/AGENTS.md](router/AGENTS.md)).
+Hosted or private behavior changes also need the relevant E2E case and composed group. Report unrun checks and external blockers explicitly; after
 pushing a PR update, report with CI pending unless asked to monitor it. For documentation-only
 changes, run the link check (`pnpm --filter @tempoxyz/earn test --run docs`), format changed files,
 and run `git diff --check`.
@@ -67,7 +69,7 @@ the automation entry points.
 - Localnet consumers import `localnet/src/index.ts` and call
   `Environment.run({ consumer, sameAssetRoute, ready })`, or use the root `./localnet` export
   ([localnet layer](docs/development/localnet.md#localnet-layer)).
-- Deployment repositories pin this repository as a submodule, install Earn's Solidity dependencies
+- Deployment repositories pin this repository as a submodule, install its Solidity dependencies
   with `pnpm deps`, and run `pnpm earn`, `pnpm e2e:profile`, and `pnpm profiles --profiles profiles`
   against the profiles they hold
   ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
