@@ -268,12 +268,19 @@ FOUNDRY_PROFILE=deploy forge script \
 `DeployFactoryRelease` holds the core (`earnFactoryRelease`) and rewards (`earnRewardsFactory`)
 release entry points; each engine factory's entry point lives in that engine's deploy script. Every
 entry point takes the expected chain ID, refuses another chain or a Foundry profile other than
-`deploy`, and broadcasts with `DEPLOYER_PRIVATE_KEY`. `earnFactoryRelease` deploys fresh EarnVault
-and EarnFees implementations, constructs the immutable factory, and checks its code and bindings.
+`deploy`, and broadcasts with `DEPLOYER_PRIVATE_KEY`. Every release contract is created
+deterministically ([`DeterministicRelease`](../../earn/script/deploy/DeterministicRelease.sol)): through
+the CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C`, present on every Tempo network and
+in localnet's genesis, with one fixed salt, so the same creation code and constructor arguments land
+at the same address on Moderato and mainnet, and an entry point reuses a contract that already exists
+there instead of creating it again. Changing the compiler, its settings, or a contract's source
+changes its address. Release contracts are ownerless, so anyone creating one first only pays its
+fee. `earnFactoryRelease` creates the EarnVault and EarnFees implementations and the immutable
+factory bound to them, and checks its code and bindings.
 Tempo's RPC must supply the creation estimate for the large EarnVault implementation; only this
 release pins Forge's multiplier to `100`, because default padding can exceed Tempo's 30M gas cap.
-Reconcile the receipt before continuing after a failed broadcast. Source-verify all three contracts
-before updating the registry. Localnet deploys the same release through the single-CREATE entry
+After a failed broadcast, rerunning the entry point creates only what is missing. Source-verify all three contracts
+before updating the registry. Localnet deploys the same release through the single-creation entry
 points `earnVaultImplementation`, `earnFeesImplementation`, and `earnFactory`, plus every
 registered engine factory's entry point.
 
@@ -285,11 +292,7 @@ Moderato succeeds), the releases (`all` is the core release and every engine fac
 names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
 that one), and whether to broadcast. Each network's job runs
 `pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
-which first skips any release whose current [`releases.ts`](../../deployments/core/releases.ts) entry on that network already runs this checkout's compiled code (the check a profile deployment runs against its release), so rerunning `all` deploys only what changed; it runs each other release's entry point below with the `deploy` profile, checks that it created exactly
-the release's contracts, each from the locally compiled creation bytecode, and, after a broadcast,
-source-verifies each one on Tempo's verifier. Without broadcast, Forge only simulates, and each
-release simulates from the deployer's current nonce, so only the first release's addresses are the
-ones a broadcast creates. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
+which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
 addresses, transactions, and source matches; a run that stops keeps the releases before it.
 
 After a broadcast, the last job records every release whose contracts all source verified, from

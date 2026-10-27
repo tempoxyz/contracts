@@ -1,42 +1,58 @@
 import { readFileSync } from 'node:fs'
-import { decodeFunctionData, getAddress, type Hex } from 'viem'
+import {
+  concatHex,
+  decodeFunctionData,
+  encodeAbiParameters,
+  getAddress,
+  getContractAddress,
+  keccak256,
+  parseAbiParameters,
+  stringToBytes,
+  type Address,
+  type Hex,
+} from 'viem'
+import { Addresses } from 'viem/tempo'
 import { describe, expect, test, vi } from 'vitest'
 
 import { deployFactoryReleaseScriptAbi } from '../abis/index.js'
 import { hostedEnvironments } from '../chain/tempo.js'
 import {
   broadcastPath,
+  create2Deployer,
   createdContracts,
   deployFactoryRelease,
   factoryReleaseKinds,
   planFactoryRelease,
+  predictRelease,
   redactRpcCredentials,
   registryPullRequestBody,
   registryReleaseKinds,
   registryUpdates,
   releaseKindsFor,
+  releaseSalt,
   updateReleaseRegistry,
   type FactoryReleaseRun,
   type FactoryReleaseDependencies,
+  type PredictedContract,
 } from './factory-release.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
-const bytecode = (name: string) => `0x6080${Buffer.from(name).toString('hex')}` as Hex
-const args = `0x${'0'.repeat(24)}${'ab'.repeat(20)}`
+const bytecode = (contract: string) =>
+  `0x6080${Buffer.from(contract.split(':')[1]!).toString('hex')}` as Hex
+const core = planFactoryRelease('core', 4217)
+const hash = (index: number) => `0x${String(index + 1).repeat(64)}` as Hex
 
-function broadcastFile(names: string[], status = '0x1') {
+/** Forge's broadcast of CREATE2 creations: the deployer call's input is the salt, then the init code. */
+function broadcastFile(created: readonly PredictedContract[], status = '0x1') {
   return {
-    transactions: names.map((name, index) => ({
-      transactionType: 'CREATE',
-      contractName: name,
-      contractAddress: address(String(index + 1)),
-      hash: `0x${String(index + 1).repeat(64)}`,
-      transaction: { input: `${bytecode(name)}${index === names.length - 1 ? args.slice(2) : ''}` },
+    transactions: created.map((contract, index) => ({
+      transactionType: 'CREATE2',
+      contractName: contract.name,
+      contractAddress: contract.address.toLowerCase(),
+      hash: hash(index),
+      transaction: { to: create2Deployer, input: concatHex([releaseSalt, contract.initCode]) },
     })),
-    receipts: names.map((_, index) => ({
-      transactionHash: `0x${String(index + 1).repeat(64)}`,
-      status,
-    })),
+    receipts: created.map((_, index) => ({ transactionHash: hash(index), status })),
   }
 }
 
@@ -76,75 +92,105 @@ describe('planFactoryRelease', () => {
   })
 })
 
-describe('createdContracts', () => {
-  const plan = planFactoryRelease('core', 4217)
-
-  test('reads each created contract and its constructor arguments', () => {
-    const created = createdContracts(
-      plan,
-      broadcastFile(['EarnVault', 'EarnFees', 'EarnFactory']),
-      (contract) => bytecode(contract.split(':')[1]!),
-      true,
+describe('predictRelease', () => {
+  test('creates each contract through the CREATE2 deployer with the release salt', () => {
+    // The salt Solidity's DeterministicRelease uses.
+    expect(releaseSalt).toBe(keccak256(stringToBytes('tempoxyz/earn shared factory release')))
+    expect(create2Deployer).toBe(getAddress('0x4e59b44847b379578588920cA78FbF26c0B4956C'))
+    const [vault, fees, factory] = predictRelease(core, bytecode)
+    expect(vault!.address).toBe(
+      getContractAddress({
+        opcode: 'CREATE2',
+        from: create2Deployer,
+        salt: releaseSalt,
+        bytecode: bytecode(vault!.contract),
+      }),
     )
-    expect(created.map((contract) => [contract.name, contract.address])).toEqual([
-      ['EarnVault', address('1')],
-      ['EarnFees', address('2')],
-      ['EarnFactory', address('3')],
+    // The factory binds the TIP-20 factory and the implementations predicted before it.
+    const factoryArgs = encodeAbiParameters(parseAbiParameters('address, address, address'), [
+      Addresses.tip20Factory,
+      vault!.address,
+      fees!.address,
     ])
-    expect(created[0]!.constructorArgs).toBe('0x')
-    expect(created[2]!.constructorArgs).toBe(args)
+    expect(factory!.constructorArgs).toBe(factoryArgs)
+    expect(factory!.initCode).toBe(concatHex([bytecode(factory!.contract), factoryArgs]))
+    expect(factory!.address).toBe(
+      getContractAddress({
+        opcode: 'CREATE2',
+        from: create2Deployer,
+        salt: releaseSalt,
+        bytecode: factory!.initCode,
+      }),
+    )
+  })
+})
+
+describe('createdContracts', () => {
+  const predicted = predictRelease(core, bytecode)
+
+  test('reads each created contract at its deterministic address', () => {
+    const created = createdContracts(core, broadcastFile(predicted), predicted, new Set(), true)
+    expect(
+      created.map((contract) => [contract.name, contract.address, contract.transaction]),
+    ).toEqual(predicted.map((contract, index) => [contract.name, contract.address, hash(index)]))
+    expect(created[2]!.constructorArgs).toBe(predicted[2]!.constructorArgs)
   })
 
-  test('refuses a run that created other contracts than the release', () => {
+  test('keeps contracts that already existed and requires only the rest to be created', () => {
+    const existing = new Set<Address>([predicted[0]!.address, predicted[1]!.address])
+    const created = createdContracts(
+      core,
+      broadcastFile([predicted[2]!]),
+      predicted,
+      existing,
+      true,
+    )
+    expect(created.map((contract) => contract.transaction)).toEqual([null, null, hash(0)])
     expect(() =>
-      createdContracts(
-        plan,
-        broadcastFile(['EarnVault', 'EarnFees', 'EarnFactory', 'Extra']),
-        (contract) => bytecode(contract.split(':')[1]!),
-        true,
-      ),
-    ).toThrow('created EarnVault, EarnFees, EarnFactory, Extra')
+      createdContracts(core, broadcastFile(predicted), predicted, existing, true),
+    ).toThrow('created EarnFactory, EarnFees, EarnVault, expected EarnFactory')
+  })
+
+  test('refuses a creation away from its deterministic address', () => {
+    const file = broadcastFile(predicted)
+    file.transactions[1]!.contractAddress = address('5')
+    expect(() => createdContracts(core, file, predicted, new Set(), true)).toThrow(
+      'EarnFees was created at 0x0000000000000000000000000000000000000005, not its deterministic address',
+    )
   })
 
   test('refuses a broadcast without a successful receipt', () => {
     expect(() =>
-      createdContracts(
-        plan,
-        broadcastFile(['EarnVault', 'EarnFees', 'EarnFactory'], '0x0'),
-        (contract) => bytecode(contract.split(':')[1]!),
-        true,
-      ),
+      createdContracts(core, broadcastFile(predicted, '0x0'), predicted, new Set(), true),
     ).toThrow('has no successful receipt')
   })
 
-  test('refuses a creation that is not the locally compiled bytecode', () => {
-    expect(() =>
-      createdContracts(
-        plan,
-        broadcastFile(['EarnVault', 'EarnFees', 'EarnFactory']),
-        () => '0x60806080' as Hex,
-        false,
-      ),
-    ).toThrow('does not start with its locally compiled creation bytecode')
+  test('refuses a creation that is not the locally compiled code', () => {
+    const file = broadcastFile(predicted)
+    file.transactions[0]!.transaction.input = concatHex([releaseSalt, '0x60806080'])
+    expect(() => createdContracts(core, file, predicted, new Set(), false)).toThrow(
+      'EarnVault creation input is not its locally compiled creation code',
+    )
   })
 })
 
 describe('deployFactoryRelease', () => {
-  function runtime() {
-    const files = new Map<string, string>()
+  const predicted = predictRelease(planFactoryRelease('core', 4217), bytecode)
+
+  function runtime(existing: readonly Address[] = []) {
     const dependencies = {
       forge: vi.fn(),
       preflight: vi.fn(),
-      currentRelease: vi.fn(
-        async (_options: unknown): Promise<Record<string, `0x${string}`> | null> => null,
-      ),
       removeScriptCache: vi.fn(),
-      readFile: vi.fn((path: string) => {
-        if (path.endsWith('-latest.json'))
-          return JSON.stringify(broadcastFile(['EarnVault', 'EarnFees', 'EarnFactory']))
-        const name = /([A-Za-z]+)\.json$/.exec(path)![1]!
-        return files.get(path) ?? JSON.stringify({ bytecode: { object: bytecode(name) } })
-      }),
+      creationBytecode: vi.fn((_root: string, contract: string) => bytecode(contract)),
+      existingCode: vi.fn(
+        async (_rpc: unknown, _addresses: readonly Address[]) => new Set(existing),
+      ),
+      readFile: vi.fn((_path: string) =>
+        JSON.stringify(
+          broadcastFile(predicted.filter((contract) => !existing.includes(contract.address))),
+        ),
+      ),
       verify: vi.fn(async ({ contract }: { contract: string }) => ({
         kind: 'source' as const,
         name: contract.split(':')[1]!,
@@ -152,26 +198,33 @@ describe('deployFactoryRelease', () => {
         sourceInputsHash: '0x' as Hex,
       })),
     }
-    return dependencies as typeof dependencies & Partial<FactoryReleaseDependencies>
+    return dependencies
   }
+  const options = (overrides: Partial<Parameters<typeof deployFactoryRelease>[0]> = {}) => ({
+    network: 'mainnet',
+    kind: 'core',
+    broadcast: true,
+    root: '/repo/earn',
+    environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
+    ...overrides,
+  })
 
-  test('broadcasts, then source verifies every created contract', async () => {
+  test('broadcasts the missing contracts, then source verifies every one', async () => {
     const dependencies = runtime()
     const result = await deployFactoryRelease(
-      {
-        network: 'mainnet',
-        kind: 'core',
-        broadcast: true,
-        root: '/repo/earn',
+      options({
         environment: {
           PATH: '/bin',
           DEPLOYER_PRIVATE_KEY: '0xkey',
           ZONE_ADMIN_PRIVATE_KEY: '0xno',
         },
-      },
+      }),
       dependencies as Partial<FactoryReleaseDependencies>,
     )
     expect(dependencies.preflight).toHaveBeenCalledOnce()
+    expect(dependencies.existingCode.mock.calls[0]![1]).toEqual(
+      predicted.map((contract) => contract.address),
+    )
     const [forgeArguments, forgeEnvironment, cwd] = dependencies.forge.mock.calls[0]!
     expect(forgeArguments).toEqual(expect.arrayContaining(['--broadcast', '--slow', '--rpc-url']))
     expect(forgeArguments[forgeArguments.indexOf('--rpc-url') + 1]).toContain('rpc.tempo.xyz')
@@ -188,12 +241,41 @@ describe('deployFactoryRelease', () => {
     expect(dependencies.verify).toHaveBeenCalledTimes(3)
     expect(dependencies.verify.mock.calls[2]![0]).toMatchObject({
       chainId: 4217,
-      address: address('3'),
+      address: predicted[2]!.address,
       contract: 'src/core/EarnFactory.sol:EarnFactory',
-      constructorArgs: args,
+      constructorArgs: predicted[2]!.constructorArgs,
     })
-    expect(result.registry).toEqual({ earn: address('3') })
+    expect(result.current).toBeUndefined()
+    expect(result.registry).toEqual({ earn: predicted[2]!.address })
     expect(result.contracts.every((contract) => contract.match === 'exact_match')).toBe(true)
+  })
+
+  test('reconciles a release that already exists without running Forge, and still verifies it', async () => {
+    const dependencies = runtime(predicted.map((contract) => contract.address))
+    const result = await deployFactoryRelease(
+      options({ network: 'moderato' }),
+      dependencies as Partial<FactoryReleaseDependencies>,
+    )
+    expect(dependencies.forge).not.toHaveBeenCalled()
+    expect(dependencies.removeScriptCache).not.toHaveBeenCalled()
+    expect(dependencies.verify).toHaveBeenCalledTimes(3)
+    expect(result).toMatchObject({ current: true, registry: { earn: predicted[2]!.address } })
+    expect(result.contracts.map((contract) => contract.transaction)).toEqual([null, null, null])
+  })
+
+  test('creates only what a partly deployed release is missing', async () => {
+    const dependencies = runtime([predicted[0]!.address])
+    const result = await deployFactoryRelease(
+      options(),
+      dependencies as Partial<FactoryReleaseDependencies>,
+    )
+    expect(dependencies.forge).toHaveBeenCalledOnce()
+    expect(result.current).toBeUndefined()
+    expect(result.contracts.map((contract) => contract.transaction)).toEqual([
+      null,
+      hash(0),
+      hash(1),
+    ])
   })
 
   test('keeps a deployed contract whose verification fails, with the error', async () => {
@@ -202,30 +284,25 @@ describe('deployFactoryRelease', () => {
       new Error('verifier timed out calling https://user:secret@rpc.tempo.xyz'),
     )
     const result = await deployFactoryRelease(
-      {
-        network: 'mainnet',
-        kind: 'core',
-        broadcast: true,
-        root: '/repo/earn',
+      options({
         environment: {
           DEPLOYER_PRIVATE_KEY: '0xkey',
           TEMPO_RPC_URL: 'https://rpc.tempo.xyz',
           TEMPO_RPC_USERNAME: 'user',
           TEMPO_RPC_PASSWORD: 'secret',
         },
-      },
+      }),
       dependencies as Partial<FactoryReleaseDependencies>,
     )
     expect(result.contracts[0]).toMatchObject({
       name: 'EarnVault',
-      address: address('1'),
+      address: predicted[0]!.address,
       match: null,
       verificationError: 'verifier timed out calling ***',
     })
     expect(result.contracts.slice(1).every((contract) => contract.match === 'exact_match')).toBe(
       true,
     )
-    expect(result.registry).toEqual({ earn: address('3') })
   })
 
   test('removes the script sequences that hold the RPC URL, even when Forge fails', async () => {
@@ -234,16 +311,7 @@ describe('deployFactoryRelease', () => {
       throw new Error('forge script failed')
     })
     await expect(
-      deployFactoryRelease(
-        {
-          network: 'mainnet',
-          kind: 'core',
-          broadcast: true,
-          root: '/repo/earn',
-          environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
-        },
-        dependencies as Partial<FactoryReleaseDependencies>,
-      ),
+      deployFactoryRelease(options(), dependencies as Partial<FactoryReleaseDependencies>),
     ).rejects.toThrow('forge script failed')
     expect(dependencies.removeScriptCache).toHaveBeenCalledWith(
       '/repo/earn',
@@ -251,48 +319,15 @@ describe('deployFactoryRelease', () => {
     )
   })
 
-  test('skips a release whose live registry entry already runs this checkout', async () => {
-    const dependencies = runtime()
-    dependencies.currentRelease.mockResolvedValueOnce({ earn: address('c') })
-    const result = await deployFactoryRelease(
-      {
-        network: 'moderato',
-        kind: 'core',
-        broadcast: true,
-        root: '/repo/earn',
-        environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
-      },
-      dependencies as Partial<FactoryReleaseDependencies>,
-    )
-    expect(dependencies.forge).not.toHaveBeenCalled()
-    expect(dependencies.verify).not.toHaveBeenCalled()
-    expect(result).toMatchObject({
-      kind: 'core',
-      current: true,
-      contracts: [],
-      registry: { earn: address('c') },
-    })
-    expect(dependencies.currentRelease.mock.calls[0]![0]).toMatchObject({ chainId: 42431 })
-  })
-
   test('a dry run simulates without broadcasting or verifying', async () => {
     const dependencies = runtime()
     const result = await deployFactoryRelease(
-      {
-        network: 'moderato',
-        kind: 'core',
-        broadcast: false,
-        root: '/repo/earn',
-        environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
-      },
+      options({ network: 'moderato', broadcast: false }),
       dependencies as Partial<FactoryReleaseDependencies>,
     )
     expect(dependencies.forge.mock.calls[0]![0]).not.toContain('--broadcast')
     expect(dependencies.readFile).toHaveBeenCalledWith(
       broadcastPath('/repo/earn', planFactoryRelease('core', 42431), 42431, false),
-    )
-    expect(broadcastPath('/repo/earn', planFactoryRelease('core', 42431), 42431, false)).toContain(
-      '/dry-run/',
     )
     expect(dependencies.verify).not.toHaveBeenCalled()
     expect(result.contracts.every((contract) => contract.match === null)).toBe(true)
@@ -302,13 +337,13 @@ describe('deployFactoryRelease', () => {
     const dependencies = runtime()
     await expect(
       deployFactoryRelease(
-        { network: 'devnet', kind: 'core', broadcast: true, root: '/repo/earn', environment: {} },
+        options({ network: 'devnet', environment: {} }),
         dependencies as Partial<FactoryReleaseDependencies>,
       ),
     ).rejects.toThrow('Unknown hosted network devnet')
     await expect(
       deployFactoryRelease(
-        { network: 'mainnet', kind: 'core', broadcast: true, root: '/repo/earn', environment: {} },
+        options({ environment: {} }),
         dependencies as Partial<FactoryReleaseDependencies>,
       ),
     ).rejects.toThrow('DEPLOYER_PRIVATE_KEY is required')
@@ -402,11 +437,11 @@ describe('registry updates', () => {
     ...overrides,
   })
 
-  test('an unchanged release needs no registry update', () => {
-    const unchanged = run('moderato')
-    unchanged.releases[0] = { ...unchanged.releases[0]!, contracts: [], current: true }
-    const { updates, skipped } = registryUpdates([unchanged])
-    expect(updates.map((update) => update.key)).toEqual(['erc4626Engine'])
+  test('records a verified release that already existed', () => {
+    const existing = run('moderato')
+    existing.releases[0] = { ...existing.releases[0]!, current: true }
+    const { updates, skipped } = registryUpdates([existing])
+    expect(updates.map((update) => update.key)).toEqual(['earn', 'erc4626Engine'])
     expect(skipped).toEqual([])
   })
 
