@@ -60,7 +60,7 @@ Its configuration is fixed at deployment, with no setters; a different mode mean
 
 - **`enabledOps`**, a bitmask of Deposit, Redeem, Spend and WithdrawExact. A disabled op reverts
   `OpDisabled`.
-- **`settlers`**, the set of `ISpendSettler` contracts `Spend` and `refund` may use, including the send settlers, written once by the
+- **`settlers`**, the set of `ISpendSettler` contracts `Spend` and `refund` may use, including `SendSettler`s, written once by the
   constructor into an `isSettler` mapping. Required for any spend other than a same-Zone send.
 - **`earnVault`, `privateAsset`, `pool`, `customerId`**, as today. Required when an Earn op (Deposit,
   Redeem or WithdrawExact) is enabled, and all zero otherwise.
@@ -73,7 +73,7 @@ cannot serve. Deployment profiles name presets:
 | Earn (today's router)      | Deposit, Redeem                       | —                            | Yes   |
 | Card, closed loop          | Spend                                 | `BridgeSettler`              | —     |
 | Card and Earn, closed loop | Deposit, Redeem, Spend, WithdrawExact | `BridgeSettler`              | Yes   |
-| Open wallet                | All                                   | Any, including send settlers | Any   |
+| Open wallet                | All                                   | Any, including `SendSettler` | Any   |
 
 The Earn preset is exactly today's router, so its tests carry over unchanged as the regression suite.
 One router per Zone can serve several programs or integrators by listing each one's settler.
@@ -151,15 +151,14 @@ and everything unused returns to the source Zone.
 
 1. Authenticates exactly as ops 0 and 1, and requires the named settler to be in `settlers`.
 2. Approves `maxInput` (never more than the withdrawn amount) to the settler and calls
-   `settle(token, maxInput, settlerData)`, then resets the approval.
+   `settle(sourceZoneId, token, maxInput, settlerData)`, then resets the approval.
 3. Requires `0 < used <= maxInput`, measured from its own balance.
 4. Returns `amount - used` to the source Zone.
 5. Emits `Spent(settler, token, used, change, zoneDepositHash)`, with no `senderTag`, no action ID and
    no cardholder address. The settler emits its own detail.
 
-With `maxInput = 0` and no settler, the whole input returns to the source Zone for the recipient its
-`ZoneReturn` encrypts: a send inside the same Zone. Zone transfers are disabled while Zones are
-permissioned (decision 8), so this is how one Zone account pays another.
+Zone transfers are disabled while Zones are permissioned (decision 8), so `Spend` is also how a
+Zone account pays anyone else ([sends](#sends)).
 
 The router accepts any enabled token and leaves it to the settler to refuse one it cannot use.
 `BridgeSettler` requires the token to be its `Spend` struct's input, and `TS` checks it against the
@@ -170,18 +169,42 @@ by the settler or the handler, so a replaced handler can take at most the spend 
 it to the spend amount for a stablecoin spend and to `maxShares` for an Earn spend, and withdraws
 the change on top.
 
-#### Send settlers
+#### Sends
 
-Tempo owns two small settlers for sends out of the source Zone:
+A send moves EarnShare or stablecoin to a recipient, in one of three forms:
 
-- **`ZoneSendSettler`:** an encrypted deposit into the Factory-registered Portal of another Zone, for
-  a recipient encrypted to that Zone's key.
-- **`PublicSendSettler`:** a transfer to a public address, which its event names, since the transfer
-  already does.
+| Form                          | Input      | Recipient gets | How                                                     |
+| ----------------------------- | ---------- | -------------- | ------------------------------------------------------- |
+| EarnShare                     | EarnShare  | EarnShare      | Delivered as is                                         |
+| Stablecoin                    | Stablecoin | Stablecoin     | Delivered as is                                         |
+| EarnShare, paid as stablecoin | EarnShare  | Stablecoin     | Redeemed for an exact stablecoin amount, then delivered |
 
-Which sends a router allows is just which of these it lists in `settlers`. A closed-loop Zone, whose
-Portal trusts its gateway to keep funds in the Zone, lists neither, so one rule covers every way funds
-leave. Since they move funds out of a Zone, they get the same review as the router.
+Each form can go to the same Zone, another Zone or a public address:
+
+- **Same Zone, as is:** `Spend` with no settler and `maxInput = 0`; the router returns the whole input
+  to the recipient its `ZoneReturn` encrypts. No settler is involved.
+- **Everything else:** `SendSettler`, which Tempo owns. `settlerData` names the destination (a Zone ID
+  and a recipient encrypted to that Zone's key, or a public address), whether to redeem, and for a
+  redemption the exact stablecoin `amount`. It delivers by encrypted deposit into the destination
+  Zone's Factory-registered Portal, or by transfer to the public address.
+- **Redeeming:** the settler uses the same Earn funding source as `TS`: `withdrawExact(amount)` on the
+  vault, burning at most `maxInput` shares, then par conversion to the stablecoin when the vault
+  asset differs. Unused shares go back through the router to the sender's Zone, as change. The
+  recipient's Zone needs only the stablecoin enabled, not EarnShare.
+
+`ISpendSettler.settle` also receives the source Zone ID, so a settler knows where it is sending
+from. `SendSettler` has an immutable `scope`:
+
+- **Same Zone:** delivers only to the source Zone. This allows the redeemed form on a closed-loop
+  Zone without letting funds leave it.
+- **Any Zone:** also delivers to another Zone.
+- **Public:** also delivers to a public address.
+
+Which sends a router allows is just which `SendSettler` it lists in `settlers`. A closed-loop Zone,
+whose Portal trusts its gateway to keep funds in the Zone, lists at most a same-Zone one, so one
+rule covers every way funds leave. Since `SendSettler` moves funds, it gets the same review as the
+router. Delivered EarnShare still follows its transfer policy: a protected EarnShare reaches only
+the addresses the policy allows, and another Zone needs EarnShare enabled to receive it.
 
 ### `WithdrawExact`
 
@@ -199,7 +222,7 @@ nothing is left over it skips the shares deposit.
 interface ISpendSettler {
     // Pays from the router's approved token, using at most maxInput. Reverts unless the
     // payment it makes is complete. Returns all unused input to the router.
-    function settle(address token, uint256 maxInput, bytes calldata data) external;
+    function settle(uint32 sourceZoneId, address token, uint256 maxInput, bytes calldata data) external;
 
     // Reverts unless payer may credit a refund into the Zone.
     function checkRefunder(address payer, address token) external view;
@@ -297,7 +320,7 @@ cardholder's access keys stay the same through every phase.
 
 ## Rollout
 
-1. **Earn:** `ZoneRouter` and `ZoneRouterFactory`, with ops 0 and 1 byte-identical and their tests carried over, plus `WithdrawExact`, the send settlers and stablecoin-only routers. The rename
+1. **Earn:** `ZoneRouter` and `ZoneRouterFactory`, with ops 0 and 1 byte-identical and their tests carried over, plus `WithdrawExact`, `SendSettler` and stablecoin-only routers. The rename
    lands with its consumers: tempoxyz/tempo (which builds `earn/src/` and reads the router outputs),
    `viem/tempo`, and the zone-router deployment module.
 2. **Spend:** `BridgeSettler`, a "ZoneRouter" setup in the 35-scenario matrix, and `e2e/zone` on the
