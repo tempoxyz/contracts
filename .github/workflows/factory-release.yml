@@ -19,7 +19,7 @@ on:
         type: choice
         options: [all, core, rewards, erc4626Engine, zoneRouterFactory, sendSettler, zoneRouter]
       parameters:
-        description: 'JSON parameters of a single release: sendSettler {"pool", "customerId"} (both, or {} for none); zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for the rest'
+        description: 'JSON parameters of a single release: sendSettler {"vault", "pool", "customerId"} (all three, or {} for none); zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for the rest'
         required: false
         type: string
         default: '{}'

@@ -347,11 +347,11 @@ release's parameters as one JSON object (`--parameters`, or the workflow's `para
 command validates them before Forge runs, refuses parameters for any other release, and records
 them in the result and the job summary.
 
-| Release             | Parameters                                              | Creates                                   |
-| ------------------- | ------------------------------------------------------- | ----------------------------------------- |
-| `zoneRouterFactory` | None                                                    | The `ZoneRouterFactory`                   |
-| `sendSettler`       | `{}`, or `{"pool": <address>, "customerId": <bytes32>}` | A `SendSettler`, pool-less or converting  |
-| `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                 | The router `factory.deploy(mode)` creates |
+| Release             | Parameters                                                                  | Creates                                                                |
+| ------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `zoneRouterFactory` | None                                                                        | The `ZoneRouterFactory`                                                |
+| `sendSettler`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}` | A `SendSettler`, never converting or converting `vault`'s asset at par |
+| `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                     | The router `factory.deploy(mode)` creates                              |
 
 A `zoneRouter` mode has `ZoneRouter.Mode`'s fields: `zoneId`, `enabledOps` (deposit 1, redeem 2,
 spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool` and `customerId`

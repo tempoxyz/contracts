@@ -16,8 +16,9 @@ and Spend's settlers implement its [`ISpendSettler`](src/interfaces/ISpendSettle
 - [`ZoneRouterFactory`](src/ZoneRouterFactory.sol): permissionless CREATE2 deployment at an address
   fixed by the mode, with `predict`, `isRouter` and `RouterDeployed` for Zone admins.
 - [`SendSettler`](src/SendSettler.sol): a settler that pays a public address in the withdrawn
-  token, in the vault asset redeemed from EarnShare, or in a stablecoin converted from it at par. A
-  mode allows sends only if it lists it.
+  token, in the vault asset redeemed from EarnShare, or, for the one vault it is bound to at
+  deployment, in the stablecoin that vault's asset converts into at par. A mode allows sends only if
+  it lists it.
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
   [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the Factory Release workflow runs for the factory, settlers and routers.

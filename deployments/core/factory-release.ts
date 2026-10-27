@@ -140,15 +140,23 @@ function noParameters(kind: string, value: unknown): Record<string, never> {
   return {}
 }
 
-/** A SendSettler's optional pool and customer ID: both set, or both omitted for a pool-less one. */
+/**
+ * A SendSettler's optional conversion binding: the vault whose asset it converts at par, the pool and
+ * the customer ID all set, or all omitted for a settler that never converts.
+ */
 export function parseSendSettlerParameters(value: unknown) {
   const parameters = object(value, 'parameters')
-  exactKeys(parameters, 'parameters', [], ['pool', 'customerId'])
-  if ((parameters.pool === undefined) !== (parameters.customerId === undefined)) {
-    throw new Error('parameters.pool and parameters.customerId are set together or not at all')
+  const keys = ['vault', 'pool', 'customerId'] as const
+  exactKeys(parameters, 'parameters', [], keys)
+  const set = keys.filter((key) => parameters[key] !== undefined)
+  if (set.length === 0) return { vault: zeroAddress, pool: zeroAddress, customerId: zeroHash }
+  if (set.length !== keys.length) {
+    throw new Error(
+      'parameters.vault, parameters.pool and parameters.customerId are set together or not at all',
+    )
   }
-  if (parameters.pool === undefined) return { pool: zeroAddress, customerId: zeroHash }
   return {
+    vault: address(parameters.vault, 'parameters.vault'),
     pool: address(parameters.pool, 'parameters.pool'),
     customerId: nonzeroBytes32(parameters.customerId, 'parameters.customerId'),
   }
@@ -225,7 +233,7 @@ function nonzeroBytes32(value: unknown, path: string): Hex {
 
 /**
  * The release entry point and the contracts it creates for one release kind on one chain, with the
- * kind's parameters: a SendSettler's optional pool and customer ID, and a ZoneRouter's factory and
+ * kind's parameters: a SendSettler's optional conversion binding, and a ZoneRouter's factory and
  * mode. Every other kind takes none.
  */
 export function planFactoryRelease(
@@ -312,7 +320,7 @@ export function planFactoryRelease(
       calldata: encodeFunctionData({
         abi: deployRouterReleaseScriptAbi,
         functionName: 'sendSettler',
-        args: [expectedChainId, settler.pool, settler.customerId],
+        args: [expectedChainId, settler.vault, settler.pool, settler.customerId],
       }),
       contracts: [
         {
@@ -320,6 +328,7 @@ export function planFactoryRelease(
           contract: 'src/SendSettler.sol:SendSettler',
           constructorArgs: () =>
             encodeAbiParameters(constructorInputs(sendSettlerAbi), [
+              settler.vault,
               settler.pool,
               settler.customerId,
             ]),
@@ -898,7 +907,8 @@ const usage =
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
   `  release: all (${registryReleaseKinds.join(', ')}) | ${factoryReleaseKinds.join(' | ')}\n` +
   '  parameters (JSON object; only these kinds take any):\n' +
-  '    sendSettler: {} for a pool-less settler, or {"pool": <address>, "customerId": <bytes32>}\n' +
+  '    sendSettler: {} for a settler that never converts, or {"vault": <address>, "pool": <address>,\n' +
+  '                "customerId": <bytes32>} for one that converts the vault asset at par\n' +
   '    zoneRouter: {"factory": <address>, "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset",\n' +
   '                "pool", "customerId", "settlers"}}; bindings and settlers default to zero and []'
 

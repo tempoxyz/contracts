@@ -7,6 +7,7 @@ import { DeployRouterReleaseScript } from "../script/deploy/DeployRouterRelease.
 import { SendSettler } from "../src/SendSettler.sol";
 import { ZoneRouter } from "../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
+import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 
 /// @dev Runs the router's release entry points as Factory Release does, with a throwaway deployer key.
@@ -35,27 +36,30 @@ contract DeployRouterReleaseTest is Test {
     }
 
     function testSendSettlerIsDeterministicPerSettingAndReused() public {
-        SendSettler settler = script.sendSettler(block.chainid, IPropAMMVenue(address(0)), bytes32(0));
+        SendSettler settler = _plainSettler();
         assertEq(
             address(settler),
             vm.computeCreate2Address(
                 RELEASE_SALT,
-                keccak256(abi.encodePacked(type(SendSettler).creationCode, abi.encode(address(0), bytes32(0)))),
+                keccak256(
+                    abi.encodePacked(type(SendSettler).creationCode, abi.encode(address(0), address(0), bytes32(0)))
+                ),
                 CREATE2_DEPLOYER
             )
         );
+        assertEq(address(settler.convertVault()), address(0));
         assertEq(address(settler.pool()), address(0));
-        assertEq(address(script.sendSettler(block.chainid, IPropAMMVenue(address(0)), bytes32(0))), address(settler));
+        assertEq(address(_plainSettler()), address(settler));
 
-        // Its settings are constructor arguments, so a settler with a pool is another contract, and the
-        // constructor still refuses half a pool binding (the CREATE2 deployer drops its revert data).
+        // Its settings are constructor arguments, so a converting settler is another contract, and the
+        // constructor still refuses a partial binding (the CREATE2 deployer drops its revert data).
         vm.expectRevert(bytes(""));
-        script.sendSettler(block.chainid, IPropAMMVenue(address(0)), keccak256("customer"));
+        script.sendSettler(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), keccak256("customer"));
     }
 
     function testZoneRouterIsTheFactorysRouterForTheModeAndReused() public {
         ZoneRouterFactory factory = script.zoneRouterFactory(block.chainid);
-        ZoneRouter.Mode memory mode = _spendMode(script.sendSettler(block.chainid, IPropAMMVenue(address(0)), 0));
+        ZoneRouter.Mode memory mode = _spendMode(_plainSettler());
         ZoneRouter router = script.zoneRouter(block.chainid, factory, mode);
         assertEq(address(router), factory.predict(mode));
         assertEq(
@@ -84,6 +88,10 @@ contract DeployRouterReleaseTest is Test {
             abi.encodeWithSelector(DeployRouterReleaseScript.UnexpectedChain.selector, block.chainid, block.chainid + 1)
         );
         script.zoneRouterFactory(block.chainid + 1);
+    }
+
+    function _plainSettler() internal returns (SendSettler) {
+        return script.sendSettler(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
     }
 
     function _spendMode(SendSettler settler) internal pure returns (ZoneRouter.Mode memory mode) {

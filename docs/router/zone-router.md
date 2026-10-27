@@ -144,20 +144,28 @@ interface ISpendSettler {
 
 [`SendSettler`](../../router/src/SendSettler.sol) pays a public address. A mode allows sends only if
 it lists a `SendSettler`; a closed-loop mode, listing only its card program's settler, does not. It
-has no owner or setters, and its only setting is an optional par-conversion pool and customer ID,
-fixed at deployment. Its `settlerData` is `abi.encode(Send(to, token, amount, vault, ref))`, and
-`to` receives exactly `amount` of `token`:
+has no owner or setters, and its only setting is an optional conversion binding fixed at deployment:
+a vault, a pool pairing that vault's asset with one other stablecoin of equal decimals (its par
+stablecoin), and a customer ID, all set or all zero. Its `settlerData` is
+`abi.encode(Send(to, token, amount, vault, ref))`, and `to` receives exactly `amount` of `token`:
 
-| `vault` | `token`                    | Input         | How it pays                                                              |
-| ------- | -------------------------- | ------------- | ------------------------------------------------------------------------ |
-| Zero    | The withdrawn token        | That token    | Transfers `amount` (a stablecoin or EarnShare)                           |
-| A vault | The vault asset            | Its EarnShare | `withdrawExact(amount, to, maxInput)`                                    |
-| A vault | The asset's par stablecoin | Its EarnShare | `withdrawExact` to itself, then the pool at the oracle's exact par price |
+| `vault`         | `token`                     | Input         | How it pays                                                              |
+| --------------- | --------------------------- | ------------- | ------------------------------------------------------------------------ |
+| Zero            | The withdrawn token         | That token    | Transfers `amount` (a stablecoin or EarnShare)                           |
+| Any vault       | The vault asset             | Its EarnShare | `withdrawExact(amount, to, maxInput)`                                    |
+| Its bound vault | That vault's par stablecoin | Its EarnShare | `withdrawExact` to itself, then the pool at the oracle's exact par price |
 
-It checks that `to`'s balance rose by exactly `amount`, so a vault or pool that reports success
-without paying cannot settle, hands every unused unit back to the router and keeps no balance or
-allowance. Whoever builds the callback picks `to` and `vault` and spends only their own input,
-capped at `maxInput`. Conversion needs the pool owner to admit the settler as a taker and recipient.
+Conversion runs only from the bound vault's asset into its par stablecoin; any other vault, token
+or direction reverts with `ConversionNotAllowed`, so a vault the caller makes up cannot trade through
+the pool. The constructor checks the pair and the equal decimals. The settler checks that `to`'s
+balance rose by exactly `amount`, so a vault or pool that reports success without paying cannot
+settle. For a [virtual address](https://github.com/tempoxyz/tempo/blob/main/tips/tip-1022.md), which
+a TIP-20 transfer credits to its registered master, it measures the master that Tempo's address
+registry resolves, redeems to itself and transfers to `to` (Earn's engines measure the literal
+receiver), and reverts for an unregistered one, as the transfer would. It hands every unused unit
+back to the router and keeps no balance or allowance. Whoever builds the callback picks `to` and
+`vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
+admit the settler as a taker and recipient.
 It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
 no Zone account or `senderTag`. Deploy one with the [Factory Release `sendSettler`](../deployment/deployment.md#router-releases) and list it in a
 profile's `zoneRouter.settlers`.

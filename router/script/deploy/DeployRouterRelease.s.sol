@@ -9,6 +9,7 @@ import { ZoneRouterFactory } from "../../src/ZoneRouterFactory.sol";
 // Earn's own DeterministicRelease, reached through the existing `tempo-earn/` (earn/src/) remapping: a new
 // remapping would change every router contract's metadata hash, and so its bytecode and address.
 import { DeterministicRelease } from "tempo-earn/../script/deploy/DeterministicRelease.sol";
+import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 
 /// @notice Release entry points for the router project's ownerless contracts, which Factory Release
@@ -50,20 +51,25 @@ contract DeployRouterReleaseScript is DeterministicRelease {
         console2.log("ZONE_ROUTER_FACTORY_ADDRESS", address(factory));
     }
 
-    /// @notice An ownerless SendSettler; `pool` and `customerId` are both zero for one that never converts.
-    function sendSettler(uint256 expectedChainId, IPropAMMVenue pool, bytes32 customerId)
+    /// @notice An ownerless SendSettler; `vault`, `pool` and `customerId` are all zero for one that never
+    ///         converts, or all set for one that converts `vault`'s asset at par through `pool`.
+    function sendSettler(uint256 expectedChainId, IEarnVault vault, IPropAMMVenue pool, bytes32 customerId)
         external
         release(expectedChainId)
         returns (SendSettler settler)
     {
-        address predicted =
-            _releaseAddress(abi.encodePacked(type(SendSettler).creationCode, abi.encode(pool, customerId)));
+        address predicted = _releaseAddress(
+            abi.encodePacked(type(SendSettler).creationCode, abi.encode(vault, pool, customerId))
+        );
         settler = predicted.code.length == 0
-            ? new SendSettler{ salt: RELEASE_SALT }(pool, customerId)
+            ? new SendSettler{ salt: RELEASE_SALT }(vault, pool, customerId)
             : SendSettler(predicted);
         if (address(settler) != predicted) revert DeploymentVerificationFailed();
         _requireCode(address(settler));
-        if (address(settler.pool()) != address(pool) || settler.customerId() != customerId) revert BindingFailed();
+        if (
+            address(settler.convertVault()) != address(vault) || address(settler.pool()) != address(pool)
+                || settler.customerId() != customerId
+        ) revert BindingFailed();
         console2.log("SEND_SETTLER_ADDRESS", address(settler));
     }
 

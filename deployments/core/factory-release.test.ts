@@ -114,10 +114,14 @@ describe('planFactoryRelease', () => {
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: factory.calldata }),
     ).toEqual({ functionName: 'zoneRouterFactory', args: [4217n] })
     const settler = planFactoryRelease('sendSettler', 42431)
-    expect(settler.parameters).toEqual({ pool: zeroAddress, customerId: zeroHash })
+    expect(settler.parameters).toEqual({
+      vault: zeroAddress,
+      pool: zeroAddress,
+      customerId: zeroHash,
+    })
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: settler.calldata }),
-    ).toEqual({ functionName: 'sendSettler', args: [42431n, zeroAddress, zeroHash] })
+    ).toEqual({ functionName: 'sendSettler', args: [42431n, zeroAddress, zeroAddress, zeroHash] })
     const router = planFactoryRelease('zoneRouter', 4217, routerParameters)
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: router.calldata }),
@@ -155,20 +159,30 @@ describe('release parameters', () => {
     expect(() => planFactoryRelease('core', 4217, [])).toThrow('parameters must be an object')
   })
 
-  test('a SendSettler converts with a pool and customer ID set together, or not at all', () => {
+  test('a SendSettler converts with a vault, pool and customer ID set together, or not at all', () => {
     const customerId = keccak256(stringToBytes('customer'))
+    const binding = { vault: address('ab'), pool: address('aa'), customerId }
     expect(
-      planFactoryRelease('sendSettler', 4217, { pool: address('aa').toLowerCase(), customerId })
-        .parameters,
-    ).toEqual({ pool: address('aa'), customerId })
-    expect(() => planFactoryRelease('sendSettler', 4217, { pool: address('aa') })).toThrow(
-      'parameters.pool and parameters.customerId are set together or not at all',
-    )
+      planFactoryRelease('sendSettler', 4217, {
+        ...binding,
+        vault: address('ab').toLowerCase(),
+        pool: address('aa').toLowerCase(),
+      }).parameters,
+    ).toEqual(binding)
+    for (const key of ['vault', 'pool', 'customerId'] as const) {
+      const { [key]: _, ...partial } = binding
+      expect(() => planFactoryRelease('sendSettler', 4217, partial)).toThrow(
+        'parameters.vault, parameters.pool and parameters.customerId are set together or not at all',
+      )
+    }
     expect(() =>
-      planFactoryRelease('sendSettler', 4217, { pool: zeroAddress, customerId }),
+      planFactoryRelease('sendSettler', 4217, { ...binding, vault: zeroAddress }),
+    ).toThrow('parameters.vault must be a nonzero address')
+    expect(() =>
+      planFactoryRelease('sendSettler', 4217, { ...binding, pool: zeroAddress }),
     ).toThrow('parameters.pool must be a nonzero address')
     expect(() =>
-      planFactoryRelease('sendSettler', 4217, { pool: address('aa'), customerId: zeroHash }),
+      planFactoryRelease('sendSettler', 4217, { ...binding, customerId: zeroHash }),
     ).toThrow('parameters.customerId must be a nonzero bytes32')
     expect(() => planFactoryRelease('sendSettler', 4217, { owner: address('aa') })).toThrow(
       'parameters.owner is not supported',
@@ -266,10 +280,15 @@ describe('predictRelease for router releases', () => {
     const customerId = keccak256(stringToBytes('customer'))
     const [poolless] = predictRelease(planFactoryRelease('sendSettler', 4217), bytecode)
     const [converting] = predictRelease(
-      planFactoryRelease('sendSettler', 4217, { pool: address('b0'), customerId }),
+      planFactoryRelease('sendSettler', 4217, {
+        vault: address('b1'),
+        pool: address('b0'),
+        customerId,
+      }),
       bytecode,
     )
-    const args = encodeAbiParameters(parseAbiParameters('address, bytes32'), [
+    const args = encodeAbiParameters(parseAbiParameters('address, address, bytes32'), [
+      address('b1'),
       address('b0'),
       customerId,
     ])
@@ -283,7 +302,11 @@ describe('predictRelease for router releases', () => {
       }),
     )
     expect(poolless!.constructorArgs).toBe(
-      encodeAbiParameters(parseAbiParameters('address, bytes32'), [zeroAddress, zeroHash]),
+      encodeAbiParameters(parseAbiParameters('address, address, bytes32'), [
+        zeroAddress,
+        zeroAddress,
+        zeroHash,
+      ]),
     )
     expect(poolless!.address).not.toBe(converting!.address)
   })
