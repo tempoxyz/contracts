@@ -1,24 +1,24 @@
 name: Factory Release
 
-# Deploys one shared factory release on a hosted network from main and source verifies it on Tempo's
-# verifier. The release registry (deployments/core/releases.ts) changes only through a reviewed pull
-# request afterwards.
+# Deploys the shared factory releases from main on the hosted networks and source verifies them on
+# Tempo's verifier, then pushes a branch that records the verified releases in
+# deployments/core/releases.ts, for a maintainer to open as a pull request.
 on:
   workflow_dispatch:
     inputs:
-      network:
-        description: Hosted network
+      networks:
+        description: Hosted networks; both runs Moderato first, and mainnet only after it succeeds
         required: true
         type: choice
         # The factory release unit test asserts these lists match the hosted networks and releases.
-        options: [moderato, mainnet]
+        options: [both, moderato, mainnet]
       release:
-        description: Release to deploy (core is EarnVault, EarnFees, and the EarnFactory bound to them)
+        description: Releases to deploy; all is the core release (EarnVault, EarnFees, EarnFactory) and every engine factory
         required: true
         type: choice
-        options: [core, rewards, erc4626Engine]
+        options: [all, core, rewards, erc4626Engine]
       broadcast:
-        description: Broadcast and source verify; unchecked only simulates
+        description: Broadcast, source verify, and push the registry branch; unchecked only simulates
         required: true
         type: boolean
         default: false
@@ -27,17 +27,23 @@ permissions: {}
 
 jobs:
   release:
-    name: ${{ inputs.release }} on ${{ inputs.network }}${{ inputs.broadcast && ' (broadcast)' || ' (dry run)' }}
+    name: ${{ inputs.release }} on ${{ matrix.network }}${{ inputs.broadcast && ' (broadcast)' || ' (dry run)' }}
     if: github.ref == 'refs/heads/main'
+    strategy:
+      # One network at a time, in order; a failure stops the networks after it.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        network: ${{ fromJSON(inputs.networks == 'both' && '["moderato","mainnet"]' || format('["{0}"]', inputs.networks)) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     # Each network's environment requires a reviewer's approval and holds the deployer key, the same
     # key local profile deployments use.
-    environment: factory-release-${{ inputs.network }}
+    environment: factory-release-${{ matrix.network }}
     # Shares the network's hosted-contracts queue. It orders only CI jobs, so do not broadcast with the
     # deployer key locally while a release runs.
     concurrency:
-      group: hosted-contracts-${{ inputs.network }}
+      group: hosted-contracts-${{ matrix.network }}
       cancel-in-progress: false
       queue: max
     permissions:
@@ -58,7 +64,7 @@ jobs:
 
       - name: Deploy and verify
         env:
-          NETWORK: ${{ inputs.network }}
+          NETWORK: ${{ matrix.network }}
           RELEASE: ${{ inputs.release }}
           BROADCAST: ${{ inputs.broadcast }}
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
@@ -81,35 +87,97 @@ jobs:
       - name: Summarize
         if: ${{ always() }}
         env:
-          RELEASE: ${{ inputs.release }}
-          NETWORK: ${{ inputs.network }}
+          NETWORK: ${{ matrix.network }}
         run: |
           result="$RUNNER_TEMP/factory-release.json"
           if [[ ! -f "$result" ]]; then
-            echo 'The release produced no result.' >> "$GITHUB_STEP_SUMMARY"
+            echo "No release ran on ${NETWORK}." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           {
-            echo "## ${RELEASE} factory release on ${NETWORK} · $(jq -r 'if .broadcast then "broadcast" else "dry run" end' "$result") · ${GITHUB_SHA::7}"
+            echo "## Factory releases on ${NETWORK} · $(jq -r 'if .broadcast then "broadcast" else "dry run" end' "$result") · ${GITHUB_SHA::7}"
             echo
-            echo '| Contract | Address | Transaction | Source match |'
-            echo '| --- | --- | --- | --- |'
-            jq -r '.contracts[] | "| \(.name) | `\(.address)` | `\(.transaction // "-")` | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
-            if jq -e '.broadcast and .registry != null' "$result" >/dev/null; then
+            echo '| Release | Contract | Address | Transaction | Source match |'
+            echo '| --- | --- | --- | --- | --- |'
+            jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | `\(.transaction // "-")` | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
+            if jq -e '(.broadcast | not) and (.releases | length > 1)' "$result" >/dev/null; then
               echo
-              echo 'Review this entry into deployments/core/releases.ts:'
+              echo 'A dry run simulates each release from the deployer'"'"'s current nonce, so the addresses after the first release are not the ones a broadcast creates.'
+            fi
+            if jq -e '.failed' "$result" >/dev/null; then
               echo
-              echo '```json'
-              jq '.registry' "$result"
-              echo '```'
+              echo "Stopped at the $(jq -r '.failed.kind' "$result") release; the releases above it are deployed."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
-          name: factory-release-${{ inputs.network }}-${{ inputs.release }}
+          name: factory-release-${{ matrix.network }}
           path: |
             ${{ runner.temp }}/factory-release.json
             earn/broadcast/
           if-no-files-found: ignore
+
+  # Records every broadcast release whose contracts all source verified, including those from a
+  # network that later failed, on a branch; the registry changes only through a reviewed pull request.
+  registry:
+    name: Push the registry branch
+    needs: release
+    if: ${{ always() && inputs.broadcast && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: '@tempoxyz/earn'
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: factory-release-*
+          path: ${{ runner.temp }}/releases
+
+      - name: Record the verified releases
+        id: registry
+        run: |
+          set -euo pipefail
+          mapfile -t results < <(find "$RUNNER_TEMP/releases" -name factory-release.json | sort)
+          if [[ ${#results[@]} -eq 0 ]]; then
+            echo 'No release produced a result.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          pnpm factory-release registry "${results[@]}" --body "$RUNNER_TEMP/registry-pr.md"
+          if git diff --quiet -- deployments/core/releases.ts; then
+            echo 'No verified release to record.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push the branch
+        if: ${{ steps.registry.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="factory-release/${GITHUB_RUN_ID}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --create "$branch"
+          git commit --message "feat(deployments): record the factory releases from run ${GITHUB_RUN_ID}" -- deployments/core/releases.ts
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          {
+            echo "Pushed \`$branch\` with the verified releases in releases.ts."
+            echo "[Open its pull request](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${branch}?expand=1) with this description:"
+            echo
+            cat "$RUNNER_TEMP/registry-pr.md"
+          } >> "$GITHUB_STEP_SUMMARY"

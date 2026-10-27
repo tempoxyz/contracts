@@ -411,10 +411,140 @@ export async function deployFactoryRelease(
   }
 }
 
+/** The releases the registry names, in deploy order; `all` deploys these. */
+export const registryReleaseKinds = factoryReleaseKinds.filter((kind) => kind !== 'rewards')
+
+/** The release kinds one selection deploys: `all`, or a single kind. */
+export function releaseKindsFor(selection: string): string[] {
+  if (selection === 'all') return [...registryReleaseKinds]
+  if (!(factoryReleaseKinds as readonly string[]).includes(selection)) {
+    throw new Error(
+      `Unknown factory release ${selection}; expected all or one of ${factoryReleaseKinds.join(', ')}`,
+    )
+  }
+  return [selection]
+}
+
+/** One network's run of one or more releases, written after each release so a failure keeps the rest. */
+export type FactoryReleaseRun = {
+  network: string
+  chainId: number | null
+  broadcast: boolean
+  releases: FactoryReleaseResult[]
+  /** The release that stopped the run, when one did. */
+  failed?: { kind: string }
+}
+
+type RegistryUpdate = { network: string; key: string; address: Address; kind: string }
+
+/**
+ * The registry entries a set of runs proves: each broadcast release that names a registry entry and
+ * whose every contract source verified. Anything else is skipped with its reason.
+ */
+export function registryUpdates(runs: readonly FactoryReleaseRun[]) {
+  const updates: RegistryUpdate[] = []
+  const skipped: { network: string; kind: string; reason: string }[] = []
+  for (const run of runs) {
+    if (run.failed) skipped.push({ network: run.network, kind: run.failed.kind, reason: 'failed' })
+    for (const release of run.releases) {
+      if (!release.registry) continue
+      if (!release.broadcast) {
+        skipped.push({ network: run.network, kind: release.kind, reason: 'dry run' })
+        continue
+      }
+      const unverified = release.contracts.filter((contract) => contract.match === null)
+      if (unverified.length > 0) {
+        skipped.push({
+          network: run.network,
+          kind: release.kind,
+          reason: `not source verified: ${unverified.map((contract) => contract.name).join(', ')}`,
+        })
+        continue
+      }
+      for (const [key, address] of Object.entries(release.registry)) {
+        updates.push({ network: run.network, key, address, kind: release.kind })
+      }
+    }
+  }
+  return { updates, skipped }
+}
+
+/** Rewrites one network's entries in releases.ts, refusing an entry the file does not declare. */
+export function updateReleaseRegistry(
+  source: string,
+  updates: readonly Pick<RegistryUpdate, 'network' | 'key' | 'address'>[],
+) {
+  let result = source
+  for (const { network, key, address } of updates) {
+    const start = result.indexOf(`\n  ${network}: {\n    factories: {\n`)
+    const end = start < 0 ? -1 : result.indexOf('\n    },\n', start)
+    if (start < 0 || end < 0) throw new Error(`releases.ts has no ${network} release`)
+    const block = result.slice(start, end)
+    const entry = new RegExp(`^(      ${key}: )(?:getAddress\\('0x[0-9a-fA-F]{40}'\\)|null),$`, 'm')
+    if (!entry.test(block)) throw new Error(`releases.ts has no ${network}.${key} entry`)
+    result =
+      result.slice(0, start) +
+      block.replace(entry, `$1getAddress('${getAddress(address)}'),`) +
+      result.slice(end)
+  }
+  return result
+}
+
+/** The pull request body that records the updates, with each contract's verification. */
+export function registryPullRequestBody(
+  runs: readonly FactoryReleaseRun[],
+  summary: ReturnType<typeof registryUpdates>,
+  runUrl?: string,
+) {
+  const lines = [
+    `Records the shared factory releases${runUrl ? ` from [the Factory Release run](${runUrl})` : ''} in [\`releases.ts\`](deployments/core/releases.ts). Each was broadcast from \`main\` and source verified on contracts.tempo.xyz.`,
+    '',
+    '| Network | Release | Contract | Address | Transaction | Source match |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ]
+  const recorded = new Set(summary.updates.map((update) => `${update.network}:${update.kind}`))
+  for (const run of runs) {
+    for (const release of run.releases) {
+      if (!recorded.has(`${run.network}:${release.kind}`)) continue
+      for (const contract of release.contracts) {
+        lines.push(
+          `| ${run.network} | ${release.kind} | ${contract.name} | \`${contract.address}\` | \`${contract.transaction ?? '-'}\` | ${contract.match} |`,
+        )
+      }
+    }
+  }
+  if (summary.skipped.length > 0) {
+    lines.push('', 'Not recorded:', '')
+    for (const skip of summary.skipped) lines.push(`- ${skip.network} ${skip.kind}: ${skip.reason}`)
+  }
+  lines.push(
+    '',
+    "Finish or discard any pending profile deployment on these networks before merging: a pending deployment must use its chain's current release.",
+  )
+  return `${lines.join('\n')}\n`
+}
+
 const usage =
-  'Usage: pnpm factory-release <network> <release> [--broadcast] [--output <file>]\n' +
+  'Usage: pnpm factory-release <network> <release|all> [--broadcast] [--output <file>]\n' +
+  '       pnpm factory-release registry <result.json>... [--body <file>]\n' +
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
-  `  release: ${factoryReleaseKinds.join(' | ')}`
+  `  release: all (${registryReleaseKinds.join(', ')}) | ${factoryReleaseKinds.join(' | ')}`
+
+/** Applies every verified release in the result files to releases.ts. */
+function registryMain(files: string[], body: string | undefined) {
+  if (files.length === 0) throw new Error(usage)
+  const runs = files.map((file) => JSON.parse(readFileSync(file, 'utf8')) as FactoryReleaseRun)
+  const summary = registryUpdates(runs)
+  const path = fileURLToPath(new URL('./releases.ts', import.meta.url))
+  writeFileSync(path, updateReleaseRegistry(readFileSync(path, 'utf8'), summary.updates))
+  const server = process.env.GITHUB_SERVER_URL
+  const runUrl =
+    server && process.env.GITHUB_REPOSITORY && process.env.GITHUB_RUN_ID
+      ? `${server}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
+      : undefined
+  if (body) writeFileSync(body, registryPullRequestBody(runs, summary, runUrl))
+  console.log(JSON.stringify(summary, null, 2))
+}
 
 /** CLI boundary; reads DEPLOYER_PRIVATE_KEY and the optional TEMPO_RPC_* from the environment. */
 export async function main(
@@ -427,6 +557,7 @@ export async function main(
     options: {
       broadcast: { type: 'boolean', default: false },
       output: { type: 'string' },
+      body: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   })
@@ -434,19 +565,47 @@ export async function main(
     console.log(usage)
     return
   }
-  const [network, kind] = positionals
-  if (!network || !kind || positionals.length !== 2) throw new Error(usage)
-  const result = await deployFactoryRelease({
+  if (positionals[0] === 'registry') {
+    registryMain(positionals.slice(1), values.body)
+    return
+  }
+  const [network, selection] = positionals
+  if (!network || !selection || positionals.length !== 2) throw new Error(usage)
+  const kinds = releaseKindsFor(selection)
+  const run: FactoryReleaseRun = {
     network,
-    kind,
+    chainId: hostedEnvironments[network as HostedEnvironmentId]?.chainId ?? null,
     broadcast: values.broadcast,
-    root,
-    environment: process.env,
-  })
-  const json = `${JSON.stringify(result, null, 2)}\n`
-  if (values.output) writeFileSync(values.output, json)
-  console.log(json)
-  const unverified = result.contracts.filter((contract) => contract.verificationError)
+    releases: [],
+  }
+  const record = () => {
+    const json = `${JSON.stringify(run, null, 2)}\n`
+    if (values.output) writeFileSync(values.output, json)
+    return json
+  }
+  for (const kind of kinds) {
+    try {
+      run.releases.push(
+        await deployFactoryRelease({
+          network,
+          kind,
+          broadcast: values.broadcast,
+          root,
+          environment: process.env,
+        }),
+      )
+      record()
+    } catch (error) {
+      // Earlier releases are deployed; keep them in the result before stopping.
+      run.failed = { kind }
+      record()
+      throw error
+    }
+  }
+  console.log(record())
+  const unverified = run.releases.flatMap((release) =>
+    release.contracts.filter((contract) => contract.verificationError),
+  )
   if (unverified.length > 0) {
     throw new Error(
       `Deployed but not source verified: ${unverified.map((contract) => `${contract.name} ${contract.address} (${contract.verificationError})`).join('; ')}. Retry with forge verify-contract (docs/deployment/deployment.md#shared-factory-releases); do not rerun the release.`,
