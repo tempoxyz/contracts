@@ -71,7 +71,7 @@ const contracts = sourceContracts
  * zone-router/ (built with `cd zone-router && forge build src script` before generating).
  */
 const zoneRouterRoot = new URL('../../zone-router/', import.meta.url)
-const routerContracts = ['ZoneRouter', 'ZoneRouterFactory', 'SendSettler'].map(
+const routerContracts = ['ZoneRouter', 'ZoneRouterFactory', 'SendSettler', 'BridgeSettler'].map(
   (contract) => [`${camel(contract)}Abi`, `out/${contract}.sol/${contract}.json`] as const,
 )
 

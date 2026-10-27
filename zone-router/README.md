@@ -1,12 +1,13 @@
 # Tempo Zone router
 
-One ownerless router per mode for a Zone's withdrawal callbacks: Earn deposits and redemptions,
-and spends through settlers fixed at deployment. The design, its invariants and the card flows are
-in [docs/zone-router/zone-router.md](../docs/zone-router/zone-router.md).
+One ownerless router per mode for a Zone's withdrawal callbacks on Tempo: Earn deposits and
+redemptions, and spends through settlers fixed at deployment. The design, its invariants and each
+settler are in [docs/zone-router/zone-router.md](../docs/zone-router/zone-router.md).
 
-This is a separate Foundry project beside [Earn](../earn/README.md) and [Spend](../spend/README.md),
-compiled with solc. It imports Earn's interfaces from [`earn/src/`](../earn/src/) rather than a copy,
-and Spend's settlers implement its [`ISpendSettler`](src/interfaces/ISpendSettler.sol).
+This is a separate Foundry project beside [Earn](../earn/README.md) and the
+[Bridge integration](../bridge/README.md), compiled with solc. It imports Earn's interfaces from
+[`earn/src/`](../earn/src/) rather than a copy. Bridge's "TS" handler in `bridge/` imports the
+`Spend` struct from here, so the handler and `BridgeSettler` encode the same spend.
 
 ## What is here
 
@@ -15,13 +16,19 @@ and Spend's settlers implement its [`ISpendSettler`](src/interfaces/ISpendSettle
   settler and returns the rest to the source Zone.
 - [`ZoneRouterFactory`](src/ZoneRouterFactory.sol): permissionless CREATE2 deployment at an address
   fixed by the mode, with `predict`, `isRouter` and `RouterDeployed` for Zone admins.
-- [`SendSettler`](src/SendSettler.sol): a settler that pays a public address in the withdrawn
-  token, in the vault asset redeemed from EarnShare, or, for the one vault it is bound to at
-  deployment, in the stablecoin that vault's asset converts into at par. A mode allows sends only if
-  it lists it.
+- [`src/settlers/`](src/settlers/): the settlers a Spend mode can list, each adapting one payee
+  system. A mode allows a settler only if it lists it.
+  - [`SendSettler`](src/settlers/SendSettler.sol) pays a public address in the withdrawn token, in
+    the vault asset redeemed from EarnShare, or, for the one vault it is bound to at deployment, in
+    the stablecoin that vault's asset converts into at par.
+  - [`BridgeSettler`](src/settlers/BridgeSettler.sol) settles a card spend through one Bridge card
+    program's spender clone and its "TS" handler. [`settlers/bridge/`](src/settlers/bridge/IBridgeSpender.sol)
+    holds the `Spend` struct and the two Bridge calls it makes.
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
-  [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) workflow runs for the factory, settlers and routers.
+  [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the
+  [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) workflow runs for the
+  factory, each settler and routers.
 
 ## Running it
 

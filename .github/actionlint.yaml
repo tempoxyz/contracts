@@ -12,7 +12,7 @@ paths:
     ignore:
       # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.
       - 'unexpected key "queue" for "concurrency" section'
-  '.github/workflows/spend-release.yml':
+  '.github/workflows/bridge-release.yml':
     ignore:
       # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.
       - 'unexpected key "queue" for "concurrency" section'

@@ -3,9 +3,11 @@ pragma solidity ^0.8.36;
 
 import { console2 } from "forge-std/Script.sol";
 
-import { SendSettler } from "../../src/SendSettler.sol";
 import { ZoneRouter } from "../../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../src/ZoneRouterFactory.sol";
+import { BridgeSettler } from "../../src/settlers/BridgeSettler.sol";
+import { SendSettler } from "../../src/settlers/SendSettler.sol";
+import { IBridgeSpenderFactory } from "../../src/settlers/bridge/IBridgeSpender.sol";
 // Earn's own DeterministicRelease, reached through the existing `tempo-earn/` (earn/src/) remapping: a new
 // remapping would change every router contract's metadata hash, and so its bytecode and address.
 import { DeterministicRelease } from "tempo-earn/../script/deploy/DeterministicRelease.sol";
@@ -14,14 +16,15 @@ import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVe
 
 /// @notice Release entry points for the router project's ownerless contracts, which Zone Router Release
 ///         deploys like Earn's shared factories (docs/deployment/deployment.md#zone-router-releases).
-///         The ZoneRouterFactory and each SendSettler are created through the CREATE2 deployer with
-///         Earn's release salt (DeterministicRelease); a ZoneRouter is created by its factory, at the
-///         address its mode fixes. Each entry point reuses a contract that already exists, so whoever
+///         The ZoneRouterFactory and each SendSettler and BridgeSettler are created through the CREATE2
+///         deployer with Earn's release salt (DeterministicRelease); a ZoneRouter is created by its
+///         factory, at the address its mode fixes. Each entry point reuses a contract that already exists, so whoever
 ///         deploys the same release lands at the same address.
 contract DeployRouterReleaseScript is DeterministicRelease {
     error BindingFailed();
     error DeploymentVerificationFailed();
     error NoFactory(address factory);
+    error NoProgram(bytes32 spenderId);
     error UnexpectedFoundryProfile(string actual);
     error UnexpectedChain(uint256 actual, uint256 expected);
 
@@ -71,6 +74,32 @@ contract DeployRouterReleaseScript is DeterministicRelease {
                 || settler.customerId() != customerId
         ) revert BindingFailed();
         console2.log("SEND_SETTLER_ADDRESS", address(settler));
+    }
+
+    /// @notice An ownerless BridgeSettler for the Bridge card program `spenderId` of Bridge's SpenderFactory
+    ///         `factory`, which must already have created the program's spender clone.
+    function bridgeSettler(uint256 expectedChainId, IBridgeSpenderFactory factory, bytes32 spenderId)
+        external
+        release(expectedChainId)
+        returns (BridgeSettler settler)
+    {
+        if (address(factory).code.length == 0) revert NoFactory(address(factory));
+        address clone;
+        try factory.getSpenderAddress(spenderId) returns (address spender) {
+            clone = spender;
+        } catch { }
+        if (clone.code.length == 0) revert NoProgram(spenderId);
+        address predicted =
+            _releaseAddress(abi.encodePacked(type(BridgeSettler).creationCode, abi.encode(factory, spenderId)));
+        settler = predicted.code.length == 0
+            ? new BridgeSettler{ salt: RELEASE_SALT }(factory, spenderId)
+            : BridgeSettler(predicted);
+        if (address(settler) != predicted) revert DeploymentVerificationFailed();
+        _requireCode(address(settler));
+        if (address(settler.FACTORY()) != address(factory) || settler.SPENDER_ID() != spenderId) {
+            revert BindingFailed();
+        }
+        console2.log("BRIDGE_SETTLER_ADDRESS", address(settler));
     }
 
     /// @notice The router `factory` deploys for `mode`, unless the factory already deployed it.

@@ -1,7 +1,8 @@
 name: Zone Router Release
 
 # Deploys one of the Zone router project's ownerless contracts (zone-router/) from main on the hosted networks:
-# the ZoneRouterFactory, a SendSettler, or a ZoneRouter its factory creates. Each lands at its
+# the ZoneRouterFactory, a SendSettler, a Bridge card program's BridgeSettler, or a ZoneRouter its factory
+# creates. Each lands at its
 # deterministic address, and one already there is reused. After a broadcast it is source verified on
 # Tempo's verifier. These contracts are in no release registry, so nothing is recorded afterwards; the
 # job summary and artifact hold the addresses. Earn's shared factory releases run in factory-release.yml.
@@ -18,9 +19,9 @@ on:
         description: Zone router contract to deploy
         required: true
         type: choice
-        options: [zoneRouterFactory, sendSettler, zoneRouter]
+        options: [zoneRouterFactory, sendSettler, bridgeSettler, zoneRouter]
       parameters:
-        description: 'JSON parameters: sendSettler {"vault", "pool", "customerId"} (all three, or {} for none); zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for zoneRouterFactory'
+        description: 'JSON parameters: sendSettler {"vault", "pool", "customerId"} (all three, or {} for none); bridgeSettler {"factory", "spenderId"}; zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for zoneRouterFactory'
         required: false
         type: string
         default: '{}'
@@ -48,7 +49,7 @@ jobs:
     # main, and holds the deployer key the factory releases use. The contracts
     # are ownerless, so the key only pays fees.
     environment: factory-release-${{ matrix.network }}
-    # Shares the network's hosted-contracts queue with the factory and spend releases, so the deployer
+    # Shares the network's hosted-contracts queue with the factory and Bridge releases, so the deployer
     # key never sends from two CI jobs at once. It orders only CI jobs, so do not broadcast with the
     # deployer key locally while a release runs.
     concurrency:

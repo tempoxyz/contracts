@@ -4,9 +4,12 @@ pragma solidity ^0.8.36;
 import { Test } from "forge-std/Test.sol";
 
 import { DeployRouterReleaseScript } from "../script/deploy/DeployRouterRelease.s.sol";
-import { SendSettler } from "../src/SendSettler.sol";
 import { ZoneRouter } from "../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
+import { BridgeSettler } from "../src/settlers/BridgeSettler.sol";
+import { SendSettler } from "../src/settlers/SendSettler.sol";
+import { IBridgeSpenderFactory } from "../src/settlers/bridge/IBridgeSpender.sol";
+import { MockClone, MockFactory } from "./BridgeSettler.t.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 
@@ -55,6 +58,50 @@ contract DeployRouterReleaseTest is Test {
         // constructor still refuses a partial binding (the CREATE2 deployer drops its revert data).
         vm.expectRevert(bytes(""));
         script.sendSettler(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), keccak256("customer"));
+    }
+
+    function testBridgeSettlerIsDeterministicPerProgramAndReused() public {
+        bytes32 spenderId = keccak256("program");
+        MockFactory factory = new MockFactory();
+        factory.setClone(spenderId, address(new MockClone()));
+        BridgeSettler settler = script.bridgeSettler(block.chainid, factory, spenderId);
+        assertEq(
+            address(settler),
+            vm.computeCreate2Address(
+                RELEASE_SALT,
+                keccak256(abi.encodePacked(type(BridgeSettler).creationCode, abi.encode(factory, spenderId))),
+                CREATE2_DEPLOYER
+            )
+        );
+        assertEq(address(settler.FACTORY()), address(factory));
+        assertEq(settler.SPENDER_ID(), spenderId);
+        assertEq(address(script.bridgeSettler(block.chainid, factory, spenderId)), address(settler));
+
+        // Another program of the same factory gets its own settler.
+        bytes32 otherId = keccak256("other program");
+        factory.setClone(otherId, address(new MockClone()));
+        assertTrue(address(script.bridgeSettler(block.chainid, factory, otherId)) != address(settler));
+    }
+
+    /// @dev A reverted entry point leaves its broadcast open, so each test expects one revert.
+    function testBridgeSettlerRefusesAnAddressWithoutAFactory() public {
+        IBridgeSpenderFactory missing = IBridgeSpenderFactory(makeAddr("missing"));
+        vm.expectRevert(abi.encodeWithSelector(DeployRouterReleaseScript.NoFactory.selector, address(missing)));
+        script.bridgeSettler(block.chainid, missing, keccak256("program"));
+    }
+
+    /// @dev Bridge's factory reverts for an unknown spender ID.
+    function testBridgeSettlerRefusesAnUnknownProgram() public {
+        MockFactory factory = new MockFactory();
+        vm.expectRevert(abi.encodeWithSelector(DeployRouterReleaseScript.NoProgram.selector, keccak256("program")));
+        script.bridgeSettler(block.chainid, factory, keccak256("program"));
+    }
+
+    function testBridgeSettlerRefusesAProgramWithoutAClone() public {
+        MockFactory factory = new MockFactory();
+        factory.setClone(keccak256("program"), makeAddr("not a clone"));
+        vm.expectRevert(abi.encodeWithSelector(DeployRouterReleaseScript.NoProgram.selector, keccak256("program")));
+        script.bridgeSettler(block.chainid, factory, keccak256("program"));
     }
 
     function testZoneRouterIsTheFactorysRouterForTheModeAndReused() public {

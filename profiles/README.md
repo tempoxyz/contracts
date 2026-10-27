@@ -113,7 +113,8 @@ protected-item and three-slot rules.
   profile's own EarnVault; `privateAsset`, `pool` and `customerId` follow `zone.router`'s rules
   (omit both `pool` and `customerId` when the private asset is the vault asset).
 - `settlers`, required with `spend` and rejected otherwise, lists the deployed `ISpendSettler`
-  contracts, such as a card program's `BridgeSettler`, without repeats. Their order is part of the
+  contracts, such as a `SendSettler` or a card program's `BridgeSettler` from
+  [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases), without repeats. Their order is part of the
   mode, so of the router's address.
 - `factory` names an existing `ZoneRouterFactory`. Omitted, the lifecycle deploys one as its own
   `zoneRouterFactory` component, so a later mode change deploys only a new router through it.

@@ -2,9 +2,11 @@
 
 [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) takes a Zone's withdrawal callbacks on Tempo: Earn
 deposits and redemptions, and spends through settlers fixed at deployment.
-[`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it. Both live in the
+[`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it, and the
+[settlers](#settlers) in [`src/settlers/`](../../zone-router/src/settlers/) pay a spend: `SendSettler`
+to a public address, `BridgeSettler` through a Bridge card program. All live in the
 [`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
-interfaces. Card spend through it is in [Spend's design](../spend/design.md).
+interfaces. Card spend through it is in the [Bridge integration's design](../bridge/design.md).
 
 `SingleZoneEarnRouter` ([Earn's zone router](../earn/modules/zone-router.md)) is the router Earn runs in
 production today. `ZoneRouter`'s Earn ops accept its callback data byte for byte and report the same
@@ -59,7 +61,7 @@ contracts:
 
 1. `deploy-zone-router-factory`, unless the profile names a factory;
 2. `deploy-zone-router`: `factory.deploy(mode)`, then a check of `isRouter`, `predict` and every
-   immutable against the mode. When anyone, such as Spend's script, already deployed the mode
+   immutable against the mode. When anyone, such as Bridge's deploy script, already deployed the mode
    through the factory, the step adopts that router and records its `RouterDeployed` transaction,
    which is also what it records after its own run, so a router someone created in between keeps
    its real creation transaction;
@@ -79,13 +81,12 @@ contracts:
 The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers as
 [required members](../earn/modules/access.md#required-members) of EarnShare's access policy.
 `pnpm earn verify` rechecks the factory provenance and mode and reports gateway, account,
-token and conversion readiness. A card program's `BridgeSettler` is deployed by Bridge with Spend's
-[scripts](../spend/deploy.md#3-deploy-the-settler-and-router-for-each-zone); the profile lists it
-in `settlers`.
+token and conversion readiness. A profile deploys no settler: it lists deployed ones in
+`settlers`, such as a release's `SendSettler` or a card program's `BridgeSettler`.
 
 Outside a profile, the **Zone Router Release** workflow deploys and source-verifies a
-`ZoneRouterFactory`, a `SendSettler`, or a mode's router from `main`
-([Zone router releases](../deployment/deployment.md#zone-router-releases)). Each lands at an address its
+`ZoneRouterFactory`, a `SendSettler`, a card program's `BridgeSettler`, or a mode's router from
+`main` ([Zone router releases](../deployment/deployment.md#zone-router-releases)). Each lands at an address its
 build and settings fix: the factory and settlers through the CREATE2 deployer with Earn's release
 salt, and a router at its factory's `predict(mode)`, so whoever deploys the same one, Tempo or an
 integrator, gets the same contract, and a release reuses one that exists. Admission and pool
@@ -127,6 +128,22 @@ charges for writing an allowance slot. A listed settler that keeps its input wit
 settled, within `maxInput`, so settlers are trusted to the extent of the sender's `maxInput`. The
 router accepts any enabled token and leaves it to the settler to refuse one it cannot use.
 
+## Settlers
+
+A settler adapts one payee system to the Spend op. Each lives in
+[`zone-router/src/settlers/`](../../zone-router/src/settlers/), has no owner, and keeps none of a
+callback's input. A settler may carry a minimal interface for the external system it pays into,
+never that system's code. A mode lists the settlers it allows, and only those can be named in a
+callback.
+
+| Settler         | Pays                                                           | `settlerData`       | Binding fixed at deployment              |
+| --------------- | -------------------------------------------------------------- | ------------------- | ---------------------------------------- |
+| `SendSettler`   | A public address, in the withdrawn token or redeemed from Earn | `abi.encode(Send)`  | Optional vault, par pool and customer ID |
+| `BridgeSettler` | A Bridge card program's destination, through its clone         | `abi.encode(Spend)` | Bridge's factory and the program's ID    |
+
+Both are released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) at a
+deterministic address and listed in a profile's `zoneRouter.settlers`.
+
 ### `ISpendSettler`
 
 ```text
@@ -138,11 +155,9 @@ interface ISpendSettler {
 }
 ```
 
-[`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol) is the card program's settler.
-
 ### `SendSettler`
 
-[`SendSettler`](../../zone-router/src/SendSettler.sol) pays a public address. A mode allows sends only if
+[`SendSettler`](../../zone-router/src/settlers/SendSettler.sol) pays a public address. A mode allows sends only if
 it lists a `SendSettler`; a closed-loop mode, listing only its card program's settler, does not. It
 has no owner or setters, and its only setting is an optional conversion binding fixed at deployment:
 a vault, a pool pairing that vault's asset with one other stablecoin of equal decimals (its par
@@ -169,6 +184,38 @@ admit the settler as a taker and recipient.
 It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
 no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSettler`](../deployment/deployment.md#zone-router-releases) and list it in a
 profile's `zoneRouter.settlers`.
+
+### `BridgeSettler`
+
+[`BridgeSettler`](../../zone-router/src/settlers/BridgeSettler.sol) settles a card spend through one
+Bridge card program: one deployment per program (`SPENDER_ID`) of one Bridge `SpenderFactory`
+(`FACTORY`), both fixed at deployment, so one program's approval can never pay through another's.
+Its `settlerData` is `abi.encode(Spend)`, the struct Bridge's "TS" handler
+(`SpenderTempoSpend`, in [`bridge/`](../../bridge/README.md)) settles for public spend too.
+[`settlers/bridge/IBridgeSpender.sol`](../../zone-router/src/settlers/bridge/IBridgeSpender.sol) holds
+that struct, its only definition, and the two Bridge calls the settler makes: the factory's
+`getSpenderAddress` and the clone's `publicCall`. A `settle`:
+
+1. requires the `Spend` to be for its program (`WrongProgram`) and `0 < maxInput <= type(uint128).max`
+   (`InvalidAmount`);
+2. requires the input to be the spend's token, or, when the vault funds all of it
+   (`fromVault == amount`), that vault's EarnShare (`WrongInputToken`); a spend split between both
+   cannot come from one withdrawal;
+3. requires the `maxInput` the router sent (`InsufficientInput`), approves it to the program's clone
+   and calls `publicCall("TS" "PS" abi.encode(spend))`, so the handler sees the settler as the
+   payer, then clears the approval;
+4. requires the handler to have used some input and no more than it was given (`NothingSettled`),
+   and the destination's balance of `Spend.token` to have risen by exactly `amount`
+   (`DestinationNotPaid`), so a replaced handler cannot look settled;
+5. hands the unused input back to the router and requires its own balance to be what it held before
+   the router's input arrived (`ResidualBalance`).
+
+It emits `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`, with no cardholder address or
+`senderTag`. Tokens sent to it outside a `settle` call are not rescued: a later `settle` caller can
+spend them, only to a destination the program authorizes, and gets back what the spend did not use.
+Deploy one per program with the [Zone Router Release `bridgeSettler`](../deployment/deployment.md#zone-router-releases),
+after Bridge has created the program, and list it in the card mode's `settlers`. The flows, Bridge's
+governance and the decisions behind it are in the [Bridge integration's design](../bridge/design.md).
 
 ## Invariants
 

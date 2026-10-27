@@ -40,6 +40,8 @@ const bytecode = (contract: string) =>
 const hash = (index: number) => `0x${String(index + 1).repeat(64)}` as Hex
 const spendMode = { zoneId: 7, enabledOps: 4, settlers: [address('5e771e')] }
 const routerParameters = { factory: address('f1'), mode: spendMode }
+const spenderId = keccak256(stringToBytes('bridge.card-program'))
+const bridgeParameters = { factory: address('b7'), spenderId }
 
 describe('planRouterRelease', () => {
   test('the router releases run from the zone-router project and name no registry entry', () => {
@@ -64,6 +66,17 @@ describe('planRouterRelease', () => {
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: settler.calldata }),
     ).toEqual({ functionName: 'sendSettler', args: [42431n, zeroAddress, zeroAddress, zeroHash] })
+    const bridgeSettler = planRouterRelease('bridgeSettler', 42431, bridgeParameters)
+    expect(bridgeSettler.parameters).toEqual(bridgeParameters)
+    expect(bridgeSettler.contracts).toMatchObject([
+      { name: 'BridgeSettler', contract: 'src/settlers/BridgeSettler.sol:BridgeSettler' },
+    ])
+    expect(
+      decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: bridgeSettler.calldata }),
+    ).toEqual({
+      functionName: 'bridgeSettler',
+      args: [42431n, bridgeParameters.factory, spenderId],
+    })
     const router = planRouterRelease('zoneRouter', 4217, routerParameters)
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: router.calldata }),
@@ -81,7 +94,7 @@ describe('planRouterRelease', () => {
         },
       ],
     })
-    for (const plan of [factory, settler, router]) {
+    for (const plan of [factory, settler, bridgeSettler, router]) {
       expect(plan.project).toBe('zone-router')
       expect(plan.registryKey).toBeUndefined()
     }
@@ -90,7 +103,7 @@ describe('planRouterRelease', () => {
   test("refuses Earn's factory releases, pointing to their own CLI", () => {
     for (const kind of ['all', ...factoryReleaseKinds]) {
       expect(() => planRouterRelease(kind, 4217)).toThrow(
-        `Unknown router release ${kind}; expected one of zoneRouterFactory, sendSettler, zoneRouter (Earn's factory releases run with pnpm factory-release)`,
+        `Unknown router release ${kind}; expected one of zoneRouterFactory, sendSettler, bridgeSettler, zoneRouter (Earn's factory releases run with pnpm factory-release)`,
       )
       expect(() => routerReleaseKindFor(kind)).toThrow('pnpm factory-release')
     }
@@ -137,6 +150,33 @@ describe('release parameters', () => {
     expect(() => planRouterRelease('sendSettler', 4217, { owner: address('aa') })).toThrow(
       'parameters.owner is not supported',
     )
+  })
+
+  test('a BridgeSettler takes exactly a nonzero factory and spender ID', () => {
+    expect(
+      planRouterRelease('bridgeSettler', 4217, {
+        factory: bridgeParameters.factory.toLowerCase(),
+        spenderId,
+      }).parameters,
+    ).toEqual(bridgeParameters)
+    expect(() => planRouterRelease('bridgeSettler', 4217, {})).toThrow(
+      'parameters.factory is required',
+    )
+    expect(() => planRouterRelease('bridgeSettler', 4217, { factory: address('b7') })).toThrow(
+      'parameters.spenderId is required',
+    )
+    expect(() =>
+      planRouterRelease('bridgeSettler', 4217, { ...bridgeParameters, factory: zeroAddress }),
+    ).toThrow('parameters.factory must be a nonzero address')
+    expect(() =>
+      planRouterRelease('bridgeSettler', 4217, { ...bridgeParameters, spenderId: zeroHash }),
+    ).toThrow('parameters.spenderId must be a nonzero bytes32')
+    expect(() =>
+      planRouterRelease('bridgeSettler', 4217, { ...bridgeParameters, spenderId: '0x1234' }),
+    ).toThrow('parameters.spenderId must be a nonzero bytes32')
+    expect(() =>
+      planRouterRelease('bridgeSettler', 4217, { ...bridgeParameters, zoneId: 7 }),
+    ).toThrow('parameters.zoneId is not supported')
   })
 
   test('a ZoneRouter mode keeps the constructor rules that need no chain state', () => {
@@ -215,7 +255,7 @@ describe('predictRelease for router releases', () => {
         opcode: 'CREATE2',
         from: create2Deployer,
         salt: releaseSalt,
-        bytecode: concatHex([bytecode('src/SendSettler.sol:SendSettler'), args]),
+        bytecode: concatHex([bytecode('src/settlers/SendSettler.sol:SendSettler'), args]),
       }),
     )
     expect(poolless!.constructorArgs).toBe(
@@ -226,6 +266,38 @@ describe('predictRelease for router releases', () => {
       ]),
     )
     expect(poolless!.address).not.toBe(converting!.address)
+  })
+
+  test('a BridgeSettler is created through the CREATE2 deployer with its program as arguments', () => {
+    const [settler] = predictRelease(
+      planRouterRelease('bridgeSettler', 4217, bridgeParameters),
+      bytecode,
+    )
+    const args = encodeAbiParameters(parseAbiParameters('address, bytes32'), [
+      bridgeParameters.factory,
+      spenderId,
+    ])
+    expect(settler).toMatchObject({
+      name: 'BridgeSettler',
+      contract: 'src/settlers/BridgeSettler.sol:BridgeSettler',
+    })
+    expect(settler!.constructorArgs).toBe(args)
+    expect(settler!.address).toBe(
+      getContractAddress({
+        opcode: 'CREATE2',
+        from: create2Deployer,
+        salt: releaseSalt,
+        bytecode: concatHex([bytecode('src/settlers/BridgeSettler.sol:BridgeSettler'), args]),
+      }),
+    )
+    const [other] = predictRelease(
+      planRouterRelease('bridgeSettler', 4217, {
+        ...bridgeParameters,
+        spenderId: keccak256(stringToBytes('other')),
+      }),
+      bytecode,
+    )
+    expect(other!.address).not.toBe(settler!.address)
   })
 
   test('a ZoneRouter is the CREATE2 address its factory creates for the mode', () => {
@@ -442,6 +514,7 @@ describe('router release workflow', () => {
   test('offers every hosted network, both, and every router release, without all', () => {
     expect(options('network')?.sort()).toEqual(['both', ...Object.keys(hostedEnvironments)].sort())
     expect(options('release')).toEqual([...routerReleaseKinds])
+    expect(workflow).toContain('bridgeSettler {"factory", "spenderId"}')
     expect(workflow).toContain('["moderato","mainnet"]')
     expect(workflow).toContain('environment: factory-release-${{ matrix.network }}')
   })

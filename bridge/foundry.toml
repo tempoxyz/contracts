@@ -1,0 +1,52 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib", "vendor"]
+# Imports Earn's sources (`tempo-earn/` = ../earn/src) and the Zone router's (`zone-router/` =
+# ../zone-router/src, which holds BridgeSettler and the Spend struct the "TS" handler settles) directly.
+# They compile here with this project's remappings and Tempo hardfork; Earn's and the Zone router's own
+# build settings are unaffected.
+allow_paths = ["../earn", "../zone-router"]
+# Real Tempo precompiles (TIP-20, AccountKeychain, TIP-403, ...) in the test EVM.
+hardfork = "tempo:T8"
+solc_version = "0.8.36"
+via_ir = true
+optimizer = true
+optimizer_runs = 200
+# Tests and deployments compile for the EVM version Tempo deployments use, as Earn does.
+evm_version = "cancun"
+auto_detect_remappings = false
+fs_permissions = [
+    { access = "read-write", path = "./reports" },
+    { access = "read", path = "./test/harness/fixtures" },
+]
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "tempo-std/=lib/tempo-std/src/",
+    "solady/=lib/solady/src/",
+    "permit2/=lib/permit2/src/",
+    "openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/",
+    "openzeppelin-contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
+    "bridge-spender/=vendor/bridge-spender/",
+    "tempo-earn/=../earn/src/",
+    "zone-router/=../zone-router/src/",
+    "tempo-zones/=vendor/tempo-zones/src/runtime/",
+]
+
+[profile.ci]
+fuzz = { runs = 512 }
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = true
+sort_imports = true
+number_underscore = "thousands"
+ignore = ["vendor/**"]
+
+[lint]
+lint_on_build = false

@@ -9,8 +9,8 @@
     "test": "vitest",
     "devnet": "tsx harness/cli.ts --devnet",
     "local": "tsx harness/cli.ts --local",
-    "spend": "tsx spend/src/run.ts",
-    "spend:moderato": "tsx spend/src/run.ts --target moderato"
+    "bridge": "tsx bridge/src/run.ts",
+    "bridge:moderato": "tsx bridge/src/run.ts --target moderato"
   },
   "dependencies": {
     "@tempoxyz/earn": "workspace:*",
