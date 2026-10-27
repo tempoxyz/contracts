@@ -113,13 +113,12 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
-          name: factory-release-${{ matrix.network }}
+          # One artifact per attempt, so a rerun that gets less far keeps what an earlier attempt verified.
+          name: factory-release-${{ matrix.network }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/factory-release.json
             earn/broadcast/
           if-no-files-found: ignore
-          # A rerun of a failed network replaces that network's result from the attempt before.
-          overwrite: true
 
   # Records every broadcast release whose contracts all source verified, including those from a
   # network that later failed, on a branch; the registry changes only through a reviewed pull request.
@@ -153,7 +152,8 @@ jobs:
         id: registry
         run: |
           set -euo pipefail
-          mapfile -t results < <(find "$RUNNER_TEMP/releases" -name factory-release.json | sort)
+          # Attempt order (version sort), so a later attempt's entry for the same release wins.
+          mapfile -t results < <(find "$RUNNER_TEMP/releases" -name factory-release.json | sort -V)
           if [[ ${#results[@]} -eq 0 ]]; then
             echo 'No release produced a result.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
