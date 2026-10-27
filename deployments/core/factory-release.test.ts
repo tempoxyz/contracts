@@ -128,6 +128,7 @@ describe('deployFactoryRelease', () => {
     const dependencies = {
       forge: vi.fn(),
       preflight: vi.fn(),
+      removeScriptCache: vi.fn(),
       readFile: vi.fn((path: string) => {
         if (path.endsWith('-latest.json'))
           return JSON.stringify(broadcastFile(['EarnVault', 'EarnFees', 'EarnFactory']))
@@ -183,6 +184,54 @@ describe('deployFactoryRelease', () => {
     })
     expect(result.registry).toEqual({ earn: address('3') })
     expect(result.contracts.every((contract) => contract.match === 'exact_match')).toBe(true)
+  })
+
+  test('keeps a deployed contract whose verification fails, with the error', async () => {
+    const dependencies = runtime()
+    dependencies.verify.mockRejectedValueOnce(new Error('verifier timed out'))
+    const result = await deployFactoryRelease(
+      {
+        network: 'mainnet',
+        kind: 'core',
+        broadcast: true,
+        root: '/repo/earn',
+        environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
+      },
+      dependencies as Partial<FactoryReleaseDependencies>,
+    )
+    expect(result.contracts[0]).toMatchObject({
+      name: 'EarnVault',
+      address: address('1'),
+      match: null,
+      verificationError: 'verifier timed out',
+    })
+    expect(result.contracts.slice(1).every((contract) => contract.match === 'exact_match')).toBe(
+      true,
+    )
+    expect(result.registry).toEqual({ earn: address('3') })
+  })
+
+  test('removes the script sequences that hold the RPC URL, even when Forge fails', async () => {
+    const dependencies = runtime()
+    dependencies.forge.mockImplementationOnce(() => {
+      throw new Error('forge script failed')
+    })
+    await expect(
+      deployFactoryRelease(
+        {
+          network: 'mainnet',
+          kind: 'core',
+          broadcast: true,
+          root: '/repo/earn',
+          environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
+        },
+        dependencies as Partial<FactoryReleaseDependencies>,
+      ),
+    ).rejects.toThrow('forge script failed')
+    expect(dependencies.removeScriptCache).toHaveBeenCalledWith(
+      '/repo/earn',
+      'DeployFactoryRelease.s.sol',
+    )
   })
 
   test('a dry run simulates without broadcasting or verifying', async () => {

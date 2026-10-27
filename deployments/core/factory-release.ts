@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -211,15 +211,19 @@ export type FactoryReleaseResult = {
   contracts: (Omit<CreatedContract, 'constructorArgs'> & {
     constructorArgs: Hex
     match: 'exact_match' | 'match' | null
+    /** Why source verification failed; the contract is still deployed. */
+    verificationError?: string
   })[]
   /** The release registry entry to review into deployments/core/releases.ts, when it names one. */
   registry: Record<string, Address> | null
 }
 
 export type FactoryReleaseDependencies = {
-  /** Runs Forge from Earn's project, where its ${'`'}solc${'`'} wrapper path resolves. */
+  /** Runs Forge from Earn's project, where its `solc` wrapper path resolves. */
   forge: (arguments_: string[], environment: Record<string, string>, cwd: string) => void
   readFile: (path: string) => string
+  /** Deletes Forge's script sequences of one script, which record the RPC URL with its credentials. */
+  removeScriptCache: (root: string, script: string) => void
   preflight: (root: string, environment: Readonly<Record<string, string | undefined>>) => void
   verify: typeof verifyContractSource
 }
@@ -236,6 +240,19 @@ const defaultDependencies: FactoryReleaseDependencies = {
       throw new Error(`forge script failed (status ${result.status ?? 'unknown'})`)
   },
   readFile: (path) => readFileSync(path, 'utf8'),
+  removeScriptCache: (root, script) => {
+    // Forge writes the sensitive sequence under <cache_path>/<script file>/, for simulations too.
+    const cache = resolve(root, 'cache')
+    let profiles: string[]
+    try {
+      profiles = readdirSync(cache)
+    } catch {
+      return
+    }
+    for (const profile of profiles) {
+      rmSync(resolve(cache, profile, script), { recursive: true, force: true })
+    }
+  },
   preflight: (root, environment) => {
     assertFoundryVersion(root)
     // Refuse a compiler build the source verifier cannot reproduce before anything is broadcast.
@@ -273,25 +290,29 @@ export async function deployFactoryRelease(
   if (!rpc.authenticatedUrl) throw new Error(`No RPC for ${network.id}`)
 
   runtime.preflight(options.root, options.environment)
-  runtime.forge(
-    [
-      'script',
-      plan.script,
-      '--root',
+  try {
+    runtime.forge(
+      [
+        'script',
+        plan.script,
+        '--root',
+        options.root,
+        '--sig',
+        plan.calldata,
+        '--network',
+        'tempo',
+        '--rpc-url',
+        rpc.authenticatedUrl,
+        '--slow',
+        ...plan.forgeArguments,
+        ...(options.broadcast ? ['--broadcast'] : []),
+      ],
+      foundryProcessEnvironment(options.environment),
       options.root,
-      '--sig',
-      plan.calldata,
-      '--network',
-      'tempo',
-      '--rpc-url',
-      rpc.authenticatedUrl,
-      '--slow',
-      ...plan.forgeArguments,
-      ...(options.broadcast ? ['--broadcast'] : []),
-    ],
-    foundryProcessEnvironment(options.environment),
-    options.root,
-  )
+    )
+  } finally {
+    runtime.removeScriptCache(options.root, basename(plan.script.split(':')[0]!))
+  }
 
   const file = JSON.parse(
     runtime.readFile(broadcastPath(options.root, plan, network.chainId, options.broadcast)),
@@ -311,18 +332,30 @@ export async function deployFactoryRelease(
 
   const contracts: FactoryReleaseResult['contracts'] = []
   for (const contract of created) {
-    const verification = options.broadcast
-      ? await runtime.verify({
-          chainId: network.chainId,
-          environment: options.environment as NodeJS.ProcessEnv,
-          root: options.root,
-          rpcUrl: rpc.authenticatedUrl,
-          address: contract.address,
-          contract: contract.contract,
-          constructorArgs: contract.constructorArgs,
-        })
-      : undefined
-    contracts.push({ ...contract, match: verification?.match ?? null })
+    if (!options.broadcast) {
+      contracts.push({ ...contract, match: null })
+      continue
+    }
+    // A deployed contract stays in the result when its verification fails, so the addresses and
+    // registry entry survive and verification can be retried without redeploying.
+    try {
+      const verification = await runtime.verify({
+        chainId: network.chainId,
+        environment: options.environment as NodeJS.ProcessEnv,
+        root: options.root,
+        rpcUrl: rpc.authenticatedUrl,
+        address: contract.address,
+        contract: contract.contract,
+        constructorArgs: contract.constructorArgs,
+      })
+      contracts.push({ ...contract, match: verification.match })
+    } catch (error) {
+      contracts.push({
+        ...contract,
+        match: null,
+        verificationError: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
   const registryContract = plan.registryKey ? created.at(-1) : undefined
   return {
@@ -373,6 +406,12 @@ export async function main(
   const json = `${JSON.stringify(result, null, 2)}\n`
   if (values.output) writeFileSync(values.output, json)
   console.log(json)
+  const unverified = result.contracts.filter((contract) => contract.verificationError)
+  if (unverified.length > 0) {
+    throw new Error(
+      `Deployed but not source verified: ${unverified.map((contract) => `${contract.name} ${contract.address} (${contract.verificationError})`).join('; ')}. Retry with forge verify-contract (docs/deployment/deployment.md#shared-factory-releases); do not rerun the release.`,
+    )
+  }
 }
 
 if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
