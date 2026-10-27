@@ -1,5 +1,6 @@
 import { decodeFunctionData, getAddress, zeroAddress, zeroHash, type Address } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
+import { Addresses } from 'viem/tempo'
 import { describe, expect, test, vi } from 'vitest'
 
 import { deployZoneRouterScriptAbi, propAMMPoolAbi, zonePortalAbi } from '../../abis/index.js'
@@ -192,6 +193,49 @@ describe('Zone router steps', () => {
       outputs,
     )
     expect(members).toContain(outputs.zoneRouter)
+  })
+
+  test('whitelists the Zone principals that move EarnShare without a zone section', () => {
+    const messenger = address('3e55')
+    const sequencer = address('5e9')
+    const members = accessMembers(
+      profileWith(
+        { zoneId: 7, ops: ['deposit', 'redeem'], earn: earnBinding },
+        { tip403PolicyId: '469' },
+      ),
+      { ...outputs, zoneRouterMessenger: messenger, zoneRouterSequencer0: sequencer },
+    )
+    expect(members).toEqual(
+      expect.arrayContaining([
+        outputs.zoneRouterPortal,
+        messenger,
+        sequencer,
+        getAddress(Addresses.zoneOutbox),
+      ]),
+    )
+    expect(zoneRouterModeModule.metadataOutput?.('zoneRouterSequencer0')).toBe(true)
+    expect(zoneRouterModeModule.metadataOutput?.('zoneRouterPortal')).toBe(false)
+  })
+
+  test('adopts the router another deployer created for the same mode', async () => {
+    const step = deploymentStep('deploy-zone-router') as FoundryStep
+    const creation = `0x${'d'.repeat(64)}` as const
+    const getLogs = vi.fn(async () => [{ transactionHash: creation }])
+    const client = {
+      ...chain(card),
+      getBlockNumber: vi.fn(async () => 10n),
+      getLogs,
+    } as unknown as ChainClient
+    const { zoneRouter: _, ...unrecorded } = outputs
+    expect(await step.adopt!(client, card, unrecorded)).toEqual({
+      outputs: { ...unrecorded, zoneRouter: outputs.zoneRouter },
+      transaction: creation,
+    })
+    expect(getLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ address: address('fac'), args: { router: outputs.zoneRouter } }),
+    )
+    // Nothing to adopt before the factory deployed the mode.
+    expect(await step.adopt!(chain(card, { isRouter: false }), card, unrecorded)).toBeUndefined()
   })
 
   test('hands gateway admission to the Zone administrator with the provenance to check', () => {

@@ -1,6 +1,7 @@
-import { zeroAddress, type Address, type PublicClient } from 'viem'
+import { getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
+import { Addresses } from 'viem/tempo'
 
-import { zoneRouterFactoryAbi } from '../../abis/index.js'
+import { zoneRouterAbi, zoneRouterFactoryAbi } from '../../abis/index.js'
 import { requireCode } from '../../chain/inspect.js'
 import { rpcClient } from '../../chain/runtime.js'
 import {
@@ -9,6 +10,7 @@ import {
   zoneCallbackGatewayRegistered,
 } from '../../chain/zone.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
+import { stackAddress } from '../../core/stack.js'
 import { preflightRouterRoute } from '../earn/zone-router/index.js'
 import { inspectRouterReadiness } from '../earn/zone-router/inspection.js'
 import { requiredOutput, type CapabilityModule, type CapabilityReadiness } from '../module.js'
@@ -23,11 +25,38 @@ import { zoneRouterTokens } from './steps.js'
  */
 export const zoneRouterModeModule: CapabilityModule = {
   preflight: preflightZoneRouter,
-  // The Factory-registered Portal of the router's Zone, read from the L1 alone.
+  // The Factory-registered Portal, Messenger and sequencers of the router's Zone, read from the L1.
   async discover({ profile, rpcUrl }) {
     if (!profile.zoneRouter) return undefined
     const zone = await registeredZone(rpcClient(rpcUrl), profile.zoneRouter.zoneId)
-    return { zoneRouterPortal: zone.portal }
+    return {
+      zoneRouterPortal: zone.portal,
+      zoneRouterMessenger: zone.messenger,
+      ...Object.fromEntries(
+        zone.sequencers.map((sequencer, index) => [`zoneRouterSequencer${index}`, sequencer]),
+      ),
+    }
+  },
+  metadataOutput: isZoneRouterMetadataOutput,
+  // The Portal, Messenger, Outbox and sequencers move EarnShare in and out of the router's Zone.
+  accessPrincipals: (profile, outputs) =>
+    profile.zoneRouter
+      ? Object.entries(outputs)
+          .flatMap(([key, value]) =>
+            (key === 'zoneRouterPortal' || isZoneRouterMetadataOutput(key)) && value ? [value] : [],
+          )
+          .concat(getAddress(Addresses.zoneOutbox))
+      : [],
+  async stackAccessPrincipals(client, stack) {
+    const router = stackAddress(stack, 'zoneRouter')
+    if (!router) return []
+    const zoneId = await client.readContract({
+      address: router,
+      abi: zoneRouterAbi,
+      functionName: 'allowedZoneId',
+    })
+    const zone = await registeredZone(client, Number(zoneId))
+    return [zone.portal, zone.messenger, ...zone.sequencers, getAddress(Addresses.zoneOutbox)]
   },
   async inspect(client, profile, outputs) {
     if (!profile.zoneRouter) return undefined
@@ -84,6 +113,11 @@ export const zoneRouterModeModule: CapabilityModule = {
     }
     return report
   },
+}
+
+/** Discovered Zone principals of the router's Zone, kept out of the deployment record. */
+function isZoneRouterMetadataOutput(key: string) {
+  return key === 'zoneRouterMessenger' || /^zoneRouterSequencer\d+$/.test(key)
 }
 
 /**

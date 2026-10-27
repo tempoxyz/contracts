@@ -149,6 +149,14 @@ export async function prepareLifecycleStep(options: {
       }
     }
 
+    // Another deployer created this step's contract through the same factory: adopt it.
+    const adopted = step.adopt ? await step.adopt(client, profile, pending.outputs) : undefined
+    if (adopted && (await step.satisfied(client, profile, adopted.outputs))) {
+      pending = { ...pending, outputs: adopted.outputs }
+      complete(action, [adopted.transaction])
+      continue
+    }
+
     // The prediction is occupied, so the factory call could only revert: adopt that stack.
     if (action.id === 'deploy-core') {
       const adopted = await adoptPredictedCore(client, profile, pending.outputs)

@@ -244,6 +244,16 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
    */
   rawGasEstimate?: true
   /**
+   * The outputs and creation transaction of a contract another deployer already created through a
+   * permissionless factory the step calls, which would otherwise return it without creating
+   * anything; undefined when there is none. Adopted outputs are recorded only once `satisfied`.
+   */
+  adopt?(
+    client: ChainClient,
+    profile: EarnDeploymentProfile,
+    outputs: Record<string, Address>,
+  ): Promise<{ outputs: Record<string, Address>; transaction: Hex } | undefined>
+  /**
    * The contract this step creates, recorded under `output` and source-verified against the step's
    * creation transaction. Core and engine outputs (proxies, protocol-native, or factory-made) are
    * classified by source verification itself.

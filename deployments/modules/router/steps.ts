@@ -1,4 +1,4 @@
-import { encodeFunctionData, getAddress, zeroAddress, type Address } from 'viem'
+import { encodeFunctionData, getAbiItem, getAddress, zeroAddress, type Address } from 'viem'
 
 import {
   deployZoneRouterFactoryScriptAbi,
@@ -115,7 +115,54 @@ export const deployZoneRouter = defineFoundryStep({
     if (!(await deployedOutputs(client, outputs, ['zoneRouter']))) return false
     return zoneRouterBound(client, profile, outputs)
   },
+  // Anyone can deploy a mode through the factory, such as Bridge's spend script listing the same
+  // settler; the factory then returns that router, and its RouterDeployed event names the creation.
+  adopt: adoptPredictedZoneRouter,
 })
+
+const routerDeployed = getAbiItem({ abi: zoneRouterFactoryAbi, name: 'RouterDeployed' })
+const maxLogBlockRange = 100_000n
+
+/** The router the factory already deployed for the profile's mode, with its creation transaction. */
+export async function adoptPredictedZoneRouter(
+  client: Pick<ChainClient, 'getBlockNumber' | 'getLogs' | 'readContract'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address>,
+) {
+  const factory = zoneRouterFactory(profile, outputs)
+  const contract = { address: factory, abi: zoneRouterFactoryAbi } as const
+  const router = await client.readContract({
+    ...contract,
+    functionName: 'predict',
+    args: [zoneRouterMode(profile, outputs)],
+  })
+  const deployed = await client.readContract({
+    ...contract,
+    functionName: 'isRouter',
+    args: [router],
+  })
+  if (!deployed) return undefined
+  for (let toBlock = await client.getBlockNumber(); toBlock >= 0n; toBlock -= maxLogBlockRange) {
+    const fromBlock = toBlock >= maxLogBlockRange ? toBlock - maxLogBlockRange + 1n : 0n
+    const [log] = await client.getLogs({
+      address: factory,
+      event: routerDeployed,
+      args: { router },
+      fromBlock,
+      toBlock,
+    })
+    if (log) {
+      return {
+        outputs: { ...outputs, zoneRouter: getAddress(router) },
+        transaction: log.transactionHash,
+      }
+    }
+    if (fromBlock === 0n) break
+  }
+  throw new Error(
+    `ZoneRouterFactory ${factory} lists router ${router}, but no RouterDeployed event names it`,
+  )
+}
 
 /** Admits the router on its DirectPropAMM pool; an Earn binding without a pool has nothing to admit. */
 export const authorizeZoneRouter = defineAuthorityStep({
