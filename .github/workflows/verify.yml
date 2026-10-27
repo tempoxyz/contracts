@@ -178,7 +178,9 @@ jobs:
       - name: Install symbolic solver
         run: |
           python3 -m venv "$RUNNER_TEMP/z3"
-          "$RUNNER_TEMP/z3/bin/pip" install z3-solver==5.3.2.0
+          echo 'z3-solver==5.3.2.0 --hash=sha256:f17df07300228a383470d4b4e1ad9daf429dc94885996712a1844a8242803935' \
+            > "$RUNNER_TEMP/z3.txt"
+          "$RUNNER_TEMP/z3/bin/pip" install --require-hashes --only-binary :all: -r "$RUNNER_TEMP/z3.txt"
           echo "$RUNNER_TEMP/z3/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/z3/bin/z3" --version
 
