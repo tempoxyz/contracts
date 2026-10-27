@@ -21,10 +21,11 @@
 Tempo's contract projects and the tooling they share. Each project is a separate Foundry project with
 its own build settings, dependencies, documentation, and audits.
 
-| Project          | What it is                                                                                   |
-| ---------------- | -------------------------------------------------------------------------------------------- |
-| [earn/](earn/)   | [Tempo Earn](earn/README.md): vault-backed stablecoin yield, its deployment tooling, and app |
-| [spend/](spend/) | [Tempo Spend](spend/README.md): card spend on Tempo through Bridge's spender contracts       |
+| Project            | What it is                                                                                      |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| [earn/](earn/)     | [Tempo Earn](earn/README.md): vault-backed stablecoin yield, its deployment tooling, and app    |
+| [spend/](spend/)   | [Tempo Spend](spend/README.md): card spend on Tempo through Bridge's spender contracts          |
+| [router/](router/) | [Zone router](router/README.md): Zone withdrawal callbacks for Earn and spends, and its factory |
 
 ## Repository layout
 
@@ -32,12 +33,13 @@ its own build settings, dependencies, documentation, and audits.
 | -------------------------- | ------------------------------------------------------------------------------------------- |
 | `earn/`                    | Tempo Earn Foundry project: contracts, tests, and Forge scripts.                            |
 | `spend/`                   | Tempo Spend Foundry project: Bridge spender handler, Zone receiver, and card harness.       |
+| `router/`                  | Zone router Foundry project (solc): `ZoneRouter`, its factory, and `ISpendSettler`.         |
 | `deployments/`             | Shared deployment lifecycle (`pnpm earn`), ABIs, and per-project modules (`modules/earn/`). |
 | `profiles/`                | Deployment profiles and generated records.                                                  |
 | `app/`                     | The web app and Cloudflare Worker.                                                          |
 | `e2e/`                     | Shared local and hosted integration harness and cases, including Spend's Zone run.          |
 | `localnet/`                | Disposable local Tempo L1 and Zone, shared by every E2E run.                                |
-| `docs/`                    | `development/`, `deployment/`, `earn/`, and `spend/` documentation.                         |
+| `docs/`                    | `development/`, `deployment/`, `earn/`, `spend/`, and `router/` documentation.              |
 | `scripts/solidity-deps.sh` | Installs each Foundry project's pinned Solidity dependencies and Earn's solar compiler.     |
 
 ## Get started
@@ -46,7 +48,7 @@ its own build settings, dependencies, documentation, and audits.
 git clone https://github.com/tempoxyz/earn
 cd earn
 pnpm install
-pnpm deps     # Solidity dependencies for earn/ and spend/, and Earn's solar compiler
+pnpm deps     # Solidity dependencies for earn/, spend/ and router/, and Earn's solar compiler
 pnpm verify
 ```
 

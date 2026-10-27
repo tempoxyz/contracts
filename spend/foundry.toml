@@ -4,9 +4,9 @@ test = "test"
 script = "script"
 out = "out"
 libs = ["lib", "vendor"]
-# Tests import Earn's sources (`tempo-earn/` = ../earn/src) directly. They compile here with this
+# Tests import Earn's sources (`tempo-earn/` = ../earn/src) and the router's (`tempo-router/` = ../router/src) directly. They compile here with this
 # project's remappings and Tempo hardfork; Earn's own build settings are unaffected.
-allow_paths = ["../earn"]
+allow_paths = ["../earn", "../router"]
 # Real Tempo precompiles (TIP-20, AccountKeychain, TIP-403, ...) in the test EVM.
 hardfork = "tempo:T8"
 solc_version = "0.8.36"
@@ -31,6 +31,7 @@ remappings = [
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
     "bridge-spender/=vendor/bridge-spender/",
     "tempo-earn/=../earn/src/",
+    "tempo-router/=../router/src/",
     "tempo-zones/=vendor/tempo-zones/src/runtime/",
 ]
 

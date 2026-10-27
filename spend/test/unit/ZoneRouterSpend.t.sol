@@ -4,8 +4,8 @@ pragma solidity ^0.8.36;
 import { ISpenderHandler } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { EncryptedDepositPayload } from "tempo-earn/interfaces/external/tempo/IZone.sol";
-import { ZoneRouter } from "tempo-earn/router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "tempo-earn/router/ZoneRouterFactory.sol";
+import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 import { Spend } from "../../src/SpenderTempoSpend.sol";
@@ -17,7 +17,7 @@ import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 import { TxCall } from "../harness/lib/TempoTx.sol";
 
 /// @notice Private card spend through a factory-deployed ZoneRouter and BridgeSettler, on a
-///         closed-loop Zone with portal and outbox fees on: the docs/spend/zone-router.md prototype.
+///         closed-loop Zone with portal and outbox fees on: the docs/router/zone-router.md prototype.
 contract ZoneRouterSpendTest is PrivateSpendFixture {
     ZoneRouter internal zoneRouter;
     BridgeSettler internal settler;

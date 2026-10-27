@@ -1,12 +1,12 @@
 # ZoneRouter and private card spend (proposal)
 
 **Status: proposed, not implemented.** This page is the target for the ZoneRouter work. Until that
-lands, [design.md](design.md) and [Earn's zone router](../earn/modules/zone-router.md) describe
+lands, [design.md](../spend/design.md) and [Earn's zone router](../earn/modules/zone-router.md) describe
 what is deployed. When the code merges, each part of this page moves to the page that owns it and
 this page is deleted.
 
-A prototype implements the router, the factory and the Bridge settler: [`ZoneRouter`](../../earn/src/router/ZoneRouter.sol),
-[`ZoneRouterFactory`](../../earn/src/router/ZoneRouterFactory.sol) and
+A prototype implements the router, the factory and the Bridge settler: [`ZoneRouter`](../../router/src/ZoneRouter.sol),
+[`ZoneRouterFactory`](../../router/src/ZoneRouterFactory.sol) and
 [`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol). `SingleZoneEarnRouter` stays deployed and
 unchanged until the rename lands with its consumers.
 
@@ -44,12 +44,13 @@ From [Stripe Issuing Smart Contracts on Tempo](https://docs.google.com/document/
 
 ## Two layers
 
-| Layer          | Lives in | Contracts                                                              | Lifetime                 |
-| -------------- | -------- | ---------------------------------------------------------------------- | ------------------------ |
-| Tempo-owned    | `earn/`  | `ZoneRouter`, `ISpendSettler`, Earn funding source with par conversion | Permanent                |
-| Bridge adapter | `spend/` | `TS` handler (funding through sources), `BridgeSettler`                | Until Tempo-native spend |
+| Layer          | Lives in           | Contracts                                                                                       | Lifetime                 |
+| -------------- | ------------------ | ----------------------------------------------------------------------------------------------- | ------------------------ |
+| Tempo-owned    | `router/`, `earn/` | `ZoneRouter`, `ZoneRouterFactory`, `ISpendSettler` in `router/`; Earn funding source in `earn/` | Permanent                |
+| Bridge adapter | `spend/`           | `TS` handler (funding through sources), `BridgeSettler`                                         | Until Tempo-native spend |
 
-Earn depends only on `ISpendSettler` and stays integrator-agnostic. Everything that knows Bridge's
+The router is its own Foundry project, [`router/`](../../router/README.md), built with solc. It imports
+only Earn's interfaces, and `spend/` imports only its `ISpendSettler`, so Earn stays integrator-agnostic. Everything that knows Bridge's
 factory stays in `spend/`.
 
 ## `ZoneRouter`
@@ -275,11 +276,11 @@ reach.
   one bounces after approval, the reserve covers its part, as for any failed callback. A split pays
   two withdrawal fees and two change returns, uses about 3M callback gas in total, and gives Bridge
   two `senderTag`s to match to one authorization.
-- **Earn's router rules** in [earn/src/AGENTS.md](../../earn/src/AGENTS.md) and router invariant 2 in
-  [zone-router.md](../earn/modules/zone-router.md#router-contract): "every successful callback returns
-  its complete output through that Portal" and "no caller-selected destinations" become "or pays
-  through a settler fixed at deployment, using at most the callback's `maxInput`". Sends out of the
-  source Zone are settlers too, so the settler set fixed at deployment bounds every destination.
+- **Router rules.** Earn's rules for `SingleZoneEarnRouter` in [earn/src/AGENTS.md](../../earn/src/AGENTS.md)
+  stay as they are. The new router's live in [router/AGENTS.md](../../router/AGENTS.md): every
+  successful callback returns its output through the source Portal, except what a settler fixed at
+  deployment uses, at most the callback's `maxInput`. Sends out of the source Zone are settlers too,
+  so the settler set bounds every destination.
 
 ## Phases
 
@@ -295,9 +296,10 @@ cardholder's access keys stay the same through every phase.
 
 ## Rollout
 
-1. **Earn:** `ZoneRouter` and `ZoneRouterFactory`, with ops 0 and 1 byte-identical and their tests carried over, plus `SendSettler` and stablecoin-only routers. The rename
-   lands with its consumers: tempoxyz/tempo (which builds `earn/src/` and reads the router outputs),
-   `viem/tempo`, and the zone-router deployment module.
+1. **Router:** `ZoneRouter` and `ZoneRouterFactory` in `router/`, accepting `SingleZoneEarnRouter`'s
+   callback data byte for byte, plus `SendSettler` and stablecoin-only routers. `SingleZoneEarnRouter`
+   stays in `earn/` until its consumers move: tempoxyz/tempo (which builds `earn/src/` and reads the
+   router outputs), `viem/tempo`, and the zone-router deployment module.
 2. **Spend:** `BridgeSettler`, a "ZoneRouter" setup in the 35-scenario matrix, and `e2e/zone` on the
    new path, with callback gas measured against today's 2.02M (Earn) and 0.98M (DLUSD) and Bridge's
    3M limit.

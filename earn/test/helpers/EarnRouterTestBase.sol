@@ -180,12 +180,17 @@ abstract contract EarnRouterTestBase is Test {
         registry = new MockRecipientRegistry();
     }
 
+    /// @dev The pinned DirectPropAMM artifact, relative to the project running the test.
+    function _propAMMArtifact() internal pure virtual returns (string memory) {
+        return "test/fixtures/propamm/DirectPropAMM.json";
+    }
+
     /// @dev Deploys the unmodified pinned DirectPropAMM artifact with funded inventory on both sides.
     function _routerPool(address base, address quote) internal returns (IRouterPropAMMPool pool) {
         // PropAMM pins solc 0.8.30; deploy its unmodified artifact alongside Earn's 0.8.36 code.
         pool = IRouterPropAMMPool(
             deployCode(
-                "test/fixtures/propamm/DirectPropAMM.json",
+                _propAMMArtifact(),
                 abi.encode(base, quote, address(oracle), address(registry), address(this), address(this), 1 days, 50)
             )
         );

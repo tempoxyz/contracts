@@ -3,9 +3,11 @@ pragma solidity ^0.8.36;
 
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
-import { IEarnVault } from "../interfaces/core/IEarnVault.sol";
-import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
-import { IPropAMMPriceOracle, IPropAMMVenue } from "../interfaces/external/propamm/IPropAMMVenue.sol";
+import { ISpendSettler } from "./interfaces/ISpendSettler.sol";
+import { IZonePortalFees } from "./interfaces/IZonePortalFees.sol";
+import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
+import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
+import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 import {
     EncryptedDepositPayload,
     IWithdrawalReceiver,
@@ -14,13 +16,12 @@ import {
     ZONE_FACTORY_ADDRESS,
     ZONE_MESSENGER_ADDRESS,
     ZoneInfo
-} from "../interfaces/external/tempo/IZone.sol";
-import { ISpendSettler } from "../interfaces/router/ISpendSettler.sol";
+} from "tempo-earn/interfaces/external/tempo/IZone.sol";
 
 /// @title ZoneRouter
 /// @notice Ownerless router for one Zone's withdrawal callbacks: Earn deposits and redemptions, and spends
 ///         through settlers fixed at deployment.
-/// @dev Prototype of docs/spend/zone-router.md. Every setting is fixed by the constructor; a different
+/// @dev Prototype of docs/router/zone-router.md. Every setting is fixed by the constructor; a different
 ///      mode is a new router. Ops 0 and 1 keep SingleZoneEarnRouter's callback layout and behavior. Op 2
 ///      (Spend) approves at most the sender's `maxInput` to a listed settler, measures what it used, and
 ///      returns the rest to the source Zone, so no settler can take more than the sender allowed.
@@ -287,7 +288,7 @@ contract ZoneRouter is IWithdrawalReceiver {
             {
                 revert InvalidReturnToken();
             }
-            uint128 fee = IZonePortal(sourcePortal).calculateDepositFee();
+            uint128 fee = IZonePortalFees(sourcePortal).calculateDepositFee();
             if (fee > data.zoneReturn.maxDepositFee) revert DepositFeeTooHigh(fee);
             _safeApprove(token, sourcePortal, change);
             zoneDepositHash = IZonePortal(sourcePortal)

@@ -25,12 +25,12 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   Cloudflare, and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
 - **Docker**, for local end-to-end runs only.
 
-Each Foundry project (`earn/`, `spend/`) pins its Solidity dependencies in its own `foundry.lock`; they
+Each Foundry project (`earn/`, `spend/`, `router/`) pins its Solidity dependencies in its own `foundry.lock`; they
 are not submodules. A fresh clone or Git worktree installs them before working:
 
 ```bash
 pnpm install
-pnpm deps   # scripts/solidity-deps.sh earn spend
+pnpm deps   # scripts/solidity-deps.sh earn spend router
 ```
 
 Every dependency is public. Contract tests and every
@@ -71,8 +71,8 @@ are in the [localnet reference](localnet.md).
 ## Required checks
 
 Run `pnpm verify` before pushing a meaningful change. Its contract checks run in Earn's Foundry
-project (`earn/`); `spend/` has its own checks ([spend/AGENTS.md](../../spend/AGENTS.md)), which the
-`spend.yml` workflow runs. It runs the root
+project (`earn/`); `spend/` and `router/` have their own checks ([spend/AGENTS.md](../../spend/AGENTS.md),
+[router/AGENTS.md](../../router/AGENTS.md)), which the `spend.yml` and `router.yml` workflows run. It runs the root
 [`package.json`](../../package.json) `verify:contracts` and `verify:typescript` scripts in parallel, and
 those scripts are the list of checks:
 
@@ -170,6 +170,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 | `zones-compatibility.yml` | Push to `main` touching `earn/src/`, `earn/foundry.*`, the deps script, itself, or the remediation-event action; manual | Builds `earn/`'s contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                       |
 | `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                             | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                              |
 | `spend.yml`               | Pull request or push to `main` touching `spend/` or its inputs                                                          | The separate [`spend/`](../../spend/README.md) project's format, build, tests, card matrix, Zone E2E, and smoke run; not a required check               |
+| `router.yml`              | Pull request or push to `main` touching `router/` or its Earn inputs                                                    | The separate [`router/`](../../router/README.md) project's format, lint, build with sizes, and tests; not a required check                              |
 
 - **Verify jobs.** Contracts runs the same steps as `verify:contracts`, except that its Forge test
   step skips `test/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also

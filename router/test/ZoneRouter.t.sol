@@ -4,13 +4,13 @@ pragma solidity ^0.8.36;
 // Test-only mocks use simple ERC-20 calls and bounded uint128 fixtures.
 // forge-lint: disable-start(erc20-unchecked-transfer,unsafe-typecast)
 
-import { ZONE_MESSENGER_ADDRESS } from "../../src/interfaces/external/tempo/IZone.sol";
-import { ISpendSettler } from "../../src/interfaces/router/ISpendSettler.sol";
-import { SingleZoneEarnRouter } from "../../src/router/SingleZoneEarnRouter.sol";
-import { ZoneRouter } from "../../src/router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "../../src/router/ZoneRouterFactory.sol";
-import { EarnRouterTestBase, IRouterPropAMMPool } from "../helpers/EarnRouterTestBase.sol";
-import { MemoMockToken } from "../helpers/PropAMMEngineMocks.sol";
+import { ZoneRouter } from "../src/ZoneRouter.sol";
+import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
+import { ISpendSettler } from "../src/interfaces/ISpendSettler.sol";
+import { EarnRouterTestBase, IRouterPropAMMPool } from "earn-test/helpers/EarnRouterTestBase.sol";
+import { MemoMockToken } from "earn-test/helpers/PropAMMEngineMocks.sol";
+import { ZONE_MESSENGER_ADDRESS } from "tempo-earn/interfaces/external/tempo/IZone.sol";
+import { SingleZoneEarnRouter } from "tempo-earn/router/SingleZoneEarnRouter.sol";
 
 /// @dev A settler whose behavior each test picks: pay `use` of the input to `payee`, optionally try to
 ///      pull more than allowed, hand back extra, keep part of the input, or re-enter the router.
@@ -57,6 +57,11 @@ contract ZoneRouterTest is EarnRouterTestBase {
     MockSettler internal settler;
     IRouterPropAMMPool internal pool;
     address internal payee = makeAddr("payee");
+
+    /// @dev Earn owns the pinned DirectPropAMM fixture; this project reads it from there.
+    function _propAMMArtifact() internal pure override returns (string memory) {
+        return "../earn/test/fixtures/propamm/DirectPropAMM.json";
+    }
 
     function setUp() public override {
         super.setUp();

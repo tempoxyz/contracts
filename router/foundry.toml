@@ -1,0 +1,46 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+# Compiled with solc, not Earn's solar, so hosted deployments can source-verify it. It imports only
+# Earn's interfaces from `tempo-earn/` (= ../earn/src); its tests also use Earn's contracts and test
+# helpers (`earn-test/`), compiled here with this project's settings. Earn's build is unaffected.
+allow_paths = ["../earn"]
+fs_permissions = [{ access = "read", path = "../earn/test/fixtures/propamm" }]
+solc_version = "0.8.36"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+evm_version = "cancun"
+auto_detect_remappings = false
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "tempo-earn/=../earn/src/",
+    "earn-test/=../earn/test/",
+]
+
+[profile.ci]
+fuzz = { runs = 1024 }
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = true
+sort_imports = true
+number_underscore = "thousands"
+
+[lint]
+lint_on_build = false
+# The same triage as Earn's router (../earn/foundry.toml): balance-delta measurement, reentrancy-locked
+# events after calls, constructor validation loops and CREATE2 init-code hashing.
+exclude_lints = [
+    "encode-packed-collision",
+    "incorrect-strict-equality",
+    "reentrancy-events",
+    "require-revert-in-loop",
+    "uninitialized-local",
+    "unused-return",
+]

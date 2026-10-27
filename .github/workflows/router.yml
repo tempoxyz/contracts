@@ -1,0 +1,71 @@
+name: Router
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - 'router/**'
+      - 'earn/src/**'
+      - 'earn/test/helpers/**'
+      - 'earn/test/fixtures/propamm/**'
+      - 'scripts/solidity-deps.sh'
+      - '.github/workflows/router.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'router/**'
+      - 'earn/src/**'
+      - 'earn/test/helpers/**'
+      - 'earn/test/fixtures/propamm/**'
+      - 'scripts/solidity-deps.sh'
+      - '.github/workflows/router.yml'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The Zone router (router/), a separate solc Foundry project that imports Earn's interfaces and test
+# helpers. Not a required check yet.
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Required by tempoxyz/gh-actions secure-runner.
+      id-token: write
+    defaults:
+      run:
+        working-directory: router
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the router's Solidity dependencies
+        working-directory: .
+        run: scripts/solidity-deps.sh router
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - name: Format
+        run: forge fmt --check
+
+      - name: Lint
+        run: forge lint --deny warnings src
+
+      - name: Build
+        run: forge build --sizes src
+
+      - name: Test
+        env:
+          FOUNDRY_PROFILE: ci
+        run: forge test

@@ -9,7 +9,8 @@ harness, and Bridge's deploy scripts. [README.md](README.md) maps the project an
   `foundry.lock` pins. Never add its
   remappings, dependencies, or hardfork to `earn/foundry.toml`: Earn's remappings feed the
   metadata hash of its reviewed releases, and tempoxyz/tempo builds `earn/src/`.
-- Import Earn through `tempo-earn/` (`earn/src/`), never a copy. A change to Earn's interfaces
+- Import Earn through `tempo-earn/` (`earn/src/`) and the router through `tempo-router/`
+  (`router/src/`), never a copy. A change to Earn's interfaces
   that breaks this project is fixed in the same pull request.
 - Bridge-specific code stays here; `earn/` stays customer-agnostic and never imports from
   `spend/`.

@@ -6,6 +6,7 @@ on:
     paths:
       - 'spend/**'
       - 'earn/src/**'
+      - 'router/src/**'
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/spend/**'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'spend/**'
       - 'earn/src/**'
+      - 'router/src/**'
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/spend/**'
