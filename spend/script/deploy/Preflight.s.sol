@@ -17,8 +17,8 @@ import {
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 
-import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";

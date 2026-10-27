@@ -2,10 +2,10 @@
 
 Zone withdrawal callbacks on Tempo: `ZoneRouter`, `ZoneRouterFactory`, and the `ISpendSettler`
 interface settlers implement. [README.md](README.md) maps the project and
-[docs/router/zone-router.md](../docs/router/zone-router.md) owns the design.
+[docs/zone-router/zone-router.md](../docs/zone-router/zone-router.md) owns the design.
 
 - This is its own Foundry project, built with solc (not Earn's solar) so hosted deployments can
-  source-verify it. Run every `forge` command from `router/`, after `scripts/solidity-deps.sh router`
+  source-verify it. Run every `forge` command from `zone-router/`, after `scripts/solidity-deps.sh zone-router`
   (from the repository root). Never add its remappings or settings to `earn/foundry.toml`.
 - `src/` imports only Earn's interfaces, through `tempo-earn/` (`earn/src/`); tests may also use
   Earn's contracts through `tempo-earn/` and its test helpers through `earn-test/` (`earn/test/`).

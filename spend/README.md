@@ -14,7 +14,7 @@ rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)
   vendored with only import paths changed. They are the baseline.
 - **One Tempo implementation inside Bridge's contracts.** A new spender handler,
   `SpenderTempoSpend` ("TS"), that Bridge registers like any other, and `BridgeSettler`, the settler
-  a [Zone router](../router/README.md) pays private spends through. See
+  a [Zone router](../zone-router/README.md) pays private spends through. See
   [`docs/spend/design.md`](../docs/spend/design.md).
 - **A card E2E harness** that runs every Stripe/Bridge card scenario against any contract setup,
   so Bridge today and the Tempo implementation are tested side by side. See
@@ -158,7 +158,7 @@ vendor/                     Pinned Bridge and Zones sources (VENDORED.md); Earn 
 ## Documents
 
 - [`docs/spend/design.md`](../docs/spend/design.md): the design, flows, security model and decisions.
-- [`docs/router/zone-router.md`](../docs/router/zone-router.md): the [Zone router](../router/README.md) private spends go through.
+- [`docs/zone-router/zone-router.md`](../docs/zone-router/zone-router.md): the [Zone router](../zone-router/README.md) private spends go through.
 - [`docs/spend/deploy.md`](../docs/spend/deploy.md): deploying into Bridge's factory, and the calls each role submits. The handler and each program's settler land at deterministic addresses, so Bridge running the deploy scripts and Tempo's Spend Release workflow ([`spend-release.yml`](../.github/workflows/spend-release.yml)) deploy the same contracts.
 - [`docs/spend/audit-scope.md`](../docs/spend/audit-scope.md): what an audit covers, the invariants to check and where to look hardest.
 - [`docs/spend/bridge-integration.md`](../docs/spend/bridge-integration.md): how Bridge's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.

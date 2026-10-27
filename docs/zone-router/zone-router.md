@@ -1,9 +1,9 @@
 # Zone router
 
-[`ZoneRouter`](../../router/src/ZoneRouter.sol) takes a Zone's withdrawal callbacks on Tempo: Earn
+[`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) takes a Zone's withdrawal callbacks on Tempo: Earn
 deposits and redemptions, and spends through settlers fixed at deployment.
-[`ZoneRouterFactory`](../../router/src/ZoneRouterFactory.sol) deploys it. Both live in the
-[`router/`](../../router/README.md) Foundry project, built with solc, which imports only Earn's
+[`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it. Both live in the
+[`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
 interfaces. Card spend through it is in [Spend's design](../spend/design.md).
 
 `SingleZoneEarnRouter` ([Earn's zone router](../earn/modules/zone-router.md)) is the router Earn runs in
@@ -53,8 +53,8 @@ have: which gateways they admit.
 ## Deployment
 
 A deployment profile's [`zoneRouter`](../../profiles/README.md#zone-routers) deploys one router
-with `pnpm earn deploy` beside its Earn stack. The lifecycle runs [`router/`](../../router/README.md)'s
-own `script/deploy/` scripts from `router/`, compiled with solc and source-verified like Earn's
+with `pnpm earn deploy` beside its Earn stack. The lifecycle runs [`zone-router/`](../../zone-router/README.md)'s
+own `script/deploy/` scripts from `zone-router/`, compiled with solc and source-verified like Earn's
 contracts:
 
 1. `deploy-zone-router-factory`, unless the profile names a factory;
@@ -83,9 +83,9 @@ token and conversion readiness. A card program's `BridgeSettler` is deployed by 
 [scripts](../spend/deploy.md#3-deploy-the-settler-and-router-for-each-zone); the profile lists it
 in `settlers`.
 
-Outside a profile, the **Router Release** workflow deploys and source-verifies a
+Outside a profile, the **Zone Router Release** workflow deploys and source-verifies a
 `ZoneRouterFactory`, a `SendSettler`, or a mode's router from `main`
-([router releases](../deployment/deployment.md#router-releases)). Each lands at an address its
+([Zone router releases](../deployment/deployment.md#zone-router-releases)). Each lands at an address its
 build and settings fix: the factory and settlers through the CREATE2 deployer with Earn's release
 salt, and a router at its factory's `predict(mode)`, so whoever deploys the same one, Tempo or an
 integrator, gets the same contract, and a release reuses one that exists. Admission and pool
@@ -142,7 +142,7 @@ interface ISpendSettler {
 
 ### `SendSettler`
 
-[`SendSettler`](../../router/src/SendSettler.sol) pays a public address. A mode allows sends only if
+[`SendSettler`](../../zone-router/src/SendSettler.sol) pays a public address. A mode allows sends only if
 it lists a `SendSettler`; a closed-loop mode, listing only its card program's settler, does not. It
 has no owner or setters, and its only setting is an optional conversion binding fixed at deployment:
 a vault, a pool pairing that vault's asset with one other stablecoin of equal decimals (its par
@@ -167,7 +167,7 @@ back to the router and keeps no balance or allowance. Whoever builds the callbac
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the settler as a taker and recipient.
 It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
-no Zone account or `senderTag`. Deploy one with the [Router Release `sendSettler`](../deployment/deployment.md#router-releases) and list it in a
+no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSettler`](../deployment/deployment.md#zone-router-releases) and list it in a
 profile's `zoneRouter.settlers`.
 
 ## Invariants

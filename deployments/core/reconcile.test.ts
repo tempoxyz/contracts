@@ -360,7 +360,7 @@ describe('Earn deployment lifecycle', () => {
         actions: planEarnDeployment(routerProfile).filter(({ id }) => id === 'deploy-zone-router'),
       })
       if (step.kind !== 'foundry') throw new Error(`planned ${step.kind}`)
-      expect(step.root).toBe(join(checkout, 'router'))
+      expect(step.root).toBe(join(checkout, 'zone-router'))
       expect(step.arguments.slice(0, 2)).toEqual([
         'script',
         'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
@@ -465,7 +465,7 @@ describe('Earn deployment lifecycle', () => {
         step: {
           kind: 'foundry',
           action: planEarnDeployment(routerProfile).find(({ id }) => id === 'deploy-zone-router')!,
-          root: join(checkout, 'router'),
+          root: join(checkout, 'zone-router'),
           arguments: ['script', 'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript'],
           environment: {},
           calldata,

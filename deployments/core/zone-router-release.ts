@@ -179,7 +179,7 @@ export function planRouterRelease(
   if (kind === 'zoneRouterFactory') {
     return {
       kind,
-      project: 'router',
+      project: 'zone-router',
       script: routerReleaseScript,
       parameters: noParameters(kind, parameters),
       calldata: encodeFunctionData({
@@ -197,7 +197,7 @@ export function planRouterRelease(
     const settler = parseSendSettlerParameters(parameters)
     return {
       kind,
-      project: 'router',
+      project: 'zone-router',
       script: routerReleaseScript,
       parameters: settler,
       calldata: encodeFunctionData({
@@ -226,7 +226,7 @@ export function planRouterRelease(
     const modeArgs = encodeAbiParameters(constructorInputs(zoneRouterAbi), [router.mode])
     return {
       kind,
-      project: 'router',
+      project: 'zone-router',
       script: routerReleaseScript,
       parameters: router,
       calldata: encodeFunctionData({
@@ -284,7 +284,7 @@ export function deployRouterRelease(
 }
 
 const usage =
-  'Usage: pnpm router-release <network> <release> [--parameters <json>] [--broadcast] [--output <file>]\n' +
+  'Usage: pnpm zone-router-release <network> <release> [--parameters <json>] [--broadcast] [--output <file>]\n' +
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
   `  release: ${routerReleaseKinds.join(' | ')}\n` +
   '  parameters (JSON object; only these kinds take any):\n' +
@@ -335,7 +335,7 @@ export async function main(
         root,
         environment: process.env,
       }),
-    retry: 'docs/deployment/deployment.md#router-releases',
+    retry: 'docs/deployment/deployment.md#zone-router-releases',
   })
 }
 

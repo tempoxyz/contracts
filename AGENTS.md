@@ -5,7 +5,7 @@ Foundry project with its own build settings, dependencies, and guide:
 
 - [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues.
 - [spend/](spend/AGENTS.md): Tempo Spend, card spend through Bridge's spender contracts.
-- [router/](router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and spends.
+- [zone-router/](zone-router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and spends.
 
 Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with one module
 folder per project) and its `profiles/`, the app (`app/`), the disposable Tempo L1 and Zone
@@ -18,14 +18,14 @@ Before editing, read the guides along the target file's directory path, from roo
 guides add local rules; they do not repeat their parents. A session started at the repository root
 must explicitly discover descendant guides rather than assume they were loaded.
 
-| Area                                                            | Guide                                    |
-| --------------------------------------------------------------- | ---------------------------------------- |
-| Tempo Earn, including its app, deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)         |
-| Tempo Spend (Bridge card spend)                                 | [spend/AGENTS.md](spend/AGENTS.md)       |
-| Zone router                                                     | [router/AGENTS.md](router/AGENTS.md)     |
-| Integration cases and hosted environments                       | [e2e/AGENTS.md](e2e/AGENTS.md)           |
-| Disposable chain lifecycle                                      | [localnet/AGENTS.md](localnet/AGENTS.md) |
-| CI and repository automation                                    | [.github/AGENTS.md](.github/AGENTS.md)   |
+| Area                                                            | Guide                                          |
+| --------------------------------------------------------------- | ---------------------------------------------- |
+| Tempo Earn, including its app, deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)               |
+| Tempo Spend (Bridge card spend)                                 | [spend/AGENTS.md](spend/AGENTS.md)             |
+| Zone router                                                     | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
+| Integration cases and hosted environments                       | [e2e/AGENTS.md](e2e/AGENTS.md)                 |
+| Disposable chain lifecycle                                      | [localnet/AGENTS.md](localnet/AGENTS.md)       |
+| CI and repository automation                                    | [.github/AGENTS.md](.github/AGENTS.md)         |
 
 ## Keep projects separate
 
@@ -42,7 +42,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
 
 Use the commands in [development](docs/development/README.md). Start with focused checks; before
 pushing meaningful implementation changes, run `pnpm verify`, plus the project's own checks for
-`spend/` ([spend/AGENTS.md](spend/AGENTS.md)) and `router/` ([router/AGENTS.md](router/AGENTS.md)).
+`spend/` ([spend/AGENTS.md](spend/AGENTS.md)) and `zone-router/` ([zone-router/AGENTS.md](zone-router/AGENTS.md)).
 Hosted or private behavior changes also need the relevant E2E case and composed group. Report unrun checks and external blockers explicitly; after
 pushing a PR update, report with CI pending unless asked to monitor it. For documentation-only
 changes, run the link check (`pnpm --filter @tempoxyz/earn test --run docs`), format changed files,

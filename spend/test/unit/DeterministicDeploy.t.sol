@@ -3,7 +3,7 @@ pragma solidity ^0.8.36;
 
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
-import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { DeployBridgeSettler } from "../../script/deploy/DeployBridgeSettler.s.sol";
 import { DeployTempoSpend } from "../../script/deploy/DeployTempoSpend.s.sol";

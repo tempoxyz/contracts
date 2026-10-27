@@ -2,7 +2,7 @@
 
 One ownerless router per mode for a Zone's withdrawal callbacks: Earn deposits and redemptions,
 and spends through settlers fixed at deployment. The design, its invariants and the card flows are
-in [docs/router/zone-router.md](../docs/router/zone-router.md).
+in [docs/zone-router/zone-router.md](../docs/zone-router/zone-router.md).
 
 This is a separate Foundry project beside [Earn](../earn/README.md) and [Spend](../spend/README.md),
 compiled with solc. It imports Earn's interfaces from [`earn/src/`](../earn/src/) rather than a copy,
@@ -21,13 +21,13 @@ and Spend's settlers implement its [`ISpendSettler`](src/interfaces/ISpendSettle
   it lists it.
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
-  [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the [Router Release](../docs/deployment/deployment.md#router-releases) workflow runs for the factory, settlers and routers.
+  [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) workflow runs for the factory, settlers and routers.
 
 ## Running it
 
 ```bash
-scripts/solidity-deps.sh router   # from the repository root
-cd router
+scripts/solidity-deps.sh zone-router   # from the repository root
+cd zone-router
 forge build
 FOUNDRY_PROFILE=ci forge test
 ```

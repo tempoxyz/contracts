@@ -18,7 +18,7 @@ const camel = (name: string) =>
 /**
  * Writes `generated.ts` from this repository's Foundry artifacts so TypeScript never hand-copies an
  * Earn contract ABI. Run `forge build src script test` in earn/ and `forge build src script` in
- * router/ first; pass `--check` to
+ * zone-router/ first; pass `--check` to
  * fail when the committed module no longer matches the artifacts. Contracts from other
  * repositories belong in `external.ts`.
  *
@@ -68,9 +68,9 @@ const contracts = sourceContracts
 
 /**
  * The Zone router's deployable contracts and deployment scripts, from the separate solc project in
- * router/ (built with `cd router && forge build src script` before generating).
+ * zone-router/ (built with `cd zone-router && forge build src script` before generating).
  */
-const routerRoot = new URL('../../router/', import.meta.url)
+const zoneRouterRoot = new URL('../../zone-router/', import.meta.url)
 const routerContracts = ['ZoneRouter', 'ZoneRouterFactory', 'SendSettler'].map(
   (contract) => [`${camel(contract)}Abi`, `out/${contract}.sol/${contract}.json`] as const,
 )
@@ -82,7 +82,7 @@ const routerContracts = ['ZoneRouter', 'ZoneRouterFactory', 'SendSettler'].map(
  */
 const scripts = [
   { base: root, directories: ['script/deploy/', 'script/local/'] },
-  { base: routerRoot, directories: ['script/deploy/'] },
+  { base: zoneRouterRoot, directories: ['script/deploy/'] },
 ].flatMap(({ base, directories }) =>
   directories.flatMap((directory) =>
     solidityFiles(directory, '.s.sol', base).map(({ file }) => {
@@ -156,7 +156,7 @@ const engineBindingAbi = (() => {
 const body = [
   ...contractAbis,
   ['earnEngineBindingAbi', engineBindingAbi] as const,
-  ...routerContracts.map(([name, path]) => [name, readAbi(path, routerRoot)] as const),
+  ...routerContracts.map(([name, path]) => [name, readAbi(path, zoneRouterRoot)] as const),
   ...scripts.map(([name, path, base]) => {
     const entryPoints = readAbi(path, base).filter(
       (item) => item.type === 'function' && item.stateMutability === 'nonpayable',
@@ -173,7 +173,7 @@ const target = fileURLToPath(new URL('generated.ts', import.meta.url))
 if (process.argv.includes('--check')) {
   if (readFileSync(target, 'utf8') !== output) {
     throw new Error(
-      'Contract ABIs drifted; run `pnpm --filter @tempoxyz/earn abis` after `forge build src script test` in earn/ and `forge build src script` in router/',
+      'Contract ABIs drifted; run `pnpm --filter @tempoxyz/earn abis` after `forge build src script test` in earn/ and `forge build src script` in zone-router/',
     )
   }
 } else {

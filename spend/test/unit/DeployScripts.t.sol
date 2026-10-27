@@ -22,8 +22,6 @@ import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol";
 import { IEarnEngineExactWithdraw } from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "tempo-earn/interfaces/engines/IEarnEngineRedeem.sol";
-import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import {
     IZoneFactory,
     IZonePortal,
@@ -31,6 +29,8 @@ import {
     ZONE_MESSENGER_ADDRESS,
     ZoneInfo
 } from "tempo-zones/interfaces/IZone.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 /// @notice The deployment scripts against an existing Bridge factory: deploy, submit the calls
 ///         they write with the role each one needs, then spend.

@@ -3,7 +3,7 @@ pragma solidity ^0.8.36;
 
 import { IERC20 } from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
-import { ISpendSettler } from "tempo-router/interfaces/ISpendSettler.sol";
+import { ISpendSettler } from "zone-router/interfaces/ISpendSettler.sol";
 
 import { Spend } from "../SpenderTempoSpend.sol";
 import { IBridgeSpenderClone, IBridgeSpenderFactory } from "../interfaces/IBridgeSpenderFactory.sol";

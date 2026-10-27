@@ -50,7 +50,7 @@ const namesFactory = (profile: EarnDeploymentProfile) => profile.zoneRouter?.fac
  */
 const namedFactoryCheck = (profile: EarnDeploymentProfile, outputs: Record<string, Address>) =>
   namesFactory(profile)
-    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as router/src/ZoneRouterFactory.sol. `
+    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as zone-router/src/ZoneRouterFactory.sol. `
     : ''
 
 /** The router's conversion pool, when its Earn binding converts the private asset. */
@@ -60,7 +60,7 @@ export const deployZoneRouterFactory = defineFoundryStep({
   id: 'deploy-zone-router-factory',
   authority: deployerAuthority,
   execution: 'foundry',
-  project: 'router',
+  project: 'zone-router',
   summary: 'Deploy the ownerless ZoneRouterFactory the profile does not name.',
   phase: 'deployment',
   intent: ['zoneRouterFactory'],
@@ -99,7 +99,7 @@ export const deployZoneRouter = defineFoundryStep({
   id: 'deploy-zone-router',
   authority: deployerAuthority,
   execution: 'foundry',
-  project: 'router',
+  project: 'zone-router',
   summary: 'Deploy the ZoneRouter for the profile mode through its ZoneRouterFactory.',
   phase: 'deployment',
   // A new factory deploys the same mode at a new address.
@@ -289,7 +289,7 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const router = requiredOutput(outputs, 'zoneRouter')
     const factory = zoneRouterFactory(profile, outputs)
     const provenance = profile.zoneRouter?.factory
-      ? `confirm that ZoneRouterFactory ${factory} is source verified as router/src/ZoneRouterFactory.sol, then `
+      ? `confirm that ZoneRouterFactory ${factory} is source verified as zone-router/src/ZoneRouterFactory.sol, then `
       : ''
     return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },

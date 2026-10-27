@@ -19,7 +19,7 @@ account or privately in a Zone, in stablecoin or in Tempo Earn shares.
 
 ## The design
 
-Two contracts in this project, plus the [Zone router](../router/zone-router.md), all on Tempo.
+Two contracts in this project, plus the [Zone router](../zone-router/zone-router.md), all on Tempo.
 Nothing is deployed inside a Zone.
 
 ### `SpenderTempoSpend` (the "TS" handler)
@@ -57,7 +57,7 @@ reach a Zone. Wallets that cannot use access keys stay on Bridge's EA and TF han
 ### `BridgeSettler` and the Zone router
 
 Bridge's clone has no fallback, so it cannot receive a Zone withdrawal callback itself. Private
-spends go to a [`ZoneRouter`](../router/zone-router.md) deployed in Spend mode, which hands the
+spends go to a [`ZoneRouter`](../zone-router/zone-router.md) deployed in Spend mode, which hands the
 withdrawal to [`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol), one per program, with no
 owner. The router:
 

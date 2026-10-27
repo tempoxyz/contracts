@@ -230,7 +230,7 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
   execution: 'foundry'
   /**
    * The Foundry project beside `earn/` that compiles and runs the script and the contract it
-   * creates, such as `router`, which builds with solc; Earn's own project when omitted.
+   * creates, such as `zone-router`, which builds with solc; Earn's own project when omitted.
    */
   project?: string
   /** `path:Contract` of the script, or the profile's script when it depends on the profile. */

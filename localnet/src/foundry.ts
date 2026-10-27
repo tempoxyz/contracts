@@ -224,7 +224,7 @@ function projectRoot(stepRoot: string, broadcastDirectory: string) {
 
 type LifecycleStep = {
   action: { id: string }
-  /** The step's Foundry project, Earn's or a sibling such as `router/`. */
+  /** The step's Foundry project, Earn's or a sibling such as `zone-router/`. */
   root: string
   arguments: string[]
   environment: Record<string, string>

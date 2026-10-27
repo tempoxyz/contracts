@@ -1,26 +1,26 @@
-name: Router
+name: Zone Router
 
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
-      - 'router/**'
+      - 'zone-router/**'
       - 'earn/src/**'
       - 'earn/test/helpers/**'
       - 'earn/test/router/**'
       - 'earn/test/fixtures/propamm/**'
       - 'scripts/solidity-deps.sh'
-      - '.github/workflows/router.yml'
+      - '.github/workflows/zone-router.yml'
   push:
     branches: [main]
     paths:
-      - 'router/**'
+      - 'zone-router/**'
       - 'earn/src/**'
       - 'earn/test/helpers/**'
       - 'earn/test/router/**'
       - 'earn/test/fixtures/propamm/**'
       - 'scripts/solidity-deps.sh'
-      - '.github/workflows/router.yml'
+      - '.github/workflows/zone-router.yml'
 
 permissions: {}
 
@@ -28,7 +28,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# The Zone router (router/), a separate solc Foundry project that imports Earn's interfaces and test
+# The Zone router (zone-router/), a separate solc Foundry project that imports Earn's interfaces and test
 # helpers. Not a required check yet.
 jobs:
   test:
@@ -41,7 +41,7 @@ jobs:
       id-token: write
     defaults:
       run:
-        working-directory: router
+        working-directory: zone-router
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -50,9 +50,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install the router's Solidity dependencies
+      - name: Install the Zone router's Solidity dependencies
         working-directory: .
-        run: scripts/solidity-deps.sh router
+        run: scripts/solidity-deps.sh zone-router
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:

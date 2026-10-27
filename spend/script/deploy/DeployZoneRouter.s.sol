@@ -4,9 +4,9 @@ pragma solidity ^0.8.36;
 import { VmSafe } from "forge-std/Vm.sol";
 import { console } from "forge-std/console.sol";
 
-import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import { IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneInfo } from "tempo-zones/interfaces/IZone.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";

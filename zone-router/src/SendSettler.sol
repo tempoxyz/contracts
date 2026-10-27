@@ -13,7 +13,7 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/extern
 /// @notice Settles a Zone router's Spend op by paying a public address exactly `amount` of a token: the
 ///         withdrawn token itself (a stablecoin or EarnShare), a vault asset redeemed from EarnShare, or
 ///         the stablecoin its bound vault's asset converts into at par.
-/// @dev Specified in docs/router/zone-router.md#sendsettler. It has no owner and no setters; its only
+/// @dev Specified in docs/zone-router/zone-router.md#sendsettler. It has no owner and no setters; its only
 ///      setting is an optional conversion binding (a vault, its par pool and a customer ID) fixed at
 ///      deployment. A router allows sends only if its mode lists this settler. The router transfers
 ///      `maxInput` before calling `settle`; the settler pays, hands every unused unit straight back and

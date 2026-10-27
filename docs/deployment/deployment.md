@@ -84,7 +84,7 @@ recorded as a completed action.
 Forge writes only where its project's `foundry.toml` allows, so each Forge step writes its outputs
 to a staging copy under the ignored `earn/.earn/external/<id>/`, which the tooling moves back into
 the profile's `deployment.pending.json` after the step or, if the run stopped, on the next run. A step whose contracts live in a sibling Foundry project, such as the
-Zone router's in `router/` (solc), names it as its `project`: Forge compiles, broadcasts and
+Zone router's in `zone-router/` (solc), names it as its `project`: Forge compiles, broadcasts and
 source-verifies from that project, and writes its outputs to the same place as Earn's steps.
 
 The profile declares immutable creation intent and the external readiness it requires; the chain
@@ -167,7 +167,7 @@ For hosted deployments the command submits missing source to `https://contracts.
 for a bytecode and source match, and records the result. A verifier outage never causes a
 rebroadcast or loses the record: rerunning resumes at verification after rechecking deployed state.
 Hosted completion cannot opt out of source verification. A contract from a sibling project, such
-as `router/`'s solc-built `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
+as `zone-router/`'s solc-built `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
 its own compiler settings; its sources may include Earn's through `../earn/`, and each must resolve
 inside the checkout and match it. The factory-created `ZoneRouter` records the `factory.deploy`
 transaction that emitted its `RouterDeployed` event as its creation transaction.
@@ -217,18 +217,18 @@ the reward treasury.
 | `deploy-core`                    | deployment | deployer                                                             | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
 | `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role) | Bind EarnVault and atomically transfer the engine to the configured final owner |
 | `deploy-router`                  | deployment | deployer                                                             | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../router/zone-router.md#deployment)                              |
-| `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../router/zone-router.md#deployment)                              |
+| `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../zone-router/zone-router.md#deployment)                         |
+| `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../zone-router/zone-router.md#deployment)                         |
 | `deploy-merkle-distributor`      | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `validate-access`                | deployment | deployer                                                             | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
 | `deploy-contribution-controller` | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `authorize-router`               | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `enable-zone-tokens`             | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `register-zone-gateway`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../router/zone-router.md#deployment)                              |
-| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
-| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
-| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
+| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone-router/zone-router.md#deployment)                         |
+| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
+| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
+| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
 
 Forge receives only `DEPLOYER_PRIVATE_KEY`; it never receives another authority key. Each typed
 authority step first proves with read-only calls that its signer holds the exact authority (the
@@ -309,8 +309,8 @@ that one), and whether to broadcast. Each network's job runs
 which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
 addresses, transactions, and source matches; a run that stops keeps the releases before it. The
 [Spend Release](../spend/deploy.md#deploying-from-ci) workflow shares these environments and the
-hosted-contracts queue. The router project's contracts release separately
-([router releases](#router-releases)); the command refuses them.
+hosted-contracts queue. The Zone router project's contracts release separately
+([Zone router releases](#zone-router-releases)); the command refuses them.
 
 After a broadcast, the last job records every release whose contracts all source verified, from
 every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
@@ -338,14 +338,14 @@ FOUNDRY_PROFILE=deploy forge script \
   --network tempo --rpc-url https://rpc.moderato.tempo.xyz --broadcast --slow
 ```
 
-### Router releases
+### Zone router releases
 
-The [Zone router](../router/zone-router.md)'s ownerless contracts release apart from Earn's, through
-the **Router Release** workflow ([`router-release.yml`](../../.github/workflows/router-release.yml))
-and `pnpm router-release <network> <release> [--parameters <json>] [--broadcast]`
-([`core/router-release.ts`](../../deployments/core/router-release.ts)), which accepts only these
+The [Zone router](../zone-router/zone-router.md)'s ownerless contracts release apart from Earn's, through
+the **Zone Router Release** workflow ([`zone-router-release.yml`](../../.github/workflows/zone-router-release.yml))
+and `pnpm zone-router-release <network> <release> [--parameters <json>] [--broadcast]`
+([`core/zone-router-release.ts`](../../deployments/core/zone-router-release.ts)), which accepts only these
 releases. It runs the same release engine as factory releases, from
-[`router/`](../../router/README.md) with its own solc build and `deploy` profile: the same address,
+[`zone-router/`](../../zone-router/README.md) with its own solc build and `deploy` profile: the same address,
 creation-code, and receipt checks, reconciling a release that already exists, and source
 verification after a broadcast. None has a registry entry, so there is no `all` and nothing is
 recorded afterwards. Pass a release's parameters as one JSON object (`--parameters`, or the
@@ -355,8 +355,8 @@ and the job summary.
 
 The workflow runs from `main` only. Choose the networks (`both` runs Moderato, then mainnet only after
 Moderato succeeds), one release and its parameters, and whether to broadcast. Each job's summary and
-its `router-release-<network>-<attempt>` artifact list the addresses, transactions, source matches,
-and parameters, with `router/broadcast/`. As with factory releases, the dispatch is
+its `zone-router-release-<network>-<attempt>` artifact list the addresses, transactions, source matches,
+and parameters, with `zone-router/broadcast/`. As with factory releases, the dispatch is
 the approval: each network's job runs in the same `factory-release-<network>` environment, with no
 required reviewer, `main` only, and the same deployer key; the contracts are ownerless, so the key only
 pays fees. It shares the network's
@@ -374,11 +374,11 @@ spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool
 the mode). Omitted fields are zero.
 
 ```bash
-pnpm router-release moderato zoneRouter \
+pnpm zone-router-release moderato zoneRouter \
   --parameters '{"factory": "<ZoneRouterFactory>", "mode": {"zoneId": 7, "enabledOps": 4, "settlers": ["<SendSettler>"]}}'
 ```
 
-[`DeployRouterRelease`](../../router/script/deploy/DeployRouterRelease.s.sol) holds their entry
+[`DeployRouterRelease`](../../zone-router/script/deploy/DeployRouterRelease.s.sol) holds their entry
 points, with the same chain, profile, and deployer checks as `DeployFactoryRelease`. The factory and
 each settler are created through the CREATE2 deployer with Earn's release salt
 (`DeterministicRelease`), and a router by its factory at `predict(mode)`, salted by the mode's hash.
@@ -389,4 +389,4 @@ records the router as a contract its factory call created; the command matches i
 checks it like any other creation, then source-verifies it with `abi.encode(mode)` as its
 constructor arguments. A release deploys only: the pool owner still admits a converting settler
 or router, and the Zone's Portal administrator a router
-([Zone router deployment](../router/zone-router.md#deployment)).
+([Zone router deployment](../zone-router/zone-router.md#deployment)).

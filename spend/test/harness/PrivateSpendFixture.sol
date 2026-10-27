@@ -2,10 +2,10 @@
 pragma solidity ^0.8.36;
 
 import { EncryptedDepositPayload } from "tempo-earn/interfaces/external/tempo/IZone.sol";
-import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { Spend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";

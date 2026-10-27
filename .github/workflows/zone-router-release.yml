@@ -1,6 +1,6 @@
-name: Router Release
+name: Zone Router Release
 
-# Deploys one of the router project's ownerless contracts (router/) from main on the hosted networks:
+# Deploys one of the Zone router project's ownerless contracts (zone-router/) from main on the hosted networks:
 # the ZoneRouterFactory, a SendSettler, or a ZoneRouter its factory creates. Each lands at its
 # deterministic address, and one already there is reused. After a broadcast it is source verified on
 # Tempo's verifier. These contracts are in no release registry, so nothing is recorded afterwards; the
@@ -12,10 +12,10 @@ on:
         description: Hosted networks; both runs Moderato first, and mainnet only after it succeeds
         required: true
         type: choice
-        # The router release unit test asserts these lists match the hosted networks and releases.
+        # The Zone router release unit test asserts these lists match the hosted networks and releases.
         options: [both, moderato, mainnet]
       release:
-        description: Router contract to deploy
+        description: Zone router contract to deploy
         required: true
         type: choice
         options: [zoneRouterFactory, sendSettler, zoneRouter]
@@ -70,10 +70,10 @@ jobs:
         with:
           workspace: '@tempoxyz/earn'
 
-      # router/ is a separate solc Foundry project with its own pinned dependencies; it needs neither
+      # zone-router/ is a separate solc Foundry project with its own pinned dependencies; it needs neither
       # Earn's solar nor its Forge build cache.
-      - name: Install the router's Solidity dependencies
-        run: scripts/solidity-deps.sh router
+      - name: Install the Zone router's Solidity dependencies
+        run: scripts/solidity-deps.sh zone-router
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -92,17 +92,17 @@ jobs:
           TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
-          arguments=("$NETWORK" "$RELEASE" --parameters "$PARAMETERS" --output "$RUNNER_TEMP/router-release.json")
+          arguments=("$NETWORK" "$RELEASE" --parameters "$PARAMETERS" --output "$RUNNER_TEMP/zone-router-release.json")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
-          pnpm router-release "${arguments[@]}"
+          pnpm zone-router-release "${arguments[@]}"
 
-      # Forge records the authenticated RPC URL in its script sequences under router/cache; the command
+      # Forge records the authenticated RPC URL in its script sequences under zone-router/cache; the command
       # deletes them, and this removes any it could not, whatever the outcome.
       - name: Remove Forge script sequences
         if: ${{ always() }}
         run: |
-          if [[ -d router/cache ]]; then
-            find router/cache -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+          if [[ -d zone-router/cache ]]; then
+            find zone-router/cache -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
           fi
 
       - name: Summarize
@@ -110,13 +110,13 @@ jobs:
         env:
           NETWORK: ${{ matrix.network }}
         run: |
-          result="$RUNNER_TEMP/router-release.json"
+          result="$RUNNER_TEMP/zone-router-release.json"
           if [[ ! -f "$result" ]]; then
             echo "No release ran on ${NETWORK}." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           {
-            echo "## Router release on ${NETWORK} · $(jq -r 'if .broadcast then "broadcast" else "dry run" end' "$result") · ${GITHUB_SHA::7}"
+            echo "## Zone router release on ${NETWORK} · $(jq -r 'if .broadcast then "broadcast" else "dry run" end' "$result") · ${GITHUB_SHA::7}"
             echo
             echo '| Release | Contract | Address | Transaction | Source match |'
             echo '| --- | --- | --- | --- | --- |'
@@ -135,8 +135,8 @@ jobs:
         if: ${{ always() }}
         with:
           # One artifact per attempt, so a rerun that gets less far keeps what an earlier attempt verified.
-          name: router-release-${{ matrix.network }}-${{ github.run_attempt }}
+          name: zone-router-release-${{ matrix.network }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/router-release.json
-            router/broadcast/
+            ${{ runner.temp }}/zone-router-release.json
+            zone-router/broadcast/
           if-no-files-found: ignore
