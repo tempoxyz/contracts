@@ -10,7 +10,7 @@
 //   only with `--admit`: otherwise, when the router or the cardholder lacks the role the Portal
 //   requires, the private steps report BLOCKED with the call the Zone administrator must make.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   BaseError,
@@ -34,6 +34,8 @@ import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 
 import { createClient as createTempoClient, Store, http as zoneHttp } from 'viem/tempo'
 import { tempoModerato } from 'viem/tempo/chains'
 
+import { Deployment as Localnet } from 'localnet'
+import { loadProfile } from '../../harness/profile.js'
 import * as Network from './network.js'
 
 /** Spend's Foundry project: Forge runs, artifacts and reports live here. */
@@ -326,9 +328,17 @@ async function preflight(
 // local
 // ---------------------------------------------------------------------------------------------
 
-export async function local(step: Step): Promise<Prepared> {
+/**
+ * The Earn stack the local target deploys with `earn`: Tempo Earn's e2e-moderato profile, the one
+ * the moderato target spends from, localized to the disposable L1 and Zone.
+ */
+const localEarnProfile = resolve(e2eRoot, '../../profiles/e2e-moderato/profile.json')
+
+export async function local(step: Step, options: { earn?: boolean } = {}): Promise<Prepared> {
   const zoneAdminPk = generatePrivateKey()
   const deployerPk = generatePrivateKey()
+  const earnDeployerPk = generatePrivateKey()
+  const earnEngineOwnerPk = generatePrivateKey()
   const zoneAdmin = privateKeyToAccount(zoneAdminPk)
   const cardholder = privateKeyToAccount(generatePrivateKey())
   const refundRecipient = privateKeyToAccount(generatePrivateKey()).address
@@ -347,6 +357,12 @@ export async function local(step: Step): Promise<Prepared> {
       zoneAdmin.address,
       privateKeyToAccount(deployerPk).address,
       cardholder.address,
+      ...(options.earn
+        ? [
+            privateKeyToAccount(earnDeployerPk).address,
+            privateKeyToAccount(earnEngineOwnerPk).address,
+          ]
+        : []),
     ]) {
       await l1Public.faucet.fundSync({ account: a, timeout: 180_000 })
     }
@@ -413,6 +429,18 @@ export async function local(step: Step): Promise<Prepared> {
       refundRecipient,
     })
     step(4, `Preflight: ${checks.length} checks ok, none todo`)
+    const earn = options.earn
+      ? await localEarn(l1Public, l1Wallet, {
+          l1,
+          zone,
+          program,
+          deployerPk,
+          earnDeployerPk,
+          earnEngineOwnerPk,
+          zoneAdminPk,
+        })
+      : undefined
+    if (earn) step(4, `Earn: e2e-moderato stack, vault ${earn.vault}, EarnShare ${earn.earnShare}`)
 
     const localZoneChain = zoneChain(zone.chainId, zone.rpcUrl, 'Local Tempo Zone', l1.chainId)
     const localZone = zone
@@ -429,6 +457,7 @@ export async function local(step: Step): Promise<Prepared> {
       cardholder,
       refundRecipient,
       disposable: true,
+      ...(earn ? { earn } : {}),
       blocked: [],
       l1Public,
       l1Wallet,
@@ -455,6 +484,76 @@ export async function local(step: Step): Promise<Prepared> {
     await Promise.allSettled([zone?.container.stop(), l1.container.stop()])
     throw error
   }
+}
+
+/**
+ * Deploys the e2e-moderato Earn profile on the local L1 and Zone through localnet's shared
+ * lifecycle, which enables its EarnShare on the Portal and waits for the Zone to mirror it, then
+ * allows the vault for the program as on Moderato.
+ */
+async function localEarn(
+  l1Public: PublicClient,
+  l1Wallet: (account: ViemAccount) => WalletClient,
+  inputs: {
+    l1: Network.L1
+    zone: Network.Zone
+    program: Program
+    deployerPk: Hex
+    earnDeployerPk: Hex
+    earnEngineOwnerPk: Hex
+    zoneAdminPk: Hex
+  },
+): Promise<EarnTarget> {
+  const { l1, zone } = inputs
+  const deployer = privateKeyToAccount(inputs.earnDeployerPk)
+  // localnet's lifecycle keeps receipts and resume state in <run directory>/broadcast, inside
+  // localnet's own directory, which its Forge projects may write.
+  const localnetDirectory = resolve(e2eRoot, '../../localnet/.local')
+  mkdirSync(localnetDirectory, { recursive: true })
+  const runDirectory = mkdtempSync(resolve(localnetDirectory, 'spend-earn-'))
+  const broadcastDirectory = resolve(runDirectory, 'broadcast')
+  const profile = loadProfile(localEarnProfile).profile
+  const common = {
+    account: deployer.address,
+    broadcastDirectory,
+    chainId: l1.chainId,
+    client: l1.client,
+    privateKey: inputs.earnDeployerPk,
+    rpcUrl: l1.rpcUrl,
+    engineOwnerPrivateKey: inputs.earnEngineOwnerPk,
+  }
+  const { state } = await (async () => {
+    try {
+      const base = await Localnet.createBase({ ...common, engineKind: profile.engine.kind })
+      return await Localnet.create({
+        ...common,
+        base,
+        earnProfile: profile,
+        accessAdministrator: deployer.address,
+        revenueShareRecipient: deployer.address,
+        zone: { ...zone, id: zone.zoneId },
+        zonePrivateKey: inputs.zoneAdminPk,
+      })
+    } finally {
+      rmSync(runDirectory, { force: true, recursive: true })
+    }
+  })()
+  if (!state.stablecoinFixture) throw new Error('the local Earn stack has no stablecoin funder')
+  const earn = await prepareEarn(
+    l1Public,
+    l1Wallet,
+    inputs.program,
+    zone.portal,
+    {
+      vault: state.earnVault,
+      asset: state.baseAsset,
+      earnShare: state.earnShare,
+      funder: state.stablecoinFixture,
+    },
+    { DEPLOYER_PRIVATE_KEY: inputs.deployerPk },
+  )
+  if (!earn) throw new Error('the local Earn stack is not ready for the program')
+  return earn
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -76,8 +76,8 @@ jobs:
           (cd spend && python3 script/matrix.py --out reports/matrix.md)
           diff -u docs/spend/matrix.md spend/reports/matrix.md
 
-  # A private spend end to end on a disposable Tempo L1 and Zone started by the shared localnet,
-  # from the images localnet/fixtures/runtime-lock.json pins.
+  # A private spend end to end, from pathUSD and from Earn shares, on a disposable Tempo L1 and Zone
+  # started by the shared localnet, from the images localnet/fixtures/runtime-lock.json pins.
   zone-e2e:
     name: Zone E2E
     runs-on: ubuntu-latest
@@ -111,8 +111,9 @@ jobs:
         working-directory: spend
         run: forge build
 
+      # --earn also deploys Tempo Earn's e2e-moderato stack locally, so the Earn spend steps run.
       - name: Run
-        run: pnpm e2e:spend
+        run: pnpm e2e:spend -- --earn
 
   # Public pulls and Bridge's access key on a disposable Tempo dev node.
   smoke:

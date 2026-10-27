@@ -1,6 +1,7 @@
 // Card spend on a real Tempo L1 and a real Tempo Zone, against a target (targets.ts):
 //
 //   pnpm zone                       local: a disposable L1 and Zone in Docker
+//   pnpm zone --earn                local, plus the e2e-moderato Earn stack for the Earn steps
 //   pnpm zone:moderato              Moderato and its hosted Zone 3, with the recorded program
 //   pnpm zone:moderato --deploy     deploys that program first and records it
 //   pnpm zone:moderato --admit      grants the router and cardholder the Portal roles they lack,
@@ -21,7 +22,7 @@
 //    and fees lower once any change is back, and a spend to an address outside the program bounces
 //    back into the Zone in full. On a disposable Zone it also shows the outbox-scoped key
 //    withdrawing to an address outside the program, an accepted risk.
-// 5. Where the target has a Tempo Earn vault (Moderato), spends from Earn shares in the Zone: the
+// 5. Where the target has a Tempo Earn vault (Moderato, or local with --earn), spends from Earn shares in the Zone: the
 //    cardholder deposits into the vault and moves the EarnShare into the Zone, Bridge withdraws
 //    shares to the router, and the handler redeems exactly the spend for the settlement wallet.
 //    Checks: the settlement wallet is paid in the vault's asset, the shares spent stay within
@@ -980,7 +981,7 @@ async function main() {
 
   const t =
     target === 'local'
-      ? await local(step)
+      ? await local(step, { earn: args.includes('--earn') })
       : await hosted(step, { deploy: args.includes('--deploy'), admit: args.includes('--admit') })
   const run = `${t.name}.${Date.now()}`
   try {

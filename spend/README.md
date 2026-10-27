@@ -103,7 +103,8 @@ script/smoke.sh
 - a Zone token's `transfer` reverts with `Unauthorized()`;
 - a leaked Zone key can withdraw outside the program (local only);
 - a spend from Earn shares in the Zone redeems exactly the spend, within Bridge's share quote, and
-  returns the unused shares (Moderato, against Tempo Earn's e2e-moderato vault on Zone 3).
+  returns the unused shares (Moderato, against Tempo Earn's e2e-moderato vault on Zone 3; locally
+  with `--earn`, which deploys that profile on the disposable chain, as CI does).
 
 It also logs the gas the router callback used, read from a trace of the settlement transaction,
 and times the card-approval path: Zone request to Zone receipt, Zone receipt to L1 settlement, and
@@ -115,6 +116,7 @@ Requires Node 22 and pnpm, plus Docker for `local`.
 ```bash
 forge build
 pnpm e2e:spend          # from the repository root
+pnpm e2e:spend -- --earn   # also the Earn spend steps, against a local e2e-moderato stack
 ```
 
 Moderato uses the test program recorded in `e2e/spend/targets/moderato.json` and reads
