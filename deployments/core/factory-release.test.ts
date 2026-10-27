@@ -10,6 +10,7 @@ import {
   deployFactoryRelease,
   factoryReleaseKinds,
   planFactoryRelease,
+  redactRpcCredentials,
   type FactoryReleaseDependencies,
 } from './factory-release.js'
 
@@ -188,14 +189,21 @@ describe('deployFactoryRelease', () => {
 
   test('keeps a deployed contract whose verification fails, with the error', async () => {
     const dependencies = runtime()
-    dependencies.verify.mockRejectedValueOnce(new Error('verifier timed out'))
+    dependencies.verify.mockRejectedValueOnce(
+      new Error('verifier timed out calling https://user:secret@rpc.tempo.xyz'),
+    )
     const result = await deployFactoryRelease(
       {
         network: 'mainnet',
         kind: 'core',
         broadcast: true,
         root: '/repo/earn',
-        environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
+        environment: {
+          DEPLOYER_PRIVATE_KEY: '0xkey',
+          TEMPO_RPC_URL: 'https://rpc.tempo.xyz',
+          TEMPO_RPC_USERNAME: 'user',
+          TEMPO_RPC_PASSWORD: 'secret',
+        },
       },
       dependencies as Partial<FactoryReleaseDependencies>,
     )
@@ -203,7 +211,7 @@ describe('deployFactoryRelease', () => {
       name: 'EarnVault',
       address: address('1'),
       match: null,
-      verificationError: 'verifier timed out',
+      verificationError: 'verifier timed out calling ***',
     })
     expect(result.contracts.slice(1).every((contract) => contract.match === 'exact_match')).toBe(
       true,
@@ -288,5 +296,27 @@ describe('factory release workflow', () => {
   test('offers every hosted network and every release', () => {
     expect(options('network')?.sort()).toEqual(Object.keys(hostedEnvironments).sort())
     expect(options('release')?.sort()).toEqual([...factoryReleaseKinds].sort())
+  })
+})
+
+describe('redactRpcCredentials', () => {
+  test('removes the authenticated URL and each credential, raw and encoded', () => {
+    const environment = { TEMPO_RPC_USERNAME: 'release', TEMPO_RPC_PASSWORD: 'p@ss:word' }
+    const url = 'https://release:p%40ss%3Aword@rpc.tempo.xyz/'
+    const text = [
+      `error sending request for url (${url})`,
+      'user release password p@ss:word encoded p%40ss%3Aword',
+    ].join('\n')
+    const redacted = redactRpcCredentials(text, url, environment)
+    expect(redacted).not.toContain('p@ss:word')
+    expect(redacted).not.toContain('p%40ss%3Aword')
+    expect(redacted).not.toContain('release')
+    expect(redacted).toContain('error sending request for url (***)')
+  })
+
+  test('keeps a public URL readable', () => {
+    expect(
+      redactRpcCredentials('timeout at https://rpc.tempo.xyz', 'https://rpc.tempo.xyz', {}),
+    ).toBe('timeout at ***')
   })
 })

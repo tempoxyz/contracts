@@ -203,6 +203,41 @@ export function createdContracts(
   })
 }
 
+/**
+ * Replaces the authenticated RPC URL and its credentials, raw and percent-encoded, in text that is
+ * written to the result, the job summary, or an artifact, where GitHub's secret masking does not
+ * reach.
+ */
+export function redactRpcCredentials(
+  text: string,
+  authenticatedUrl: string,
+  environment: Readonly<Record<string, string | undefined>>,
+) {
+  const url = new URL(authenticatedUrl)
+  const secrets = new Set<string>([authenticatedUrl, authenticatedUrl.replace(/\/+$/, '')])
+  for (const value of [
+    url.username,
+    url.password,
+    environment.TEMPO_RPC_URL,
+    environment.TEMPO_RPC_USERNAME,
+    environment.TEMPO_RPC_PASSWORD,
+  ]) {
+    if (!value) continue
+    secrets.add(value)
+    secrets.add(encodeURIComponent(value))
+    try {
+      secrets.add(decodeURIComponent(value))
+    } catch {
+      // Not percent-encoded.
+    }
+  }
+  // Longest first, so a URL is replaced whole before any credential inside it.
+  return [...secrets]
+    .filter((secret) => secret.length > 0)
+    .sort((left, right) => right.length - left.length)
+    .reduce((redacted, secret) => redacted.split(secret).join('***'), text)
+}
+
 export type FactoryReleaseResult = {
   network: HostedEnvironmentId
   chainId: number
@@ -353,7 +388,12 @@ export async function deployFactoryRelease(
       contracts.push({
         ...contract,
         match: null,
-        verificationError: error instanceof Error ? error.message : String(error),
+        // Forge's stderr can echo the --rpc-url, and this lands in the uploaded result artifact.
+        verificationError: redactRpcCredentials(
+          error instanceof Error ? error.message : String(error),
+          rpc.authenticatedUrl,
+          options.environment,
+        ),
       })
     }
   }
