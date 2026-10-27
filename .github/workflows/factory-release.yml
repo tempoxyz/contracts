@@ -118,6 +118,8 @@ jobs:
             ${{ runner.temp }}/factory-release.json
             earn/broadcast/
           if-no-files-found: ignore
+          # A rerun of a failed network replaces that network's result from the attempt before.
+          overwrite: true
 
   # Records every broadcast release whose contracts all source verified, including those from a
   # network that later failed, on a branch; the registry changes only through a reviewed pull request.
@@ -169,7 +171,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          branch="factory-release/${GITHUB_RUN_ID}"
+          # One branch per attempt: a rerun of failed jobs pushes its own branch instead of being refused
+          # by the first attempt's.
+          branch="factory-release/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch --create "$branch"

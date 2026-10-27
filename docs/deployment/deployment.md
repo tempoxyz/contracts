@@ -294,7 +294,7 @@ addresses, transactions, and source matches; a run that stops keeps the releases
 
 After a broadcast, the last job records every release whose contracts all source verified, from
 every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
-`factory-release/<run>` branch (`pnpm factory-release registry`) and links it in the job summary with
+`factory-release/<run>-<attempt>` branch (`pnpm factory-release registry`) and links it in the job summary with
 the pull request description; a maintainer opens that pull request, so the registry changes only
 through its review.
 
