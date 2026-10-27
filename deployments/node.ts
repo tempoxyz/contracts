@@ -1,10 +1,6 @@
 /** Node-only profile lifecycle, records, runtime, and Foundry tooling. Inspectors live in `./deployments`. */
 export { discoverOutputs, reconcileEarnProfileActions } from './core/deploy.js'
-export {
-  assertFoundryVersion,
-  assertSourceVerifiableCompiler,
-  foundryProcessEnvironment,
-} from './chain/foundry.js'
+export { assertFoundryVersion, foundryProcessEnvironment } from './chain/foundry.js'
 export {
   loadDeploymentEnvironment,
   loadEarnProfile,

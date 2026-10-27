@@ -249,10 +249,13 @@ are ownerless, and their constructors impose no PATHUSD transfer-policy ID. The 
 funded and authorized to pay fees under its chosen fee token's live policy; a custom PATHUSD policy
 does not by itself block a release.
 
-Earn compiles with solar ([`earn/solar.lock`](../../earn/solar.lock)), whose bytecode Tempo's source
-verifier cannot reproduce. The profile lifecycle refuses hosted Forge steps for that reason, but the
-release entry points below are plain Forge scripts that it does not run: do not broadcast them to a
-hosted chain until the verifier supports solar. Deploy a core release with:
+Earn compiles with solar ([`earn/solar.lock`](../../earn/solar.lock)). Tempo's source verifier
+rebuilds only the solar builds it pins in tempo-apps'
+[`solar-builds.json`](https://github.com/tempoxyz/tempo-apps/blob/main/apps/contract-verification/container/solar-builds.json),
+so a new `solar.lock` revision must be added there and deployed before a hosted deployment built
+with it. Source verification passes Forge the solar build (`--compiler-version`, from
+`earn/solar-solc --version`, with `--compilation-profile default`); a manual
+`forge verify-contract` needs the same two flags. Deploy a core release with:
 
 ```bash
 FOUNDRY_PROFILE=deploy forge script \

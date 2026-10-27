@@ -81,6 +81,7 @@ function dependencies(engineName = 'VedaEngine') {
     pause: vi.fn(async () => undefined),
     readSource: vi.fn((path: string) => `canonical:${path.replace('/repo/', '')}`),
     spawn: vi.fn(),
+    compilerArguments: vi.fn((): string[] => []),
   } satisfies VerificationDependencies
 }
 
@@ -241,6 +242,94 @@ describe('deployment source verification', () => {
         transaction,
       ]),
     )
+    expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
+  })
+
+  test('submits with the solar build the deploy profile compiles with', async () => {
+    const erc4626Profile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'source-submission-test',
+        chainId: 42431,
+        owner: address('9'),
+        engine: {
+          kind: 'erc4626',
+          venue: address('d'),
+        },
+      },
+      { deployer: address('1'), factories: { earn: coreFactory, erc4626Engine: address('c') } },
+    )
+    const runtime = dependencies()
+    let engineLookups = 0
+    runtime.fetch = vi.fn(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/v2/verify/job')) {
+        return Response.json({
+          isJobCompleted: true,
+          contract: { address: engine, match: 'exact_match', name: 'ERC4626Engine' },
+          error: null,
+        })
+      }
+      if (url.toLowerCase().includes(engine.toLowerCase())) {
+        engineLookups++
+        return engineLookups === 1
+          ? new Response('{}', { status: 404 })
+          : Response.json({
+              ...verifiedContract(engine, 'ERC4626Engine'),
+              transactionHash: transaction,
+            })
+      }
+      return dependencies().fetch(input)
+    }) as unknown as typeof fetch
+    runtime.compilerArguments = vi.fn(() => [
+      '--compiler-version',
+      '0.8.36+commit.d83529b.solar.0.2.0',
+      '--compilation-profile',
+      'default',
+    ])
+    runtime.spawn = vi.fn(() => ({
+      status: 0,
+      stdout: '',
+      stderr: 'Verification Job ID: `job`',
+    })) as unknown as typeof runtime.spawn
+
+    await expect(
+      verifyDeploymentSources(
+        run({
+          environment: {
+            PATH: '/bin',
+            DEPLOYER_PRIVATE_KEY: 'must-not-leak',
+            ZONE_ADMIN_PRIVATE_KEY: 'must-not-leak',
+          },
+          profile: erc4626Profile,
+          record: {
+            actions: {
+              ...actions,
+              'deploy-engine': {
+                completedAt: '2026-01-01T00:00:00.000Z',
+                verification: 'broadcast',
+                transactions: [transaction],
+              },
+            },
+            addresses,
+          },
+        }),
+        runtime,
+      ),
+    ).resolves.toMatchObject({
+      contracts: { engine: { name: 'ERC4626Engine', match: 'exact_match' } },
+    })
+    expect(runtime.spawn).toHaveBeenCalledTimes(1)
+    const [, arguments_, spawnOptions] = runtime.spawn.mock.calls[0]!
+    expect(arguments_).toEqual(
+      expect.arrayContaining([
+        '--compiler-version',
+        '0.8.36+commit.d83529b.solar.0.2.0',
+        '--compilation-profile',
+        'default',
+      ]),
+    )
+    expect(runtime.compilerArguments).toHaveBeenCalledWith('/repo', expect.any(Object))
     expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
   })
 
