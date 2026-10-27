@@ -117,7 +117,7 @@ sequenceDiagram
     Note over B: Bridge approves the card here
     O->>P: next batch
     P->>R: messenger callback
-    R->>S: settle(maxInput)
+    R->>S: transfer maxInput + settle
     S->>C: publicCall "PS"
     C->>D: pay amount
     R->>P: depositEncrypted(change)
@@ -126,7 +126,7 @@ sequenceDiagram
 
 Bridge approves the card once the Zone accepts the request. If the callback later reverts (pause,
 a disabled handler, a removed destination, price move, illiquid venue), the input bounces to the
-withdrawal's fallback recipient, the program's Stripe-owned Zone account, and the platform reserve
+withdrawal's fallback recipient, the cardholder's Zone account, and the platform reserve
 pays the network. A callback that deposits anything back must
 deposit at least the portal's deposit and bounce-back fees. A closed-loop Zone always requires a
 return, and an Earn spend always returns its unused shares. So for either, Bridge withdraws the

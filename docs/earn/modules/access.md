@@ -33,8 +33,10 @@ The policy administrator controls eligibility, not issuance or backing, and cann
 issuer membership; the deployment lifecycle never creates the policy or edits its membership. The
 administrator must keep every protocol endpoint that moves EarnShare or the asset
 authorized: the EarnVault, `EarnFees`, every recipient of the current fee configuration, and, when
-configured, the Merkle distributor and its treasury, and the Zone router with the Zone's Portal,
-Messenger, every active sequencer, and Outbox. Authorities that never hold EarnShare (owner,
+configured, the Merkle distributor and its treasury, the Zone router with the Zone's Portal,
+Messenger, every active sequencer, and Outbox, and the profile's `zoneRouter`
+([`ZoneRouter`](../../router/zone-router.md#deployment)) with its own Zone's Portal, Messenger,
+sequencers, and Outbox, whatever its ops. Authorities that never hold EarnShare (owner,
 deployer, fee distributor) are not members. Zone account admission and token enablement are separate
 Zone-administrator permissions ([Zones](zone-router.md#token-enablement-policy-and-admission)).
 
@@ -75,4 +77,5 @@ protected stacks: `access-admin-guards`, `access-receiver-policy`,
 `access-ineligible-contributor-does-not-earn`, `access-transfer-policy`, and
 `access-removed-holder`. With a Zone, `zone-ineligible-private-transfer-blocked` and
 `zone-ineligible-private-deposit-bounces` cover policy mirroring. The removal-safety guard has unit tests in
-[`membership.test.ts`](../../../deployments/modules/earn/access-policy/membership.test.ts).
+[`membership.test.ts`](../../../deployments/modules/earn/access-policy/membership.test.ts), and the
+`zoneRouter` members in [`steps.test.ts`](../../../deployments/modules/router/steps.test.ts).

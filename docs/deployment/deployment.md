@@ -15,7 +15,7 @@ The current Foundry deployment scripts and this profile lifecycle tooling are ou
 One profile JSON drives every command, and `deploy` is the only one an operator must run:
 
 ```sh
-cp .env.example earn/.env.app-moderato
+cp .env.example .env.app-moderato
 pnpm earn plan profiles/app-moderato/profile.json
 pnpm earn deploy profiles/app-moderato/profile.json
 pnpm earn status profiles/app-moderato/profile.json
@@ -32,8 +32,8 @@ pnpm earn verify profiles/app-moderato/profile.json
 | `access`  | Reads or changes one member of a protected profile's TIP-403 whitelist ([access](../earn/modules/access.md#deployment-and-operations)).                                  | `--earn-file <profile.json> <status\|add\|remove> <address>`                             |
 
 Every command loads only the ignored `.env.<profile-id>` beside the `profiles/` directory that holds
-the profile (`earn/` for Earn's own; [profiles in another repository](../../profiles/README.md#profiles-in-another-repository));
-values already in the process environment take precedence. A command fails, naming that file, when
+the profile (the repository root for Earn's own;
+[profiles in another repository](../../profiles/README.md#profiles-in-another-repository)); values already in the process environment take precedence. A command fails, naming that file, when
 neither supplies a value it needs:
 
 - `DEPLOYER_PRIVATE_KEY`, for every command until the profile has a `deployment.json`, because the
@@ -81,10 +81,9 @@ steps must all complete before the record is published. Activation steps (pool a
 token enablement, gateway registration) are mutable external readiness: each is attempted on every
 run, a handoff on one does not block the others or source verification, and none of them is
 recorded as a completed action.
-Forge may write only inside the Earn checkout, so for a profile outside Earn's `profiles/` each
-Forge step writes its outputs to a staging copy under the ignored `.earn/external/<id>/`, which the
-tooling moves back into the profile's `deployment.pending.json` after the step or, if the run
-stopped, on the next run. A step whose contracts live in a sibling Foundry project, such as the
+Forge writes only where its project's `foundry.toml` allows, so each Forge step writes its outputs
+to a staging copy under the ignored `earn/.earn/external/<id>/`, which the tooling moves back into
+the profile's `deployment.pending.json` after the step or, if the run stopped, on the next run. A step whose contracts live in a sibling Foundry project, such as the
 Zone router's in `router/` (solc), names it as its `project`: Forge compiles, broadcasts and
 source-verifies from that project, and writes its outputs to the same place as Earn's steps.
 
@@ -113,7 +112,9 @@ created the stack: the predicted EarnShare and EarnFees cover every creation-tim
 inspection checks the adopted stack before any record is written. An interrupted run's own outputs
 are recovered first. Either way, `deploy-core` records the transaction named by the factory's
 `EarnStackDeployed` event for that EarnShare, never a hash from Forge's latest-broadcast file, which
-every profile on the chain shares and which may lack the receipt.
+every profile on the chain shares and which may lack the receipt. `deploy-zone-router` likewise
+adopts the router its permissionless `ZoneRouterFactory` already deployed for the profile's mode,
+such as one Spend's script created, recording the transaction its `RouterDeployed` event names.
 
 ## Generated record
 
@@ -169,7 +170,7 @@ Hosted completion cannot opt out of source verification. A contract from a sibli
 as `router/`'s solc-built `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
 its own compiler settings; its sources may include Earn's through `../earn/`, and each must resolve
 inside the checkout and match it. The factory-created `ZoneRouter` records the `factory.deploy`
-transaction as its creation transaction.
+transaction that emitted its `RouterDeployed` event as its creation transaction.
 
 The record classifies actual code forms instead of treating every output as an ordinary Solidity
 deployment. Ordinary contracts keep the verifier's `exact_match` or normalized `match`; the

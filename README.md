@@ -29,18 +29,18 @@ its own build settings, dependencies, documentation, and audits.
 
 ## Repository layout
 
-| Path                       | Purpose                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------- |
-| `earn/`                    | Tempo Earn Foundry project: contracts, tests, and Forge scripts.                            |
-| `spend/`                   | Tempo Spend Foundry project: Bridge spender handler, `BridgeSettler`, and card harness.     |
-| `router/`                  | Zone router Foundry project (solc): `ZoneRouter`, its factory, and `ISpendSettler`.         |
-| `deployments/`             | Shared deployment lifecycle (`pnpm earn`), ABIs, and per-project modules (`modules/earn/`). |
-| `profiles/`                | Deployment profiles and generated records.                                                  |
-| `app/`                     | The web app and Cloudflare Worker.                                                          |
-| `e2e/`                     | Shared local and hosted integration harness and cases, including Spend's Zone run.          |
-| `localnet/`                | Disposable local Tempo L1 and Zone, shared by every E2E run.                                |
-| `docs/`                    | `development/`, `deployment/`, `earn/`, `spend/`, and `router/` documentation.              |
-| `scripts/solidity-deps.sh` | Installs each Foundry project's pinned Solidity dependencies and Earn's solar compiler.     |
+| Path                       | Purpose                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| `earn/`                    | Tempo Earn Foundry project: contracts, tests, and Forge scripts.                           |
+| `spend/`                   | Tempo Spend Foundry project: Bridge spender handler, `BridgeSettler`, and card harness.    |
+| `router/`                  | Zone router Foundry project (solc): `ZoneRouter`, its factory, and `ISpendSettler`.        |
+| `deployments/`             | Shared deployment lifecycle (`pnpm earn`), ABIs, and modules (`modules/earn/`, `router/`). |
+| `profiles/`                | Deployment profiles and generated records.                                                 |
+| `app/`                     | The web app and Cloudflare Worker.                                                         |
+| `e2e/`                     | Shared local and hosted integration harness and cases, including Spend's Zone run.         |
+| `localnet/`                | Disposable local Tempo L1 and Zone, shared by every E2E run.                               |
+| `docs/`                    | `development/`, `deployment/`, `earn/`, `spend/`, and `router/` documentation.             |
+| `scripts/solidity-deps.sh` | Installs each Foundry project's pinned Solidity dependencies and Earn's solar compiler.    |
 
 ## Get started
 

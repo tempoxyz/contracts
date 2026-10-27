@@ -2,7 +2,7 @@
 
 Card spend through Bridge's spender contracts: the `TS` handler, `BridgeSettler`, the card E2E
 harness, and Bridge's deploy scripts. [README.md](README.md) maps the project and
-[docs/design.md](../docs/spend/design.md) owns the design.
+[docs/spend/design.md](../docs/spend/design.md) owns the design.
 
 - This is its own Foundry project. Run every `forge` command from `spend/`, after
   `scripts/solidity-deps.sh spend` (from the repository root) installs `lib/` at the revisions
@@ -14,8 +14,8 @@ harness, and Bridge's deploy scripts. [README.md](README.md) maps the project an
   that breaks this project is fixed in the same pull request.
 - Bridge-specific code stays here; `earn/` stays customer-agnostic and never imports from
   `spend/`.
-- `vendor/` holds unmodified Bridge and Zone sources at the commits in
-  [vendor/VENDORED.md](vendor/VENDORED.md); refresh them only by re-copying.
+- `vendor/` holds Bridge and Zone sources at the commits in [vendor/VENDORED.md](vendor/VENDORED.md),
+  unmodified except for the changes it lists; refresh them only by re-copying.
 - No contract here emits or stores the Zone callback `senderTag` or a cardholder address; Bridge
   matches private spends by the Portal's own events.
 

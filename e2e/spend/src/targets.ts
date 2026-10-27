@@ -7,8 +7,8 @@
 // - moderato: Tempo's testnet L1 and its hosted Zone 3, reached through Tempo API. The program is
 //   deployed once (`--deploy`) and recorded in targets/moderato.json; a record without a settler
 //   and router gets them from script/deploy/DeployZoneRouter.s.sol. A run changes the Zone's Portal
-//   only with `--admit`: otherwise, when the router or the cardholder lacks the role the Portal
-//   requires, the private steps report BLOCKED with the call the Zone administrator must make.
+//   only with `--admit`: otherwise, when the router, cardholder, program wallet or refund recipient
+//   lacks the role the Portal requires, the private steps report BLOCKED with the call the Zone administrator must make.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -705,7 +705,7 @@ export async function hosted(
   }
   if (!existsSync(moderatoRecord))
     throw new Error(
-      'targets/moderato.json is missing: deploy once with `pnpm zone:moderato --deploy`',
+      'targets/moderato.json is missing: deploy once with `pnpm --filter e2e spend:moderato --deploy`',
     )
   const record = JSON.parse(readFileSync(moderatoRecord, 'utf8')) as Omit<
     Program,

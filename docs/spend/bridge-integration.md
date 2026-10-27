@@ -115,9 +115,11 @@ payer in the input token: stablecoin, or EarnShare for an Earn spend. The fee pa
 approves those tokens. Unsponsored, the cardholder approves `input + withdrawalFee` and pays it.
 
 - `inputToken` is the stablecoin, or EarnShare for an Earn spend. A withdrawal carries one token,
-  so a private spend is all stablecoin (`fromVault = 0`) or all Earn (`fromVault = amount`), never
-  split as a public spend can be. Its preflight balance is that one token's. Use Earn shares if
-  they cover the spend, otherwise the stablecoin, otherwise decline.
+  so one withdrawal is all stablecoin (`fromVault = 0`) or all Earn (`fromVault = amount`), never
+  split as a public spend can be. Use Earn shares if they cover the spend, otherwise the
+  stablecoin, otherwise both as two withdrawals in the same Zone transaction, each a `Spend` for its
+  part, otherwise decline ([decision 15](design.md#decisions)). The two settle independently: if
+  one bounces after approval, the reserve covers its part.
 - An Earn spend settles in the vault's asset.
 - `input` is `maxInput` plus change. `maxInput` is the amount, or `maxShares` for Earn: the
   settler uses no more, and the router returns the rest to the cardholder. A callback that deposits anything
@@ -233,11 +235,12 @@ only bounces, so they show up when Bridge simulates the callback or traces the s
 - **The handler:** `WrongProgram`, `DestinationNotAuthorized`, `DestinationNotCredited`,
   `InvalidAmount`, `VaultNotAllowed`, `IncorrectAssetForVault`, `ShareCostExceeded`, and
   `PipelineDisabled` on the pull path.
-- **The router:** `NotZoneMessenger`, `WrongSourceZone`, `InvalidSourcePortal`, `OpDisabled`,
-  `UnknownSettler`, `InvalidMaxInput`, `InvalidSettlement`, `InvalidReturnToken`,
-  `DepositFeeTooHigh`, `ResidualBalance`, `ReentrantCall` and `ZeroAddress` (no refund recipient).
-- **The settler:** `WrongProgram`, `WrongInputToken`, `InvalidAmount`, `NothingSettled`,
-  `DestinationNotPaid`, `ResidualBalance` and `Reentrancy`.
+- **The router:** `NotZoneMessenger`, `WrongSourceZone`, `InvalidSourcePortal`, `BadFlow`,
+  `OpDisabled`, `UnknownSettler`, `InvalidMaxInput`, `InvalidSettlement`, `InvalidReturnToken`,
+  `DepositFeeTooHigh`, `TokenCallFailed` (a token transfer that reverts, such as one a policy
+  blocks), `ResidualBalance`, `ReentrantCall` and `ZeroAddress` (no refund recipient).
+- **The settler:** `WrongProgram`, `WrongInputToken`, `InvalidAmount`, `InsufficientInput`,
+  `NothingSettled`, `DestinationNotPaid`, `ResidualBalance` and `Reentrancy`.
 - **The portal, on the return deposit:** `DepositTooSmall` when change does not cover its fees,
   and on an access-enforced portal `CallbackDidNotReturnToZone` when nothing comes back.
 - **The keychain, on a public spend:** `SpendingLimitExceeded` and `CallNotAllowed`.
@@ -252,7 +255,9 @@ Reads:
 
 ## Accepted behavior
 
-- Tokens sent to the router or settler outside a callback stay there. Neither has an owner, and
-  each moves only the current call's input.
+- Tokens sent to the router outside a callback stay there: it moves only the current call's input.
+  Tokens sent to the settler outside a `settle` call are not rescued either, but any later `settle`
+  call can spend them, only to pay a destination the program authorizes, and gets back what that
+  spend did not use. Neither has an owner.
 - The withdrawer writes the `SpendReturn`, so whoever sends a withdrawal to the router chooses
   where its change goes.

@@ -5,6 +5,9 @@ par conversion, Zone token enablement and admission, router deployment and activ
 integration, failure handling, tests, and the Zone go-live gate. Readers are integrators building
 private deposits and redemptions, operators activating a router, and reviewers.
 
+A profile's separate `zoneRouter` field deploys a different contract beside this one, the
+factory-made [`ZoneRouter`](../../router/zone-router.md).
+
 Zones are external infrastructure. Audit coverage is in [audits](../audit/README.md#scope). Hosted Zone stacks are listed in
 [hosted environments](../../deployment/hosted-environments.md).
 

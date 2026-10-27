@@ -1,11 +1,14 @@
 // Card spend on a real Tempo L1 and a real Tempo Zone, against a target (targets.ts):
 //
-//   pnpm zone                       local: a disposable L1 and Zone in Docker
-//   pnpm zone --earn                local, plus the e2e-moderato Earn stack for the Earn steps
-//   pnpm zone:moderato              Moderato and its hosted Zone 3, with the recorded program
-//   pnpm zone:moderato --deploy     deploys that program first and records it
-//   pnpm zone:moderato --admit      grants the router and cardholder the Portal roles they lack,
-//                                   with ZONE_ADMIN_PRIVATE_KEY
+//   pnpm e2e:spend                              local: a disposable L1 and Zone in Docker
+//   pnpm e2e:spend -- --earn                    local, plus the e2e-moderato Earn stack for the
+//                                               Earn steps
+//   pnpm --filter e2e spend:moderato            Moderato and its hosted Zone 3, with the recorded
+//                                               program
+//   pnpm --filter e2e spend:moderato --deploy   deploys that program first and records it
+//   pnpm --filter e2e spend:moderato --admit    grants the router, cardholder, program wallet and
+//                                               refund recipient the Portal roles they lack, with
+//                                               ZONE_ADMIN_PRIVATE_KEY
 //
 // 1. Prepares the target: its L1, its Zone, and a Bridge card program with the "TS" handler, its
 //    BridgeSettler, and a factory-deployed ZoneRouter in Spend mode listing that settler

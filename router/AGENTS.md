@@ -8,7 +8,8 @@ interface settlers implement. [README.md](README.md) maps the project and
   source-verify it. Run every `forge` command from `router/`, after `scripts/solidity-deps.sh router`
   (from the repository root). Never add its remappings or settings to `earn/foundry.toml`.
 - `src/` imports only Earn's interfaces, through `tempo-earn/` (`earn/src/`); tests may also use
-  Earn's contracts and test helpers through `earn-test/`. Never copy Earn code here.
+  Earn's contracts through `tempo-earn/` and its test helpers through `earn-test/` (`earn/test/`).
+  Never copy Earn code here.
 - Integrator-specific code (Bridge's settler, card logic) stays in `spend/` or its own project; this
   project stays integrator-agnostic and never imports from `spend/`.
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical

@@ -27,8 +27,8 @@ each term in one line and links its owning page.
 
 Each capability is a module: its lifecycle steps, inspection, and reads live under
 [`deployments/modules/`](../../deployments/modules/) (an engine kind is one `defineEngine` file in
-`deployments/modules/engines/`), its E2E cases under [`e2e/modules/`](../../e2e/modules/) (an engine
-kind's under [`e2e/engines/`](../../e2e/engines/)), and one page
+`deployments/modules/earn/engines/`), its E2E cases under [`e2e/modules/`](../../e2e/modules/) (an
+engine kind's under [`e2e/engines/`](../../e2e/engines/)), and one page
 here owns its contracts, flows, trust boundaries, deployment steps, operations, and design
 decisions. The architecture pages describe only the core and link here, so a change to one
 capability updates one page. The shared engine contract and the recipe for a new engine kind are in
@@ -41,6 +41,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 | `access-policy` | [Access policy](modules/access.md)               | EarnShare TIP-403 whitelist, required members, `pnpm earn access`          |
 | `rewards`       | [Rewards](modules/rewards.md)                    | Contribution controller, Merkle distributor, `EarnRewardsFactory`          |
 | none            | [Existing vault migration](modules/migration.md) | Holder opt-in, source-vault composition, stack replacement (E2E in `zone`) |
+| `router`        | [`ZoneRouter`](../router/zone-router.md)         | The `zoneRouter` field: a `ZoneRouter` mode and its `ZoneRouterFactory`    |
 
 ## Document ownership
 

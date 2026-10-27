@@ -2,7 +2,7 @@
 
 Tempo Earn provides a stable EarnVault and native TIP-20 EarnShare over a yield venue.
 This is its own Foundry project: run `forge` from `earn/`. Use [README.md](README.md) for the
-project map and [docs/README.md](../docs/earn/README.md) to find the one canonical page for each topic.
+project map and [docs/earn/README.md](../docs/earn/README.md) to find the one canonical page for each topic.
 Paths in Earn's guides and docs are relative to `earn/` unless they start with `../`. Read what the
 task needs.
 

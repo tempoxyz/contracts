@@ -81,8 +81,9 @@ whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. L
 `--broadcast`.
 
 Once the settler exists, the router can instead come from an Earn deployment profile's
-`zoneRouter`, which lists the settler and deploys, verifies and records the router through the same
-factory with `pnpm earn deploy` ([Zone router deployment](../router/zone-router.md#deployment)).
+`zoneRouter`, which lists the settler and deploys, verifies and records the router with
+`pnpm earn deploy`. Through the same factory, it adopts a router this script already deployed for
+that mode ([Zone router deployment](../router/zone-router.md#deployment)).
 
 Neither contract has an owner or needs configuration. The Zone admin checks the router with the
 factory's `isRouter(router)`, then grants roles:
@@ -104,9 +105,10 @@ FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... SETTLEMENT=0x... TOKEN
   forge script script/deploy/Preflight.s.sol --rpc-url $TEMPO_RPC
 ```
 
-Nothing is sent. `ROUTER_FACTORY`, `ROUTER`, `REFUND_RECIPIENT`, `PROGRAM_WALLET` and `VAULTS` are
-optional, and each one left out reports `todo`; the router checks need both `ROUTER_FACTORY` and
-`ROUTER`. It prints `ok` or `todo` for each item, with who submits the fix:
+Nothing is sent. `ROUTER_FACTORY`, `ROUTER`, `REFUND_RECIPIENT` and `PROGRAM_WALLET` are optional,
+and each one left out reports `todo`; the router checks need both `ROUTER_FACTORY` and `ROUTER`.
+`VAULTS` is optional too: without it no vault is checked, as for a stablecoin-only program. It
+prints `ok` or `todo` for each item, with who submits the fix:
 
 - the program's clone was created for `SPENDER_ID`, which `TS` requires;
 - `TS` is registered, has code, was built for this factory, and is usable by the program;
@@ -135,9 +137,10 @@ For Earn, run it again with `TOKEN` set to the vault's EarnShare and the vault i
 checks the settlement and program wallets against the vault asset's policy, and that a private
 refund in the asset can reach the Zone: the portal receives and sends, the Zone admin and refund
 recipient receive, and the portal takes deposits of the asset. Against the share's policy it checks
-the same addresses as for a stablecoin, and that the clone receives and sends and the vault
-receives. EarnShare policies are whitelists, so the policy admin adds whichever of the clone,
-vault, router, settler, refund recipient, portal, messenger and Zone admin are missing.
+the router, settler, refund recipient, portal, messenger and Zone admin as for a stablecoin, and
+that the clone receives and sends and the vault receives. EarnShare policies are whitelists, so
+the policy admin adds whichever of the clone, vault, router, settler, refund recipient, portal,
+messenger and Zone admin are missing.
 
 ## Testing the scripts
 

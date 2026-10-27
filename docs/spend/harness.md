@@ -30,8 +30,9 @@ recipient.
 
 **The card program model.** `CardProgram` follows monorail's noncustodial just-in-time cards:
 
-- An authorization pulls its hold first: the amount, a 20% buffer for restaurants, bars, taxis
-  and car rentals, a $100 hold for a $1 fuel-pump preauthorization, plus any estimated fee.
+- An authorization pulls its hold first: the amount, a 20% buffer for restaurants, bars, fast
+  food, taxis and car rentals, a $100 hold for a $1 fuel-pump preauthorization, plus any estimated
+  fee.
 - A capture above the hold pulls the difference.
 - A final capture, reversal or expiry returns the unused hold. Holds expire after 7 days, or 31
   for lodging, airlines and rentals.
@@ -57,18 +58,19 @@ TempoEnv        tokens, Earn, Bridge factory with EA/P2/TF/EV/TS
 
 ## Hooks a rail implements
 
-| Hook                                              | Meaning                                                              |
-| ------------------------------------------------- | -------------------------------------------------------------------- |
-| `_railName()`                                     | The setup's name in the matrix                                       |
-| `_railCaps()`                                     | Capabilities, which decide how capability-dependent scenarios assert |
-| `_railSetUp()`                                    | Deploy anything beyond the shared world                              |
-| `_railEnroll(user, amount)`                       | Fund the funding source and link the card                            |
-| `_railPull(user, amount, actionId)`               | Bridge pulls: `Settled`, `Rejected` or `FailedAfterApproval`         |
-| `_railCredit(user, amount, actionId)`             | Bridge returns funds                                                 |
-| `_railValue(user)`, `_railShares(user)`           | What the cardholder holds                                            |
-| `_railSetSpendLimit`, `_railRevoke`, `_railDrain` | Cardholder controls and adversarial moves                            |
-| `_railPullSplit`                                  | One pull from stablecoin and Earn (with `splitFunding`)              |
-| `_railZoneKeyWithdrawTo`                          | Uses Bridge's Zone key as if leaked (private rails)                  |
+| Hook                                              | Meaning                                                                               |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `_railName()`                                     | The setup's name in the matrix                                                        |
+| `_railCaps()`                                     | Capabilities, which decide how capability-dependent scenarios assert                  |
+| `_railSetUp()`                                    | Deploy anything beyond the shared world                                               |
+| `_railEnroll(user, amount)`                       | Fund the funding source and link the card                                             |
+| `_railPull(user, amount, actionId)`               | Bridge pulls: `Settled`, `Rejected` or `FailedAfterApproval`                          |
+| `_railDeclineError(reason)`                       | The error a pull fails with for a `Decline` reason, or zero to check only the outcome |
+| `_railCredit(user, amount, actionId)`             | Bridge returns funds                                                                  |
+| `_railValue(user)`, `_railShares(user)`           | What the cardholder holds                                                             |
+| `_railSetSpendLimit`, `_railRevoke`, `_railDrain` | Cardholder controls and adversarial moves                                             |
+| `_railPullSplit`                                  | One pull from stablecoin and Earn (with `splitFunding`)                               |
+| `_railZoneKeyWithdrawTo`                          | Uses Bridge's Zone key as if leaked (private rails)                                   |
 
 ## Extending it
 

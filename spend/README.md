@@ -4,7 +4,7 @@ Card spend on Tempo from balances cardholders keep in their own accounts: public
 Zone), in stablecoin or in Tempo Earn shares, built on Bridge's existing card contracts.
 
 This is a separate Foundry project beside [Earn](../earn/README.md). It has its own build settings
-and dependencies, and its tests import Earn's contracts from [`src/`](../earn/src/)
+and dependencies, and its tests import Earn's contracts from [`earn/src/`](../earn/src/)
 rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)).
 
 ## What is here
@@ -15,10 +15,10 @@ rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)
 - **One Tempo implementation inside Bridge's contracts.** A new spender handler,
   `SpenderTempoSpend` ("TS"), that Bridge registers like any other, and `BridgeSettler`, the settler
   a [Zone router](../router/README.md) pays private spends through. See
-  [`docs/design.md`](../docs/spend/design.md).
+  [`docs/spend/design.md`](../docs/spend/design.md).
 - **A card E2E harness** that runs every Stripe/Bridge card scenario against any contract setup,
   so Bridge today and the Tempo implementation are tested side by side. See
-  [`docs/harness.md`](../docs/spend/harness.md).
+  [`docs/spend/harness.md`](../docs/spend/harness.md).
 
 ## How it works
 
@@ -27,10 +27,11 @@ rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)
   handler code in the program's Bridge clone.
 - Public: one transaction from the cardholder's account approves the exact amount to the clone,
   calls `publicCall "PS"` and clears the approval.
-- Private: Bridge's Zone key withdraws to the Zone's `ZoneRouter`, which hands at most the
+- Private: Bridge's Zone key withdraws to the Zone's `ZoneRouter`, which transfers the
   cardholder's `maxInput` to the program's `BridgeSettler`. The settler settles the spend through
-  the clone, and the router returns the change to the Zone, so the settlement names no cardholder. Bridge approves the card on the Zone receipt, and the platform reserve covers a
-  settlement that fails after approval.
+  the clone and hands back what it did not use, and the router returns the change to the Zone, so
+  the settlement names no cardholder. Bridge approves the card on the Zone receipt, and the platform
+  reserve covers a settlement that fails after approval.
 - A spend pays from stablecoin, Earn shares, or both, and settles in the stablecoin the funds
   are held in. Bridge accepts any stablecoin, so nothing is converted.
 - Bridge's factory governs everything: settlement destinations, pause and the vault allowlist.
@@ -38,9 +39,9 @@ rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)
 
 ## Results
 
-476 tests pass. The card matrix runs 35 scenarios against 11 setups, with no failures: 5 Bridge
+478 tests pass. The card matrix runs 35 scenarios against 11 setups, with no failures: 5 Bridge
 setups and 6 Tempo setups. The full table is in
-[`docs/matrix.md`](../docs/spend/matrix.md).
+[`docs/spend/matrix.md`](../docs/spend/matrix.md).
 
 |                                                                    | Bridge (EA, P2, TF, and EV from PR #14) | TS, public | TS, private |
 | ------------------------------------------------------------------ | --------------------------------------- | ---------- | ----------- |
@@ -81,7 +82,9 @@ runs real transactions:
   the program allowlisted again, then a spend through it;
 - the calls a leaked access key must fail, each with its exact error: paying outside the program,
   transferring out, spending after governance takes the program off the gated handler's allowlist,
-  exceeding its limit.
+  exceeding its limit;
+- the private path's `BridgeSettler` and Spend-mode router deployed through a `ZoneRouterFactory`,
+  with the router taking callbacks only from the Zone messenger.
 
 Every balance it reports is read back from the node after the transactions land.
 
@@ -106,9 +109,9 @@ script/smoke.sh
   returns the unused shares (Moderato, against Tempo Earn's e2e-moderato vault on Zone 3; locally
   with `--earn`, which deploys that profile on the disposable chain, as CI does).
 
-It also logs the gas the router callback used, read from a trace of the settlement transaction,
-and times the card-approval path: Zone request to Zone receipt, Zone receipt to L1 settlement, and
-a public spend's one L1 transaction, sent with a Bridge access key
+It also logs the gas the router callback used, read from a trace of the settlement transaction
+(local only), and times the card-approval path: Zone request to Zone receipt, Zone receipt to L1
+settlement, and a public spend's one L1 transaction, sent with a Bridge access key
 (`reports/zone-e2e-latency-<target>.json`).
 
 Requires Node 22 and pnpm, plus Docker for `local`.
@@ -122,9 +125,11 @@ pnpm e2e:spend -- --earn   # also the Earn spend steps, against a local e2e-mode
 Moderato uses the test program recorded in `e2e/spend/targets/moderato.json` and reads
 `TEMPO_API_KEY` and an admitted `CARDHOLDER_PRIVATE_KEY` from `e2e/spend/.env.moderato` (see
 `.env.example`). `--deploy` also needs `DEPLOYER_PRIVATE_KEY`, a test-only key that deploys a new
-test program and records it in `targets/moderato.json`. Zone 3 enforces account admission and a closed callback gateway. A plain run never
-changes its Portal: if the router, program wallet or cardholder lacks a role, the private steps report `BLOCKED`
-with the call to make and the run exits with code 3 after the public steps. `--admit` makes those
+test program and records it in `targets/moderato.json`. A run also needs it when the record has no
+settler and router, which it then deploys and records, and to allow the Earn vault for the program.
+Zone 3 enforces account admission and a closed callback gateway. A plain run never changes its
+Portal: if the router, cardholder, program wallet or refund recipient lacks a role, the private
+steps report `BLOCKED` with the call to make and the run exits with code 3 after the public steps. `--admit` makes those
 grants with `ZONE_ADMIN_PRIVATE_KEY`, which must be the Portal admin or the sole owner of the
 threshold-1 Safe that is, as in Tempo Earn's deployment tooling.
 
@@ -144,19 +149,20 @@ test/
   rails/                    One adapter per contract setup
   e2e/                      Card scenarios and the setup matrix
   unit/                     Contract and security tests
+  fork/                     Private-spend callback gas on a Tempo mainnet fork (inert without one)
   smoke/                    A check that the harness world deploys
 script/                     Deployment scripts, real-node smoke test, Zone E2E deploy, matrix generator
-vendor/                     Pinned Bridge and Zones sources (VENDORED.md); Earn comes from ../src
+vendor/                     Pinned Bridge and Zones sources (VENDORED.md); Earn comes from ../earn/src
 ```
 
 ## Documents
 
-- [`docs/design.md`](../docs/spend/design.md): the design, flows, security model and decisions.
+- [`docs/spend/design.md`](../docs/spend/design.md): the design, flows, security model and decisions.
 - [`docs/router/zone-router.md`](../docs/router/zone-router.md): the [Zone router](../router/README.md) private spends go through.
-- [`docs/deploy.md`](../docs/spend/deploy.md): deploying into Bridge's factory, and the calls each role submits.
-- [`docs/audit-scope.md`](../docs/spend/audit-scope.md): what an audit covers, the invariants to check and where to look hardest.
-- [`docs/bridge-integration.md`](../docs/spend/bridge-integration.md): how Bridge's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
-- [`docs/harness.md`](../docs/spend/harness.md): what is real and what is modeled, and how to extend it.
-- [`docs/scenarios.md`](../docs/spend/scenarios.md): every card scenario and what it asserts.
-- [`docs/bridge-today.md`](../docs/spend/bridge-today.md): how Bridge moves card money on Tempo today.
-- [`docs/matrix.md`](../docs/spend/matrix.md): generated scenario × setup results.
+- [`docs/spend/deploy.md`](../docs/spend/deploy.md): deploying into Bridge's factory, and the calls each role submits.
+- [`docs/spend/audit-scope.md`](../docs/spend/audit-scope.md): what an audit covers, the invariants to check and where to look hardest.
+- [`docs/spend/bridge-integration.md`](../docs/spend/bridge-integration.md): how Bridge's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
+- [`docs/spend/harness.md`](../docs/spend/harness.md): what is real and what is modeled, and how to extend it.
+- [`docs/spend/scenarios.md`](../docs/spend/scenarios.md): every card scenario and what it asserts.
+- [`docs/spend/bridge-today.md`](../docs/spend/bridge-today.md): how Bridge moves card money on Tempo today.
+- [`docs/spend/matrix.md`](../docs/spend/matrix.md): generated scenario × setup results.

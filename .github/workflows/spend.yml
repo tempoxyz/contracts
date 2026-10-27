@@ -28,8 +28,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Bridge card spend (spend/), a separate Foundry project that imports Earn's src/. Not a required
-# check: it covers customer-specific code and runs only when spend/, src/, or the pinned images change.
+# Bridge card spend (spend/), a separate Foundry project that imports Earn's earn/src/. Not a required
+# check: it covers customer-specific code and runs only when spend/, earn/src/, router/src/, e2e/spend/,
+# localnet/ (with its pinned images) or scripts/solidity-deps.sh change.
 jobs:
   test:
     name: Test

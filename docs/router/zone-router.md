@@ -15,13 +15,16 @@ views, so Earn clients can move to it.
 A router has no owner and no setters. Its mode is fixed at deployment; a different mode is a new
 router.
 
+- **`zoneId`**, the only source Zone (`allowedZoneId`).
 - **`enabledOps`**, a bitmask of Deposit, Redeem and Spend. A disabled op reverts `OpDisabled`.
 - **`settlers`**, the `ISpendSettler` contracts Spend may use, written once by the constructor.
   Required when Spend is enabled, empty otherwise.
 - **`earnVault`, `privateAsset`, `pool`, `customerId`**, as `SingleZoneEarnRouter` binds them.
-  Required when Deposit or Redeem is enabled, and all zero otherwise.
+  Required when Deposit or Redeem is enabled (`pool` and `customerId` only when the private asset is
+  not the vault asset), and all zero otherwise.
 
-The constructor rejects inconsistent combinations. Profiles name presets:
+The constructor rejects inconsistent combinations. A profile states its mode as `ops`, `earn` and
+`settlers`; the common modes are:
 
 | Mode                       | Ops                    | Settlers        | Vault |
 | -------------------------- | ---------------------- | --------------- | ----- |
@@ -40,7 +43,7 @@ One router per Zone can serve several programs by listing each one's settler.
   check that a gateway came from the factory, with the expected mode, before admitting it.
 - **One factory per router version.** A new version ships as a new factory; deployed routers keep
   working, and each customer moves by deploying its mode there and having its Zone admit it.
-- **Size.** The router's runtime is 9.9 KB and the factory's 13.2 KB, under the 24 KB limit.
+- **Size.** The router's runtime is 9.7 KiB and the factory's 13.0 KiB, under the 24 KiB limit.
 
 Nobody can change a deployed router. Enabling a settler or op means deploying a new router through
 the factory and having the Zone's Portal admin admit it as a gateway; the old router stays deployed
@@ -55,13 +58,16 @@ own `script/deploy/` scripts from `router/`, compiled with solc and source-verif
 contracts:
 
 1. `deploy-zone-router-factory`, unless the profile names a factory;
-2. `deploy-zone-router`: `factory.deploy(mode)`, which returns the existing router for a mode
-   already deployed, then a check of `isRouter`, `predict` and every immutable against the mode;
+2. `deploy-zone-router`: `factory.deploy(mode)`, then a check of `isRouter`, `predict` and every
+   immutable against the mode. When anyone, such as Spend's script, already deployed the mode
+   through the factory, the step adopts that router and records its `RouterDeployed` transaction;
 3. activation, each verified onchain and otherwise handed off to its owner: `authorize-zone-router`
    (the PropAMM pool owner admits a converting Earn mode), `enable-zone-router-tokens` (the Zone
    enables EarnShare and the private asset for Earn ops) and `register-zone-router-gateway` (the
    Portal administrator admits the router when the Zone restricts callback gateways).
 
+The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers as
+[required members](../earn/modules/access.md#required-members) of EarnShare's access policy.
 `pnpm earn verify` rechecks the factory provenance and mode and reports gateway, token and
 conversion readiness. A card program's `BridgeSettler` is deployed by Bridge with Spend's
 [scripts](../spend/deploy.md#3-deploy-the-settler-and-router-for-each-zone); the profile lists it
@@ -92,16 +98,16 @@ Callback data: `op`, `settler`, `maxInput`, `settlerData` and `SpendReturn`, 864
 2. requires `0 < maxInput <= amount`, transfers exactly `maxInput` to the settler and calls
    `settle(token, maxInput, settlerData)`; the settler hands back what it did not use;
 3. requires `0 < used <= maxInput`, measured from its own balance;
-4. returns `amount - used` to the source Zone;
-5. emits `Spent(settler, token, used, change, zoneDepositHash)`, with no `senderTag`, action ID or
-   Zone account. The settler emits its own detail.
+4. returns the change, `amount - used`, to the source Zone when it is not zero;
+5. emits `Spent(settler, token, used, change, zoneDepositHash)`, with a zero hash when there is no
+   change, and no `senderTag`, action ID or Zone account. The settler emits its own detail.
 
 `maxInput` is set in the sender's Zone transaction, not by the settler, so no settler can take more
 than the sender allowed, and the change always returns. The router transfers rather than approves:
 the settler never holds an allowance from it, and the callback skips the roughly 250k gas Tempo
 charges for writing an allowance slot. A listed settler that keeps its input without paying looks
-settled, within `maxInput`, so settlers are trusted to the extent of the sender's `maxInput`. The router accepts any enabled token and
-leaves it to the settler to refuse one it cannot use.
+settled, within `maxInput`, so settlers are trusted to the extent of the sender's `maxInput`. The
+router accepts any enabled token and leaves it to the settler to refuse one it cannot use.
 
 ### `ISpendSettler`
 
