@@ -26,7 +26,7 @@
     "test": "pnpm --filter @tempoxyz/earn test --run && pnpm --filter localnet test --run && pnpm --filter e2e test --run && pnpm --filter app test",
     "test:contracts": "cd earn && FOUNDRY_PROFILE=ci forge test",
     "verify": "pnpm run '/^verify:/'",
-    "verify:contracts": "cd earn && forge fmt --check && forge lint --deny warnings --out out/lint --cache-path cache/lint && forge build src script test && pnpm --filter @tempoxyz/earn abis:check && FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol && cd .. && pnpm test:contracts && pnpm gas:snapshot",
+    "verify:contracts": "cd earn && forge fmt --check && forge lint --deny warnings --out out/lint --cache-path cache/lint && forge build src script test && (cd ../router && forge build src) && pnpm --filter @tempoxyz/earn abis:check && FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol && cd .. && pnpm test:contracts && pnpm gas:snapshot",
     "verify:typescript": "pnpm check && pnpm check:types && pnpm test && pnpm build",
     "deps": "scripts/solidity-deps.sh earn spend router",
     "e2e:spend": "pnpm --filter e2e run spend"

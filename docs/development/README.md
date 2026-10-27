@@ -77,7 +77,8 @@ project (`earn/`); `spend/` and `router/` have their own checks ([spend/AGENTS.m
 those scripts are the list of checks:
 
 - `verify:contracts`: `forge fmt --check`, `forge lint --deny warnings`, one `forge build` of `src`,
-  `script`, `test`, and `localnet` in `earn/`, the generated-ABI check (`abis:check`), the
+  `script`, `test`, and `localnet` in `earn/`, a `forge build src` in `router/`, the generated-ABI check
+  (`abis:check`), the
   [EarnVault size check](#contract-size), `pnpm test:contracts` (every Forge test under
   `FOUNDRY_PROFILE=ci`), and the [gas snapshot](#gas-baseline).
 - `verify:typescript`: `pnpm check` (lint, formatting, and profile validation), `pnpm check:types`,

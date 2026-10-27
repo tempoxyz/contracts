@@ -1,6 +1,7 @@
 # Deploying
 
-Tempo spend deploys into Bridge's existing `SpenderFactory`. Anyone can deploy the two contracts.
+Tempo spend deploys into Bridge's existing `SpenderFactory`. Bridge deploys the handler, its `BridgeSettler` and the program's Zone router; none has an
+owner, so nothing changes after deployment.
 Every factory change is a role-gated call, so the scripts write those calls as calldata for the
 multisig that holds each role, instead of sending them.
 

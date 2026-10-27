@@ -34,9 +34,11 @@ runs every capability module's inspection, is exported from `/node` only.
   contract in a new `src/` directory fails generation until the directory joins the order;
 - the state-changing entry points of every deployment and localnet fixture script as
   `<name>ScriptAbi`; and
-- the derived `earnEngineBindingAbi`.
+- the derived `earnEngineBindingAbi`; and
+- `zoneRouterAbi` and `zoneRouterFactoryAbi`, from the separate [`router/`](../router/README.md) project.
 
-After a contract interface change, run `forge build src script test localnet` and
+After a contract interface change, run `forge build src script test localnet` in `earn/` and
+`forge build src` in `router/`, then
 `pnpm --filter @tempoxyz/earn abis`, and commit the result; `abis:check` fails on drift.
 `abis/external.ts` hand-maintains contracts built elsewhere: Tempo Zone predeploys, the PropAMM
 pool, oracle, and controller, the Veda periphery, the Morpho fee wrapper, and the Safe. Use
