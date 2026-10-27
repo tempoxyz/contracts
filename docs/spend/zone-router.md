@@ -5,6 +5,11 @@ lands, [design.md](design.md) and [Earn's zone router](../earn/modules/zone-rout
 what is deployed. When the code merges, each part of this page moves to the page that owns it and
 this page is deleted.
 
+A prototype implements the router, the factory and the Bridge settler: [`ZoneRouter`](../../earn/src/router/ZoneRouter.sol),
+[`ZoneRouterFactory`](../../earn/src/router/ZoneRouterFactory.sol) and
+[`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol). `SingleZoneEarnRouter` stays deployed and
+unchanged until the rename lands with its consumers.
+
 ## Why
 
 Private card spend runs through [`ZoneSpendReceiver`](../../spend/src/ZoneSpendReceiver.sol), a

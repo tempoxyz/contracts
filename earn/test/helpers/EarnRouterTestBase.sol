@@ -62,6 +62,15 @@ contract RouterMockZonePortal {
     uint128 public lastAmount;
     address public lastRefundRecipient;
     uint256 public depositCount;
+    uint128 public depositFee;
+
+    function setDepositFee(uint128 fee) external {
+        depositFee = fee;
+    }
+
+    function calculateDepositFee() external view returns (uint128) {
+        return depositFee;
+    }
 
     function setToken(address token, bool enabled_, bool active_) external {
         enabled[token] = enabled_;

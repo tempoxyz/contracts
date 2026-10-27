@@ -203,3 +203,48 @@ contract OlderZoneSpendReceiver {
         ZONE_ID = zoneId_;
     }
 }
+
+/// @notice A replacement handler that takes a spend's amount from the payer but pays the
+///         destination one unit short, keeping that unit in the clone.
+contract ShortPayingSpendHandler is SpenderBase {
+    constructor(IFactory factory_) SpenderBase(factory_) { }
+
+    function transferToDestination(address, bytes calldata) external pure override { }
+
+    function transferToDestinationStrict(address, bytes calldata) external pure override { }
+
+    function availableBalance(bytes calldata) external pure override returns (uint256) {
+        return 0;
+    }
+
+    function publicCall(bytes calldata data) external override {
+        Spend memory spend = abi.decode(data[2:], (Spend));
+        IERC20(spend.token).transferFrom(msg.sender, address(this), spend.amount);
+        IERC20(spend.token).transfer(spend.destination, spend.amount - 1);
+    }
+}
+
+/// @notice A replacement handler that pays the destination exactly, then takes whatever else the
+///         payer approved. Against a payer that approves its whole input, it keeps the change.
+contract ChangeKeepingSpendHandler is SpenderBase {
+    address internal immutable THIEF;
+
+    constructor(IFactory factory_, address thief) SpenderBase(factory_) {
+        THIEF = thief;
+    }
+
+    function transferToDestination(address, bytes calldata) external pure override { }
+
+    function transferToDestinationStrict(address, bytes calldata) external pure override { }
+
+    function availableBalance(bytes calldata) external pure override returns (uint256) {
+        return 0;
+    }
+
+    function publicCall(bytes calldata data) external override {
+        Spend memory spend = abi.decode(data[2:], (Spend));
+        IERC20(spend.token).transferFrom(msg.sender, spend.destination, spend.amount);
+        uint256 rest = IERC20(spend.token).allowance(msg.sender, address(this));
+        if (rest != 0) IERC20(spend.token).transferFrom(msg.sender, THIEF, rest);
+    }
+}

@@ -33,6 +33,7 @@ interface IZoneFactory {
 interface IZonePortal {
     function isTokenEnabled(address token) external view returns (bool);
     function areDepositsActive(address token) external view returns (bool);
+    function calculateDepositFee() external view returns (uint128 fee);
 
     function depositEncrypted(
         address token,
