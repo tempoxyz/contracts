@@ -39,6 +39,15 @@ const hasZoneRouter = (profile: EarnDeploymentProfile) => profile.zoneRouter !==
 /** Whether the profile names an existing ZoneRouterFactory rather than deploying its own. */
 const namesFactory = (profile: EarnDeploymentProfile) => profile.zoneRouter?.factory !== undefined
 
+/**
+ * The check a person makes before admitting a router from a factory the profile names, which the
+ * lifecycle trusts only for its own answers; empty for a factory the lifecycle deployed.
+ */
+const namedFactoryCheck = (profile: EarnDeploymentProfile, outputs: Record<string, Address>) =>
+  namesFactory(profile)
+    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as router/src/ZoneRouterFactory.sol. `
+    : ''
+
 /** The router's conversion pool, when its Earn binding converts the private asset. */
 const routerPool = (profile: EarnDeploymentProfile) => profile.zoneRouter?.earn?.pool
 
@@ -185,21 +194,24 @@ export const authorizeZoneRouter = defineAuthorityStep({
   },
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
-    return `The owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
+    return `${namedFactoryCheck(profile, outputs)}The owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
   },
-  signerAvailable: (_profile, environment, proven) =>
-    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
+  // Like gateway admission, a router from a factory the profile names is admitted only by a person.
+  signerAvailable: (profile, environment, proven) =>
+    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven && !namesFactory(profile),
   probeSigner: (options) => {
     const pool = routerPool(options.profile)
     return pool ? canAdministerPool(options, pool) : Promise.resolve(false)
   },
   execute: (options, dependencies) =>
-    admitPoolRouter(
-      options,
-      dependencies,
-      required(routerPool(options.profile), 'Zone router conversion pool'),
-      requiredOutput(options.outputs, 'zoneRouter'),
-    ),
+    namesFactory(options.profile)
+      ? Promise.resolve(undefined)
+      : admitPoolRouter(
+          options,
+          dependencies,
+          required(routerPool(options.profile), 'Zone router conversion pool'),
+          requiredOutput(options.outputs, 'zoneRouter'),
+        ),
 })
 
 export const enableZoneRouterTokens = defineAuthorityStep({

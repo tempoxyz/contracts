@@ -322,6 +322,38 @@ describe('Zone router steps', () => {
     })
   })
 
+  test('leaves pool admission of a router from a factory the profile names to a person', async () => {
+    const named = profileWith({
+      zoneId: 7,
+      ops: ['deposit', 'redeem', 'spend'],
+      earn: earnBinding,
+      settlers: [settler],
+      factory: address('fac'),
+    })
+    const step = deploymentStep('authorize-zone-router')
+    if (step.execution !== 'authority') throw new Error('expected an authority step')
+    const environment = { DEPLOYER_PRIVATE_KEY: `0x${'4'.repeat(64)}` }
+    expect(step.signerAvailable!(named, environment, true)).toBe(false)
+    expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
+    expect(step.handoff(named, outputs)).toContain(
+      `ZoneRouterFactory ${address('fac')} is source verified as router/src/ZoneRouterFactory.sol`,
+    )
+    expect(step.handoff(cardAndEarn, outputs)).not.toContain('source verified')
+    const authorityClient = vi.fn()
+    const result = await executeAvailableAuthority(
+      {
+        action: { id: 'authorize-zone-router' },
+        environment,
+        outputs,
+        profile: named,
+        rpcUrl: 'https://rpc.invalid',
+      },
+      { authorityClient: authorityClient as never, fundFromFaucet: vi.fn() as never },
+    )
+    expect(result).toBeUndefined()
+    expect(authorityClient).not.toHaveBeenCalled()
+  })
+
   test('admits the router on its conversion pool as the pool owner', async () => {
     const deployerKey = `0x${'4'.repeat(64)}` as const
     const deployer = privateKeyToAccount(deployerKey).address
