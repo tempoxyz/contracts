@@ -10,7 +10,7 @@ import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 
-/// @dev Runs the router's release entry points as Factory Release does, with a throwaway deployer key.
+/// @dev Runs the router's release entry points as Router Release does, with a throwaway deployer key.
 contract DeployRouterReleaseTest is Test {
     /// @dev forge-std's CREATE2_FACTORY, which Forge routes broadcast salted creations through.
     address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;

@@ -303,14 +303,14 @@ registered engine factory's entry point.
 The **Factory Release** workflow ([`factory-release.yml`](../../.github/workflows/factory-release.yml))
 releases from `main` in one run. Choose the networks (`both` runs Moderato, then mainnet only after
 Moderato succeeds), the releases (`all` is the core release and every engine factory the registry
-names; `core`, `rewards`, one engine factory's `releaseKey`, such as `erc4626Engine`, or a
-[router release](#router-releases) with its `parameters` deploys just that one), and whether to
-broadcast. Each network's job runs
-`pnpm factory-release <network> <release|all> [--parameters <json>] [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
+names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
+that one), and whether to broadcast. Each network's job runs
+`pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
 which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
 addresses, transactions, and source matches; a run that stops keeps the releases before it. The
 [Spend Release](../spend/deploy.md#deploying-from-ci) workflow shares these environments and the
-hosted-contracts queue.
+hosted-contracts queue. The router project's contracts release separately
+([router releases](#router-releases)); the command refuses them.
 
 After a broadcast, the last job records every release whose contracts all source verified, from
 every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
@@ -340,12 +340,27 @@ FOUNDRY_PROFILE=deploy forge script \
 
 ### Router releases
 
-The [Zone router](../router/zone-router.md)'s ownerless contracts release through the same command
-and workflow, from [`router/`](../../router/README.md) with its own solc build and `deploy` profile.
-None has a registry entry, so `all` never deploys one and the registry job records none. Pass a
-release's parameters as one JSON object (`--parameters`, or the workflow's `parameters` input); the
-command validates them before Forge runs, refuses parameters for any other release, and records
-them in the result and the job summary.
+The [Zone router](../router/zone-router.md)'s ownerless contracts release apart from Earn's, through
+the **Router Release** workflow ([`router-release.yml`](../../.github/workflows/router-release.yml))
+and `pnpm router-release <network> <release> [--parameters <json>] [--broadcast]`
+([`core/router-release.ts`](../../deployments/core/router-release.ts)), which accepts only these
+releases. It runs the same release engine as factory releases, from
+[`router/`](../../router/README.md) with its own solc build and `deploy` profile: the same address,
+creation-code, and receipt checks, reconciling a release that already exists, and source
+verification after a broadcast. None has a registry entry, so there is no `all` and nothing is
+recorded afterwards. Pass a release's parameters as one JSON object (`--parameters`, or the
+workflow's `parameters` input, which reaches the command only through the environment); the command
+validates them before Forge runs, refuses parameters for the factory, and records them in the result
+and the job summary.
+
+The workflow runs from `main` only. Choose the networks (`both` runs Moderato, then mainnet only after
+Moderato succeeds), one release and its parameters, and whether to broadcast. Each job's summary and
+its `router-release-<network>-<attempt>` artifact list the addresses, transactions, source matches,
+and parameters, with `router/broadcast/`. Each network's job runs in the `router-release-<network>`
+environment, which maintainers create with a required reviewer and the deployer's
+`DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`, `TEMPO_RPC_PASSWORD`);
+the contracts are ownerless, so the key only pays fees. It shares the network's
+`hosted-contracts-<network>` queue with the factory and spend releases.
 
 | Release             | Parameters                                                                  | Creates                                                                |
 | ------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -359,7 +374,7 @@ spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool
 the mode). Omitted fields are zero.
 
 ```bash
-pnpm factory-release moderato zoneRouter \
+pnpm router-release moderato zoneRouter \
   --parameters '{"factory": "<ZoneRouterFactory>", "mode": {"zoneId": 7, "enabledOps": 4, "settlers": ["<SendSettler>"]}}'
 ```
 

@@ -83,7 +83,7 @@ token and conversion readiness. A card program's `BridgeSettler` is deployed by 
 [scripts](../spend/deploy.md#3-deploy-the-settler-and-router-for-each-zone); the profile lists it
 in `settlers`.
 
-Outside a profile, the **Factory Release** workflow deploys and source-verifies a
+Outside a profile, the **Router Release** workflow deploys and source-verifies a
 `ZoneRouterFactory`, a `SendSettler`, or a mode's router from `main`
 ([router releases](../deployment/deployment.md#router-releases)). Each lands at an address its
 build and settings fix: the factory and settlers through the CREATE2 deployer with Earn's release
@@ -167,7 +167,7 @@ back to the router and keeps no balance or allowance. Whoever builds the callbac
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the settler as a taker and recipient.
 It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
-no Zone account or `senderTag`. Deploy one with the [Factory Release `sendSettler`](../deployment/deployment.md#router-releases) and list it in a
+no Zone account or `senderTag`. Deploy one with the [Router Release `sendSettler`](../deployment/deployment.md#router-releases) and list it in a
 profile's `zoneRouter.settlers`.
 
 ## Invariants

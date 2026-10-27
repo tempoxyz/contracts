@@ -12,8 +12,8 @@ import { DeterministicRelease } from "tempo-earn/../script/deploy/DeterministicR
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 
-/// @notice Release entry points for the router project's ownerless contracts, which Factory Release
-///         deploys like Earn's shared factories (docs/deployment/deployment.md#shared-factory-releases).
+/// @notice Release entry points for the router project's ownerless contracts, which Router Release
+///         deploys like Earn's shared factories (docs/deployment/deployment.md#router-releases).
 ///         The ZoneRouterFactory and each SendSettler are created through the CREATE2 deployer with
 ///         Earn's release salt (DeterministicRelease); a ZoneRouter is created by its factory, at the
 ///         address its mode fixes. Each entry point reuses a contract that already exists, so whoever

@@ -21,7 +21,7 @@ and Spend's settlers implement its [`ISpendSettler`](src/interfaces/ISpendSettle
   it lists it.
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
-  [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the Factory Release workflow runs for the factory, settlers and routers.
+  [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the [Router Release](../docs/deployment/deployment.md#router-releases) workflow runs for the factory, settlers and routers.
 
 ## Running it
 

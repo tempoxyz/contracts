@@ -13,6 +13,7 @@
     "dev:local": "pnpm --filter app dev:local",
     "earn": "pnpm --filter @tempoxyz/earn exec tsx core/cli.ts",
     "factory-release": "pnpm --filter @tempoxyz/earn exec tsx core/factory-release.ts",
+    "router-release": "pnpm --filter @tempoxyz/earn exec tsx core/router-release.ts",
     "coverage": "cd earn && mkdir -p out/coverage && FOUNDRY_PROFILE=coverage forge coverage --no-match-coverage '^script/' --report-file out/coverage/lcov.info",
     "e2e:benchmark": "pnpm --filter e2e exec tsx harness/benchmark.ts",
     "e2e:profile": "pnpm --filter e2e exec tsx harness/cli.ts --earn-file",
