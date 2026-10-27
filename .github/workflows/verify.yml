@@ -179,15 +179,21 @@ jobs:
           forge-cache: symbolic
           node: 'false'
 
+      # Ubuntu's z3 4.8 takes minutes on solar's output, which leaves small ABI arguments unmasked.
       - name: Install symbolic solver
-        run: sudo apt-get update && sudo apt-get install --yes z3
+        run: |
+          python3 -m venv "$RUNNER_TEMP/z3"
+          echo 'z3-solver==5.3.2.0 --hash=sha256:f17df07300228a383470d4b4e1ad9daf429dc94885996712a1844a8242803935' \
+            > "$RUNNER_TEMP/z3.txt"
+          "$RUNNER_TEMP/z3/bin/pip" install --require-hashes --only-binary :all: -r "$RUNNER_TEMP/z3.txt"
+          echo "$RUNNER_TEMP/z3/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/z3/bin/z3" --version
 
-      # Include compiler-generated ABI and memory initialization loops in the proof bound. Solar's
-      # output takes z3 longer: proveFixedFeeRemainderConservation needs about 210 s of solver time.
+      # Include compiler-generated ABI and memory initialization loops in the proof bound.
       - name: Prove fee arithmetic and conversion properties
         run: >-
           forge test --symbolic --match-contract EarnFeeMathFuzzTest --match-test '^prove'
-          --symbolic-solver z3 --symbolic-timeout 600 --symbolic-loop 32 -vv
+          --symbolic-solver z3 --symbolic-timeout 60 --symbolic-loop 32 -vv
 
   typescript:
     name: TypeScript checks

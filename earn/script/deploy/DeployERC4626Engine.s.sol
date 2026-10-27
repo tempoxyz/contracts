@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import { Script, console2 } from "forge-std/Script.sol";
+import { console2 } from "forge-std/Script.sol";
 
 import { ERC4626Engine, IERC4626Vault } from "../../src/engines/ERC4626Engine.sol";
 import { ERC4626EngineFactory } from "../../src/engines/ERC4626EngineFactory.sol";
+import { DeterministicRelease } from "./DeterministicRelease.sol";
 
 /// @notice Deploys (or resolves) the deterministic ERC-4626 engine for one Earn stack, and the
 ///         ownerless ERC-4626 engine factory release that profiles consume.
 /// @dev Earn core deployment and the setup-owner binding remain separate resumable phases.
-contract DeployERC4626EngineScript is Script {
+contract DeployERC4626EngineScript is DeterministicRelease {
     /// @notice The deployment step's typed input. `owner` holds the unbound engine; binding transfers
     ///         it to `finalOwner`.
     struct Input {
@@ -26,8 +27,8 @@ contract DeployERC4626EngineScript is Script {
     error UnexpectedChain(uint256 actual, uint256 expected);
     error UnexpectedFoundryProfile(string actual);
 
-    /// @notice The shared factory release entry point (`<releaseKey>Factory`): one CREATE of the
-    ///         ownerless factory.
+    /// @notice The shared factory release entry point (`<releaseKey>Factory`): one deterministic
+    ///         creation of the ownerless factory, reused when it already exists.
     function erc4626EngineFactory(uint256 expectedChainId) external returns (ERC4626EngineFactory factory) {
         // Reviewed release runtimes are compiled under the `deploy` profile.
         string memory foundryProfile = vm.envString("FOUNDRY_PROFILE");
@@ -35,9 +36,13 @@ contract DeployERC4626EngineScript is Script {
             revert UnexpectedFoundryProfile(foundryProfile);
         }
         if (block.chainid != expectedChainId) revert UnexpectedChain(block.chainid, expectedChainId);
+        address predicted = _releaseAddress(type(ERC4626EngineFactory).creationCode);
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        factory = new ERC4626EngineFactory();
+        factory = predicted.code.length == 0
+            ? new ERC4626EngineFactory{ salt: RELEASE_SALT }()
+            : ERC4626EngineFactory(predicted);
         vm.stopBroadcast();
+        if (address(factory) != predicted) revert EngineVerificationFailed();
         if (address(factory).code.length == 0) revert EngineVerificationFailed();
         console2.log("ERC4626_ENGINE_FACTORY_ADDRESS", address(factory));
     }

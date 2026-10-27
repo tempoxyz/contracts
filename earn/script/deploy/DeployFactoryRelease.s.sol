@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { Script, console2 } from "forge-std/Script.sol";
+import { console2 } from "forge-std/Script.sol";
 
 import { EarnFactory } from "../../src/core/EarnFactory.sol";
 import { EarnFees } from "../../src/core/EarnFees.sol";
 import { EarnVault } from "../../src/core/EarnVault.sol";
 import { EarnRewardsFactory } from "../../src/rewards/EarnRewardsFactory.sol";
+import { DeterministicRelease } from "./DeterministicRelease.sol";
 
 /// @notice Deploys the ownerless shared factory releases: the EarnFactory with its locked
 ///         implementations, and the rewards factory. Each engine factory's release entry point lives
@@ -14,8 +15,10 @@ import { EarnRewardsFactory } from "../../src/rewards/EarnRewardsFactory.sol";
 /// @dev Customer profiles consume these addresses but deploy their own engines, core proxies, and
 ///      reward contracts. `earnFactoryRelease` deploys the whole core release in one broadcast; the
 ///      same release is also one CREATE per entry point (`earnVaultImplementation`,
-///      `earnFeesImplementation`, `earnFactory`) for Tempo batches, which allow a single CREATE.
-contract DeployFactoryReleaseScript is Script {
+///      `earnFeesImplementation`, `earnFactory`) for Tempo batches, which allow a single CREATE. Every
+///      contract is created deterministically (`DeterministicRelease`), and one that already exists is
+///      reused.
+contract DeployFactoryReleaseScript is DeterministicRelease {
     address private constant TIP20_FACTORY = 0x20Fc000000000000000000000000000000000000;
 
     error DeploymentVerificationFailed();
@@ -59,19 +62,26 @@ contract DeployFactoryReleaseScript is Script {
         release(expectedChainId)
         returns (EarnRewardsFactory factory)
     {
-        factory = new EarnRewardsFactory();
+        address predicted = _releaseAddress(type(EarnRewardsFactory).creationCode);
+        factory =
+            predicted.code.length == 0 ? new EarnRewardsFactory{ salt: RELEASE_SALT }() : EarnRewardsFactory(predicted);
+        if (address(factory) != predicted) revert DeploymentVerificationFailed();
         _requireCode(address(factory));
         console2.log("EARN_REWARDS_FACTORY_ADDRESS", address(factory));
     }
 
     function _earnVaultImplementation() private returns (EarnVault implementation) {
-        implementation = new EarnVault();
+        address predicted = _releaseAddress(type(EarnVault).creationCode);
+        implementation = predicted.code.length == 0 ? new EarnVault{ salt: RELEASE_SALT }() : EarnVault(predicted);
+        if (address(implementation) != predicted) revert DeploymentVerificationFailed();
         _requireCode(address(implementation));
         console2.log("EARN_VAULT_IMPLEMENTATION", address(implementation));
     }
 
     function _earnFeesImplementation() private returns (EarnFees implementation) {
-        implementation = new EarnFees();
+        address predicted = _releaseAddress(type(EarnFees).creationCode);
+        implementation = predicted.code.length == 0 ? new EarnFees{ salt: RELEASE_SALT }() : EarnFees(predicted);
+        if (address(implementation) != predicted) revert DeploymentVerificationFailed();
         _requireCode(address(implementation));
         console2.log("EARN_FEES_IMPLEMENTATION", address(implementation));
     }
@@ -82,7 +92,18 @@ contract DeployFactoryReleaseScript is Script {
     {
         _requireCode(address(vaultImplementation));
         _requireCode(address(feesImplementation));
-        factory = new EarnFactory(TIP20_FACTORY, address(vaultImplementation), address(feesImplementation));
+        address predicted = _releaseAddress(
+            abi.encodePacked(
+                type(EarnFactory).creationCode,
+                abi.encode(TIP20_FACTORY, address(vaultImplementation), address(feesImplementation))
+            )
+        );
+        factory = predicted.code.length == 0
+            ? new EarnFactory{ salt: RELEASE_SALT }(
+                TIP20_FACTORY, address(vaultImplementation), address(feesImplementation)
+            )
+            : EarnFactory(predicted);
+        if (address(factory) != predicted) revert DeploymentVerificationFailed();
         _requireCode(address(factory));
         if (
             factory.tip20Factory() != TIP20_FACTORY || factory.earnVaultImplementation() != address(vaultImplementation)
