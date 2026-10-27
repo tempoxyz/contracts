@@ -168,6 +168,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 | `scan-github-actions.yml` | Called by Pull Request; weekly; manual                                                                                  | The shared GitHub Actions scan                                                                                                                          |
 | `pr-audit.yml`            | Pull request label, push, or comment                                                                                    | The Cyclops audit                                                                                                                                       |
 | `zones-compatibility.yml` | Push to `main` touching `earn/src/`, `earn/foundry.*`, the deps script, itself, or the remediation-event action; manual | Builds `earn/`'s contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                       |
+| `factory-release.yml`     | Manual (`main` only)                                                                                                    | One [shared factory release](../deployment/deployment.md#releasing-from-ci) on a hosted network, simulated or broadcast and source verified             |
 | `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                             | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                              |
 | `spend.yml`               | Pull request or push to `main` touching `spend/` or its inputs                                                          | The separate [`spend/`](../../spend/README.md) project's format, build, tests, card matrix, Zone E2E, and smoke run; not a required check               |
 
@@ -199,7 +200,9 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
   Only the two deploy jobs receive the `DEV_CLOUDFLARE_*` credentials, which are secrets of the
   `production` and `preview` environments, and both environments deploy only from `main`; the
-  benchmark job receives `TEMPO_API_KEY`; the audit and remediation-event jobs receive the
+  benchmark job receives `TEMPO_API_KEY`; the factory release job receives its network's
+  `DEPLOYER_PRIVATE_KEY` and RPC credentials from the reviewer-gated `factory-release-<network>`
+  environment; the audit and remediation-event jobs receive the
   `EVENTS_*` intake credentials.
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC
   token, and a read-only `GITHUB_TOKEN`, and can pass every required check. Without an OIDC token,

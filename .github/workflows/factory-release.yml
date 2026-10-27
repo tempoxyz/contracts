@@ -1,0 +1,106 @@
+name: Factory Release
+
+# Deploys one shared factory release on a hosted network from main and source verifies it on Tempo's
+# verifier. The release registry (deployments/core/releases.ts) changes only through a reviewed pull
+# request afterwards.
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Hosted network
+        required: true
+        type: choice
+        # The factory release unit test asserts these lists match the hosted networks and releases.
+        options: [moderato, mainnet]
+      release:
+        description: Release to deploy (core is EarnVault, EarnFees, and the EarnFactory bound to them)
+        required: true
+        type: choice
+        options: [core, rewards, erc4626Engine]
+      broadcast:
+        description: Broadcast and source verify; unchecked only simulates
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: ${{ inputs.release }} on ${{ inputs.network }}${{ inputs.broadcast && ' (broadcast)' || ' (dry run)' }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Each network's environment holds its deployer key and requires a reviewer's approval.
+    environment: factory-release-${{ inputs.network }}
+    # Shares the network's hosted-contracts queue, so no other job spends the deployer's nonces.
+    concurrency:
+      group: hosted-contracts-${{ inputs.network }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          forge-cache: factory-release
+          workspace: '@tempoxyz/earn'
+
+      - name: Deploy and verify
+        env:
+          NETWORK: ${{ inputs.network }}
+          RELEASE: ${{ inputs.release }}
+          BROADCAST: ${{ inputs.broadcast }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          arguments=("$NETWORK" "$RELEASE" --output "$RUNNER_TEMP/factory-release.json")
+          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
+          pnpm factory-release "${arguments[@]}"
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          RELEASE: ${{ inputs.release }}
+          NETWORK: ${{ inputs.network }}
+        run: |
+          result="$RUNNER_TEMP/factory-release.json"
+          if [[ ! -f "$result" ]]; then
+            echo 'The release produced no result.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## ${RELEASE} factory release on ${NETWORK} · $(jq -r 'if .broadcast then "broadcast" else "dry run" end' "$result") · ${GITHUB_SHA::7}"
+            echo
+            echo '| Contract | Address | Transaction | Source match |'
+            echo '| --- | --- | --- | --- |'
+            jq -r '.contracts[] | "| \(.name) | `\(.address)` | `\(.transaction // "-")` | \(.match // "-") |"' "$result"
+            if jq -e '.broadcast and .registry != null' "$result" >/dev/null; then
+              echo
+              echo 'Review this entry into deployments/core/releases.ts:'
+              echo
+              echo '```json'
+              jq '.registry' "$result"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: factory-release-${{ inputs.network }}-${{ inputs.release }}
+          path: |
+            ${{ runner.temp }}/factory-release.json
+            earn/broadcast/
+          if-no-files-found: ignore
