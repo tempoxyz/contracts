@@ -80,6 +80,46 @@ cannot serve. Deployment profiles name presets:
 The Earn preset is exactly today's router, so its tests carry over unchanged as the regression suite.
 One router per Zone can serve several programs or integrators by listing each one's settler.
 
+### `ZoneRouterFactory`
+
+Routers are deployed through a factory, so a new customer or mode is one call, not a deployment
+project:
+
+- **Ownerless and permissionless.** `deploy(mode)` creates the router with CREATE2, salted by the mode's
+  hash. The same mode always gives the same address, and deploying it again returns the existing
+  router. `predict(mode)` gives the address in advance, so a profile, Bridge and the Zone admin agree on
+  it before anything is deployed.
+- **Provenance.** `isRouter(address)` and `RouterDeployed(router, modeHash, mode)` let a Zone admin check
+  that a gateway came from this factory, with the mode they expect, before admitting it.
+- **One factory per router version.** A new router version ships as a new factory. Routers already
+  deployed keep working, and each customer moves to the new version when ready, by deploying its mode
+  there and having its Zone admit the new address. The factory is a shared release, so it is reviewed
+  and its address recorded like Earn's other factory releases.
+- **Size.** If the router's creation code is too large to embed in the factory, the factory deploys
+  minimal clones that read the mode as immutable arguments instead. Measure the router before choosing.
+
+The mode struct is deliberately the shape of a route in a single shared router.
+
+### Toward one shared router
+
+Once the modes settle, one ownerless router can replace the per-mode routers:
+
+- Each mode becomes a **route**, registered permissionlessly, identified by its hash, and immutable.
+  Every callback names its `routeId`.
+- A Zone admits the one router once, so a Zone's Portal admin approves the routes its Zone accepts
+  (`approveRoute(zoneId, routeId)`). Without that, admitting the shared router would let anyone's route,
+  such as one with public sends, move funds out of a closed-loop Zone.
+- Authentication, measured balances and par conversion are unchanged; the reentrancy lock covers the
+  whole contract, and route settings are read from storage instead of immutables.
+- `routeId` adds 32 bytes per callback: `Pay` becomes 896 bytes and `WithdrawExact` 992, still under
+  1,024.
+- The cost is concentration: a bug reaches every Zone, and an ownerless contract is fixed by
+  deploying a new one and moving every Zone. So the move waits until a few customers have run on
+  factory-deployed routers.
+
+Settlers, `ISpendSettler`, the callback fields other than `routeId`, and events stay the same, so
+moving only changes the address Bridge and clients target.
+
 ### Ops
 
 The router already reads the first callback word before decoding, so ops 0 and 1 keep their exact
@@ -254,7 +294,7 @@ cardholder's access keys stay the same through every phase.
 
 ## Rollout
 
-1. **Earn:** `ZoneRouter` with ops 0 and 1 byte-identical and their tests carried over, plus `Send`, `WithdrawExact` and stablecoin-only routers. The rename
+1. **Earn:** `ZoneRouter` and `ZoneRouterFactory`, with ops 0 and 1 byte-identical and their tests carried over, plus `Send`, `WithdrawExact` and stablecoin-only routers. The rename
    lands with its consumers: tempoxyz/tempo (which builds `earn/src/` and reads the router outputs),
    `viem/tempo`, and the zone-router deployment module.
 2. **Spend:** `BridgeSettler`, a "ZoneRouter" setup in the 35-scenario matrix, and `e2e/zone` on the
