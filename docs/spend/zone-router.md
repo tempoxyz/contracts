@@ -98,6 +98,14 @@ project:
 
 The mode struct is deliberately the shape of a route in a single shared router.
 
+### Changing a router
+
+A router has no owner, so nobody can change an existing one. Enabling a new settler or op means a new
+router: anyone deploys it through the factory with the new mode, the Zone's Portal admin admits it as
+a gateway after checking its mode through `isRouter` and `RouterDeployed`, and integrators start
+sending withdrawals to it. The old router stays deployed, so callbacks already on their way to it
+finish or bounce. The only authority is the one Zones already have: which gateways they admit.
+
 ### Toward one shared router
 
 Once the modes settle, one ownerless router can replace the per-mode routers:
