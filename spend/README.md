@@ -15,6 +15,9 @@ rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)
 - **One Tempo implementation inside Bridge's contracts.** A new spender handler,
   `SpenderTempoSpend` ("TS"), that Bridge registers like any other, and a small
   `ZoneSpendReceiver` for Zone withdrawals. See [`docs/design.md`](../docs/spend/design.md).
+- **A prototype `BridgeSettler`** ([`src/settler/`](src/settler/BridgeSettler.sol)), the settler a
+  [Zone router](../router/README.md) pays through to replace `ZoneSpendReceiver`. See
+  [`docs/router/zone-router.md`](../docs/router/zone-router.md).
 - **A card E2E harness** that runs every Stripe/Bridge card scenario against any contract setup,
   so Bridge today and the Tempo implementation are tested side by side. See
   [`docs/harness.md`](../docs/spend/harness.md).

@@ -167,6 +167,34 @@ contract BridgeSettlerTest is AccessKeys {
         _expectSettleRevert(AMOUNT, abi.encodeWithSelector(BridgeSettler.NothingSettled.selector));
     }
 
+    /// @notice The input must be the spend's own token: its stablecoin, or the shares of the vault that
+    ///         funds all of it. A split spend cannot come from one withdrawal.
+    function test_rejectsAnInputThatIsNotTheSpendsToken() public {
+        _mintUsd(router, 100e6);
+        uint256 shares = _depositEarn(router, 100e6);
+        vm.startPrank(router);
+        earnShare.approve(address(settler), shares);
+        vm.expectRevert(abi.encodeWithSelector(BridgeSettler.WrongInputToken.selector, address(earnShare)));
+        settler.settle(address(earnShare), shares, abi.encode(_stableSpend(AMOUNT)));
+
+        Spend memory split = _stableSpend(AMOUNT);
+        split.vault = address(earnVault);
+        split.fromVault = AMOUNT / 2;
+        split.maxShares = shares;
+        vm.expectRevert(abi.encodeWithSelector(BridgeSettler.WrongInputToken.selector, address(earnShare)));
+        settler.settle(address(earnShare), shares, abi.encode(split));
+
+        Spend memory earn = _stableSpend(AMOUNT);
+        earn.vault = address(earnVault);
+        earn.fromVault = AMOUNT;
+        earn.maxShares = shares;
+        usd.approve(address(settler), 50e6);
+        vm.expectRevert(abi.encodeWithSelector(BridgeSettler.WrongInputToken.selector, address(usd)));
+        settler.settle(address(usd), 50e6, abi.encode(earn));
+        vm.stopPrank();
+        assertEq(earnShare.balanceOf(router), shares, "nothing taken");
+    }
+
     /// @notice A handler that takes the input but pays the destination short cannot look settled.
     function test_rejectsAHandlerThatPaysShort() public {
         _replaceHandler(ISpenderHandler(address(new ShortPayingSpendHandler(IFactory(address(bridgeFactory))))));

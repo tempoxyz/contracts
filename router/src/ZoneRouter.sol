@@ -225,6 +225,26 @@ contract ZoneRouter is IWithdrawalReceiver {
         return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
     }
 
+    /// @notice Pool state and output inventory for each Earn op, as SingleZoneEarnRouter reports it.
+    /// @dev Not a guaranteed executable conversion: execution also depends on the pool's oracle freshness
+    ///      and deviation guard and on token policy. A router without a pool, including one without Earn
+    ///      ops, reports an unpaused, admitted, at-par route with unlimited liquidity.
+    function liquidityStatus()
+        external
+        view
+        returns (bool paused, bool admitted, bool atPar, uint256 depositLiquidity, uint256 redeemLiquidity)
+    {
+        if (!_converts()) return (false, true, true, type(uint256).max, type(uint256).max);
+        paused = pool.paused();
+        admitted = pool.takerAllowed(address(this)) && pool.recipientAllowed(address(this))
+            && pool.resolveRecipient(address(this)) == address(this);
+        try IPropAMMPriceOracle(pool.oracle()).latestPrice() returns (uint256 price, uint256) {
+            atPar = price == parPrice();
+        } catch { }
+        depositLiquidity = IERC20Like(vaultAsset).balanceOf(address(pool));
+        redeemLiquidity = IERC20Like(privateAsset).balanceOf(address(pool));
+    }
+
     function onWithdrawalReceived(
         uint32 sourceZoneId,
         address sourcePortal,

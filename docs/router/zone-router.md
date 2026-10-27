@@ -1,14 +1,13 @@
 # ZoneRouter and private card spend (proposal)
 
-**Status: proposed, not implemented.** This page is the target for the ZoneRouter work. Until that
-lands, [design.md](../spend/design.md) and [Earn's zone router](../earn/modules/zone-router.md) describe
-what is deployed. When the code merges, each part of this page moves to the page that owns it and
-this page is deleted.
-
-A prototype implements the router, the factory and the Bridge settler: [`ZoneRouter`](../../router/src/ZoneRouter.sol),
-[`ZoneRouterFactory`](../../router/src/ZoneRouterFactory.sol) and
-[`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol). `SingleZoneEarnRouter` stays deployed and
-unchanged until the rename lands with its consumers.
+**Status: prototype.** [`ZoneRouter`](../../router/src/ZoneRouter.sol),
+[`ZoneRouterFactory`](../../router/src/ZoneRouterFactory.sol),
+[`ISpendSettler`](../../router/src/interfaces/ISpendSettler.sol) and
+[`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol) are implemented and tested;
+`SendSettler` and the `TS` funding sources are not built yet. Until the router is deployed,
+[design.md](../spend/design.md) and [Earn's zone router](../earn/modules/zone-router.md) describe what
+runs today. When it is, each part of this page moves to the page that owns it and this page is
+deleted.
 
 ## Why
 
@@ -44,10 +43,10 @@ From [Stripe Issuing Smart Contracts on Tempo](https://docs.google.com/document/
 
 ## Two layers
 
-| Layer          | Lives in           | Contracts                                                                                       | Lifetime                 |
-| -------------- | ------------------ | ----------------------------------------------------------------------------------------------- | ------------------------ |
-| Tempo-owned    | `router/`, `earn/` | `ZoneRouter`, `ZoneRouterFactory`, `ISpendSettler` in `router/`; Earn funding source in `earn/` | Permanent                |
-| Bridge adapter | `spend/`           | `TS` handler (funding through sources), `BridgeSettler`                                         | Until Tempo-native spend |
+| Layer          | Lives in           | Contracts                                                                                                         | Lifetime                 |
+| -------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| Tempo-owned    | `router/`, `earn/` | `ZoneRouter`, `ZoneRouterFactory`, `ISpendSettler` and `SendSettler` in `router/`; Earn funding source in `earn/` | Permanent                |
+| Bridge adapter | `spend/`           | `TS` handler (funding through sources), `BridgeSettler`                                                           | Until Tempo-native spend |
 
 The router is its own Foundry project, [`router/`](../../router/README.md), built with solc. It imports
 only Earn's interfaces, and `spend/` imports only its `ISpendSettler`, so Earn stays integrator-agnostic. Everything that knows Bridge's
@@ -55,8 +54,9 @@ factory stays in `spend/`.
 
 ## `ZoneRouter`
 
-`SingleZoneEarnRouter`, renamed, with deployment modes, settlers, an optional EarnVault and three more ops. It keeps
-everything the router has today:
+A new contract beside `SingleZoneEarnRouter`, which stays in `earn/` until its consumers move. It adds
+one op (Spend), deployment modes, settlers and an optional EarnVault, and keeps everything the router
+has today:
 
 - one Zone, an optional EarnVault and private asset, and an optional par pool;
 - authentication through the Zone Messenger, the Zone ID and the Factory-registered Portal;
@@ -66,7 +66,7 @@ Its configuration is fixed at deployment, with no setters; a different mode mean
 
 - **`enabledOps`**, a bitmask of Deposit, Redeem and Spend. A disabled op reverts
   `OpDisabled`.
-- **`settlers`**, the set of `ISpendSettler` contracts `Spend` may use, including `SendSettler`s, written once by the
+- **`settlers`**, the set of `ISpendSettler` contracts `Spend` may use, written once by the
   constructor into an `isSettler` mapping. Required when Spend is enabled, empty otherwise.
 - **`earnVault`, `privateAsset`, `pool`, `customerId`**, as today. Required when an Earn op (Deposit or
   Redeem) is enabled, and all zero otherwise.
@@ -81,8 +81,10 @@ cannot serve. Deployment profiles name presets:
 | Card and Earn, closed loop | Deposit, Redeem, Spend | `BridgeSettler`              | Yes   |
 | Open wallet                | All                    | Any, including `SendSettler` | Any   |
 
-The Earn preset is exactly today's router, so its tests carry over unchanged as the regression suite.
-One router per Zone can serve several programs or integrators by listing each one's settler.
+The Earn preset accepts `SingleZoneEarnRouter`'s callback data byte for byte and reports the same views
+(`parPrice`, `liquidityStatus`, `supportsFlow`), so clients can switch to it; porting
+`SingleZoneEarnRouter`'s full test suite to it is still to do. One router per Zone can serve several
+programs or integrators by listing each one's settler.
 
 ### `ZoneRouterFactory`
 
@@ -99,8 +101,8 @@ project:
   deployed keep working, and each customer moves to the new version when ready, by deploying its mode
   there and having its Zone admit the new address. The factory is a shared release, so it is reviewed
   and its address recorded like Earn's other factory releases.
-- **Size.** If the router's creation code is too large to embed in the factory, the factory deploys
-  minimal clones that read the mode as immutable arguments instead. Measure the router before choosing.
+- **Size.** The factory embeds the router's creation code: the router's runtime is 9.9 KB and the
+  factory's 13.2 KB, both well under the 24 KB limit, so it needs no clones.
 
 The mode struct is deliberately the shape of a route in a single shared router.
 
@@ -143,17 +145,17 @@ layout and `viem/tempo`'s `earnRouterCallbackData` keeps working.
 | 1 Redeem  | EarnShare                           | Unchanged                                                                               | Private asset    |
 | 2 Spend   | Any token the source Portal enables | Approves at most `maxInput` to the named settler, calls `settle`, measures what it used | Unused input     |
 
-Every return to a Zone is an encrypted deposit with its own `ZoneReturn` (key index, encrypted
-recipient, refund recipient and `maxDepositFee`), and reverts if that Portal's deposit fee is above
-the cap. Every op requires the return token to be enabled with deposits active on the Portal it goes
-to. Any revert bounces the whole input to the withdrawal's `zoneFallbackRecipient` in the source
+Every return to the source Zone is an encrypted deposit to a recipient the callback encrypts, with a
+refund recipient, and requires the return token to be enabled with deposits active. Ops 0 and 1 keep
+`SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn` adds `maxDepositFee` and reverts if the
+Portal's deposit fee is above it. Any revert bounces the whole input to the withdrawal's `zoneFallbackRecipient` in the source
 Zone.
 
 Callback data sizes, with a 64-byte ciphertext, against the outbox's 1,024 bytes:
 
-| Op    | Bytes | Fields                                                                             |
-| ----- | ----- | ---------------------------------------------------------------------------------- |
-| Spend | 864   | `op`, `settler`, `maxInput`, `settlerData` (Bridge's `Spend` struct), `ZoneReturn` |
+| Op    | Bytes | Fields                                                                              |
+| ----- | ----- | ----------------------------------------------------------------------------------- |
+| Spend | 864   | `op`, `settler`, `maxInput`, `settlerData` (Bridge's `Spend` struct), `SpendReturn` |
 
 ### `Spend`
 
@@ -161,7 +163,7 @@ One op covers card spend and sends: the router hands at most `maxInput` to a set
 and everything unused returns to the source Zone.
 
 1. Authenticates exactly as ops 0 and 1, and requires the named settler to be in `settlers`.
-2. Approves `maxInput` (never more than the withdrawn amount) to the settler and calls
+2. Requires `0 < maxInput <= amount`, approves `maxInput` to the settler and calls
    `settle(token, maxInput, settlerData)`, then resets the approval.
 3. Requires `0 < used <= maxInput`, measured from its own balance.
 4. Returns `amount - used` to the source Zone.
@@ -171,8 +173,8 @@ and everything unused returns to the source Zone.
 `Spend` also covers paying a public address from a Zone account ([sends](#sends)).
 
 The router accepts any enabled token and leaves it to the settler to refuse one it cannot use.
-`BridgeSettler` requires the token to be its `Spend` struct's input, and `TS` checks it against the
-spend.
+`BridgeSettler` requires the token to be its `Spend` struct's input: the stablecoin, or the shares of
+the vault that funds the whole spend.
 
 `maxInput` is what closes the Cyclops finding. It is set in the cardholder's Zone transaction, not
 by the settler or the handler, so a replaced handler can take at most the spend itself. Bridge sets
@@ -189,7 +191,7 @@ A send pays a public address from a Zone account, in one of three forms:
 | Stablecoin                    | Stablecoin | Stablecoin     | Transferred as is                                         |
 | EarnShare, paid as stablecoin | EarnShare  | Stablecoin     | Redeemed for an exact stablecoin amount, then transferred |
 
-All three go through `SendSettler`, which Tempo owns. `settlerData` names the recipient, whether to
+All three go through `SendSettler` (not built yet), which Tempo owns in `router/`. `settlerData` names the recipient, whether to
 redeem, and for a redemption the exact stablecoin `amount`. To redeem, the settler uses the same Earn
 funding source as `TS`: `withdrawExact(amount)` on the vault, burning at most `maxInput` shares, then
 par conversion when the vault asset differs from the stablecoin. Unused shares go back through the
@@ -219,10 +221,11 @@ interface ISpendSettler {
 
 ### `BridgeSettler`
 
-`ZoneSpendReceiver` without its Zone code: ownerless, bound to Bridge's factory and one spender ID,
-one per program and Zone router. `settle`:
+`ZoneSpendReceiver` without its Zone code: ownerless, bound to Bridge's factory and one spender ID, so
+one per program, which any router that lists it can use. `settle`:
 
-- decodes the `Spend`, requires its `spenderId` to be the bound one and `token` to be its input, and
+- decodes the `Spend`, requires its `spenderId` to be the bound one and `token` to be its input (a
+  spend split between stablecoin and shares is rejected, since one withdrawal carries one token), and
   pulls `maxInput` from the router;
 - approves it to the program's clone and calls `publicCall "PS"`, then resets the approval;
 - requires the destination received exactly `spend.amount` and that the handler used something;
@@ -235,7 +238,7 @@ in the same transaction as `Spent`, carries `senderTag`, `to`, `token`, `amount`
 
 ### `TS` funding sources
 
-`TS` keeps its `Spend` ABI. Two fields widen in meaning, not type:
+Not built yet. `TS` keeps its `Spend` ABI. Two fields widen in meaning, not type:
 
 - `vault` becomes `source`: any funding source governance allows through the existing `"UV"` call;
 - `maxShares` becomes `maxInput`.
@@ -296,11 +299,12 @@ cardholder's access keys stay the same through every phase.
 
 ## Rollout
 
-1. **Router:** `ZoneRouter` and `ZoneRouterFactory` in `router/`, accepting `SingleZoneEarnRouter`'s
-   callback data byte for byte, plus `SendSettler` and stablecoin-only routers. `SingleZoneEarnRouter`
+1. **Router:** `ZoneRouter` and `ZoneRouterFactory` in `router/` (prototyped), accepting
+   `SingleZoneEarnRouter`'s callback data byte for byte, then `SendSettler`, a router deployment module
+   and profile fields. `SingleZoneEarnRouter`
    stays in `earn/` until its consumers move: tempoxyz/tempo (which builds `earn/src/` and reads the
    router outputs), `viem/tempo`, and the zone-router deployment module.
-2. **Spend:** `BridgeSettler`, a "ZoneRouter" setup in the 35-scenario matrix, and `e2e/zone` on the
+2. **Spend:** `BridgeSettler` (prototyped), a "ZoneRouter" setup in the 35-scenario matrix, and `e2e/zone` on the
    new path, with callback gas measured against today's 2.02M (Earn) and 0.98M (DLUSD) and Bridge's
    3M limit.
 3. **Spend:** `TS` funding through sources, including par conversion.

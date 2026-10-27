@@ -7,6 +7,7 @@ import { ISpendSettler } from "tempo-router/interfaces/ISpendSettler.sol";
 
 import { Spend } from "../SpenderTempoSpend.sol";
 import { IBridgeSpenderClone, IBridgeSpenderFactory } from "../interfaces/IBridgeSpenderFactory.sol";
+import { ITempoEarnVault } from "../interfaces/ITempoEarnVault.sol";
 
 /// @title BridgeSettler
 /// @notice Settles a Zone router's Spend op through one Bridge card program's spender clone, with
@@ -30,6 +31,7 @@ contract BridgeSettler is ISpendSettler {
     error NothingSettled();
     error Reentrancy();
     error ResidualBalance(address token);
+    error WrongInputToken(address token);
     error WrongProgram(bytes32 spenderId);
     error ZeroAddress();
 
@@ -56,6 +58,15 @@ contract BridgeSettler is ISpendSettler {
         Spend memory spend = abi.decode(data, (Spend));
         if (spend.spenderId != SPENDER_ID) revert WrongProgram(spend.spenderId);
         if (maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
+        // One withdrawal carries one token: a stablecoin spend's token, or the shares of the vault that
+        // funds all of it. A spend split between both cannot come from one Zone withdrawal.
+        address input;
+        if (spend.fromVault == 0) {
+            input = spend.token;
+        } else if (spend.fromVault == spend.amount && spend.vault != address(0)) {
+            input = ITempoEarnVault(spend.vault).earnShare();
+        }
+        if (input == address(0) || input != token) revert WrongInputToken(token);
 
         // Measured before the pull; nothing may stay behind.
         uint256 inputBefore = IERC20(token).balanceOf(address(this));

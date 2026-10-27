@@ -94,6 +94,21 @@ contract ZoneRouterTest is EarnRouterTestBase {
         _assertEmpty(zr);
     }
 
+    /// @notice The Earn preset reports the same views clients read from SingleZoneEarnRouter.
+    function testEarnModeReportsTheSameViewsAsSingleZoneEarnRouter() public {
+        ZoneRouter zr = _earnRouter(false);
+        SingleZoneEarnRouter legacy = _admittedRouter(pool);
+        assertEq(zr.parPrice(), legacy.parPrice());
+        assertEq(zr.privateAssetIsBase(), legacy.privateAssetIsBase());
+        (bool p1, bool a1, bool r1, uint256 d1, uint256 l1) = zr.liquidityStatus();
+        (bool p2, bool a2, bool r2, uint256 d2, uint256 l2) = legacy.liquidityStatus();
+        assertEq(abi.encode(p1, a1, r1, d1, l1), abi.encode(p2, a2, r2, d2, l2));
+        assertTrue(a1, "admitted");
+        for (uint8 flow = 0; flow < 2; flow++) {
+            assertEq(zr.supportsFlow(flow), legacy.supportsFlow(flow));
+        }
+    }
+
     function testFactoryDeploysAtPredictedAddressOnce() public {
         ZoneRouter.Mode memory mode = _spendMode();
         address predicted = factory.predict(mode);
