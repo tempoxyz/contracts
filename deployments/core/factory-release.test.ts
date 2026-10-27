@@ -36,7 +36,7 @@ import {
   type FactoryReleaseDependencies,
   type PredictedContract,
 } from './factory-release.js'
-import { routerReleaseKinds } from './router-release.js'
+import { routerReleaseKinds } from './zone-router-release.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
 const bytecode = (contract: string) =>
@@ -422,7 +422,7 @@ describe('release selection', () => {
   test('refuses the router releases, pointing to their own CLI', () => {
     for (const kind of routerReleaseKinds) {
       expect(() => releaseKindsFor(kind)).toThrow(
-        `Unknown factory release ${kind}; expected all or one of ${factoryReleaseKinds.join(', ')} (router contracts release with pnpm router-release)`,
+        `Unknown factory release ${kind}; expected all or one of ${factoryReleaseKinds.join(', ')} (Zone router contracts release with pnpm zone-router-release)`,
       )
     }
   })
@@ -432,7 +432,7 @@ describe('factory release CLI', () => {
   test('refuses a router release and parameters before deploying anything', async () => {
     for (const kind of routerReleaseKinds) {
       await expect(main(['moderato', kind], '/nonexistent/earn')).rejects.toThrow(
-        'router contracts release with pnpm router-release',
+        'Zone router contracts release with pnpm zone-router-release',
       )
     }
     await expect(

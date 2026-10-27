@@ -5,8 +5,8 @@ import { ISpenderHandler } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
-import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
 import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";

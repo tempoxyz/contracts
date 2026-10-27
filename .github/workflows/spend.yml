@@ -7,7 +7,7 @@ on:
       - 'spend/**'
       - 'earn/src/**'
       - 'earn/script/deploy/DeterministicRelease.sol'
-      - 'router/src/**'
+      - 'zone-router/src/**'
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/spend/**'
@@ -18,7 +18,7 @@ on:
       - 'spend/**'
       - 'earn/src/**'
       - 'earn/script/deploy/DeterministicRelease.sol'
-      - 'router/src/**'
+      - 'zone-router/src/**'
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/spend/**'
@@ -32,7 +32,7 @@ concurrency:
 
 # Bridge card spend (spend/), a separate Foundry project that imports Earn's earn/src/. Not a required
 # check: it covers customer-specific code and runs only when spend/, earn/src/, Earn's
-# DeterministicRelease, router/src/, e2e/spend/,
+# DeterministicRelease, zone-router/src/, e2e/spend/,
 # localnet/ (with its pinned images) or scripts/solidity-deps.sh change.
 jobs:
   test:

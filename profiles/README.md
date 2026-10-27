@@ -61,7 +61,7 @@ set to `null`; an empty `core` or `core.fees` object is rejected. Top-level keys
   `router.customerId` is its nonzero bytes32 route identifier. When `privateAsset` is the vault
   asset, omit both `pool` and `customerId` (setting only one is rejected). The Zone chain ID is
   derived from `chainId` and `zone.id` using the protocol's reserved ranges.
-- `zoneRouter`: one [`ZoneRouter`](../docs/router/zone-router.md) mode and the factory that deploys
+- `zoneRouter`: one [`ZoneRouter`](../docs/zone-router/zone-router.md) mode and the factory that deploys
   it ([Zone routers](#zone-routers)).
 - `targetYield` and `boostRewards`: optional reward periphery ([rewards](#rewards)).
 
@@ -85,8 +85,8 @@ protected-item and three-slot rules.
 
 ## Zone routers
 
-`zoneRouter` deploys one [`ZoneRouter`](../docs/router/zone-router.md#modes) through a
-`ZoneRouterFactory`, from the separate [`router/`](../router/README.md) project. It sits beside
+`zoneRouter` deploys one [`ZoneRouter`](../docs/zone-router/zone-router.md#modes) through a
+`ZoneRouterFactory`, from the separate [`zone-router/`](../zone-router/README.md) project. It sits beside
 `zone`, whose `SingleZoneEarnRouter` it does not replace. Card and Earn on one Zone:
 
 ```json
@@ -119,7 +119,7 @@ protected-item and three-slot rules.
   `zoneRouterFactory` component, so a later mode change deploys only a new router through it.
 
 A different mode is a new router at a new address, which the Zone must admit again
-([lifecycle](../docs/router/zone-router.md#deployment)).
+([lifecycle](../docs/zone-router/zone-router.md#deployment)).
 
 ## Rewards
 

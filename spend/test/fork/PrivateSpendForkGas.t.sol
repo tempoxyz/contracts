@@ -10,10 +10,10 @@ import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandl
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { EncryptedDepositPayload, ZONE_MESSENGER_ADDRESS } from "tempo-earn/interfaces/external/tempo/IZone.sol";
-import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "tempo-router/ZoneRouterFactory.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";

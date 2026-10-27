@@ -48,7 +48,7 @@ jobs:
       # The generated ABIs also export the Zone router's contracts, from its separate solc project.
       - name: Build the Zone router
         working-directory: .
-        run: scripts/solidity-deps.sh router && (cd router && forge build src script)
+        run: scripts/solidity-deps.sh zone-router && (cd zone-router && forge build src script)
 
       - name: Check generated contract ABIs
         run: pnpm --filter @tempoxyz/earn abis:check

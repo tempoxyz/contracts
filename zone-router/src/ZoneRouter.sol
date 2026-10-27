@@ -21,7 +21,7 @@ import {
 /// @title ZoneRouter
 /// @notice Ownerless router for one Zone's withdrawal callbacks: Earn deposits and redemptions, and spends
 ///         through settlers fixed at deployment.
-/// @dev Specified in docs/router/zone-router.md. Every setting is fixed by the constructor; a different
+/// @dev Specified in docs/zone-router/zone-router.md. Every setting is fixed by the constructor; a different
 ///      mode is a new router. Ops 0 and 1 keep SingleZoneEarnRouter's callback layout and behavior. Op 2
 ///      (Spend) transfers exactly the sender's `maxInput` to a listed settler, measures what it used once
 ///      the settler hands back the rest, and returns the change to the source Zone, so no settler can take

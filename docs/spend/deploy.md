@@ -87,7 +87,7 @@ FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... ZONE_ID=7 ROUTER_FACTO
 The script checks that the program's clone was created for its ID, that `ZONE_ID` is a valid Zone
 ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program's
 `BridgeSettler` at its deterministic address, as the handler's, or reuses the one there, then,
-through the `ZoneRouterFactory`, a [`ZoneRouter`](../router/zone-router.md)
+through the `ZoneRouterFactory`, a [`ZoneRouter`](../zone-router/zone-router.md)
 whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. Leave
 `ROUTER_FACTORY` unset to deploy a new factory. `OUT` holds `factory`, `spenderId`, `clone`,
 `zoneId`, `portal`, `settler`, `routerFactory` and `router`, and is written only with
@@ -101,7 +101,7 @@ program checks and lands on the same address, and `OUT` holds `factory`, `spende
 Once the settler exists, the router can instead come from an Earn deployment profile's
 `zoneRouter`, which lists the settler and deploys, verifies and records the router with
 `pnpm earn deploy`. Through the same factory, it adopts a router this script already deployed for
-that mode ([Zone router deployment](../router/zone-router.md#deployment)).
+that mode ([Zone router deployment](../zone-router/zone-router.md#deployment)).
 
 Neither contract has an owner or needs configuration. The Zone admin checks the router with the
 factory's `isRouter(router)`, then grants roles:

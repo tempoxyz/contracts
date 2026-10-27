@@ -60,7 +60,7 @@ type RouterProfile = SliceProfile<ZoneRouterFields>
 const zoneRouterContractRelease = 1
 
 /**
- * The `zoneRouter` slice: a `ZoneRouter` mode from `router/`, the `ZoneRouterFactory` that deploys it
+ * The `zoneRouter` slice: a `ZoneRouter` mode from `zone-router/`, the `ZoneRouterFactory` that deploys it
  * unless the profile names one, and the Portal of the Zone it serves. Each is optional periphery, so
  * a mode change deploys a new router through the same factory.
  */

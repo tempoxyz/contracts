@@ -3,7 +3,7 @@ import type { ProfileSlice } from '../../deployments/modules/module.js'
 import { accessPolicyProfile } from './earn/access-policy/profile.js'
 import { rewardsProfile } from './earn/rewards/profile.js'
 import { zoneRouterProfile } from './earn/zone-router/profile.js'
-import { zoneRouterModeProfile } from './router/profile.js'
+import { zoneRouterModeProfile } from './zone-router/profile.js'
 
 /**
  * Every capability's browser-safe slice, in authored, record, and published-stack order. Core

@@ -159,7 +159,7 @@ ZERO=0x0000000000000000000000000000000000000000
 ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
 MODE_T="(uint32,uint8,address,address,address,bytes32,address[])"
 SETTLER=$(create src/settler/BridgeSettler.sol:BridgeSettler --constructor-args "$FACTORY" "$SPENDER_ID")
-ROUTER_FACTORY=$(create ../router/src/ZoneRouterFactory.sol:ZoneRouterFactory)
+ROUTER_FACTORY=$(create ../zone-router/src/ZoneRouterFactory.sol:ZoneRouterFactory)
 [[ -n "$SETTLER" && -n "$ROUTER_FACTORY" ]] || { echo "settler or router factory not deployed"; exit 1; }
 MODE="(1,4,$ZERO,$ZERO,$ZERO,$ZERO32,[$SETTLER])"
 cast send "$ROUTER_FACTORY" "deploy($MODE_T)" "$MODE" --private-key "$DEPLOYER_PK" --rpc-url "$RPC" >/dev/null

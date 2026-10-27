@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { ZoneRouter } from "tempo-router/ZoneRouter.sol";
 import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";

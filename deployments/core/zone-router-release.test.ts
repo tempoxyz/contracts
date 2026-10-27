@@ -32,7 +32,7 @@ import {
   planRouterRelease,
   routerReleaseKindFor,
   routerReleaseKinds,
-} from './router-release.js'
+} from './zone-router-release.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
 const bytecode = (contract: string) =>
@@ -42,10 +42,10 @@ const spendMode = { zoneId: 7, enabledOps: 4, settlers: [address('5e771e')] }
 const routerParameters = { factory: address('f1'), mode: spendMode }
 
 describe('planRouterRelease', () => {
-  test('the router releases run from the router project and name no registry entry', () => {
+  test('the router releases run from the zone-router project and name no registry entry', () => {
     const factory = planRouterRelease('zoneRouterFactory', 4217)
     expect(factory).toMatchObject({
-      project: 'router',
+      project: 'zone-router',
       script: 'script/deploy/DeployRouterRelease.s.sol:DeployRouterReleaseScript',
       contracts: [
         { name: 'ZoneRouterFactory', contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory' },
@@ -82,7 +82,7 @@ describe('planRouterRelease', () => {
       ],
     })
     for (const plan of [factory, settler, router]) {
-      expect(plan.project).toBe('router')
+      expect(plan.project).toBe('zone-router')
       expect(plan.registryKey).toBeUndefined()
     }
   })
@@ -354,7 +354,7 @@ describe('deployRouterRelease', () => {
     ...overrides,
   })
 
-  test('runs a router release from the router project and records its parameters', async () => {
+  test('runs a Zone router release from the zone-router project and records its parameters', async () => {
     const plan = planRouterRelease('zoneRouter', 42431, routerParameters)
     const [router] = predictRelease(plan, bytecode)
     const dependencies = runtime()
@@ -377,24 +377,24 @@ describe('deployRouterRelease', () => {
       options({ network: 'moderato', kind: 'zoneRouter', parameters: routerParameters }),
       dependencies as Partial<FactoryReleaseDependencies>,
     )
-    expect(dependencies.preflight.mock.calls[0]![0]).toBe('/repo/router')
+    expect(dependencies.preflight.mock.calls[0]![0]).toBe('/repo/zone-router')
     expect(dependencies.creationBytecode.mock.calls[0]!.slice(0, 2)).toEqual([
-      '/repo/router',
+      '/repo/zone-router',
       'src/ZoneRouter.sol:ZoneRouter',
     ])
     const [forgeArguments, , cwd] = dependencies.forge.mock.calls[0]!
-    expect(cwd).toBe('/repo/router')
+    expect(cwd).toBe('/repo/zone-router')
     expect(forgeArguments.slice(0, 3)).toEqual(['script', plan.script, '--root'])
-    expect(forgeArguments[3]).toBe('/repo/router')
+    expect(forgeArguments[3]).toBe('/repo/zone-router')
     expect(dependencies.readFile).toHaveBeenCalledWith(
-      broadcastPath('/repo/router', plan, 42431, true),
+      broadcastPath('/repo/zone-router', plan, 42431, true),
     )
     expect(dependencies.removeScriptCache).toHaveBeenCalledWith(
-      '/repo/router',
+      '/repo/zone-router',
       'DeployRouterRelease.s.sol',
     )
     expect(dependencies.verify.mock.calls[0]![0]).toMatchObject({
-      root: '/repo/router',
+      root: '/repo/zone-router',
       address: router!.address,
       contract: 'src/ZoneRouter.sol:ZoneRouter',
       constructorArgs: router!.constructorArgs,
@@ -431,7 +431,7 @@ describe('deployRouterRelease', () => {
 
 describe('router release workflow', () => {
   const workflow = readFileSync(
-    new URL('../../.github/workflows/router-release.yml', import.meta.url),
+    new URL('../../.github/workflows/zone-router-release.yml', import.meta.url),
     'utf8',
   )
   const options = (input: string) =>
@@ -449,7 +449,7 @@ describe('router release workflow', () => {
   test('passes the parameters input through the environment, not the script text', () => {
     expect(workflow).toMatch(/^ {6}parameters:\n(?: {8}.*\n)*? {8}default: '\{\}'$/m)
     expect(workflow).toContain('PARAMETERS: ${{ inputs.parameters }}')
-    expect(workflow).toContain('pnpm router-release')
+    expect(workflow).toContain('pnpm zone-router-release')
     expect(workflow).toContain('--parameters "$PARAMETERS"')
     expect(workflow.match(/\$\{\{ inputs\.parameters \}\}/g)).toHaveLength(1)
   })
@@ -466,7 +466,7 @@ describe('router release CLI', () => {
       main(['moderato', 'zoneRouter', '--parameters', 'not json'], '/nonexistent/earn'),
     ).rejects.toThrow('--parameters must be a JSON object')
     await expect(main(['moderato', 'zoneRouter', 'extra'], '/nonexistent/earn')).rejects.toThrow(
-      'Usage: pnpm router-release',
+      'Usage: pnpm zone-router-release',
     )
   })
 })

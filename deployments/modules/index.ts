@@ -23,7 +23,7 @@ import {
   type AuthorityDependencies,
 } from '../../deployments/modules/signer.js'
 import { zoneRouterModule } from './earn/zone-router/index.js'
-import { zoneRouterModeModule } from './router/index.js'
+import { zoneRouterModeModule } from './zone-router/index.js'
 import {
   authorizeZoneRouter,
   deployZoneRouter,
@@ -31,7 +31,7 @@ import {
   enableZoneRouterTokens,
   registerZoneRouterGateway,
   admitZoneRouterAccount,
-} from './router/steps.js'
+} from './zone-router/steps.js'
 import {
   authorizeRouter,
   deployRouter,

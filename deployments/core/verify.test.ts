@@ -406,7 +406,7 @@ describe('deployment source verification', () => {
     }
 
     const { result, runtime } = verify({
-      'src/ZoneRouter.sol': 'canonical:router/src/ZoneRouter.sol',
+      'src/ZoneRouter.sol': 'canonical:zone-router/src/ZoneRouter.sol',
       '../earn/src/interfaces/core/IEarnVault.sol': 'canonical:src/interfaces/core/IEarnVault.sol',
     })
     await expect(result).resolves.toMatchObject({
@@ -414,14 +414,17 @@ describe('deployment source verification', () => {
     })
     const [, arguments_, spawnOptions] = vi.mocked(runtime.spawn).mock.calls[0]!
     expect(arguments_).toEqual(
-      expect.arrayContaining(['--root', '/checkout/router', 'src/ZoneRouter.sol:ZoneRouter']),
+      expect.arrayContaining(['--root', '/checkout/zone-router', 'src/ZoneRouter.sol:ZoneRouter']),
     )
-    expect(spawnOptions?.cwd).toBe('/checkout/router')
-    expect(runtime.compilerArguments).toHaveBeenCalledWith('/checkout/router', expect.any(Object))
+    expect(spawnOptions?.cwd).toBe('/checkout/zone-router')
+    expect(runtime.compilerArguments).toHaveBeenCalledWith(
+      '/checkout/zone-router',
+      expect.any(Object),
+    )
 
     await expect(
       verify({
-        'src/ZoneRouter.sol': 'canonical:router/src/ZoneRouter.sol',
+        'src/ZoneRouter.sol': 'canonical:zone-router/src/ZoneRouter.sol',
         '../../outside/Secret.sol': 'canonical:outside',
       }).result,
     ).rejects.toThrow('Verifier source path ../../outside/Secret.sol escapes the repository root')

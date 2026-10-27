@@ -40,7 +40,7 @@ const releaseScript = 'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryRel
  * Every shared release one run deploys: the core release (EarnVault and EarnFees implementations
  * and the EarnFactory bound to them), the rewards factory, and each engine factory by its
  * `releaseKey`. The router project's contracts release through the same engine with their own
- * kinds and CLI (`router-release.ts`).
+ * kinds and CLI (`zone-router-release.ts`).
  */
 export const factoryReleaseKinds = [
   'core',
@@ -73,7 +73,7 @@ export type ReleaseContract = {
 }
 
 /** The Foundry project that compiles, deploys and source-verifies a release. */
-export type FoundryProject = 'earn' | 'router'
+export type FoundryProject = 'earn' | 'zone-router'
 
 /** A release's validated parameters, as its result records them; empty for a kind that takes none. */
 export type ReleaseParameters = Readonly<Record<string, unknown>>
@@ -460,7 +460,7 @@ const defaultDependencies: FactoryReleaseDependencies = {
 export type ReleaseOptions = {
   network: string
   broadcast: boolean
-  /** Earn's Foundry project; a plan in another project runs from its sibling (`router/`). */
+  /** Earn's Foundry project; a plan in another project runs from its sibling (`zone-router/`). */
   root: string
   environment: Readonly<Record<string, string | undefined>>
 }
@@ -600,13 +600,13 @@ export const registryReleaseKinds = factoryReleaseKinds.filter((kind) => kind !=
 
 /**
  * The release kinds one selection deploys: `all`, or a single kind. The router project's kinds are
- * not among them: they release with `pnpm router-release`.
+ * not among them: they release with `pnpm zone-router-release`.
  */
 export function releaseKindsFor(selection: string): FactoryReleaseKind[] {
   if (selection === 'all') return [...registryReleaseKinds]
   if (!(factoryReleaseKinds as readonly string[]).includes(selection)) {
     throw new Error(
-      `Unknown factory release ${selection}; expected all or one of ${factoryReleaseKinds.join(', ')} (router contracts release with pnpm router-release)`,
+      `Unknown factory release ${selection}; expected all or one of ${factoryReleaseKinds.join(', ')} (Zone router contracts release with pnpm zone-router-release)`,
     )
   }
   return [selection as FactoryReleaseKind]
@@ -765,7 +765,7 @@ const usage =
   '       pnpm factory-release registry <result.json>... [--body <file>]\n' +
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
   `  release: all (${registryReleaseKinds.join(', ')}) | ${factoryReleaseKinds.join(' | ')}\n` +
-  'Router contracts release with pnpm router-release.'
+  'Zone router contracts release with pnpm zone-router-release.'
 
 /** Applies every verified release in the result files to releases.ts. */
 function registryMain(files: string[], body: string | undefined) {

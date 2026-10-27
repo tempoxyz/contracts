@@ -35,7 +35,7 @@ administrator must keep every protocol endpoint that moves EarnShare or the asse
 authorized: the EarnVault, `EarnFees`, every recipient of the current fee configuration, and, when
 configured, the Merkle distributor and its treasury, the Zone router with the Zone's Portal,
 Messenger, every active sequencer, and Outbox, and the profile's `zoneRouter`
-([`ZoneRouter`](../../router/zone-router.md#deployment)) with its own Zone's Portal, Messenger,
+([`ZoneRouter`](../../zone-router/zone-router.md#deployment)) with its own Zone's Portal, Messenger,
 sequencers, and Outbox, whatever its ops. Authorities that never hold EarnShare (owner,
 deployer, fee distributor) are not members. Zone account admission and token enablement are separate
 Zone-administrator permissions ([Zones](zone-router.md#token-enablement-policy-and-admission)).
@@ -78,4 +78,4 @@ protected stacks: `access-admin-guards`, `access-receiver-policy`,
 `access-removed-holder`. With a Zone, `zone-ineligible-private-transfer-blocked` and
 `zone-ineligible-private-deposit-bounces` cover policy mirroring. The removal-safety guard has unit tests in
 [`membership.test.ts`](../../../deployments/modules/earn/access-policy/membership.test.ts), and the
-`zoneRouter` members in [`steps.test.ts`](../../../deployments/modules/router/steps.test.ts).
+`zoneRouter` members in [`steps.test.ts`](../../../deployments/modules/zone-router/steps.test.ts).
