@@ -203,7 +203,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
   benchmark job receives `TEMPO_API_KEY`; the factory release job receives the shared
   `DEPLOYER_PRIVATE_KEY` and RPC credentials from the reviewer-gated `factory-release-<network>`
   environment, and its registry job, with no secrets, gets a `GITHUB_TOKEN` that may push a
-  `factory-release/<run>` branch; the audit and remediation-event jobs receive the
+  `factory-release/<run>-<attempt>` branch; the audit and remediation-event jobs receive the
   `EVENTS_*` intake credentials.
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC
   token, and a read-only `GITHUB_TOKEN`, and can pass every required check. Without an OIDC token,

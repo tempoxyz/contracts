@@ -289,12 +289,12 @@ which runs each release's entry point below with the `deploy` profile, checks th
 the release's contracts, each from the locally compiled creation bytecode, and, after a broadcast,
 source-verifies each one on Tempo's verifier. Without broadcast, Forge only simulates, and each
 release simulates from the deployer's current nonce, so only the first release's addresses are the
-ones a broadcast creates. Each job's summary and its `factory-release-<network>` artifact list the
+ones a broadcast creates. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
 addresses, transactions, and source matches; a run that stops keeps the releases before it.
 
 After a broadcast, the last job records every release whose contracts all source verified, from
 every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
-`factory-release/<run>` branch (`pnpm factory-release registry`) and links it in the job summary with
+`factory-release/<run>-<attempt>` branch (`pnpm factory-release registry`) and links it in the job summary with
 the pull request description; a maintainer opens that pull request, so the registry changes only
 through its review.
 
