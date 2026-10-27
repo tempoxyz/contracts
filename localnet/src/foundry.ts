@@ -2,7 +2,11 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/earn/abis'
-import { foundryProcessEnvironment } from '@tempoxyz/earn/deployments/node'
+import {
+  foundryProcessEnvironment,
+  planFactoryRelease,
+  predictRelease,
+} from '@tempoxyz/earn/deployments/node'
 import {
   encodeFunctionData,
   getAddress,
@@ -71,6 +75,30 @@ export const release = script(
   'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript',
   deployFactoryReleaseScriptAbi,
 )
+
+/**
+ * The deterministic CREATE2 address of every shared release contract, by contract name, from the
+ * creation code this checkout compiles with the deploy profile: the core release and each engine
+ * factory, which the release entry points create there or reuse when they already exist.
+ */
+export function releaseAddresses(releaseKeys: readonly string[]): Record<string, Address> {
+  ensureEarnDependencies()
+  const environment = foundryProcessEnvironment(process.env)
+  delete environment.DEPLOYER_PRIVATE_KEY
+  const creationBytecode = (contract: string) =>
+    execFileSync('forge', ['inspect', contract, 'bytecode'], {
+      cwd: Config.earnRoot,
+      encoding: 'utf8',
+      env: environment,
+    }).trim() as Hex
+  return Object.fromEntries(
+    ['core', ...releaseKeys].flatMap((kind) =>
+      predictRelease(planFactoryRelease(kind, 0), creationBytecode).map(
+        (contract) => [contract.name, contract.address] as const,
+      ),
+    ),
+  )
+}
 
 /** Engine-independent fixture steps; each engine module binds its own venue script. */
 export const earnFixture = fixtureScript('DeployLocalEarn', deployLocalEarnScriptAbi)

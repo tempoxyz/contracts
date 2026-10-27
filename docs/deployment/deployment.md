@@ -280,8 +280,8 @@ factory bound to them, and checks its code and bindings.
 Tempo's RPC must supply the creation estimate for the large EarnVault implementation; only this
 release pins Forge's multiplier to `100`, because default padding can exceed Tempo's 30M gas cap.
 After a failed broadcast, rerunning the entry point creates only what is missing. Source-verify all three contracts
-before updating the registry. Localnet deploys the same release through the single-creation entry
-points `earnVaultImplementation`, `earnFeesImplementation`, and `earnFactory`, plus every
+before updating the registry. Localnet deploys the same release, at the same addresses and reusing contracts that already
+exist (a persistent devnet deployed before), through the single-creation entry points `earnVaultImplementation`, `earnFeesImplementation`, and `earnFactory`, plus every
 registered engine factory's entry point.
 
 ### Releasing from CI

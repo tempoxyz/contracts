@@ -101,13 +101,30 @@ export async function createBase(options: createBase.Options): Promise<Base> {
     : undefined
   const chainId = BigInt(options.chainId)
   const large = { rawGasEstimate: true }
-  const earnVaultImplementation = await deployed(
+  // Release contracts are created deterministically, and an entry point reuses one that exists
+  // without a transaction (a persistent devnet deployed before), so take it from its address.
+  const predicted = Foundry.releaseAddresses(engineFactories.map((factory) => factory.releaseKey))
+  const released = async (name: string, step: Foundry.Step) => {
+    const address = predicted[name]
+    if (!address) throw new Error(`No deterministic address for ${name}`)
+    const code = await options.client.getCode({ address })
+    if (code && code !== '0x') return address
+    const created = await deployed(step)
+    if (getAddress(created) !== address) {
+      throw new Error(`${step.name} created ${created}, not its deterministic address ${address}`)
+    }
+    return address
+  }
+  const earnVaultImplementation = await released(
+    'EarnVault',
     Foundry.release('earnVaultImplementation', [chainId], large),
   )
-  const earnFeesImplementation = await deployed(
+  const earnFeesImplementation = await released(
+    'EarnFees',
     Foundry.release('earnFeesImplementation', [chainId], large),
   )
-  const factory = await deployed(
+  const factory = await released(
+    'EarnFactory',
     Foundry.release(
       'earnFactory',
       [chainId, earnVaultImplementation, earnFeesImplementation],
@@ -118,7 +135,7 @@ export async function createBase(options: createBase.Options): Promise<Base> {
   const releasedEngineFactories: Base['engineFactories'][number][] = []
   for (const factory of engineFactories) {
     const step = factoryReleaseStep(factory, chainId)
-    releasedEngineFactories.push({ factory, address: await deployed(step) })
+    releasedEngineFactories.push({ factory, address: await released(factory.contract, step) })
   }
   return {
     ...fixtures,
