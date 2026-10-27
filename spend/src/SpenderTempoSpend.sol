@@ -50,7 +50,7 @@ library SpenderTempoSpendStorageLib {
 ///      pause govern every spend. The payer submits a `Spend` through `publicCall "PS"`:
 ///      - public spend: the cardholder's account, in a transaction signed by Bridge's access key
 ///        that approves the exact amount, spends and clears the approval;
-///      - private spend: the program's `BridgeSettler`, from what a Zone withdrawal's router approves.
+///      - private spend: the program's `BridgeSettler`, from the input a Zone withdrawal's router sends it.
 ///      Bridge's pull pipeline (`transferToDestination`) is not used: it needs a standing
 ///      allowance and cannot reach Zone balances.
 ///      A spend settles in the stablecoin the funds are held in. Earn shares redeem into the

@@ -17,7 +17,7 @@ import {
 } from "tempo-earn/interfaces/external/tempo/IZone.sol";
 import { SingleZoneEarnRouter } from "tempo-earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev Pays a configured part of the approved input to a payee and leaves the rest with the router.
+/// @dev Pays a configured part of the input the router sent to a payee and hands the rest back.
 contract PayingSettler is ISpendSettler {
     address public immutable payee;
     uint256 public use;
@@ -30,8 +30,9 @@ contract PayingSettler is ISpendSettler {
         use = use_;
     }
 
-    function settle(address token, uint256, bytes calldata) external {
-        MemoMockToken(token).transferFrom(msg.sender, payee, use);
+    function settle(address token, uint256 maxInput, bytes calldata) external {
+        MemoMockToken(token).transfer(payee, use);
+        MemoMockToken(token).transfer(msg.sender, maxInput - use);
     }
 }
 

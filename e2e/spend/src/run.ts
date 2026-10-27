@@ -13,8 +13,8 @@
 // 2. The cardholder moves pathUSD into the Zone with an encrypted deposit and authorizes Bridge's
 //    access key, scoped to an approval of the outbox and the outbox's requestWithdrawal.
 // 3. Bridge requests the withdrawal to the router with its Zone access key and Spend callback data.
-//    The Zone batches it to the L1, where the portal calls the router, which approves at most
-//    maxInput to the BridgeSettler. The settler pays through Bridge's spender clone and the router
+//    The Zone batches it to the L1, where the portal calls the router, which transfers maxInput
+//    to the BridgeSettler. The settler pays through Bridge's spender clone and the router
 //    returns the change to the Zone.
 // 4. Checks: a Zone token transfer reverts, the settlement wallet is paid on the L1, no L1 log of
 //    the settlement names the cardholder, the cardholder's private balance ends exactly the spend

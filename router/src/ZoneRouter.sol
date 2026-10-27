@@ -23,8 +23,9 @@ import {
 ///         through settlers fixed at deployment.
 /// @dev Specified in docs/router/zone-router.md. Every setting is fixed by the constructor; a different
 ///      mode is a new router. Ops 0 and 1 keep SingleZoneEarnRouter's callback layout and behavior. Op 2
-///      (Spend) approves at most the sender's `maxInput` to a listed settler, measures what it used, and
-///      returns the rest to the source Zone, so no settler can take more than the sender allowed.
+///      (Spend) transfers exactly the sender's `maxInput` to a listed settler, measures what it used once
+///      the settler hands back the rest, and returns the change to the source Zone, so no settler can take
+///      more than the sender allowed.
 contract ZoneRouter is IWithdrawalReceiver {
     enum Op {
         Deposit,
@@ -290,13 +291,13 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
 
         uint256 balanceBefore = IERC20Like(token).balanceOf(address(this));
-        _safeApprove(token, data.settler, data.maxInput);
+        // A transfer instead of an approval: the settler holds no allowance from the router, so it can
+        // never take more than maxInput, and no router -> settler allowance slot is written.
+        _safeTransfer(token, data.settler, data.maxInput);
         ISpendSettler(data.settler).settle(token, data.maxInput, data.settlerData);
-        _safeApprove(token, data.settler, 0);
         uint256 balanceAfter = IERC20Like(token).balanceOf(address(this));
 
-        // The approval bounds the pull at maxInput; a settler that used nothing, or handed back more than
-        // it took, must not look settled.
+        // A settler that used nothing, or handed back more than it was sent, must not look settled.
         if (balanceAfter >= balanceBefore) revert InvalidSettlement();
         uint256 used = balanceBefore - balanceAfter;
         if (used > data.maxInput) revert InvalidSettlement();
@@ -486,6 +487,10 @@ contract ZoneRouter is IWithdrawalReceiver {
     function _safeApprove(address token, address spender, uint256 value) private {
         _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
         if (value != 0) _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, value)));
+    }
+
+    function _safeTransfer(address token, address to, uint256 value) private {
+        _callOptionalReturn(token, abi.encodeCall(IERC20Like.transfer, (to, value)));
     }
 
     function _callOptionalReturn(address token, bytes memory data) private {

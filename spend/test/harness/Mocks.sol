@@ -249,3 +249,10 @@ contract ChangeKeepingSpendHandler is SpenderBase {
         if (rest != 0) IERC20(spend.token).transferFrom(msg.sender, THIEF, rest);
     }
 }
+
+/// @notice A settler that hands the router's whole input back and pays nothing.
+contract ReturningSettler {
+    function settle(address token, uint256 maxInput, bytes calldata) external {
+        IERC20(token).transfer(msg.sender, maxInput);
+    }
+}

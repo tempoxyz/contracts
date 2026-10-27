@@ -11,7 +11,7 @@ import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZon
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";
-import { ChangeKeepingSpendHandler, DivertingSpendHandler, OlderBridgeSettler } from "../harness/Mocks.sol";
+import { ChangeKeepingSpendHandler, DivertingSpendHandler, ReturningSettler } from "../harness/Mocks.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 
 /// @notice Private spend through the program's Spend-mode ZoneRouter and BridgeSettler, on a
@@ -187,10 +187,10 @@ contract PrivateSpendTest is PrivateSpendFixture {
         );
     }
 
-    /// @notice A listed settler that takes nothing cannot make a spend look settled: the router
-    ///         measures its own balance, so the spend bounces.
-    function test_settlerThatTakesNothingBounces() public {
-        OlderBridgeSettler idle = new OlderBridgeSettler(address(bridgeFactory), SPENDER_ID);
+    /// @notice A listed settler that hands all its input back cannot make a spend look settled: the
+    ///         router measures its own balance, so the spend bounces.
+    function test_settlerThatUsesNothingBounces() public {
+        ReturningSettler idle = new ReturningSettler();
         address[] memory list = new address[](2);
         list[0] = address(settler);
         list[1] = address(idle);

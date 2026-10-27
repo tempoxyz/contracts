@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { ISpenderHandler } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
+import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
@@ -15,19 +16,32 @@ import {
     ShortPayingSpendHandler
 } from "../harness/Mocks.sol";
 
-/// @notice The settler pays one program's spend from what a Zone router approves it, returns the
-///         unused input to the router in the same call, and keeps nothing.
-/// @dev No Zone: the settler has no Zone code. `router` plays the Zone router, approving
-///      `maxInput` and calling `settle`.
+/// @notice Hands input to a settler as the Zone router does: transfers exactly `maxInput` and calls
+///         `settle` in one call, so a revert returns the input.
+contract SettleCaller {
+    function settle(BridgeSettler settler, address token, uint256 maxInput, bytes calldata data) external {
+        SafeTransferLib.safeTransfer(token, address(settler), maxInput);
+        settler.settle(token, maxInput, data);
+    }
+}
+
+/// @notice The settler pays one program's spend from the input a Zone router transfers it, returns
+///         the unused input to the router in the same call, and keeps nothing.
+/// @dev No Zone: the settler has no Zone code. `router` plays the Zone router, transferring
+///      `maxInput` and calling `settle` in one call.
 contract BridgeSettlerTest is AccessKeys {
     uint256 internal constant AMOUNT = 40e6;
 
     BridgeSettler internal settler;
-    address internal router = makeAddr("zone.router");
+    SettleCaller internal caller;
+    address internal router;
 
     function setUp() public {
         _deployTempo();
         settler = new BridgeSettler(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID);
+        caller = new SettleCaller();
+        router = address(caller);
+        vm.label(router, "zone.router");
     }
 
     function test_requiresAFactory() public {
@@ -42,7 +56,6 @@ contract BridgeSettlerTest is AccessKeys {
         uint256 before = usd.balanceOf(settlement);
         Spend memory spend = _stableSpend(AMOUNT);
         spend.ref = keccak256("card.auth");
-        _approve(address(usd), maxInput);
 
         vm.expectEmit(true, true, true, true, spender);
         emit SpenderTempoSpend.TempoSpendExecuted(
@@ -50,9 +63,7 @@ contract BridgeSettlerTest is AccessKeys {
         );
         vm.expectEmit(true, true, true, true, address(settler));
         emit BridgeSettler.SpendSettled(spend.ref, address(usd), AMOUNT, 7e6);
-        vm.prank(router);
-        settler.settle(address(usd), maxInput, abi.encode(spend));
-        _approve(address(usd), 0);
+        _settle(address(usd), maxInput, spend);
 
         assertEq(usd.balanceOf(settlement) - before, AMOUNT, "destination paid");
         assertEq(usd.balanceOf(router), 7e6, "unused input returned");
@@ -76,20 +87,17 @@ contract BridgeSettlerTest is AccessKeys {
         uint256 shares = _depositEarn(router, 100e6);
         uint256 burned = earnVault.previewWithdraw(AMOUNT);
         uint256 maxInput = burned + burned * 50 / 10_000 + 1;
-        assertLt(maxInput, shares, "router holds more than it approves");
+        assertLt(maxInput, shares, "router holds more than it sends");
         uint256 before = usd.balanceOf(settlement);
         Spend memory spend = _stableSpend(AMOUNT);
         spend.vault = address(earnVault);
         spend.fromVault = AMOUNT;
         spend.maxShares = maxInput;
         spend.ref = keccak256("card.auth.earn");
-        _approve(address(earnShare), maxInput);
 
         vm.expectEmit(true, true, true, true, address(settler));
         emit BridgeSettler.SpendSettled(spend.ref, address(earnShare), burned, maxInput - burned);
-        vm.prank(router);
-        settler.settle(address(earnShare), maxInput, abi.encode(spend));
-        _approve(address(earnShare), 0);
+        _settle(address(earnShare), maxInput, spend);
 
         assertEq(usd.balanceOf(settlement) - before, AMOUNT, "destination paid");
         assertEq(shares - earnShare.balanceOf(router), burned, "charged the burned shares only");
@@ -99,45 +107,70 @@ contract BridgeSettlerTest is AccessKeys {
         _assertNoApprovals(address(earnShare));
     }
 
-    /// @notice Whatever the router approves and the spend asks, it loses exactly the spend, never
-    ///         more than `maxInput`.
-    function testFuzz_callerLosesExactlyTheSpend(uint256 amount, uint256 maxInput, uint256 approved) public {
+    /// @notice Whatever `maxInput` the router sends and the spend asks, it loses exactly the
+    ///         spend, never more than `maxInput`, and the settler keeps nothing.
+    function testFuzz_callerLosesExactlyTheSpend(uint256 amount, uint256 maxInput) public {
         amount = bound(amount, 1, 1_000_000e6);
         maxInput = bound(maxInput, amount, 2_000_000e6);
-        approved = bound(approved, maxInput, type(uint128).max);
         _mintUsd(router, 2_000_000e6);
 
-        vm.startPrank(router);
-        usd.approve(address(settler), approved);
-        settler.settle(address(usd), maxInput, abi.encode(_stableSpend(amount)));
-        vm.stopPrank();
+        _settle(address(usd), maxInput, _stableSpend(amount));
 
         assertEq(2_000_000e6 - usd.balanceOf(router), amount, "lost the spend only");
-        assertEq(usd.allowance(router, address(settler)), approved - maxInput, "pulled maxInput only");
-        assertEq(usd.balanceOf(address(settler)), 0);
+        assertEq(usd.balanceOf(address(settler)), 0, "nothing left in the settler");
+        _assertNoApprovals(address(usd));
     }
 
-    /// @notice A spend above `maxInput` cannot reach the router's other funds, even with a larger
-    ///         standing approval.
+    /// @notice A spend above `maxInput` cannot reach the router's other funds: the settler holds
+    ///         only what it was sent and no allowance from the router.
     function test_spendAboveMaxInputReverts() public {
         _mintUsd(router, 100e6);
-        vm.startPrank(router);
-        usd.approve(address(settler), 100e6);
+        bytes memory data = abi.encode(_stableSpend(AMOUNT));
         vm.expectRevert();
-        settler.settle(address(usd), AMOUNT - 1, abi.encode(_stableSpend(AMOUNT)));
-        vm.stopPrank();
+        caller.settle(settler, address(usd), AMOUNT - 1, data);
         assertEq(usd.balanceOf(router), 100e6, "nothing taken");
+    }
+
+    /// @notice A call that did not send `maxInput` first cannot settle.
+    function test_rejectsSettleWithoutInput() public {
+        _mintUsd(router, 100e6);
+        _mintUsd(address(settler), AMOUNT - 1);
+        bytes memory data = abi.encode(_stableSpend(AMOUNT));
+        vm.prank(router);
+        vm.expectRevert(BridgeSettler.InsufficientInput.selector);
+        settler.settle(address(usd), AMOUNT, data);
+        assertEq(usd.balanceOf(router), 100e6, "nothing taken");
+    }
+
+    /// @notice Tokens sent to the settler outside a settle call are not accounted for: a later caller
+    ///         can spend them, but only through this program to a destination it authorizes, and gets
+    ///         back only what that spend did not use.
+    function test_strayTokensOnlyPayTheProgramsDestination() public {
+        address stranger = makeAddr("stranger");
+        _mintUsd(address(settler), AMOUNT + 5e6);
+
+        Spend memory elsewhere = _stableSpend(AMOUNT);
+        elsewhere.destination = stranger;
+        bytes memory data = abi.encode(elsewhere);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(SpenderTempoSpend.DestinationNotAuthorized.selector, stranger));
+        settler.settle(address(usd), AMOUNT + 5e6, data);
+
+        uint256 before = usd.balanceOf(settlement);
+        vm.prank(stranger);
+        settler.settle(address(usd), AMOUNT + 5e6, abi.encode(_stableSpend(AMOUNT)));
+        assertEq(usd.balanceOf(settlement) - before, AMOUNT, "program destination paid");
+        assertEq(usd.balanceOf(stranger), 5e6, "only the unused part returns");
+        assertEq(usd.balanceOf(address(settler)), 0);
     }
 
     function test_rejectsAnotherProgram() public {
         Spend memory spend = _stableSpend(AMOUNT);
         spend.spenderId = keccak256("another.program");
         _mintUsd(router, AMOUNT);
-        vm.startPrank(router);
-        usd.approve(address(settler), AMOUNT);
+        bytes memory data = abi.encode(spend);
         vm.expectRevert(abi.encodeWithSelector(BridgeSettler.WrongProgram.selector, spend.spenderId));
-        settler.settle(address(usd), AMOUNT, abi.encode(spend));
-        vm.stopPrank();
+        caller.settle(settler, address(usd), AMOUNT, data);
     }
 
     function test_rejectsZeroInput() public {
@@ -172,26 +205,26 @@ contract BridgeSettlerTest is AccessKeys {
     function test_rejectsAnInputThatIsNotTheSpendsToken() public {
         _mintUsd(router, 100e6);
         uint256 shares = _depositEarn(router, 100e6);
-        vm.startPrank(router);
-        earnShare.approve(address(settler), shares);
+        bytes memory data = abi.encode(_stableSpend(AMOUNT));
         vm.expectRevert(abi.encodeWithSelector(BridgeSettler.WrongInputToken.selector, address(earnShare)));
-        settler.settle(address(earnShare), shares, abi.encode(_stableSpend(AMOUNT)));
+        caller.settle(settler, address(earnShare), shares, data);
 
         Spend memory split = _stableSpend(AMOUNT);
         split.vault = address(earnVault);
         split.fromVault = AMOUNT / 2;
         split.maxShares = shares;
+        data = abi.encode(split);
         vm.expectRevert(abi.encodeWithSelector(BridgeSettler.WrongInputToken.selector, address(earnShare)));
-        settler.settle(address(earnShare), shares, abi.encode(split));
+        caller.settle(settler, address(earnShare), shares, data);
 
         Spend memory earn = _stableSpend(AMOUNT);
         earn.vault = address(earnVault);
         earn.fromVault = AMOUNT;
         earn.maxShares = shares;
-        usd.approve(address(settler), 50e6);
+        _mintUsd(router, 50e6);
+        data = abi.encode(earn);
         vm.expectRevert(abi.encodeWithSelector(BridgeSettler.WrongInputToken.selector, address(usd)));
-        settler.settle(address(usd), 50e6, abi.encode(earn));
-        vm.stopPrank();
+        caller.settle(settler, address(usd), 50e6, data);
         assertEq(earnShare.balanceOf(router), shares, "nothing taken");
     }
 
@@ -201,8 +234,8 @@ contract BridgeSettlerTest is AccessKeys {
         _expectSettleRevert(AMOUNT, abi.encodeWithSelector(BridgeSettler.DestinationNotPaid.selector));
     }
 
-    /// @notice A token that calls back into the settler during the pull hits the reentrancy lock,
-    ///         and the spend still settles.
+    /// @notice A token that calls back into the settler while the clone pulls the input hits the
+    ///         reentrancy lock, and the spend still settles.
     function test_rejectsReentrancy() public {
         ReentrantToken token = new ReentrantToken();
         token.mint(router, AMOUNT);
@@ -231,29 +264,16 @@ contract BridgeSettlerTest is AccessKeys {
         });
     }
 
-    /// @dev As the router does: approve `maxInput`, settle, reset the approval.
+    /// @dev As the router does: transfer `maxInput`, then settle, in one call.
     function _settle(address token, uint256 maxInput, Spend memory spend) internal {
-        _approve(token, maxInput);
-        vm.prank(router);
-        settler.settle(token, maxInput, abi.encode(spend));
-        _approve(token, 0);
-    }
-
-    /// @dev The router approves the settler for `amount` of `token`.
-    function _approve(address token, uint256 amount) internal {
-        vm.prank(router);
-        (bool ok,) = token.call(abi.encodeWithSignature("approve(address,uint256)", address(settler), amount));
-        require(ok, "approve");
+        caller.settle(settler, token, maxInput, abi.encode(spend));
     }
 
     function _expectSettleRevert(uint256 maxInput, bytes memory reason) internal {
         _mintUsd(router, maxInput);
         bytes memory data = abi.encode(_stableSpend(AMOUNT));
-        vm.startPrank(router);
-        usd.approve(address(settler), maxInput);
         vm.expectRevert(reason);
-        settler.settle(address(usd), maxInput, data);
-        vm.stopPrank();
+        caller.settle(settler, address(usd), maxInput, data);
         assertEq(usd.balanceOf(router), maxInput, "nothing taken");
     }
 
@@ -262,7 +282,8 @@ contract BridgeSettlerTest is AccessKeys {
         bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, handler);
     }
 
-    /// @notice The settler's approval to the clone and the router's to the settler are cleared.
+    /// @notice The settler's approval to the clone is cleared, and the router never approves the
+    ///         settler.
     function _assertNoApprovals(address token) internal view {
         (bool ok, bytes memory ret) =
             token.staticcall(abi.encodeWithSignature("allowance(address,address)", address(settler), spender));

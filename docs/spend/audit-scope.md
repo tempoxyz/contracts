@@ -5,14 +5,14 @@ design is in [`design.md`](design.md) and Bridge's side in [`bridge-integration.
 
 ## In scope
 
-| File                                                                                | Lines | What it does                                                                                                                                                                                        |
-| ----------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/SpenderTempoSpend.sol`                                                         | 225   | Bridge spender handler `TS`. Runs by delegatecall in each program's clone and settles a `Spend` from stablecoin, Earn shares, or both.                                                              |
-| `src/settler/BridgeSettler.sol`                                                     | 99    | One per program. The router's Spend settler: pulls `maxInput`, settles the spend through the clone, checks the destination was paid, and hands unused input back.                                   |
-| `../router/src/ZoneRouter.sol`                                                      | 496   | One per mode, from the factory. In Spend mode it takes the Zone withdrawal callback from one Zone, approves at most `maxInput` to a listed settler, and returns unused input to the Zone encrypted. |
-| `../router/src/ZoneRouterFactory.sol`, `../router/src/interfaces/ISpendSettler.sol` | 54    | Ownerless CREATE2 deployer that fixes each router's mode, and the settler interface.                                                                                                                |
-| `src/interfaces/*`                                                                  |       | The subsets of Bridge's factory, Tempo Earn's vault and the Zone outbox the contracts call.                                                                                                         |
-| `script/deploy/*`                                                                   | 815   | Deploy the handler and a program's settler and router, write the role-gated factory calls as calldata, and check a program before it goes live.                                                     |
+| File                                                                                | Lines | What it does                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/SpenderTempoSpend.sol`                                                         | 225   | Bridge spender handler `TS`. Runs by delegatecall in each program's clone and settles a `Spend` from stablecoin, Earn shares, or both.                                                       |
+| `src/settler/BridgeSettler.sol`                                                     | 106   | One per program. The router's Spend settler: takes the `maxInput` the router sent, settles the spend through the clone, checks the destination was paid, and hands unused input back.        |
+| `../router/src/ZoneRouter.sol`                                                      | 501   | One per mode, from the factory. In Spend mode it takes the Zone withdrawal callback from one Zone, transfers `maxInput` to a listed settler, and returns unused input to the Zone encrypted. |
+| `../router/src/ZoneRouterFactory.sol`, `../router/src/interfaces/ISpendSettler.sol` | 54    | Ownerless CREATE2 deployer that fixes each router's mode, and the settler interface.                                                                                                         |
+| `src/interfaces/*`                                                                  |       | The subsets of Bridge's factory, Tempo Earn's vault and the Zone outbox the contracts call.                                                                                                  |
+| `script/deploy/*`                                                                   | 815   | Deploy the handler and a program's settler and router, write the role-gated factory calls as calldata, and check a program before it goes live.                                              |
 
 ## Out of scope, taken as given
 
@@ -47,8 +47,8 @@ What the in-scope code relies on from them:
 3. **Share cost is bounded.** A spend from Earn burns no more than `maxShares` when it is set, and
    unused shares return to the payer.
 4. **The router and settler hold nothing after a callback.** Each one's balance of the input token
-   after the callback equals its balance before the input arrived (`ResidualBalance`), and
-   approvals to the settler, clone and portal are cleared.
+   after the callback equals its balance before the input arrived (`ResidualBalance`), the router
+   never approves the settler, and approvals to the clone and portal are cleared.
 5. **Only the right Zone can call the router.** The caller is the Zone messenger, the source Zone is
    the router's `allowedZoneId`, the source portal is the Zone factory's portal for that Zone, and
    Spend uses only the settlers fixed in the router's mode (`UnknownSettler`).
@@ -60,8 +60,8 @@ What the in-scope code relies on from them:
 8. **Bridge's pull pipeline is off for `TS`.** `transferToDestination` and its strict variant
    revert, so no standing allowance can be pulled.
 9. **The settler takes at most `maxInput`.** `maxInput` cannot exceed the withdrawal
-   (`InvalidMaxInput`), the router approves only `maxInput`, and it reverts `InvalidSettlement` if
-   the settler used more. The cardholder's Zone transaction sets it, so a replaced handler can take
+   (`InvalidMaxInput`), the router transfers exactly `maxInput` and grants no allowance, and it
+   reverts `InvalidSettlement` if the settler handed back more than it was sent. The cardholder's Zone transaction sets it, so a replaced handler can take
    at most the spend, never the change.
 10. **A callback that moves nothing does not settle.** If the clone consumed none of the input, or
     handed back more than it was given, the settler reverts `NothingSettled` (and the router
@@ -89,6 +89,11 @@ What the in-scope code relies on from them:
   guarded (`ReentrantCall`, `Reentrancy`).
 - **Approval hygiene** in the handler, the settler and the router: exact approvals, cleared after
   use.
+- **Tokens sent to the settler outside a callback.** The settler takes its balance less
+  `maxInput` as what it held before the router's input, so that input is accounted for, but tokens
+  sent to it directly are not: any later `settle` caller can spend them through the program's clone, only to
+  a destination the program authorizes, and gets back the part the spend did not use. Nothing
+  rescues them.
 
 ## Accepted risks and decisions
 

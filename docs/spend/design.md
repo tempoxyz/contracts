@@ -62,8 +62,8 @@ withdrawal to [`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol), one 
 owner. The router:
 
 - accepts callbacks only from the Zone messenger, for its Zone and that Zone's canonical portal;
-- approves at most the callback's `maxInput` to a settler from its fixed list, and measures what
-  the settler used;
+- transfers the callback's `maxInput` to a settler from its fixed list, calls it, and measures
+  what the settler used;
 - returns the rest to the Zone as an encrypted deposit, which closed-loop Zones require, and
   reverts if the portal's deposit fee is above the `SpendReturn`'s `maxDepositFee`.
 
@@ -71,8 +71,8 @@ The settler:
 
 - requires the `Spend` to be for its program and the input to be the spend's token (its stablecoin,
   or the shares of the vault that funds all of it);
-- pulls `maxInput`, approves it to the clone and calls `publicCall "PS"`, so the handler sees the
-  settler as the payer;
+- requires the `maxInput` the router sent, approves it to the clone and calls `publicCall "PS"`,
+  so the handler sees the settler as the payer;
 - checks the destination received exactly `amount`, so a replaced handler cannot look settled, and
   that the handler used something;
 - returns the unused input to the router.
@@ -159,18 +159,20 @@ approval path: the reserve covers a callback that fails after approval.
 
 Bridge gives each private spend's callback 3M gas. The outbox allows up to 10M, and the withdrawal
 fee grows with the gas requested. The Spend callback data is 864 of the outbox's 1,024 bytes.
-Measured on a mainnet fork (block 46,078,827) against the production OUSD Earn vault and Zone 2's
+Measured on a mainnet fork (block 46,154,047) against the production OUSD Earn vault and Zone 2's
 portal, through a factory-deployed router, `BridgeSettler` and the program's clone, with change
 returned to the Zone ([`test/fork/PrivateSpendForkGas.t.sol`](../../spend/test/fork/PrivateSpendForkGas.t.sol)):
 
 | Spend      | First spend (empty settlement wallet) | Later spend |
 | ---------- | ------------------------------------- | ----------- |
-| Earn       | 2.51M                                 | 2.26M       |
-| Stablecoin | 1.47M                                 | 1.23M       |
+| Earn       | 2.25M                                 | 2.00M       |
+| Stablecoin | 1.21M                                 | 0.96M       |
 
 The amount does not change it, from $10 to $10,000. Most of the cost is Tempo's charge of about
 250k gas for each storage slot that goes from zero to nonzero: every approval and every transient
-balance in the router, settler and clone pays it, even when cleared in the same transaction.
+balance in the router, settler and clone pays it, even when cleared in the same transaction. The
+router hands the settler its input by transfer rather than approval to save one such slot (about
+261k per spend).
 
 ### Refunds
 

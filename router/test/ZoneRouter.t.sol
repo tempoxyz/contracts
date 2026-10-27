@@ -12,8 +12,9 @@ import { MemoMockToken } from "earn-test/helpers/PropAMMEngineMocks.sol";
 import { ZONE_MESSENGER_ADDRESS } from "tempo-earn/interfaces/external/tempo/IZone.sol";
 import { SingleZoneEarnRouter } from "tempo-earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev A settler whose behavior each test picks: pay `use` of the input to `payee`, optionally try to
-///      pull more than allowed, hand back extra, keep part of the input, or re-enter the router.
+/// @dev A settler whose behavior each test picks. The router sends it `maxInput` up front: pay `use`
+///      of it to `payee` and hand back the rest, optionally try to pull more from the router, hand back
+///      extra, keep the rest of the input, or re-enter the router.
 contract MockSettler is ISpendSettler {
     enum Behavior {
         Pay,
@@ -36,14 +37,14 @@ contract MockSettler is ISpendSettler {
     function settle(address token, uint256 maxInput, bytes calldata) external {
         MemoMockToken input = MemoMockToken(token);
         if (behavior == Behavior.PullMore) {
-            input.transferFrom(msg.sender, address(this), maxInput + 1);
+            // The router grants no allowance, so this reverts.
+            input.transferFrom(msg.sender, address(this), 1);
             return;
         }
         if (behavior == Behavior.Reenter) {
             ZoneRouter(msg.sender).onWithdrawalReceived(0, address(0), bytes32(0), token, 1, "");
             return;
         }
-        input.transferFrom(msg.sender, address(this), maxInput);
         input.transfer(payee, use);
         if (behavior == Behavior.KeepInput) return;
         uint256 back = maxInput - use;
@@ -236,7 +237,8 @@ contract ZoneRouterTest is EarnRouterTestBase {
         _assertEmpty(zr);
     }
 
-    /// @notice The cardholder's maxInput bounds what any settler, or a handler behind it, can take.
+    /// @notice The cardholder's maxInput bounds what any settler, or a handler behind it, can take: the
+    ///         router sends exactly maxInput and grants no allowance to pull more.
     function testSettlerCannotTakeMoreThanMaxInput() public {
         ZoneRouter zr = _spendRouter();
         settler.configure(MockSettler.Behavior.PullMore, 0, payee);
@@ -244,7 +246,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
     }
 
     function testSettlerThatKeepsInputCountsOnlyWithinMaxInput() public {
-        // Keeping unused input is bounded by the approval: the settler took maxInput and the rest returns.
+        // Keeping unused input is bounded by the transfer: the settler got maxInput and the rest returns.
         ZoneRouter zr = _spendRouter();
         settler.configure(MockSettler.Behavior.KeepInput, ONE, payee);
         alternate.mint(address(zr), 10 * ONE);

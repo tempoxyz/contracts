@@ -52,11 +52,11 @@ have: which gateways they admit.
 The router reads the first callback word before decoding, so ops 0 and 1 keep
 `SingleZoneEarnRouter`'s layout and `viem/tempo`'s `earnRouterCallbackData` works unchanged.
 
-| Op        | Input                               | What the router does                                                   | Back to the Zone |
-| --------- | ----------------------------------- | ---------------------------------------------------------------------- | ---------------- |
-| 0 Deposit | Private asset                       | As `SingleZoneEarnRouter`                                              | EarnShare        |
-| 1 Redeem  | EarnShare                           | As `SingleZoneEarnRouter`                                              | Private asset    |
-| 2 Spend   | Any token the source Portal enables | Approves at most `maxInput` to a listed settler, measures what it used | Unused input     |
+| Op        | Input                               | What the router does                                            | Back to the Zone |
+| --------- | ----------------------------------- | --------------------------------------------------------------- | ---------------- |
+| 0 Deposit | Private asset                       | As `SingleZoneEarnRouter`                                       | EarnShare        |
+| 1 Redeem  | EarnShare                           | As `SingleZoneEarnRouter`                                       | Private asset    |
+| 2 Spend   | Any token the source Portal enables | Transfers `maxInput` to a listed settler, measures what it used | Unused input     |
 
 Every return to the source Zone is an encrypted deposit, with a refund recipient, of a token enabled
 with deposits active. Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn`
@@ -69,23 +69,27 @@ Callback data: `op`, `settler`, `maxInput`, `settlerData` and `SpendReturn`, 864
 1,024 bytes with a 64-byte ciphertext. A Spend callback:
 
 1. authenticates as ops 0 and 1, and requires the settler to be listed;
-2. requires `0 < maxInput <= amount`, approves `maxInput` to the settler, calls
-   `settle(token, maxInput, settlerData)`, and resets the approval;
+2. requires `0 < maxInput <= amount`, transfers exactly `maxInput` to the settler and calls
+   `settle(token, maxInput, settlerData)`; the settler hands back what it did not use;
 3. requires `0 < used <= maxInput`, measured from its own balance;
 4. returns `amount - used` to the source Zone;
 5. emits `Spent(settler, token, used, change, zoneDepositHash)`, with no `senderTag`, action ID or
    Zone account. The settler emits its own detail.
 
 `maxInput` is set in the sender's Zone transaction, not by the settler, so no settler can take more
-than the sender allowed, and the change always returns. The router accepts any enabled token and
+than the sender allowed, and the change always returns. The router transfers rather than approves:
+the settler never holds an allowance from it, and the callback skips the roughly 250k gas Tempo
+charges for writing an allowance slot. A listed settler that keeps its input without paying looks
+settled, within `maxInput`, so settlers are trusted to the extent of the sender's `maxInput`. The router accepts any enabled token and
 leaves it to the settler to refuse one it cannot use.
 
 ### `ISpendSettler`
 
 ```text
 interface ISpendSettler {
-    // Pays from the router's approved token, using at most maxInput. Reverts unless the
-    // payment it makes is complete. Returns all unused input to the router.
+    // Pays from the maxInput of token the router transferred to it before the call. Reverts
+    // unless the payment it makes is complete. Transfers all unused input back to the router
+    // before returning and keeps none.
     function settle(address token, uint256 maxInput, bytes calldata data) external;
 }
 ```

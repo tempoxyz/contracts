@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.36;
 
 import { IERC20 } from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
@@ -15,9 +15,12 @@ import { ITempoEarnVault } from "../interfaces/ITempoEarnVault.sol";
 /// @dev One deployment serves one Bridge card program (`SPENDER_ID`), so one program's approval can
 ///      never pay through another's. It has no owner and holds no Zone code: the router
 ///      authenticates the withdrawal, caps the input at `maxInput` and returns unused input to the
-///      Zone. The settler pulls `maxInput` from the router, pays the spend through the "TS"
-///      handler, and hands the rest straight back, keeping nothing. Like the router, it neither
-///      emits nor stores the Zone's sender commitment.
+///      Zone. The router transfers `maxInput` to the settler before calling `settle`; the settler
+///      pays the spend through the "TS" handler and hands the rest straight back, keeping nothing.
+///      Tokens sent to the settler outside a `settle` call are not accounted for and are not
+///      rescued: any later `settle` caller can spend them, but only to pay a destination this
+///      program authorizes through its clone, and gets back what that spend did not use. Like the
+///      router, it neither emits nor stores the Zone's sender commitment.
 contract BridgeSettler is ISpendSettler {
     bytes2 private constant HANDLER = "TS";
 
@@ -27,6 +30,7 @@ contract BridgeSettler is ISpendSettler {
     uint256 private _locked = 1;
 
     error DestinationNotPaid();
+    error InsufficientInput();
     error InvalidAmount();
     error NothingSettled();
     error Reentrancy();
@@ -52,8 +56,9 @@ contract BridgeSettler is ISpendSettler {
     }
 
     /// @inheritdoc ISpendSettler
-    /// @dev `data` is `abi.encode(Spend)`. Pulls exactly `maxInput` from the caller and returns what
-    ///      the spend did not use in the same call, so the caller never loses more than `maxInput`.
+    /// @dev `data` is `abi.encode(Spend)`. Expects the caller to have transferred `maxInput` to it
+    ///      first, and returns what the spend did not use in the same call, so the caller never loses
+    ///      more than `maxInput`.
     function settle(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
         Spend memory spend = abi.decode(data, (Spend));
         if (spend.spenderId != SPENDER_ID) revert WrongProgram(spend.spenderId);
@@ -68,9 +73,11 @@ contract BridgeSettler is ISpendSettler {
         }
         if (input == address(0) || input != token) revert WrongInputToken(token);
 
-        // Measured before the pull; nothing may stay behind.
-        uint256 inputBefore = IERC20(token).balanceOf(address(this));
-        SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), maxInput);
+        // The caller sent maxInput before this call; whatever else the settler holds is the baseline,
+        // and nothing beyond it may stay behind.
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance < maxInput) revert InsufficientInput();
+        uint256 baseline = balance - maxInput;
 
         // Checked here as well as in the handler, so a replaced handler cannot look settled.
         uint256 destinationBefore = IERC20(spend.token).balanceOf(spend.destination);
@@ -80,7 +87,7 @@ contract BridgeSettler is ISpendSettler {
         IBridgeSpenderClone(clone).publicCall(abi.encodePacked(HANDLER, bytes2("PS"), abi.encode(spend)));
         SafeTransferLib.safeApprove(token, clone, 0);
 
-        uint256 unused = IERC20(token).balanceOf(address(this)) - inputBefore;
+        uint256 unused = IERC20(token).balanceOf(address(this)) - baseline;
         // A spend always consumes input, so a handler that moved nothing, or handed back more
         // than it was given, must not look settled.
         if (unused >= maxInput) revert NothingSettled();
@@ -88,7 +95,7 @@ contract BridgeSettler is ISpendSettler {
             revert DestinationNotPaid();
         }
         if (unused != 0) SafeTransferLib.safeTransfer(token, msg.sender, unused);
-        if (IERC20(token).balanceOf(address(this)) != inputBefore) revert ResidualBalance(token);
+        if (IERC20(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
 
         emit SpendSettled(spend.ref, token, maxInput - unused, unused);
     }

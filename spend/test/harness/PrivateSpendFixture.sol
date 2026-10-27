@@ -166,8 +166,9 @@ abstract contract PrivateSpendFixture is AccessKeys {
         ITIP20(token).transfer(address(zoneRouter), input);
     }
 
-    /// @notice The router, settler and clone hold none of `token`, and every approval a spend
-    ///         makes is cleared: router to settler and portal, settler to clone, clone to vault.
+    /// @notice The router, settler and clone hold none of `token`, every approval a spend makes is
+    ///         cleared (router to portal, settler to clone, clone to vault), and the router, which
+    ///         transfers the settler its input, never approves it.
     function _assertNothingHeld(address token) internal view {
         assertEq(ITIP20(token).balanceOf(address(zoneRouter)), 0, "nothing left in the router");
         assertEq(ITIP20(token).balanceOf(address(settler)), 0, "nothing left in the settler");
