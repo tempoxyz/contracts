@@ -34,7 +34,7 @@ From [Stripe Issuing Smart Contracts on Tempo](https://docs.google.com/document/
 | Debit from stablecoin, Earn shares, or both, converting 1:1                  | Public: `TS` splits a spend between `token` and a source. Private: one balance, or both as two withdrawals (decision 15, see below)           |
 | Approve once the Zone accepts the withdrawal; change returns encrypted       | Unchanged: Bridge approves on the Zone receipt; `Spend` returns change by encrypted deposit with a fee cap                                    |
 | A spend blocked after approval must not land back in the cardholder's wallet | Bridge sets the withdrawal's `zoneFallbackRecipient` to the program's Stripe-owned Zone account                                               |
-| Refunds through Bridge's orchestration                                       | `credit()` is the on-chain leg, callable only by a program destination                                                                        |
+| Refunds through Bridge's orchestration                                       | `depositEncrypted()` is the on-chain leg, callable only by a program destination                                                              |
 | 2 s authorization budget, 3M callback gas, 1,024-byte callback data          | No new wait before approval; one more token hop in the callback; the largest callback (`Spend`) is 864 bytes                                  |
 
 ## Two layers
@@ -60,7 +60,7 @@ Its configuration is fixed at deployment, with no setters; a different mode mean
 
 - **`enabledOps`**, a bitmask of Deposit, Redeem and Spend. A disabled op reverts
   `OpDisabled`.
-- **`settlers`**, the set of `ISpendSettler` contracts `Spend` and `credit` may use, including `SendSettler`s, written once by the
+- **`settlers`**, the set of `ISpendSettler` contracts `Spend` and `depositEncrypted` may use, including `SendSettler`s, written once by the
   constructor into an `isSettler` mapping. Required when Spend is enabled, empty otherwise.
 - **`earnVault`, `privateAsset`, `pool`, `customerId`**, as today. Required when an Earn op (Deposit or
   Redeem) is enabled, and all zero otherwise.
@@ -123,12 +123,12 @@ moving only changes the address Bridge and clients target.
 The router already reads the first callback word before decoding, so ops 0 and 1 keep their exact
 layout and `viem/tempo`'s `earnRouterCallbackData` keeps working.
 
-| Op                  | Input                                       | What the router does                                                                    | Back to the Zone |
-| ------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------- |
-| 0 Deposit           | Private asset                               | Unchanged                                                                               | EarnShare        |
-| 1 Redeem            | EarnShare                                   | Unchanged                                                                               | Private asset    |
-| 2 Spend             | Any token the source Portal enables         | Approves at most `maxInput` to the named settler, calls `settle`, measures what it used | Unused input     |
-| `credit()` (public) | Stablecoin from a payer the settler accepts | Deposits it into the Zone for the encrypted recipient                                   | The credit       |
+| Op                            | Input                                       | What the router does                                                                    | Back to the Zone |
+| ----------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------- |
+| 0 Deposit                     | Private asset                               | Unchanged                                                                               | EarnShare        |
+| 1 Redeem                      | EarnShare                                   | Unchanged                                                                               | Private asset    |
+| 2 Spend                       | Any token the source Portal enables         | Approves at most `maxInput` to the named settler, calls `settle`, measures what it used | Unused input     |
+| `depositEncrypted()` (public) | Stablecoin from a payer the settler accepts | Deposits it into the Zone for the encrypted recipient                                   | The deposit      |
 
 Every return to a Zone is an encrypted deposit with its own `ZoneReturn` (key index, encrypted
 recipient, refund recipient and `maxDepositFee`), and reverts if that Portal's deposit fee is above
@@ -200,21 +200,21 @@ interface ISpendSettler {
     // payment it makes is complete. Returns all unused input to the router.
     function settle(address token, uint256 maxInput, bytes calldata data) external;
 
-    // Reverts unless payer may credit funds into the Zone through this settler.
-    function checkCreditor(address payer, address token) external view;
+    // Reverts unless payer may deposit into the Zone through this settler.
+    function checkDepositor(address payer, address token) external view;
 }
 ```
 
-### `credit()`
+### `depositEncrypted()`
 
-`credit(settler, token, amount, zoneReturn)` pulls `amount` from the caller and deposits it into the Zone,
-after `checkCreditor(msg.sender, token)` on the settler it names, which must be in `settlers`. It is the router's only public entry point that
+`depositEncrypted(settler, token, amount, zoneReturn)` pulls `amount` from the caller and deposits it into the Zone,
+after `checkDepositor(msg.sender, token)` on the settler it names, which must be in `settlers`. It is the router's only public entry point that
 deposits, and only payers the settler accepts can use it, so it cannot bypass a closed-loop Zone's
 admission.
 
-The router calls it a credit, not a refund, since nothing in it is card-specific: a card refund, a
-payout or any approved payer topping up a Zone account all use it. Card terms such as refund stay in
-the Bridge adapter.
+It is the Portal's own `depositEncrypted`, with a gate: only payers a listed settler accepts can call
+it through the router. Nothing in it is card-specific; a card refund, a payout or any approved payer
+topping up a Zone account all use it, and card terms such as refund stay in the Bridge adapter.
 
 ## Bridge adapter (`spend/`)
 
@@ -229,7 +229,7 @@ one per program and Zone router. `settle`:
 - requires the destination received exactly `spend.amount` and that the handler used something;
 - sends the unused input back to the router.
 
-`checkCreditor` makes `refundPrivate`'s checks today: the factory is not paused and the payer is an
+`checkDepositor` makes `refundPrivate`'s checks today: the factory is not paused and the payer is an
 authorized destination of the program.
 
 Neither the router nor the settler emits `senderTag`. The Portal's own `WithdrawalProcessed` event,
@@ -256,11 +256,11 @@ back a DLUSD card, as the program setup requires.
 
 Bridge pulls at authorization, so every card event is a spend, a refund or a reserve draw off chain.
 
-| Event                                                                                | On chain                                                    |
-| ------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| Purchase, ATM, fees, force capture, a tip beyond the hold, incremental authorization | Spend: public `TS` call, or `Spend` from the Zone           |
-| Reversal, hold expiry, partial-capture remainder, merchant refund, dispute won       | Refund: public transfer, or `credit()` into the Zone        |
-| Over-capture without funds, a callback that fails after approval                     | Reserve, off chain; the input goes to Stripe's Zone account |
+| Event                                                                                | On chain                                                       |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Purchase, ATM, fees, force capture, a tip beyond the hold, incremental authorization | Spend: public `TS` call, or `Spend` from the Zone              |
+| Reversal, hold expiry, partial-capture remainder, merchant refund, dispute won       | Refund: public transfer, or `depositEncrypted()` into the Zone |
+| Over-capture without funds, a callback that fails after approval                     | Reserve, off chain; the input goes to Stripe's Zone account    |
 
 A closed-loop Zone still needs change on every callback, so Bridge withdraws the input plus change of
 at least `depositFee + bouncebackFee + 1`, and `maxInput` leaves that change outside the settler's
