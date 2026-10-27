@@ -277,6 +277,26 @@ before updating the registry. Localnet deploys the same release through the sing
 points `earnVaultImplementation`, `earnFeesImplementation`, and `earnFactory`, plus every
 registered engine factory's entry point.
 
+### Releasing from CI
+
+The **Factory Release** workflow ([`factory-release.yml`](../../.github/workflows/factory-release.yml))
+runs one release from `main`: choose the hosted network, the release (`core`, `rewards`, or an engine
+factory's `releaseKey`, such as `erc4626Engine`), and whether to broadcast. It runs
+`pnpm factory-release <network> <release> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
+which runs the release's entry point below with the `deploy` profile, checks that the run created
+exactly the release's contracts, each from the locally compiled creation bytecode, and, after a
+broadcast, source-verifies each one on Tempo's verifier. Without broadcast, Forge only simulates.
+The job summary and the `factory-release-<network>-<release>` artifact list the addresses,
+transactions, and source matches, plus the registry entry to review into
+[`releases.ts`](../../deployments/core/releases.ts) in a pull request; the workflow never edits the
+registry. The job runs in the `factory-release-<network>` environment, which requires a reviewer's
+approval and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
+`TEMPO_RPC_PASSWORD`). Both environments hold the same deployer key that local profile deployments
+use; releases are ownerless, so it only pays fees. Rotating it updates both environments. The
+network's `hosted-contracts-<network>` queue orders only CI jobs, so do not broadcast with that key
+locally while a release runs. The same command runs locally with `DEPLOYER_PRIVATE_KEY` exported,
+for example from a profile's `.env.<id>`; it does not load dotenv files itself.
+
 An engine factory release is independent: the `<releaseKey>Factory` entry point of the engine's
 deploy script (for example `erc4626EngineFactory` in `DeployERC4626Engine`) deploys it. Deploy one
 when the engine creation bytecode changes, then source-verify it before updating the registry. A
