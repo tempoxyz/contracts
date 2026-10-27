@@ -1,7 +1,8 @@
 # Earn deployment lifecycle
 
 This runbook owns the shared deployment lifecycle: the `pnpm earn` commands, the generated record,
-verification, authority handoffs, and shared factory releases. The authored profile JSON is in
+verification, authority handoffs, and the hosted contract releases: Earn's shared factory releases,
+the [Zone router releases](#zone-router-releases), and the [Bridge releases](#bridge-releases). The authored profile JSON is in
 [deployment profiles](../../profiles/README.md), each capability's own steps in its
 [module page](../earn/README.md#capability-modules), engine installation in
 [yield engines](../earn/integrations/engines.md#installation), and package exports in the
@@ -308,9 +309,9 @@ that one), and whether to broadcast. Each network's job runs
 `pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
 which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
 addresses, transactions, and source matches; a run that stops keeps the releases before it. The
-[Spend Release](../spend/deploy.md#deploying-from-ci) workflow shares these environments and the
-hosted-contracts queue. The Zone router project's contracts release separately
-([Zone router releases](#zone-router-releases)); the command refuses them.
+Zone router and Bridge releases share these environments and the hosted-contracts queue, and release
+separately ([Zone router releases](#zone-router-releases), [Bridge releases](#bridge-releases)); the
+command refuses them.
 
 After a broadcast, the last job records every release whose contracts all source verified, from
 every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
@@ -360,13 +361,20 @@ and parameters, with `zone-router/broadcast/`. As with factory releases, the dis
 the approval: each network's job runs in the same `factory-release-<network>` environment, with no
 required reviewer, `main` only, and the same deployer key; the contracts are ownerless, so the key only
 pays fees. It shares the network's
-`hosted-contracts-<network>` queue with the factory and spend releases.
+`hosted-contracts-<network>` queue with the factory and Bridge releases.
 
 | Release             | Parameters                                                                  | Creates                                                                |
 | ------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `zoneRouterFactory` | None                                                                        | The `ZoneRouterFactory`                                                |
 | `sendSettler`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}` | A `SendSettler`, never converting or converting `vault`'s asset at par |
+| `bridgeSettler`     | `{"factory": <address>, "spenderId": <bytes32>}`                            | The `BridgeSettler` of Bridge card program `spenderId` on `factory`    |
 | `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                     | The router `factory.deploy(mode)` creates                              |
+
+A `bridgeSettler` release takes Bridge's `SpenderFactory` and a nonzero program ID, and its entry
+point refuses a factory without code (`NoFactory`) or a program the factory has no clone for
+(`NoProgram`). It does not check that the ID is the one the clone was created for, which the "TS"
+handler requires; Bridge's [preflight](../bridge/deploy.md#4-check-the-program-before-it-goes-live)
+does.
 
 A `zoneRouter` mode has `ZoneRouter.Mode`'s fields: `zoneId`, `enabledOps` (deposit 1, redeem 2,
 spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool` and `customerId`
@@ -382,11 +390,22 @@ pnpm zone-router-release moderato zoneRouter \
 points, with the same chain, profile, and deployer checks as `DeployFactoryRelease`. The factory and
 each settler are created through the CREATE2 deployer with Earn's release salt
 (`DeterministicRelease`), and a router by its factory at `predict(mode)`, salted by the mode's hash.
-So a `ZoneRouterFactory` or `SendSettler` of the same build and settings, and a `ZoneRouter` of the
-same factory and mode, lands at the same address whoever deploys it, on every network, and an entry
+So a `ZoneRouterFactory`, `SendSettler` or `BridgeSettler` of the same build and settings, and a
+`ZoneRouter` of the same factory and mode, lands at the same address whoever deploys it, on every network, and an entry
 point reuses one that exists (a router only if `factory.isRouter` says its factory made it). Forge
 records the router as a contract its factory call created; the command matches it by address and
 checks it like any other creation, then source-verifies it with `abi.encode(mode)` as its
 constructor arguments. A release deploys only: the pool owner still admits a converting settler
 or router, and the Zone's Portal administrator a router
 ([Zone router deployment](../zone-router/zone-router.md#deployment)).
+
+### Bridge releases
+
+The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
+deploys the Bridge integration's "TS" handler (`SpenderTempoSpend`) for a Bridge `SpenderFactory`
+from `main`, at its deterministic address, with [`bridge/`](../../bridge/README.md)'s own build.
+It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue,
+one network per dispatch, and lists in its summary the calls Bridge's admin and governance submit to
+register and gate the handler; it never submits them. A program's `BridgeSettler` is a Zone router
+settler and releases above. [Deploying from CI](../bridge/deploy.md#deploying-from-ci) owns the
+details.

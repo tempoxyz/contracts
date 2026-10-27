@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs a Foundry project's Solidity dependencies into <project>/lib/ at the revisions its
-# foundry.lock pins. Each project (earn/, spend/, zone-router/) pins its own; they are not Git submodules.
+# foundry.lock pins. Each project (earn/, zone-router/, bridge/) pins its own; they are not Git submodules.
 # A project that compiles with solar (earn/) pins its revision in <project>/solar.lock; this builds
 # that revision once into .solar/<rev>/ with cargo, where the project's solar-solc wrapper finds it.
 # Runs on bash 3.2 (macOS's /bin/bash), so it uses no associative arrays.

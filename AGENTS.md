@@ -4,11 +4,13 @@ This repository holds Tempo's contract projects and the tooling they share. Each
 Foundry project with its own build settings, dependencies, and guide:
 
 - [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues.
-- [spend/](spend/AGENTS.md): Tempo Spend, card spend through Bridge's spender contracts.
-- [zone-router/](zone-router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and spends.
+- [zone-router/](zone-router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and
+  spends, and the settlers a spend pays through (`SendSettler`, `BridgeSettler`).
+- [bridge/](bridge/AGENTS.md): Tempo's Bridge integration: Bridge's card contracts vendored as they
+  are, the "TS" handler (`SpenderTempoSpend`), the card E2E harness, and Bridge's deploy scripts.
 
-Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with one module
-folder per project) and its `profiles/`, the app (`app/`), the disposable Tempo L1 and Zone
+Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with module
+folders for Earn and the Zone router) and its `profiles/`, the app (`app/`), the disposable Tempo L1 and Zone
 (`localnet/`), the E2E harness (`e2e/`), the docs (`docs/`), CI, and `scripts/solidity-deps.sh`, which
 installs each project's pinned Solidity dependencies. [README.md](README.md) maps the repository.
 
@@ -21,8 +23,8 @@ must explicitly discover descendant guides rather than assume they were loaded.
 | Area                                                            | Guide                                          |
 | --------------------------------------------------------------- | ---------------------------------------------- |
 | Tempo Earn, including its app, deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)               |
-| Tempo Spend (Bridge card spend)                                 | [spend/AGENTS.md](spend/AGENTS.md)             |
-| Zone router                                                     | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
+| Zone router and its settlers                                    | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
+| Bridge integration (Bridge card spend)                          | [bridge/AGENTS.md](bridge/AGENTS.md)           |
 | Integration cases and hosted environments                       | [e2e/AGENTS.md](e2e/AGENTS.md)                 |
 | Disposable chain lifecycle                                      | [localnet/AGENTS.md](localnet/AGENTS.md)       |
 | CI and repository automation                                    | [.github/AGENTS.md](.github/AGENTS.md)         |
@@ -34,17 +36,22 @@ must explicitly discover descendant guides rather than assume they were loaded.
   the metadata hash of its reviewed releases.
 - A project imports another's contracts through a remapping to its `src/`, never a copy. Shared
   Solidity belongs in the project that owns it until a second owner needs it.
-- Integrator-specific code stays in its own project; `earn/` stays integrator-agnostic and never
-  imports from `spend/`.
+- Imports flow one way: `earn/` imports neither other project, `zone-router/` imports only Earn's
+  interfaces, and `bridge/` imports both. Settlers are a Zone router concept and live in
+  `zone-router/src/settlers/`; a settler may hold a minimal interface for the system it pays into,
+  never vendored code.
+- Integrator-specific code (Bridge's vendored contracts, the "TS" handler, card logic) stays in
+  `bridge/`; `earn/` stays integrator-agnostic.
 - Secrets and funded private keys stay out of source, logs, and generated records.
 
 ## Validation and documentation
 
 Use the commands in [development](docs/development/README.md). Start with focused checks; before
 pushing meaningful implementation changes, run `pnpm verify`, plus the project's own checks for
-`spend/` ([spend/AGENTS.md](spend/AGENTS.md)) and `zone-router/` ([zone-router/AGENTS.md](zone-router/AGENTS.md)).
-Hosted or private behavior changes also need the relevant E2E case and composed group. Report unrun checks and external blockers explicitly; after
-pushing a PR update, report with CI pending unless asked to monitor it. For documentation-only
+`zone-router/` ([zone-router/AGENTS.md](zone-router/AGENTS.md)) and `bridge/`
+([bridge/AGENTS.md](bridge/AGENTS.md)). Hosted or private behavior changes also need the relevant
+E2E case and composed group. Report unrun checks and external blockers explicitly; after pushing a
+PR update, report with CI pending unless asked to monitor it. For documentation-only
 changes, run the link check (`pnpm --filter @tempoxyz/earn test --run docs`), format changed files,
 and run `git diff --check`.
 

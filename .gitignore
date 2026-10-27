@@ -15,7 +15,7 @@ localnet/.local/
 **/.env.*
 !/.env.example
 !/app/.env.example
-!/e2e/spend/.env.example
+!/e2e/bridge/.env.example
 *.log
 /earn/lib/
 /.solar/

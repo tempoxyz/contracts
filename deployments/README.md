@@ -35,8 +35,9 @@ runs every capability module's inspection, is exported from `/node` only.
 - the state-changing entry points of every deployment and localnet fixture script as
   `<name>ScriptAbi`; and
 - the derived `earnEngineBindingAbi`; and
-- `zoneRouterAbi`, `zoneRouterFactoryAbi` and the `zone-router/` deployment scripts' `<name>ScriptAbi`,
-  from the separate [`zone-router/`](../zone-router/README.md) project.
+- `zoneRouterAbi`, `zoneRouterFactoryAbi`, the settlers' `sendSettlerAbi` and `bridgeSettlerAbi`, and
+  the `zone-router/` deployment scripts' `<name>ScriptAbi`, from the separate
+  [`zone-router/`](../zone-router/README.md) project.
 
 After a contract interface change, run `forge build src script test` in `earn/` and
 `forge build src script` in `zone-router/`, then
