@@ -35,7 +35,7 @@ From [Stripe Issuing Smart Contracts on Tempo](https://docs.google.com/document/
 | Approve once the Zone accepts the withdrawal; change returns encrypted       | Unchanged: Bridge approves on the Zone receipt; `Spend` returns change by encrypted deposit with a fee cap                                    |
 | A spend blocked after approval must not land back in the cardholder's wallet | Bridge sets the withdrawal's `zoneFallbackRecipient` to the program's Stripe-owned Zone account                                               |
 | Refunds through Bridge's orchestration                                       | `refund()` is the on-chain leg, callable only by a program destination                                                                        |
-| 2 s authorization budget, 3M callback gas, 1,024-byte callback data          | No new wait before approval; one more token hop in the callback; the largest callback (`WithdrawExact`) is 960 bytes                          |
+| 2 s authorization budget, 3M callback gas, 1,024-byte callback data          | No new wait before approval; one more token hop in the callback; the largest callback (`Spend`) is 864 bytes                                  |
 
 ## Two layers
 
@@ -58,22 +58,22 @@ everything the router has today:
 
 Its configuration is fixed at deployment, with no setters; a different mode means a new router:
 
-- **`enabledOps`**, a bitmask of Deposit, Redeem, Spend and WithdrawExact. A disabled op reverts
+- **`enabledOps`**, a bitmask of Deposit, Redeem and Spend. A disabled op reverts
   `OpDisabled`.
 - **`settlers`**, the set of `ISpendSettler` contracts `Spend` and `refund` may use, including `SendSettler`s, written once by the
   constructor into an `isSettler` mapping. Required when Spend is enabled, empty otherwise.
-- **`earnVault`, `privateAsset`, `pool`, `customerId`**, as today. Required when an Earn op (Deposit,
-  Redeem or WithdrawExact) is enabled, and all zero otherwise.
+- **`earnVault`, `privateAsset`, `pool`, `customerId`**, as today. Required when an Earn op (Deposit or
+  Redeem) is enabled, and all zero otherwise.
 
 The constructor rejects inconsistent combinations, so a router cannot be deployed with an op it
 cannot serve. Deployment profiles name presets:
 
-| Mode                       | Ops                                   | Settlers                     | Vault |
-| -------------------------- | ------------------------------------- | ---------------------------- | ----- |
-| Earn (today's router)      | Deposit, Redeem                       | —                            | Yes   |
-| Card, closed loop          | Spend                                 | `BridgeSettler`              | —     |
-| Card and Earn, closed loop | Deposit, Redeem, Spend, WithdrawExact | `BridgeSettler`              | Yes   |
-| Open wallet                | All                                   | Any, including `SendSettler` | Any   |
+| Mode                       | Ops                    | Settlers                     | Vault |
+| -------------------------- | ---------------------- | ---------------------------- | ----- |
+| Earn (today's router)      | Deposit, Redeem        | —                            | Yes   |
+| Card, closed loop          | Spend                  | `BridgeSettler`              | —     |
+| Card and Earn, closed loop | Deposit, Redeem, Spend | `BridgeSettler`              | Yes   |
+| Open wallet                | All                    | Any, including `SendSettler` | Any   |
 
 The Earn preset is exactly today's router, so its tests carry over unchanged as the regression suite.
 One router per Zone can serve several programs or integrators by listing each one's settler.
@@ -109,7 +109,7 @@ Once the modes settle, one ownerless router can replace the per-mode routers:
   such as one with public sends, move funds out of a closed-loop Zone.
 - Authentication, measured balances and par conversion are unchanged; the reentrancy lock covers the
   whole contract, and route settings are read from storage instead of immutables.
-- `routeId` adds 32 bytes per callback: `Spend` becomes 896 bytes and `WithdrawExact` 992, still under
+- `routeId` adds 32 bytes per callback: `Spend` becomes 896 bytes, still under
   1,024.
 - The cost is concentration: a bug reaches every Zone, and an ownerless contract is fixed by
   deploying a new one and moving every Zone. So the move waits until a few customers have run on
@@ -123,13 +123,12 @@ moving only changes the address Bridge and clients target.
 The router already reads the first callback word before decoding, so ops 0 and 1 keep their exact
 layout and `viem/tempo`'s `earnRouterCallbackData` keeps working.
 
-| Op                  | Input                                       | What the router does                                                                    | Back to the Zone                 |
-| ------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------- |
-| 0 Deposit           | Private asset                               | Unchanged                                                                               | EarnShare                        |
-| 1 Redeem            | EarnShare                                   | Unchanged                                                                               | Private asset                    |
-| 2 Spend             | Any token the source Portal enables         | Approves at most `maxInput` to the named settler, calls `settle`, measures what it used | Unused input                     |
-| 3 WithdrawExact     | EarnShare                                   | Withdraws exactly `assets` from the vault, burning at most the input, converting at par | The assets and the unused shares |
-| `refund()` (public) | Stablecoin from a payer the settler accepts | Deposits it into the Zone for the encrypted recipient                                   | The refund                       |
+| Op                  | Input                                       | What the router does                                                                    | Back to the Zone |
+| ------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------- |
+| 0 Deposit           | Private asset                               | Unchanged                                                                               | EarnShare        |
+| 1 Redeem            | EarnShare                                   | Unchanged                                                                               | Private asset    |
+| 2 Spend             | Any token the source Portal enables         | Approves at most `maxInput` to the named settler, calls `settle`, measures what it used | Unused input     |
+| `refund()` (public) | Stablecoin from a payer the settler accepts | Deposits it into the Zone for the encrypted recipient                                   | The refund       |
 
 Every return to a Zone is an encrypted deposit with its own `ZoneReturn` (key index, encrypted
 recipient, refund recipient and `maxDepositFee`), and reverts if that Portal's deposit fee is above
@@ -139,10 +138,9 @@ Zone.
 
 Callback data sizes, with a 64-byte ciphertext, against the outbox's 1,024 bytes:
 
-| Op            | Bytes | Fields                                                                                |
-| ------------- | ----- | ------------------------------------------------------------------------------------- |
-| Spend         | 864   | `op`, `settler`, `maxInput`, `settlerData` (Bridge's `Spend` struct), `ZoneReturn`    |
-| WithdrawExact | 960   | `op`, `assets`, `minOutput`, `ZoneReturn` for the assets, `ZoneReturn` for the shares |
+| Op    | Bytes | Fields                                                                             |
+| ----- | ----- | ---------------------------------------------------------------------------------- |
+| Spend | 864   | `op`, `settler`, `maxInput`, `settlerData` (Bridge's `Spend` struct), `ZoneReturn` |
 
 ### `Spend`
 
@@ -193,16 +191,6 @@ does not route between Zones.
 A router allows sends only if it lists `SendSettler` in `settlers`. A closed-loop Zone, whose Portal
 trusts its gateway to keep funds in the Zone, does not list it, so one rule covers every way funds
 leave. Since `SendSettler` moves funds out of a Zone, it gets the same review as the router.
-
-### `WithdrawExact`
-
-Redeems EarnShares for an exact amount of the private asset, such as a known payment, rather than
-an exact number of shares. The router calls `withdrawExact(assets, router, input)` on the vault,
-converts the vault asset to the private asset at par when they differ (the same pool, checks and
-1:1 measured output as op 1, with `keccak256` of the assets' encrypted payload as the pool trade ID,
-unique per action and unlinkable to the sender), and requires at least `minOutput`. It returns the assets and the
-unused shares as two deposits, each with its own `ZoneReturn`, so they need no shared payload. When
-nothing is left over it skips the shares deposit.
 
 ### `ISpendSettler`
 
@@ -308,7 +296,7 @@ cardholder's access keys stay the same through every phase.
 
 ## Rollout
 
-1. **Earn:** `ZoneRouter` and `ZoneRouterFactory`, with ops 0 and 1 byte-identical and their tests carried over, plus `WithdrawExact`, `SendSettler` and stablecoin-only routers. The rename
+1. **Earn:** `ZoneRouter` and `ZoneRouterFactory`, with ops 0 and 1 byte-identical and their tests carried over, plus `SendSettler` and stablecoin-only routers. The rename
    lands with its consumers: tempoxyz/tempo (which builds `earn/src/` and reads the router outputs),
    `viem/tempo`, and the zone-router deployment module.
 2. **Spend:** `BridgeSettler`, a "ZoneRouter" setup in the 35-scenario matrix, and `e2e/zone` on the
