@@ -99,11 +99,7 @@ jobs:
             echo
             echo '| Release | Contract | Address | Transaction | Source match |'
             echo '| --- | --- | --- | --- | --- |'
-            jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | `\(.transaction // "-")` | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
-            if jq -e '(.broadcast | not) and (.releases | length > 1)' "$result" >/dev/null; then
-              echo
-              echo 'A dry run simulates each release from the deployer'"'"'s current nonce, so the addresses after the first release are not the ones a broadcast creates.'
-            fi
+            jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" else "already deployed" end) | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
             if jq -e '.failed' "$result" >/dev/null; then
               echo
               echo "Stopped at the $(jq -r '.failed.kind' "$result") release; the releases above it are deployed."
