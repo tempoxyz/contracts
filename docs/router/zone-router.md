@@ -70,7 +70,8 @@ contracts:
    and `admit-zone-router-account` (when the Zone enforces account access with open gateways, the
    router returns funds as an ordinary depositor, so the Portal administrator admits it with
    `setAllowedAccount`; the Portal holds one role per account, so a router needs only one of the
-   two). The lifecycle grants pool, gateway and account admission with its own keys only when it
+   two, and after the Zone changes gateway mode either step revokes the old role and grants the new
+   one in one batch). The lifecycle grants pool, gateway and account admission with its own keys only when it
    deployed the factory itself; for a router from a factory the profile names, each is always handed
    off, for the pool owner or the Portal administrator to check that factory's verified source
    first.

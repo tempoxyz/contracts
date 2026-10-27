@@ -11,6 +11,7 @@ import {
   missingZoneTokens,
   zoneCallbackGatewayRegistered,
   zoneGatewayDepositsAdmitted,
+  zonePortalRole,
 } from '../../chain/zone.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
 import {
@@ -290,7 +291,7 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const provenance = profile.zoneRouter?.factory
       ? `confirm that ZoneRouterFactory ${factory} is source verified as router/src/ZoneRouterFactory.sol, then `
       : ''
-    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, then call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
+    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },
   // A factory the profile names is trusted only for its own answers, so a router it made is admitted
   // by a person who checked its verified source; the lifecycle admits only routers of its own factory.
@@ -304,16 +305,9 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const router = requiredOutput(options.outputs, 'zoneRouter')
     if (await zoneCallbackGatewayRegistered(administrator.client, portal, router))
       return { transactions: [] }
-    return administrator.send([
-      {
-        to: portal,
-        data: encodeFunctionData({
-          abi: zonePortalAbi,
-          functionName: 'setGateway',
-          args: [router, true],
-        }),
-      },
-    ])
+    return administrator.send(
+      await portalRoleCalls(administrator.client, portal, router, 'callbackGateway'),
+    )
   },
 })
 
@@ -340,7 +334,7 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     ),
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
-    return `Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should ${namedFactoryCheck(profile, outputs)}confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, then call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
+    return `Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should ${namedFactoryCheck(profile, outputs)}confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, then, if the router holds the callback-gateway role, call setGateway(${router}, false), and call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
   },
   // As for gateway admission, a router from a factory the profile names is admitted only by a person.
   signerAvailable: (profile, environment) =>
@@ -353,18 +347,37 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     const router = requiredOutput(options.outputs, 'zoneRouter')
     if (await zoneGatewayDepositsAdmitted(administrator.client, portal, router))
       return { transactions: [] }
-    return administrator.send([
-      {
-        to: portal,
-        data: encodeFunctionData({
-          abi: zonePortalAbi,
-          functionName: 'setAllowedAccount',
-          args: [router, true],
-        }),
-      },
-    ])
+    return administrator.send(
+      await portalRoleCalls(administrator.client, portal, router, 'account'),
+    )
   },
 })
+
+/**
+ * The Portal calls that give the router `role`. The Portal holds one role per account and grants
+ * one only from none, so a router admitted under the other gateway mode is moved in one batch:
+ * revoke the role it holds, then grant the one the current mode needs.
+ */
+async function portalRoleCalls(
+  client: Pick<ChainClient, 'readContract'>,
+  portal: Address,
+  router: Address,
+  role: 'account' | 'callbackGateway',
+) {
+  const other = role === 'account' ? 'callbackGateway' : 'account'
+  const setter = { account: 'setAllowedAccount', callbackGateway: 'setGateway' } as const
+  const call = (functionName: (typeof setter)[keyof typeof setter], allowed: boolean) => ({
+    to: portal,
+    data: encodeFunctionData({ abi: zonePortalAbi, functionName, args: [router, allowed] }),
+  })
+  const holdsOther = await client.readContract({
+    address: portal,
+    abi: zonePortalAbi,
+    functionName: 'hasRole',
+    args: [router, zonePortalRole[other]],
+  })
+  return [...(holdsOther ? [call(setter[other], false)] : []), call(setter[role], true)]
+}
 
 /** The tokens an Earn mode moves in and out of its Zone, labeled for readiness reports. */
 export function zoneRouterTokens(

@@ -430,6 +430,72 @@ describe('Zone router steps', () => {
     )
   })
 
+  test.each([
+    {
+      name: 'opened gateways move a registered gateway to an account',
+      action: 'admit-zone-router-account',
+      gatewayOpen: true,
+      held: 3,
+      calls: [
+        ['setGateway', false],
+        ['setAllowedAccount', true],
+      ],
+    },
+    {
+      name: 'restricted gateways move an admitted account to a gateway',
+      action: 'register-zone-router-gateway',
+      gatewayOpen: false,
+      held: 2,
+      calls: [
+        ['setAllowedAccount', false],
+        ['setGateway', true],
+      ],
+    },
+  ])('$name in one batch', async (scenario) => {
+    const readContract = vi.fn(
+      async ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
+        if (functionName === 'admin') return authorityAccount
+        if (functionName === 'isAccessEnforced') return true
+        if (functionName === 'isGatewayOpen') return scenario.gatewayOpen
+        if (functionName === 'hasRole') return args?.[1] === scenario.held
+        return undefined
+      },
+    )
+    const sendTransactionSync = vi.fn().mockResolvedValue({ transactionHash: receiptHash })
+    const result = await executeAvailableAuthority(
+      {
+        action: { id: scenario.action as 'admit-zone-router-account' },
+        environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
+        outputs,
+        profile: cardAndEarn,
+        rpcUrl: 'https://rpc.invalid',
+      },
+      {
+        authorityClient: ((_options: unknown, account: unknown) => ({
+          account,
+          chain: {},
+          readContract,
+          sendTransactionSync,
+        })) as never,
+        fundFromFaucet: vi.fn() as never,
+      },
+    )
+    expect(result).toEqual({ transactions: [receiptHash] })
+    expect(sendTransactionSync).toHaveBeenCalledTimes(1)
+    const calls = sendTransactionSync.mock.calls[0]![0].calls as Array<{
+      to: Address
+      data: `0x${string}`
+    }>
+    expect(
+      calls.map((call) => {
+        const decoded = decodeFunctionData({ abi: zonePortalAbi, data: call.data })
+        expect(call.to).toBe(outputs.zoneRouterPortal)
+        expect(decoded.args?.[0]).toBe(outputs.zoneRouter)
+        return [decoded.functionName, decoded.args?.[1]]
+      }),
+    ).toEqual(scenario.calls)
+  })
+
   test('admits the router on its conversion pool as the pool owner', async () => {
     const deployerKey = `0x${'4'.repeat(64)}` as const
     const deployer = privateKeyToAccount(deployerKey).address
