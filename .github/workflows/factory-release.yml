@@ -1,8 +1,8 @@
 name: Factory Release
 
 # Deploys the shared factory releases from main on the hosted networks and source verifies them on
-# Tempo's verifier, then opens a pull request that records the verified releases in
-# deployments/core/releases.ts for review.
+# Tempo's verifier, then pushes a branch that records the verified releases in
+# deployments/core/releases.ts, for a maintainer to open as a pull request.
 on:
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ on:
         type: choice
         options: [all, core, rewards, erc4626Engine]
       broadcast:
-        description: Broadcast, source verify, and open the registry pull request; unchecked only simulates
+        description: Broadcast, source verify, and push the registry branch; unchecked only simulates
         required: true
         type: boolean
         default: false
@@ -120,9 +120,9 @@ jobs:
           if-no-files-found: ignore
 
   # Records every broadcast release whose contracts all source verified, including those from a
-  # network that later failed, in a pull request; the registry changes only through its review.
+  # network that later failed, on a branch; the registry changes only through a reviewed pull request.
   registry:
-    name: Open the registry pull request
+    name: Push the registry branch
     needs: release
     if: ${{ always() && inputs.broadcast && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
@@ -130,7 +130,6 @@ jobs:
     permissions:
       id-token: write
       contents: write
-      pull-requests: write
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -164,7 +163,7 @@ jobs:
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Open the pull request
+      - name: Push the branch
         if: ${{ steps.registry.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -176,19 +175,9 @@ jobs:
           git switch --create "$branch"
           git commit --message "feat(deployments): record the factory releases from run ${GITHUB_RUN_ID}" -- deployments/core/releases.ts
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
-          # A pull request GITHUB_TOKEN opens starts no workflows; it opens as a draft, and the reviewer
-          # marking it ready for review runs the required checks. Opening one needs the repository's
-          # "Allow GitHub Actions to create and approve pull requests" setting; without it, the pushed
-          # branch and a link to open the pull request are in the job summary.
-          title="feat(deployments): record the factory releases from run ${GITHUB_RUN_ID}"
-          if url="$(gh pr create --draft --base main --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/registry-pr.md")"; then
-            echo "Opened $url" >> "$GITHUB_STEP_SUMMARY"
-          else
-            {
-              echo "Pushed \`$branch\`, but GitHub Actions may not open pull requests in this repository."
-              echo "[Open the pull request](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${branch}?expand=1) with this description:"
-              echo
-              cat "$RUNNER_TEMP/registry-pr.md"
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::Pushed $branch; open its pull request from the job summary"
-          fi
+          {
+            echo "Pushed \`$branch\` with the verified releases in releases.ts."
+            echo "[Open its pull request](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${branch}?expand=1) with this description:"
+            echo
+            cat "$RUNNER_TEMP/registry-pr.md"
+          } >> "$GITHUB_STEP_SUMMARY"

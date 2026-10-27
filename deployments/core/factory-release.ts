@@ -519,8 +519,6 @@ export function registryPullRequestBody(
   }
   lines.push(
     '',
-    'Opened as a draft by GITHUB_TOKEN, which starts no workflows: mark it ready for review to run the required checks.',
-    '',
     "Finish or discard any pending profile deployment on these networks before merging: a pending deployment must use its chain's current release.",
   )
   return `${lines.join('\n')}\n`
