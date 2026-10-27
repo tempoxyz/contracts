@@ -246,6 +246,30 @@ describe('Zone router steps', () => {
     expect(handoff).toContain(
       `setGateway(${outputs.zoneRouter}, true) on ${outputs.zoneRouterPortal}`,
     )
+    expect(handoff).toContain(
+      `${address('fac')} is source verified as router/src/ZoneRouterFactory.sol`,
+    )
+  })
+
+  test('never admits a router from a factory the profile names, even with the admin key', async () => {
+    const step = deploymentStep('register-zone-router-gateway')
+    if (step.execution !== 'authority') throw new Error('expected an authority step')
+    const environment = { ZONE_ADMIN_PRIVATE_KEY: authorityKey }
+    expect(step.signerAvailable!(card, environment, true)).toBe(false)
+    expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
+    const authorityClient = vi.fn()
+    const result = await executeAvailableAuthority(
+      {
+        action: { id: 'register-zone-router-gateway' },
+        environment,
+        outputs,
+        profile: card,
+        rpcUrl: 'https://rpc.invalid',
+      },
+      { authorityClient: authorityClient as never, fundFromFaucet: vi.fn() as never },
+    )
+    expect(result).toBeUndefined()
+    expect(authorityClient).not.toHaveBeenCalled()
   })
 
   test.each([
@@ -264,7 +288,7 @@ describe('Zone router steps', () => {
         action: { id: 'register-zone-router-gateway' },
         environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
         outputs,
-        profile: card,
+        profile: cardAndEarn,
         rpcUrl: 'https://rpc.invalid',
       },
       {

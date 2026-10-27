@@ -64,7 +64,10 @@ contracts:
 3. activation, each verified onchain and otherwise handed off to its owner: `authorize-zone-router`
    (the PropAMM pool owner admits a converting Earn mode), `enable-zone-router-tokens` (the Zone
    enables EarnShare and the private asset for Earn ops) and `register-zone-router-gateway` (the
-   Portal administrator admits the router when the Zone restricts callback gateways).
+   Portal administrator admits the router when the Zone restricts callback gateways). The lifecycle
+   admits it with `ZONE_ADMIN_PRIVATE_KEY` only when it deployed the factory itself; a router from a
+   factory the profile names is always handed off, for the administrator to check that factory's
+   verified source first.
 
 The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers as
 [required members](../earn/modules/access.md#required-members) of EarnShare's access policy.

@@ -36,6 +36,9 @@ import {
 
 const hasZoneRouter = (profile: EarnDeploymentProfile) => profile.zoneRouter !== null
 
+/** Whether the profile names an existing ZoneRouterFactory rather than deploying its own. */
+const namesFactory = (profile: EarnDeploymentProfile) => profile.zoneRouter?.factory !== undefined
+
 /** The router's conversion pool, when its Earn binding converts the private asset. */
 const routerPool = (profile: EarnDeploymentProfile) => profile.zoneRouter?.earn?.pool
 
@@ -267,9 +270,18 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     ),
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
-    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, then call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
+    const factory = zoneRouterFactory(profile, outputs)
+    const provenance = profile.zoneRouter?.factory
+      ? `confirm that ZoneRouterFactory ${factory} is source verified as router/src/ZoneRouterFactory.sol, then `
+      : ''
+    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, then call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },
+  // A factory the profile names is trusted only for its own answers, so a router it made is admitted
+  // by a person who checked its verified source; the lifecycle admits only routers of its own factory.
+  signerAvailable: (profile, environment) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && !namesFactory(profile),
   async execute(options, dependencies) {
+    if (namesFactory(options.profile)) return undefined
     const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
     const administrator = await zoneAdministrator(options, dependencies, portal)
     if (!administrator) return undefined
