@@ -247,6 +247,8 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
    * The outputs and creation transaction of a contract another deployer already created through a
    * permissionless factory the step calls, which would otherwise return it without creating
    * anything; undefined when there is none. Adopted outputs are recorded only once `satisfied`.
+   * After the step's own run, its creation transaction comes from here too, so a contract someone
+   * created between planning and broadcast keeps its real provenance.
    */
   adopt?(
     client: ChainClient,

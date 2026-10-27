@@ -214,16 +214,25 @@ export async function recordFoundryAction(options: {
     ...readActionOutputs(pendingDeploymentPath(options.profilePath)),
   }
   await requireSatisfied(options, outputs, 'exited successfully')
+  // A factory call can return a contract someone created after planning; record the transaction
+  // that created it, which the factory's event names, rather than this run's call.
+  const step = deploymentStep(options.step.action.id)
+  const created =
+    step.execution === 'foundry' && step.adopt
+      ? await step.adopt(rpcClient(options.rpcUrl), options.profile, outputs)
+      : undefined
   const pending = completeAction(
     { ...options.step.pending, outputs },
     options.step.action.id,
     'broadcast',
-    successfulBroadcastTransactions(
-      options.root,
-      required(options.step.arguments[1], 'Foundry target'),
-      options.step.calldata,
-      options.profile.chainId,
-    ),
+    created
+      ? [created.transaction]
+      : successfulBroadcastTransactions(
+          options.root,
+          required(options.step.arguments[1], 'Foundry target'),
+          options.step.calldata,
+          options.profile.chainId,
+        ),
   )
   savePendingDeployment(options.profilePath, options.profile, pending)
   return pending

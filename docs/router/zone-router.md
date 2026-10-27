@@ -60,7 +60,9 @@ contracts:
 1. `deploy-zone-router-factory`, unless the profile names a factory;
 2. `deploy-zone-router`: `factory.deploy(mode)`, then a check of `isRouter`, `predict` and every
    immutable against the mode. When anyone, such as Spend's script, already deployed the mode
-   through the factory, the step adopts that router and records its `RouterDeployed` transaction;
+   through the factory, the step adopts that router and records its `RouterDeployed` transaction,
+   which is also what it records after its own run, so a router someone created in between keeps
+   its real creation transaction;
 3. activation, each verified onchain and otherwise handed off to its owner: `authorize-zone-router`
    (the PropAMM pool owner admits a converting Earn mode), `enable-zone-router-tokens` (the Zone
    enables EarnShare and the private asset for Earn ops) and `register-zone-router-gateway` (the

@@ -18,7 +18,8 @@ import { validateSharedFactoryRelease } from './releases.js'
 import { resolvedEngineStateSatisfied } from '../modules/earn/engines/steps.js'
 import { componentDeploymentIntentHashes, engineOwnerAccepted } from './profile.js'
 import { planEarnDeployment } from './plan.js'
-import { prepareLifecycleStep, recordAuthorityAction } from './reconcile.js'
+import { prepareLifecycleStep, recordAuthorityAction, recordFoundryAction } from './reconcile.js'
+import { deploymentStep } from '../modules/index.js'
 import { pendingDeploymentPath } from './bundle.js'
 
 const chain = vi.hoisted(() => ({
@@ -410,6 +411,73 @@ describe('Earn deployment lifecycle', () => {
       expect(step.pending.actions['deploy-core']?.transactions).toEqual([creation])
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+  test('records the router creation the factory event names, not a later call that reused it', async () => {
+    const routerProfile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'reuse-test',
+        chainId: 4217,
+        owner: address('4'),
+        engine: { kind: 'veda', address: address('1') },
+        zoneRouter: {
+          zoneId: 7,
+          ops: ['spend'],
+          settlers: [address('5e')],
+          factory: address('fa'),
+        },
+      },
+      { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+    )
+    const router = address('9a')
+    const creation: Hex = `0x${'c1'.repeat(32)}`
+    const reuse: Hex = `0x${'7e'.repeat(32)}`
+    const step = deploymentStep('deploy-zone-router')
+    if (step.execution !== 'foundry') throw new Error('expected a Foundry step')
+    const satisfied = vi.spyOn(step, 'satisfied').mockResolvedValue(true)
+    chain.readContract.mockImplementation(async ({ functionName }: { functionName: string }) =>
+      functionName === 'predict' ? router : functionName === 'isRouter' ? true : undefined,
+    )
+    chain.getLogs.mockImplementation(async () => [{ transactionHash: creation }])
+    const checkout = mkdtempSync(join(tmpdir(), 'earn-reuse-'))
+    try {
+      const root = join(checkout, 'earn')
+      const profilePath = join(checkout, 'profiles', routerProfile.id, 'profile.json')
+      mkdirSync(join(checkout, 'profiles', routerProfile.id), { recursive: true })
+      const pending = loadPendingDeployment(profilePath, routerProfile)
+      const calldata: Hex = '0x12345678'
+      // This run's factory.deploy(mode) succeeded but only returned the router someone created first.
+      const broadcast = join(root, 'broadcast', 'DeployZoneRouter.s.sol', '4217')
+      mkdirSync(broadcast, { recursive: true })
+      writeFileSync(
+        join(broadcast, '12345678-latest.json'),
+        JSON.stringify({
+          transactions: [{ hash: reuse }],
+          receipts: [{ transactionHash: reuse, status: '0x1' }],
+        }),
+      )
+      const recorded = await recordFoundryAction({
+        root,
+        profilePath,
+        profile: routerProfile,
+        rpcUrl: 'http://chain.test',
+        step: {
+          kind: 'foundry',
+          action: planEarnDeployment(routerProfile).find(({ id }) => id === 'deploy-zone-router')!,
+          root: join(checkout, 'router'),
+          arguments: ['script', 'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript'],
+          environment: {},
+          calldata,
+          rawGasEstimate: true,
+          pending: { ...pending, outputs: { ...pending.outputs, zoneRouter: router } },
+          outputPath: join(root, '.earn', 'out.json'),
+        },
+      })
+      expect(recorded.actions['deploy-zone-router']?.transactions).toEqual([creation])
+    } finally {
+      satisfied.mockRestore()
+      rmSync(checkout, { recursive: true, force: true })
     }
   })
 })
