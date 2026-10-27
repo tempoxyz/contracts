@@ -37,8 +37,8 @@ jobs:
         network: ${{ fromJSON(inputs.networks == 'both' && '["moderato","mainnet"]' || format('["{0}"]', inputs.networks)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Each network's environment requires a reviewer's approval and holds the deployer key, the same
-    # key local profile deployments use.
+    # Dispatching from main is the approval: the environment has no required reviewer, accepts only
+    # main, and holds the deployer key, the same key local profile deployments use.
     environment: factory-release-${{ matrix.network }}
     # Shares the network's hosted-contracts queue. It orders only CI jobs, so do not broadcast with the
     # deployer key locally while a release runs.

@@ -181,7 +181,8 @@ admin and governance calls above for Bridge to submit; the
 `spend-release-<network>-<contract>-<attempt>` artifact holds the result and Forge's broadcast
 files. The workflow never submits those calls: registering and gating stay with Bridge's roles.
 
-The job runs in the reviewer-gated `factory-release-<network>` environment, with the deployer key
+Dispatching it from `main` is the approval: the job runs in the `factory-release-<network>`
+environment, which has no required reviewer and accepts only `main`, with the deployer key
 and RPC credentials of the [factory releases](../deployment/deployment.md#releasing-from-ci), and
 shares their `hosted-contracts-<network>` queue. The contracts are ownerless, so the key only pays
 fees. The script also runs locally, for example against a dev node:

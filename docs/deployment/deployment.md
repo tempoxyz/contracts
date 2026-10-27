@@ -318,8 +318,8 @@ every network that reached it, in [`releases.ts`](../../deployments/core/release
 the pull request description; a maintainer opens that pull request, so the registry changes only
 through its review.
 
-Each network's job runs in the `factory-release-<network>` environment, which requires a reviewer's
-approval and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
+Dispatching the workflow from `main` is the approval: each network's job runs in the
+`factory-release-<network>` environment, which has no required reviewer, accepts only `main`, and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
 `TEMPO_RPC_PASSWORD`). Both environments hold the same deployer key that local profile deployments
 use; releases are ownerless, so it only pays fees. Rotating it updates both environments. The
 network's `hosted-contracts-<network>` queue orders only CI jobs, so do not broadcast with that key
@@ -356,10 +356,10 @@ and the job summary.
 The workflow runs from `main` only. Choose the networks (`both` runs Moderato, then mainnet only after
 Moderato succeeds), one release and its parameters, and whether to broadcast. Each job's summary and
 its `router-release-<network>-<attempt>` artifact list the addresses, transactions, source matches,
-and parameters, with `router/broadcast/`. Each network's job runs in the `router-release-<network>`
-environment, which maintainers create with a required reviewer and the deployer's
-`DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`, `TEMPO_RPC_PASSWORD`);
-the contracts are ownerless, so the key only pays fees. It shares the network's
+and parameters, with `router/broadcast/`. As with factory releases, the dispatch is
+the approval: each network's job runs in the same `factory-release-<network>` environment, with no
+required reviewer, `main` only, and the same deployer key; the contracts are ownerless, so the key only
+pays fees. It shares the network's
 `hosted-contracts-<network>` queue with the factory and spend releases.
 
 | Release             | Parameters                                                                  | Creates                                                                |

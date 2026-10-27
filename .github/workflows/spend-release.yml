@@ -42,8 +42,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # The network's environment requires a reviewer's approval and holds the deployer key the factory
-    # releases use. The contracts are ownerless, so the key only pays fees.
+    # Dispatching from main is the approval: the environment has no required reviewer, accepts only
+    # main, and holds the deployer key the factory releases use. The contracts
+    # are ownerless, so the key only pays fees.
     environment: factory-release-${{ inputs.network }}
     # Shares the network's hosted-contracts queue with the factory releases, so the deployer key never
     # sends from two CI jobs at once.

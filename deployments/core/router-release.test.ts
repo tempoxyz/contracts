@@ -443,7 +443,7 @@ describe('router release workflow', () => {
     expect(options('network')?.sort()).toEqual(['both', ...Object.keys(hostedEnvironments)].sort())
     expect(options('release')).toEqual([...routerReleaseKinds])
     expect(workflow).toContain('["moderato","mainnet"]')
-    expect(workflow).toContain('environment: router-release-${{ matrix.network }}')
+    expect(workflow).toContain('environment: factory-release-${{ matrix.network }}')
   })
 
   test('passes the parameters input through the environment, not the script text', () => {

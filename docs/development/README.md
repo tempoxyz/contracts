@@ -205,10 +205,9 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
   Only the two deploy jobs receive the `DEV_CLOUDFLARE_*` credentials, which are secrets of the
   `production` and `preview` environments, and both environments deploy only from `main`; the
-  benchmark job receives `TEMPO_API_KEY`; the factory release and spend release jobs receive the shared
-  `DEPLOYER_PRIVATE_KEY` and RPC credentials from the reviewer-gated `factory-release-<network>`
-  environment, and the router release job from the reviewer-gated `router-release-<network>`
-  environment; the factory release's registry job, with no secrets, gets a `GITHUB_TOKEN` that may push a
+  benchmark job receives `TEMPO_API_KEY`; the factory release, router release and spend release jobs receive the shared
+  `DEPLOYER_PRIVATE_KEY` and RPC credentials from the `factory-release-<network>` environment, which
+  accepts only `main` and has no required reviewer, so dispatching a release is its approval; the factory release's registry job, with no secrets, gets a `GITHUB_TOKEN` that may push a
   `factory-release/<run>-<attempt>` branch; the audit and remediation-event jobs receive the
   `EVENTS_*` intake credentials.
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC
