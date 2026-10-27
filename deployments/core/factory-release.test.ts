@@ -11,6 +11,12 @@ import {
   factoryReleaseKinds,
   planFactoryRelease,
   redactRpcCredentials,
+  registryPullRequestBody,
+  registryReleaseKinds,
+  registryUpdates,
+  releaseKindsFor,
+  updateReleaseRegistry,
+  type FactoryReleaseRun,
   type FactoryReleaseDependencies,
 } from './factory-release.js'
 
@@ -293,9 +299,10 @@ describe('factory release workflow', () => {
       .exec(workflow)?.[1]
       ?.split(/,\s*/)
 
-  test('offers every hosted network and every release', () => {
-    expect(options('network')?.sort()).toEqual(Object.keys(hostedEnvironments).sort())
-    expect(options('release')?.sort()).toEqual([...factoryReleaseKinds].sort())
+  test('offers every hosted network, both, every release, and all', () => {
+    expect(options('networks')?.sort()).toEqual(['both', ...Object.keys(hostedEnvironments)].sort())
+    expect(options('release')?.sort()).toEqual(['all', ...factoryReleaseKinds].sort())
+    expect(workflow).toContain('["moderato","mainnet"]')
   })
 })
 
@@ -318,5 +325,118 @@ describe('redactRpcCredentials', () => {
     expect(
       redactRpcCredentials('timeout at https://rpc.tempo.xyz', 'https://rpc.tempo.xyz', {}),
     ).toBe('timeout at ***')
+  })
+})
+
+describe('release selection', () => {
+  test('all deploys the core release, then every engine factory the registry names', () => {
+    expect(releaseKindsFor('all')).toEqual(['core', 'erc4626Engine'])
+    expect(registryReleaseKinds).not.toContain('rewards')
+    expect(releaseKindsFor('rewards')).toEqual(['rewards'])
+    expect(() => releaseKindsFor('vault')).toThrow('Unknown factory release vault')
+  })
+})
+
+describe('registry updates', () => {
+  const contract = (name: string, suffix: string, match: 'exact_match' | null = 'exact_match') => ({
+    name,
+    contract: `src/${name}.sol:${name}`,
+    address: address(suffix),
+    transaction: `0x${suffix.repeat(64)}` as Hex,
+    constructorArgs: '0x' as Hex,
+    match,
+  })
+  const run = (network: string, overrides: Partial<FactoryReleaseRun> = {}): FactoryReleaseRun => ({
+    network,
+    chainId: 1,
+    broadcast: true,
+    releases: [
+      {
+        network: network as 'moderato',
+        chainId: 1,
+        kind: 'core',
+        broadcast: true,
+        contracts: [
+          contract('EarnVault', 'a'),
+          contract('EarnFees', 'b'),
+          contract('EarnFactory', 'c'),
+        ],
+        registry: { earn: address('c') },
+      },
+      {
+        network: network as 'moderato',
+        chainId: 1,
+        kind: 'erc4626Engine',
+        broadcast: true,
+        contracts: [contract('ERC4626EngineFactory', 'd')],
+        registry: { erc4626Engine: address('d') },
+      },
+    ],
+    ...overrides,
+  })
+
+  test('records every verified broadcast release on every network', () => {
+    const { updates, skipped } = registryUpdates([run('moderato'), run('mainnet')])
+    expect(updates.map((update) => [update.network, update.key, update.address])).toEqual([
+      ['moderato', 'earn', address('c')],
+      ['moderato', 'erc4626Engine', address('d')],
+      ['mainnet', 'earn', address('c')],
+      ['mainnet', 'erc4626Engine', address('d')],
+    ])
+    expect(skipped).toEqual([])
+  })
+
+  test('skips a release with an unverified contract, a dry run, and a failed release', () => {
+    const unverified = run('moderato')
+    unverified.releases[0]!.contracts[1] = contract('EarnFees', 'b', null)
+    const { updates, skipped } = registryUpdates([
+      unverified,
+      {
+        ...run('mainnet', { broadcast: false }),
+        releases: run('mainnet').releases.map((r) => ({ ...r, broadcast: false })),
+      },
+      { ...run('moderato'), releases: [], failed: { kind: 'core' } },
+    ])
+    expect(updates.map((update) => update.key)).toEqual(['erc4626Engine'])
+    expect(skipped).toEqual([
+      { network: 'moderato', kind: 'core', reason: 'not source verified: EarnFees' },
+      { network: 'mainnet', kind: 'core', reason: 'dry run' },
+      { network: 'mainnet', kind: 'erc4626Engine', reason: 'dry run' },
+      { network: 'moderato', kind: 'core', reason: 'failed' },
+    ])
+  })
+
+  test('rewrites only the named entries of releases.ts', () => {
+    const source = readFileSync(new URL('./releases.ts', import.meta.url), 'utf8')
+    const updated = updateReleaseRegistry(source, [
+      { network: 'moderato', key: 'earn', address: address('c') },
+      { network: 'mainnet', key: 'erc4626Engine', address: address('d') },
+    ])
+    const changed = updated.split('\n').filter((line, index) => line !== source.split('\n')[index])
+    expect(changed).toEqual([
+      `      erc4626Engine: getAddress('${address('d')}'),`,
+      `      earn: getAddress('${address('c')}'),`,
+    ])
+    expect(updated.indexOf(`erc4626Engine: getAddress('${address('d')}')`)).toBeLessThan(
+      updated.indexOf('  moderato: {'),
+    )
+    expect(() =>
+      updateReleaseRegistry(source, [{ network: 'devnet', key: 'earn', address: address('c') }]),
+    ).toThrow('releases.ts has no devnet release')
+    expect(() =>
+      updateReleaseRegistry(source, [{ network: 'moderato', key: 'veda', address: address('c') }]),
+    ).toThrow('releases.ts has no moderato.veda entry')
+  })
+
+  test('the pull request body lists each recorded contract and each skipped release', () => {
+    const runs = [run('moderato'), { ...run('mainnet'), releases: [], failed: { kind: 'core' } }]
+    const body = registryPullRequestBody(
+      runs,
+      registryUpdates(runs),
+      'https://github.com/o/r/actions/runs/1',
+    )
+    expect(body).toContain('[the Factory Release run](https://github.com/o/r/actions/runs/1)')
+    expect(body).toContain(`| moderato | core | EarnFactory | \`${address('c')}\` |`)
+    expect(body).toContain('- mainnet core: failed')
   })
 })

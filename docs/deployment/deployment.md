@@ -280,16 +280,27 @@ registered engine factory's entry point.
 ### Releasing from CI
 
 The **Factory Release** workflow ([`factory-release.yml`](../../.github/workflows/factory-release.yml))
-runs one release from `main`: choose the hosted network, the release (`core`, `rewards`, or an engine
-factory's `releaseKey`, such as `erc4626Engine`), and whether to broadcast. It runs
-`pnpm factory-release <network> <release> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
-which runs the release's entry point below with the `deploy` profile, checks that the run created
-exactly the release's contracts, each from the locally compiled creation bytecode, and, after a
-broadcast, source-verifies each one on Tempo's verifier. Without broadcast, Forge only simulates.
-The job summary and the `factory-release-<network>-<release>` artifact list the addresses,
-transactions, and source matches, plus the registry entry to review into
-[`releases.ts`](../../deployments/core/releases.ts) in a pull request; the workflow never edits the
-registry. The job runs in the `factory-release-<network>` environment, which requires a reviewer's
+releases from `main` in one run. Choose the networks (`both` runs Moderato, then mainnet only after
+Moderato succeeds), the releases (`all` is the core release and every engine factory the registry
+names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
+that one), and whether to broadcast. Each network's job runs
+`pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
+which runs each release's entry point below with the `deploy` profile, checks that it created exactly
+the release's contracts, each from the locally compiled creation bytecode, and, after a broadcast,
+source-verifies each one on Tempo's verifier. Without broadcast, Forge only simulates, and each
+release simulates from the deployer's current nonce, so only the first release's addresses are the
+ones a broadcast creates. Each job's summary and its `factory-release-<network>` artifact list the
+addresses, transactions, and source matches; a run that stops keeps the releases before it.
+
+After a broadcast, the last job records every release whose contracts all source verified, from
+every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
+`factory-release/<run>` branch and opens it as a draft pull request (`pnpm factory-release registry`).
+A pull request `GITHUB_TOKEN` opens starts no workflows, so mark it ready for review to run the
+required checks. Opening it needs the repository's "Allow GitHub Actions to create and approve pull
+requests" setting; without it, the job pushes the branch and its summary links the pull request to
+open. The registry changes only through that review.
+
+Each network's job runs in the `factory-release-<network>` environment, which requires a reviewer's
 approval and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
 `TEMPO_RPC_PASSWORD`). Both environments hold the same deployer key that local profile deployments
 use; releases are ownerless, so it only pays fees. Rotating it updates both environments. The
