@@ -31,9 +31,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Each network's environment holds its deployer key and requires a reviewer's approval.
+    # Each network's environment requires a reviewer's approval and holds the deployer key, the same
+    # key local profile deployments use.
     environment: factory-release-${{ inputs.network }}
-    # Shares the network's hosted-contracts queue, so no other job spends the deployer's nonces.
+    # Shares the network's hosted-contracts queue. It orders only CI jobs, so do not broadcast with the
+    # deployer key locally while a release runs.
     concurrency:
       group: hosted-contracts-${{ inputs.network }}
       cancel-in-progress: false

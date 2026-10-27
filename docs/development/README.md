@@ -200,7 +200,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
   Only the two deploy jobs receive the `DEV_CLOUDFLARE_*` credentials, which are secrets of the
   `production` and `preview` environments, and both environments deploy only from `main`; the
-  benchmark job receives `TEMPO_API_KEY`; the factory release job receives its network's
+  benchmark job receives `TEMPO_API_KEY`; the factory release job receives the shared
   `DEPLOYER_PRIVATE_KEY` and RPC credentials from the reviewer-gated `factory-release-<network>`
   environment; the audit and remediation-event jobs receive the
   `EVENTS_*` intake credentials.

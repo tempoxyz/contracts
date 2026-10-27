@@ -289,10 +289,13 @@ broadcast, source-verifies each one on Tempo's verifier. Without broadcast, Forg
 The job summary and the `factory-release-<network>-<release>` artifact list the addresses,
 transactions, and source matches, plus the registry entry to review into
 [`releases.ts`](../../deployments/core/releases.ts) in a pull request; the workflow never edits the
-registry. The job runs in the `factory-release-<network>` environment, which holds that network's
-`DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`, `TEMPO_RPC_PASSWORD`) and
-requires a reviewer's approval, and it shares the network's `hosted-contracts-<network>` queue so no
-other job spends the deployer's nonces. The same command runs locally with those variables set.
+registry. The job runs in the `factory-release-<network>` environment, which requires a reviewer's
+approval and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
+`TEMPO_RPC_PASSWORD`). Both environments hold the same deployer key that local profile deployments
+use; releases are ownerless, so it only pays fees. Rotating it updates both environments. The
+network's `hosted-contracts-<network>` queue orders only CI jobs, so do not broadcast with that key
+locally while a release runs. The same command runs locally with `DEPLOYER_PRIVATE_KEY` exported,
+for example from a profile's `.env.<id>`; it does not load dotenv files itself.
 
 An engine factory release is independent: the `<releaseKey>Factory` entry point of the engine's
 deploy script (for example `erc4626EngineFactory` in `DeployERC4626Engine`) deploys it. Deploy one
