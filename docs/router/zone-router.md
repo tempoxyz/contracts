@@ -83,6 +83,14 @@ token and conversion readiness. A card program's `BridgeSettler` is deployed by 
 [scripts](../spend/deploy.md#3-deploy-the-settler-and-router-for-each-zone); the profile lists it
 in `settlers`.
 
+Outside a profile, the **Factory Release** workflow deploys and source-verifies a
+`ZoneRouterFactory`, a `SendSettler`, or a mode's router from `main`
+([router releases](../deployment/deployment.md#router-releases)). Each lands at an address its
+build and settings fix: the factory and settlers through the CREATE2 deployer with Earn's release
+salt, and a router at its factory's `predict(mode)`, so whoever deploys the same one, Tempo or an
+integrator, gets the same contract, and a release reuses one that exists. Admission and pool
+authorization stay with their owners, as above.
+
 ## Ops
 
 The router reads the first callback word before decoding, so ops 0 and 1 keep
@@ -151,8 +159,7 @@ without paying cannot settle, hands every unused unit back to the router and kee
 allowance. Whoever builds the callback picks `to` and `vault` and spends only their own input,
 capped at `maxInput`. Conversion needs the pool owner to admit the settler as a taker and recipient.
 It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
-no Zone account or `senderTag`. Deploy one with
-[`DeploySendSettler.s.sol`](../../router/script/deploy/DeploySendSettler.s.sol) and list it in a
+no Zone account or `senderTag`. Deploy one with the [Factory Release `sendSettler`](../deployment/deployment.md#router-releases) and list it in a
 profile's `zoneRouter.settlers`.
 
 ## Invariants

@@ -39,7 +39,7 @@ rather than a copy. Earn's own build never compiles it ([`AGENTS.md`](AGENTS.md)
 
 ## Results
 
-478 tests pass. The card matrix runs 35 scenarios against 11 setups, with no failures: 5 Bridge
+485 tests pass. The card matrix runs 35 scenarios against 11 setups, with no failures: 5 Bridge
 setups and 6 Tempo setups. The full table is in
 [`docs/spend/matrix.md`](../docs/spend/matrix.md).
 
@@ -159,7 +159,7 @@ vendor/                     Pinned Bridge and Zones sources (VENDORED.md); Earn 
 
 - [`docs/spend/design.md`](../docs/spend/design.md): the design, flows, security model and decisions.
 - [`docs/router/zone-router.md`](../docs/router/zone-router.md): the [Zone router](../router/README.md) private spends go through.
-- [`docs/spend/deploy.md`](../docs/spend/deploy.md): deploying into Bridge's factory, and the calls each role submits.
+- [`docs/spend/deploy.md`](../docs/spend/deploy.md): deploying into Bridge's factory, and the calls each role submits. The handler and each program's settler land at deterministic addresses, so Bridge running the deploy scripts and Tempo's Spend Release workflow ([`spend-release.yml`](../.github/workflows/spend-release.yml)) deploy the same contracts.
 - [`docs/spend/audit-scope.md`](../docs/spend/audit-scope.md): what an audit covers, the invariants to check and where to look hardest.
 - [`docs/spend/bridge-integration.md`](../docs/spend/bridge-integration.md): how Bridge's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
 - [`docs/spend/harness.md`](../docs/spend/harness.md): what is real and what is modeled, and how to extend it.

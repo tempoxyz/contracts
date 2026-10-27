@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { Script } from "forge-std/Script.sol";
 import { VmSafe } from "forge-std/Vm.sol";
 import { console } from "forge-std/console.sol";
 
@@ -12,6 +11,7 @@ import { IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneInfo } from "tempo-zones/interf
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeSettler } from "../../src/settler/BridgeSettler.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
+import { SpendRelease } from "./SpendRelease.sol";
 
 /// @notice A card program's router mode: Spend only on `zoneId`, through `settler` alone, with no Earn
 ///         bindings.
@@ -26,15 +26,18 @@ library SpendMode {
 
 /// @notice Deploys one card program's `BridgeSettler` and the Spend-mode `ZoneRouter` that may use
 ///         it on one Zone, through a `ZoneRouterFactory`, after checking the program's clone was
-///         created for its ID and the Zone has a registered portal. Neither contract has an owner,
-///         so nothing else is configured here. A Zone with a closed callback gateway must still
-///         grant the router the gateway role, and one that enforces access must admit the program's
-///         refund recipient and the program wallet that deposits refunds.
+///         created for its ID and the Zone has a registered portal. The settler lands at its
+///         deterministic address (`SpendRelease`), as `DeployBridgeSettler` deploys it, and one
+///         already there is reused; so is a router the factory already deployed for this mode.
+///         Neither contract has an owner, so nothing else is configured here. A Zone with a closed
+///         callback gateway must still grant the router the gateway role, and one that enforces
+///         access must admit the program's refund recipient and the program wallet that deposits
+///         refunds.
 ///         `run` reads FACTORY (the Bridge spender factory), SPENDER_ID, ZONE_ID, OUT,
 ///         ROUTER_FACTORY (optional: a new ZoneRouterFactory is deployed without it) and
 ///         DEPLOYER_PK unless the signer comes from `--account` or `--ledger`. OUT is written only
 ///         with `--broadcast`.
-contract DeployZoneRouter is Script {
+contract DeployZoneRouter is SpendRelease {
     struct Output {
         address factory;
         bytes32 spenderId;
@@ -88,7 +91,7 @@ contract DeployZoneRouter is Script {
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
         if (address(routerFactory) == address(0)) routerFactory = new ZoneRouterFactory();
-        o.settler = new BridgeSettler(factory, spenderId);
+        (o.settler,) = _bridgeSettler(factory, spenderId);
         o.router = ZoneRouter(routerFactory.deploy(SpendMode.forSettler(zoneId, address(o.settler))));
         vm.stopBroadcast();
         o.factory = address(factory);

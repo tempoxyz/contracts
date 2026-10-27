@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { Script } from "forge-std/Script.sol";
 import { VmSafe } from "forge-std/Vm.sol";
 import { console } from "forge-std/console.sol";
 
 import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
-import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
+import { SpendRelease } from "./SpendRelease.sol";
 
-/// @notice Deploys the "TS" handler against Bridge's existing SpenderFactory. Registering it is an
+/// @notice Deploys the "TS" handler against Bridge's existing SpenderFactory at its deterministic
+///         address (`SpendRelease`), or reuses the one already there, so Bridge and Tempo's Spend
+///         Release workflow land on the same handler. Registering it is an
 ///         admin call behind Bridge's timelock, and gating it is a governance call, so the script
 ///         writes both as calldata to OUT for Bridge to submit rather than sending them. The gate
 ///         call is written only while the prefix is `Disabled` with no handler, its state before
@@ -20,12 +21,16 @@ import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 ///         `Enabled` handler back to `Gated`, and never turns a `Disabled` one back on.
 ///         `run` reads FACTORY and OUT, and DEPLOYER_PK unless the signer comes from `--account`
 ///         or `--ledger`. OUT is written only with `--broadcast`, once the handler exists.
-contract DeployTempoSpend is Script {
+contract DeployTempoSpend is SpendRelease {
     bytes2 internal constant PREFIX = "TS";
 
     struct Output {
         address factory;
         SpenderTempoSpend handler;
+        /// @dev False when the handler already existed at its address, so nothing was sent.
+        bool created;
+        /// @dev True when the factory's "TS" handler is already this one, so the admin call changes nothing.
+        bool registered;
         /// @dev True when the factory had no "TS" handler before this deploy.
         bool firstRegistration;
         /// @dev The prefix's status before this deploy: "Disabled", "Gated" or "Enabled".
@@ -50,11 +55,13 @@ contract DeployTempoSpend is Script {
     function deploy(address factory, uint256 deployerPk) public returns (Output memory o) {
         require(factory.code.length != 0, "FACTORY has no code");
         SpenderStatus status = _status(SpenderFactory(factory));
-        o.firstRegistration = address(SpenderFactory(factory).getSpenderHandler(PREFIX)) == address(0);
+        address current = address(SpenderFactory(factory).getSpenderHandler(PREFIX));
+        o.firstRegistration = current == address(0);
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
-        o.handler = new SpenderTempoSpend(IFactory(factory));
+        (o.handler, o.created) = _tempoSpend(factory);
         vm.stopBroadcast();
+        o.registered = current == address(o.handler);
         o.factory = factory;
         o.status = _name(status);
         o.adminRegisterHandler =
@@ -71,6 +78,8 @@ contract DeployTempoSpend is Script {
         string memory key = "tempo-spend";
         vm.serializeAddress(key, "factory", o.factory);
         vm.serializeAddress(key, "handler", address(o.handler));
+        vm.serializeBool(key, "created", o.created);
+        vm.serializeBool(key, "registered", o.registered);
         vm.serializeBool(key, "firstRegistration", o.firstRegistration);
         vm.serializeString(key, "status", o.status);
         vm.serializeBytes(key, "adminRegisterHandler", o.adminRegisterHandler);

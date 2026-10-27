@@ -8,6 +8,10 @@ paths:
     ignore:
       # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.
       - 'unexpected key "queue" for "concurrency" section'
+  '.github/workflows/spend-release.yml':
+    ignore:
+      # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.
+      - 'unexpected key "queue" for "concurrency" section'
   '.github/workflows/e2e-benchmarks.yml':
     ignore:
       # GitHub supports queued concurrency, but actionlint 1.7.12 does not yet

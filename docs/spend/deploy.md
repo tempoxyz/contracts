@@ -1,7 +1,9 @@
 # Deploying
 
-Tempo spend deploys into Bridge's existing `SpenderFactory`. Bridge deploys the handler, its `BridgeSettler` and the program's Zone router; none has an
-owner, so nothing changes after deployment.
+Tempo spend deploys into Bridge's existing `SpenderFactory`: the handler, each program's `BridgeSettler` and the
+program's Zone router. None has an owner, so nothing changes after deployment. The handler and the
+settler land at deterministic addresses, so Bridge can deploy them with the scripts below or Tempo
+with the [Spend Release workflow](#deploying-from-ci), and either lands on the same contract.
 Every factory change is a role-gated call, so the scripts write those calls as calldata for the
 multisig that holds each role, instead of sending them.
 
@@ -17,11 +19,20 @@ FACTORY=0x... OUT=reports/tempo-spend.json \
   forge script script/deploy/DeployTempoSpend.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
 ```
 
+The script creates the handler through the CREATE2 deployer
+(`0x4e59b44847b379578588920cA78FbF26c0B4956C`) with the salt of Earn's
+[shared factory releases](../deployment/deployment.md#shared-factory-releases)
+([`SpendRelease`](../../spend/script/deploy/SpendRelease.sol)), so the same build for the same
+factory lands at the same address whoever deploys it. A handler already at that address is reused
+and nothing is sent. The address follows this repo's build of `spend/`: a change to the handler's
+source, the compiler settings or the project's remappings moves it.
+
 The deploy scripts sign with forge's `--account` or `--ledger`. `DEPLOYER_PK` also works, for test
 networks, and takes precedence over both when set. `OUT` is written only with `--broadcast`, but
 forge writes it while running the script, before the deployment confirms. Check that `handler` has
-code before submitting its calls. It holds the handler address, the prefix's `status` before the deploy, and two calls to the
-factory:
+code before submitting its calls. It holds the handler address, whether this run `created` it,
+whether the factory's `"TS"` handler is already this one (`registered`), the prefix's `status`
+before the deploy, and two calls to the factory:
 
 | Field                   | Submitted by     | Call                                      |
 | ----------------------- | ---------------- | ----------------------------------------- |
@@ -32,7 +43,8 @@ A gated handler only runs for programs governance allowlists, so programs can be
 a time. Governance can later switch the status to `Enabled` for every program, or `Disabled` to
 stop it.
 
-Run the same script to replace a live handler. The factory keeps the prefix's status across
+Run the same script to replace a live handler with a new build; for an unchanged build it reuses
+the existing handler, and once that one is registered the admin call changes nothing. The factory keeps the prefix's status across
 `setSpenderHandler`, so `governanceGateHandler` is written only for a first registration while
 `status` is `Disabled`. Otherwise it is empty (`0x`) and only the admin call is needed:
 
@@ -74,11 +86,17 @@ FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... ZONE_ID=7 ROUTER_FACTO
 
 The script checks that the program's clone was created for its ID, that `ZONE_ID` is a valid Zone
 ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program's
-`BridgeSettler`, then, through the `ZoneRouterFactory`, a [`ZoneRouter`](../router/zone-router.md)
+`BridgeSettler` at its deterministic address, as the handler's, or reuses the one there, then,
+through the `ZoneRouterFactory`, a [`ZoneRouter`](../router/zone-router.md)
 whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. Leave
 `ROUTER_FACTORY` unset to deploy a new factory. `OUT` holds `factory`, `spenderId`, `clone`,
 `zoneId`, `portal`, `settler`, `routerFactory` and `router`, and is written only with
 `--broadcast`.
+
+To deploy the settler alone, as the Spend Release workflow does, run
+`script/deploy/DeployBridgeSettler.s.sol` with `FACTORY`, `SPENDER_ID` and `OUT`; it makes the same
+program checks and lands on the same address, and `OUT` holds `factory`, `spenderId`, `clone`,
+`settler` and `created`. `DeployZoneRouter` then reuses that settler.
 
 Once the settler exists, the router can instead come from an Earn deployment profile's
 `zoneRouter`, which lists the settler and deploys, verifies and records the router with
@@ -142,7 +160,40 @@ that the clone receives and sends and the vault receives. EarnShare policies are
 the policy admin adds whichever of the clone, vault, router, settler, refund recipient, portal,
 messenger and Zone admin are missing.
 
+## Deploying from CI
+
+The **Spend Release** workflow ([`spend-release.yml`](../../.github/workflows/spend-release.yml))
+deploys the handler (`tempoSpend`) or one program's settler (`bridgeSettler`) from `main`, with the
+same scripts and so at the same deterministic addresses as a deploy by Bridge. Choose the network
+(Moderato or mainnet), the contract, Bridge's factory, the program's spender ID for a settler, and
+whether to broadcast; without broadcast Forge only simulates. It runs
+[`script/deploy/release.sh`](../../spend/script/deploy/release.sh), which:
+
+- refuses an RPC serving another chain, and runs Forge at the chain's hardfork from
+  `tempo_forkSchedule`;
+- predicts the address from the locally compiled creation code, and checks that the run created
+  exactly that contract there from that code, or nothing when it already existed;
+- after a broadcast, source-verifies it on Tempo's verifier (`https://contracts.tempo.xyz`),
+  including a contract that already existed, and fails if the verifier has no source match.
+
+The job summary lists the address, the transaction and the source match, and, for the handler, the
+admin and governance calls above for Bridge to submit; the
+`spend-release-<network>-<contract>-<attempt>` artifact holds the result and Forge's broadcast
+files. The workflow never submits those calls: registering and gating stay with Bridge's roles.
+
+The job runs in the reviewer-gated `factory-release-<network>` environment, with the deployer key
+and RPC credentials of the [factory releases](../deployment/deployment.md#releasing-from-ci), and
+shares their `hosted-contracts-<network>` queue. The contracts are ownerless, so the key only pays
+fees. The script also runs locally, for example against a dev node:
+
+```bash
+FACTORY=0x... SPENDER_ID=0x... DEPLOYER_PRIVATE_KEY=0x... TEMPO_RPC_URL=http://127.0.0.1:8545 \
+  script/deploy/release.sh local bridgeSettler --broadcast
+```
+
 ## Testing the scripts
 
 `test/unit/DeployScripts.t.sol` runs each script against the harness's factory, submits the calls
 it writes with the matching role, and settles a spend through the new handler.
+`test/unit/DeterministicDeploy.t.sol` checks that the handler and settler land at their predicted
+release addresses for any deployer, and that deploying again reuses them without sending anything.

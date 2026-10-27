@@ -1,8 +1,9 @@
 name: Factory Release
 
-# Deploys the shared factory releases from main on the hosted networks and source verifies them on
-# Tempo's verifier, then pushes a branch that records the verified releases in
-# deployments/core/releases.ts, for a maintainer to open as a pull request.
+# Deploys the shared factory releases, and the router project's ownerless contracts, from main on the
+# hosted networks and source verifies them on Tempo's verifier, then pushes a branch that records the
+# verified registry releases in deployments/core/releases.ts, for a maintainer to open as a pull
+# request.
 on:
   workflow_dispatch:
     inputs:
@@ -13,10 +14,15 @@ on:
         # The factory release unit test asserts these lists match the hosted networks and releases.
         options: [both, moderato, mainnet]
       release:
-        description: Releases to deploy; all is the core release (EarnVault, EarnFees, EarnFactory) and every engine factory
+        description: Releases to deploy; all is the core release (EarnVault, EarnFees, EarnFactory) and every engine factory. The router releases (zoneRouterFactory, sendSettler, zoneRouter) are in no registry
         required: true
         type: choice
-        options: [all, core, rewards, erc4626Engine]
+        options: [all, core, rewards, erc4626Engine, zoneRouterFactory, sendSettler, zoneRouter]
+      parameters:
+        description: 'JSON parameters of a single release: sendSettler {"pool", "customerId"} (both, or {} for none); zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for the rest'
+        required: false
+        type: string
+        default: '{}'
       broadcast:
         description: Broadcast, source verify, and push the registry branch; unchecked only simulates
         required: true
@@ -62,10 +68,15 @@ jobs:
           forge-cache: factory-release
           workspace: '@tempoxyz/earn'
 
+      # The router releases build router/, a separate Foundry project with its own pinned dependencies.
+      - name: Install the router's Solidity dependencies
+        run: scripts/solidity-deps.sh router
+
       - name: Deploy and verify
         env:
           NETWORK: ${{ matrix.network }}
           RELEASE: ${{ inputs.release }}
+          PARAMETERS: ${{ inputs.parameters }}
           BROADCAST: ${{ inputs.broadcast }}
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
@@ -73,16 +84,21 @@ jobs:
           TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
-          arguments=("$NETWORK" "$RELEASE" --output "$RUNNER_TEMP/factory-release.json")
+          arguments=("$NETWORK" "$RELEASE" --parameters "$PARAMETERS" --output "$RUNNER_TEMP/factory-release.json")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
           pnpm factory-release "${arguments[@]}"
 
-      # Forge records the authenticated RPC URL in its script sequences under earn/cache, which the
-      # forge cache saves after the job for every branch to restore; the command deletes them, and
-      # this removes any it could not, whatever the outcome, before that save.
+      # Forge records the authenticated RPC URL in its script sequences under each project's cache,
+      # which the forge cache saves after the job (earn/cache) for every branch to restore; the
+      # command deletes them, and this removes any it could not, whatever the outcome, before that save.
       - name: Remove Forge script sequences
         if: ${{ always() }}
-        run: find earn/cache -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+        run: |
+          for cache in earn/cache router/cache; do
+            if [[ -d "$cache" ]]; then
+              find "$cache" -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+            fi
+          done
 
       - name: Summarize
         if: ${{ always() }}
@@ -100,6 +116,10 @@ jobs:
             echo '| Release | Contract | Address | Transaction | Source match |'
             echo '| --- | --- | --- | --- | --- |'
             jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" else "already deployed" end) | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
+            if jq -e 'any(.releases[]; .parameters)' "$result" >/dev/null; then
+              echo
+              jq -r '.releases[] | select(.parameters) | "- \(.kind) parameters: `\(.parameters | tojson)`"' "$result"
+            fi
             if jq -e '.failed' "$result" >/dev/null; then
               echo
               echo "Stopped at the $(jq -r '.failed.kind' "$result") release; the releases above it are deployed."
@@ -114,6 +134,7 @@ jobs:
           path: |
             ${{ runner.temp }}/factory-release.json
             earn/broadcast/
+            router/broadcast/
           if-no-files-found: ignore
 
   # Records every broadcast release whose contracts all source verified, including those from a

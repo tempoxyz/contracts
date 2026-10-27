@@ -1,0 +1,142 @@
+name: Spend Release
+
+# Deploys one of Tempo spend's ownerless contracts for a Bridge SpenderFactory from main: the "TS"
+# handler or one card program's BridgeSettler. Each lands at its deterministic release address (the
+# CREATE2 deployer with Earn's release salt), the same address Bridge reaches running the deploy
+# scripts itself, and one already there is reused. After a broadcast it is source verified on Tempo's
+# verifier. Registering the handler stays with Bridge's admin and governance, so the job summary lists
+# the calls each submits; nothing here holds a role on Bridge's factory.
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Hosted network
+        required: true
+        type: choice
+        options: [moderato, mainnet]
+      contract:
+        description: tempoSpend is the "TS" handler; bridgeSettler is one program's BridgeSettler
+        required: true
+        type: choice
+        options: [tempoSpend, bridgeSettler]
+      factory:
+        description: Bridge's SpenderFactory address
+        required: true
+        type: string
+      spender-id:
+        description: bridgeSettler only, the program's spender ID (bytes32)
+        required: false
+        type: string
+        default: ''
+      broadcast:
+        description: Broadcast and source verify; unchecked only simulates
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: ${{ inputs.contract }} on ${{ inputs.network }}${{ inputs.broadcast && ' (broadcast)' || ' (dry run)' }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The network's environment requires a reviewer's approval and holds the deployer key the factory
+    # releases use. The contracts are ownerless, so the key only pays fees.
+    environment: factory-release-${{ inputs.network }}
+    # Shares the network's hosted-contracts queue with the factory releases, so the deployer key never
+    # sends from two CI jobs at once.
+    concurrency:
+      group: hosted-contracts-${{ inputs.network }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: spend
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install spend's Solidity dependencies
+        working-directory: .
+        run: scripts/solidity-deps.sh spend
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      # Inputs reach the script only through the environment; release.sh validates them.
+      - name: Deploy and verify
+        env:
+          NETWORK: ${{ inputs.network }}
+          CONTRACT: ${{ inputs.contract }}
+          FACTORY: ${{ inputs.factory }}
+          SPENDER_ID: ${{ inputs.contract == 'bridgeSettler' && inputs.spender-id || '' }}
+          BROADCAST: ${{ inputs.broadcast }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          arguments=("$NETWORK" "$CONTRACT")
+          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
+          RESULT="$RUNNER_TEMP/spend-release.json" script/deploy/release.sh "${arguments[@]}"
+
+      # Forge records the authenticated RPC URL in its script sequences under spend/cache; the script
+      # deletes them, and this removes any it could not, whatever the outcome.
+      - name: Remove Forge script sequences
+        if: ${{ always() }}
+        run: find cache -mindepth 1 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          NETWORK: ${{ inputs.network }}
+        run: |
+          result="$RUNNER_TEMP/spend-release.json"
+          if [[ ! -f "$result" ]]; then
+            echo "No release ran on ${NETWORK}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Spend release on ${NETWORK} · $(jq -r 'if .broadcast then "broadcast" else "dry run" end' "$result") · ${GITHUB_SHA::7}"
+            echo
+            echo '| Contract | Address | Transaction | Source match |'
+            echo '| --- | --- | --- | --- |'
+            jq -r 'select(.address) | "| \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" elif .existed then "already deployed" elif .broadcast then "-" else "would be created" end) | \(.match // "-") |"' "$result"
+            jq -r 'select(.factory) | "\nFactory `\(.factory)`\(if .spenderId then ", program `\(.spenderId)`" else "" end)."' "$result"
+            if jq -e '.contract == "tempoSpend" and .output.adminRegisterHandler' "$result" >/dev/null; then
+              echo
+              echo '### Calls for Bridge to submit'
+              echo
+              jq -r 'if .output.registered then "The factory already runs this handler, so the admin call changes nothing.\n" else empty end' "$result"
+              echo '| Submitted by | Call | Calldata |'
+              echo '| --- | --- | --- |'
+              jq -r '"| Admin (timelock) | `setSpenderHandler(\"TS\", handler)` | `\(.output.adminRegisterHandler)` |"' "$result"
+              jq -r '.output | if (.governanceGateHandler // "0x") != "0x" then "| Governance | `updateSpenderHandlerStatus(\"TS\", Gated)` | `\(.governanceGateHandler)` |" else empty end' "$result"
+              jq -r '.output | if .status then "\nThe prefix was `\(.status)` before this deploy; docs/spend/deploy.md says when governance gates it." else "\nA broadcast also writes the governance gate call when the factory needs one." end' "$result"
+            fi
+            if jq -e '.error' "$result" >/dev/null; then
+              echo
+              echo "Failed: $(jq -r '.error' "$result")"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          # One artifact per attempt, so a rerun keeps what an earlier attempt recorded.
+          name: spend-release-${{ inputs.network }}-${{ inputs.contract }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/spend-release.json
+            spend/broadcast/
+          if-no-files-found: ignore

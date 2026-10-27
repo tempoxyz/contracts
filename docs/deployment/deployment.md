@@ -303,11 +303,14 @@ registered engine factory's entry point.
 The **Factory Release** workflow ([`factory-release.yml`](../../.github/workflows/factory-release.yml))
 releases from `main` in one run. Choose the networks (`both` runs Moderato, then mainnet only after
 Moderato succeeds), the releases (`all` is the core release and every engine factory the registry
-names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
-that one), and whether to broadcast. Each network's job runs
-`pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
+names; `core`, `rewards`, one engine factory's `releaseKey`, such as `erc4626Engine`, or a
+[router release](#router-releases) with its `parameters` deploys just that one), and whether to
+broadcast. Each network's job runs
+`pnpm factory-release <network> <release|all> [--parameters <json>] [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
 which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
-addresses, transactions, and source matches; a run that stops keeps the releases before it.
+addresses, transactions, and source matches; a run that stops keeps the releases before it. The
+[Spend Release](../spend/deploy.md#deploying-from-ci) workflow shares these environments and the
+hosted-contracts queue.
 
 After a broadcast, the last job records every release whose contracts all source verified, from
 every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
@@ -334,3 +337,41 @@ FOUNDRY_PROFILE=deploy forge script \
   --sig 'erc4626EngineFactory(uint256)' 42431 \
   --network tempo --rpc-url https://rpc.moderato.tempo.xyz --broadcast --slow
 ```
+
+### Router releases
+
+The [Zone router](../router/zone-router.md)'s ownerless contracts release through the same command
+and workflow, from [`router/`](../../router/README.md) with its own solc build and `deploy` profile.
+None has a registry entry, so `all` never deploys one and the registry job records none. Pass a
+release's parameters as one JSON object (`--parameters`, or the workflow's `parameters` input); the
+command validates them before Forge runs, refuses parameters for any other release, and records
+them in the result and the job summary.
+
+| Release             | Parameters                                              | Creates                                   |
+| ------------------- | ------------------------------------------------------- | ----------------------------------------- |
+| `zoneRouterFactory` | None                                                    | The `ZoneRouterFactory`                   |
+| `sendSettler`       | `{}`, or `{"pool": <address>, "customerId": <bytes32>}` | A `SendSettler`, pool-less or converting  |
+| `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                 | The router `factory.deploy(mode)` creates |
+
+A `zoneRouter` mode has `ZoneRouter.Mode`'s fields: `zoneId`, `enabledOps` (deposit 1, redeem 2,
+spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool` and `customerId`
+(together, for a converting Earn mode), and `settlers` (exactly with spend; their order is part of
+the mode). Omitted fields are zero.
+
+```bash
+pnpm factory-release moderato zoneRouter \
+  --parameters '{"factory": "<ZoneRouterFactory>", "mode": {"zoneId": 7, "enabledOps": 4, "settlers": ["<SendSettler>"]}}'
+```
+
+[`DeployRouterRelease`](../../router/script/deploy/DeployRouterRelease.s.sol) holds their entry
+points, with the same chain, profile, and deployer checks as `DeployFactoryRelease`. The factory and
+each settler are created through the CREATE2 deployer with Earn's release salt
+(`DeterministicRelease`), and a router by its factory at `predict(mode)`, salted by the mode's hash.
+So a `ZoneRouterFactory` or `SendSettler` of the same build and settings, and a `ZoneRouter` of the
+same factory and mode, lands at the same address whoever deploys it, on every network, and an entry
+point reuses one that exists (a router only if `factory.isRouter` says its factory made it). Forge
+records the router as a contract its factory call created; the command matches it by address and
+checks it like any other creation, then source-verifies it with `abi.encode(mode)` as its
+constructor arguments. A release deploys only: the pool owner still admits a converting settler
+or router, and the Zone's Portal administrator a router
+([Zone router deployment](../router/zone-router.md#deployment)).
