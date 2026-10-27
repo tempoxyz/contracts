@@ -285,7 +285,7 @@ Moderato succeeds), the releases (`all` is the core release and every engine fac
 names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
 that one), and whether to broadcast. Each network's job runs
 `pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
-which runs each release's entry point below with the `deploy` profile, checks that it created exactly
+which first skips any release whose current [`releases.ts`](../../deployments/core/releases.ts) entry on that network already runs this checkout's compiled code (the check a profile deployment runs against its release), so rerunning `all` deploys only what changed; it runs each other release's entry point below with the `deploy` profile, checks that it created exactly
 the release's contracts, each from the locally compiled creation bytecode, and, after a broadcast,
 source-verifies each one on Tempo's verifier. Without broadcast, Forge only simulates, and each
 release simulates from the deployer's current nonce, so only the first release's addresses are the

@@ -135,6 +135,9 @@ describe('deployFactoryRelease', () => {
     const dependencies = {
       forge: vi.fn(),
       preflight: vi.fn(),
+      currentRelease: vi.fn(
+        async (_options: unknown): Promise<Record<string, `0x${string}`> | null> => null,
+      ),
       removeScriptCache: vi.fn(),
       readFile: vi.fn((path: string) => {
         if (path.endsWith('-latest.json'))
@@ -246,6 +249,30 @@ describe('deployFactoryRelease', () => {
       '/repo/earn',
       'DeployFactoryRelease.s.sol',
     )
+  })
+
+  test('skips a release whose live registry entry already runs this checkout', async () => {
+    const dependencies = runtime()
+    dependencies.currentRelease.mockResolvedValueOnce({ earn: address('c') })
+    const result = await deployFactoryRelease(
+      {
+        network: 'moderato',
+        kind: 'core',
+        broadcast: true,
+        root: '/repo/earn',
+        environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
+      },
+      dependencies as Partial<FactoryReleaseDependencies>,
+    )
+    expect(dependencies.forge).not.toHaveBeenCalled()
+    expect(dependencies.verify).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      kind: 'core',
+      current: true,
+      contracts: [],
+      registry: { earn: address('c') },
+    })
+    expect(dependencies.currentRelease.mock.calls[0]![0]).toMatchObject({ chainId: 42431 })
   })
 
   test('a dry run simulates without broadcasting or verifying', async () => {
@@ -373,6 +400,14 @@ describe('registry updates', () => {
       },
     ],
     ...overrides,
+  })
+
+  test('an unchanged release needs no registry update', () => {
+    const unchanged = run('moderato')
+    unchanged.releases[0] = { ...unchanged.releases[0]!, contracts: [], current: true }
+    const { updates, skipped } = registryUpdates([unchanged])
+    expect(updates.map((update) => update.key)).toEqual(['erc4626Engine'])
+    expect(skipped).toEqual([])
   })
 
   test('records every verified broadcast release on every network', () => {

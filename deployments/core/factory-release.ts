@@ -5,7 +5,14 @@ import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { encodeFunctionData, getAddress, type Address, type Hex } from 'viem'
+import {
+  createPublicClient,
+  encodeFunctionData,
+  getAddress,
+  keccak256,
+  type Address,
+  type Hex,
+} from 'viem'
 
 import { deployFactoryReleaseScriptAbi } from '../abis/index.js'
 import {
@@ -13,9 +20,17 @@ import {
   foundryProcessEnvironment,
   sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
-import { rpcConfiguration } from '../chain/runtime.js'
+import { configuredRpcTransport, rpcConfiguration } from '../chain/runtime.js'
 import { hostedEnvironments, type HostedEnvironmentId } from '../chain/tempo.js'
 import { engineFactories } from '../modules/earn/engines/index.js'
+import { compiledRuntimeCode } from './deploy.js'
+import type { EarnDeploymentProfile } from './profile.js'
+import {
+  resolveEarnFactoryRelease,
+  runtimeCodeHash,
+  sharedFactoryRuntimeCodeHashes,
+  validateSharedFactoryRelease,
+} from './releases.js'
 import { verifyContractSource } from './verify.js'
 
 const releaseScript = 'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
@@ -249,6 +264,11 @@ export type FactoryReleaseResult = {
     /** Why source verification failed; the contract is still deployed. */
     verificationError?: string
   })[]
+  /**
+   * Set when the registry's release on this network already runs exactly this checkout's code, so
+   * nothing was deployed and ${BT}registry${BT} names that existing release.
+   */
+  current?: true
   /** The release registry entry to review into deployments/core/releases.ts, when it names one. */
   registry: Record<string, Address> | null
 }
@@ -257,6 +277,17 @@ export type FactoryReleaseDependencies = {
   /** Runs Forge from Earn's project, where its `solc` wrapper path resolves. */
   forge: (arguments_: string[], environment: Record<string, string>, cwd: string) => void
   readFile: (path: string) => string
+  /**
+   * The registry entry of this release on the chain when its live code already matches this
+   * checkout's compiled code, or null when the release needs deploying.
+   */
+  currentRelease: (options: {
+    plan: FactoryReleasePlan
+    chainId: number
+    rpc: ReturnType<typeof rpcConfiguration>
+    root: string
+    environment: Readonly<Record<string, string | undefined>>
+  }) => Promise<Record<string, Address> | null>
   /** Deletes Forge's script sequences of one script, which record the RPC URL with its credentials. */
   removeScriptCache: (root: string, script: string) => void
   preflight: (root: string, environment: Readonly<Record<string, string | undefined>>) => void
@@ -275,6 +306,41 @@ const defaultDependencies: FactoryReleaseDependencies = {
       throw new Error(`forge script failed (status ${result.status ?? 'unknown'})`)
   },
   readFile: (path) => readFileSync(path, 'utf8'),
+  currentRelease: async ({ plan, chainId, rpc, root, environment }) => {
+    if (!plan.registryKey) return null
+    const registry = resolveEarnFactoryRelease(chainId)
+    const address = registry[plan.registryKey as keyof typeof registry]
+    if (!address) return null
+    const client = createPublicClient({ transport: configuredRpcTransport(rpc) })
+    const compile = (contract: string) => compiledRuntimeCode(root, contract, environment)
+    try {
+      if (plan.kind === 'core') {
+        // The same check a profile deployment runs against its release: the factory, its immutable
+        // implementations, and the TIP-20 factory it binds.
+        await validateSharedFactoryRelease(
+          client,
+          { factories: registry } as EarnDeploymentProfile,
+          sharedFactoryRuntimeCodeHashes(compile),
+        )
+      } else {
+        const [contract] = plan.contracts
+        if (!contract) return null
+        const expected = keccak256(compile(contract.contract).bytecode)
+        const actual = await runtimeCodeHash(client, address, contract.name)
+        if (actual.toLowerCase() !== expected.toLowerCase()) return null
+      }
+    } catch (error) {
+      // A different or missing release needs deploying; any other failure, such as the RPC, stops.
+      if (
+        error instanceof Error &&
+        /does not match this checkout|uses TIP-20 factory|No runtime code/.test(error.message)
+      ) {
+        return null
+      }
+      throw error
+    }
+    return { [plan.registryKey]: address }
+  },
   removeScriptCache: (root, script) => {
     // Forge writes the sensitive sequence under <cache_path>/<script file>/, for simulations too.
     const cache = resolve(root, 'cache')
@@ -325,6 +391,24 @@ export async function deployFactoryRelease(
   if (!rpc.authenticatedUrl) throw new Error(`No RPC for ${network.id}`)
 
   runtime.preflight(options.root, options.environment)
+  const current = await runtime.currentRelease({
+    plan,
+    chainId: network.chainId,
+    rpc,
+    root: options.root,
+    environment: options.environment,
+  })
+  if (current) {
+    return {
+      network: network.id,
+      chainId: network.chainId,
+      kind: plan.kind,
+      broadcast: options.broadcast,
+      contracts: [],
+      registry: current,
+      current: true,
+    }
+  }
   try {
     runtime.forge(
       [
@@ -447,7 +531,8 @@ export function registryUpdates(runs: readonly FactoryReleaseRun[]) {
   for (const run of runs) {
     if (run.failed) skipped.push({ network: run.network, kind: run.failed.kind, reason: 'failed' })
     for (const release of run.releases) {
-      if (!release.registry) continue
+      // An unchanged release needs no registry update.
+      if (!release.registry || release.current) continue
       if (!release.broadcast) {
         skipped.push({ network: run.network, kind: release.kind, reason: 'dry run' })
         continue

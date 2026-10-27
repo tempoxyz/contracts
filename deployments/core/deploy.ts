@@ -540,7 +540,7 @@ export function publicFixtureAddresses() {
 }
 
 /** Compiles one release contract with the deploy profile and reads its immutable slots. */
-function compiledRuntimeCode(
+export function compiledRuntimeCode(
   root: string,
   contract: string,
   environment: Readonly<Record<string, string | undefined>>,
