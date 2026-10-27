@@ -107,9 +107,14 @@ describe('Zone router steps', () => {
       'authorize-zone-router',
       'enable-zone-router-tokens',
       'register-zone-router-gateway',
+      'admit-zone-router-account',
     ])
     // A named factory is used as is; Spend needs no pool admission or Earn tokens.
-    expect(routerSteps(card)).toEqual(['deploy-zone-router', 'register-zone-router-gateway'])
+    expect(routerSteps(card)).toEqual([
+      'deploy-zone-router',
+      'register-zone-router-gateway',
+      'admit-zone-router-account',
+    ])
     expect(
       routerSteps(
         profileWith({ zoneId: 7, ops: ['deposit'], earn: { privateAsset: address('a') } }),
@@ -119,6 +124,7 @@ describe('Zone router steps', () => {
       'deploy-zone-router',
       'enable-zone-router-tokens',
       'register-zone-router-gateway',
+      'admit-zone-router-account',
     ])
     expect(routerSteps(profileWith(undefined))).toEqual([])
   })
@@ -352,6 +358,76 @@ describe('Zone router steps', () => {
     )
     expect(result).toBeUndefined()
     expect(authorityClient).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    { name: 'an open Portal', access: false, gatewayOpen: true, admitted: false, sends: false },
+    {
+      name: 'restricted gateways',
+      access: true,
+      gatewayOpen: false,
+      admitted: false,
+      sends: false,
+    },
+    { name: 'an admitted router', access: true, gatewayOpen: true, admitted: true, sends: false },
+    { name: 'an unadmitted router', access: true, gatewayOpen: true, admitted: false, sends: true },
+  ])('admits the router as an account only for $name', async (scenario) => {
+    const reads: Record<string, unknown> = {
+      admin: authorityAccount,
+      isAccessEnforced: scenario.access,
+      isGatewayOpen: scenario.gatewayOpen,
+      hasRole: scenario.admitted,
+    }
+    const readContract = vi.fn(
+      async ({ functionName }: { functionName: string }) => reads[functionName],
+    )
+    const sendTransactionSync = vi.fn().mockResolvedValue({ transactionHash: receiptHash })
+    const result = await executeAvailableAuthority(
+      {
+        action: { id: 'admit-zone-router-account' },
+        environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
+        outputs,
+        profile: cardAndEarn,
+        rpcUrl: 'https://rpc.invalid',
+      },
+      {
+        authorityClient: ((_options: unknown, account: unknown) => ({
+          account,
+          chain: {},
+          readContract,
+          sendTransactionSync,
+        })) as never,
+        fundFromFaucet: vi.fn() as never,
+      },
+    )
+    if (!scenario.sends) {
+      expect(result).toEqual({ transactions: [] })
+      expect(sendTransactionSync).not.toHaveBeenCalled()
+      return
+    }
+    expect(result).toEqual({ transactions: [receiptHash] })
+    const [call] = sendTransactionSync.mock.calls[0]![0].calls as Array<{
+      to: Address
+      data: `0x${string}`
+    }>
+    expect(call!.to).toBe(outputs.zoneRouterPortal)
+    expect(decodeFunctionData({ abi: zonePortalAbi, data: call!.data })).toMatchObject({
+      functionName: 'setAllowedAccount',
+      args: [outputs.zoneRouter, true],
+    })
+  })
+
+  test('hands account admission of a router from a named factory to the Zone administrator', () => {
+    const step = deploymentStep('admit-zone-router-account')
+    if (step.execution !== 'authority') throw new Error('expected an authority step')
+    const environment = { ZONE_ADMIN_PRIVATE_KEY: authorityKey }
+    expect(step.signerAvailable!(card, environment, true)).toBe(false)
+    expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
+    const handoff = step.handoff(card, outputs)
+    expect(handoff).toContain('is source verified as router/src/ZoneRouterFactory.sol')
+    expect(handoff).toContain(
+      `setAllowedAccount(${outputs.zoneRouter}, true) on ${outputs.zoneRouterPortal}`,
+    )
   })
 
   test('admits the router on its conversion pool as the pool owner', async () => {

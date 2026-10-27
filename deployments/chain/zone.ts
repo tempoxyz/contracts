@@ -336,6 +336,30 @@ export async function missingZoneTokens(
 export const zonePortalRole = { account: 2, callbackGateway: 3 } as const
 
 /**
+ * Whether the Portal accepts deposits from a callback gateway `router`: an access-enforced Portal
+ * with open gateways admits it only as an account, since the gateway role then grants nothing.
+ */
+export async function zoneGatewayDepositsAdmitted(
+  client: Pick<PublicClient, 'readContract'>,
+  portal: Address,
+  router: Address,
+) {
+  const read = (functionName: 'isAccessEnforced' | 'isGatewayOpen') =>
+    client.readContract({ address: portal, abi: zonePortalAbi, functionName })
+  const [accessEnforced, gatewayOpen] = await Promise.all([
+    read('isAccessEnforced'),
+    read('isGatewayOpen'),
+  ])
+  if (!accessEnforced || !gatewayOpen) return true
+  return client.readContract({
+    address: portal,
+    abi: zonePortalAbi,
+    functionName: 'hasRole',
+    args: [router, zonePortalRole.account],
+  })
+}
+
+/**
  * Whether the Portal accepts withdrawal callbacks to `gateway`: either it leaves gateways open or
  * `gateway` holds the callback-gateway role.
  */

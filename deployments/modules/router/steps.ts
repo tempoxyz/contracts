@@ -7,7 +7,11 @@ import {
   zoneRouterFactoryAbi,
 } from '../../abis/index.js'
 import { InspectionMismatchError } from '../../chain/inspect.js'
-import { missingZoneTokens, zoneCallbackGatewayRegistered } from '../../chain/zone.js'
+import {
+  missingZoneTokens,
+  zoneCallbackGatewayRegistered,
+  zoneGatewayDepositsAdmitted,
+} from '../../chain/zone.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
 import {
   admitPoolRouter,
@@ -306,6 +310,55 @@ export const registerZoneRouterGateway = defineAuthorityStep({
         data: encodeFunctionData({
           abi: zonePortalAbi,
           functionName: 'setGateway',
+          args: [router, true],
+        }),
+      },
+    ])
+  },
+})
+
+/**
+ * Admits the router as a Portal account when the Portal enforces access with open gateways: the
+ * router then returns change and converted output as an ordinary depositor, which needs that role.
+ */
+export const admitZoneRouterAccount = defineAuthorityStep({
+  id: 'admit-zone-router-account',
+  authority: zoneAdministratorAuthority,
+  execution: 'authority',
+  summary:
+    'Admit the ZoneRouter as a Portal account when the Zone enforces access with open gateways.',
+  handoffSummary:
+    'Verify the router can deposit back into its Zone and emit a Zone administrator handoff if not.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  enabled: hasZoneRouter,
+  satisfied: (client, _profile, outputs) =>
+    zoneGatewayDepositsAdmitted(
+      client,
+      requiredOutput(outputs, 'zoneRouterPortal'),
+      requiredOutput(outputs, 'zoneRouter'),
+    ),
+  handoff: (profile, outputs) => {
+    const router = requiredOutput(outputs, 'zoneRouter')
+    return `Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should ${namedFactoryCheck(profile, outputs)}confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, then call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
+  },
+  // As for gateway admission, a router from a factory the profile names is admitted only by a person.
+  signerAvailable: (profile, environment) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && !namesFactory(profile),
+  async execute(options, dependencies) {
+    if (namesFactory(options.profile)) return undefined
+    const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
+    const administrator = await zoneAdministrator(options, dependencies, portal)
+    if (!administrator) return undefined
+    const router = requiredOutput(options.outputs, 'zoneRouter')
+    if (await zoneGatewayDepositsAdmitted(administrator.client, portal, router))
+      return { transactions: [] }
+    return administrator.send([
+      {
+        to: portal,
+        data: encodeFunctionData({
+          abi: zonePortalAbi,
+          functionName: 'setAllowedAccount',
           args: [router, true],
         }),
       },

@@ -30,6 +30,7 @@ import {
   deployZoneRouterFactory,
   enableZoneRouterTokens,
   registerZoneRouterGateway,
+  admitZoneRouterAccount,
 } from './router/steps.js'
 import {
   authorizeRouter,
@@ -58,6 +59,7 @@ const steps = [
   authorizeZoneRouter,
   enableZoneRouterTokens,
   registerZoneRouterGateway,
+  admitZoneRouterAccount,
 ] as const
 
 unique(

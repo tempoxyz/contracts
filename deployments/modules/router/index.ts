@@ -8,6 +8,7 @@ import {
   missingZoneTokens,
   registeredZone,
   zoneCallbackGatewayRegistered,
+  zoneGatewayDepositsAdmitted,
 } from '../../chain/zone.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
 import { stackAddress } from '../../core/stack.js'
@@ -73,8 +74,9 @@ export const zoneRouterModeModule: CapabilityModule = {
       vaultAsset: requiredOutput(outputs, 'asset'),
     })
     const earn = profile.zoneRouter.earn
-    const [gateway, disabled, inactive, conversion] = await Promise.all([
+    const [gateway, depositsBack, disabled, inactive, conversion] = await Promise.all([
       zoneCallbackGatewayRegistered(client, portal, router),
+      zoneGatewayDepositsAdmitted(client, portal, router),
       earn ? missingZoneTokens(client, portal, zoneRouterTokens(profile, outputs)) : [],
       earn
         ? missingZoneTokens(client, portal, zoneRouterTokens(profile, outputs), {
@@ -86,6 +88,11 @@ export const zoneRouterModeModule: CapabilityModule = {
     const zoneId = profile.zoneRouter.zoneId
     const blockers = [
       ...(gateway ? [] : [`Zone ${zoneId} has not registered the router as a callback gateway`]),
+      ...(depositsBack
+        ? []
+        : [
+            `Zone ${zoneId} enforces access with open gateways and has not admitted the router as an account`,
+          ]),
       ...(disabled.length === 0
         ? []
         : [`Zone ${zoneId} has not enabled ${disabled.join(' and ')}`]),

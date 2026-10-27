@@ -228,6 +228,7 @@ the reward treasury.
 | `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../router/zone-router.md#deployment)                              |
 | `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
 | `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
+| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../router/zone-router.md#deployment)                              |
 
 Forge receives only `DEPLOYER_PRIVATE_KEY`; it never receives another authority key. Each typed
 authority step first proves with read-only calls that its signer holds the exact authority (the

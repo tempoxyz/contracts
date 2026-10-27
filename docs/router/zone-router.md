@@ -65,16 +65,20 @@ contracts:
    its real creation transaction;
 3. activation, each verified onchain and otherwise handed off to its owner: `authorize-zone-router`
    (the PropAMM pool owner admits a converting Earn mode), `enable-zone-router-tokens` (the Zone
-   enables EarnShare and the private asset for Earn ops) and `register-zone-router-gateway` (the
-   Portal administrator admits the router when the Zone restricts callback gateways). The lifecycle
-   grants pool and gateway admission with its own keys only when it deployed the factory itself; for
-   a router from a factory the profile names, both are always handed off, for the pool owner and the
-   Portal administrator to check that factory's verified source first.
+   enables EarnShare and the private asset for Earn ops), `register-zone-router-gateway` (the
+   Portal administrator admits the router as a callback gateway when the Zone restricts gateways)
+   and `admit-zone-router-account` (when the Zone enforces account access with open gateways, the
+   router returns funds as an ordinary depositor, so the Portal administrator admits it with
+   `setAllowedAccount`; the Portal holds one role per account, so a router needs only one of the
+   two). The lifecycle grants pool, gateway and account admission with its own keys only when it
+   deployed the factory itself; for a router from a factory the profile names, each is always handed
+   off, for the pool owner or the Portal administrator to check that factory's verified source
+   first.
 
 The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers as
 [required members](../earn/modules/access.md#required-members) of EarnShare's access policy.
-`pnpm earn verify` rechecks the factory provenance and mode and reports gateway, token and
-conversion readiness. A card program's `BridgeSettler` is deployed by Bridge with Spend's
+`pnpm earn verify` rechecks the factory provenance and mode and reports gateway, account,
+token and conversion readiness. A card program's `BridgeSettler` is deployed by Bridge with Spend's
 [scripts](../spend/deploy.md#3-deploy-the-settler-and-router-for-each-zone); the profile lists it
 in `settlers`.
 
