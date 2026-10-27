@@ -7,6 +7,8 @@ libs = ["lib"]
 # Earn's interfaces from `tempo-earn/` (= ../earn/src); its tests also use Earn's contracts and test
 # helpers (`earn-test/`), compiled here with this project's settings. Earn's build is unaffected.
 allow_paths = ["../earn"]
+# Earn's own custody suite is imported for its pool mock; it runs in earn/, not here.
+no_match_contract = "SingleZoneEarnRouterCustodyTest"
 fs_permissions = [{ access = "read", path = "../earn/test/fixtures/propamm" }]
 solc_version = "0.8.36"
 optimizer = true
