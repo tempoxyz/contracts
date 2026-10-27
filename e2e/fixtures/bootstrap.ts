@@ -21,6 +21,7 @@ import {
   profileDeploymentPath,
   resolveProfilePath,
   rpcConfiguration,
+  sourceVerificationCompilerArguments,
   verifyContractSource,
 } from '@tempoxyz/earn/deployments/node'
 import { Deployment, localEngines } from 'localnet'
@@ -174,6 +175,9 @@ if (!args.broadcast) {
 }
 
 assertFoundryVersion(root)
+// The fixture's engine is source verified on the hosted network: resolve the compiler build the
+// verifier needs before anything is broadcast.
+sourceVerificationCompilerArguments(root)
 if ((await feeBalance()) < minimumFeeBalance) {
   if (!hostedEnvironments[network].faucet) {
     throw new Error(`Fund ${deployer} with PATHUSD on ${network} before bootstrapping`)
