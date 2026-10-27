@@ -132,6 +132,29 @@ interface ISpendSettler {
 
 [`BridgeSettler`](../../spend/src/settler/BridgeSettler.sol) is the card program's settler.
 
+### `SendSettler`
+
+[`SendSettler`](../../router/src/SendSettler.sol) pays a public address. A mode allows sends only if
+it lists a `SendSettler`; a closed-loop mode, listing only its card program's settler, does not. It
+has no owner or setters, and its only setting is an optional par-conversion pool and customer ID,
+fixed at deployment. Its `settlerData` is `abi.encode(Send(to, token, amount, vault, ref))`, and
+`to` receives exactly `amount` of `token`:
+
+| `vault` | `token`                    | Input         | How it pays                                                              |
+| ------- | -------------------------- | ------------- | ------------------------------------------------------------------------ |
+| Zero    | The withdrawn token        | That token    | Transfers `amount` (a stablecoin or EarnShare)                           |
+| A vault | The vault asset            | Its EarnShare | `withdrawExact(amount, to, maxInput)`                                    |
+| A vault | The asset's par stablecoin | Its EarnShare | `withdrawExact` to itself, then the pool at the oracle's exact par price |
+
+It checks that `to`'s balance rose by exactly `amount`, so a vault or pool that reports success
+without paying cannot settle, hands every unused unit back to the router and keeps no balance or
+allowance. Whoever builds the callback picks `to` and `vault` and spends only their own input,
+capped at `maxInput`. Conversion needs the pool owner to admit the settler as a taker and recipient.
+It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
+no Zone account or `senderTag`. Deploy one with
+[`DeploySendSettler.s.sol`](../../router/script/deploy/DeploySendSettler.s.sol) and list it in a
+profile's `zoneRouter.settlers`.
+
 ## Invariants
 
 1. No owner, setters or rescue; the mode is fixed at deployment.
@@ -145,9 +168,6 @@ interface ISpendSettler {
 
 ## Not built yet
 
-- **`SendSettler`.** A Tempo-owned settler in `router/` that pays a public address in EarnShare, in
-  stablecoin, or in stablecoin redeemed from EarnShare through the Earn vault's `withdrawExact` and
-  par conversion. A router allows sends only if it lists it; closed-loop routers do not.
 - **One shared router.** Once modes settle, each mode becomes an immutable route on one ownerless
   router, and each Zone's Portal admin approves the routes it accepts. `routeId` adds 32 bytes per
   callback (Spend becomes 896).
