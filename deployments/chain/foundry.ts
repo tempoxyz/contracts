@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { basename } from 'node:path'
+import { resolve } from 'node:path'
 
 /** Earn builds, tests, and deploys with the `forge` on PATH, which must be stable Foundry v1.8.6 or newer. */
 export function assertFoundryVersion(root: string) {
@@ -60,29 +60,47 @@ export function foundryVerificationEnvironment(
 }
 
 /**
- * Tempo's source verifier (contracts.tempo.xyz, a Sourcify instance) rebuilds each contract with solc,
- * and hosted deployments require that match. A solar build cannot be reproduced there, so a hosted
- * deployment compiled with solar would broadcast and then fail verification.
+ * The `forge verify-contract` arguments that make Tempo's source verifier rebuild with the compiler
+ * the deploy profile uses. Forge reports a solar build to the verifier as the solc version solar
+ * emulates, which the verifier compiles with solc and can never match, so for solar this passes the
+ * version solar reports as a solc wrapper (`0.8.36+commit.<rev>.solar.<version>`), which names the
+ * exact build. Forge drops that build metadata when it looks up its compilation cache unless the
+ * compilation profile is named. Any other compiler needs no arguments; a solar build whose version
+ * does not name its build throws, since the verifier could not reproduce it.
  */
-export function isSourceVerifiableCompiler(solc: string | null | undefined) {
-  return !solc || !/solar/i.test(basename(solc))
-}
-
-/** Refuses a hosted deployment before it broadcasts when the deploy profile compiles with solar. */
-export function assertSourceVerifiableCompiler(
+export function sourceVerificationCompilerArguments(
   root: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
-) {
+): string[] {
+  const env = foundryVerificationEnvironment(environment)
   const config = JSON.parse(
-    execFileSync('forge', ['config', '--json'], {
-      cwd: root,
-      encoding: 'utf8',
-      env: foundryVerificationEnvironment(environment),
-    }),
+    execFileSync('forge', ['config', '--json'], { cwd: root, encoding: 'utf8', env }),
   ) as { solc?: string | null }
-  if (!isSourceVerifiableCompiler(config.solc)) {
+  if (!config.solc || !/[\\/]/.test(config.solc)) return []
+  const output = execFileSync(resolve(root, config.solc), ['--version'], {
+    cwd: root,
+    encoding: 'utf8',
+    env,
+  })
+  return solarVerificationArguments(config.solc, output)
+}
+
+/** Verification arguments for a compiler's `--version` output; throws for an unidentified solar build. */
+export function solarVerificationArguments(solc: string, versionOutput: string): string[] {
+  const version = solcWrapperVersion(versionOutput)
+  if (version) return ['--compiler-version', version, '--compilation-profile', 'default']
+  if (/solar/i.test(solc) || /solar/i.test(versionOutput)) {
     throw new Error(
-      `Earn compiles with solar (${config.solc}), which Tempo's source verifier cannot reproduce; hosted deployments need a source match, so they stay on solc until the verifier supports solar`,
+      `${solc} is solar but does not report a source-verifiable build (expected a solc-wrapper version such as 0.8.36+commit.<rev>.solar.<version>); run it through earn/solar-solc`,
     )
   }
+  return []
+}
+
+/** The solar build a solc-wrapper `--version` output names, or null for any other compiler. */
+export function solcWrapperVersion(output: string) {
+  return (
+    /^Version: (\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.\d+\.\d+\.\d+)\s*$/m.exec(output)?.[1] ??
+    null
+  )
 }
