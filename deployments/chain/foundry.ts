@@ -65,7 +65,8 @@ export function foundryVerificationEnvironment(
  * emulates, which the verifier compiles with solc and can never match, so for solar this passes the
  * version solar reports as a solc wrapper (`0.8.36+commit.<rev>.solar.<version>`), which names the
  * exact build. Forge drops that build metadata when it looks up its compilation cache unless the
- * compilation profile is named. Any other compiler needs no arguments.
+ * compilation profile is named. Any other compiler needs no arguments; a solar build whose version
+ * does not name its build throws, since the verifier could not reproduce it.
  */
 export function sourceVerificationCompilerArguments(
   root: string,
@@ -76,10 +77,24 @@ export function sourceVerificationCompilerArguments(
     execFileSync('forge', ['config', '--json'], { cwd: root, encoding: 'utf8', env }),
   ) as { solc?: string | null }
   if (!config.solc || !/[\\/]/.test(config.solc)) return []
-  const version = solcWrapperVersion(
-    execFileSync(resolve(root, config.solc), ['--version'], { cwd: root, encoding: 'utf8', env }),
-  )
-  return version ? ['--compiler-version', version, '--compilation-profile', 'default'] : []
+  const output = execFileSync(resolve(root, config.solc), ['--version'], {
+    cwd: root,
+    encoding: 'utf8',
+    env,
+  })
+  return solarVerificationArguments(config.solc, output)
+}
+
+/** Verification arguments for a compiler's `--version` output; throws for an unidentified solar build. */
+export function solarVerificationArguments(solc: string, versionOutput: string): string[] {
+  const version = solcWrapperVersion(versionOutput)
+  if (version) return ['--compiler-version', version, '--compilation-profile', 'default']
+  if (/solar/i.test(solc) || /solar/i.test(versionOutput)) {
+    throw new Error(
+      `${solc} is solar but does not report a source-verifiable build (expected a solc-wrapper version such as 0.8.36+commit.<rev>.solar.<version>); run it through earn/solar-solc`,
+    )
+  }
+  return []
 }
 
 /** The solar build a solc-wrapper `--version` output names, or null for any other compiler. */
