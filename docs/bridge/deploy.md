@@ -184,10 +184,11 @@ spend a seed there.
 Bridge's TF handler, on the same clone, clears that vault approval after each of its own Earn pulls,
 so while TF pulls from the same vault the next private Earn spend sets it again, about 250k more gas.
 
-Lower `callbackGas` only after measuring the program's own vault, since a callback that runs out of gas
-bounces after Bridge approved the card. Keep a margin above the later-spend figures in the
-[design](design.md#callback-gas): room for a vault whose redemption costs more than the OUSD vault's,
-and for the vault approval TF may have cleared.
+Then request callback gas per spend type rather than one figure: about 0.6M for a stablecoin spend
+and 1.4M for an Earn spend, which is what fits 4 and 3 spends into a default withdrawal batch
+([design](design.md#callback-gas)). Measure the program's own vault first, since a callback that runs
+out of gas bounces after Bridge approved the card: 1.4M leaves room for the vault approval TF may have
+cleared on top of the OUSD vault's 0.98M, not for a much costlier vault.
 
 ## Deploying from CI
 

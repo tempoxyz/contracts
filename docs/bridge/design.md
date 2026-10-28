@@ -191,6 +191,21 @@ cleared when it hands the spend on: about 250k on every spend. Seeding the settl
 but `settle` is permissionless and counts what the settler holds as the caller's input, so anyone could
 spend the seed and the slot would empty again.
 
+The gas requested, not used, is what limits throughput. The Zone sequencer packs withdrawals into
+`processWithdrawals` transactions against a gas budget (10M by default), reserving 0.5M per
+transaction and 1.75M plus the requested callback gas per spend. So a spend's requested gas decides how
+many fit in a batch:
+
+| Callback gas requested | Spends per 10M batch |
+| ---------------------- | -------------------- |
+| 3M                     | 2                    |
+| up to 1.42M            | 3                    |
+| up to 0.63M            | 4                    |
+
+With a prepared program, Bridge requests about 0.6M for a stablecoin spend (4 per batch) and 1.4M
+for an Earn spend (3 per batch), instead of 3M for both (2 per batch). The fixed 1.75M per spend and
+the batch budget belong to the Zone, so no change to these contracts fits a fifth spend.
+
 ### Refunds
 
 Refunds are stablecoin through Bridge's orchestration, as Bridge returns funds today:
