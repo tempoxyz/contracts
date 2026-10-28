@@ -279,6 +279,11 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         assertEq(alternate.balanceOf(payee), ONE);
         assertEq(portalA.lastToken(), address(alternate));
         assertEq(portalA.lastAmount(), 2 * ONE);
+        // The spend leaves only its standing approval to the Portal; the redeem below, which keeps
+        // SingleZoneEarnRouter's exact approvals, clears it again.
+        assertEq(alternate.allowance(address(zr), address(portalA)), type(uint256).max);
+        vm.prank(address(zr));
+        alternate.approve(address(portalA), 0);
         _assertRouterState(0, 0, 0);
         assertEq(alternate.allowance(address(zr), address(settler)), 0);
 

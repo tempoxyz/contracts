@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
+import { IERC20Allowance } from "./interfaces/IERC20Allowance.sol";
 import { ISpendSettler } from "./interfaces/ISpendSettler.sol";
 import { IZonePortalFees } from "./interfaces/IZonePortalFees.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
@@ -115,7 +116,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     mapping(address settler => bool listed) public isSettler;
     address[] private settlerList;
 
-    uint256 private locked = 1;
+    bool private transient locked;
 
     event EarnDeposit(
         bytes32 indexed actionId,
@@ -167,10 +168,10 @@ contract ZoneRouter is IWithdrawalReceiver {
     error ZeroAmount();
 
     modifier nonReentrant() {
-        if (locked != 1) revert ReentrantCall();
-        locked = 2;
+        if (locked) revert ReentrantCall();
+        locked = true;
         _;
-        locked = 1;
+        locked = false;
     }
 
     constructor(Mode memory mode) {
@@ -213,6 +214,13 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @notice The settlers Spend may use, in deployment order.
     function settlers() external view returns (address[] memory) {
         return settlerList;
+    }
+
+    /// @notice Sets the router's standing approval of `token` to its Zone's Portal, which a spend's
+    ///         change would otherwise set on its first callback. Permissionless:
+    ///         the router holds no balance between callbacks, and the Portal is the Zone's own.
+    function warm(address token) external {
+        _approvePortal(token, IZoneFactory(ZONE_FACTORY_ADDRESS).zones(allowedZoneId).portal, type(uint256).max);
     }
 
     function supportsFlow(uint8 flow) external view returns (bool) {
@@ -311,7 +319,7 @@ contract ZoneRouter is IWithdrawalReceiver {
             }
             uint128 fee = IZonePortalFees(sourcePortal).calculateDepositFee();
             if (fee > data.zoneReturn.maxDepositFee) revert DepositFeeTooHigh(fee);
-            _safeApprove(token, sourcePortal, change);
+            _approvePortal(token, sourcePortal, change);
             zoneDepositHash = IZonePortal(sourcePortal)
                 .depositEncrypted(
                     token,
@@ -320,7 +328,6 @@ contract ZoneRouter is IWithdrawalReceiver {
                     data.zoneReturn.encrypted,
                     data.zoneReturn.refundRecipient
                 );
-            _safeApprove(token, sourcePortal, 0);
         }
         emit Spent(data.settler, token, used, change, zoneDepositHash);
     }
@@ -482,6 +489,15 @@ contract ZoneRouter is IWithdrawalReceiver {
         // The explicit bound above makes this narrowing conversion lossless.
         // forge-lint: disable-next-line(unsafe-typecast)
         return uint128(value);
+    }
+
+    /// @dev Leaves a standing maximum approval to the Portal, topped up only when it falls below `amount`.
+    ///      Clearing it after each deposit would create its allowance slot again on every callback, which
+    ///      Tempo charges as a new storage slot (TIP-1000) against the callback's gas limit.
+    function _approvePortal(address token, address portal, uint256 amount) private {
+        if (IERC20Allowance(token).allowance(address(this), portal) < amount) {
+            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (portal, type(uint256).max)));
+        }
     }
 
     function _safeApprove(address token, address spender, uint256 value) private {

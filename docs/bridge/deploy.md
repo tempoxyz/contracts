@@ -166,6 +166,25 @@ that the clone receives and sends and the vault receives. EarnShare policies are
 the policy admin adds whichever of the clone, vault, router, settler, refund recipient, portal,
 messenger and Zone admin are missing.
 
+## 5. Prepare the program for low callback gas
+
+Optional, but it is what lets Bridge request well under 3M callback gas
+([design](design.md#callback-gas)). Anyone can do it, once per token the program spends from a
+Zone (its stablecoin, and the EarnShare for Earn):
+
+- `router.warm(token)` and `settler.warm(token)` set the router's standing approval to its Zone's portal
+  and the settler's to the program's clone. Without them the first spend sets them.
+- Send 1 unit of the token to the router, the settler and the program's clone. The contracts leave
+  a balance they held before a spend untouched, so it stays, and no spend creates those balance
+  slots again. It cannot be recovered. Under a whitelist policy the three must already be admitted,
+  as preflight checks.
+
+The clone's approval to each allowed vault is set when governance allows it with `UV`.
+
+Lower `callbackGas` only after measuring the program's own vault and checking these balances, since a
+callback that runs out of gas bounces after Bridge approved the card. Keep a margin: the warmed
+figures above leave room for a vault whose redemption costs more than the OUSD vault's.
+
 ## Deploying from CI
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))

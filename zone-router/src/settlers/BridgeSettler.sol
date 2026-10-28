@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { IERC20Allowance } from "../interfaces/IERC20Allowance.sol";
 import { ISpendSettler } from "../interfaces/ISpendSettler.sol";
 import { IBridgeSpenderClone, IBridgeSpenderFactory, Spend } from "./bridge/IBridgeSpender.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
@@ -29,7 +30,7 @@ contract BridgeSettler is ISpendSettler {
     IBridgeSpenderFactory public immutable FACTORY;
     bytes32 public immutable SPENDER_ID;
 
-    uint256 private _locked = 1;
+    bool private transient _locked;
 
     error DestinationNotPaid();
     error InsufficientInput();
@@ -45,10 +46,10 @@ contract BridgeSettler is ISpendSettler {
     event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned);
 
     modifier nonReentrant() {
-        if (_locked != 1) revert Reentrancy();
-        _locked = 2;
+        if (_locked) revert Reentrancy();
+        _locked = true;
         _;
-        _locked = 1;
+        _locked = false;
     }
 
     constructor(IBridgeSpenderFactory factory_, bytes32 spenderId_) {
@@ -85,11 +86,10 @@ contract BridgeSettler is ISpendSettler {
         uint256 destinationBefore = IERC20Like(spend.token).balanceOf(spend.destination);
 
         address clone = FACTORY.getSpenderAddress(SPENDER_ID);
-        _tokenCall(token, IERC20Like.approve.selector, clone, maxInput, APPROVE_FAILED);
+        _approveClone(token, clone, maxInput);
         // Every entry point is nonReentrant; the lock is released only after settle returns.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         IBridgeSpenderClone(clone).publicCall(abi.encodePacked(HANDLER, PUBLIC_SPEND, abi.encode(spend)));
-        _tokenCall(token, IERC20Like.approve.selector, clone, 0, APPROVE_FAILED);
 
         uint256 unused = IERC20Like(token).balanceOf(address(this)) - baseline;
         // A spend always consumes input, so a handler that moved nothing, or handed back more
@@ -102,6 +102,22 @@ contract BridgeSettler is ISpendSettler {
         if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
 
         emit SpendSettled(spend.ref, token, maxInput - unused, unused);
+    }
+
+    /// @notice Sets the settler's standing approval of `token` to its program's clone, which the first
+    ///         spend in `token` would otherwise set. Permissionless: the settler holds no balance between
+    ///         spends, and the clone is the one its program was created with.
+    function warm(address token) external {
+        _approveClone(token, FACTORY.getSpenderAddress(SPENDER_ID), type(uint256).max);
+    }
+
+    /// @dev Leaves a standing maximum approval to the clone, topped up only when it falls below `amount`.
+    ///      Clearing it after each spend would create its allowance slot again on every callback, which
+    ///      Tempo charges as a new storage slot (TIP-1000) against the callback's gas limit.
+    function _approveClone(address token, address clone, uint256 amount) private {
+        if (IERC20Allowance(token).allowance(address(this), clone) < amount) {
+            _tokenCall(token, IERC20Like.approve.selector, clone, type(uint256).max, APPROVE_FAILED);
+        }
     }
 
     /// @dev Calls `approve` or `transfer` (`selector`) on `token` and reverts with `failure` alone

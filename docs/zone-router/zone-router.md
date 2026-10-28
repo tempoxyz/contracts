@@ -45,7 +45,7 @@ One router per Zone can serve several programs by listing each one's settler.
   check that a gateway came from the factory, with the expected mode, before admitting it.
 - **One factory per router version.** A new version ships as a new factory; deployed routers keep
   working, and each customer moves by deploying its mode there and having its Zone admit it.
-- **Size.** The router's runtime is 9.7 KiB and the factory's 13.0 KiB, under the 24 KiB limit.
+- **Size.** The router's runtime is 10.2 KiB and the factory's 13.4 KiB, under the 24 KiB limit.
 
 Nobody can change a deployed router. Enabling a settler or op means deploying a new router through
 the factory and having the Zone's Portal admin admit it as a gateway; the old router stays deployed
@@ -117,7 +117,8 @@ Callback data: `op`, `settler`, `maxInput`, `settlerData` and `SpendReturn`, 864
 2. requires `0 < maxInput <= amount`, transfers exactly `maxInput` to the settler and calls
    `settle(token, maxInput, settlerData)`; the settler hands back what it did not use;
 3. requires `0 < used <= maxInput`, measured from its own balance;
-4. returns the change, `amount - used`, to the source Zone when it is not zero;
+4. returns the change, `amount - used`, to the source Zone when it is not zero, through a standing
+   approval to that Portal (below);
 5. emits `Spent(settler, token, used, change, zoneDepositHash)`, with a zero hash when there is no
    change, and no `senderTag`, action ID or Zone account. The settler emits its own detail.
 
@@ -127,6 +128,13 @@ the settler never holds an allowance from it, and the callback skips the roughly
 charges for writing an allowance slot. A listed settler that keeps its input without paying looks
 settled, within `maxInput`, so settlers are trusted to the extent of the sender's `maxInput`. The
 router accepts any enabled token and leaves it to the settler to refuse one it cannot use.
+
+The change goes back through a standing maximum approval to the source Portal, set on the first
+spend of a token and topped up only when it runs low. Clearing it after each deposit would create
+the allowance slot again on every callback, which Tempo charges (TIP-1000) against the callback's
+gas limit; the Portal is the Zone's own, and the router holds nothing between callbacks. Anyone can
+set it ahead of the first spend with `warm(token)`. Ops 0 and 1 keep `SingleZoneEarnRouter`'s exact
+approvals, so an Earn op on the same token clears it and the next spend sets it again.
 
 ## Settlers
 
@@ -201,9 +209,9 @@ that struct, its only definition, and the two Bridge calls the settler makes: th
 2. requires the input to be the spend's token, or, when the vault funds all of it
    (`fromVault == amount`), that vault's EarnShare (`WrongInputToken`); a spend split between both
    cannot come from one withdrawal;
-3. requires the `maxInput` the router sent (`InsufficientInput`), approves it to the program's clone
-   and calls `publicCall("TS" "PS" abi.encode(spend))`, so the handler sees the settler as the
-   payer, then clears the approval;
+3. requires the `maxInput` the router sent (`InsufficientInput`), makes sure its standing approval
+   to the program's clone covers it, and calls `publicCall("TS" "PS" abi.encode(spend))`, so the
+   handler sees the settler as the payer;
 4. requires the handler to have used some input and no more than it was given (`NothingSettled`),
    and the destination's balance of `Spend.token` to have risen by exactly `amount`
    (`DestinationNotPaid`), so a replaced handler cannot look settled;
@@ -211,7 +219,10 @@ that struct, its only definition, and the two Bridge calls the settler makes: th
    the router's input arrived (`ResidualBalance`).
 
 It emits `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`, with no cardholder address or
-`senderTag`. Tokens sent to it outside a `settle` call are not rescued: a later `settle` caller can
+`senderTag`. Its approval to the clone stays at the maximum for the same reason as the router's to
+the Portal; between spends the settler holds nothing the clone could take, and the router's
+`maxInput` transfer still bounds what a spend can use. `warm(token)` sets it ahead of the first spend.
+Tokens sent to it outside a `settle` call are not rescued: a later `settle` caller can
 spend them, only to a destination the program authorizes, and gets back what the spend did not use.
 Deploy one per program with the [Zone Router Release `bridgeSettler`](../deployment/deployment.md#zone-router-releases),
 after Bridge has created the program, and list it in the card mode's `settlers`. The flows, Bridge's
@@ -225,7 +236,8 @@ governance and the decisions behind it are in the [Bridge integration's design](
 3. Every successful callback returns its output through the source Portal, except what a listed
    settler uses, at most the callback's `maxInput`.
 4. Conversion happens only at the pool oracle's exact par price with measured 1:1 output.
-5. No balance or allowance stays with the router after a callback.
+5. No balance stays with the router after a callback, and no allowance except a spend's standing
+   approval to its own Zone's Portal.
 6. The router never emits or stores `senderTag`.
 
 ## Not built yet

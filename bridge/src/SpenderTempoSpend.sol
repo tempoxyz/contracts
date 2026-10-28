@@ -107,6 +107,13 @@ contract SpenderTempoSpend is SpenderBase {
         address vault = address(bytes20(data[3:23]));
         bool allowed = data[2] == 0x01;
         _storage().allowedVaults[vault] = allowed;
+        // The clone's standing EarnShare approval follows the allowlist: set for an allowed vault, so its
+        // spends need not create the allowance slot, and cleared for a disallowed one. A vault that cannot
+        // report its share is still allowed or disallowed; a spend sets its approval when it needs one.
+        (bool ok, uint256 word) = _readWord(vault, abi.encodeCall(ITempoEarnVault.earnShare, ()));
+        if (ok && word >> 160 == 0 && word != 0) {
+            SafeTransferLib.safeApprove(address(uint160(word)), vault, allowed ? type(uint256).max : 0);
+        }
         emit SpendVaultUpdated(vault, allowed);
     }
 
@@ -164,9 +171,14 @@ contract SpenderTempoSpend is SpenderBase {
 
         address share = v.earnShare();
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
-        SafeTransferLib.safeApprove(share, vault, required);
+        // A standing maximum approval, set when governance allowed the vault and topped up here when
+        // another handler (such as TF, which clears its own) has lowered it. Clearing it after each spend
+        // would create the allowance slot again on every spend, which Tempo charges as a new storage slot
+        // (TIP-1000). The clone holds no EarnShare between spends.
+        if (IERC20(share).allowance(address(this), vault) < required) {
+            SafeTransferLib.safeApprove(share, vault, type(uint256).max);
+        }
         burned = v.withdrawExact(assets, receiver, required);
-        SafeTransferLib.safeApprove(share, vault, 0);
         if (burned < required) SafeTransferLib.safeTransfer(share, msg.sender, required - burned);
     }
 

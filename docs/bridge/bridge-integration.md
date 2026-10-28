@@ -128,8 +128,10 @@ approves those tokens. Unsponsored, the cardholder approves `input + withdrawalF
   on an access-enforced portal, which requires a return, and on every Earn spend, which returns its
   unused shares. Add a margin too, since a fee that rises before the batch bounces the spend. A
   stablecoin spend on an open portal adds nothing.
-- `withdrawalFee` is the outbox's `calculateWithdrawalFee(callbackGas)`. Use 3M callback gas (see
-  [`design.md`](design.md#callback-gas)).
+- `withdrawalFee` is the outbox's `calculateWithdrawalFee(callbackGas)`, `(50,000 + callbackGas)` times
+  the Zone's gas rate, so it is paid on the gas requested, not used. Use 3M callback gas until the
+  program is [prepared](deploy.md#5-prepare-the-program-for-low-callback-gas) and its own vault
+  measured; a prepared program needs far less (see [`design.md`](design.md#callback-gas)).
 - `callbackData` is `abi.encode(SpendData)`: `op = 2` (Spend), `settler` (the program's
   `BridgeSettler`), `maxInput`, `settlerData = abi.encode(Spend)` and `zoneReturn`. That
   `SpendReturn` is the encrypted deposit (`keyIndex`, `encrypted`) that sends unused input back to
