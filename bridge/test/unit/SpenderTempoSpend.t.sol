@@ -14,7 +14,8 @@ import {
     GasSinkShareVault,
     HostileShareVault,
     MockToken,
-    PartialBurnEarnVault
+    PartialBurnEarnVault,
+    SwitchingShareVault
 } from "../harness/Mocks.sol";
 import { isStandingOrNone } from "../harness/StandingApproval.sol";
 import { TempoEnv } from "../harness/TempoEnv.sol";
@@ -171,6 +172,25 @@ contract SpenderTempoSpendTest is TempoEnv {
         _setVault(sink, true);
         _setVault(sink, false);
         assertFalse(_vaultAllowed(sink), "share gas sink disallowed");
+    }
+
+    /// @notice Disallowing a vault clears the approval on the share that was approved, even when the vault
+    ///         now reverts or reports another share.
+    function test_disallowClearsTheRecordedShareNotTheReportedOne() public {
+        SwitchingShareVault vault = new SwitchingShareVault(address(earnShare));
+        _setVault(address(vault), true);
+        assertEq(earnShare.allowance(spender, address(vault)), type(uint256).max, "approved");
+
+        vault.set(address(0), true);
+        _setVault(address(vault), false);
+        assertEq(earnShare.allowance(spender, address(vault)), 0, "cleared though earnShare reverts");
+
+        _setVault(address(vault), true);
+        vault.set(address(usd), false);
+        _setVault(address(vault), true);
+        assertEq(earnShare.allowance(spender, address(vault)), 0, "old share cleared on re-allow");
+        _setVault(address(vault), false);
+        assertEq(usd.allowance(spender, address(vault)), 0, "new share cleared on disallow");
     }
 
     /// @notice Another handler that clears the approval (as TF does) only makes the next spend set it again.

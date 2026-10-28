@@ -302,3 +302,23 @@ contract GasSinkShare {
 contract GasSinkShareVault {
     address public immutable earnShare = address(new GasSinkShare());
 }
+
+/// @notice A vault whose `earnShare()` the test can change or make revert after it was allowed.
+contract SwitchingShareVault {
+    address public shareAddr;
+    bool public reverts;
+
+    constructor(address share_) {
+        shareAddr = share_;
+    }
+
+    function set(address share_, bool reverts_) external {
+        shareAddr = share_;
+        reverts = reverts_;
+    }
+
+    function earnShare() external view returns (address) {
+        require(!reverts, "no share");
+        return shareAddr;
+    }
+}
