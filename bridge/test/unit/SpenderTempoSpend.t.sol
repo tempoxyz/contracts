@@ -8,7 +8,14 @@ import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
 
 import { Spend, SpenderTempoSpend, SpenderTempoSpendStorageLib } from "../../src/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
-import { ApproveRevertingVault, FeeOnTransferToken, MockToken, PartialBurnEarnVault } from "../harness/Mocks.sol";
+import {
+    ApproveRevertingVault,
+    FeeOnTransferToken,
+    GasSinkShareVault,
+    HostileShareVault,
+    MockToken,
+    PartialBurnEarnVault
+} from "../harness/Mocks.sol";
 import { isStandingOrNone } from "../harness/StandingApproval.sol";
 import { TempoEnv } from "../harness/TempoEnv.sol";
 
@@ -145,6 +152,25 @@ contract SpenderTempoSpendTest is TempoEnv {
         assertTrue(_vaultAllowed(vault), "allowed");
         _setVault(vault, false);
         assertFalse(_vaultAllowed(vault), "disallowed");
+    }
+
+    /// @notice A vault that answers `earnShare()` with a huge payload or burns all its gas, or reports a
+    ///         share whose `approve` burns all its gas, cannot stop governance from disallowing it.
+    function test_hostileVaultCannotBlockDisallow() public {
+        HostileShareVault bomb = new HostileShareVault();
+        _setVault(address(bomb), true);
+        _setVault(address(bomb), false);
+        assertFalse(_vaultAllowed(address(bomb)), "returndata bomb disallowed");
+
+        bomb.setBurnGas(true);
+        _setVault(address(bomb), true);
+        _setVault(address(bomb), false);
+        assertFalse(_vaultAllowed(address(bomb)), "gas sink disallowed");
+
+        address sink = address(new GasSinkShareVault());
+        _setVault(sink, true);
+        _setVault(sink, false);
+        assertFalse(_vaultAllowed(sink), "share gas sink disallowed");
     }
 
     /// @notice Another handler that clears the approval (as TF does) only makes the next spend set it again.

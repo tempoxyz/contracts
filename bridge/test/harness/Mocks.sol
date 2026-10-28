@@ -271,3 +271,34 @@ contract ApproveRevertingShare {
 contract ApproveRevertingVault {
     address public immutable earnShare = address(new ApproveRevertingShare());
 }
+
+/// @notice A vault whose `earnShare()` returns or burns as much as it can: a returndata bomb, then a gas sink.
+contract HostileShareVault {
+    bool public burnGas;
+
+    function setBurnGas(bool burn) external {
+        burnGas = burn;
+    }
+
+    function earnShare() external view returns (address) {
+        if (burnGas) {
+            while (true) { }
+        }
+        assembly {
+            return(0, 2000000)
+        }
+    }
+}
+
+/// @notice A share token whose `approve` burns all the gas it is given.
+contract GasSinkShare {
+    function approve(address, uint256) external pure returns (bool) {
+        while (true) { }
+        return true;
+    }
+}
+
+/// @notice A vault that reports a share whose `approve` burns all its gas.
+contract GasSinkShareVault {
+    address public immutable earnShare = address(new GasSinkShare());
+}

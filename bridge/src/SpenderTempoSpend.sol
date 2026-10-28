@@ -67,6 +67,12 @@ contract SpenderTempoSpend is SpenderBase {
         uint256 sharesBurned
     );
 
+    /// @dev Gas for the vault's `earnShare()` read in `UV`: a storage read or an immutable.
+    uint256 private constant EARN_SHARE_READ_GAS = 30_000;
+    /// @dev Gas for the share's `approve` in `UV`: enough to create the allowance slot (~250k on Tempo,
+    ///      TIP-1000) with room to spare.
+    uint256 private constant SHARE_APPROVE_GAS = 400_000;
+
     constructor(IFactory factory_) SpenderBase(factory_) { }
 
     // ------------------------------------------------------------------
@@ -111,17 +117,36 @@ contract SpenderTempoSpend is SpenderBase {
         // spends need not create the allowance slot, and cleared for a disallowed one. Best effort, so a
         // vault whose share cannot be read or refuses `approve` is still allowed or disallowed: the
         // allowlist write never depends on the vault, and a spend sets the approval when it needs one.
-        (bool ok, uint256 word) = _readWord(vault, abi.encodeCall(ITempoEarnVault.earnShare, ()));
-        if (ok && word >> 160 == 0 && word != 0) {
-            address share = address(uint160(word));
-            if (share.code.length != 0) {
-                // Uncapped: an approval that creates its slot costs ~250k on Tempo (TIP-1000).
-                // forge-lint: disable-next-line(unchecked-call)
-                (bool approved,) = share.call(abi.encodeCall(IERC20.approve, (vault, allowed ? type(uint256).max : 0)));
-                approved;
+        _tryApproveShare(vault, allowed ? type(uint256).max : 0);
+        emit SpendVaultUpdated(vault, allowed);
+    }
+
+    /// @dev Best-effort `share.approve(vault, amount)` for the share `vault` reports. Both calls have a
+    ///      fixed gas cap and copy at most one word back, so a vault or share that burns gas, reverts or
+    ///      returns a huge payload cannot make the governance call fail.
+    function _tryApproveShare(address vault, uint256 amount) private {
+        if (vault.code.length == 0) return;
+        address share;
+        assembly ("memory-safe") {
+            mstore(0x00, 0xdab0322f) // earnShare()
+            // Copies at most 32 bytes of return data, whatever the vault returns.
+            // Yul evaluates arguments right to left, so the call goes first and its size is read after it.
+            let ok := staticcall(EARN_SHARE_READ_GAS, vault, 0x1c, 0x04, 0x00, 0x20)
+            if and(ok, iszero(lt(returndatasize(), 0x20))) {
+                let word := mload(0x00)
+                if iszero(shr(160, word)) { share := word }
             }
         }
-        emit SpendVaultUpdated(vault, allowed);
+        // No code check: a TIP-20 share is a precompile, and a call to an address without code is a no-op.
+        if (share == address(0)) return;
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, 0x095ea7b3) // approve(address,uint256)
+            mstore(add(m, 0x20), vault)
+            mstore(add(m, 0x40), amount)
+            // The result is ignored and no return data is copied.
+            pop(call(SHARE_APPROVE_GAS, share, 0, add(m, 0x1c), 0x44, 0x00, 0x00))
+        }
     }
 
     /// @dev The clone has already checked the factory's pause.
