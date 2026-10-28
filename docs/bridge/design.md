@@ -202,8 +202,11 @@ many fit in a batch:
 | up to 1.42M            | 3                    |
 | up to 0.63M            | 4                    |
 
-With a prepared program, Bridge requests about 0.6M for a stablecoin spend (4 per batch) and 1.4M
-for an Earn spend (3 per batch), instead of 3M for both (2 per batch). The fixed 1.75M per spend and
+With a prepared program whose settlement wallet already holds each token it receives, Bridge requests
+about 0.6M for a stablecoin spend (4 per batch) and 1.4M for an Earn spend (3 per batch), instead of 3M
+for both (2 per batch). Each covers the measured later spend with margin, and the Earn figure also
+covers the vault approval Bridge's TF handler may have cleared. A spend to a settlement wallet with no
+balance needs about 250k more (the first-spend column above), which these figures do not cover. The fixed 1.75M per spend and
 the batch budget belong to the Zone, so no change to these contracts fits a fifth spend.
 
 ### Refunds

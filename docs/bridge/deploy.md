@@ -181,14 +181,21 @@ Under a whitelist policy the clone must already be admitted, as preflight checks
 settler: `settle` is permissionless and counts whatever it holds as the caller's input, so anyone could
 spend a seed there.
 
+The settlement wallet must also hold a balance of each token it receives (the stablecoin, and the
+vault's asset for Earn) before the first spend, and Bridge must never sweep it to zero: a spend to a
+wallet with no balance creates that slot, about 250k more gas. Send it 1 unit of each, or leave 1 unit
+after every sweep.
+
 Bridge's TF handler, on the same clone, clears that vault approval after each of its own Earn pulls,
 so while TF pulls from the same vault the next private Earn spend sets it again, about 250k more gas.
 
-Then request callback gas per spend type rather than one figure: about 0.6M for a stablecoin spend
-and 1.4M for an Earn spend, which is what fits 4 and 3 spends into a default withdrawal batch
-([design](design.md#callback-gas)). Measure the program's own vault first, since a callback that runs
-out of gas bounces after Bridge approved the card: 1.4M leaves room for the vault approval TF may have
-cleared on top of the OUSD vault's 0.98M, not for a much costlier vault.
+Then request callback gas per spend type rather than one figure, sized for the worst case of a
+prepared program: about 0.6M for a stablecoin spend (measured 0.44M) and 1.4M for an Earn spend
+(measured 0.98M, plus about 250k when TF cleared the vault approval). That is what fits 4 and 3 spends
+into a default withdrawal batch ([design](design.md#callback-gas)). The figures hold only once all of
+step 5 is done, the settlement wallet's balance included: a callback that runs out of gas bounces
+after Bridge approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
+measure the program's own vault first.
 
 ## Deploying from CI
 
