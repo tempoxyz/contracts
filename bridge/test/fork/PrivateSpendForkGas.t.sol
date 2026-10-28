@@ -206,7 +206,7 @@ contract PrivateSpendForkGasTest is Test {
     function _measure(bool earn, uint256 dollars, bool prepared) internal {
         Row memory row;
         row.kind = earn ? "Earn (EarnShare -> OUSD)" : "Stablecoin (DLUSD)";
-        row.setup = prepared ? "warmed, 1-unit balances" : "as deployed";
+        row.setup = prepared ? "warmed, clone holds 1 EarnShare" : "as deployed";
         row.dollars = dollars;
         uint256 amount = dollars * 1e6;
 
@@ -219,11 +219,11 @@ contract PrivateSpendForkGasTest is Test {
         assertEq(destBefore, 0, "settlement wallet starts empty");
         row.firstGas = driver.callback(address(router), token, input, data);
         assertEq(ITIP20(_paid(earn)).balanceOf(destination), amount, "first spend paid");
-        _assertNothingHeld(token, prepared ? 1 : 0);
+        _assertNothingHeld(token);
         (token, input, data) = _withdrawal(earn, amount, destination);
         row.secondGas = driver.callback(address(router), token, input, data);
         assertEq(ITIP20(_paid(earn)).balanceOf(destination), 2 * amount, "second spend paid");
-        _assertNothingHeld(token, prepared ? 1 : 0);
+        _assertNothingHeld(token);
         vm.revertToState(snapshot);
 
         snapshot = vm.snapshotState();
@@ -235,7 +235,7 @@ contract PrivateSpendForkGasTest is Test {
         (token, input, data) = _withdrawal(earn, amount, destination);
         row.secondDeliver = driver.deliver(address(router), token, input, data);
         assertEq(ITIP20(_paid(earn)).balanceOf(destination), 2 * amount, "delivered second spend paid");
-        _assertNothingHeld(token, prepared ? 1 : 0);
+        _assertNothingHeld(token);
         vm.revertToState(snapshot);
 
         rows.push(row);
@@ -309,27 +309,23 @@ contract PrivateSpendForkGasTest is Test {
         bridgeFactory.updateSpenderDestination(SPENDER_ID, destination, true);
     }
 
-    function _assertNothingHeld(address token, uint256 dust) internal view {
-        assertEq(ITIP20(token).balanceOf(address(router)), dust, "router");
-        assertEq(ITIP20(token).balanceOf(address(settler)), dust, "settler");
-        assertEq(ITIP20(token).balanceOf(clone), dust, "clone");
+    function _assertNothingHeld(address token) internal view {
+        assertEq(ITIP20(token).balanceOf(address(router)), 0, "router");
+        assertEq(ITIP20(token).balanceOf(address(settler)), 0, "settler");
+        assertLe(ITIP20(token).balanceOf(clone), 1, "clone");
     }
 
     /// @dev A program set up ahead of its first spend: the router's and settler's standing approvals
-    ///      warmed (the clone's to the vault is set when governance allows it) and 1 unit of each
-    ///      token left in the router, settler and clone, so no spend creates their balance or allowance
-    ///      slots (TIP-1000).
+    ///      warmed (the clone's to the vault is set when governance allows it), and 1 EarnShare unit
+    ///      in the clone, which holds the shares an Earn spend redeems, so that balance slot stays set.
     function _prepare() internal {
         address[2] memory tokens = [Mainnet.DLUSD, Mainnet.EARN_SHARE];
-        address[3] memory holders = [address(router), address(settler), clone];
         for (uint256 i; i < tokens.length; ++i) {
             router.warm(tokens[i]);
             settler.warm(tokens[i]);
-            for (uint256 j; j < holders.length; ++j) {
-                vm.prank(Mainnet.PORTAL);
-                ITIP20(tokens[i]).transfer(holders[j], 1);
-            }
         }
+        vm.prank(Mainnet.PORTAL);
+        ITIP20(Mainnet.EARN_SHARE).transfer(clone, 1);
     }
 
     // ------------------------------------------------------------------

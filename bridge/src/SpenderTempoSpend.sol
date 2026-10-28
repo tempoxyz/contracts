@@ -108,11 +108,18 @@ contract SpenderTempoSpend is SpenderBase {
         bool allowed = data[2] == 0x01;
         _storage().allowedVaults[vault] = allowed;
         // The clone's standing EarnShare approval follows the allowlist: set for an allowed vault, so its
-        // spends need not create the allowance slot, and cleared for a disallowed one. A vault that cannot
-        // report its share is still allowed or disallowed; a spend sets its approval when it needs one.
+        // spends need not create the allowance slot, and cleared for a disallowed one. Best effort, so a
+        // vault whose share cannot be read or refuses `approve` is still allowed or disallowed: the
+        // allowlist write never depends on the vault, and a spend sets the approval when it needs one.
         (bool ok, uint256 word) = _readWord(vault, abi.encodeCall(ITempoEarnVault.earnShare, ()));
         if (ok && word >> 160 == 0 && word != 0) {
-            SafeTransferLib.safeApprove(address(uint160(word)), vault, allowed ? type(uint256).max : 0);
+            address share = address(uint160(word));
+            if (share.code.length != 0) {
+                // Uncapped: an approval that creates its slot costs ~250k on Tempo (TIP-1000).
+                // forge-lint: disable-next-line(unchecked-call)
+                (bool approved,) = share.call(abi.encodeCall(IERC20.approve, (vault, allowed ? type(uint256).max : 0)));
+                approved;
+            }
         }
         emit SpendVaultUpdated(vault, allowed);
     }

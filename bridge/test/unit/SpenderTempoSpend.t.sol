@@ -8,7 +8,7 @@ import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
 
 import { Spend, SpenderTempoSpend, SpenderTempoSpendStorageLib } from "../../src/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
-import { FeeOnTransferToken, MockToken, PartialBurnEarnVault } from "../harness/Mocks.sol";
+import { ApproveRevertingVault, FeeOnTransferToken, MockToken, PartialBurnEarnVault } from "../harness/Mocks.sol";
 import { isStandingOrNone } from "../harness/StandingApproval.sol";
 import { TempoEnv } from "../harness/TempoEnv.sol";
 
@@ -135,6 +135,16 @@ contract SpenderTempoSpendTest is TempoEnv {
         assertEq(earnShare.allowance(spender, address(earnVault)), type(uint256).max, "set when allowed");
         _setVault(address(earnVault), false);
         assertEq(earnShare.allowance(spender, address(earnVault)), 0, "cleared when disallowed");
+    }
+
+    /// @notice A vault whose share refuses `approve` is still allowed and, above all, disallowed:
+    ///         the allowlist write never depends on the vault.
+    function test_vaultWhoseShareRefusesApprovalCanStillBeDisallowed() public {
+        address vault = address(new ApproveRevertingVault());
+        _setVault(vault, true);
+        assertTrue(_vaultAllowed(vault), "allowed");
+        _setVault(vault, false);
+        assertFalse(_vaultAllowed(vault), "disallowed");
     }
 
     /// @notice Another handler that clears the approval (as TF does) only makes the next spend set it again.

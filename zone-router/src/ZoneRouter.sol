@@ -217,7 +217,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     }
 
     /// @notice Sets the router's standing approval of `token` to its Zone's Portal, which a spend's
-    ///         change would otherwise set on its first callback. Permissionless:
+    ///         change would otherwise set on its first callback. Earn ops then use it too. Permissionless:
     ///         the router holds no balance between callbacks, and the Portal is the Zone's own.
     function warm(address token) external {
         _approvePortal(token, IZoneFactory(ZONE_FACTORY_ADDRESS).zones(allowedZoneId).portal, type(uint256).max);
@@ -455,10 +455,14 @@ contract ZoneRouter is IWithdrawalReceiver {
         private
         returns (bytes32 hash)
     {
-        _safeApprove(token, sourcePortal, amount);
+        // A standing approval a spend or `warm` left is used and kept, so an Earn op on a router that
+        // also spends never clears it. Without one, the op keeps SingleZoneEarnRouter's exact approval,
+        // cleared after the deposit, so an Earn-only router behaves exactly like it.
+        bool standing = IERC20Allowance(token).allowance(address(this), sourcePortal) > type(uint128).max;
+        if (!standing) _safeApprove(token, sourcePortal, amount);
         hash = IZonePortal(sourcePortal)
             .depositEncrypted(token, amount, zoneReturn.keyIndex, zoneReturn.encrypted, zoneReturn.refundRecipient);
-        _safeApprove(token, sourcePortal, 0);
+        if (!standing) _safeApprove(token, sourcePortal, 0);
     }
 
     function _decodeRawOp(bytes calldata callbackData) private pure returns (uint256 rawOp) {

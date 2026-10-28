@@ -168,22 +168,26 @@ messenger and Zone admin are missing.
 
 ## 5. Prepare the program for low callback gas
 
-Optional, but it is what lets Bridge request well under 3M callback gas
-([design](design.md#callback-gas)). Anyone can do it, once per token the program spends from a
-Zone (its stablecoin, and the EarnShare for Earn):
+Optional. Anyone can do it, once per token the program spends from a Zone (its stablecoin, and the
+EarnShare for Earn): `router.warm(token)` and `settler.warm(token)` set the router's standing approval to its
+Zone's portal and the settler's to the program's clone. Without them the program's first spend sets
+them, which costs that spend about 250k more gas each. The clone's approval to each allowed vault is
+set when governance allows it with `UV`.
 
-- `router.warm(token)` and `settler.warm(token)` set the router's standing approval to its Zone's portal
-  and the settler's to the program's clone. Without them the first spend sets them.
-- Send 1 unit of the token to the router, the settler and the program's clone. The contracts leave
-  a balance they held before a spend untouched, so it stays, and no spend creates those balance
-  slots again. It cannot be recovered. Under a whitelist policy the three must already be admitted,
-  as preflight checks.
+For Earn, also send 1 unit of the EarnShare to the program's clone. The clone holds the shares an
+Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
+the unit stays and no spend creates that balance slot again (about 245k). It cannot be recovered.
+Under a whitelist policy the clone must already be admitted, as preflight checks. Do not seed the
+settler: `settle` is permissionless and counts whatever it holds as the caller's input, so anyone could
+spend a seed there.
 
-The clone's approval to each allowed vault is set when governance allows it with `UV`.
+Bridge's TF handler, on the same clone, clears that vault approval after each of its own Earn pulls,
+so while TF pulls from the same vault the next private Earn spend sets it again, about 250k more gas.
 
-Lower `callbackGas` only after measuring the program's own vault and checking these balances, since a
-callback that runs out of gas bounces after Bridge approved the card. Keep a margin: the warmed
-figures above leave room for a vault whose redemption costs more than the OUSD vault's.
+Lower `callbackGas` only after measuring the program's own vault, since a callback that runs out of gas
+bounces after Bridge approved the card. Keep a margin above the later-spend figures in the
+[design](design.md#callback-gas): room for a vault whose redemption costs more than the OUSD vault's,
+and for the vault approval TF may have cleared.
 
 ## Deploying from CI
 

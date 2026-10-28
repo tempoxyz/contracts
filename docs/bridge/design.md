@@ -162,18 +162,18 @@ approval path: the reserve covers a callback that fails after approval.
 
 The outbox charges a withdrawal fee of `(50,000 + callbackGas)` times the Zone's gas rate: on the gas
 requested, not used, up to the outbox's 10M. The Spend callback data is 864 of the outbox's 1,024 bytes.
-Measured on a mainnet fork (block 46,249,892) against the production OUSD Earn vault and Zone 2's
+Measured on a mainnet fork (block 46,308,438) against the production OUSD Earn vault and Zone 2's
 portal, through a factory-deployed router, `BridgeSettler` and the program's clone, with change
 returned to the Zone ([`test/fork/PrivateSpendForkGas.t.sol`](../../bridge/test/fork/PrivateSpendForkGas.t.sol)):
 
-| Spend      | Program                 | First spend (empty settlement wallet) | Later spend |
-| ---------- | ----------------------- | ------------------------------------- | ----------- |
-| Earn       | As deployed             | 1.98M                                 | 1.22M       |
-| Stablecoin | As deployed             | 1.19M                                 | 0.44M       |
-| Earn       | Warmed, 1-unit balances | 0.98M                                 | 0.73M       |
-| Stablecoin | Warmed, 1-unit balances | 0.44M                                 | 0.19M       |
+| Spend      | Program     | First spend (empty settlement wallet) | Later spend |
+| ---------- | ----------- | ------------------------------------- | ----------- |
+| Earn       | As deployed | 1.98M                                 | 1.22M       |
+| Stablecoin | As deployed | 1.19M                                 | 0.44M       |
+| Earn       | Prepared    | 1.23M                                 | 0.98M       |
+| Stablecoin | Prepared    | 0.69M                                 | 0.44M       |
 
-The amount does not change it, from $10 to $10,000. Most of the cost is Tempo's charge for each
+Before the standing approvals, a later spend took 2.00M (Earn) and 0.96M (stablecoin). The amount does not change it, from $10 to $10,000. Most of the cost is Tempo's charge for each
 storage slot that goes from zero to nonzero (TIP-1000): 245k of it is refunded at the end of the
 transaction when the slot is cleared again (TIP-1060), but the callback's gas limit must still cover
 it. So the contracts avoid creating slots on every spend:
@@ -184,9 +184,12 @@ it. So the contracts avoid creating slots on every spend:
   instead of on every spend;
 - the reentrancy locks are transient.
 
-A prepared program also keeps 1 unit of each token in the router, settler and clone
-([deploy](deploy.md#5-prepare-the-program-for-low-callback-gas)), so their balance slots never return
-to zero. The remaining Earn cost is mostly the vault's own redemption.
+A prepared program is warmed and, for Earn, keeps 1 EarnShare unit in its clone
+([deploy](deploy.md#5-prepare-the-program-for-low-callback-gas)). The rest of a later spend's cost is
+the vault's own redemption, for Earn, and the settler's balance slot, created when the router sends it the input and
+cleared when it hands the spend on: about 250k on every spend. Seeding the settler would avoid it,
+but `settle` is permissionless and counts what the settler holds as the caller's input, so anyone could
+spend the seed and the slot would empty again.
 
 ### Refunds
 

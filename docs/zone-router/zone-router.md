@@ -133,8 +133,9 @@ The change goes back through a standing maximum approval to the source Portal, s
 spend of a token and topped up only when it runs low. Clearing it after each deposit would create
 the allowance slot again on every callback, which Tempo charges (TIP-1000) against the callback's
 gas limit; the Portal is the Zone's own, and the router holds nothing between callbacks. Anyone can
-set it ahead of the first spend with `warm(token)`. Ops 0 and 1 keep `SingleZoneEarnRouter`'s exact
-approvals, so an Earn op on the same token clears it and the next spend sets it again.
+set it ahead of the first spend with `warm(token)`. An Earn op on a router that holds this approval uses and keeps it; without one, ops 0 and 1 keep
+`SingleZoneEarnRouter`'s exact approval, cleared after the deposit, so an Earn-only router behaves
+exactly like it.
 
 ## Settlers
 

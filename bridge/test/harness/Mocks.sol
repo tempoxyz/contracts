@@ -259,3 +259,15 @@ contract ReturningSettler {
         IERC20(token).transfer(msg.sender, maxInput);
     }
 }
+
+/// @notice A share token whose `approve` always reverts.
+contract ApproveRevertingShare {
+    function approve(address, uint256) external pure returns (bool) {
+        revert("no approvals");
+    }
+}
+
+/// @notice A vault that reports a share token whose `approve` reverts.
+contract ApproveRevertingVault {
+    address public immutable earnShare = address(new ApproveRevertingShare());
+}
