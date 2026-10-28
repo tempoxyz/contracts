@@ -160,22 +160,54 @@ approval path: the reserve covers a callback that fails after approval.
 
 ### Callback gas
 
-Bridge gives each private spend's callback 3M gas. The outbox allows up to 10M, and the withdrawal
-fee grows with the gas requested. The Spend callback data is 864 of the outbox's 1,024 bytes.
-Measured on a mainnet fork (block 46,154,047) against the production OUSD Earn vault and Zone 2's
+The outbox charges a withdrawal fee of `(50,000 + callbackGas)` times the Zone's gas rate: on the gas
+requested, not used, up to the outbox's 10M. The Spend callback data is 864 of the outbox's 1,024 bytes.
+Measured on a mainnet fork (block 46,308,438) against the production OUSD Earn vault and Zone 2's
 portal, through a factory-deployed router, `BridgeSettler` and the program's clone, with change
 returned to the Zone ([`test/fork/PrivateSpendForkGas.t.sol`](../../bridge/test/fork/PrivateSpendForkGas.t.sol)):
 
-| Spend      | First spend (empty settlement wallet) | Later spend |
-| ---------- | ------------------------------------- | ----------- |
-| Earn       | 2.25M                                 | 2.00M       |
-| Stablecoin | 1.21M                                 | 0.96M       |
+| Spend      | Program     | First spend (empty settlement wallet) | Later spend |
+| ---------- | ----------- | ------------------------------------- | ----------- |
+| Earn       | As deployed | 1.98M                                 | 1.22M       |
+| Stablecoin | As deployed | 1.19M                                 | 0.44M       |
+| Earn       | Prepared    | 1.23M                                 | 0.98M       |
+| Stablecoin | Prepared    | 0.69M                                 | 0.44M       |
 
-The amount does not change it, from $10 to $10,000. Most of the cost is Tempo's charge of about
-250k gas for each storage slot that goes from zero to nonzero: every approval and every transient
-balance in the router, settler and clone pays it, even when cleared in the same transaction. The
-router hands the settler its input by transfer rather than approval to save one such slot (about
-261k per spend).
+Before the standing approvals, a later spend took 2.00M (Earn) and 0.96M (stablecoin). The amount does not change it, from $10 to $10,000. Most of the cost is Tempo's charge for each
+storage slot that goes from zero to nonzero (TIP-1000): 245k of it is refunded at the end of the
+transaction when the slot is cleared again (TIP-1060), but the callback's gas limit must still cover
+it. So the contracts avoid creating slots on every spend:
+
+- the router hands the settler its input by transfer, not approval;
+- the settler's approval to the clone, the router's to the portal and the clone's to an allowed vault
+  are standing maximum approvals, set once (by `warm(token)`, or for the vault by governance's `UV`)
+  instead of on every spend;
+- the reentrancy locks are transient.
+
+A prepared program is warmed and, for Earn, keeps 1 EarnShare unit in its clone
+([deploy](deploy.md#5-prepare-the-program-for-low-callback-gas)). The rest of a later spend's cost is
+the vault's own redemption, for Earn, and the settler's balance slot, created when the router sends it the input and
+cleared when it hands the spend on: about 250k on every spend. Seeding the settler would avoid it,
+but `settle` is permissionless and counts what the settler holds as the caller's input, so anyone could
+spend the seed and the slot would empty again.
+
+The gas requested, not used, is what limits throughput. The Zone sequencer packs withdrawals into
+`processWithdrawals` transactions against a gas budget (10M by default), reserving 0.5M per
+transaction and 1.75M plus the requested callback gas per spend. So a spend's requested gas decides how
+many fit in a batch:
+
+| Callback gas requested | Spends per 10M batch |
+| ---------------------- | -------------------- |
+| 3M                     | 2                    |
+| up to 1.42M            | 3                    |
+| up to 0.63M            | 4                    |
+
+With a prepared program whose settlement wallet already holds each token it receives, Bridge requests
+about 0.6M for a stablecoin spend (4 per batch) and 1.4M for an Earn spend (3 per batch), instead of 3M
+for both (2 per batch). Each covers the measured later spend with margin, and the Earn figure also
+covers the vault approval Bridge's TF handler may have cleared. A spend to a settlement wallet with no
+balance needs about 250k more (the first-spend column above), which these figures do not cover. The fixed 1.75M per spend and
+the batch budget belong to the Zone, so no change to these contracts fits a fifth spend.
 
 ### Refunds
 

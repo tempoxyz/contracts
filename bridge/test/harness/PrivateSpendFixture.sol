@@ -11,6 +11,7 @@ import { Spend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { IZoneOutbox } from "../../src/interfaces/IZoneOutbox.sol";
 import { AccessKeys } from "./AccessKeys.sol";
+import { isStandingOrNone } from "./StandingApproval.sol";
 import { TxCall } from "./lib/TempoTx.sol";
 import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
@@ -166,17 +167,17 @@ abstract contract PrivateSpendFixture is AccessKeys {
         ITIP20(token).transfer(address(zoneRouter), input);
     }
 
-    /// @notice The router, settler and clone hold none of `token`, every approval a spend makes is
-    ///         cleared (router to portal, settler to clone, clone to vault), and the router, which
-    ///         transfers the settler its input, never approves it.
+    /// @notice The router, settler and clone hold none of `token`, the approvals a spend makes are
+    ///         none or standing (router to portal, settler to clone, clone to vault), and the router,
+    ///         which transfers the settler its input, never approves it.
     function _assertNothingHeld(address token) internal view {
         assertEq(ITIP20(token).balanceOf(address(zoneRouter)), 0, "nothing left in the router");
         assertEq(ITIP20(token).balanceOf(address(settler)), 0, "nothing left in the settler");
         assertEq(ITIP20(token).balanceOf(spender), 0, "nothing left in the clone");
         assertEq(ITIP20(token).allowance(address(zoneRouter), address(settler)), 0, "router -> settler");
-        assertEq(ITIP20(token).allowance(address(zoneRouter), address(portal)), 0, "router -> portal");
-        assertEq(ITIP20(token).allowance(address(settler), spender), 0, "settler -> clone");
-        assertEq(earnShare.allowance(spender, address(earnVault)), 0, "clone -> vault");
+        assertTrue(isStandingOrNone(ITIP20(token).allowance(address(zoneRouter), address(portal))), "router -> portal");
+        assertTrue(isStandingOrNone(ITIP20(token).allowance(address(settler), spender)), "settler -> clone");
+        assertTrue(isStandingOrNone(earnShare.allowance(spender, address(earnVault))), "clone -> vault");
     }
 
     /// @dev Bridge's Zone key requests the spend for `user` from the outbox.

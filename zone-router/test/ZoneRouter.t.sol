@@ -227,6 +227,37 @@ contract ZoneRouterTest is EarnRouterTestBase {
         assertEq(alternate.allowance(address(zr), address(settler)), 0);
     }
 
+    /// @notice The change's approval to the Portal stays standing, so a later spend sets no new slot,
+    ///         and the Portal still takes exactly the change.
+    function testSpendLeavesAStandingPortalApproval() public {
+        ZoneRouter zr = _spendRouter();
+        settler.configure(MockSettler.Behavior.Pay, 5 * ONE, payee);
+        alternate.mint(address(zr), 10 * ONE);
+        _deliverSpend(zr, 10 * ONE, 6 * ONE, 0);
+        assertGt(alternate.allowance(address(zr), address(portalA)), type(uint128).max);
+
+        alternate.mint(address(zr), 10 * ONE);
+        _deliverSpend(zr, 10 * ONE, 6 * ONE, 0);
+        assertEq(portalA.lastAmount(), 5 * ONE);
+        assertEq(alternate.balanceOf(address(zr)), 0);
+    }
+
+    /// @notice Anyone may set the router's standing approval to its own Zone's Portal ahead of the
+    ///         first spend.
+    function testWarmApprovesTheZonePortal() public {
+        ZoneRouter zr = _spendRouter();
+        vm.prank(makeAddr("anyone"));
+        zr.warm(address(alternate));
+        assertEq(alternate.allowance(address(zr), address(portalA)), type(uint256).max);
+    }
+
+    /// @notice An Earn-only router cannot be warmed, so it never holds a standing Portal approval.
+    function testWarmRefusesAnEarnOnlyRouter() public {
+        ZoneRouter zr = _earnRouter(false);
+        vm.expectRevert(ZoneRouter.OpDisabled.selector);
+        zr.warm(address(alternate));
+    }
+
     function testSpendUsingEverythingReturnsNothing() public {
         ZoneRouter zr = _spendRouter();
         settler.configure(MockSettler.Behavior.Pay, 3 * ONE, payee);
@@ -421,7 +452,9 @@ contract ZoneRouterTest is EarnRouterTestBase {
         MemoMockToken[3] memory tokens = [alternate, assetA, earnA];
         for (uint256 i = 0; i < tokens.length; i++) {
             assertEq(tokens[i].balanceOf(address(zr)), 0);
-            assertEq(tokens[i].allowance(address(zr), address(portalA)), 0);
+            // A spend leaves its standing approval to the Portal (less what deposits used); nothing else.
+            uint256 portalAllowance = tokens[i].allowance(address(zr), address(portalA));
+            assertTrue(portalAllowance == 0 || portalAllowance > type(uint128).max, "portal allowance");
             assertEq(tokens[i].allowance(address(zr), address(settler)), 0);
             assertEq(tokens[i].allowance(address(zr), address(earnVaultA)), 0);
             assertEq(tokens[i].allowance(address(zr), address(pool)), 0);

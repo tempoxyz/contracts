@@ -120,6 +120,20 @@ contract BridgeSettlerTest is Test {
         new BridgeSettler(IBridgeSpenderFactory(address(0)), SPENDER_ID);
     }
 
+    /// @notice Anyone may set the settler's standing approval to its program's clone ahead of the first
+    ///         spend, after which a spend approves nothing.
+    function testWarmApprovesTheProgramClone() public {
+        vm.prank(makeAddr("anyone"));
+        settler.warm(address(usd));
+        assertEq(usd.allowance(address(settler), address(clone)), type(uint256).max);
+
+        clone.configure(AMOUNT, AMOUNT);
+        usd.mint(address(settler), AMOUNT);
+        vm.prank(router);
+        settler.settle(address(usd), AMOUNT, abi.encode(_spend(address(usd))));
+        assertEq(usd.allowance(address(settler), address(clone)), type(uint256).max - AMOUNT);
+    }
+
     function testSettlesAndHandsBackUnusedInput() public {
         uint256 maxInput = AMOUNT + 7e6;
         clone.configure(AMOUNT, AMOUNT);
@@ -134,7 +148,8 @@ contract BridgeSettlerTest is Test {
         assertEq(usd.balanceOf(destination), AMOUNT);
         assertEq(usd.balanceOf(router), 7e6);
         assertEq(usd.balanceOf(address(settler)), 0);
-        assertEq(usd.allowance(address(settler), address(clone)), 0);
+        // The standing approval to the clone stays, less what the spend used.
+        assertEq(usd.allowance(address(settler), address(clone)), type(uint256).max - AMOUNT);
         assertEq(clone.lastCall(), abi.encodePacked(bytes2("TS"), bytes2("PS"), abi.encode(spend)));
     }
 

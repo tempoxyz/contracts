@@ -14,6 +14,7 @@ import {
     ReentrantToken,
     ShortPayingSpendHandler
 } from "../harness/Mocks.sol";
+import { isStandingOrNone } from "../harness/StandingApproval.sol";
 import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice Hands input to a settler as the Zone router does: transfers exactly `maxInput` and calls
@@ -103,7 +104,7 @@ contract BridgeSettlerTest is AccessKeys {
         assertEq(shares - earnShare.balanceOf(router), burned, "charged the burned shares only");
         assertEq(earnShare.balanceOf(address(settler)), 0, "nothing left in the settler");
         assertEq(earnShare.balanceOf(spender), 0, "nothing left in the clone");
-        assertEq(earnShare.allowance(spender, address(earnVault)), 0, "clone -> vault");
+        assertTrue(isStandingOrNone(earnShare.allowance(spender, address(earnVault))), "clone -> vault");
         _assertNoApprovals(address(earnShare));
     }
 
@@ -288,7 +289,7 @@ contract BridgeSettlerTest is AccessKeys {
         (bool ok, bytes memory ret) =
             token.staticcall(abi.encodeWithSignature("allowance(address,address)", address(settler), spender));
         require(ok);
-        assertEq(abi.decode(ret, (uint256)), 0, "settler -> clone");
+        assertTrue(isStandingOrNone(abi.decode(ret, (uint256))), "settler -> clone");
         (ok, ret) = token.staticcall(abi.encodeWithSignature("allowance(address,address)", router, address(settler)));
         require(ok);
         assertEq(abi.decode(ret, (uint256)), 0, "router -> settler");

@@ -166,6 +166,37 @@ that the clone receives and sends and the vault receives. EarnShare policies are
 the policy admin adds whichever of the clone, vault, router, settler, refund recipient, portal,
 messenger and Zone admin are missing.
 
+## 5. Prepare the program for low callback gas
+
+Optional. Anyone can do it, once per token the program spends from a Zone (its stablecoin, and the
+EarnShare for Earn): `router.warm(token)` and `settler.warm(token)` set the router's standing approval to its
+Zone's portal and the settler's to the program's clone. Without them the program's first spend sets
+them, which costs that spend about 250k more gas each. The clone's approval to each allowed vault is
+set when governance allows it with `UV`.
+
+For Earn, also send 1 unit of the EarnShare to the program's clone. The clone holds the shares an
+Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
+the unit stays and no spend creates that balance slot again (about 245k). It cannot be recovered.
+Under a whitelist policy the clone must already be admitted, as preflight checks. Do not seed the
+settler: `settle` is permissionless and counts whatever it holds as the caller's input, so anyone could
+spend a seed there.
+
+The settlement wallet must also hold a balance of each token it receives (the stablecoin, and the
+vault's asset for Earn) before the first spend, and Bridge must never sweep it to zero: a spend to a
+wallet with no balance creates that slot, about 250k more gas. Send it 1 unit of each, or leave 1 unit
+after every sweep.
+
+Bridge's TF handler, on the same clone, clears that vault approval after each of its own Earn pulls,
+so while TF pulls from the same vault the next private Earn spend sets it again, about 250k more gas.
+
+Then request callback gas per spend type rather than one figure, sized for the worst case of a
+prepared program: about 0.6M for a stablecoin spend (measured 0.44M) and 1.4M for an Earn spend
+(measured 0.98M, plus about 250k when TF cleared the vault approval). That is what fits 4 and 3 spends
+into a default withdrawal batch ([design](design.md#callback-gas)). The figures hold only once all of
+step 5 is done, the settlement wallet's balance included: a callback that runs out of gas bounces
+after Bridge approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
+measure the program's own vault first.
+
 ## Deploying from CI
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))

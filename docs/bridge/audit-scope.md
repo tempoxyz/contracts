@@ -50,7 +50,9 @@ What the in-scope code relies on from them:
    unused shares return to the payer.
 4. **The router and settler hold nothing after a callback.** Each one's balance of the input token
    after the callback equals its balance before the input arrived (`ResidualBalance`), the router
-   never approves the settler, and approvals to the clone and portal are cleared.
+   never approves the settler. The settler's approval to the clone, the router's to its portal and
+   the clone's to an allowed vault stay standing at the maximum, so no spend creates their slots
+   (TIP-1000); each holder keeps nothing between spends for them to take.
 5. **Only the right Zone can call the router.** The caller is the Zone messenger, the source Zone is
    the router's `allowedZoneId`, the source portal is the Zone factory's portal for that Zone, and
    Spend uses only the settlers fixed in the router's mode (`UnknownSettler`).
@@ -90,8 +92,12 @@ What the in-scope code relies on from them:
   bounces after Bridge approved it. Bridge adds that change, but the contracts do not enforce it.
 - **Reentrancy** through tokens or the vault during `onWithdrawalReceived` and `settle`. Both are
   guarded (`ReentrantCall`, `Reentrancy`).
-- **Approval hygiene** in the handler, the settler and the router: exact approvals, cleared after
-  use.
+- **Standing approvals** in the handler, the settler and the router: the clone's EarnShare approval
+  to an allowed vault (set by governance's `UV`, cleared when it disallows, restored by a spend after
+  another handler such as TF clears it), the settler's to its clone and the router's to its portal.
+  Check that nothing those spenders can reach is left in the clone, settler or router between spends,
+  and that `maxInput` still bounds a spend. The cardholder's own approvals on the public path stay
+  exact and cleared.
 - **Tokens sent to the settler outside a callback.** The settler takes its balance less
   `maxInput` as what it held before the router's input, so that input is accounted for, but tokens
   sent to it directly are not: any later `settle` caller can spend them through the program's clone, only to

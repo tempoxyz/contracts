@@ -13,6 +13,9 @@ import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 
 struct SpenderTempoSpendStorage {
     mapping(address vault => bool allowed) allowedVaults;
+    /// @dev The share the clone holds a standing approval to `vault` on, so a disallow clears that
+    ///      share's approval without trusting what the vault reports then.
+    mapping(address vault => address share) approvedShare;
 }
 
 library SpenderTempoSpendStorageLib {
@@ -67,6 +70,12 @@ contract SpenderTempoSpend is SpenderBase {
         uint256 sharesBurned
     );
 
+    /// @dev Gas for the vault's `earnShare()` read in `UV`: a storage read or an immutable.
+    uint256 private constant EARN_SHARE_READ_GAS = 30_000;
+    /// @dev Gas for the share's `approve` in `UV`: enough to create the allowance slot (~250k on Tempo,
+    ///      TIP-1000) with room to spare.
+    uint256 private constant SHARE_APPROVE_GAS = 400_000;
+
     constructor(IFactory factory_) SpenderBase(factory_) { }
 
     // ------------------------------------------------------------------
@@ -107,7 +116,64 @@ contract SpenderTempoSpend is SpenderBase {
         address vault = address(bytes20(data[3:23]));
         bool allowed = data[2] == 0x01;
         _storage().allowedVaults[vault] = allowed;
+        // The clone's standing EarnShare approval follows the allowlist: set for an allowed vault, so its
+        // spends need not create the allowance slot, and cleared for a disallowed one. Best effort, so a
+        // vault whose share cannot be read or refuses `approve` is still allowed or disallowed: the
+        // allowlist write never depends on the vault, and a spend sets the approval when it needs one.
+        if (allowed) {
+            address share = _tryReadShare(vault);
+            if (share != address(0)) _setStandingApproval(vault, share);
+        } else {
+            _clearStandingApproval(vault);
+        }
         emit SpendVaultUpdated(vault, allowed);
+    }
+
+    /// @dev The share `vault` reports, or zero. The call has a fixed gas cap and copies at most one word
+    ///      back, so a vault that burns gas, reverts or returns a huge payload cannot make governance fail.
+    function _tryReadShare(address vault) private view returns (address share) {
+        if (vault.code.length == 0) return address(0);
+        assembly ("memory-safe") {
+            mstore(0x00, 0xdab0322f) // earnShare()
+            // Yul evaluates arguments right to left, so the call goes first and its size is read after it.
+            let ok := staticcall(EARN_SHARE_READ_GAS, vault, 0x1c, 0x04, 0x00, 0x20)
+            if and(ok, iszero(lt(returndatasize(), 0x20))) {
+                let word := mload(0x00)
+                if iszero(shr(160, word)) { share := word }
+            }
+        }
+    }
+
+    /// @dev Sets the clone's standing approval of `share` to `vault` and records it, first clearing one
+    ///      recorded on another share. Best effort: the approve calls have a fixed gas cap and their result
+    ///      is ignored, so a share that misbehaves cannot make governance fail.
+    function _setStandingApproval(address vault, address share) private {
+        SpenderTempoSpendStorage storage $ = _storage();
+        address recorded = $.approvedShare[vault];
+        if (recorded != address(0) && recorded != share) _tryApprove(recorded, vault, 0);
+        _tryApprove(share, vault, type(uint256).max);
+        if (recorded != share) $.approvedShare[vault] = share;
+    }
+
+    /// @dev Clears the standing approval on the share recorded for `vault`, whatever the vault reports now.
+    function _clearStandingApproval(address vault) private {
+        SpenderTempoSpendStorage storage $ = _storage();
+        address recorded = $.approvedShare[vault];
+        if (recorded == address(0)) return;
+        _tryApprove(recorded, vault, 0);
+        delete $.approvedShare[vault];
+    }
+
+    /// @dev `share.approve(spender, amount)` with a fixed gas cap, its result ignored and no return data
+    ///      copied. No code check: a TIP-20 share is a precompile, and a call without code is a no-op.
+    function _tryApprove(address share, address spender, uint256 amount) private {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, 0x095ea7b3) // approve(address,uint256)
+            mstore(add(m, 0x20), spender)
+            mstore(add(m, 0x40), amount)
+            pop(call(SHARE_APPROVE_GAS, share, 0, add(m, 0x1c), 0x44, 0x00, 0x00))
+        }
     }
 
     /// @dev The clone has already checked the factory's pause.
@@ -164,9 +230,21 @@ contract SpenderTempoSpend is SpenderBase {
 
         address share = v.earnShare();
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
-        SafeTransferLib.safeApprove(share, vault, required);
+        // A standing maximum approval, set when governance allowed the vault and topped up here when
+        // another handler (such as TF, which clears its own) has lowered it. Clearing it after each spend
+        // would create the allowance slot again on every spend, which Tempo charges as a new storage slot
+        // (TIP-1000). The clone holds no EarnShare between spends.
+        // The approval is recorded, so governance clears it on the right share when it disallows the vault.
+        if (IERC20(share).allowance(address(this), vault) < required) {
+            SafeTransferLib.safeApprove(share, vault, type(uint256).max);
+            SpenderTempoSpendStorage storage $ = _storage();
+            address recorded = $.approvedShare[vault];
+            if (recorded != share) {
+                if (recorded != address(0)) SafeTransferLib.safeApprove(recorded, vault, 0);
+                $.approvedShare[vault] = share;
+            }
+        }
         burned = v.withdrawExact(assets, receiver, required);
-        SafeTransferLib.safeApprove(share, vault, 0);
         if (burned < required) SafeTransferLib.safeTransfer(share, msg.sender, required - burned);
     }
 

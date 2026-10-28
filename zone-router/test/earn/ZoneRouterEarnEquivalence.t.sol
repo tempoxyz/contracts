@@ -279,7 +279,10 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         assertEq(alternate.balanceOf(payee), ONE);
         assertEq(portalA.lastToken(), address(alternate));
         assertEq(portalA.lastAmount(), 2 * ONE);
-        _assertRouterState(0, 0, 0);
+        // The spend leaves only its standing approval to the Portal, which the Earn ops share.
+        uint256 standing = alternate.allowance(address(zr), address(portalA));
+        assertGt(standing, type(uint128).max);
+        _assertBalances(zr);
         assertEq(alternate.allowance(address(zr), address(settler)), 0);
 
         portalA.release(address(earnA), address(zr), 2 * ONE);
@@ -287,8 +290,23 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         assertEq(portalA.lastToken(), address(alternate));
         assertEq(portalA.lastAmount(), 2 * ONE);
         assertEq(earnA.totalSupply(), 0);
-        _assertRouterState(0, 0, 0);
+        // The redeem's output went back through the same standing approval and left it standing.
+        assertGt(alternate.allowance(address(zr), address(portalA)), type(uint128).max);
+        _assertBalances(zr);
         assertEq(portalA.depositCount(), 3);
+    }
+
+    /// @dev The router holds none of the three tokens, approves the pool and vault nothing, and keeps
+    ///      at most a standing approval to its Portal (none or more than any amount it moves).
+    function _assertBalances(ZoneRouter zr) private view {
+        MemoMockToken[3] memory tokens = [alternate, assetA, earnA];
+        for (uint256 i = 0; i < tokens.length; i++) {
+            assertEq(tokens[i].balanceOf(address(zr)), 0);
+            assertEq(tokens[i].allowance(address(zr), address(pool)), 0);
+            assertEq(tokens[i].allowance(address(zr), address(earnVaultA)), 0);
+            uint256 portal = tokens[i].allowance(address(zr), address(portalA));
+            assertTrue(portal == 0 || portal > type(uint128).max, "portal allowance");
+        }
     }
 
     /// @dev Spend data sent to an Earn-only router is rejected before any decoding or transfer.

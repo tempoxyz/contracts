@@ -8,7 +8,16 @@ import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
 
 import { Spend, SpenderTempoSpend, SpenderTempoSpendStorageLib } from "../../src/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
-import { FeeOnTransferToken, MockToken, PartialBurnEarnVault } from "../harness/Mocks.sol";
+import {
+    ApproveRevertingVault,
+    FeeOnTransferToken,
+    GasSinkShareVault,
+    HostileShareVault,
+    MockToken,
+    PartialBurnEarnVault,
+    SwitchingShareVault
+} from "../harness/Mocks.sol";
+import { isStandingOrNone } from "../harness/StandingApproval.sol";
 import { TempoEnv } from "../harness/TempoEnv.sol";
 
 /// @notice The "TS" handler: `publicCall "PS"` through the program's Bridge clone.
@@ -120,12 +129,77 @@ contract SpenderTempoSpendTest is TempoEnv {
         _spendAs(alice, s);
     }
 
-    /// @notice The clone approves the vault for one spend's shares and clears it after.
-    function test_spendFromEarnLeavesNoApproval() public {
+    /// @notice The clone keeps only its standing approval to the allowed vault, and no shares.
+    function test_spendFromEarnLeavesOnlyTheStandingApproval() public {
         _spendAs(alice, _earn(100e6, 100e6, earnVault.previewWithdraw(100e6) * 2));
-        assertEq(earnShare.allowance(spender, address(earnVault)), 0, "clone -> vault");
+        assertTrue(isStandingOrNone(earnShare.allowance(spender, address(earnVault))), "clone -> vault");
         assertEq(earnShare.balanceOf(spender), 0, "clone holds no shares");
         assertEq(usd.balanceOf(spender), 0, "clone holds no stablecoin");
+    }
+
+    /// @notice Governance allowing a vault gives the clone a standing EarnShare approval to it, and
+    ///         disallowing the vault clears it.
+    function test_vaultAllowlistSetsAndClearsTheStandingApproval() public {
+        assertEq(earnShare.allowance(spender, address(earnVault)), type(uint256).max, "set when allowed");
+        _setVault(address(earnVault), false);
+        assertEq(earnShare.allowance(spender, address(earnVault)), 0, "cleared when disallowed");
+    }
+
+    /// @notice A vault whose share refuses `approve` is still allowed and, above all, disallowed:
+    ///         the allowlist write never depends on the vault.
+    function test_vaultWhoseShareRefusesApprovalCanStillBeDisallowed() public {
+        address vault = address(new ApproveRevertingVault());
+        _setVault(vault, true);
+        assertTrue(_vaultAllowed(vault), "allowed");
+        _setVault(vault, false);
+        assertFalse(_vaultAllowed(vault), "disallowed");
+    }
+
+    /// @notice A vault that answers `earnShare()` with a huge payload or burns all its gas, or reports a
+    ///         share whose `approve` burns all its gas, cannot stop governance from disallowing it.
+    function test_hostileVaultCannotBlockDisallow() public {
+        HostileShareVault bomb = new HostileShareVault();
+        _setVault(address(bomb), true);
+        _setVault(address(bomb), false);
+        assertFalse(_vaultAllowed(address(bomb)), "returndata bomb disallowed");
+
+        bomb.setBurnGas(true);
+        _setVault(address(bomb), true);
+        _setVault(address(bomb), false);
+        assertFalse(_vaultAllowed(address(bomb)), "gas sink disallowed");
+
+        address sink = address(new GasSinkShareVault());
+        _setVault(sink, true);
+        _setVault(sink, false);
+        assertFalse(_vaultAllowed(sink), "share gas sink disallowed");
+    }
+
+    /// @notice Disallowing a vault clears the approval on the share that was approved, even when the vault
+    ///         now reverts or reports another share.
+    function test_disallowClearsTheRecordedShareNotTheReportedOne() public {
+        SwitchingShareVault vault = new SwitchingShareVault(address(earnShare));
+        _setVault(address(vault), true);
+        assertEq(earnShare.allowance(spender, address(vault)), type(uint256).max, "approved");
+
+        vault.set(address(0), true);
+        _setVault(address(vault), false);
+        assertEq(earnShare.allowance(spender, address(vault)), 0, "cleared though earnShare reverts");
+
+        _setVault(address(vault), true);
+        vault.set(address(usd), false);
+        _setVault(address(vault), true);
+        assertEq(earnShare.allowance(spender, address(vault)), 0, "old share cleared on re-allow");
+        _setVault(address(vault), false);
+        assertEq(usd.allowance(spender, address(vault)), 0, "new share cleared on disallow");
+    }
+
+    /// @notice Another handler that clears the approval (as TF does) only makes the next spend set it again.
+    function test_spendRestoresAStandingApprovalAnotherHandlerCleared() public {
+        vm.prank(spender);
+        earnShare.approve(address(earnVault), 0);
+        _spendAs(alice, _earn(100e6, 100e6, earnVault.previewWithdraw(100e6) * 2));
+        assertEq(earnShare.allowance(spender, address(earnVault)), type(uint256).max);
+        assertEq(earnShare.balanceOf(spender), 0, "clone holds no shares");
     }
 
     /// @notice A vault that burns fewer shares than it quoted leaves the difference with the payer,
@@ -151,7 +225,7 @@ contract SpenderTempoSpendTest is TempoEnv {
         assertEq(usd.balanceOf(settlement) - before, 50e6, "destination paid");
         assertEq(500e6 - share.balanceOf(alice), burned, "payer charged only the burn");
         assertEq(share.balanceOf(spender), 0, "clone holds no shares");
-        assertEq(share.allowance(spender, address(vault)), 0, "clone -> vault");
+        assertTrue(isStandingOrNone(share.allowance(spender, address(vault))), "clone -> vault");
     }
 
     /// @notice With Tempo Earn's fees accruing over time, a spend still pays exactly the amount
@@ -487,7 +561,7 @@ contract SpenderTempoSpendTest is TempoEnv {
     function _assertCloneEmpty() internal view {
         assertEq(usd.balanceOf(spender), 0, "clone holds no stablecoin");
         assertEq(earnShare.balanceOf(spender), 0, "clone holds no shares");
-        assertEq(earnShare.allowance(spender, address(earnVault)), 0, "clone -> vault");
+        assertTrue(isStandingOrNone(earnShare.allowance(spender, address(earnVault))), "clone -> vault");
     }
 
     function _spendAs(address payer, Spend memory s) internal {

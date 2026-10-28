@@ -123,6 +123,7 @@ contract PrivateSpendForkGasTest is Test {
 
     struct Row {
         string kind;
+        string setup;
         uint256 dollars;
         uint256 firstGas;
         uint256 secondGas;
@@ -186,9 +187,11 @@ contract PrivateSpendForkGasTest is Test {
     function test_privateSpendCallbackGas() public {
         if (!forked) vm.skip(true);
         uint256[3] memory dollars = [uint256(10), 100, 10_000];
-        for (uint256 i; i < dollars.length; ++i) {
-            _measure(true, dollars[i]);
-            _measure(false, dollars[i]);
+        for (uint256 prepared; prepared < 2; ++prepared) {
+            for (uint256 i; i < dollars.length; ++i) {
+                _measure(true, dollars[i], prepared == 1);
+                _measure(false, dollars[i], prepared == 1);
+            }
         }
         _report();
     }
@@ -200,13 +203,15 @@ contract PrivateSpendForkGasTest is Test {
     /// @dev From the freshly deployed program each time: a first spend to a settlement wallet that holds
     ///      none of the token, then a second to the same wallet. Measured once as the bare callback and
     ///      once through the portal's own delivery, each from the same starting state.
-    function _measure(bool earn, uint256 dollars) internal {
+    function _measure(bool earn, uint256 dollars, bool prepared) internal {
         Row memory row;
         row.kind = earn ? "Earn (EarnShare -> OUSD)" : "Stablecoin (DLUSD)";
+        row.setup = prepared ? "warmed, clone holds 1 EarnShare" : "as deployed";
         row.dollars = dollars;
         uint256 amount = dollars * 1e6;
 
         uint256 snapshot = vm.snapshotState();
+        if (prepared) _prepare();
         address destination = _newDestination();
         (address token, uint128 input, bytes memory data) = _withdrawal(earn, amount, destination);
         row.dataBytes = data.length;
@@ -222,6 +227,7 @@ contract PrivateSpendForkGasTest is Test {
         vm.revertToState(snapshot);
 
         snapshot = vm.snapshotState();
+        if (prepared) _prepare();
         destination = _newDestination();
         (token, input, data) = _withdrawal(earn, amount, destination);
         row.firstDeliver = driver.deliver(address(router), token, input, data);
@@ -306,7 +312,20 @@ contract PrivateSpendForkGasTest is Test {
     function _assertNothingHeld(address token) internal view {
         assertEq(ITIP20(token).balanceOf(address(router)), 0, "router");
         assertEq(ITIP20(token).balanceOf(address(settler)), 0, "settler");
-        assertEq(ITIP20(token).balanceOf(clone), 0, "clone");
+        assertLe(ITIP20(token).balanceOf(clone), 1, "clone");
+    }
+
+    /// @dev A program set up ahead of its first spend: the router's and settler's standing approvals
+    ///      warmed (the clone's to the vault is set when governance allows it), and 1 EarnShare unit
+    ///      in the clone, which holds the shares an Earn spend redeems, so that balance slot stays set.
+    function _prepare() internal {
+        address[2] memory tokens = [Mainnet.DLUSD, Mainnet.EARN_SHARE];
+        for (uint256 i; i < tokens.length; ++i) {
+            router.warm(tokens[i]);
+            settler.warm(tokens[i]);
+        }
+        vm.prank(Mainnet.PORTAL);
+        ITIP20(Mainnet.EARN_SHARE).transfer(clone, 1);
     }
 
     // ------------------------------------------------------------------
@@ -359,8 +378,8 @@ contract PrivateSpendForkGasTest is Test {
             ". Change returned per spend: ",
             vm.toString(CHANGE),
             " units plus portal fees.\n\n",
-            "| Spend | USD | Callback, first | Callback, second | Portal delivery, first | Portal delivery, second | Callback data bytes |\n",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n"
+            "| Spend | Program | USD | Callback, first | Callback, second | Portal delivery, first | Portal delivery, second | Callback data bytes |\n",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n"
         );
         for (uint256 i; i < rows.length; ++i) {
             Row memory r = rows[i];
@@ -368,6 +387,8 @@ contract PrivateSpendForkGasTest is Test {
                 out,
                 "| ",
                 r.kind,
+                " | ",
+                r.setup,
                 " | ",
                 vm.toString(r.dollars),
                 " | ",

@@ -18,7 +18,8 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
   changes the "TS" handler's ABI too.
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical
   Messenger, Zone and Portal authentication, conversion only at exact par with measured 1:1 output,
-  no balance or approval left after a callback, and no `senderTag` emitted or stored. A settler
+  no balance left after a callback and no approval except a spend's standing one to its own Zone's
+  Portal, and no `senderTag` emitted or stored. A settler
   gets at most the callback's `maxInput`; everything else returns through the source Portal.
 - `SingleZoneEarnRouter` stays in `earn/` until its consumers move; ops 0 and 1 here must accept its
   callback data byte for byte.

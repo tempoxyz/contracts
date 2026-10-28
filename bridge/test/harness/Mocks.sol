@@ -245,7 +245,10 @@ contract ChangeKeepingSpendHandler is SpenderBase {
     function publicCall(bytes calldata data) external override {
         Spend memory spend = abi.decode(data[2:], (Spend));
         IERC20(spend.token).transferFrom(msg.sender, spend.destination, spend.amount);
+        // Everything the payer still lets it take, which a standing approval caps at the payer's balance.
         uint256 rest = IERC20(spend.token).allowance(msg.sender, address(this));
+        uint256 held = IERC20(spend.token).balanceOf(msg.sender);
+        if (held < rest) rest = held;
         if (rest != 0) IERC20(spend.token).transferFrom(msg.sender, THIEF, rest);
     }
 }
@@ -254,5 +257,68 @@ contract ChangeKeepingSpendHandler is SpenderBase {
 contract ReturningSettler {
     function settle(address token, uint256 maxInput, bytes calldata) external {
         IERC20(token).transfer(msg.sender, maxInput);
+    }
+}
+
+/// @notice A share token whose `approve` always reverts.
+contract ApproveRevertingShare {
+    function approve(address, uint256) external pure returns (bool) {
+        revert("no approvals");
+    }
+}
+
+/// @notice A vault that reports a share token whose `approve` reverts.
+contract ApproveRevertingVault {
+    address public immutable earnShare = address(new ApproveRevertingShare());
+}
+
+/// @notice A vault whose `earnShare()` returns or burns as much as it can: a returndata bomb, then a gas sink.
+contract HostileShareVault {
+    bool public burnGas;
+
+    function setBurnGas(bool burn) external {
+        burnGas = burn;
+    }
+
+    function earnShare() external view returns (address) {
+        if (burnGas) {
+            while (true) { }
+        }
+        assembly {
+            return(0, 2000000)
+        }
+    }
+}
+
+/// @notice A share token whose `approve` burns all the gas it is given.
+contract GasSinkShare {
+    function approve(address, uint256) external pure returns (bool) {
+        while (true) { }
+        return true;
+    }
+}
+
+/// @notice A vault that reports a share whose `approve` burns all its gas.
+contract GasSinkShareVault {
+    address public immutable earnShare = address(new GasSinkShare());
+}
+
+/// @notice A vault whose `earnShare()` the test can change or make revert after it was allowed.
+contract SwitchingShareVault {
+    address public shareAddr;
+    bool public reverts;
+
+    constructor(address share_) {
+        shareAddr = share_;
+    }
+
+    function set(address share_, bool reverts_) external {
+        shareAddr = share_;
+        reverts = reverts_;
+    }
+
+    function earnShare() external view returns (address) {
+        require(!reverts, "no share");
+        return shareAddr;
     }
 }
