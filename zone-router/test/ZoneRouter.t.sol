@@ -251,6 +251,13 @@ contract ZoneRouterTest is EarnRouterTestBase {
         assertEq(alternate.allowance(address(zr), address(portalA)), type(uint256).max);
     }
 
+    /// @notice An Earn-only router cannot be warmed, so it never holds a standing Portal approval.
+    function testWarmRefusesAnEarnOnlyRouter() public {
+        ZoneRouter zr = _earnRouter(false);
+        vm.expectRevert(ZoneRouter.OpDisabled.selector);
+        zr.warm(address(alternate));
+    }
+
     function testSpendUsingEverythingReturnsNothing() public {
         ZoneRouter zr = _spendRouter();
         settler.configure(MockSettler.Behavior.Pay, 3 * ONE, payee);

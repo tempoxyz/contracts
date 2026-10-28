@@ -219,7 +219,9 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @notice Sets the router's standing approval of `token` to its Zone's Portal, which a spend's
     ///         change would otherwise set on its first callback. Earn ops then use it too. Permissionless:
     ///         the router holds no balance between callbacks, and the Portal is the Zone's own.
+    ///         Only a router that spends has one: an Earn-only router keeps SingleZoneEarnRouter's exact approvals.
     function warm(address token) external {
+        if (enabledOps & OP_SPEND == 0) revert OpDisabled();
         _approvePortal(token, IZoneFactory(ZONE_FACTORY_ADDRESS).zones(allowedZoneId).portal, type(uint256).max);
     }
 
