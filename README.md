@@ -39,7 +39,7 @@ Earn and the Zone router.
 | `bridge/`                  | Bridge integration Foundry project (solc): vendored Bridge contracts, the "TS" handler, card harness, deploy scripts.  |
 | `deployments/`             | Shared deployment lifecycle (`pnpm earn`), releases, ABIs, and modules (`modules/earn/`, `modules/zone-router/`).      |
 | `profiles/`                | Deployment profiles and generated records.                                                                             |
-| `app/`                     | Earn's web app and Cloudflare Worker.                                                                                  |
+| `earn/app/`                | Earn's web app and Cloudflare Worker.                                                                                  |
 | `e2e/`                     | Shared local and hosted integration harness and cases, and the Bridge integration's Zone run (`e2e/bridge/`).          |
 | `localnet/`                | Disposable local Tempo L1 and Zone, shared by every E2E run.                                                           |
 | `docs/`                    | `earn/` (the documentation index), `zone-router/`, `bridge/`, `deployment/`, and `development/`.                       |

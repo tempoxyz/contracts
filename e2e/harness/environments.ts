@@ -3,9 +3,12 @@ import {
   hostedEnvironment,
   hostedEnvironments,
   type HostedEnvironmentId,
-} from '@tempoxyz/earn/deployments'
-import { loadDeploymentEnvironment, profileRepositoryRoot } from '@tempoxyz/earn/deployments/node'
-import type { EarnStack } from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments'
+import {
+  loadDeploymentEnvironment,
+  profileRepositoryRoot,
+} from '@tempoxyz/contracts/deployments/node'
+import type { EarnStack } from '@tempoxyz/contracts/deployments/operations'
 
 /** One hosted E2E environment per `hostedEnvironments` entry; its facts stay in that table. */
 const hostedDefinitions = Object.fromEntries(

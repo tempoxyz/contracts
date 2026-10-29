@@ -120,7 +120,7 @@ and prices at par with the full pool inventory.
   `EarnFactory` from `earn/script/deploy/DeployFactoryRelease.s.sol` and every engine factory from its
   engine's deploy script (`erc4626EngineFactory` in `earn/script/deploy/DeployERC4626Engine.s.sol`); it
   deploys no rewards factory. `Foundry.script` binds a script to its generated ABI from
-  `@tempoxyz/earn/abis`, so step names and arguments are checked against the Solidity signatures.
+  `@tempoxyz/contracts/abis`, so step names and arguments are checked against the Solidity signatures.
 - Forge receives `DEPLOYER_PRIVATE_KEY` as its only secret, alongside an allowlist of ordinary
   process variables and `FOUNDRY_PROFILE=deploy`, the profile hosted deployments use. Fixture and
   lifecycle steps run with `--batch` and the PATHUSD fee token; Tempo batches allow a top-level

@@ -8,16 +8,16 @@ repository-relative.
 
 ## Catalog boundaries
 
-- The `catalog` constant in `app/deployments/generate.ts` is the catalog's only input. It names the
+- The `catalog` constant in `earn/app/deployments/generate.ts` is the catalog's only input. It names the
   default environment and, per served hosted environment, the listed profile IDs with the
   description the app renders, plus `zone: true` when the environment shows its Tempo-owned hosted
   Zone. The first listed profile is the environment's default stack. A hosted environment with no
   active reviewed stack is omitted. Chain IDs, RPC and explorer URLs, and the hosted Zone's ID and
-  chain ID come from `hostedEnvironments` (`@tempoxyz/earn/deployments`); they are not configured.
-- `app/deployments/generate.ts` writes `app/deployments/generated.json`, the browser-safe
+  chain ID come from `hostedEnvironments` (`@tempoxyz/contracts/deployments`); they are not configured.
+- `earn/app/deployments/generate.ts` writes `earn/app/deployments/generated.json`, the browser-safe
   environment catalog, and formats it with `vp fmt`. The Worker bundles it and serves it at
   `/api/config`. A listed stack is the shared `EarnStack` allowlisted by `publicStack`
-  (`@tempoxyz/earn/deployments`) plus its description; its operations, provenance, and E2E fixture
+  (`@tempoxyz/contracts/deployments`) plus its description; its operations, provenance, and E2E fixture
   never enter it, and `parsePublicStackCatalog` rejects them. A stack with a private route also
   carries `privateAssetMetadata`, the route asset's name, symbol, and decimals. Never edit
   `generated.json` directly. `pnpm dev:local` points the Vite alias at an ignored generated local
@@ -92,5 +92,5 @@ The catalog ships inside the Worker bundle, so it changes only when the Worker i
   `pnpm --filter app build` and `wrangler deploy --env production` in the `production` environment.
 
 Both deploy jobs smoke-test `/` and `/health` and parse the live `/api/config` with the browser's
-own loader (`app/deployments/check-live-config.ts`), so a catalog the app cannot render fails the
+own loader (`earn/app/deployments/check-live-config.ts`), so a catalog the app cannot render fails the
 deploy. Credentials and the remaining CI jobs are in [development](../development/README.md).

@@ -1,6 +1,6 @@
 import { deposit, redeem } from '../../harness/support/public.js'
 import { contributeDirectly, fundRewards } from './actions.js'
-import { earnContributionControllerAbi, earnVaultAbi } from '@tempoxyz/earn/abis'
+import { earnContributionControllerAbi, earnVaultAbi } from '@tempoxyz/contracts/abis'
 import {
   E2ePrerequisiteError,
   assert,

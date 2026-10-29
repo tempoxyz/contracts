@@ -69,7 +69,7 @@ jobs:
 
       - uses: ./.github/actions/setup
         with:
-          workspace: '@tempoxyz/earn'
+          workspace: '@tempoxyz/contracts'
 
       # zone-router/ is a separate solc Foundry project with its own pinned dependencies; it needs neither
       # Earn's solar nor its Forge build cache.

@@ -1,7 +1,7 @@
 import type { Hash } from 'viem'
 import { deposit, depositIntoVenue, expectUnchanged, redeem } from '../../harness/support/public.js'
 import { contributeDirectly } from '../rewards/actions.js'
-import { earnVaultAbi } from '@tempoxyz/earn/abis'
+import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 import { mintVaultAsset, tokenBalance } from '../../harness/support/funding.js'
 import {
   minimumOutput,

@@ -10,7 +10,7 @@ import {
   deployLocalVedaScriptAbi,
   vedaEngineAbi,
   vedaPeripheryRegistryAbi,
-} from '@tempoxyz/earn/abis'
+} from '@tempoxyz/contracts/abis'
 import * as Foundry from '../foundry.js'
 import {
   expectAddress,

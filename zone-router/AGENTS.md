@@ -27,4 +27,4 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
 Validate with `forge fmt --check`, `forge lint --deny warnings src`, `forge build --sizes src`,
 and `FOUNDRY_PROFILE=ci forge test` here, plus `bridge/`'s tests when `ISpendSettler`, the callback
 format, `BridgeSettler` or `settlers/bridge/` changes ([bridge/AGENTS.md](../bridge/AGENTS.md)), and
-`pnpm --filter @tempoxyz/earn abis` after an interface change.
+`pnpm --filter @tempoxyz/contracts abis` after an interface change.

@@ -12,8 +12,8 @@ import {
   type Address,
   type Hex,
 } from 'viem'
-import { zoneFactoryAbi } from '@tempoxyz/earn/abis'
-import { configuredTempoNetworkChain } from '@tempoxyz/earn/deployments/operations'
+import { zoneFactoryAbi } from '@tempoxyz/contracts/abis'
+import { configuredTempoNetworkChain } from '@tempoxyz/contracts/deployments/operations'
 
 import * as Config from './config.js'
 

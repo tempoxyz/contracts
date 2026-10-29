@@ -122,7 +122,7 @@ force an exit.
 
 ```bash
 forge test --match-path 'test/engines/propamm/*'
-pnpm --filter @tempoxyz/earn abis:check
+pnpm --filter @tempoxyz/contracts abis:check
 pnpm e2e:local -- --variant propamm --all
 ```
 
@@ -143,7 +143,7 @@ recovery and the handoff record check
 ([`propamm.test.ts`](../../../deployments/modules/earn/engines/propamm.test.ts)).
 
 `viem/tempo` has no PropAMM provisioning or route-aware quotes; E2E and the app's deposit preview
-read them through the engine definition and the generated ABIs in `@tempoxyz/earn/abis`
+read them through the engine definition and the generated ABIs in `@tempoxyz/contracts/abis`
 ([deposit previews](../../development/app-browser.md#public-transaction-preparation)).
 
 ### Pinned DirectPropAMM fixture

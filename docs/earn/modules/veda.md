@@ -170,7 +170,7 @@ actions for the queued pair, so build both calls against `Abis.earnVault`:
 import { encodeAbiParameters, encodeFunctionData, parseAbiParameters, parseEventLogs } from 'viem'
 import { sendTransaction, waitForTransactionReceipt } from 'viem/actions'
 import { Abis } from 'viem/tempo'
-import { vedaBoringQueueAbi } from '@tempoxyz/earn/abis'
+import { vedaBoringQueueAbi } from '@tempoxyz/contracts/abis'
 
 const shareAmount = 50_000_000n
 const engineShares = await client.readContract({

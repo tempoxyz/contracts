@@ -13,7 +13,7 @@
     "bridge:moderato": "tsx bridge/src/run.ts --target moderato"
   },
   "dependencies": {
-    "@tempoxyz/earn": "workspace:*",
+    "@tempoxyz/contracts": "workspace:*",
     "viem": "catalog:"
   },
   "devDependencies": {

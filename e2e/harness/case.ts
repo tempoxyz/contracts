@@ -1,9 +1,9 @@
-import type { DeploymentCapabilities, EngineKind } from '@tempoxyz/earn/deployments'
+import type { DeploymentCapabilities, EngineKind } from '@tempoxyz/contracts/deployments'
 import type {
   DeploymentAccess,
   OptionalPeriphery,
   OptionalPeripheryKey,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import { e2eEngines, type E2eEngineHook } from '../engines/index.js'
 import type { DeploymentPublicClient, E2eContext, E2eStack } from './context.js'
 import type { E2eEnvironmentId } from './environments.js'

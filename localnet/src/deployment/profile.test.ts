@@ -1,5 +1,5 @@
-import { authoredProfile } from '@tempoxyz/earn/deployments/node'
-import { parseEarnDeploymentProfile } from '@tempoxyz/earn/deployments/operations'
+import { authoredProfile } from '@tempoxyz/contracts/deployments/node'
+import { parseEarnDeploymentProfile } from '@tempoxyz/contracts/deployments/operations'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 

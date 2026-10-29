@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tempoxyz/earn": "workspace:*",
+    "@tempoxyz/contracts": "workspace:*",
     "prool": "0.2.16",
     "testcontainers": "12.2.1",
     "viem": "catalog:"

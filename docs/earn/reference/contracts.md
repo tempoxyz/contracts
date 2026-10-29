@@ -5,7 +5,7 @@ entrypoints with their authority, events, and the errors that enforce core rules
 owned by [system architecture](../architecture/system.md) and [Earn fees](../architecture/fees.md),
 ordering by [flows](../architecture/flows.md), and trust assumptions by
 [security and privacy](../architecture/security-and-privacy.md). TypeScript consumers import the
-ABIs from `@tempoxyz/earn/abis` ([deployments README](../../../deployments/README.md#exports)). Audit
+ABIs from `@tempoxyz/contracts/abis` ([deployments README](../../../deployments/README.md#exports)). Audit
 scope is in [audits](../audit/README.md#scope).
 
 ## Deployment inventory

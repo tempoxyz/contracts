@@ -21,9 +21,8 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   deployments target, so tests and the gas snapshot run on the deployed EVM version.
 - **Node.js 22.23.4 or newer in the 22.x line**, pinned by `.nvmrc` and enforced by the root `engines` field.
 - **pnpm 11** (`packageManager` in the root `package.json`). The workspace holds Earn's app
-  (`app/`), Earn's deployment package (`deployments/`, named `@tempoxyz/earn`),
-  `localnet/`, and `e2e/`; viem,
-  Cloudflare, and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
+  (`earn/app/`), the shared deployment package (`deployments/`, named `@tempoxyz/contracts`),
+  `localnet/`, and `e2e/`; viem, Cloudflare, and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
 - **Docker**, for local end-to-end runs only.
 
 Each Foundry project (`earn/`, `zone-router/`, `bridge/`) pins its Solidity dependencies in its own
@@ -45,7 +44,7 @@ carries the public Privy application ID), set `TEMPO_API_KEY` in it, and restart
 after any change:
 
 ```bash
-cp app/.env.example app/.env.local
+cp earn/app/.env.example earn/app/.env.local
 pnpm dev
 ```
 
@@ -171,7 +170,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 
 | Workflow                  | Trigger                                                                                                                                | Runs                                                                                                                                                                                                                                                                                                           |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pull-request.yml`        | Pull request                                                                                                                           | Verify, Actions security, dependency scan, `Required / Core` over those three, and Build Preview, which uploads the static `app/dist/client` artifact                                                                                                                                                          |
+| `pull-request.yml`        | Pull request                                                                                                                           | Verify, Actions security, dependency scan, `Required / Core` over those three, and Build Preview, which uploads the static `earn/app/dist/client` artifact                                                                                                                                                     |
 | `verify.yml`              | Called by Pull Request and Main; manual                                                                                                | Contracts, PropAMM fixture, Symbolic, TypeScript checks, the app and Worker build, and TypeScript tests, under `FOUNDRY_PROFILE=ci`                                                                                                                                                                            |
 | `local-zone.yml`          | Pull request; push to `main`                                                                                                           | On a pull request, two shards per engine kind and `Required / Local E2E` over them; on `main`, only a `deploy`-profile build that warms the Forge cache                                                                                                                                                        |
 | `preview.yml`             | `workflow_run` after Pull Request succeeds                                                                                             | Deploy Preview for same-repository pull requests                                                                                                                                                                                                                                                               |
@@ -210,7 +209,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
   requires the preview Worker's `PRIVY_APP_ID` and `TEMPO_API_KEY` secrets, uploads a Worker version
   with the `pr-<number>` alias, and comments its URL. Deploy Production runs in the `production`
   environment after Verify. Both smoke-test `/` and `/health` and parse the live `/api/config` with
-  `app/deployments/check-live-config.ts`.
+  `earn/app/deployments/check-live-config.ts`.
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
   Only the two deploy jobs receive the `DEV_CLOUDFLARE_*` credentials, which are secrets of the
   `production` and `preview` environments, and both environments deploy only from `main`; the

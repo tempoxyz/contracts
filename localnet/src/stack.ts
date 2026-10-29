@@ -4,7 +4,7 @@ import {
   zoneRouterStackFields,
   type EarnStack,
   type OptionalPeripheryKey,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 
 import type * as Deployment from './deployment.js'
 import { localEngines } from './engines/index.js'

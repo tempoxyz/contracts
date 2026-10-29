@@ -1,5 +1,5 @@
-import { earnFeesAbi, earnVaultAbi } from '@tempoxyz/earn/abis'
-import { quotePropAMMRoute } from '@tempoxyz/earn/deployments'
+import { earnFeesAbi, earnVaultAbi } from '@tempoxyz/contracts/abis'
+import { quotePropAMMRoute } from '@tempoxyz/contracts/deployments'
 import type { E2eEngine } from '../index.js'
 
 export const engine: E2eEngine = {

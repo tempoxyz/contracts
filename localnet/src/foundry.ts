@@ -1,12 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
-import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/earn/abis'
+import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/contracts/abis'
 import {
   foundryProcessEnvironment,
   planFactoryRelease,
   predictRelease,
-} from '@tempoxyz/earn/deployments/node'
+} from '@tempoxyz/contracts/deployments/node'
 import {
   encodeFunctionData,
   getAddress,
@@ -48,7 +48,7 @@ type AddressContext = {
 }
 
 /**
- * Binds a Foundry script to its generated ABI from `@tempoxyz/earn/abis`. The returned function
+ * Binds a Foundry script to its generated ABI from `@tempoxyz/contracts/abis`. The returned function
  * makes the step that calls one entry point with arguments typed by the Solidity signature.
  */
 export function script<const abi extends Abi>(target: string, abi: abi) {

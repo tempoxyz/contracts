@@ -1,4 +1,4 @@
-import type { EngineKind } from '@tempoxyz/earn/deployments'
+import type { EngineKind } from '@tempoxyz/contracts/deployments'
 
 import { erc4626 } from './erc4626.js'
 import type { LocalEngine } from './local-engine.js'

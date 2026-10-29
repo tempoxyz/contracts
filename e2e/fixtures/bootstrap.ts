@@ -12,7 +12,7 @@ import {
   object,
   type EngineKind,
   type HostedEnvironmentId,
-} from '@tempoxyz/earn/deployments'
+} from '@tempoxyz/contracts/deployments'
 import {
   assertFoundryVersion,
   configuredRpcTransport,
@@ -23,7 +23,7 @@ import {
   rpcConfiguration,
   sourceVerificationCompilerArguments,
   verifyContractSource,
-} from '@tempoxyz/earn/deployments/node'
+} from '@tempoxyz/contracts/deployments/node'
 import { Deployment, localEngines } from 'localnet'
 import {
   createPublicClient,

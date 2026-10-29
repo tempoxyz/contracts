@@ -372,12 +372,12 @@ viem helpers, event correlation, router revert handling, and bounce-back behavio
 
 ## Validation in this repository
 
-- **App:** [`app/src/public/Write.ts`](../../../app/src/public/Write.ts) implements this sequence.
+- **App:** [`earn/app/src/public/Write.ts`](../../../earn/app/src/public/Write.ts) implements this sequence.
   `prepare` revalidates the deployment, simulates the batch that the action's `calls` in
-  [`app/src/earn/Actions.ts`](../../../app/src/earn/Actions.ts) builds, and `send` submits it
-  unchanged. [`PublicActions.tsx`](../../../app/src/public/PublicActions.tsx) drives it, and
-  [`app/src/Errors.ts`](../../../app/src/Errors.ts) decodes nested reverts.
-- **Type check:** [`ClientExamples.test-d.ts`](../../../app/src/public/ClientExamples.test-d.ts) keeps
+  [`earn/app/src/earn/Actions.ts`](../../../earn/app/src/earn/Actions.ts) builds, and `send` submits it
+  unchanged. [`PublicActions.tsx`](../../../earn/app/src/public/PublicActions.tsx) drives it, and
+  [`earn/app/src/Errors.ts`](../../../earn/app/src/Errors.ts) decodes nested reverts.
+- **Type check:** [`ClientExamples.test-d.ts`](../../../earn/app/src/public/ClientExamples.test-d.ts) keeps
   this guide's viem calls, the [Veda request](../modules/veda.md#build-a-queued-request), and the
   [private Zone](../modules/zone-router.md#client-integration) examples compiling under
   `pnpm --filter app check:types`.

@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks'
 
 import { erc20Abi, type Address, type Hash, type Log } from 'viem'
-import { earnVaultAbi, simple4626VaultAbi } from '@tempoxyz/earn/abis'
+import { earnVaultAbi, simple4626VaultAbi } from '@tempoxyz/contracts/abis'
 import type { E2eActor, E2eContext } from '../context.js'
 import { approve, tokenBalance, tokenSupply } from './funding.js'
 import { minimumOutput, previewEarnDeposit } from './slippage.js'

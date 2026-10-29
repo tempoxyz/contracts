@@ -1,6 +1,6 @@
 # Tempo Earn deployment tooling
 
-`@tempoxyz/earn` is a private workspace package for this repository's deployment registries,
+`@tempoxyz/contracts` is a private workspace package for this repository's deployment registries,
 generated ABIs, and operator tooling. It is not published as a client dependency. Earn actions,
 TIP-403 policy actions, Earn math, and client decoration come from the upstream `viem/tempo`
 preview; see the [client integration guide](../docs/earn/integrations/client.md).
@@ -11,20 +11,20 @@ documented in [deployment profiles](../profiles/README.md).
 
 ## Exports
 
-| Export                                  | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@tempoxyz/earn/deployments`            | Browser-safe: the `hostedEnvironments` network table (chain templates and IDs, testnet flag, public RPC and explorer URLs, faucet, fee-token policy, app sponsor, hosted Zone), the public stack catalog parser and `publicStack` projection, the engine registry (`engineDefinitions`, `quoteEarnDeposit`), `configuredTempoNetworkChain` and `configuredZoneChain`, the strict parser kit (`object`, `array`, `exactKeys`, `nonemptyString`, `address`, `isBytes32`), and the stack, engine, and router binding inspectors |
-| `@tempoxyz/earn/deployments/node`       | Node-only profile reconciliation, records, `loadHostedProfileStack`, capability output discovery (`discoverOutputs`), runtime and key parsing, Foundry, and Zone RPC tooling                                                                                                                                                                                                                                                                                                                                                 |
-| `@tempoxyz/earn/deployments/operations` | The operational `EarnStack` model, profile parsing, policy and access-membership helpers, and planning                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `@tempoxyz/earn/tempo/zone`             | Canonical Zone predeploys, `discoverZone`, `inspectZone`, `waitForZoneTempoBlock`, `waitForWithdrawalProcessed`, `processedRouterEvent`, and `missingZoneTokens`                                                                                                                                                                                                                                                                                                                                                             |
-| `@tempoxyz/earn/abis`                   | Every contract ABI the TypeScript packages use                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Export                                       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@tempoxyz/contracts/deployments`            | Browser-safe: the `hostedEnvironments` network table (chain templates and IDs, testnet flag, public RPC and explorer URLs, faucet, fee-token policy, app sponsor, hosted Zone), the public stack catalog parser and `publicStack` projection, the engine registry (`engineDefinitions`, `quoteEarnDeposit`), `configuredTempoNetworkChain` and `configuredZoneChain`, the strict parser kit (`object`, `array`, `exactKeys`, `nonemptyString`, `address`, `isBytes32`), and the stack, engine, and router binding inspectors |
+| `@tempoxyz/contracts/deployments/node`       | Node-only profile reconciliation, records, `loadHostedProfileStack`, capability output discovery (`discoverOutputs`), runtime and key parsing, Foundry, and Zone RPC tooling                                                                                                                                                                                                                                                                                                                                                 |
+| `@tempoxyz/contracts/deployments/operations` | The operational `EarnStack` model, profile parsing, policy and access-membership helpers, and planning                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `@tempoxyz/contracts/tempo/zone`             | Canonical Zone predeploys, `discoverZone`, `inspectZone`, `waitForZoneTempoBlock`, `waitForWithdrawalProcessed`, `processedRouterEvent`, and `missingZoneTokens`                                                                                                                                                                                                                                                                                                                                                             |
+| `@tempoxyz/contracts/abis`                   | Every contract ABI the TypeScript packages use                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Each name has one entry, except `configuredTempoNetworkChain`, which is in both the browser-safe and
 `operations` entries. Node tooling imports the inspectors and
 hosted network facts from the browser-safe entry. The whole-profile `inspectEarnDeployment`, which
 runs every capability module's inspection, is exported from `/node` only.
 
-`@tempoxyz/earn/abis` is the only place TypeScript gets a contract ABI; never hand-write one.
+`@tempoxyz/contracts/abis` is the only place TypeScript gets a contract ABI; never hand-write one.
 `abis/generate.ts` writes `abis/generated.ts` from this repository's Foundry artifacts:
 
 - every deployable contract under `earn/src/` (not an interface, library, or abstract contract) as
@@ -41,7 +41,7 @@ runs every capability module's inspection, is exported from `/node` only.
 
 After a contract interface change, run `forge build src script test` in `earn/` and
 `forge build src script` in `zone-router/`, then
-`pnpm --filter @tempoxyz/earn abis`, and commit the result; `abis:check` fails on drift.
+`pnpm --filter @tempoxyz/contracts abis`, and commit the result; `abis:check` fails on drift.
 `abis/external.ts` hand-maintains contracts built elsewhere: Tempo Zone predeploys, the PropAMM
 pool, oracle, and controller, the Veda periphery, the Morpho fee wrapper, and the Safe. Use
 `erc20Abi` and `erc4626Abi` from `viem` and `Abis.tip20` from `viem/tempo` for tokens.
@@ -123,7 +123,7 @@ and `publicStack` allowlists its browser-safe fields. It does not own a concrete
 release pipeline, or hosted E2E fixture lifecycle.
 
 - The app's browser catalog list, generator, and generated `generated.json` live under
-  `app/deployments/`; [app deployment](../docs/deployment/app-deployment.md#catalog-boundaries)
+  `earn/app/deployments/`; [app deployment](../docs/deployment/app-deployment.md#catalog-boundaries)
   owns what the catalog carries.
 - Hosted E2E builds its stack from a deployed profile's record and attaches its own test fixture
   ([E2E environments](../docs/deployment/e2e-environments.md)). Fixtures, roles, receipts, and

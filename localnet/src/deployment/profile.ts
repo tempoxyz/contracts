@@ -1,9 +1,9 @@
-import { authoredProfile } from '@tempoxyz/earn/deployments/node'
-import { engineDefinitions } from '@tempoxyz/earn/deployments'
+import { authoredProfile } from '@tempoxyz/contracts/deployments/node'
+import { engineDefinitions } from '@tempoxyz/contracts/deployments'
 import {
   parseEarnDeploymentProfile,
   type EarnDeploymentProfile,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import type { Address, Hex } from 'viem'
 
 import { localEngines } from '../engines/index.js'

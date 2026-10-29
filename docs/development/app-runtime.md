@@ -1,22 +1,22 @@
 # App Worker and build reference
 
-This reference owns the Hono Cloudflare Worker in `app/worker/` (its routes, limits,
+This reference owns the Hono Cloudflare Worker in `earn/app/worker/` (its routes, limits,
 configuration, and secrets) and the app's build and Cloudflare deployment tooling. Browser signing,
 sessions, and UI live in [the browser reference](app-browser.md); the browser catalog the Worker
 serves is owned by [app deployment](../deployment/app-deployment.md).
 
 ## Routes and limits
 
-The Worker answers these routes (`app/worker/index.ts`) and serves the static app for every other
-`GET`; `run_worker_first` in `app/wrangler.jsonc` sends every request except `/assets/*` through it
+The Worker answers these routes (`earn/app/worker/index.ts`) and serves the static app for every other
+`GET`; `run_worker_first` in `earn/app/wrangler.jsonc` sends every request except `/assets/*` through it
 first.
 
 | Route                                                                   | Behavior                                                                                                                                                         |
 | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /health`                                                           | `{ "status": "ok" }`                                                                                                                                             |
 | `GET /api/config`                                                       | The browser configuration: catalog environments with RPC URLs, sponsor URLs, Privy ID, and `tempoApiZoneReads`; 503 `missing_environment` without `PRIVY_APP_ID` |
-| `POST /api/environments/:id/l1-rpc`, `.../zone-rpc`                     | JSON-RPC proxy to the environment's L1 or Zone (`app/worker/rpc-proxy.ts`)                                                                                       |
-| `POST /api/environments/:id/zones/:zoneId/balances`, `.../transactions` | [Tempo API Zone reads](#tempo-api-zone-reads) (`app/worker/zone-reads.ts`)                                                                                       |
+| `POST /api/environments/:id/l1-rpc`, `.../zone-rpc`                     | JSON-RPC proxy to the environment's L1 or Zone (`earn/app/worker/rpc-proxy.ts`)                                                                                  |
+| `POST /api/environments/:id/zones/:zoneId/balances`, `.../transactions` | [Tempo API Zone reads](#tempo-api-zone-reads) (`earn/app/worker/zone-reads.ts`)                                                                                  |
 
 - Every POST body must be `application/json` (415 otherwise) and is read incrementally up to its
   route's limit before parsing: 1 MB for RPC, 1 KiB for Zone reads.
@@ -34,17 +34,17 @@ first.
 - Wrangler's `secrets.required` replaces `.env` secret inference. List every Worker secret there in
   the top-level, preview, and production environments; an undeclared secret is omitted from the
   Worker binding, leaving the same-origin proxy without its required upstream credential.
-- Fresh Git worktrees do not inherit ignored `app/.env.local`. Without `TEMPO_API_KEY`, hosted RPC
+- Fresh Git worktrees do not inherit ignored `earn/app/.env.local`. Without `TEMPO_API_KEY`, hosted RPC
   routes fail, which leaves deployment verification unavailable and makes passkey registration
   surface a generic `HTTP request failed` error. Production builds load ignored
-  `app/.env.production` from the same template, and deployed Worker settings are Cloudflare
+  `earn/app/.env.production` from the same template, and deployed Worker settings are Cloudflare
   secrets.
 - Keep `TEMPO_API_KEY` Worker-only. The Worker attaches it only to Tempo API RPC URLs derived from
   the selected environment's registered L1 or Zone chain ID and to Tempo API's `/v1/transactions`
   history endpoint; the browser must not select an upstream or receive the key. Preview and
   production configure the key as a Worker secret with the matching L1 faucet and Zone write
   scopes, because the same proxy funds test accounts and broadcasts signed private transactions.
-- Put local Worker secrets in ignored `app/.env.local`; Wrangler resolves that file beside `app/wrangler.jsonc`. Do not create `.dev.vars`, because its presence takes precedence over and disables Wrangler's default `.env` file discovery.
+- Put local Worker secrets in ignored `earn/app/.env.local`; Wrangler resolves that file beside `earn/app/wrangler.jsonc`. Do not create `.dev.vars`, because its presence takes precedence over and disables Wrangler's default `.env` file discovery.
 - A hosted network's fee sponsor is the `sponsorUrl` of its `hostedEnvironments` entry. The Worker
   serves it only for catalog environments on that chain, never for a local catalog, and adds its
   origin to the CSP `connect-src`.
@@ -67,7 +67,7 @@ are one batched Zone `eth_call` of `balanceOf` per token, sent through Tempo API
 for the account on the Zone's chain ID with `include=receipt`, the newest 10, with the response
 capped at 256 KiB. Each Tempo API call times out after 10 seconds.
 
-Derive balance-read coverage only through `app/deployments/tokens.ts`: the Worker and UI both
+Derive balance-read coverage only through `earn/app/deployments/tokens.ts`: the Worker and UI both
 require the selected deployment's EarnShare, asset, and private asset and must not reconstruct that
 set independently. Tempo API gives the Worker unredacted Zone access, so the browser-supplied
 account address only limits accidental cross-account responses; it is not end-user authorization.
@@ -78,14 +78,14 @@ Zone RPC and shows no history.
 ## Build
 
 - `pnpm --filter app build` and `build:preview` set `CLOUDFLARE_ENV` to `production` or `preview`.
-  The Worker bundle is one module (`codeSplitting: false` in `app/vite.config.ts`) because preview
+  The Worker bundle is one module (`codeSplitting: false` in `earn/app/vite.config.ts`) because preview
   uploads it with `--no-bundle`.
 - `pnpm --filter app test` runs the unit suite and then the Worker pool
   (`@cloudflare/vitest-pool-workers`).
 
 ## Cloudflare deployment tooling
 
-- Keep Cloudflare configuration in `app/wrangler.jsonc`; comments should explain account, environment, asset-routing, or security choices that are not obvious from the values.
+- Keep Cloudflare configuration in `earn/app/wrangler.jsonc`; comments should explain account, environment, asset-routing, or security choices that are not obvious from the values.
 - Wrangler action `preCommands` runs each input line as a separate shell command and automatically prefixes only lines that begin with `wrangler` with the configured package-manager exec command. Keep compound preview guards in one folded command beginning with `wrangler`; do not split shell state or control flow across `preCommands` lines.
 - Manual deployments use `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; never commit either
   value. Which CI jobs receive the organization-scoped `DEV_CLOUDFLARE_*` secrets, and how preview

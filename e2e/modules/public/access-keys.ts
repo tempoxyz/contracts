@@ -10,7 +10,7 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { simulateCalls } from 'viem/actions'
 import { Abis, Account, Addresses, createClient } from 'viem/tempo'
-import { earnVaultAbi } from '@tempoxyz/earn/abis'
+import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 import { deposit, depositIntoVenue, expectUnchanged, redeem } from '../../harness/support/public.js'
 import { ensureFeeBalance, mintVaultAsset, tokenBalance } from '../../harness/support/funding.js'
 import { minimumOutput, previewEarnDeposit } from '../../harness/support/slippage.js'

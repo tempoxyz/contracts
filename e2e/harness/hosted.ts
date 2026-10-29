@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { parseEnv } from 'node:util'
 
-import { configuredZone } from '@tempoxyz/earn/deployments/operations'
+import { configuredZone } from '@tempoxyz/contracts/deployments/operations'
 import {
   envPrivateKey,
   loadHostedProfileStack,
   missingZoneRpcError,
   zoneRpcConfiguration,
-} from '@tempoxyz/earn/deployments/node'
-import { inspectZone } from '@tempoxyz/earn/tempo/zone'
+} from '@tempoxyz/contracts/deployments/node'
+import { inspectZone } from '@tempoxyz/contracts/tempo/zone'
 import { concat, createPublicClient, http, keccak256, stringify, stringToHex, type Hex } from 'viem'
 import {
   loadOptionalProfileFixture,

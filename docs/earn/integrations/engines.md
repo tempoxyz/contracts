@@ -133,7 +133,7 @@ Registrations:
 | [`localnet/src/engines/index.ts`](../../../localnet/src/engines/index.ts)                    | Import the `LocalEngine` and add it to `localEngines`, typed `Record<EngineKind, LocalEngine>`, so type checking requires it |
 | [`.github/workflows/local-zone.yml`](../../../.github/workflows/local-zone.yml)              | Add `<kind>` to `matrix.variant`; `e2e/harness/modules.test.ts` requires the list to equal `engineKinds`                     |
 | This page                                                                                    | Add a row to the [engine table](#yield-engines)                                                                              |
-| [`deployments/abis/generated.ts`](../../../deployments/abis/generated.ts)                    | Regenerate: `forge build src script test localnet`, then `pnpm --filter @tempoxyz/earn abis`                                 |
+| [`deployments/abis/generated.ts`](../../../deployments/abis/generated.ts)                    | Regenerate: `forge build src script test localnet`, then `pnpm --filter @tempoxyz/contracts abis`                            |
 
 [ABI generation](../../../deployments/abis/generate.ts) exports every deployable contract under `src/`
 as `<name>Abi` (`PropAMMEngine` becomes `propAMMEngineAbi`) and every `script/deploy/` and
@@ -157,7 +157,7 @@ A kind whose engines the lifecycle provisions from a venue also adds:
   key ([shared factory releases](../../deployment/deployment.md#shared-factory-releases)).
 
 The app needs no change: it lists kinds from `engineKinds` and labels them from the definition. Add
-an `engineVerification` entry in [`app/src/earn/Verification.ts`](../../../app/src/earn/Verification.ts)
+an `engineVerification` entry in [`earn/app/src/earn/Verification.ts`](../../../earn/app/src/earn/Verification.ts)
 only for browser checks that the shared stack inspection lacks, as Veda does.
 
 ### Definition fields
@@ -187,8 +187,8 @@ The registry derives `EngineKind`, `engineKinds`, `FactoryEngineKind`, the profi
 parsers' accepted kinds, the local variants, and the literals that
 [`boundary.test.ts`](../../../deployments/modules/earn/engines/boundary.test.ts) rejects in generic code:
 outside test files, no file under `deployments/core`, `deployments/chain`, `e2e/harness`,
-`e2e/fixtures`, `e2e/modules`, `localnet/src` (except `localnet/src/engines`), `app/src`, or
-`app/worker` may quote a kind name.
+`e2e/fixtures`, `e2e/modules`, `localnet/src` (except `localnet/src/engines`), `earn/app/src`, or
+`earn/app/worker` may quote a kind name.
 
 ### Localnet and E2E
 

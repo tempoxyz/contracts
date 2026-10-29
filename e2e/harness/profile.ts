@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs'
 
-import { resolveProfilePath } from '@tempoxyz/earn/deployments/node'
+import { resolveProfilePath } from '@tempoxyz/contracts/deployments/node'
 import {
   parseEarnDeploymentProfile,
   type EarnDeploymentProfile,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import { sha256 } from './results.js'
 
 /** The deployment profile an E2E run validates, with its source for result provenance. */

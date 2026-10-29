@@ -24,7 +24,7 @@ In scope:
 
 Out of scope:
 
-- the demo application in [`app/`](app/);
+- the demo application in [`earn/app/`](earn/app/);
 - `src/demo/` and test fixtures, including `test/`, `localnet/`, and committed fixture artifacts,
   which are not production code;
 - third-party venues and their contracts, such as ERC-4626 vaults, Veda, and PropAMM. Report issues

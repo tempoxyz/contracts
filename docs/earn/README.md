@@ -85,7 +85,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 - **Document current behavior only.** Implementation claims come from `main`; there are no plans,
   rollout history, dated snapshots, or legacy notes.
 - **Addresses have one owner.** Generated `deployment.json` records own profile deployments;
-  `app/deployments/` owns browser catalogs; a test profile's `fixture.json` owns its E2E fixture;
+  `earn/app/deployments/` owns browser catalogs; a test profile's `fixture.json` owns its E2E fixture;
   factory registries own shared releases. Other pages link rather than copy.
 - **Capabilities have one home.** Core sequences live in the flow document and capability
   sequences, decisions, and runbooks on their module page; other pages link instead of restating

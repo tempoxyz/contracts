@@ -195,7 +195,7 @@ when the Tempo refund recipient holds the `Account` role and otherwise reverts
 `AccountNotAllowed(address)`. Users inside the Zone need no Tempo admission, so a client sets the
 refund recipient to an admitted account it controls when the user is not admitted. The Earn app
 refunds to the user and refuses the action up front when the user is not admitted
-([`Admission.ts`](../../../app/src/private/Admission.ts)).
+([`Admission.ts`](../../../earn/app/src/private/Admission.ts)).
 
 ## Client integration
 

@@ -6,7 +6,7 @@ import {
   redeemVenueShares,
   withdrawExact,
 } from '../../harness/support/public.js'
-import { earnVaultAbi } from '@tempoxyz/earn/abis'
+import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 import { E2ePrerequisiteError, assert } from '../../harness/support/utils.js'
 import {
   approve,

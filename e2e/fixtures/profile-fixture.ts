@@ -1,9 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
-import { configuredZone, type EarnDeploymentProfile } from '@tempoxyz/earn/deployments/operations'
-import type { EarnDeploymentRecord } from '@tempoxyz/earn/deployments/node'
-import { address, exactKeys, isBytes32, object } from '@tempoxyz/earn/deployments'
+import {
+  configuredZone,
+  type EarnDeploymentProfile,
+} from '@tempoxyz/contracts/deployments/operations'
+import type { EarnDeploymentRecord } from '@tempoxyz/contracts/deployments/node'
+import { address, exactKeys, isBytes32, object } from '@tempoxyz/contracts/deployments'
 import { getAddress, keccak256, type Address, type Hex } from 'viem'
 import type { DeploymentPublicClient } from '../harness/context.js'
 

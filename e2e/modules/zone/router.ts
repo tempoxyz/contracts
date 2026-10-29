@@ -1,5 +1,5 @@
-import { earnRouterAbi } from '@tempoxyz/earn/abis'
-import { inspectRouterReadiness } from '@tempoxyz/earn/deployments'
+import { earnRouterAbi } from '@tempoxyz/contracts/abis'
+import { inspectRouterReadiness } from '@tempoxyz/contracts/deployments'
 import { erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
 import type { DeploymentPublicClient, E2eContext, E2eStack } from '../../harness/context.js'
 import { tokenBalance } from '../../harness/support/funding.js'

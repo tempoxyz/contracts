@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAddress } from 'viem'
-import { zoneFactoryAddress, zoneMessengerAddress } from '@tempoxyz/earn/tempo/zone'
+import { zoneFactoryAddress, zoneMessengerAddress } from '@tempoxyz/contracts/tempo/zone'
 
 export const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 export const directory = resolve(root, 'localnet/.local')

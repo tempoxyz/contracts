@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks'
 import { getAbiItem, getAddress, type Address, type Hex } from 'viem'
 import { getGasPrice, getTransactionCount } from 'viem/actions'
 import { Abis, Actions as TempoActions } from 'viem/tempo'
-import { processedRouterEvent, waitForWithdrawalProcessed } from '@tempoxyz/earn/tempo/zone'
+import { processedRouterEvent, waitForWithdrawalProcessed } from '@tempoxyz/contracts/tempo/zone'
 import {
   requireE2eZone,
   type E2eActor,

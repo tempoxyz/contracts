@@ -79,9 +79,9 @@ jobs:
             echo 'Preview artifact is missing client/index.html' >&2
             exit 1
           fi
-          rm -rf app/dist/client
-          mkdir -p app/dist/client
-          cp -R "$client_dir/." app/dist/client/
+          rm -rf earn/app/dist/client
+          mkdir -p earn/app/dist/client
+          cp -R "$client_dir/." earn/app/dist/client/
 
       - name: Upload preview version
         id: deploy
@@ -104,7 +104,7 @@ jobs:
             --no-bundle
             --preview-alias pr-${{ github.event.workflow_run.pull_requests[0].number }}
           packageManager: pnpm
-          workingDirectory: app
+          workingDirectory: earn/app
 
       - name: Resolve preview URL
         id: preview

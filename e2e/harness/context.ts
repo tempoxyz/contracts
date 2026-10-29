@@ -1,5 +1,5 @@
-import { configuredTempoChain, type EarnStack } from '@tempoxyz/earn/deployments/operations'
-import { configuredRpcTransport } from '@tempoxyz/earn/deployments/node'
+import { configuredTempoChain, type EarnStack } from '@tempoxyz/contracts/deployments/operations'
+import { configuredRpcTransport } from '@tempoxyz/contracts/deployments/node'
 import { http, zeroAddress, type Account, type Address, type Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { createClient, Store, Transport } from 'viem/tempo'

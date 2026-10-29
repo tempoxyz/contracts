@@ -4,9 +4,9 @@ broadcast/
 .earn/
 **/deployment.pending.json
 node_modules/
-app/dist/
-app/.local/
-app/worker-configuration.d.ts
+earn/app/dist/
+earn/app/.local/
+earn/app/worker-configuration.d.ts
 e2e/.local/
 e2e/.results/
 localnet/.local/
@@ -14,7 +14,7 @@ localnet/.local/
 **/.env
 **/.env.*
 !/.env.example
-!/app/.env.example
+!/earn/app/.env.example
 !/e2e/bridge/.env.example
 *.log
 /earn/lib/

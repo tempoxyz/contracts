@@ -1,4 +1,4 @@
-import { deployLocalPropAMMScriptAbi } from '@tempoxyz/earn/abis'
+import { deployLocalPropAMMScriptAbi } from '@tempoxyz/contracts/abis'
 import * as Foundry from '../foundry.js'
 import type { LocalEngine } from './local-engine.js'
 

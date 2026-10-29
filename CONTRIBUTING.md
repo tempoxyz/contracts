@@ -24,8 +24,8 @@ and local stacks deploy a committed [DirectPropAMM fixture](docs/earn/modules/pr
 | Area                                                                  | Commands                                                                           |
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | Earn contracts ([`earn/src/`](earn/src/), [`earn/test/`](earn/test/)) | `pnpm test:contracts`, or `forge test --match-path <path> -vvv` in `earn/`         |
-| Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/earn test --run`, `check`, and `typecheck`                |
-| App ([`app/`](app/))                                                  | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack           |
+| Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/contracts test --run`, `check`, and `typecheck`           |
+| App ([`earn/app/`](earn/app/))                                        | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack           |
 | Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`; `pnpm dev:local -- --smoke` sets up and verifies a stack         |
 | Zone router ([`zone-router/`](zone-router/))                          | `forge test` in `zone-router/`; see [zone-router/AGENTS.md](zone-router/AGENTS.md) |
 | Bridge integration ([`bridge/`](bridge/))                             | `forge test` in `bridge/`; see [bridge/AGENTS.md](bridge/AGENTS.md)                |
