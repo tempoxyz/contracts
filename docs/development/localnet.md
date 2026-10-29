@@ -57,8 +57,8 @@ policy-membership transactions, and its EarnShare is enabled and mirrored before
 ## Localnet layer
 
 `localnet/src/layer.ts` exports `earn(options)`, a v0 layer for `@tempoxyz/localnet`, as the
-repository root's `./localnet` export. The root package (`earn`) is not published, so a consumer
-links an Earn checkout under a dependency name of its choice. The layer accepts `access`,
+repository root's `./localnet` export. The root package (`tempo-contracts`) is not published, so a consumer
+links a checkout of this repository under a dependency name of its choice. The layer accepts `access`,
 `earnProfile`, `engineKind`, and `sameAssetRoute` and runs `Environment.run` with them. `up({ runId })`
 resolves inside `ready`; `down()` or the run's abort signal releases it, which stops the containers.
 The containers are named `tempo-localnet.<runId>.{l1,zone}`, and the L1 container carries the

@@ -33,7 +33,7 @@ pnpm earn verify profiles/app-moderato/profile.json
 | `access`  | Reads or changes one member of a protected profile's TIP-403 whitelist ([access](../earn/modules/access.md#deployment-and-operations)).                                  | `--earn-file <profile.json> <status\|add\|remove> <address>`                             |
 
 Every command loads only the ignored `.env.<profile-id>` beside the `profiles/` directory that holds
-the profile (the repository root for Earn's own;
+the profile (the repository root for this repository's own;
 [profiles in another repository](../../profiles/README.md#profiles-in-another-repository)); values already in the process environment take precedence. A command fails, naming that file, when
 neither supplies a value it needs:
 
@@ -97,7 +97,7 @@ typed handoff or completed record and never parse it. Deleting it changes nothin
 before the record is published it discards the transaction provenance a clean resume needs.
 Pending state resumes only under the identity that wrote it: a different deployer, factory
 release, or intent hash (including a checkout that hashes intent differently) is refused, so
-finish an unpublished deployment before moving to a newer Earn checkout.
+finish an unpublished deployment before moving to a newer checkout of this repository.
 
 Deployment subprocesses use the repository's `deploy` Foundry profile, which compiles for Cancun
 like Tempo's deployment runtime and writes separate artifacts. A hosted broadcast requires the
@@ -197,7 +197,7 @@ also requires `TEMPO_API_KEY` or `ZONE_RPC_URL` to confirm the live Zone; `--ski
 everything else and reports the Zone as not verified. `--validate-only` fails on what `verify` only
 reports: engine or capability readiness, custody, EarnShare issuer exclusivity, accounting
 alignment, and required TIP-403 members ([profile acceptance](e2e-environments.md#profile-acceptance)).
-Nothing reruns these checks on a schedule, in Earn or in a deployments repository that holds
+Nothing reruns these checks on a schedule, here or in a deployments repository that holds
 other stacks ([profiles in another repository](../../profiles/README.md#profiles-in-another-repository)).
 
 ## Authority boundaries

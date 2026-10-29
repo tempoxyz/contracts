@@ -10,7 +10,7 @@ Foundry project with its own build settings, dependencies, and guide:
   are, the "TS" handler (`SpenderTempoSpend`), the card E2E harness, and Bridge's deploy scripts.
 
 Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with module
-folders for Earn and the Zone router) and its `profiles/`, the app (`earn/app/`), the disposable Tempo L1 and Zone
+folders for Earn and the Zone router) and its `profiles/`, the disposable Tempo L1 and Zone
 (`localnet/`), the E2E harness (`e2e/`), the docs (`docs/`), CI, and `scripts/solidity-deps.sh`, which
 installs each project's pinned Solidity dependencies. [README.md](README.md) maps the repository.
 
@@ -55,7 +55,7 @@ PR update, report with CI pending unless asked to monitor it. For documentation-
 changes, run the link check (`pnpm --filter @tempoxyz/contracts test --run docs`), format changed files,
 and run `git diff --check`.
 
-Follow the [documentation rules](docs/earn/README.md#documentation-rules) and update the page that
+Follow the [documentation rules](docs/README.md#documentation-rules) and update the page that
 owns the changed behavior. Read implementation and tests together; resolve contradictions rather
 than preserving stale text. Removing an integration means removing every reference to it.
 
