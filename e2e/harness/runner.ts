@@ -1,4 +1,4 @@
-import { earnFeesAbi } from '@tempoxyz/earn/abis'
+import { earnFeesAbi } from '@tempoxyz/contracts/abis'
 import { E2ePrerequisiteError, errorSummary } from './support/utils.js'
 import type { CaseSelection } from './arguments.js'
 import { unsupportedReason, type E2eTarget, type RegisteredCase } from './case.js'

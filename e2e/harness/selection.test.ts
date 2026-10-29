@@ -1,4 +1,4 @@
-import { capabilityKeys, type DeploymentCapabilities } from '@tempoxyz/earn/deployments'
+import { capabilityKeys, type DeploymentCapabilities } from '@tempoxyz/contracts/deployments'
 import { describe, expect, test } from 'vitest'
 
 import type { E2eTarget } from './case.js'

@@ -1,5 +1,5 @@
 packages:
-  - app
+  - earn/app
   - deployments
   - e2e
   - localnet

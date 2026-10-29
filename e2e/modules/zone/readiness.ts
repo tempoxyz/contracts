@@ -1,7 +1,7 @@
 import { getAddress } from 'viem'
 
-import { zonePortalAbi } from '@tempoxyz/earn/abis'
-import { inspectZone, missingZoneTokens, readZoneTempoBlock } from '@tempoxyz/earn/tempo/zone'
+import { zonePortalAbi } from '@tempoxyz/contracts/abis'
+import { inspectZone, missingZoneTokens, readZoneTempoBlock } from '@tempoxyz/contracts/tempo/zone'
 import {
   requireE2eZone,
   type E2eActor,

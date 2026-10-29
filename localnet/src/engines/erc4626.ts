@@ -1,4 +1,4 @@
-import { deployLocalERC4626ScriptAbi, morphoFeeWrapperAbi } from '@tempoxyz/earn/abis'
+import { deployLocalERC4626ScriptAbi, morphoFeeWrapperAbi } from '@tempoxyz/contracts/abis'
 import { erc4626Abi } from 'viem'
 import * as Foundry from '../foundry.js'
 import { expectAddress, type LocalEngine, type LocalVenue } from './local-engine.js'

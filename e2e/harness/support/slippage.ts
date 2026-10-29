@@ -1,5 +1,5 @@
-import { earnVaultAbi } from '@tempoxyz/earn/abis'
-import { quoteEarnDeposit } from '@tempoxyz/earn/deployments'
+import { earnVaultAbi } from '@tempoxyz/contracts/abis'
+import { quoteEarnDeposit } from '@tempoxyz/contracts/deployments'
 import { EarnShares } from 'viem/tempo'
 import type { E2eContext } from '../context.js'
 

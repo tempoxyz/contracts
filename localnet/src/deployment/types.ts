@@ -1,11 +1,11 @@
-import type { EngineKind } from '@tempoxyz/earn/deployments'
+import type { EngineKind } from '@tempoxyz/contracts/deployments'
 import type {
   DeploymentAccess,
   EarnDeploymentActionId,
   EarnDeploymentProfile,
   EngineFactory,
   OptionalPeriphery,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import type { Address, Hex } from 'viem'
 
 import type { ConversionPool, Fixtures } from './fixtures.js'
@@ -32,7 +32,7 @@ export type State = OptionalPeriphery & {
   baseAsset: Address
   /**
    * `DemoStablecoinFunder`: sole issuer of `baseAsset` and `alternateAsset`. Its permissionless
-   * `fund(token, receiver, amount)` mints either token; see `demoStablecoinFunderAbi` in `@tempoxyz/earn/abis`.
+   * `fund(token, receiver, amount)` mints either token; see `demoStablecoinFunderAbi` in `@tempoxyz/contracts/abis`.
    */
   stablecoinFixture: Address
   /** The profile owner: EarnVault operator and final engine owner. */

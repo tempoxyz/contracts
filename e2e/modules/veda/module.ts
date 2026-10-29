@@ -5,7 +5,7 @@ import {
   vedaBoringQueueAbi,
   vedaEngineAbi,
   vedaForwardingSolverAbi,
-} from '@tempoxyz/earn/abis'
+} from '@tempoxyz/contracts/abis'
 import type { E2eCase, LaunchFeature } from '../../harness/case.js'
 import { engineFixtures, type E2eContext } from '../../harness/context.js'
 import {

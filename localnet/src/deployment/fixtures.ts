@@ -1,5 +1,5 @@
-import { demoStablecoinFunderAbi, propAMMPoolAbi } from '@tempoxyz/earn/abis'
-import type { EngineKind } from '@tempoxyz/earn/deployments'
+import { demoStablecoinFunderAbi, propAMMPoolAbi } from '@tempoxyz/contracts/abis'
+import type { EngineKind } from '@tempoxyz/contracts/deployments'
 import { custom, type Address, type Hex, type PublicClient } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { Abis, createClient as createTempoClient } from 'viem/tempo'

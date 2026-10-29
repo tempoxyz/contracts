@@ -1,7 +1,7 @@
 import { Actions as TempoActions } from 'viem/tempo'
 import { encodeFunctionData, parseEventLogs, type Address, type Hex } from 'viem'
 import { simulateCalls } from 'viem/actions'
-import { earnVaultAbi, morphoFeeWrapperAbi, simple4626VaultAbi } from '@tempoxyz/earn/abis'
+import { earnVaultAbi, morphoFeeWrapperAbi, simple4626VaultAbi } from '@tempoxyz/contracts/abis'
 import { e2eEngines } from '../../engines/index.js'
 import { requireE2eZone, type E2eContext } from '../../harness/context.js'
 import { E2ePrerequisiteError, TIMEOUT_MS, assert } from '../../harness/support/utils.js'

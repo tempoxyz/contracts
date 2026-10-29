@@ -10,7 +10,7 @@ import {
   planEarnDeployment,
   serializeWhitelistPolicy,
   type EarnDeploymentProfile,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import {
   authoredProfile,
   discoverOutputs,
@@ -19,7 +19,7 @@ import {
   reconcileEarnProfileActions,
   recordAuthorityAction,
   verifyEarnDeploymentState,
-} from '@tempoxyz/earn/deployments/node'
+} from '@tempoxyz/contracts/deployments/node'
 import {
   encodeFunctionData,
   getAddress,
@@ -53,8 +53,8 @@ import type {
   Result,
   State,
 } from './deployment/types.js'
-import { earnEngineBindingAbi, earnRouterAbi, zonePortalAbi } from '@tempoxyz/earn/abis'
-import { missingZoneTokens, zonePortalRole } from '@tempoxyz/earn/tempo/zone'
+import { earnEngineBindingAbi, earnRouterAbi, zonePortalAbi } from '@tempoxyz/contracts/abis'
+import { missingZoneTokens, zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
 
 /** Pure profile helpers, so consumers can derive what a variant deploys without a chain. */
 export {

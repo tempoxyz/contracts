@@ -1,6 +1,6 @@
 import { stringify } from 'viem'
 import { Abis } from 'viem/tempo'
-import { earnVaultAbi } from '@tempoxyz/earn/abis'
+import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 import type { E2eContext } from './context.js'
 import { moduleIntegrity } from './modules.js'
 import { assert } from './support/utils.js'

@@ -57,8 +57,8 @@ policy-membership transactions, and its EarnShare is enabled and mirrored before
 ## Localnet layer
 
 `localnet/src/layer.ts` exports `earn(options)`, a v0 layer for `@tempoxyz/localnet`, as the
-repository root's `./localnet` export. The root package (`earn`) is not published, so a consumer
-links an Earn checkout under a dependency name of its choice. The layer accepts `access`,
+repository root's `./localnet` export. The root package (`tempo-contracts`) is not published, so a consumer
+links a checkout of this repository under a dependency name of its choice. The layer accepts `access`,
 `earnProfile`, `engineKind`, and `sameAssetRoute` and runs `Environment.run` with them. `up({ runId })`
 resolves inside `ready`; `down()` or the run's abort signal releases it, which stops the containers.
 The containers are named `tempo-localnet.<runId>.{l1,zone}`, and the L1 container carries the
@@ -120,7 +120,7 @@ and prices at par with the full pool inventory.
   `EarnFactory` from `earn/script/deploy/DeployFactoryRelease.s.sol` and every engine factory from its
   engine's deploy script (`erc4626EngineFactory` in `earn/script/deploy/DeployERC4626Engine.s.sol`); it
   deploys no rewards factory. `Foundry.script` binds a script to its generated ABI from
-  `@tempoxyz/earn/abis`, so step names and arguments are checked against the Solidity signatures.
+  `@tempoxyz/contracts/abis`, so step names and arguments are checked against the Solidity signatures.
 - Forge receives `DEPLOYER_PRIVATE_KEY` as its only secret, alongside an allowlist of ordinary
   process variables and `FOUNDRY_PROFILE=deploy`, the profile hosted deployments use. Fixture and
   lifecycle steps run with `--batch` and the PATHUSD fee token; Tempo batches allow a top-level

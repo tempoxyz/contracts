@@ -1,5 +1,5 @@
 import { parseEventLogs, type Address } from 'viem'
-import { earnContributionControllerAbi, earnVaultAbi } from '@tempoxyz/earn/abis'
+import { earnContributionControllerAbi, earnVaultAbi } from '@tempoxyz/contracts/abis'
 import type { E2eActor, E2eContext } from '../../harness/context.js'
 import { approve, tokenBalance } from '../../harness/support/funding.js'
 import { write } from '../../harness/support/transactions.js'

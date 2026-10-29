@@ -51,7 +51,7 @@ jobs:
         run: scripts/solidity-deps.sh zone-router && (cd zone-router && forge build src script)
 
       - name: Check generated contract ABIs
-        run: pnpm --filter @tempoxyz/earn abis:check
+        run: pnpm --filter @tempoxyz/contracts abis:check
 
       - name: Check EarnVault deployable size
         run: FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol

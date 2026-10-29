@@ -11,7 +11,7 @@ import {
   TIMEOUT_MS,
   ZONE_CASE_AMOUNT,
 } from '../../harness/support/utils.js'
-import { readAccessStatus } from '@tempoxyz/earn/deployments/operations'
+import { readAccessStatus } from '@tempoxyz/contracts/deployments/operations'
 import { protectedAccessConfiguration } from '../access/shared.js'
 import {
   refundsToSelf,

@@ -1,13 +1,16 @@
-import { demoStablecoinFunderAbi, earnVaultAbi } from '@tempoxyz/earn/abis'
-import { engineDefinitions } from '@tempoxyz/earn/deployments'
-import { inspectEarnDeployment, type EarnDeploymentRecord } from '@tempoxyz/earn/deployments/node'
+import { demoStablecoinFunderAbi, earnVaultAbi } from '@tempoxyz/contracts/abis'
+import { engineDefinitions } from '@tempoxyz/contracts/deployments'
+import {
+  inspectEarnDeployment,
+  type EarnDeploymentRecord,
+} from '@tempoxyz/contracts/deployments/node'
 import {
   optionalPeriphery,
   parseWhitelistPolicy,
   requiredAccessMembers,
   validateEarnShareWhitelist,
   type EarnDeploymentProfile,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import { erc20Abi, getAddress, isAddress, type Address, type PublicClient } from 'viem'
 import { Abis } from 'viem/tempo'
 import type { DeploymentPublicClient, E2eStack } from './context.js'

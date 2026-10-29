@@ -1,6 +1,6 @@
 import { getAddress, type Address, type PublicClient } from 'viem'
-import { zonePortalRole } from '@tempoxyz/earn/tempo/zone'
-import { earnVaultAbi, zonePortalAbi } from '@tempoxyz/earn/abis'
+import { zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
+import { earnVaultAbi, zonePortalAbi } from '@tempoxyz/contracts/abis'
 import type { E2eContext } from '../../harness/context.js'
 
 type Client = Pick<PublicClient, 'readContract'>

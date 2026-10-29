@@ -1,5 +1,5 @@
-import type { TokenMetadata } from '@tempoxyz/earn/deployments'
-import type { EarnDeploymentProfile } from '@tempoxyz/earn/deployments/operations'
+import type { TokenMetadata } from '@tempoxyz/contracts/deployments'
+import type { EarnDeploymentProfile } from '@tempoxyz/contracts/deployments/operations'
 import { isAddressEqual, type Address, type Hex, type PublicClient } from 'viem'
 
 import type * as Foundry from '../foundry.js'

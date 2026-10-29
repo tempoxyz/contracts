@@ -79,8 +79,8 @@ or building transaction infrastructure.
 ## Project layout
 
 Earn's Foundry project; paths below are relative to `earn/`. Its deployment modules
-(`deployments/modules/earn/`), profiles, app, and docs (`docs/earn/`) live at the
-[repository](../README.md) root.
+(`deployments/modules/earn/`), profiles, and docs (`docs/earn/`) live at the
+[repository](../README.md) root, with the shared tooling.
 
 | Path              | Purpose                                                                               |
 | ----------------- | ------------------------------------------------------------------------------------- |
@@ -93,6 +93,7 @@ Earn's Foundry project; paths below are relative to `earn/`. Its deployment modu
 | `script/`         | Foundry deployment scripts the shared profile lifecycle runs.                         |
 | `test/`           | Tests mirroring the Solidity production domains.                                      |
 | `script/local/`   | Local fixture contracts and scripts the root `localnet/` package deploys.             |
+| `app/`            | Earn's web app and Cloudflare Worker ([app guide](app/AGENTS.md)).                    |
 
 ## Project status
 

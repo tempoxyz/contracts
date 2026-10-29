@@ -240,7 +240,7 @@ profile with `--local --group rewards` to exercise the reward contracts it confi
 
 `pnpm e2e:fixture --profile <id|path> --network <moderato|mainnet> [--broadcast]`
 (`e2e/fixtures/bootstrap.ts`) provisions a disposable test profile's fixture with localnet's fixture
-steps, one transaction each, owned by the deployer. A bare ID names a profile in Earn's own
+steps, one transaction each, owned by the deployer. A bare ID names a profile in this repository's
 `profiles/`; pass a path for a profile elsewhere. `--network` must match the profile's chain. What a
 profile gets is its engine kind's `hostedFixture` in `localnet/src/engines/<kind>.ts`; a kind
 without one is refused:

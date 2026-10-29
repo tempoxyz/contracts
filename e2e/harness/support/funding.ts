@@ -1,6 +1,6 @@
 import { erc20Abi, isAddressEqual, type Address } from 'viem'
-import { demoStablecoinFunderAbi } from '@tempoxyz/earn/abis'
-import { hasFaucet } from '@tempoxyz/earn/deployments'
+import { demoStablecoinFunderAbi } from '@tempoxyz/contracts/abis'
+import { hasFaucet } from '@tempoxyz/contracts/deployments'
 import type { E2eActor, E2eContext, E2eWallet } from '../context.js'
 import { write } from './transactions.js'
 import { TIMEOUT_MS } from './utils.js'

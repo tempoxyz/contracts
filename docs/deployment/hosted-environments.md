@@ -57,7 +57,7 @@ sponsor from it. To add a network:
 ## External deployments
 
 Stacks deployed outside this repository keep their profiles, generated records, and runbooks in a
-separate deployments repository that pins Earn as a submodule and runs this tooling against them
+separate deployments repository that pins this repository as a submodule and runs this tooling against them
 ([profiles in another repository](../../profiles/README.md#profiles-in-another-repository)). Recheck one on demand with `pnpm earn verify <profile.json>` and
 `pnpm e2e:profile <profile.json> --validate-only`, with `TEMPO_API_KEY` or `ZONE_RPC_URL` set for
 the live Zone check ([rechecking deployed profiles](deployment.md#rechecking-deployed-profiles)).

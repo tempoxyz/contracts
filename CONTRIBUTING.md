@@ -24,8 +24,8 @@ and local stacks deploy a committed [DirectPropAMM fixture](docs/earn/modules/pr
 | Area                                                                  | Commands                                                                           |
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | Earn contracts ([`earn/src/`](earn/src/), [`earn/test/`](earn/test/)) | `pnpm test:contracts`, or `forge test --match-path <path> -vvv` in `earn/`         |
-| Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/earn test --run`, `check`, and `typecheck`                |
-| App ([`app/`](app/))                                                  | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack           |
+| Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/contracts test --run`, `check`, and `typecheck`           |
+| App ([`earn/app/`](earn/app/))                                        | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack           |
 | Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`; `pnpm dev:local -- --smoke` sets up and verifies a stack         |
 | Zone router ([`zone-router/`](zone-router/))                          | `forge test` in `zone-router/`; see [zone-router/AGENTS.md](zone-router/AGENTS.md) |
 | Bridge integration ([`bridge/`](bridge/))                             | `forge test` in `bridge/`; see [bridge/AGENTS.md](bridge/AGENTS.md)                |
@@ -42,7 +42,7 @@ The [test map](docs/development/README.md#test-map) shows where existing coverag
    CI adds the symbolic proofs, the PropAMM fixture rebuild, and local E2E
    ([required checks](docs/development/README.md#required-checks)).
 2. Update the one page that owns the behavior you changed; the
-   [documentation index](docs/earn/README.md#document-ownership) names it. Document current behavior
+   [documentation index](docs/README.md) names it. Document current behavior
    only.
 3. For contract changes, answer the [review checklist](docs/development/README.md#review-checklist) in the
    pull request.
@@ -66,8 +66,8 @@ deployments, e2e: run the tooling against profiles that live in another reposito
 ci: run the symbolic proofs on stable Foundry
 ```
 
-Areas are project or top-level directories (`earn`, `zone-router`, `bridge`, `e2e`, `localnet`), the Earn
-subdirectory for a narrower change (`deployments`, `app`), or `ci`, `docs`, `repo`, and `chore`. Pull requests are squash-merged
+Areas are project or top-level directories (`earn`, `zone-router`, `bridge`, `e2e`, `localnet`), a shared
+or narrower directory (`deployments`, `profiles`, `app`), or `ci`, `docs`, `repo`, and `chore`. Pull requests are squash-merged
 with the title as the commit subject, so describe the change and its validation in the body.
 
 ## License

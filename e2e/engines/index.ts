@@ -1,6 +1,6 @@
 import { readdirSync } from 'node:fs'
 
-import { engineKinds, type EngineKind } from '@tempoxyz/earn/deployments'
+import { engineKinds, type EngineKind } from '@tempoxyz/contracts/deployments'
 import type { Address } from 'viem'
 import type { E2eContext } from '../harness/context.js'
 

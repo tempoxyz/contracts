@@ -1,9 +1,9 @@
 # Browser implementation reference
 
 This reference owns the browser's implementation constraints and SDK compatibility notes. Use the
-sections relevant to the change; the [browser guide](../../app/src/AGENTS.md) lists only the rules
+sections relevant to the change; the [browser guide](../../earn/app/src/AGENTS.md) lists only the rules
 agents most often break. Paths beginning with `src/` in this document are relative
-to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workarounds when upgrading.
+to `earn/app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workarounds when upgrading.
 
 ## Wallet modes and module ownership
 
@@ -78,7 +78,7 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
 ## Zone identity and private execution
 
 - Browser verification must authenticate every Zone through the Factory/Portal/Inbox binding that
-  the shared `discoverZone` (`@tempoxyz/earn/tempo/zone`) checks, and use only the canonical router
+  the shared `discoverZone` (`@tempoxyz/contracts/tempo/zone`) checks, and use only the canonical router
   ABI. Do not retain standalone Portal identity branches or read Zone predeploys in app code.
 - Address Worker RPC routes by environment slug, not numeric Zone identity alone; a hosted Zone may
   receive a new Zone ID and chain ID after regenesis.
@@ -111,7 +111,7 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
   error or later writes repeat an already-published authorization.
 - Retain `requestWithdrawalSync`'s `senderTag` only in memory while the action is pending and use it
   to correlate the L1 Portal's `WithdrawalProcessed` event through the shared
-  `waitForWithdrawalProcessed` (`@tempoxyz/earn/tempo/zone`). Fail immediately when
+  `waitForWithdrawalProcessed` (`@tempoxyz/contracts/tempo/zone`). Fail immediately when
   `callbackSuccess` is false; after Portal success, read this EarnVault's EarnRouter event for the
   action from that processing receipt (`processedRouterEvent`). Never log, persist, or add the sender
   tag to app transaction progress.
@@ -196,7 +196,7 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
   configurations that do not exist.
 - Regen tooltips render through transformed `data-base-ui-portal` positioners without a tooltip
   ARIA role. Configuration tooltip labels must retain the `configuration-tooltip` marker so
-  `app/src/styles.css` can keep their positioner above the inspector and wrap their copy.
+  `earn/app/src/styles.css` can keep their positioner above the inspector and wrap their copy.
   Compact inspector choices must retain visible default and selected surfaces.
 - Normal mode emits separate setup toasts for each passkey approval used to enable a Zone. Privy
   mode connects its embedded wallet directly without publishing an access key.
@@ -219,7 +219,7 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
   to the balance table by using the compact label typography for its heading, states, and
   transaction rows.
 - The balance table lists every configured token, including the private route asset and the
-  PATHUSD vault asset, followed by EarnShare. `app/deployments/tokens.ts` owns that display list and
+  PATHUSD vault asset, followed by EarnShare. `earn/app/deployments/tokens.ts` owns that display list and
   token metadata; keep it separate from the private mode's one `privateAsset` so PATHUSD does not
   become a private router input.
 - Read the engine kind from the selected stack, never from its asset. Public actions are Deposit and Redeem, and the composer displays the relevant asset balance without a MAX action.
@@ -237,7 +237,7 @@ to `app/`. Dependency pins are owned by `pnpm-workspace.yaml`; recheck workaroun
 - Private actions use the deployment's single private asset (the router's fixed input), shown as a
   label rather than a token choice. Its name, symbol, and decimals come from the catalog stack's
   `privateAssetMetadata`; deployment verification checks its decimals against the live token.
-- Deposit to Zone offers the tokens `zoneFundingTokens` (`app/deployments/tokens.ts`) returns: the
+- Deposit to Zone offers the tokens `zoneFundingTokens` (`earn/app/deployments/tokens.ts`) returns: the
   private asset, plus PATHUSD when it is one of the deployment's balance tokens, so a user can fund
   the PATHUSD that private Zone fees are paid in.
 - `network.explorerUrl` is optional: local stacks have none, so address and transaction links are

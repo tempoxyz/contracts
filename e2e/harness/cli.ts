@@ -1,4 +1,4 @@
-import { engineKinds } from '@tempoxyz/earn/deployments'
+import { engineKinds } from '@tempoxyz/contracts/deployments'
 import { defaultEngineKind } from 'localnet'
 
 import { parseE2eArguments } from './arguments.js'

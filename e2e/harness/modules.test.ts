@@ -1,12 +1,12 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { engineKinds } from '@tempoxyz/earn/deployments'
-import { deploymentAddressKeysForProfile } from '@tempoxyz/earn/deployments/node'
+import { engineKinds } from '@tempoxyz/contracts/deployments'
+import { deploymentAddressKeysForProfile } from '@tempoxyz/contracts/deployments/node'
 import {
   optionalPeriphery,
   parseEarnDeploymentProfile,
   profileCapabilities,
   type EarnDeploymentProfile,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import { Deployment } from 'localnet'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'

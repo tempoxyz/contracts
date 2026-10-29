@@ -3,7 +3,10 @@ import { Abis, Addresses } from 'viem/tempo'
 
 import type { E2eActor, E2eContext } from '../../harness/context.js'
 import { authorizeZoneActor } from '../zone/readiness.js'
-import { requireProtectedAccess, setAccessEligibility } from '@tempoxyz/earn/deployments/operations'
+import {
+  requireProtectedAccess,
+  setAccessEligibility,
+} from '@tempoxyz/contracts/deployments/operations'
 import { E2ePrerequisiteError, waitFor } from '../../harness/support/utils.js'
 import { waitForSuccessfulWrite } from '../../harness/support/transactions.js'
 

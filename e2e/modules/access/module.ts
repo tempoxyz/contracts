@@ -4,7 +4,7 @@ import {
   readAccessStatus,
   resolveAccessAddress,
   setAccessEligibility,
-} from '@tempoxyz/earn/deployments/operations'
+} from '@tempoxyz/contracts/deployments/operations'
 import type { E2eBenchmark, E2eCase, LaunchFeature } from '../../harness/case.js'
 import { expectContractRevert } from '../../harness/support/transactions.js'
 import { assert } from '../../harness/support/utils.js'

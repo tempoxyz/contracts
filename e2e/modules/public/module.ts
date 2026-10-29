@@ -9,7 +9,7 @@ import {
   redeemVenueShares,
   withdrawExact,
 } from '../../harness/support/public.js'
-import { earnVaultAbi } from '@tempoxyz/earn/abis'
+import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 import { mintVaultAsset, tokenBalance } from '../../harness/support/funding.js'
 import { previewEarnDeposit, previewEarnRedeem } from '../../harness/support/slippage.js'
 import { expectRevertedWrite } from '../../harness/support/transactions.js'

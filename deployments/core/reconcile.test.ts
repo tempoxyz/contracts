@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
-import { parseEarnDeploymentProfile } from '@tempoxyz/earn/deployments/operations'
+import { parseEarnDeploymentProfile } from '@tempoxyz/contracts/deployments/operations'
 import { keccak256, zeroAddress, type Hex } from 'viem'
 import { Addresses } from 'viem/tempo'
 

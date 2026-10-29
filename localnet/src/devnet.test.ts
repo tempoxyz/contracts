@@ -1,13 +1,13 @@
 import { privateKeyToAccount } from 'viem/accounts'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { inspectZone } from '@tempoxyz/earn/tempo/zone'
+import { inspectZone } from '@tempoxyz/contracts/tempo/zone'
 import * as Deployment from './deployment.js'
 import * as Network from './network.js'
 import { deploy } from './devnet.js'
 
-vi.mock('@tempoxyz/earn/tempo/zone', async (original) => ({
-  ...(await original<typeof import('@tempoxyz/earn/tempo/zone')>()),
+vi.mock('@tempoxyz/contracts/tempo/zone', async (original) => ({
+  ...(await original<typeof import('@tempoxyz/contracts/tempo/zone')>()),
   inspectZone: vi.fn(),
 }))
 vi.mock('./deployment.js', () => ({ createBase: vi.fn(), create: vi.fn() }))

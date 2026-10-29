@@ -17,7 +17,7 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
     # viem 2.57.5 changed KeyAuthorizationManager.from to a store-only API that accounts does not
-    # use yet (app/src/private/AccountsCompatibility.test.ts). Drop these once accounts adopts it.
+    # use yet (earn/app/src/private/AccountsCompatibility.test.ts). Drop these once accounts adopts it.
     ignore:
       - dependency-name: viem
         versions: ['>=2.57.5']

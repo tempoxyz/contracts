@@ -46,7 +46,7 @@ separately. A selector absent from the deployed implementation may revert withou
 inspect a verified ABI before interpreting a failed read as stale valuation or broken accounting.
 
 Tempo-owned stacks are recorded in the generated `deployment.json` beside
-`profiles/<profile-id>/profile.json` and in the app catalog, `app/deployments/generated.json`. A
+`profiles/<profile-id>/profile.json` and in the app catalog, `earn/app/deployments/generated.json`. A
 stack deployed elsewhere keeps its record in the deployments repository that holds its profile
 ([profiles in another repository](../../../profiles/README.md#profiles-in-another-repository)). No
 record proves current readiness: verify live bindings and simulate the intended action on the
