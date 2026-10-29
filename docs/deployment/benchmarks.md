@@ -92,7 +92,7 @@ API's Zone RPC. Runs share the `hosted-contracts-moderato` concurrency group, wh
 than replaces pending runs.
 
 ```bash
-gh workflow run e2e-benchmarks.yml --repo tempoxyz/earn --ref main -f group=all -f samples=10
-gh run list --repo tempoxyz/earn --workflow e2e-benchmarks.yml --limit 1
-gh run download <run-id> --repo tempoxyz/earn --name earn-e2e-benchmarks-<environment>-<group>-<run-id>
+gh workflow run e2e-benchmarks.yml --repo tempoxyz/contracts --ref main -f group=all -f samples=10
+gh run list --repo tempoxyz/contracts --workflow e2e-benchmarks.yml --limit 1
+gh run download <run-id> --repo tempoxyz/contracts --name earn-e2e-benchmarks-<environment>-<group>-<run-id>
 ```

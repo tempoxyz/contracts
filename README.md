@@ -15,8 +15,8 @@
 
 # Tempo contracts
 
-[![Pull Request](https://github.com/tempoxyz/earn/actions/workflows/pull-request.yml/badge.svg)](https://github.com/tempoxyz/earn/actions/workflows/pull-request.yml)
-[![Local E2E](https://github.com/tempoxyz/earn/actions/workflows/local-zone.yml/badge.svg)](https://github.com/tempoxyz/earn/actions/workflows/local-zone.yml)
+[![Pull Request](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml)
+[![Local E2E](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml)
 
 Tempo's contracts and the tooling they share. Each project is a separate Foundry project with its
 own build settings, dependencies, documentation, and audits; they share one deployment lifecycle,
@@ -49,8 +49,8 @@ this repository.
 ## Get started
 
 ```bash
-git clone https://github.com/tempoxyz/earn
-cd earn
+git clone https://github.com/tempoxyz/contracts
+cd contracts
 pnpm install
 pnpm deps     # Solidity dependencies for earn/, zone-router/ and bridge/, and Earn's solar compiler
 pnpm verify

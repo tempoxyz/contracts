@@ -10,8 +10,8 @@ Install the tools in the [toolchain](docs/development/README.md#toolchain): Foun
 Node.js 22, and pnpm 11. Local end-to-end runs also need Docker.
 
 ```bash
-git clone https://github.com/tempoxyz/earn
-cd earn
+git clone https://github.com/tempoxyz/contracts
+cd contracts
 pnpm install
 pnpm deps   # each project's Solidity dependencies at its foundry.lock revisions, and Earn's solar
 ```

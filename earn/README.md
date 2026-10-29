@@ -15,8 +15,8 @@
 
 # Tempo Earn
 
-[![Pull Request](https://github.com/tempoxyz/earn/actions/workflows/pull-request.yml/badge.svg)](https://github.com/tempoxyz/earn/actions/workflows/pull-request.yml)
-[![Local E2E](https://github.com/tempoxyz/earn/actions/workflows/local-zone.yml/badge.svg)](https://github.com/tempoxyz/earn/actions/workflows/local-zone.yml)
+[![Pull Request](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml)
+[![Local E2E](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml)
 [![Audited by Sigma Prime](https://img.shields.io/badge/audited_by-Sigma_Prime-2ea44f)](../docs/earn/audit/README.md)
 
 Tempo Earn is vault-backed stablecoin yield for [Tempo](https://tempo.xyz). Users deposit a
