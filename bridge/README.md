@@ -67,8 +67,8 @@ Three behaviors are decisions, not defects, and the matrix lists them so they st
 ## Running it
 
 ```bash
-git clone https://github.com/tempoxyz/earn.git
-cd earn
+git clone https://github.com/tempoxyz/contracts.git
+cd contracts
 scripts/solidity-deps.sh bridge   # Solidity dependencies at the revisions bridge/foundry.lock pins
 cd bridge
 FOUNDRY_PROFILE=ci forge test

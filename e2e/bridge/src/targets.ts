@@ -564,7 +564,7 @@ const moderato = {
   chainId: tempoModerato.id,
   rpcUrl: tempoModerato.rpcUrls.default.http[0],
   zone: { id: 3, chainId: 1_424_310_003 },
-  // Tempo Earn's e2e-moderato stack on Zone 3 (tempoxyz/earn profiles/e2e-moderato).
+  // Tempo Earn's e2e-moderato stack on Zone 3 (tempoxyz/contracts profiles/e2e-moderato).
   earn: {
     vault: '0x0eb6bc4711Bf400684Df14616e049F4b889eb025',
     asset: '0x20c00000000000000000000024c6653e25eaE22B',
