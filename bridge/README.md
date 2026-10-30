@@ -97,6 +97,29 @@ Every balance it reports is read back from the node after the transactions land.
 script/smoke.sh
 ```
 
+**On a Tempo mainnet fork.** [`test/fork/ZoneRouterMainnetFork.t.sol`](test/fork/ZoneRouterMainnetFork.t.sol)
+sets up a ZoneRouter for each of Zone 2's production Earn stacks, with a `BridgeSettler` and a
+`SendSettler`. It copies each router's vault, DirectPropAMM pool, customer ID and seed from the live
+`SingleZoneEarnRouter`, then runs every major flow through Zone 2's real portal and messenger at Bridge's
+3M callback gas:
+
+- Earn deposits and redeems through the production pool match the live router's output, pool
+  movement and gas;
+- card spends pay the settlement wallet: from the private stablecoin and from Earn through the router,
+  and from a public account through Bridge's clone;
+- sends pay a public address the stablecoin, the EarnShare, the vault asset redeemed from Earn, or
+  that asset converted to the stablecoin at par;
+- refunds from an admitted wallet deposit into the Zone, and an unadmitted wallet's are refused;
+- a paused pool or stale oracle bounces both routers with the same error while stablecoin spends
+  still settle, an unadmitted router bounces, and Zone 2's closed loop bounces a callback that
+  returns nothing.
+
+```bash
+forge test --match-path 'test/fork/*' --fork-url https://rpc.tempo.xyz --hardfork tempo:T12 -vv
+```
+
+The fork tests are inert without `--fork-url` or `FORK_URL`.
+
 **On a real Tempo L1 and Zone.** [`e2e/bridge`](../e2e/bridge/) runs a private spend end to end
 against a target: `local`, a disposable L1 and Zone from the images Earn's
 [localnet](../localnet/fixtures/) pins (in CI), or `moderato`, Tempo's testnet and its hosted Zone 3.
@@ -154,7 +177,7 @@ test/
   rails/                    One adapter per contract setup
   e2e/                      Card scenarios and the setup matrix
   unit/                     Contract and security tests, including BridgeSettler against Bridge's factory
-  fork/                     Private-spend callback gas on a Tempo mainnet fork (inert without one)
+  fork/                     Every Zone router flow and private-spend gas on a Tempo mainnet fork (inert without one)
   smoke/                    A check that the harness world deploys
 script/                     Deploy scripts, real-node smoke test, Zone E2E deploy, matrix generator
 vendor/                     Pinned Bridge and Zones sources (VENDORED.md)
