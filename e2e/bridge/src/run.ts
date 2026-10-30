@@ -34,28 +34,29 @@
 //    approves), Zone receipt to L1 settlement (after approval), and a public spend's one L1
 //    transaction, signed with Bridge's L1 access key. Writes them to
 //    reports/zone-e2e-latency-<target>.json.
+// 7. Local with --earn only (router.ts): every ZoneRouter flow through one router with every op,
+//    over the local Earn stack, whose private stablecoin converts to the vault asset at par through
+//    a DirectPropAMM pool: Earn deposit and redeem, card spends from the stablecoin and from Earn,
+//    sends of the stablecoin, EarnShare, the vault asset redeemed from Earn and that asset converted
+//    back at par, a refund into the Zone, a paused pool, and the Zone's closed loop. Writes each
+//    flow's router callback gas to reports/zone-e2e-router-flows-<target>.json.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  BaseError,
   concat,
-  ContractFunctionRevertedError,
   encodeAbiParameters,
-  encodePacked,
   encodeFunctionData,
   erc20Abi,
   formatUnits,
   isAddressEqual,
   keccak256,
   parseAbi,
-  parseAbiParameters,
   parseEventLogs,
   toFunctionSelector,
   toHex,
   zeroAddress,
   zeroHash,
-  type Abi,
   type Address,
   type Hex,
   type Log,
@@ -63,7 +64,30 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { Account, Actions } from 'viem/tempo'
 
-import * as Network from './network.js'
+import { routerFlows } from './router.js'
+import {
+  CALLBACK_GAS,
+  OP_SPEND,
+  artifact,
+  assert,
+  cloneAbi,
+  findCall,
+  median,
+  names,
+  outbox,
+  outboxAbi,
+  pathUsd,
+  portalEventsAbi,
+  revertData,
+  since,
+  spendDataType,
+  spendType,
+  step,
+  waitFor,
+  withdrawalRequested,
+  zoneTokenAbi,
+  type CallFrame,
+} from './support.js'
 import {
   forgeEnv,
   hosted,
@@ -75,42 +99,12 @@ import {
   type Prepared,
 } from './targets.js'
 
-const CALLBACK_GAS = 3_000_000n
 const DEPOSIT = 100_000_000n // 100 pathUSD
 const SPEND = 20_000_000n // 20 pathUSD
-const pathUsd = Network.address.pathUsd
-const outbox = Network.address.zoneOutbox
 // Public spends timed on the L1. One is not a sample.
 const PUBLIC_SPENDS = 5
 /** Exit code when the private steps could not run because the Zone lacks a role grant. */
 const EXIT_BLOCKED = 3
-
-const outboxAbi = parseAbi([
-  'function calculateWithdrawalFee(uint64 gasLimit) view returns (uint128)',
-  'function requestWithdrawal(address token, address to, uint128 amount, bytes32 memo, uint64 gasLimit, address fallbackRecipient, bytes data, bytes revealTo)',
-  'event WithdrawalRequested(uint64 indexed withdrawalIndex, address indexed sender, address token, address to, uint128 amount, uint128 fee, bytes32 memo, uint64 gasLimit, uint64 fallbackNonce, bytes data, bytes revealTo)',
-])
-const portalEventsAbi = parseAbi([
-  'event WithdrawalProcessed(address indexed to, bytes32 indexed senderTag, address token, uint128 amount, bool callbackSuccess)',
-])
-const zoneTokenAbi = parseAbi([
-  'function transfer(address to, uint256 amount) returns (bool)',
-  'error Unauthorized()',
-])
-const spendType = parseAbiParameters([
-  'Spend spend',
-  'struct Spend { bytes32 spenderId; address token; uint256 amount; address destination; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
-])
-const cloneAbi = parseAbi(['function publicCall(bytes data)'])
-/** `ZoneRouter.SpendData`, the callback data of the router's Spend op. */
-const spendDataType = parseAbiParameters([
-  'SpendData data',
-  'struct SpendData { uint8 op; address settler; uint128 maxInput; bytes settlerData; SpendReturn zoneReturn; }',
-  'struct SpendReturn { uint256 keyIndex; DepositPayload encrypted; address refundRecipient; uint128 maxDepositFee; }',
-  'struct DepositPayload { bytes32 ephemeralPubkeyX; uint8 ephemeralPubkeyYParity; bytes ciphertext; bytes12 nonce; bytes16 tag; }',
-])
-/** `ZoneRouter.Op.Spend`. */
-const OP_SPEND = 2
 
 type SpendArgs = {
   spenderId: Hex
@@ -175,54 +169,6 @@ function routerSpent(logs: readonly Log[], router: Address) {
   ).args
 }
 
-function artifact(name: string) {
-  const json = JSON.parse(readFileSync(resolve(root, `out/${name}.sol/${name}.json`), 'utf8'))
-  return { abi: json.abi as Abi, bytecode: json.bytecode.object as Hex }
-}
-
-type CallFrame = { to?: string; input?: string; gas?: Hex; gasUsed?: Hex; calls?: CallFrame[] }
-
-/** The first call frame in `frame`'s tree to `to` with `selector`, depth first. */
-function findCall(frame: CallFrame, to: Address, selector: Hex): CallFrame | undefined {
-  if (frame.to?.toLowerCase() === to.toLowerCase() && frame.input?.startsWith(selector))
-    return frame
-  for (const child of frame.calls ?? []) {
-    const found = findCall(child, to, selector)
-    if (found) return found
-  }
-  return undefined
-}
-
-function step(n: number, text: string) {
-  console.log(`[${n}] ${text}`)
-}
-
-async function waitFor<T>(
-  label: string,
-  read: () => Promise<T>,
-  done: (value: T) => boolean,
-  intervalMs = 1000,
-) {
-  const deadline = Date.now() + 240_000
-  for (;;) {
-    const value = await read()
-    if (done(value)) return value
-    if (Date.now() > deadline)
-      throw new Error(`timed out waiting for ${label} (last read ${String(value)})`)
-    await new Promise((r) => setTimeout(r, intervalMs))
-  }
-}
-
-/** Wall-clock milliseconds since `start`, from `performance.now()`. */
-function since(start: number) {
-  return Math.round(performance.now() - start)
-}
-
-function median(values: number[]) {
-  const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.floor(sorted.length / 2)]!
-}
-
 /** Whether `logs` hold a `token` transfer of exactly `SPEND` to `destination`. */
 function paid(logs: readonly Log[], destination: Address, token: Address = pathUsd) {
   return parseEventLogs({ abi: erc20Abi, eventName: 'Transfer', logs: [...logs] }).some(
@@ -231,51 +177,6 @@ function paid(logs: readonly Log[], destination: Address, token: Address = pathU
       isAddressEqual(log.args.to, destination) &&
       log.args.value === SPEND,
   )
-}
-
-/** Whether any of `logs` carries `address` in its topics or data. */
-function names(logs: readonly Log[], address: Address) {
-  const needle = address.slice(2).toLowerCase()
-  return logs.some(
-    (log) =>
-      log.data.toLowerCase().includes(needle) ||
-      log.topics.some((topic) => topic?.toLowerCase().includes(needle)),
-  )
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(`check failed: ${message}`)
-}
-
-/**
- * The revert data of a failed call: as viem decoded it, or as the Zone RPC quotes it in the message
- * of the internal error it wraps reverts in.
- */
-function revertData(error: unknown): Hex | undefined {
-  if (!(error instanceof BaseError)) return undefined
-  const reverted = error.walk((e) => e instanceof ContractFunctionRevertedError)
-  if (reverted instanceof ContractFunctionRevertedError) {
-    if (reverted.raw) return reverted.raw
-    return reverted.reason?.match(/RawValue\("(0x[0-9a-fA-F]*)"\)/)?.[1] as Hex | undefined
-  }
-  return undefined
-}
-
-/**
- * The outbox's WithdrawalRequested in a Zone receipt, with the sender tag the portal's
- * WithdrawalProcessed for it carries, derived as viem's `requestWithdrawalSync` derives it.
- */
-function withdrawalRequested(receipt: { logs: Log[]; transactionHash: Hex }) {
-  const logs = receipt.logs.filter((log) => isAddressEqual(log.address, outbox))
-  const [event] = parseEventLogs({ abi: outboxAbi, eventName: 'WithdrawalRequested', logs })
-  assert(event, 'the Zone receipt carries the outbox WithdrawalRequested event')
-  const senderTag = keccak256(
-    encodePacked(
-      ['address', 'bytes32', 'uint64'],
-      [event.args.sender, receipt.transactionHash, event.args.fallbackNonce],
-    ),
-  )
-  return { ...event.args, senderTag }
 }
 
 /** Steps 5 to 12: a private spend, a bounce, and (on a disposable Zone) the leaked-key withdrawal. */
@@ -994,6 +895,8 @@ async function main() {
     else if (t.earn) await earnSpend(t, run, t.earn)
     else console.log('    no Earn vault on this target: Earn steps 13-16 skipped')
     const publicMs = await publicSpend(t, run)
+    if (privateResult && t.earn && t.routerFlows) await routerFlows(t, run, t.routerFlows, t.earn)
+    else console.log('    no every-op router on this target: router flow steps 18-28 skipped')
 
     mkdirSync(resolve(root, 'reports'), { recursive: true })
     const latency = {

@@ -97,29 +97,6 @@ Every balance it reports is read back from the node after the transactions land.
 script/smoke.sh
 ```
 
-**On a Tempo mainnet fork.** [`test/fork/ZoneRouterMainnetFork.t.sol`](test/fork/ZoneRouterMainnetFork.t.sol)
-sets up a ZoneRouter for each of Zone 2's production Earn stacks, with a `BridgeSettler` and a
-`SendSettler`. It copies each router's vault, DirectPropAMM pool, customer ID and seed from the live
-`SingleZoneEarnRouter`, then runs every major flow through Zone 2's real portal and messenger at Bridge's
-3M callback gas:
-
-- Earn deposits and redeems through the production pool match the live router's output, pool
-  movement and gas;
-- card spends pay the settlement wallet: from the private stablecoin and from Earn through the router,
-  and from a public account through Bridge's clone;
-- sends pay a public address the stablecoin, the EarnShare, the vault asset redeemed from Earn, or
-  that asset converted to the stablecoin at par;
-- refunds from an admitted wallet deposit into the Zone, and an unadmitted wallet's are refused;
-- a paused pool or stale oracle bounces both routers with the same error while stablecoin spends
-  still settle, an unadmitted router bounces, and Zone 2's closed loop bounces a callback that
-  returns nothing.
-
-```bash
-forge test --match-path 'test/fork/*' --fork-url https://rpc.tempo.xyz --hardfork tempo:T12 -vv
-```
-
-The fork tests are inert without `--fork-url` or `FORK_URL`.
-
 **On a real Tempo L1 and Zone.** [`e2e/bridge`](../e2e/bridge/) runs a private spend end to end
 against a target: `local`, a disposable L1 and Zone from the images Earn's
 [localnet](../localnet/fixtures/) pins (in CI), or `moderato`, Tempo's testnet and its hosted Zone 3.
@@ -137,18 +114,26 @@ It checks that:
 - a spend from Earn shares in the Zone redeems exactly the spend, within Bridge's share quote, and
   returns the unused shares (Moderato, against Tempo Earn's e2e-moderato vault on Zone 3; locally
   with `--earn`, which deploys that profile on the disposable chain, as CI does).
+- locally with `--earn`, every Zone router flow through one router with every op over that stack,
+  whose private stablecoin converts to the vault asset at par through a DirectPropAMM pool
+  ([`router.ts`](../e2e/bridge/src/router.ts)): Earn deposit and redeem at par, card spends from the
+  stablecoin and from Earn, sends of the stablecoin, the EarnShare, the vault asset redeemed from Earn
+  and that asset converted back at par, a refund into the Zone, a paused pool bouncing an Earn deposit
+  while a stablecoin spend settles, and the closed loop: a spend returning nothing bounces, the
+  registered router settles and an unadmitted wallet cannot deposit.
 
 It also logs the gas the router callback used, read from a trace of the settlement transaction
 (local only), and times the card-approval path: Zone request to Zone receipt, Zone receipt to L1
 settlement, and a public spend's one L1 transaction, sent with a Bridge access key
-(`reports/zone-e2e-latency-<target>.json`).
+(`reports/zone-e2e-latency-<target>.json`), and each router flow's callback gas
+(`reports/zone-e2e-router-flows-<target>.json`).
 
 Requires Node 22 and pnpm, plus Docker for `local`.
 
 ```bash
 forge build
 pnpm e2e:bridge             # from the repository root
-pnpm e2e:bridge -- --earn   # also the Earn spend steps, against a local e2e-moderato stack
+pnpm e2e:bridge -- --earn   # also the Earn spend steps and every router flow, on a local e2e-moderato stack
 ```
 
 Moderato uses the test program recorded in `e2e/bridge/targets/moderato.json` and reads
@@ -177,7 +162,7 @@ test/
   rails/                    One adapter per contract setup
   e2e/                      Card scenarios and the setup matrix
   unit/                     Contract and security tests, including BridgeSettler against Bridge's factory
-  fork/                     Every Zone router flow and private-spend gas on a Tempo mainnet fork (inert without one)
+  fork/                     Private-spend callback gas on a Tempo mainnet fork (inert without one)
   smoke/                    A check that the harness world deploys
 script/                     Deploy scripts, real-node smoke test, Zone E2E deploy, matrix generator
 vendor/                     Pinned Bridge and Zones sources (VENDORED.md)
