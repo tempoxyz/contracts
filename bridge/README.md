@@ -114,18 +114,26 @@ It checks that:
 - a spend from Earn shares in the Zone redeems exactly the spend, within Bridge's share quote, and
   returns the unused shares (Moderato, against Tempo Earn's e2e-moderato vault on Zone 3; locally
   with `--earn`, which deploys that profile on the disposable chain, as CI does).
+- locally with `--earn`, every Zone router flow through one router with every op over that stack,
+  whose private stablecoin converts to the vault asset at par through a DirectPropAMM pool
+  ([`router.ts`](../e2e/bridge/src/router.ts)): Earn deposit and redeem at par, card spends from the
+  stablecoin and from Earn, sends of the stablecoin, the EarnShare, the vault asset redeemed from Earn
+  and that asset converted back at par, a refund into the Zone, a paused pool bouncing an Earn deposit
+  while a stablecoin spend settles, and the closed loop: a spend returning nothing bounces, the
+  registered router settles and an unadmitted wallet cannot deposit.
 
 It also logs the gas the router callback used, read from a trace of the settlement transaction
 (local only), and times the card-approval path: Zone request to Zone receipt, Zone receipt to L1
 settlement, and a public spend's one L1 transaction, sent with a Bridge access key
-(`reports/zone-e2e-latency-<target>.json`).
+(`reports/zone-e2e-latency-<target>.json`), and each router flow's callback gas
+(`reports/zone-e2e-router-flows-<target>.json`).
 
 Requires Node 22 and pnpm, plus Docker for `local`.
 
 ```bash
 forge build
 pnpm e2e:bridge             # from the repository root
-pnpm e2e:bridge -- --earn   # also the Earn spend steps, against a local e2e-moderato stack
+pnpm e2e:bridge -- --earn   # also the Earn spend steps and every router flow, on a local e2e-moderato stack
 ```
 
 Moderato uses the test program recorded in `e2e/bridge/targets/moderato.json` and reads
