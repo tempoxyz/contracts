@@ -10,9 +10,9 @@ libs = ["lib", "vendor"]
 allow_paths = ["../earn", "../zone-router"]
 # Real Tempo precompiles (TIP-20, AccountKeychain, TIP-403, ...) in the test EVM.
 hardfork = "tempo:T8"
-# No pinned solc: the card contracts compile with 0.8.36, and the vendored Rain contracts, whose
-# exact pragma is 0.8.17, with the compiler they were verified with.
-auto_detect_solc = true
+# The vendored Rain contracts (exact pragma 0.8.17) are not built here: script/rain/foundry.toml builds
+# them with Rain's own settings into test/fixtures/rain.json.
+solc_version = "0.8.36"
 via_ir = true
 optimizer = true
 optimizer_runs = 200
