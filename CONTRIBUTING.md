@@ -50,8 +50,7 @@ The [test map](docs/development/README.md#test-map) shows where existing coverag
 
 Pull requests run the secretless verification, security scan, and local end-to-end workflows
 described in [continuous integration](docs/development/README.md#continuous-integration), and a pull
-request from a fork can pass every required check. A fork gets no preview deployment, and a change
-to `earn/test/fixtures/propamm/` from a fork fails CI until a maintainer re-verifies it from a branch in
+request from a fork can pass every required check. A change to `earn/test/fixtures/propamm/` from a fork fails CI until a maintainer re-verifies it from a branch in
 this repository.
 
 ## Commits and pull requests

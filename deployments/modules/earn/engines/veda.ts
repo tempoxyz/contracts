@@ -6,16 +6,15 @@ import { defineEngine, type PeripheryContract } from './engine.js'
 import { inspectVedaEngine, readVedaStackPeriphery } from './veda-inspection.js'
 
 /**
- * The Veda contracts a stack records beside the engine and BoringVault, in display order. A profile
- * stack derives all but the liquidity buffer from what the engine reports through
- * `inspectVedaPeriphery`; only a hand-authored catalog stack records a liquidity buffer.
+ * The Veda contracts a stack records beside the engine and BoringVault, in record order. A profile
+ * stack derives them from what the engine reports through `inspectVedaPeriphery`.
  */
 const vedaPeripheryContracts = [
-  { name: 'teller', label: 'Teller' },
-  { name: 'accountant', label: 'Accountant' },
-  { name: 'queue', label: 'Queue', optional: true },
-  { name: 'peripheryRegistry', label: 'periphery registry' },
-  { name: 'rolesAuthority', label: 'RolesAuthority' },
+  { name: 'teller' },
+  { name: 'accountant' },
+  { name: 'queue', optional: true },
+  { name: 'peripheryRegistry' },
+  { name: 'rolesAuthority' },
 ] as const satisfies readonly PeripheryContract[]
 
 type VedaPeripheryContract = (typeof vedaPeripheryContracts)[number]
@@ -54,7 +53,6 @@ export const veda = defineEngine({
   engineContract: 'VedaEngine',
   engineSource: 'src/engines/veda/VedaEngine.sol',
   venueLabel: 'BoringVault',
-  venueDetail: 'Illustrative Veda contract set',
   periphery: vedaPeripheryContracts,
   exitSolver: 'VedaForwardingSolver',
   capabilities: {

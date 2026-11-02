@@ -6,8 +6,6 @@ type ReadClient = Pick<PublicClient, 'readContract'>
 export type PeripheryContract = {
   /** Key in `DeploymentContracts.periphery`. */
   name: string
-  /** Display name, prefixed with the engine label in UI copy. */
-  label: string
   /** The contract may be absent from a stack, e.g. an inactive Veda Queue. */
   optional?: true
 }
@@ -24,13 +22,13 @@ export type EngineReadiness = {
 }
 
 /**
- * Everything tooling, localnet, E2E, and the app know about one engine kind, so they look it up
+ * Everything tooling, localnet, and E2E know about one engine kind, so they look it up
  * instead of branching on the kind. Each kind is one `defineEngine` module in this directory,
- * registered once in `index.ts`. Reads use only `viem` and generated ABIs, so the browser entry can
- * import every engine.
+ * registered once in `index.ts`. Reads use only `viem` and generated ABIs, so the browser-safe entry
+ * can import every engine.
  */
 export type Engine = {
-  /** Short product name, e.g. in UI copy. */
+  /** Short product name, used in logs and errors. */
   label: string
   /** The Earn engine contract. */
   engineContract: string
@@ -38,11 +36,9 @@ export type Engine = {
   engineSource: string
   /** The venue the engine holds shares of. */
   venueLabel: string
-  /** One-line description of the venue, e.g. in the app topology. */
-  venueDetail: string
   /**
-   * Engine-specific contracts a stack records in `contracts.periphery`, in display order. Catalog
-   * parsing accepts exactly these names; the engine's own module reads them through a typed view.
+   * Engine-specific contracts a stack records in `contracts.periphery`, in record order. The
+   * engine's own module reads them through a typed view.
    */
   periphery: readonly PeripheryContract[]
   /** Contract that solves queued exits, when the engine queues them. */

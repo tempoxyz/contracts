@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report incorrect behavior in the contracts, tooling, or app
+about: Report incorrect behavior in the contracts or tooling
 labels: bug
 ---
 

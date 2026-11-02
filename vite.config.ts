@@ -2,7 +2,6 @@ import type { ViteUserConfig } from 'vp'
 
 const ignorePatterns = [
   'dist/',
-  'worker-configuration.d.ts',
   '**/.local/',
   '**/.results/',
   'deployments/abis/generated.ts',

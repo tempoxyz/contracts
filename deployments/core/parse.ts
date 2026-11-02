@@ -1,8 +1,8 @@
 import { getAddress, isAddress, zeroAddress, type Address, type Hex } from 'viem'
 
 /**
- * Strict parsing primitives shared by every authored and generated schema: profiles, rewards,
- * records, and the public catalog. Each rejects with `${path} ...` so errors name the exact field.
+ * Strict parsing primitives shared by every authored and generated schema: profiles, rewards, and
+ * records. Each rejects with `${path} ...` so errors name the exact field.
  */
 
 export function object(value: unknown, path: string): Record<string, unknown> {
@@ -50,20 +50,6 @@ export function address(value: unknown, path: string): Address {
   if (typeof value !== 'string' || !isAddress(value) || getAddress(value) === zeroAddress)
     throw new Error(`${path} must be a nonzero address`)
   return getAddress(value)
-}
-
-/** A nonzero address published exactly in checksum form. */
-export function checksummedAddress(value: unknown, path: string): Address {
-  const raw = nonemptyString(value, path)
-  let normalized: Address
-  try {
-    normalized = getAddress(raw)
-  } catch {
-    throw new Error(`${path} must be an address`)
-  }
-  if (normalized !== raw) throw new Error(`${path} must be checksummed`)
-  if (normalized === zeroAddress) throw new Error(`${path} must not be the zero address`)
-  return normalized
 }
 
 export function nonnegativeInteger(value: unknown, path: string): number {

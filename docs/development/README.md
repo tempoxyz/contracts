@@ -188,10 +188,10 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC
   token, and a read-only `GITHUB_TOKEN`, and can pass every required check. Without an OIDC token,
   each job's secure runner starts Harden Runner with the inline audit egress policy instead of the
-  StepSecurity policy store and installs no package firewall, with a warning annotation. Three
+  StepSecurity policy store and installs no package firewall, with a warning annotation. Two
   things do not run for a fork: the PropAMM fixture rebuild (the job passes when
   `test/fixtures/propamm/` is unchanged and fails otherwise, until a maintainer re-verifies the
-  change from a branch in this repository), the preview deployment, and the label- and
+  change from a branch in this repository) and the label- and
   push-triggered Cyclops audit, which a maintainer starts with a `cyclops audit` comment.
 - **Zones compatibility.** The job checks out Tempo `main` and builds with the Foundry nightly
   Tempo's own CI pins. A failed run on `main` publishes a `zones_compatibility_failure` remediation

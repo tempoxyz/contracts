@@ -125,7 +125,7 @@ It does not own a hosted E2E fixture lifecycle.
 - `network.explorerUrl` is an optional explorer base URL; consumers append the resource route,
   such as `/receipt/<hash>` or `/address/<address>`, and show no link when it is absent (local
   stacks have none).
-- Default helpers are lookup primitives and do not select an app environment. Consumers must honor
+- Default helpers are lookup primitives and do not select an environment. Consumers must honor
   deployment and mode availability rather than attempt zero-address writes.
 
 Per-package commands are in [CONTRIBUTING.md](../CONTRIBUTING.md#work-on-one-area); `check` also

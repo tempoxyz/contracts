@@ -28,7 +28,7 @@ export function createDeploymentPublicClient(
 
 export type DeploymentPublicClient = ReturnType<typeof createDeploymentPublicClient>
 
-/** Matches the app Worker's trusted API-key path; direct RPCs retain caller-token isolation. */
+/** Uses Tempo API's trusted API-key path; direct RPCs retain caller-token isolation. */
 function createZoneTransport(url: string, options: Transport.HttpConfig) {
   const headers = new Headers(options.fetchOptions?.headers)
   if (!headers.get('tempo-api-key')?.trim()) return Transport.http(url, options)
