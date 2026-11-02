@@ -23,8 +23,10 @@ card's spending power. That is where a Tempo spend lands.
 [`RainCardProgram`](../../cards/src/providers/rain/RainCardProgram.sol) authorizes a destination when
 it is a collateral contract Rain's factory created and either:
 
-- **the payer owns it** (Rain-managed, public spend): the cardholder's account funds its own
-  collateral. Another cardholder's collateral is refused, and so is any collateral when the payer is
+- **the payer owns it and is one of its admins** (Rain-managed, public spend): the cardholder's account
+  funds its own collateral. Another cardholder's collateral is refused, including one whose ownership
+  was handed to the payer without admin rights (Rain's `transferOwnership` leaves the admins as they
+  were), and so is any collateral when the payer is
   one of the program's settlers (it reports the adapter as its `PROGRAM`), even one a cardholder has
   made the settler own; or
 - **it is one of the program's pooled collateral contracts** (partner-managed, and every private

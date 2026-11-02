@@ -10,8 +10,8 @@ import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 ///         Rain's contracts are used as they are (vendor/rain); nothing here asks them to change.
 ///         Specified in docs/cards/rain.md.
 /// @dev A destination is authorized when it is a collateral contract Rain's factory created and either:
-///      - the payer owns it and is not one of this program's settlers: a public spend into the
-///        cardholder's own collateral (Rain-managed); or
+///      - the payer owns and administers it and is not one of this program's settlers: a public spend
+///        into the cardholder's own collateral (Rain-managed); or
 ///      - it is one of the program's pooled collateral contracts: a private spend, which must not name
 ///        the cardholder, or a partner-managed program.
 ///      Rain's factory records every collateral contract it creates in its public `collateralProxies`
@@ -69,7 +69,10 @@ contract RainCardProgram is ICardProgram {
         if (isProgramCollateral[destination]) return true;
         // A settler of this program pays private spends, which must reach only pooled collateral, even
         // one a cardholder has made the owner of their own collateral.
-        return !_isProgramSettler(payer) && _owner(destination) == payer;
+        // Ownership moves with a plain `transferOwnership` that leaves the admins as they were, so the payer
+        // must also administer the collateral: a collateral handed over without its admin rights stays the
+        // previous holder's, and no payer can fund it.
+        return !_isProgramSettler(payer) && _owner(destination) == payer && _isAdmin(destination, payer);
     }
 
     /// @notice Whether `collateral` is the collateral contract Rain's factory recorded at `index` of its
@@ -99,6 +102,12 @@ contract RainCardProgram is ICardProgram {
         if (payer.code.length == 0) return false;
         (bool ok, bytes memory ret) = payer.staticcall(abi.encodeWithSignature("PROGRAM()"));
         return ok && ret.length >= 32 && abi.decode(ret, (address)) == address(this);
+    }
+
+    /// @dev Whether `account` is an admin of `collateral`, the role Rain's controller lets withdraw it.
+    function _isAdmin(address collateral, address account) private view returns (bool) {
+        (bool ok, bytes memory ret) = collateral.staticcall(abi.encodeCall(IRainCollateral.isAdmin, (account)));
+        return ok && ret.length >= 32 && abi.decode(ret, (bool));
     }
 
     /// @dev The collateral's owner, or zero when it cannot report one.

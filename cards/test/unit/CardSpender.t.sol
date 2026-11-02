@@ -68,6 +68,26 @@ contract CardSpenderTest is CardsEnv {
         spender.spend(s);
     }
 
+    /// @dev Alice hands Bob ownership of her collateral, which keeps her as its only admin: Bob's spends
+    ///      cannot fund it until he also administers it, at which point Rain lets him withdraw it.
+    function test_revert_transferredCollateralWithoutAdminRights() public {
+        vm.prank(alice);
+        (bool ok,) = aliceCollateral.call(abi.encodeWithSignature("transferOwnership(address)", bob));
+        assertTrue(ok);
+        CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 1e6, "transferred");
+        vm.prank(bob);
+        usd.approve(address(spender), 1e6);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, aliceCollateral));
+        spender.spend(s);
+
+        vm.prank(bob);
+        (ok,) = aliceCollateral.call(abi.encodeWithSignature("addAdmin(address)", bob));
+        assertTrue(ok);
+        assertTrue(program.isAuthorizedDestination(bob, aliceCollateral, address(usd), aliceIndex));
+        assertFalse(program.isAuthorizedDestination(alice, aliceCollateral, address(usd), aliceIndex));
+    }
+
     function test_publicSpend_programCollateral_isAuthorizedForAnyPayer() public {
         _publicSpend(alice, _stableSpend(programCollateral, programCollateralIndex, 5e6, "pooled"));
         assertEq(usd.balanceOf(programCollateral), 5e6);

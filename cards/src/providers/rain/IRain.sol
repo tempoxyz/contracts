@@ -12,4 +12,6 @@ interface IRainCollateral {
     function factory() external view returns (address);
 
     function owner() external view returns (address);
+
+    function isAdmin(address account) external view returns (bool);
 }
