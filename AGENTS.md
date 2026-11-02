@@ -6,8 +6,8 @@ Foundry project with its own build settings, dependencies, and guide:
 - [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues.
 - [zone-router/](zone-router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and
   spends, and the settlers a spend pays through (`SendSettler`, `BridgeSettler`).
-- [bridge/](bridge/AGENTS.md): Tempo's Bridge integration: Bridge's card contracts vendored as they
-  are, the "TS" handler (`SpenderTempoSpend`), the card E2E harness, and Bridge's deploy scripts.
+- [bridge/](bridge/AGENTS.md): Tempo's card integration: the card spender contracts vendored as they
+  are, the "TS" handler (`SpenderTempoSpend`), the card E2E harness, and the issuer's deploy scripts.
 
 Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with module
 folders for Earn and the Zone router) and its `profiles/`, the disposable Tempo L1 and Zone
@@ -24,7 +24,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
 | --------------------------------------------------------------- | ---------------------------------------------- |
 | Tempo Earn, including its app, deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)               |
 | Zone router and its settlers                                    | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
-| Bridge integration (Bridge card spend)                          | [bridge/AGENTS.md](bridge/AGENTS.md)           |
+| Card integration (card spend)                                   | [bridge/AGENTS.md](bridge/AGENTS.md)           |
 | Integration cases and hosted environments                       | [e2e/AGENTS.md](e2e/AGENTS.md)                 |
 | Disposable chain lifecycle                                      | [localnet/AGENTS.md](localnet/AGENTS.md)       |
 | CI and repository automation                                    | [.github/AGENTS.md](.github/AGENTS.md)         |
@@ -40,7 +40,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
   interfaces, and `bridge/` imports both. Settlers are a Zone router concept and live in
   `zone-router/src/settlers/`; a settler may hold a minimal interface for the system it pays into,
   never vendored code.
-- Integrator-specific code (Bridge's vendored contracts, the "TS" handler, card logic) stays in
+- Integrator-specific code (the issuer's vendored contracts, the "TS" handler, card logic) stays in
   `bridge/`; `earn/` stays integrator-agnostic.
 - Secrets and funded private keys stay out of source, logs, and generated records.
 

@@ -1,8 +1,8 @@
 # Deploying
 
-The Bridge integration deploys into Bridge's existing `SpenderFactory`: the "TS" handler, each
+The card integration deploys into the issuer's existing `SpenderFactory`: the "TS" handler, each
 program's `BridgeSettler` and the program's Zone router. None has an owner, so nothing changes after
-deployment. The handler lands at a deterministic address, so Bridge can deploy it with the scripts
+deployment. The handler lands at a deterministic address, so the issuer can deploy it with the scripts
 below or Tempo with the [Bridge Release workflow](#deploying-from-ci), and either lands on the same
 contract. A program's `BridgeSettler` is a [Zone router settler](../zone-router/zone-router.md#bridgesettler):
 its hosted release is the Zone router's ([`bridgeSettler`](../deployment/deployment.md#zone-router-releases)),
@@ -59,7 +59,7 @@ the existing handler, and once that one is registered the admin call changes not
 
 ## 2. Turn it on for a program
 
-The program exists already: Bridge's manager created it with `createSpender(spenderId,
+The program exists already: the issuer's manager created it with `createSpender(spenderId,
 destinations)`, with the settlement wallet as a destination. `TS` must be
 registered, that is the admin's `setSpenderHandler` has executed.
 
@@ -182,11 +182,11 @@ settler: `settle` is permissionless and counts whatever it holds as the caller's
 spend a seed there.
 
 The settlement wallet must also hold a balance of each token it receives (the stablecoin, and the
-vault's asset for Earn) before the first spend, and Bridge must never sweep it to zero: a spend to a
+vault's asset for Earn) before the first spend, and the issuer must never sweep it to zero: a spend to a
 wallet with no balance creates that slot, about 250k more gas. Send it 1 unit of each, or leave 1 unit
 after every sweep.
 
-Bridge's TF handler, on the same clone, clears that vault approval after each of its own Earn pulls,
+The TF handler, on the same clone, clears that vault approval after each of its own Earn pulls,
 so while TF pulls from the same vault the next private Earn spend sets it again, about 250k more gas.
 
 Then request callback gas per spend type rather than one figure, sized for the worst case of a
@@ -194,14 +194,14 @@ prepared program: about 0.6M for a stablecoin spend (measured 0.44M) and 1.4M fo
 (measured 0.98M, plus about 250k when TF cleared the vault approval). That is what fits 4 and 3 spends
 into a default withdrawal batch ([design](design.md#callback-gas)). The figures hold only once all of
 step 5 is done, the settlement wallet's balance included: a callback that runs out of gas bounces
-after Bridge approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
+after the issuer approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
 measure the program's own vault first.
 
 ## Deploying from CI
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
 deploys the handler (`tempoSpend`) from `main`, with the same script and so at the same
-deterministic address as a deploy by Bridge. Choose the network (Moderato or mainnet), Bridge's
+deterministic address as a deploy by the issuer. Choose the network (Moderato or mainnet), the issuer's
 factory, and whether to broadcast; without broadcast Forge only simulates. It runs
 [`script/deploy/release.sh`](../../bridge/script/deploy/release.sh), which:
 
@@ -213,9 +213,9 @@ factory, and whether to broadcast; without broadcast Forge only simulates. It ru
   including a contract that already existed, and fails if the verifier has no source match.
 
 The job summary lists the address, the transaction and the source match, and the admin and
-governance calls above for Bridge to submit; the `bridge-release-<network>-<contract>-<attempt>`
+governance calls above for the issuer to submit; the `bridge-release-<network>-<contract>-<attempt>`
 artifact holds the result and Forge's broadcast files. The workflow never submits those calls:
-registering and gating stay with Bridge's roles. A program's `BridgeSettler` releases through the
+registering and gating stay with the issuer's roles. A program's `BridgeSettler` releases through the
 [Zone Router Release](../deployment/deployment.md#zone-router-releases) workflow instead, and
 `release.sh` refuses it.
 

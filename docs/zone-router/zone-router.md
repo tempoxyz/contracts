@@ -4,9 +4,9 @@
 deposits and redemptions, and spends through settlers fixed at deployment.
 [`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it, and the
 [settlers](#settlers) in [`src/settlers/`](../../zone-router/src/settlers/) pay a spend: `SendSettler`
-to a public address, `BridgeSettler` through a Bridge card program. All live in the
+to a public address, `BridgeSettler` through a card program. All live in the
 [`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
-interfaces. Card spend through it is in the [Bridge integration's design](../bridge/design.md).
+interfaces. Card spend through it is in the [card integration's design](../bridge/design.md).
 
 `SingleZoneEarnRouter` ([Earn's zone router](../earn/modules/zone-router.md)) is the router Earn runs in
 production today. `ZoneRouter`'s Earn ops accept its callback data byte for byte and report the same
@@ -61,7 +61,7 @@ contracts:
 
 1. `deploy-zone-router-factory`, unless the profile names a factory;
 2. `deploy-zone-router`: `factory.deploy(mode)`, then a check of `isRouter`, `predict` and every
-   immutable against the mode. When anyone, such as Bridge's deploy script, already deployed the mode
+   immutable against the mode. When anyone, such as the issuer's deploy script, already deployed the mode
    through the factory, the step adopts that router and records its `RouterDeployed` transaction,
    which is also what it records after its own run, so a router someone created in between keeps
    its real creation transaction;
@@ -148,7 +148,7 @@ callback.
 | Settler         | Pays                                                           | `settlerData`       | Binding fixed at deployment              |
 | --------------- | -------------------------------------------------------------- | ------------------- | ---------------------------------------- |
 | `SendSettler`   | A public address, in the withdrawn token or redeemed from Earn | `abi.encode(Send)`  | Optional vault, par pool and customer ID |
-| `BridgeSettler` | A Bridge card program's destination, through its clone         | `abi.encode(Spend)` | Bridge's factory and the program's ID    |
+| `BridgeSettler` | A card program's destination, through its clone                | `abi.encode(Spend)` | The spender factory and the program's ID |
 
 Both are released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) at a
 deterministic address and listed in a profile's `zoneRouter.settlers`.
@@ -197,12 +197,12 @@ profile's `zoneRouter.settlers`.
 ### `BridgeSettler`
 
 [`BridgeSettler`](../../zone-router/src/settlers/BridgeSettler.sol) settles a card spend through one
-Bridge card program: one deployment per program (`SPENDER_ID`) of one Bridge `SpenderFactory`
+card program: one deployment per program (`SPENDER_ID`) of one issuer `SpenderFactory`
 (`FACTORY`), both fixed at deployment, so one program's approval can never pay through another's.
-Its `settlerData` is `abi.encode(Spend)`, the struct Bridge's "TS" handler
+Its `settlerData` is `abi.encode(Spend)`, the struct the issuer's "TS" handler
 (`SpenderTempoSpend`, in [`bridge/`](../../bridge/README.md)) settles for public spend too.
 [`settlers/bridge/IBridgeSpender.sol`](../../zone-router/src/settlers/bridge/IBridgeSpender.sol) holds
-that struct, its only definition, and the two Bridge calls the settler makes: the factory's
+that struct, its only definition, and the two issuer calls the settler makes: the factory's
 `getSpenderAddress` and the clone's `publicCall`. A `settle`:
 
 1. requires the `Spend` to be for its program (`WrongProgram`) and `0 < maxInput <= type(uint128).max`
@@ -226,8 +226,8 @@ the Portal; between spends the settler holds nothing the clone could take, and t
 Tokens sent to it outside a `settle` call are not rescued: a later `settle` caller can
 spend them, only to a destination the program authorizes, and gets back what the spend did not use.
 Deploy one per program with the [Zone Router Release `bridgeSettler`](../deployment/deployment.md#zone-router-releases),
-after Bridge has created the program, and list it in the card mode's `settlers`. The flows, Bridge's
-governance and the decisions behind it are in the [Bridge integration's design](../bridge/design.md).
+after the issuer has created the program, and list it in the card mode's `settlers`. The flows, the issuer's
+governance and the decisions behind it are in the [card integration's design](../bridge/design.md).
 
 ## Invariants
 

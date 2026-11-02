@@ -5,8 +5,8 @@ redemptions, and spends through settlers fixed at deployment. The design, its in
 settler are in [docs/zone-router/zone-router.md](../docs/zone-router/zone-router.md).
 
 This is a separate Foundry project beside [Earn](../earn/README.md) and the
-[Bridge integration](../bridge/README.md), compiled with solc. It imports Earn's interfaces from
-[`earn/src/`](../earn/src/) rather than a copy. Bridge's "TS" handler in `bridge/` imports the
+[card integration](../bridge/README.md), compiled with solc. It imports Earn's interfaces from
+[`earn/src/`](../earn/src/) rather than a copy. The issuer's "TS" handler in `bridge/` imports the
 `Spend` struct from here, so the handler and `BridgeSettler` encode the same spend.
 
 ## What is here
@@ -21,9 +21,9 @@ This is a separate Foundry project beside [Earn](../earn/README.md) and the
   - [`SendSettler`](src/settlers/SendSettler.sol) pays a public address in the withdrawn token, in
     the vault asset redeemed from EarnShare, or, for the one vault it is bound to at deployment, in
     the stablecoin that vault's asset converts into at par.
-  - [`BridgeSettler`](src/settlers/BridgeSettler.sol) settles a card spend through one Bridge card
+  - [`BridgeSettler`](src/settlers/BridgeSettler.sol) settles a card spend through one card
     program's spender clone and its "TS" handler. [`settlers/bridge/`](src/settlers/bridge/IBridgeSpender.sol)
-    holds the `Spend` struct and the two Bridge calls it makes.
+    holds the `Spend` struct and the two issuer calls it makes.
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
   [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the

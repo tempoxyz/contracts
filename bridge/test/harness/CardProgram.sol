@@ -3,9 +3,9 @@ pragma solidity ^0.8.36;
 
 import { PullOutcome, SpendRail } from "./SpendRail.sol";
 
-/// @notice Model of a Stripe Issuing card program run by Bridge on top of a rail.
+/// @notice Model of a card program run by the card issuer on top of a rail.
 /// @dev Mirrors what monorail does today for noncustodial just-in-time cards: every authorization
-///      pulls its hold (amount, MCC buffer and estimated fee) synchronously before Stripe answers;
+///      pulls its hold (amount, MCC buffer and estimated fee) synchronously before the processor answers;
 ///      a capture above the hold pulls the difference; the final capture, a reversal or an expiry
 ///      returns the unused hold; refunds and won disputes are credited back. When a pull fails
 ///      after the card was approved, the platform reserve settles with the network and the
@@ -149,7 +149,7 @@ abstract contract CardProgram is SpendRail {
         _credit(a.cardholder, amount);
     }
 
-    /// @notice Stripe resolves a cardholder dispute. A won dispute credits the cardholder.
+    /// @notice The processor resolves a cardholder dispute. A won dispute credits the cardholder.
     function _resolveDispute(uint256 id, uint256 amount, bool won) internal {
         Authorization storage a = auths[id];
         require(a.status == AuthStatus.Closed, "dispute before close");

@@ -122,7 +122,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
     /// @notice A spend naming a token other than the one withdrawn cannot pay from it.
     function test_spendInAnotherTokenBounces() public {
         Spend memory spend = _spend(10e6, settlement);
-        spend.token = address(_createToken("Deel USD", "DLUSD"));
+        spend.token = address(_createToken("Test USD", "TUSD"));
         _assertBouncesWith(
             10e6 + _change(),
             _callbackAsIs(spend),

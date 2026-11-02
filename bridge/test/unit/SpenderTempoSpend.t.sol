@@ -90,7 +90,7 @@ contract SpenderTempoSpendTest is TempoEnv {
     /// @notice Earn shares redeem into the vault's own asset, so the spend must settle in it.
     function test_spendFromEarnSettlesInTheVaultAsset() public {
         Spend memory s = _earn(10e6, 10e6, 0);
-        s.token = address(_createToken("Deel USD", "DLUSD"));
+        s.token = address(_createToken("Test USD", "TUSD"));
         _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.IncorrectAssetForVault.selector));
     }
 
@@ -382,7 +382,7 @@ contract SpenderTempoSpendTest is TempoEnv {
 
     /// @notice A vault whose asset is not `token` adds nothing to the stablecoin balance.
     function test_availableBalanceSkipsVaultInAnotherToken() public {
-        MockToken other = new MockToken("Deel USD", "DLUSD");
+        MockToken other = new MockToken("Test USD", "TUSD");
         other.mint(alice, 7e6);
         assertEq(_available(address(other), address(earnVault)), 7e6);
     }
