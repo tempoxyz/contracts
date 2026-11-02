@@ -95,6 +95,8 @@ const usd = (amount: bigint) => formatUnits(amount, 6)
 /** One flow's L1 settlement: whether the router's callback succeeded, its receipt and callback gas. */
 type Settlement = {
   ok: boolean
+  /** The outbox withdrawal fee, taken from the withdrawn token on top of the amount. */
+  fee: bigint
   logs: Log[]
   blockNumber: bigint
   callbackGas?: bigint
@@ -320,6 +322,7 @@ export async function routerFlows(
     const receipt = await l1Public.getTransactionReceipt({ hash: processed!.transactionHash })
     const settlement: Settlement = {
       ok: processed!.args.callbackSuccess === true,
+      fee,
       logs: receipt.logs,
       blockNumber: receipt.blockNumber,
     }
@@ -425,7 +428,7 @@ export async function routerFlows(
       'Earn deposit: EarnShare back in the Zone',
     )
     assert(
-      (await zoneBalance(r.privateAsset)) === privateBefore - amount,
+      (await zoneBalance(r.privateAsset)) === privateBefore - amount - s.fee,
       'Earn deposit: only the deposit left the Zone',
     )
     step(
@@ -499,7 +502,7 @@ export async function routerFlows(
     )
     await zoneSettles(
       r.privateAsset,
-      privateBefore - spend - depositFee,
+      privateBefore - spend - depositFee - s.fee,
       'stablecoin card spend: change back in the Zone',
     )
     step(
@@ -527,7 +530,7 @@ export async function routerFlows(
     )
     await zoneSettles(
       earn.earnShare,
-      sharesBefore - used - depositFee,
+      sharesBefore - used - depositFee - s.fee,
       'Earn card spend: unused shares back in the Zone',
     )
     step(
@@ -640,7 +643,8 @@ export async function routerFlows(
     assert(!bounced.ok, 'paused pool: the Earn deposit callback failed')
     await zoneSettles(
       r.privateAsset,
-      before - bouncebackFee,
+      // A failed callback bounces the whole amount back, so only the withdrawal fee is spent.
+      before - bounced.fee,
       'paused pool: the deposit bounced back into the Zone',
     )
     const s = await withdraw(
@@ -650,6 +654,12 @@ export async function routerFlows(
       'Card spend, pool paused',
     )
     assert(s.ok, 'paused pool: a stablecoin card spend still settles')
+    // The change must land before the closed-loop step reads its starting balance.
+    await zoneSettles(
+      r.privateAsset,
+      before - bounced.fee - spend - depositFee - s.fee,
+      'paused pool: the card spend change back in the Zone',
+    )
     await l1Write(r.poolOwner, { address: r.pool, abi: poolAbi, functionName: 'unpause' })
     step(
       26,
@@ -678,7 +688,7 @@ export async function routerFlows(
     assert(!exact.ok, 'closed loop: a spend that returns nothing bounces')
     await zoneSettles(
       r.privateAsset,
-      before - bouncebackFee,
+      before - exact.fee,
       'closed loop: the spend bounced back into the Zone',
     )
 
