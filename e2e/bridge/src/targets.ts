@@ -89,6 +89,8 @@ export type Prepared = {
   disposable: boolean
   /** A Tempo Earn vault the program allows and whose EarnShare the Zone has enabled, if any. */
   earn?: EarnTarget
+  /** A ZoneRouter with every op over that vault, where the run controls its pool and Zone. */
+  routerFlows?: RouterFlowsTarget
   /** Why the private steps cannot run on this Zone, each with the fix; empty when they can. */
   blocked: string[]
   l1Public: PublicClient
@@ -106,6 +108,24 @@ export type EarnTarget = {
   earnShare: Address
   /** Anyone can call its `fund(token, receiver, amount)` for the asset. */
   funder: Address
+}
+
+/**
+ * A ZoneRouter with Earn deposit and redeem of a private stablecoin that converts to the vault asset at
+ * par through a DirectPropAMM pool, and Spend through the program's BridgeSettler and a SendSettler,
+ * with the keys that administer its pool and Zone.
+ */
+export type RouterFlowsTarget = {
+  router: Address
+  sendSettler: Address
+  /** The private stablecoin: the pool's other token, enabled on the Zone. */
+  privateAsset: Address
+  pool: Address
+  /** The pool's owner, which pauses it and admits takers. */
+  poolOwner: PrivateKeyAccount
+  zoneAdmin: PrivateKeyAccount
+  /** The program destination that deposits refunds into the Zone. */
+  programWallet: PrivateKeyAccount
 }
 
 /** A Tempo chain: an L1, or a Zone with its parent L1 as `sourceId`. */
@@ -162,6 +182,12 @@ const FORGE_WITHHELD = [
   'REFUND_RECIPIENT',
   'PROGRAM_WALLET',
   'VAULTS',
+  'BRIDGE_SETTLER',
+  'EARN_VAULT',
+  'PRIVATE_ASSET',
+  'POOL',
+  'CUSTOMER_ID',
+  'SEND_CUSTOMER_ID',
   'OUT',
   'DEPLOYER_PK',
   'DEPLOYER_PRIVATE_KEY',
@@ -343,7 +369,8 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
   const cardholder = privateKeyToAccount(generatePrivateKey())
   const refundRecipient = privateKeyToAccount(generatePrivateKey()).address
   const settlement = privateKeyToAccount(generatePrivateKey()).address
-  const programWallet = privateKeyToAccount(generatePrivateKey()).address
+  const programWalletAccount = privateKeyToAccount(generatePrivateKey())
+  const programWallet = programWalletAccount.address
 
   const l1 = await Network.startL1(zoneAdmin.address)
   let zone: Network.Zone | undefined
@@ -357,6 +384,7 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
       zoneAdmin.address,
       privateKeyToAccount(deployerPk).address,
       cardholder.address,
+      programWallet,
       ...(options.earn
         ? [
             privateKeyToAccount(earnDeployerPk).address,
@@ -429,7 +457,7 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
       refundRecipient,
     })
     step(4, `Preflight: ${checks.length} checks ok, none todo`)
-    const earn = options.earn
+    const localStack = options.earn
       ? await localEarn(l1Public, l1Wallet, {
           l1,
           zone,
@@ -440,7 +468,25 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
           zoneAdminPk,
         })
       : undefined
+    const earn = localStack?.earn
     if (earn) step(4, `Earn: e2e-moderato stack, vault ${earn.vault}, EarnShare ${earn.earnShare}`)
+    const routerFlows = localStack
+      ? await deployRouterFlows(l1Public, l1Wallet, l1.rpcUrl, {
+          deployerPk,
+          earn: localStack.earn,
+          conversion: localStack.conversion,
+          poolOwner: privateKeyToAccount(earnDeployerPk),
+          program,
+          programWallet: programWalletAccount,
+          zoneAdmin,
+          zoneId: zone.zoneId,
+        })
+      : undefined
+    if (routerFlows)
+      step(
+        4,
+        `Every-op ZoneRouter ${routerFlows.router} with SendSettler ${routerFlows.sendSettler}, admitted on pool ${routerFlows.pool}`,
+      )
 
     const localZoneChain = zoneChain(zone.chainId, zone.rpcUrl, 'Local Tempo Zone', l1.chainId)
     const localZone = zone
@@ -458,6 +504,7 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
       refundRecipient,
       disposable: true,
       ...(earn ? { earn } : {}),
+      ...(routerFlows ? { routerFlows } : {}),
       blocked: [],
       l1Public,
       l1Wallet,
@@ -503,7 +550,7 @@ async function localEarn(
     earnEngineOwnerPk: Hex
     zoneAdminPk: Hex
   },
-): Promise<EarnTarget> {
+): Promise<{ earn: EarnTarget; conversion: { privateAsset: Address; pool: Address } }> {
   const { l1, zone } = inputs
   const deployer = privateKeyToAccount(inputs.earnDeployerPk)
   // localnet's lifecycle keeps receipts and resume state in <run directory>/broadcast, inside
@@ -553,7 +600,92 @@ async function localEarn(
     { DEPLOYER_PRIVATE_KEY: inputs.deployerPk },
   )
   if (!earn) throw new Error('the local Earn stack is not ready for the program')
-  return earn
+  return {
+    earn,
+    conversion: { privateAsset: state.alternateAsset, pool: state.earnRouterPool.pool },
+  }
+}
+
+const poolAdminAbi = parseAbi([
+  'function owner() view returns (address)',
+  'function setTakerAllowed(address taker, bool allowed)',
+  'function setRecipientAllowed(address recipient, bool allowed)',
+])
+
+/**
+ * Deploys a SendSettler and an every-op ZoneRouter over the local Earn stack through the program's
+ * router factory (script/ZoneE2ERouter.s.sol), and admits both on the pool as its owner.
+ */
+async function deployRouterFlows(
+  l1Public: PublicClient,
+  l1Wallet: (account: ViemAccount) => WalletClient,
+  rpcUrl: string,
+  inputs: {
+    deployerPk: Hex
+    earn: EarnTarget
+    conversion: { privateAsset: Address; pool: Address }
+    poolOwner: PrivateKeyAccount
+    program: Program
+    programWallet: PrivateKeyAccount
+    zoneAdmin: PrivateKeyAccount
+    zoneId: number
+  },
+): Promise<RouterFlowsTarget> {
+  const { conversion } = inputs
+  const out = `reports/zone-e2e-router-flows-${inputs.zoneId}.json`
+  execFileSync(
+    'forge',
+    ['script', 'script/ZoneE2ERouter.s.sol', '--rpc-url', rpcUrl, '--broadcast', '--slow'],
+    {
+      cwd: root,
+      stdio: 'ignore',
+      env: forgeEnv({
+        FOUNDRY_HARDFORK: await hardfork(l1Public),
+        DEPLOYER_PK: inputs.deployerPk,
+        ROUTER_FACTORY: inputs.program.routerFactory,
+        BRIDGE_SETTLER: inputs.program.settler,
+        ZONE_ID: String(inputs.zoneId),
+        EARN_VAULT: inputs.earn.vault,
+        PRIVATE_ASSET: conversion.privateAsset,
+        POOL: conversion.pool,
+        CUSTOMER_ID: keccak256(concat(['0x01', inputs.program.router])),
+        SEND_CUSTOMER_ID: keccak256(concat(['0x02', inputs.program.router])),
+        OUT: out,
+      }),
+    },
+  )
+  const { router, sendSettler } = JSON.parse(readFileSync(resolve(root, out), 'utf8')) as {
+    router: Address
+    sendSettler: Address
+  }
+  const owner = await l1Public.readContract({
+    address: conversion.pool,
+    abi: poolAdminAbi,
+    functionName: 'owner',
+  })
+  if (getAddress(owner) !== inputs.poolOwner.address)
+    throw new Error(`pool ${conversion.pool} is owned by ${owner}, not the Earn deployer`)
+  const admin = l1Wallet(inputs.poolOwner)
+  for (const account of [router, sendSettler]) {
+    for (const functionName of ['setTakerAllowed', 'setRecipientAllowed'] as const) {
+      await admin.writeContractSync({
+        address: conversion.pool,
+        abi: poolAdminAbi,
+        functionName,
+        args: [account, true],
+        feeToken: Network.address.pathUsd,
+      } as never)
+    }
+  }
+  return {
+    router,
+    sendSettler,
+    privateAsset: conversion.privateAsset,
+    pool: conversion.pool,
+    poolOwner: inputs.poolOwner,
+    zoneAdmin: inputs.zoneAdmin,
+    programWallet: inputs.programWallet,
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
