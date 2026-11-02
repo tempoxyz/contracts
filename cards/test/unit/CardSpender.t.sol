@@ -17,7 +17,7 @@ contract CardSpenderTest is CardsEnv {
     }
 
     function test_publicSpend_fromStable_fundsOwnCollateral() public {
-        CardSpend memory s = _stableSpend(aliceCollateral, aliceNonce, 42e6, "auth.1");
+        CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 42e6, "auth.1");
         vm.prank(alice);
         usd.approve(address(spender), 42e6);
         vm.expectEmit(address(spender));
@@ -35,7 +35,7 @@ contract CardSpenderTest is CardsEnv {
     function test_publicSpend_fromEarn_redeemsExactlyTheSpend() public {
         uint256 shares = _depositEarn(alice, 500e6);
         uint256 cost = earnVault.previewWithdraw(30e6);
-        CardSpend memory s = _earnSpend(aliceCollateral, aliceNonce, 30e6, 30e6, "auth.earn");
+        CardSpend memory s = _earnSpend(aliceCollateral, aliceIndex, 30e6, 30e6, "auth.earn");
         _publicSpend(alice, s);
         assertEq(usd.balanceOf(aliceCollateral), 30e6, "collateral funded in the vault asset");
         assertEq(earnShare.balanceOf(alice), shares - cost, "burned only what the spend cost");
@@ -45,7 +45,7 @@ contract CardSpenderTest is CardsEnv {
     function test_publicSpend_splitAcrossStableAndEarn() public {
         _depositEarn(alice, 500e6);
         uint256 stableBefore = usd.balanceOf(alice);
-        CardSpend memory s = _earnSpend(aliceCollateral, aliceNonce, 50e6, 20e6, "auth.split");
+        CardSpend memory s = _earnSpend(aliceCollateral, aliceIndex, 50e6, 20e6, "auth.split");
         _publicSpend(alice, s);
         assertEq(usd.balanceOf(aliceCollateral), 50e6);
         assertEq(stableBefore - usd.balanceOf(alice), 30e6);
@@ -60,7 +60,7 @@ contract CardSpenderTest is CardsEnv {
     }
 
     function test_revert_anotherCardholdersCollateral() public {
-        CardSpend memory s = _stableSpend(bobCollateral, bobNonce, 1e6, "steal");
+        CardSpend memory s = _stableSpend(bobCollateral, bobIndex, 1e6, "steal");
         vm.prank(alice);
         usd.approve(address(spender), 1e6);
         vm.prank(alice);
@@ -69,12 +69,12 @@ contract CardSpenderTest is CardsEnv {
     }
 
     function test_publicSpend_programCollateral_isAuthorizedForAnyPayer() public {
-        _publicSpend(alice, _stableSpend(programCollateral, programCollateralNonce, 5e6, "pooled"));
+        _publicSpend(alice, _stableSpend(programCollateral, programCollateralIndex, 5e6, "pooled"));
         assertEq(usd.balanceOf(programCollateral), 5e6);
     }
 
-    function test_revert_wrongNonce() public {
-        CardSpend memory s = _stableSpend(aliceCollateral, bobNonce, 1e6, "nonce");
+    function test_revert_wrongIndex() public {
+        CardSpend memory s = _stableSpend(aliceCollateral, bobIndex, 1e6, "index");
         vm.prank(alice);
         usd.approve(address(spender), 1e6);
         vm.prank(alice);
@@ -88,19 +88,26 @@ contract CardSpenderTest is CardsEnv {
         address fake = address(
             new BeaconProxy(rain.factory.getBeacon(), abi.encodeWithSignature("initialize(string,address)", "x", alice))
         );
-        // It reports Alice's own address as its factory; any nonce fails the CREATE check.
-        for (uint256 n = 1; n < 6; ++n) {
-            assertFalse(program.isAuthorizedDestination(alice, fake, address(usd), n));
+        // The factory never recorded it, at any index.
+        for (uint256 i; i < 6; ++i) {
+            assertFalse(program.isAuthorizedDestination(alice, fake, address(usd), i));
         }
     }
 
     function test_revert_beaconIsNotADestination() public view {
-        assertFalse(program.isAuthorizedDestination(alice, rain.factory.getBeacon(), address(usd), 1));
+        for (uint256 i; i < 4; ++i) {
+            assertFalse(program.isAuthorizedDestination(alice, rain.factory.getBeacon(), address(usd), i));
+        }
+    }
+
+    function test_revert_indexPastTheEnd() public view {
+        assertFalse(program.isAuthorizedDestination(alice, aliceCollateral, address(usd), 3));
+        assertFalse(program.isAuthorizedDestination(alice, aliceCollateral, address(usd), type(uint256).max));
     }
 
     function test_revert_tokenNotAccepted() public {
         otherUsd.mint(alice, 10e6);
-        CardSpend memory s = _stableSpend(aliceCollateral, aliceNonce, 1e6, "token");
+        CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 1e6, "token");
         s.token = address(otherUsd);
         vm.prank(alice);
         otherUsd.approve(address(spender), 1e6);
@@ -110,7 +117,7 @@ contract CardSpenderTest is CardsEnv {
     }
 
     function test_revert_wrongProgram() public {
-        CardSpend memory s = _stableSpend(aliceCollateral, aliceNonce, 1e6, "program");
+        CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 1e6, "program");
         s.program = address(0xBEEF);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, address(0xBEEF)));
@@ -118,7 +125,7 @@ contract CardSpenderTest is CardsEnv {
     }
 
     function test_revert_invalidAmounts() public {
-        CardSpend memory s = _stableSpend(aliceCollateral, aliceNonce, 0, "zero");
+        CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 0, "zero");
         vm.prank(alice);
         vm.expectRevert(CardSpender.InvalidAmount.selector);
         spender.spend(s);
@@ -132,7 +139,7 @@ contract CardSpenderTest is CardsEnv {
     function test_revert_vaultNotAllowed() public {
         CardSpender noEarn = new CardSpender(_deployProgram(address(0)));
         _depositEarn(alice, 100e6);
-        CardSpend memory s = _earnSpend(aliceCollateral, aliceNonce, 10e6, 10e6, "vault");
+        CardSpend memory s = _earnSpend(aliceCollateral, aliceIndex, 10e6, 10e6, "vault");
         s.program = address(noEarn.PROGRAM());
         vm.prank(alice);
         earnShare.approve(address(noEarn), type(uint256).max);
@@ -143,7 +150,7 @@ contract CardSpenderTest is CardsEnv {
 
     function test_revert_shareCostAboveQuote() public {
         _depositEarn(alice, 100e6);
-        CardSpend memory s = _earnSpend(aliceCollateral, aliceNonce, 10e6, 10e6, "quote");
+        CardSpend memory s = _earnSpend(aliceCollateral, aliceIndex, 10e6, 10e6, "quote");
         uint256 required = earnVault.previewWithdraw(10e6);
         s.maxShares = required - 1;
         vm.prank(alice);
@@ -154,7 +161,7 @@ contract CardSpenderTest is CardsEnv {
     }
 
     function test_revert_noApproval() public {
-        CardSpend memory s = _stableSpend(aliceCollateral, aliceNonce, 1e6, "approval");
+        CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 1e6, "approval");
         vm.prank(alice);
         vm.expectRevert();
         spender.spend(s);
@@ -165,7 +172,7 @@ contract CardSpenderTest is CardsEnv {
         amount = bound(amount, 1, 400e6);
         fromVault = bound(fromVault, 0, amount);
         uint256 total = usd.balanceOf(alice) + earnVault.previewRedeem(earnShare.balanceOf(alice));
-        CardSpend memory s = _earnSpend(aliceCollateral, aliceNonce, amount, fromVault, "fuzz");
+        CardSpend memory s = _earnSpend(aliceCollateral, aliceIndex, amount, fromVault, "fuzz");
         if (fromVault == 0) s.vault = address(0);
         _publicSpend(alice, s);
         assertEq(usd.balanceOf(aliceCollateral), amount, "collateral got exactly the spend");

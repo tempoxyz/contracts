@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { LibRLP } from "solady/utils/LibRLP.sol";
-
 import { ICardProgram } from "../../interfaces/ICardProgram.sol";
 import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 
@@ -16,11 +14,10 @@ import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 ///        cardholder's own collateral (Rain-managed); or
 ///      - it is one of the program's pooled collateral contracts: a private spend, which must not name
 ///        the cardholder, or a partner-managed program.
-///      Rain's factory keeps no lookup of its collateral contracts, so the spend names the factory nonce
-///      that created it (`hint`), and the address must be the factory's CREATE address for that nonce.
-///      Only the factory's code deploys from the factory's address, so that proves provenance without
-///      trusting the destination's code; the beacon, the one other contract the factory creates, is
-///      excluded. Tokens and vaults are fixed at deployment: there is no owner, and changing them means
+///      Rain's factory records every collateral contract it creates in its public `collateralProxies`
+///      array but keeps no address lookup, so the spend names the collateral's index in that array
+///      (`hint`): one read proves the factory created it, without trusting the destination's code.
+///      Tokens and vaults are fixed at deployment: there is no owner, and changing them means
 ///      deploying a new adapter, spender and settler.
 contract RainCardProgram is ICardProgram {
     /// @notice Rain's `RainCollateralFactory` (its proxy, where it is behind one).
@@ -62,7 +59,7 @@ contract RainCardProgram is ICardProgram {
     }
 
     /// @inheritdoc ICardProgram
-    /// @dev `hint` is the factory nonce whose CREATE address is `destination`.
+    /// @dev `hint` is `destination`'s index in the factory's `collateralProxies`.
     function isAuthorizedDestination(address payer, address destination, address token, uint256 hint)
         external
         view
@@ -75,13 +72,13 @@ contract RainCardProgram is ICardProgram {
         return !_isProgramSettler(payer) && _owner(destination) == payer;
     }
 
-    /// @notice Whether `collateral` is a collateral contract Rain's factory created with nonce `nonce`.
-    function isRainCollateral(address collateral, uint256 nonce) public view returns (bool) {
-        if (collateral == address(0) || collateral.code.length == 0) return false;
-        if (LibRLP.computeAddress(FACTORY, nonce) != collateral) return false;
-        if (collateral == IRainCollateralFactory(FACTORY).getBeacon()) return false;
-        (bool ok, bytes memory ret) = collateral.staticcall(abi.encodeCall(IRainCollateral.factory, ()));
-        return ok && ret.length >= 32 && abi.decode(ret, (address)) == FACTORY;
+    /// @notice Whether `collateral` is the collateral contract Rain's factory recorded at `index` of its
+    ///         `collateralProxies`. An index past the end reverts in the factory and reads as false.
+    function isRainCollateral(address collateral, uint256 index) public view returns (bool) {
+        if (collateral == address(0)) return false;
+        (bool ok, bytes memory ret) =
+            FACTORY.staticcall(abi.encodeCall(IRainCollateralFactory.collateralProxies, (index)));
+        return ok && ret.length >= 32 && abi.decode(ret, (address)) == collateral;
     }
 
     function tokens() external view returns (address[] memory) {

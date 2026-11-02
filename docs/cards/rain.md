@@ -11,7 +11,7 @@ Rain issues Visa cards backed by stablecoins in a collateral contract. Its contr
 
 | Contract                   | Role                                                                                                                                                                                                                                                                      |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RainCollateralFactory`    | Rain-owned and upgradeable. Creates each collateral contract as a beacon proxy, with CREATE, and keeps no lookup of them.                                                                                                                                                 |
+| `RainCollateralFactory`    | Rain-owned and upgradeable. Creates each collateral contract as a beacon proxy and appends it to its public `collateralProxies` array.                                                                                                                                    |
 | `RainCollateral`           | Holds a cardholder's or program's collateral. Its owner (the user it was created for) manages its admins. Only the controller moves its tokens.                                                                                                                           |
 | `RainCollateralController` | Moves collateral: `makePayment` to Rain's treasury and `withdrawAsset` by a collateral admin, each with an EIP-712 signature from Rain's `controllerAdmin`, bound to the caller, a per-collateral nonce and an expiry; `liquidateAsset` by the controller admin directly. |
 
@@ -31,13 +31,12 @@ it is a collateral contract Rain's factory created and either:
   spend): fixed at deployment. Rain or the partner credits each cardholder off chain. The settler owns
   no collateral, so a private spend can reach only a pooled one and never names the cardholder.
 
-Rain's factory keeps no lookup, so the spend's `destinationHint` is the factory nonce that created the
-collateral, and the adapter requires the destination to be the factory's CREATE address for that
-nonce. Only the factory's code deploys from its address, so this proves provenance without trusting the
-destination's code; the beacon, the one other contract the factory creates, is refused, and the
-destination must report the factory as its own. Rain's backend knows each collateral's nonce from the
-order of its `NewRainCollateral` events (the beacon took nonce 1). The adapter also fixes the accepted
-tokens and Earn vaults; it has no owner.
+Rain's factory records each collateral contract in its public `collateralProxies` array but keeps no
+address lookup, so the spend's `destinationHint` is the collateral's index in that array, and the
+adapter requires `collateralProxies(hint)` to be the destination. One read of Rain's factory proves
+provenance without trusting the destination's code. Rain's backend knows each index from the order of
+the factory's `NewRainCollateral` events. The adapter also fixes the accepted tokens and Earn vaults; it
+has no owner.
 
 ## Card lifecycle
 
@@ -83,7 +82,7 @@ committed collateral stays Rain's to settle; that is the guarantee its card prog
 
 - [`cards/test/unit/`](../../cards/test/unit/): public spends into a cardholder's collateral from
   stablecoin, Earn and both; refusals for another cardholder's collateral, a collateral the factory did
-  not create, the beacon, a wrong nonce, an unaccepted token and a disallowed vault; private settlement
+  not create, the beacon, a wrong or out-of-range index, an unaccepted token and a disallowed vault; private settlement
   into the pooled collateral and refusal of a cardholder's own; Rain's payment, refund, replay, expiry
   and liquidation against its real controller.
 - [`e2e/cards`](../../e2e/cards/) (`pnpm e2e:cards -- --earn`), on a disposable Tempo L1 and Zone:

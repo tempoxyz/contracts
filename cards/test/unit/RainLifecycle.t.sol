@@ -17,7 +17,7 @@ contract RainLifecycleTest is CardsEnv {
     }
 
     function test_spendThenRainSettlesToTreasury() public {
-        _publicSpend(alice, _stableSpend(aliceCollateral, aliceNonce, 60e6, "auth.1"));
+        _publicSpend(alice, _stableSpend(aliceCollateral, aliceIndex, 60e6, "auth.1"));
         uint256 expiresAt = block.timestamp + 30 minutes;
         bytes memory sig = _signPay(rainBackend, aliceCollateral, address(usd), 60e6, expiresAt, "pay.1");
         vm.prank(rainBackend);
@@ -30,8 +30,8 @@ contract RainLifecycleTest is CardsEnv {
     function test_pooledCollateral_settlesPrivateSpendsTogether() public {
         address router = makeAddr("zone-router");
         usd.mint(router, 100e6);
-        _routerSettle(router, address(usd), 10e6, _stableSpend(programCollateral, programCollateralNonce, 10e6, "p.1"));
-        _routerSettle(router, address(usd), 15e6, _stableSpend(programCollateral, programCollateralNonce, 15e6, "p.2"));
+        _routerSettle(router, address(usd), 10e6, _stableSpend(programCollateral, programCollateralIndex, 10e6, "p.1"));
+        _routerSettle(router, address(usd), 15e6, _stableSpend(programCollateral, programCollateralIndex, 15e6, "p.2"));
         uint256 expiresAt = block.timestamp + 1 hours;
         bytes memory sig = _signPay(rainBackend, programCollateral, address(usd), 25e6, expiresAt, "pay.pool");
         vm.prank(rainBackend);
@@ -40,7 +40,7 @@ contract RainLifecycleTest is CardsEnv {
     }
 
     function test_refund_rainSignedWithdrawalByCollateralAdmin() public {
-        _publicSpend(alice, _stableSpend(aliceCollateral, aliceNonce, 40e6, "auth.2"));
+        _publicSpend(alice, _stableSpend(aliceCollateral, aliceIndex, 40e6, "auth.2"));
         uint256 expiresAt = block.timestamp + 30 minutes;
         bytes memory sig = _signWithdraw(alice, aliceCollateral, address(usd), 15e6, alice, expiresAt, "wd.1");
         vm.prank(alice);
@@ -50,7 +50,7 @@ contract RainLifecycleTest is CardsEnv {
     }
 
     function test_revert_withdrawWithoutRainSignature() public {
-        _publicSpend(alice, _stableSpend(aliceCollateral, aliceNonce, 40e6, "auth.3"));
+        _publicSpend(alice, _stableSpend(aliceCollateral, aliceIndex, 40e6, "auth.3"));
         uint256 expiresAt = block.timestamp + 30 minutes;
         // Signed by Alice, not Rain's controller admin.
         bytes32 digest = keccak256("anything");
@@ -69,7 +69,7 @@ contract RainLifecycleTest is CardsEnv {
     }
 
     function test_revert_replayedOrExpiredSignature() public {
-        _publicSpend(alice, _stableSpend(aliceCollateral, aliceNonce, 40e6, "auth.4"));
+        _publicSpend(alice, _stableSpend(aliceCollateral, aliceIndex, 40e6, "auth.4"));
         uint256 expiresAt = block.timestamp + 30 minutes;
         bytes memory sig = _signPay(rainBackend, aliceCollateral, address(usd), 10e6, expiresAt, "pay");
         vm.prank(rainBackend);
@@ -86,7 +86,7 @@ contract RainLifecycleTest is CardsEnv {
     }
 
     function test_rainCanLiquidate() public {
-        _publicSpend(alice, _stableSpend(aliceCollateral, aliceNonce, 40e6, "auth.5"));
+        _publicSpend(alice, _stableSpend(aliceCollateral, aliceIndex, 40e6, "auth.5"));
         vm.prank(rainAdmin);
         rain.controller.liquidateAsset(aliceCollateral, _one(address(usd)), _one(40e6));
         assertEq(usd.balanceOf(rainTreasury), 40e6);
@@ -95,7 +95,7 @@ contract RainLifecycleTest is CardsEnv {
     /// @dev A spend from Earn lands in the collateral as the vault's asset, which Rain settles as usual.
     function test_spendFromEarn_thenRainSettles() public {
         _depositEarn(alice, 300e6);
-        CardSpend memory s = _earnSpend(aliceCollateral, aliceNonce, 25e6, 25e6, "auth.earn");
+        CardSpend memory s = _earnSpend(aliceCollateral, aliceIndex, 25e6, 25e6, "auth.earn");
         _publicSpend(alice, s);
         uint256 expiresAt = block.timestamp + 30 minutes;
         bytes memory sig = _signPay(rainBackend, aliceCollateral, address(usd), 25e6, expiresAt, "pay.earn");

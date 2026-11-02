@@ -44,9 +44,9 @@ type RainDeployment = {
   rainFactory: Address
   rainController: Address
   cardholderCollateral: Address
-  cardholderCollateralNonce: number
+  cardholderCollateralIndex: number
   programCollateral: Address
-  programCollateralNonce: number
+  programCollateralIndex: number
   program: Address
   spender: Address
   settler: Address
@@ -116,18 +116,18 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
         zoneToken: d.zoneToken,
         publicDestination: {
           address: d.cardholderCollateral,
-          hint: BigInt(d.cardholderCollateralNonce),
+          hint: BigInt(d.cardholderCollateralIndex),
           label: "the cardholder's Rain collateral",
         },
         privateDestination: {
           address: d.programCollateral,
-          hint: BigInt(d.programCollateralNonce),
+          hint: BigInt(d.programCollateralIndex),
           label: "the program's pooled Rain collateral",
         },
         // The cardholder's own collateral names them, and the settler (the payer) does not own it.
         refusedPrivateDestination: {
           address: d.cardholderCollateral,
-          hint: BigInt(d.cardholderCollateralNonce),
+          hint: BigInt(d.cardholderCollateralIndex),
           label: "the cardholder's own Rain collateral",
         },
         ...(d.earnVault && d.earnShare

@@ -22,6 +22,7 @@ import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { CardSettler } from "../src/CardSettler.sol";
 import { CardSpender } from "../src/CardSpender.sol";
+import { IRainCollateralFactory } from "../src/providers/rain/IRain.sol";
 import { RainCardProgram } from "../src/providers/rain/RainCardProgram.sol";
 import { RainStack } from "./RainStack.sol";
 
@@ -54,7 +55,6 @@ contract CardsE2EDeploy is Script, RainStack {
 
         vm.startBroadcast(deployerPk);
         Rain memory rain = _deployRain(vm.envAddress("RAIN_ADMIN"), vm.envAddress("RAIN_TREASURY"));
-        // The beacon took the factory's first CREATE nonce in `initialize`.
         address cardholderCollateral = rain.factory.createCollateralContract("cardholder", vm.envAddress("CARDHOLDER"));
         address programCollateral = rain.factory.createCollateralContract("program", vm.envAddress("PARTNER"));
 
@@ -83,16 +83,16 @@ contract CardsE2EDeploy is Script, RainStack {
         ITIP20(zoneToken).changeTransferPolicyId(ALWAYS_ALLOW_POLICY_ID);
         vm.stopBroadcast();
 
-        require(cardholderCollateral == vm.computeCreateAddress(address(rain.factory), 2), "cardholder nonce");
-        require(programCollateral == vm.computeCreateAddress(address(rain.factory), 3), "program nonce");
+        require(IRainCollateralFactory(address(rain.factory)).collateralProxies(0) == cardholderCollateral, "index 0");
+        require(IRainCollateralFactory(address(rain.factory)).collateralProxies(1) == programCollateral, "index 1");
 
         string memory key = "cards-e2e";
         vm.serializeAddress(key, "rainFactory", address(rain.factory));
         vm.serializeAddress(key, "rainController", address(rain.controller));
         vm.serializeAddress(key, "cardholderCollateral", cardholderCollateral);
-        vm.serializeUint(key, "cardholderCollateralNonce", 2);
+        vm.serializeUint(key, "cardholderCollateralIndex", 0);
         vm.serializeAddress(key, "programCollateral", programCollateral);
-        vm.serializeUint(key, "programCollateralNonce", 3);
+        vm.serializeUint(key, "programCollateralIndex", 1);
         vm.serializeAddress(key, "program", address(program));
         vm.serializeAddress(key, "spender", address(spender));
         vm.serializeAddress(key, "settler", address(settler));

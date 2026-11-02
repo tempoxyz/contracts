@@ -5,8 +5,8 @@ pragma solidity ^0.8.36;
 ///         cardholder's account) and private spend (paid by the program's `CardSettler` from a Zone
 ///         withdrawal), so both encode `abi.encode(CardSpend)` identically.
 /// @dev The provider-specific parts are the program, which decides what `destination` may be, and
-///      `destinationHint`, the evidence that program reads (Rain: the factory nonce that created the
-///      collateral contract). Kept to static words so a private spend's callback fits the Zone outbox's
+///      `destinationHint`, the evidence that program reads (Rain: the collateral's index in its factory's
+///      `collateralProxies`). Kept to static words so a private spend's callback fits the Zone outbox's
 ///      1,024 bytes.
 struct CardSpend {
     /// @dev The provider's `ICardProgram` adapter. Must be the spender's own program.

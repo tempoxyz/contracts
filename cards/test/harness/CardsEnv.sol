@@ -51,7 +51,7 @@ abstract contract CardsEnv is Test, RainStack {
     /// @dev The partner's account that owns the program's pooled collateral (partner-managed, private spend).
     address internal partner = makeAddr("rain.partner");
     address internal programCollateral;
-    uint256 internal programCollateralNonce;
+    uint256 internal programCollateralIndex;
 
     // The card program on the provider-agnostic contracts.
     RainCardProgram internal program;
@@ -62,12 +62,12 @@ abstract contract CardsEnv is Test, RainStack {
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
     address internal aliceCollateral;
-    uint256 internal aliceNonce;
+    uint256 internal aliceIndex;
     address internal bobCollateral;
-    uint256 internal bobNonce;
+    uint256 internal bobIndex;
 
-    /// @dev The factory's next CREATE nonce. The beacon took nonce 1 in `initialize`.
-    uint256 private _factoryNonce = 2;
+    /// @dev The index the factory's next collateral contract gets in `collateralProxies`.
+    uint256 private _nextIndex;
 
     function _deployWorld() internal {
         vm.warp(1_790_000_000);
@@ -77,9 +77,9 @@ abstract contract CardsEnv is Test, RainStack {
         rain = _deployRain(rainAdmin, rainTreasury);
         vm.label(address(rain.factory), "Rain.Factory");
         vm.label(address(rain.controller), "Rain.Controller");
-        (aliceCollateral, aliceNonce) = _createCollateral("alice", alice);
-        (bobCollateral, bobNonce) = _createCollateral("bob", bob);
-        (programCollateral, programCollateralNonce) = _createCollateral("program", partner);
+        (aliceCollateral, aliceIndex) = _createCollateral("alice", alice);
+        (bobCollateral, bobIndex) = _createCollateral("bob", bob);
+        (programCollateral, programCollateralIndex) = _createCollateral("program", partner);
         program = _deployProgram(address(earnVault));
         spender = new CardSpender(program);
         settler = new CardSettler(spender);
@@ -100,9 +100,8 @@ abstract contract CardsEnv is Test, RainStack {
 
     /// @dev Rain's factory owner (this contract) creates `user`'s collateral contract.
     function _createCollateral(string memory name, address user) internal returns (address collateral, uint256 n) {
-        n = _factoryNonce++;
+        n = _nextIndex++;
         collateral = rain.factory.createCollateralContract(name, user);
-        assertEq(collateral, vm.computeCreateAddress(address(rain.factory), n), "factory CREATE nonce");
         vm.label(collateral, string.concat("Rain.Collateral.", name));
     }
 
