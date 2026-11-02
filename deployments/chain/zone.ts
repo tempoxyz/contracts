@@ -44,31 +44,6 @@ type L1Client = Pick<PublicClient, 'readContract'>
 type ZoneClient = Pick<PublicClient, 'getChainId' | 'readContract'>
 
 /**
- * Discovers the live identity of one configured Zone from the canonical Factory and checks it
- * against the Zone's own RPC, which must also report an imported Tempo block.
- */
-export async function discoverZone(options: {
-  l1Client: L1Client
-  zoneClient: ZoneClient
-  zoneId: number
-}): Promise<ZoneIdentity> {
-  const [zone, chainId, inboxPortal] = await Promise.all([
-    registeredZone(options.l1Client, options.zoneId),
-    options.zoneClient.getChainId(),
-    readInboxPortal(options.zoneClient),
-    readZoneTempoBlock(options.zoneClient),
-  ])
-  requireInboxPortal(inboxPortal, zone.portal)
-  return {
-    id: zone.id,
-    chainId,
-    portal: zone.portal,
-    messenger: zone.messenger,
-    sequencers: zone.sequencers,
-  }
-}
-
-/**
  * Inspects the complete canonical callback graph of one Zone: the Factory registration, Messenger
  * binding, Portal, encryption key, and sequencer set, plus the Zone RPC when one is given. Protocol
  * precompiles intentionally have empty `eth_getCode`, so functional ABI reads are the only reliable
@@ -193,20 +168,6 @@ export function readZoneTempoBlock(zoneClient: Pick<PublicClient, 'readContract'
     abi: tempoStateAbi,
     functionName: 'tempoBlockNumber',
   })
-}
-
-/** Waits until the Zone has imported `tempoBlockNumber`, returning the imported block. */
-export async function waitForZoneTempoBlock(
-  zoneClient: Pick<PublicClient, 'readContract'>,
-  parameters: { tempoBlockNumber: bigint; pollingInterval: number; timeout: number },
-) {
-  const deadline = Date.now() + parameters.timeout
-  while (Date.now() < deadline) {
-    const current = await readZoneTempoBlock(zoneClient)
-    if (current >= parameters.tempoBlockNumber) return current
-    await new Promise((resolve) => setTimeout(resolve, parameters.pollingInterval))
-  }
-  throw new Error(`Timed out waiting for Zone Tempo block ${parameters.tempoBlockNumber}`)
 }
 
 /**

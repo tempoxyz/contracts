@@ -1013,7 +1013,7 @@ export async function hosted(
     blocked,
     l1Public,
     l1Wallet,
-    // Tempo API's key authorizes the whole route, as Tempo Earn's hosted runs and app Worker use it,
+    // Tempo API's key authorizes the whole route, as Tempo Earn's hosted runs use it,
     // so no per-account authorization token is signed.
     async zoneClient(account) {
       return walletClient(hostedZoneChain, zoneTransport, account)

@@ -10,19 +10,17 @@ task needs.
 
 Read the [repository guide](../AGENTS.md) first, then the guides along the target file's path.
 
-| Area                                               | Guide                                                        |
-| -------------------------------------------------- | ------------------------------------------------------------ |
-| Solidity implementation                            | [src/AGENTS.md](src/AGENTS.md)                               |
-| Contract tests                                     | [test/AGENTS.md](test/AGENTS.md)                             |
-| Application, app catalog, shared app configuration | [app/AGENTS.md](app/AGENTS.md)                               |
-| Browser and Worker                                 | [browser](app/src/AGENTS.md), [Worker](app/worker/AGENTS.md) |
-| Shared deployment tooling                          | [deployments/AGENTS.md](../deployments/AGENTS.md)            |
-| Deployment profiles and records                    | [profiles/AGENTS.md](../profiles/AGENTS.md)                  |
-| Foundry deployment scripts                         | [script/AGENTS.md](script/AGENTS.md)                         |
-| Earn's local fixture contracts and scripts         | [script/local/](script/local/), built with this project      |
-| Integration cases and hosted environments          | [e2e/AGENTS.md](../e2e/AGENTS.md)                            |
-| Disposable chain lifecycle                         | [localnet/AGENTS.md](../localnet/AGENTS.md)                  |
-| CI and repository automation                       | [.github/AGENTS.md](../.github/AGENTS.md)                    |
+| Area                                       | Guide                                                   |
+| ------------------------------------------ | ------------------------------------------------------- |
+| Solidity implementation                    | [src/AGENTS.md](src/AGENTS.md)                          |
+| Contract tests                             | [test/AGENTS.md](test/AGENTS.md)                        |
+| Shared deployment tooling                  | [deployments/AGENTS.md](../deployments/AGENTS.md)       |
+| Deployment profiles and records            | [profiles/AGENTS.md](../profiles/AGENTS.md)             |
+| Foundry deployment scripts                 | [script/AGENTS.md](script/AGENTS.md)                    |
+| Earn's local fixture contracts and scripts | [script/local/](script/local/), built with this project |
+| Integration cases and hosted environments  | [e2e/AGENTS.md](../e2e/AGENTS.md)                       |
+| Disposable chain lifecycle                 | [localnet/AGENTS.md](../localnet/AGENTS.md)             |
+| CI and repository automation               | [.github/AGENTS.md](../.github/AGENTS.md)               |
 
 For application onboarding, use [SKILL.md](../SKILL.md) and the
 [integrator guide](../docs/earn/integrations/agent-guide.md).
@@ -37,10 +35,10 @@ For application onboarding, use [SKILL.md](../SKILL.md) and the
   private conversion in the scoped router, and per-deployment configuration in deployment profiles.
 - Tempo API owns offchain reward policy and operations. This repository owns reward contracts,
   deployment surfaces, and contract-focused tests; do not recreate an offchain reward service.
-- Use `viem/tempo` for shared Earn client capabilities. Keep browser signing, Worker transport,
+- Use `viem/tempo` for shared Earn client capabilities. Keep
   Node-only deployment operations, and Solidity in their existing layers.
-- The shared lifecycle owns deployment reconciliation and verified records. App catalogs and the
-  stack each hosted E2E run builds from a profile are separate projections; never bypass
+- The shared lifecycle owns deployment reconciliation and verified records. The stack each
+  hosted E2E run builds from a profile is a separate projection; never bypass
   verification by editing outputs.
 - Never hand-write a contract ABI in TypeScript: import it from `@tempoxyz/contracts/abis` and regenerate
   after interface changes ([deployments README](../deployments/README.md#exports)).

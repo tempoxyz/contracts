@@ -22,8 +22,6 @@ test('generic code names no engine kind', () => {
       'e2e/modules',
       'localnet/src',
       ':!localnet/src/engines',
-      'earn/app/src',
-      'earn/app/worker',
       ':!*.test.ts',
     ],
     { cwd: root, encoding: 'utf8' },

@@ -1,8 +1,8 @@
 import { getAddress, isAddress, zeroAddress, type Address, type Hex } from 'viem'
 
 /**
- * Strict parsing primitives shared by every authored and generated schema: profiles, rewards,
- * records, and the public catalog. Each rejects with `${path} ...` so errors name the exact field.
+ * Strict parsing primitives shared by every authored and generated schema: profiles, rewards, and
+ * records. Each rejects with `${path} ...` so errors name the exact field.
  */
 
 export function object(value: unknown, path: string): Record<string, unknown> {
@@ -52,20 +52,6 @@ export function address(value: unknown, path: string): Address {
   return getAddress(value)
 }
 
-/** A nonzero address published exactly in checksum form. */
-export function checksummedAddress(value: unknown, path: string): Address {
-  const raw = nonemptyString(value, path)
-  let normalized: Address
-  try {
-    normalized = getAddress(raw)
-  } catch {
-    throw new Error(`${path} must be an address`)
-  }
-  if (normalized !== raw) throw new Error(`${path} must be checksummed`)
-  if (normalized === zeroAddress) throw new Error(`${path} must not be the zero address`)
-  return normalized
-}
-
 export function nonnegativeInteger(value: unknown, path: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0)
     throw new Error(`${path} must be a nonnegative integer`)
@@ -110,30 +96,6 @@ export function url(value: unknown, path: string): string {
     throw new Error(`${path} must not contain credentials`)
   }
   return result
-}
-
-/**
- * Parses a published stack mode's availability, requiring a reason exactly when it is unavailable;
- * a capability's mode adds its `requiredFields`.
- */
-export function parseMode(value: unknown, path: string, requiredFields: readonly string[] = []) {
-  const mode = object(value, path)
-  exactKeys(mode, path, ['availability', ...requiredFields], ['reason'])
-  const availability = literal(mode.availability, `${path}.availability`, [
-    'available',
-    'unverified',
-    'blocked',
-    'unavailable',
-  ] as const)
-  const reason =
-    mode.reason === undefined ? undefined : nonemptyString(mode.reason, `${path}.reason`)
-  if (availability === 'available' && reason !== undefined) {
-    throw new Error(`${path}.reason is not allowed when availability is available`)
-  }
-  if (availability !== 'available' && reason === undefined) {
-    throw new Error(`${path}.reason is required when availability is ${availability}`)
-  }
-  return { availability, reason }
 }
 
 /** Rejects a repeated value; parse addresses first so equal addresses compare equal. */

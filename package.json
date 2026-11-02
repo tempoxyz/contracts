@@ -6,11 +6,8 @@
     "./localnet": "./localnet/src/layer.ts"
   },
   "scripts": {
-    "build": "pnpm --filter app build",
-    "check": "pnpm --filter @tempoxyz/contracts check && pnpm --filter app check && vp lint --deny-warnings e2e localnet vite.config.ts && vp fmt --check '.github/**' README.md earn/README.md bridge/README.md zone-router/README.md SKILL.md SECURITY.md CONTRIBUTING.md 'docs/**' '**/AGENTS.md' '!**/lib/**' 'profiles/**' 'e2e/**' 'localnet/**' vite.config.ts package.json pnpm-workspace.yaml",
+    "check": "pnpm --filter @tempoxyz/contracts check && vp lint --deny-warnings e2e localnet vite.config.ts && vp fmt --check '.github/**' README.md earn/README.md bridge/README.md zone-router/README.md SKILL.md SECURITY.md CONTRIBUTING.md 'docs/**' '**/AGENTS.md' '!**/lib/**' 'profiles/**' 'e2e/**' 'localnet/**' vite.config.ts package.json pnpm-workspace.yaml",
     "check:types": "pnpm -r --parallel run '/^(typecheck|check:types)$/'",
-    "dev": "pnpm --filter app dev",
-    "dev:local": "pnpm --filter app dev:local",
     "earn": "pnpm --filter @tempoxyz/contracts exec tsx core/cli.ts",
     "factory-release": "pnpm --filter @tempoxyz/contracts exec tsx core/factory-release.ts",
     "zone-router-release": "pnpm --filter @tempoxyz/contracts exec tsx core/zone-router-release.ts",
@@ -24,11 +21,11 @@
     "e2e:local": "pnpm --filter e2e run local",
     "gas:snapshot": "cd earn && forge snapshot --check --match-path 'test/gas/*'",
     "gas:update": "cd earn && forge snapshot --match-path 'test/gas/*'",
-    "test": "pnpm --filter @tempoxyz/contracts test --run && pnpm --filter localnet test --run && pnpm --filter e2e test --run && pnpm --filter app test",
+    "test": "pnpm --filter @tempoxyz/contracts test --run && pnpm --filter localnet test --run && pnpm --filter e2e test --run",
     "test:contracts": "cd earn && FOUNDRY_PROFILE=ci forge test",
     "verify": "pnpm run '/^verify:/'",
     "verify:contracts": "cd earn && forge fmt --check && forge lint --deny warnings --out out/lint --cache-path cache/lint && forge build src script test && (cd ../zone-router && forge build src script) && pnpm --filter @tempoxyz/contracts abis:check && FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol && cd .. && pnpm test:contracts && pnpm gas:snapshot",
-    "verify:typescript": "pnpm check && pnpm check:types && pnpm test && pnpm build",
+    "verify:typescript": "pnpm check && pnpm check:types && pnpm test",
     "deps": "scripts/solidity-deps.sh earn zone-router bridge",
     "e2e:bridge": "pnpm --filter e2e run bridge"
   },

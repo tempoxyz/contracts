@@ -20,14 +20,14 @@ Before editing, read the guides along the target file's directory path, from roo
 guides add local rules; they do not repeat their parents. A session started at the repository root
 must explicitly discover descendant guides rather than assume they were loaded.
 
-| Area                                                            | Guide                                          |
-| --------------------------------------------------------------- | ---------------------------------------------- |
-| Tempo Earn, including its app, deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)               |
-| Zone router and its settlers                                    | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
-| Card integration (card spend)                                   | [bridge/AGENTS.md](bridge/AGENTS.md)           |
-| Integration cases and hosted environments                       | [e2e/AGENTS.md](e2e/AGENTS.md)                 |
-| Disposable chain lifecycle                                      | [localnet/AGENTS.md](localnet/AGENTS.md)       |
-| CI and repository automation                                    | [.github/AGENTS.md](.github/AGENTS.md)         |
+| Area                                                       | Guide                                          |
+| ---------------------------------------------------------- | ---------------------------------------------- |
+| Tempo Earn, including its deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)               |
+| Zone router and its settlers                               | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
+| Card integration (card spend)                              | [bridge/AGENTS.md](bridge/AGENTS.md)           |
+| Integration cases and hosted environments                  | [e2e/AGENTS.md](e2e/AGENTS.md)                 |
+| Disposable chain lifecycle                                 | [localnet/AGENTS.md](localnet/AGENTS.md)       |
+| CI and repository automation                               | [.github/AGENTS.md](.github/AGENTS.md)         |
 
 ## Keep projects separate
 

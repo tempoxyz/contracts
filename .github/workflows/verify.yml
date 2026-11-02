@@ -219,26 +219,6 @@ jobs:
       - name: Typecheck
         run: pnpm -r --workspace-concurrency=1 run '/^(typecheck|check:types)$/'
 
-  # Split from the checks above, which it used to follow in one ~240s job, the PR's longest.
-  build:
-    name: Build app and Worker
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup
-
-      - name: Build app and Worker
-        run: pnpm build
-
   javascript:
     name: TypeScript tests
     runs-on: ubuntu-latest
@@ -255,5 +235,5 @@ jobs:
 
       - uses: ./.github/actions/setup
 
-      - name: Test app, Worker, deployments, E2E, and localnet units
+      - name: Test deployments, E2E, and localnet units
         run: pnpm test

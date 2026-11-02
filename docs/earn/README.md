@@ -60,9 +60,6 @@ capability updates one page. The shared engine contract and the recipe for a new
 | Completed Sigma Prime audit reports, finding status, and post-audit coverage   | [Audits](audit/README.md)                                                                     |
 | Agent entry-point selection, access checks, and integration troubleshooting    | [Agent guide](integrations/agent-guide.md)                                                    |
 | Client integration, approvals, simulation, and revert handling                 | [Client integration](integrations/client.md)                                                  |
-| Browser catalog and app profile projection                                     | [App deployment](../deployment/app-deployment.md)                                             |
-| Browser wallets, sessions, transactions, private settlement, and UI            | [App browser](../development/app-browser.md)                                                  |
-| Worker routes, limits, configuration, secrets, build, and Cloudflare tooling   | [App Worker](../development/app-runtime.md)                                                   |
 | Integrator onboarding for agents                                               | [Tempo Earn skill](../../SKILL.md)                                                            |
 | One-line term definitions                                                      | [Glossary](glossary.md)                                                                       |
 | Settled rationale for the core stack                                           | [Design decisions](decisions.md)                                                              |

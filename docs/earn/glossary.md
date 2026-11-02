@@ -63,8 +63,6 @@ One line per term; each links to the page that owns it.
   and provenance; never edited by hand ([generated record](../deployment/deployment.md#generated-record)).
 - **Fixture:** test-only contracts and tokens a disposable stack runs over, recorded in a test
   profile's `fixture.json` ([test fixtures](../../profiles/README.md#acceptance-and-test-fixtures)).
-- **Catalog:** the browser-safe list of stacks the app serves, generated from verified records
-  ([app deployment](../deployment/app-deployment.md#catalog-boundaries)).
 - **Slice:** a capability's browser-safe profile parsing, recorded addresses, and stack fields
   ([deployment package layout](../../deployments/README.md#layout)).
 - **Capability vs module:** a capability is a feature a stack advertises, such as `deposit`,

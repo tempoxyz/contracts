@@ -16,11 +16,11 @@ The current Foundry deployment scripts and this profile lifecycle tooling are ou
 One profile JSON drives every command, and `deploy` is the only one an operator must run:
 
 ```sh
-cp .env.example .env.app-moderato
-pnpm earn plan profiles/app-moderato/profile.json
-pnpm earn deploy profiles/app-moderato/profile.json
-pnpm earn status profiles/app-moderato/profile.json
-pnpm earn verify profiles/app-moderato/profile.json
+cp .env.example .env.e2e-moderato
+pnpm earn plan profiles/e2e-moderato/profile.json
+pnpm earn deploy profiles/e2e-moderato/profile.json
+pnpm earn status profiles/e2e-moderato/profile.json
+pnpm earn verify profiles/e2e-moderato/profile.json
 ```
 
 | Command   | What it does                                                                                                                                                             | Flags                                                                                    |
@@ -51,10 +51,10 @@ The deposit helper quotes through the engine's own module for any engine kind:
 
 ```sh
 # Read-only quote plus deployment and wiring checks
-pnpm earn deposit profiles/app-moderato/profile.json --assets 1
+pnpm earn deposit profiles/e2e-moderato/profile.json --assets 1
 
 # Submit the atomic approval + deposit transaction
-pnpm earn deposit profiles/app-moderato/profile.json --assets 1 --broadcast
+pnpm earn deposit profiles/e2e-moderato/profile.json --assets 1 --broadcast
 ```
 
 `--assets` is a decimal amount of the vault asset. The helper signs with `DEPLOYER_PRIVATE_KEY`;

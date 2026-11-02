@@ -11,13 +11,13 @@ documented in [deployment profiles](../profiles/README.md).
 
 ## Exports
 
-| Export                                       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@tempoxyz/contracts/deployments`            | Browser-safe: the `hostedEnvironments` network table (chain templates and IDs, testnet flag, public RPC and explorer URLs, faucet, fee-token policy, app sponsor, hosted Zone), the public stack catalog parser and `publicStack` projection, the engine registry (`engineDefinitions`, `quoteEarnDeposit`), `configuredTempoNetworkChain` and `configuredZoneChain`, the strict parser kit (`object`, `array`, `exactKeys`, `nonemptyString`, `address`, `isBytes32`), and the stack, engine, and router binding inspectors |
-| `@tempoxyz/contracts/deployments/node`       | Node-only profile reconciliation, records, `loadHostedProfileStack`, capability output discovery (`discoverOutputs`), runtime and key parsing, Foundry, and Zone RPC tooling                                                                                                                                                                                                                                                                                                                                                 |
-| `@tempoxyz/contracts/deployments/operations` | The operational `EarnStack` model, profile parsing, policy and access-membership helpers, and planning                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `@tempoxyz/contracts/tempo/zone`             | Canonical Zone predeploys, `discoverZone`, `inspectZone`, `waitForZoneTempoBlock`, `waitForWithdrawalProcessed`, `processedRouterEvent`, and `missingZoneTokens`                                                                                                                                                                                                                                                                                                                                                             |
-| `@tempoxyz/contracts/abis`                   | Every contract ABI the TypeScript packages use                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Export                                       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@tempoxyz/contracts/deployments`            | Browser-safe: the `hostedEnvironments` network table (chain templates and IDs, testnet flag, public RPC and explorer URLs, faucet, fee-token policy, app sponsor, hosted Zone), the engine registry (`engineDefinitions`, `quoteEarnDeposit`), `configuredTempoNetworkChain` and `configuredZoneChain`, the strict parser kit (`object`, `array`, `exactKeys`, `nonemptyString`, `address`, `isBytes32`), and the stack, engine, and router binding inspectors |
+| `@tempoxyz/contracts/deployments/node`       | Node-only profile reconciliation, records, `loadHostedProfileStack`, capability output discovery (`discoverOutputs`), runtime and key parsing, Foundry, and Zone RPC tooling                                                                                                                                                                                                                                                                                   |
+| `@tempoxyz/contracts/deployments/operations` | The operational `EarnStack` model, profile parsing, policy and access-membership helpers, and planning                                                                                                                                                                                                                                                                                                                                                         |
+| `@tempoxyz/contracts/tempo/zone`             | Canonical Zone predeploys, `discoverZone`, `inspectZone`, `waitForZoneTempoBlock`, `waitForWithdrawalProcessed`, `processedRouterEvent`, and `missingZoneTokens`                                                                                                                                                                                                                                                                                               |
+| `@tempoxyz/contracts/abis`                   | Every contract ABI the TypeScript packages use                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 Each name has one entry, except `configuredTempoNetworkChain`, which is in both the browser-safe and
 `operations` entries. Node tooling imports the inspectors and
@@ -64,11 +64,10 @@ the `./tempo/zone` entry is `chain/zone.ts`.
   authored JSON, intent-hash fields and components, `EarnFactory` inputs it decides, recorded
   addresses (discovered, deployed into its own stack fields, or optional periphery), its key of the
   record target, the capabilities it advertises, the privileged roles it assigns (which a hosted
-  deployment refuses to give a public `.env.example` identity), and its optional published-stack
-  fields with their parsers and cross-field rules. Core derives `EarnDeploymentProfile`, its
-  hashes, the record's address order and target, `capabilityKeys`, `EarnStack`, and the catalog
-  parser from the list, in registry order, at both the type and the runtime level; slices never
-  import the envelope at runtime.
+  deployment refuses to give a public `.env.example` identity), and the types of its optional stack
+  fields. Core derives `EarnDeploymentProfile`, its hashes, the record's address order and target,
+  `capabilityKeys`, and `EarnStack` from the list, in registry order; slices never import the
+  envelope at runtime.
 - Its **lifecycle module** (`index.ts`, registered in `modules/index.ts`), whose hooks core runs
   for every registered module: preflight checks, discovered external outputs, access principals
   from a plan or a live stack, post-deployment inspection and readiness, and the module's
@@ -94,8 +93,8 @@ Node-only code.
   same inputs, declares `adopt` to record that contract and its creation transaction instead, as
   `deploy-zone-router` does with the factory's `RouterDeployed` event.
 - **A recorded address** names its owning intent component in one of its slice's address maps.
-  **A profile field** belongs to one slice and its intent hash. **A published stack field** is a
-  parser in its slice's `stack` section.
+  **A profile field** belongs to one slice and its intent hash. **A stack field** is a type in
+  its slice's `stack` section, filled by the capability's own stack builder.
 - **Capability behavior** the lifecycle needs is a `CapabilityModule` hook, not a branch in
   `core/`. Optional contracts are carried as `OptionalPeriphery`.
 - **A new capability** is its folder under `modules/` (`modules/earn/<capability>/` for an Earn
@@ -118,20 +117,15 @@ deployed, and it hands them to the Zone router's `zoneRouterStackFields` itself.
 ## Registries
 
 Root `deployments/` owns generic Earn-stack reconciliation and the consumer-neutral `EarnStack`
-model. `loadHostedProfileStack` builds a deployed profile's stack from its record and live reads,
-and `publicStack` allowlists its browser-safe fields. It does not own a concrete hosted catalog, app
-release pipeline, or hosted E2E fixture lifecycle.
+model. `loadHostedProfileStack` builds a deployed profile's stack from its record and live reads.
+It does not own a hosted E2E fixture lifecycle.
 
-- The app's browser catalog list, generator, and generated `generated.json` live under
-  `earn/app/deployments/`; [app deployment](../docs/deployment/app-deployment.md#catalog-boundaries)
-  owns what the catalog carries.
 - Hosted E2E builds its stack from a deployed profile's record and attaches its own test fixture
-  ([E2E environments](../docs/deployment/e2e-environments.md)). Fixtures, roles, receipts, and
-  source metadata never enter the browser catalog.
+  ([E2E environments](../docs/deployment/e2e-environments.md)).
 - `network.explorerUrl` is an optional explorer base URL; consumers append the resource route,
   such as `/receipt/<hash>` or `/address/<address>`, and show no link when it is absent (local
   stacks have none).
-- Default helpers are lookup primitives and do not select an app environment. Consumers must honor
+- Default helpers are lookup primitives and do not select an environment. Consumers must honor
   deployment and mode availability rather than attempt zero-address writes.
 
 Per-package commands are in [CONTRIBUTING.md](../CONTRIBUTING.md#work-on-one-area); `check` also

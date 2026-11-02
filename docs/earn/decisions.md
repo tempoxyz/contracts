@@ -124,12 +124,11 @@ orchestration in `EarnContributionController`.
 reserved for state that protects ownership and backing. Each extracted component has one coherent
 security boundary rather than being a generic externalization.
 
-## Deployment catalog axes and boundaries
+## Deployment stack axes
 
-**Decision:** record engine kind and the scoped `earnRouter` on each stack, serve the browser an
-allowlisted public stack with no separate product records, and expose the operational `EarnStack`
-through `@tempoxyz/contracts/deployments/operations` rather than the browser catalog entrypoint.
+**Decision:** record engine kind and the scoped `earnRouter` on each stack, with no separate product
+records, and expose the operational `EarnStack` through `@tempoxyz/contracts/deployments/operations`.
 
 **Why:** the engine kind (`erc4626`, `veda`, or `propamm`) describes execution, not the asset, so it
 belongs to the stack rather than a product indirection. Stack-scoped router addresses preserve the immutable Zone and EarnVault
-bindings, and allowlisting public fields keeps the public/operational data boundary explicit.
+bindings.

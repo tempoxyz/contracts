@@ -39,7 +39,7 @@ New to the terms? See the [glossary](../docs/earn/glossary.md). The
 ## Use it
 
 `viem/tempo` exposes the Earn ABIs, reads, writes, and call builders. This reads the
-[`app-moderato`](../profiles/app-moderato/deployment.json) EarnVault, an open PATHUSD vault on the
+[`e2e-moderato`](../profiles/e2e-moderato/deployment.json) EarnVault, an open PATHUSD vault on the
 Moderato testnet:
 
 ```ts
@@ -52,13 +52,13 @@ const client = createClient({
 })
 
 const earnVault = await client.earn.getVault({
-  vault: '0x46b81bdFA3f184CC1c02BBbd45eaa3E3dAa25cD9',
+  vault: '0x0eb6bc4711Bf400684Df14616e049F4b889eb025',
 })
 
 console.log(earnVault.assetToken, earnVault.engine.totalAssets)
 ```
 
-This needs viem 2.55.10 or later; the repository pins viem 2.57.4.
+This needs viem 2.55.10 or later; the repository uses viem 2.57.14.
 
 - [Client integration](../docs/earn/integrations/client.md): deposits, redemptions, quotes, simulation, and
   revert handling.
@@ -93,7 +93,6 @@ Earn's Foundry project; paths below are relative to `earn/`. Its deployment modu
 | `script/`         | Foundry deployment scripts the shared profile lifecycle runs.                         |
 | `test/`           | Tests mirroring the Solidity production domains.                                      |
 | `script/local/`   | Local fixture contracts and scripts the root `localnet/` package deploys.             |
-| `app/`            | Earn's web app and Cloudflare Worker ([app guide](app/AGENTS.md)).                    |
 
 ## Project status
 

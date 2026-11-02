@@ -6,9 +6,9 @@ import { zoneRouterProfile } from './earn/zone-router/profile.js'
 import { zoneRouterModeProfile } from './zone-router/profile.js'
 
 /**
- * Every capability's browser-safe slice, in authored, record, and published-stack order. Core
- * derives the profile envelope, intent components, recorded addresses, record target, advertised
- * capabilities, and published stack fields from this list alone.
+ * Every capability's browser-safe slice, in authored and record order. Core derives the profile
+ * envelope, intent components, recorded addresses, record target, advertised capabilities, and
+ * stack field types from this list alone.
  */
 export const profileSlices = [
   accessPolicyProfile,
@@ -30,9 +30,6 @@ for (const [label, declared] of Object.entries({
     ),
   'target key': (slice) => (slice.target ? [slice.target.key] : []),
   capability: (slice) => Object.keys(slice.capabilities ?? {}),
-  'stack network field': (slice) => Object.keys(slice.stack?.network ?? {}),
-  'stack contract field': (slice) => Object.keys(slice.stack?.contracts ?? {}),
-  'stack mode': (slice) => Object.keys(slice.stack?.modes ?? {}),
 } satisfies Record<string, (slice: (typeof slices)[number]) => readonly string[]>))
   unique(slices.flatMap(declared), label)
 
@@ -101,17 +98,13 @@ type TargetOf<S> = S extends {
 /** Each slice's key of the deployment record's target, with its recorded identity. */
 export type SliceTargets = UnionToIntersection<TargetOf<Slice>>
 
-/** One slice's optional fields of one published-stack section, with their parsed types. */
+/** One slice's optional fields of one stack section. */
 type StackFieldsOf<S, Section extends string> = S extends { readonly stack: infer Stack }
   ? Section extends keyof Stack
-    ? {
-        [K in keyof Stack[Section]]?:
-          | (Stack[Section][K] extends (...args: never[]) => infer Parsed ? Parsed : never)
-          | undefined
-      }
+    ? { [K in keyof Stack[Section]]?: Stack[Section][K] | undefined }
     : never
   : never
 
-/** One section of the published stack: each slice's optional fields with their parsed types. */
+/** One section of a stack: each slice's optional fields. */
 export type SliceStackFields<Section extends 'network' | 'contracts' | 'modes'> =
   UnionToIntersection<StackFieldsOf<Slice, Section>>

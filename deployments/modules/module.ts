@@ -19,13 +19,10 @@ export type SliceProfile<Fields extends object> = CoreProfile & Fields
 /** Each recorded address a slice declares, mapped to the intent component that owns it. */
 type AddressComponents = Readonly<Record<string, string>>
 
-/** Parses one optional field of a published stack; absent fields are never parsed. */
-type StackFieldParser = (value: unknown, path: string) => unknown
-
 /**
  * One capability's browser-safe declarations, registered in `modules/slices.ts`: its part of the
  * authored profile and intent hashes, its recorded addresses and record target, the capabilities
- * it advertises, and its fields of a published stack. Core composes every registered slice in
+ * it advertises, and the fields it adds to a stack. Core composes every registered slice in
  * registry order and never names one; a slice never imports the envelope at runtime.
  */
 export type ProfileSlice<Fields extends object = object> = {
@@ -59,21 +56,11 @@ export type ProfileSlice<Fields extends object = object> = {
   readonly target?: TargetSlice<string, unknown, Fields>
   /** Capabilities the slice advertises, in record order, and whether a profile enables each. */
   readonly capabilities?: Readonly<Record<string, (profile: SliceProfile<Fields>) => boolean>>
-  /** The slice's optional fields of a published stack, in serialized order, and their rules. */
+  /** The optional fields the slice adds to each stack section; type-only, read by `SliceStackFields`. */
   readonly stack?: {
-    readonly network?: Readonly<Record<string, StackFieldParser>>
-    readonly contracts?: Readonly<Record<string, StackFieldParser>>
-    readonly modes?: Readonly<Record<string, StackFieldParser>>
-    /** Cross-field rules over a parsed stack and its network; `fail` throws. */
-    validate?(
-      stack: {
-        capabilities: Readonly<Record<string, boolean>>
-        contracts: Readonly<Record<string, unknown>>
-        modes: Readonly<Record<string, unknown>>
-      },
-      network: Readonly<Record<string, unknown>>,
-      fail: (reason: string) => never,
-    ): void
+    readonly network?: object
+    readonly contracts?: object
+    readonly modes?: object
   }
   /** Cross-field validation over the parsed profile. */
   validate?(profile: SliceProfile<Fields>): void

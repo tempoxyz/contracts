@@ -160,7 +160,6 @@ export const propamm = defineEngine({
   engineContract: 'PropAMMEngine',
   engineSource: 'src/engines/propamm/PropAMMEngine.sol',
   venueLabel: 'PropAMM base token',
-  venueDetail: 'Oracle-priced base token',
   periphery: [],
   capabilities: {
     inKindDeposit: false,

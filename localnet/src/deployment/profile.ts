@@ -29,7 +29,7 @@ export type LocalTargets = {
 
 const rewardInterval = 300
 
-/** Access each variant deploys unless a consumer asks otherwise; only the browser asks for open. */
+/** Access each variant deploys unless a consumer asks for open access. */
 export const variantAccess: AccessKind = 'tip403-whitelist'
 
 /**

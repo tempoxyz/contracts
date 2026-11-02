@@ -445,8 +445,7 @@ export async function verifyEarnProfile(
 function executeFoundry(step: Extract<ReconciliationStep, { kind: 'foundry' }>) {
   const result = spawnSync('forge', step.arguments, {
     cwd: step.root,
-    // Wrangler augments NodeJS.ProcessEnv with app-only required bindings. This child intentionally
-    // receives the smaller deployment allowlist instead.
+    // The child receives only the deployment allowlist, not the parent's environment.
     env: step.environment as NodeJS.ProcessEnv,
     stdio: 'inherit',
   })

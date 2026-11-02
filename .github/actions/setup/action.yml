@@ -55,7 +55,6 @@ runs:
       with:
         path: |
           node_modules
-          earn/app/node_modules
           deployments/node_modules
           e2e/node_modules
           localnet/node_modules
@@ -88,7 +87,6 @@ runs:
       with:
         path: |
           node_modules
-          earn/app/node_modules
           deployments/node_modules
           e2e/node_modules
           localnet/node_modules

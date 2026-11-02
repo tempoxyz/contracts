@@ -80,21 +80,17 @@ export function sameFactoryRelease(left: EarnFactoryRelease, right: EarnFactoryR
 }
 
 /**
- * Parses a release: `earn` and any engine factories, nothing else. Records and pending state accept
- * any nonzero address and normalize it; the public catalog passes a checksummed parser.
+ * Parses a release: `earn` and any engine factories, nothing else. It accepts any nonzero address and
+ * normalizes it.
  */
-export function parseFactoryRelease(
-  value: unknown,
-  path: string,
-  parseAddress: (value: unknown, path: string) => Address = address,
-): EarnFactoryRelease {
+export function parseFactoryRelease(value: unknown, path: string): EarnFactoryRelease {
   const release = object(value, path)
   exactKeys(release, path, ['earn'], engineFactoryKeys)
   return {
-    earn: parseAddress(release.earn, `${path}.earn`),
+    earn: address(release.earn, `${path}.earn`),
     ...Object.fromEntries(
       engineFactoryKeys.flatMap((key) =>
-        release[key] === undefined ? [] : [[key, parseAddress(release[key], `${path}.${key}`)]],
+        release[key] === undefined ? [] : [[key, address(release[key], `${path}.${key}`)]],
       ),
     ),
   }

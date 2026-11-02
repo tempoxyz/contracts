@@ -1,8 +1,7 @@
 # Localnet
 
 `localnet/` starts a disposable Tempo L1 and Zone in Docker, deploys Earn onto them through the
-shared profile lifecycle, and hands the running environment to a consumer: the app's
-`pnpm dev:local`, local E2E, and downstream localnet consumers. This page owns its
+shared profile lifecycle, and hands the running environment to a consumer: local E2E, and downstream localnet consumers. This page owns its
 API and the constraints behind it; [development](README.md#local-tempo-and-zone) has the
 commands, and the [localnet guide](../../localnet/AGENTS.md) the package rules. Exact image and
 protocol versions are owned by `localnet/src/config.ts` and `localnet/fixtures/runtime-lock.json`.

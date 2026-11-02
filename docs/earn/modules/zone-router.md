@@ -145,7 +145,7 @@ router events.
 pause flag, whether the pool admits the router as taker and recipient and resolves it to itself,
 whether the oracle price equals par, and the pool's vault-asset (deposit) and private-asset (redeem)
 inventory. It is a snapshot, not an execution guarantee, and `atPar` ignores report age, so
-deployment inspection, the app, and E2E preflight also check the latest report against the pool's
+deployment inspection and E2E preflight also check the latest report against the pool's
 `maxOracleAge`. A same-asset router returns zero for `pool()`, `customerId()`, and `parPrice()`,
 false for `privateAssetIsBase()`, and `(false, true, true, type(uint256).max, type(uint256).max)`
 from `liquidityStatus()`; clients detect the mode with `pool() == address(0)`. The EarnVault's
@@ -193,9 +193,7 @@ registering a router as a gateway gives it no authority over its bindings or Ear
 On a Zone with account admission, the Portal accepts the router's return `depositEncrypted` only
 when the Tempo refund recipient holds the `Account` role and otherwise reverts
 `AccountNotAllowed(address)`. Users inside the Zone need no Tempo admission, so a client sets the
-refund recipient to an admitted account it controls when the user is not admitted. The Earn app
-refunds to the user and refuses the action up front when the user is not admitted
-([`Admission.ts`](../../../earn/app/src/private/Admission.ts)).
+refund recipient to an admitted account it controls when the user is not admitted.
 
 ## Client integration
 
