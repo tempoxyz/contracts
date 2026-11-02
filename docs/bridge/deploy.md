@@ -2,11 +2,9 @@
 
 The card integration deploys into the issuer's existing `SpenderFactory`: the "TS" handler, each
 program's `BridgeSettler` and the program's Zone router. None has an owner, so nothing changes after
-deployment. The handler lands at a deterministic address, so the issuer can deploy it with the scripts
-below or Tempo with the [Bridge Release workflow](#deploying-from-ci), and either lands on the same
-contract. A program's `BridgeSettler` is a [Zone router settler](../zone-router/zone-router.md#bridgesettler):
-its hosted release is the Zone router's ([`bridgeSettler`](../deployment/deployment.md#zone-router-releases)),
-and the scripts here deploy one for E2E and local stacks. Every factory change is a role-gated call,
+deployment. The handler and each program's `BridgeSettler` land at deterministic addresses, so the
+issuer can deploy them with the scripts below or Tempo with the
+[Bridge Release workflow](#deploying-from-ci), and either lands on the same contract. Every factory change is a role-gated call,
 so the scripts write those calls as calldata for the multisig that holds each role, instead of
 sending them.
 
@@ -92,17 +90,14 @@ The script checks that the program's clone was created for its ID, that `ZONE_ID
 ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program's
 `BridgeSettler` through the CREATE2 deployer with the release salt, as the handler, or reuses the
 one there, then, through the `ZoneRouterFactory`, a [`ZoneRouter`](../zone-router/zone-router.md)
-whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. The settler is
-compiled with this project's settings, so it lands at a different address from the Zone Router
-Release's `bridgeSettler`, which compiles it in `zone-router/`. Leave
+whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. Leave
 `ROUTER_FACTORY` unset to deploy a new factory. `OUT` holds `factory`, `spenderId`, `clone`,
 `zoneId`, `portal`, `settler`, `routerFactory` and `router`, and is written only with
 `--broadcast`.
 
-For a hosted program, release the settler alone with Zone Router Release
-(`pnpm zone-router-release <network> bridgeSettler --parameters '{"factory": "<SpenderFactory>", "spenderId": "<bytes32>"}'`).
-It checks that the factory has a clone for the program, not that the ID is the one the clone was
-created for; the preflight below does. The router can then come from an Earn deployment profile's
+For a hosted program, release the settler alone with the Bridge Release workflow's `bridgeSettler`
+([Deploying from CI](#deploying-from-ci)) or `script/deploy/DeployBridgeSettler.s.sol` (`FACTORY`,
+`SPENDER_ID`, `OUT`), which checks that the program's clone was created for its ID. The router can then come from an Earn deployment profile's
 `zoneRouter`, which lists the settler and deploys, verifies and records the router with
 `pnpm earn deploy`, or from Zone Router Release's `zoneRouter`. Through the same factory, either
 adopts a router this script already deployed for that mode
@@ -137,8 +132,7 @@ prints `ok` or `todo` for each item, with who submits the fix:
 - `TS` is registered, has code, was built for this factory, and is usable by the program;
 - the `TS` handler and the router's settler are this repository's build: their code matches copies
   the script deploys in its own simulation, so one deployed from older code reads `todo`. Solc's
-  metadata hash is left out, so a build from source that differs only in comments, or a settler
-  Zone Router Release compiled in `zone-router/`, still matches;
+  metadata hash is left out, so a build from source that differs only in comments still matches;
 - the settlement destination is authorized, and the factory is not paused;
 - the token's TIP-403 policy lets the settlement wallet receive, the router and settler receive and
   send, the refund recipient receive, the program wallet send, the portal and its messenger send
@@ -200,9 +194,10 @@ measure the program's own vault first.
 ## Deploying from CI
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
-deploys the handler (`tempoSpend`) from `main`, with the same script and so at the same
-deterministic address as a deploy by the issuer. Choose the network (Moderato or mainnet), the issuer's
-factory, and whether to broadcast; without broadcast Forge only simulates. It runs
+deploys the handler (`tempoSpend`) or a program's settler (`bridgeSettler`) from `main`, with the same
+scripts and so at the same deterministic addresses as a deploy by the issuer. Choose the network
+(Moderato or mainnet), the contract, the issuer's factory, the program's `spenderId` for a settler,
+and whether to broadcast; without broadcast Forge only simulates. It runs
 [`script/deploy/release.sh`](../../bridge/script/deploy/release.sh), which:
 
 - refuses an RPC serving another chain, and runs Forge at the chain's hardfork from
@@ -215,9 +210,8 @@ factory, and whether to broadcast; without broadcast Forge only simulates. It ru
 The job summary lists the address, the transaction and the source match, and the admin and
 governance calls above for the issuer to submit; the `bridge-release-<network>-<contract>-<attempt>`
 artifact holds the result and Forge's broadcast files. The workflow never submits those calls:
-registering and gating stay with the issuer's roles. A program's `BridgeSettler` releases through the
-[Zone Router Release](../deployment/deployment.md#zone-router-releases) workflow instead, and
-`release.sh` refuses it.
+registering and gating stay with the issuer's roles. A settler needs no factory call; list it in the
+program's Spend-mode router.
 
 Dispatching it from `main` is the approval: the job runs in the `factory-release-<network>`
 environment, which has no required reviewer and accepts only `main`, with the deployer key

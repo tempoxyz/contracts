@@ -5,12 +5,13 @@ import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { BridgeRelease } from "../../script/deploy/BridgeRelease.sol";
+import { DeployBridgeSettler } from "../../script/deploy/DeployBridgeSettler.s.sol";
 import { DeployTempoSpend } from "../../script/deploy/DeployTempoSpend.s.sol";
 import { DeployZoneRouter } from "../../script/deploy/DeployZoneRouter.s.sol";
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { ZoneEnv } from "../harness/ZoneEnv.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @dev Calls the creating functions without a broadcast, which Forge does not route through the
 ///      CREATE2 deployer.
@@ -155,5 +156,35 @@ contract DeterministicDeployTest is ZoneEnv {
 
     function _newBridgeFactory() internal returns (SpenderFactory factory) {
         factory = new SpenderFactory();
+    }
+
+    function test_settlerReleaseScriptDeploysOnceAndReuses() public {
+        DeployBridgeSettler script = new DeployBridgeSettler();
+        IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
+        address predicted = script.bridgeSettlerAddress(address(bridgeFactory), SPENDER_ID);
+        assertEq(predicted.code.length, 0);
+
+        DeployBridgeSettler.Output memory first = script.deploy(factory, SPENDER_ID, TEMPO_PK);
+        assertEq(address(first.settler), predicted);
+        assertTrue(first.created);
+        assertEq(first.clone, factory.getSpenderAddress(SPENDER_ID));
+        assertEq(address(first.settler.FACTORY()), address(bridgeFactory));
+        assertEq(first.settler.SPENDER_ID(), SPENDER_ID);
+
+        DeployBridgeSettler.Output memory again = new DeployBridgeSettler().deploy(factory, SPENDER_ID, BRIDGE_PK);
+        assertEq(address(again.settler), predicted);
+        assertFalse(again.created);
+    }
+
+    function test_settlerReleaseScriptRefusesAFactoryWithoutCode() public {
+        DeployBridgeSettler script = new DeployBridgeSettler();
+        vm.expectRevert(bytes("FACTORY has no code"));
+        script.deploy(IBridgeSpenderFactory(makeAddr("missing")), SPENDER_ID, TEMPO_PK);
+    }
+
+    function test_settlerReleaseScriptRefusesAProgramWithoutAClone() public {
+        DeployBridgeSettler script = new DeployBridgeSettler();
+        vm.expectRevert();
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("no such program"), TEMPO_PK);
     }
 }

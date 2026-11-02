@@ -8,10 +8,10 @@ import { IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneInfo } from "tempo-zones/interf
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeRelease } from "./BridgeRelease.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice A card program's router mode: Spend only on `zoneId`, through `settler` alone, with no Earn
 ///         bindings.

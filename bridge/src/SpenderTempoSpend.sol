@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import { Spend } from "./interfaces/IBridgeSpender.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { IERC20 } from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { LibClone } from "solady/utils/LibClone.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
-import { Spend } from "zone-router/settlers/bridge/IBridgeSpender.sol";
 
 import { IBridgeSpenderFactory } from "./interfaces/IBridgeSpenderFactory.sol";
 import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";

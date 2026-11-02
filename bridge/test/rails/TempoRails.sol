@@ -11,10 +11,10 @@ import { DepositPayload } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderClone } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { IZoneOutbox } from "../../src/interfaces/IZoneOutbox.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.sol";
 import { TxCall } from "../harness/lib/TempoTx.sol";

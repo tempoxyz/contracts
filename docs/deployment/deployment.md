@@ -367,14 +367,7 @@ pays fees. It shares the network's
 | ------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `zoneRouterFactory` | None                                                                        | The `ZoneRouterFactory`                                                |
 | `sendSettler`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}` | A `SendSettler`, never converting or converting `vault`'s asset at par |
-| `bridgeSettler`     | `{"factory": <address>, "spenderId": <bytes32>}`                            | The `BridgeSettler` of card program `spenderId` on `factory`           |
 | `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                     | The router `factory.deploy(mode)` creates                              |
-
-A `bridgeSettler` release takes the issuer's `SpenderFactory` and a nonzero program ID, and its entry
-point refuses a factory without code (`NoFactory`) or a program the factory has no clone for
-(`NoProgram`). It does not check that the ID is the one the clone was created for, which the "TS"
-handler requires; the issuer's [preflight](../bridge/deploy.md#4-check-the-program-before-it-goes-live)
-does.
 
 A `zoneRouter` mode has `ZoneRouter.Mode`'s fields: `zoneId`, `enabledOps` (deposit 1, redeem 2,
 spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool` and `customerId`
@@ -402,10 +395,9 @@ or router, and the Zone's Portal administrator a router
 ### Bridge releases
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
-deploys the card integration's "TS" handler (`SpenderTempoSpend`) for an issuer's `SpenderFactory`
-from `main`, at its deterministic address, with [`bridge/`](../../bridge/README.md)'s own build.
+deploys the card integration's "TS" handler (`SpenderTempoSpend`) or a card program's `BridgeSettler`
+for an issuer's `SpenderFactory` from `main`, at its deterministic address, with [`bridge/`](../../bridge/README.md)'s own build.
 It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue,
 one network per dispatch, and lists in its summary the calls the issuer's admin and governance submit to
-register and gate the handler; it never submits them. A program's `BridgeSettler` is a Zone router
-settler and releases above. [Deploying from CI](../bridge/deploy.md#deploying-from-ci) owns the
+register and gate the handler; it never submits them. [Deploying from CI](../bridge/deploy.md#deploying-from-ci) owns the
 details.

@@ -41,7 +41,7 @@ spends:
 | -------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | [`SpenderTempoSpend`](../../bridge/src/SpenderTempoSpend.sol) ("TS") | Tempo L1, by delegatecall in each program clone | spender factory governance (Earn vault list only) | Pays a spend to a program destination from stablecoin, Earn shares, or both.                                   |
 | [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)      | Tempo L1, one for each Zone and mode            | None. The mode is fixed at deployment.            | Receives a Zone withdrawal callback, sends `maxInput` to a listed settler, and returns the change to the Zone. |
-| [`BridgeSettler`](../../zone-router/src/settlers/BridgeSettler.sol)  | Tempo L1, one for each program                  | None                                              | Pays the spend through the program clone, checks the destination, and returns unused input to the router.      |
+| [`BridgeSettler`](../../bridge/src/BridgeSettler.sol)                | Tempo L1, one for each program                  | None                                              | Pays the spend through the program clone, checks the destination, and returns unused input to the router.      |
 | [`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol)   | Tempo L1                                        | None                                              | Deploys each router at a CREATE2 address from its mode.                                                        |
 
 No contract runs inside a Zone. `ZoneRouter` also has Earn Deposit and Redeem ops
@@ -71,7 +71,7 @@ The contracts convert nothing: a spend settles in the stablecoin that funds it.
    spend from. This also sets the clone's standing EarnShare approval to the vault. Disallowing
    clears it.
 3. **Tempo.** Deploys the program's `BridgeSettler` (`factory`, `spenderId`) with
-   [Zone Router Release](../deployment/deployment.md#zone-router-releases).
+   [Bridge Release](../deployment/deployment.md#bridge-releases).
 4. **Tempo.** Deploys the Zone's `ZoneRouter` with a fixed settler list through `ZoneRouterFactory`.
 5. **Zone admin.** Gives the router its gateway role. Admits the program's `refundRecipient` and
    program wallet.
@@ -287,15 +287,20 @@ struct SpendReturn {
 
 ### BridgeSettler
 
-- The `Spend` must be for the settler's program (`WrongProgram`).
+- The `Spend` must be for the settler's program (`WrongProgram`), and `maxInput` must be more than
+  zero and at most `type(uint128).max` (`InvalidAmount`).
 - The input must be the spend token when `fromVault` is zero, or the vault's EarnShare when
   `fromVault` equals `amount` (`WrongInputToken`).
-- The settler must hold at least `maxInput`. It uses its balance minus `maxInput` as its baseline.
-- After the clone call, some input must be used (`NothingSettled`), and the destination must get
-  exactly `amount` (`DestinationNotPaid`).
+- The settler must hold at least `maxInput` (`InsufficientInput`). It uses its balance minus
+  `maxInput` as its baseline.
+- After the clone call, the handler must have used some input and no more than it was given
+  (`NothingSettled`), and the destination must get exactly `amount` (`DestinationNotPaid`).
 - The settler returns the unused input to the caller and must end at its baseline
   (`ResidualBalance`).
 - `settle` is permissionless. A transient lock stops reentry (`Reentrancy`).
+- `warm(token)` sets the settler's standing maximum approval to the clone before the first spend.
+- It emits `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`, with no cardholder address
+  or `senderTag`.
 
 ### ZoneRouterFactory
 
@@ -473,7 +478,7 @@ needs about 250k more.
 ### In scope
 
 - [`bridge/src/SpenderTempoSpend.sol`](../../bridge/src/SpenderTempoSpend.sol)
-- [`zone-router/src/settlers/BridgeSettler.sol`](../../zone-router/src/settlers/BridgeSettler.sol)
+- [`bridge/src/BridgeSettler.sol`](../../bridge/src/BridgeSettler.sol)
 - [`zone-router/src/ZoneRouter.sol`](../../zone-router/src/ZoneRouter.sol), focused on the Spend op
 - [`zone-router/src/ZoneRouterFactory.sol`](../../zone-router/src/ZoneRouterFactory.sol)
 
@@ -509,7 +514,7 @@ as the [security policy](../../SECURITY.md) describes.
 | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `bridge/test/unit/`: `SpenderTempoSpend`, `BridgeSettler`, `PrivateSpend`, `PrivateEarnChange` | Handler, settler and router Spend behavior, every revert, events, approvals, hostile callback data, Earn change under portal fees, fuzzed spends |
 | `zone-router/test/ZoneRouter.t.sol`                                                            | Router modes and the Spend op: callback authentication, settler list, `maxInput` cap, deposit fee cap, reentry                                   |
-| `zone-router/test/BridgeSettler.t.sol`                                                         | The settler's own checks against a mock factory and clone                                                                                        |
+| `bridge/test/unit/BridgeSettlerMock.t.sol`                                                     | The settler's own checks against a mock factory and clone                                                                                        |
 | `bridge/test/unit/`: `Roles`, `AccessKeySecurity`, `DeployScripts`                             | Factory roles, what a leaked key can do, and the deploy scripts                                                                                  |
 | `bridge/test/e2e/Matrix.t.sol`                                                                 | 35 card scenarios against 11 setups ([matrix](matrix.md))                                                                                        |
 | `e2e/bridge`                                                                                   | A real L1 and Zone, locally and on testnet, including an Earn spend                                                                              |

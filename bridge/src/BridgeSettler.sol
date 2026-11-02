@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { IERC20Allowance } from "../interfaces/IERC20Allowance.sol";
-import { ISpendSettler } from "../interfaces/ISpendSettler.sol";
-import { IBridgeSpenderClone, IBridgeSpenderFactory, Spend } from "./bridge/IBridgeSpender.sol";
+import { IBridgeSpenderClone, IBridgeSpenderFactory, Spend } from "./interfaces/IBridgeSpender.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
+import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
+import { ISpendSettler } from "zone-router/interfaces/ISpendSettler.sol";
 
 /// @title BridgeSettler
 /// @notice Settles a Zone router's Spend op through one Bridge card program's spender clone, with
 ///         the same `Spend` public spend uses.
-/// @dev Specified in docs/zone-router/zone-router.md#bridgesettler. One deployment serves one Bridge
+/// @dev Specified in docs/bridge/design.md#bridgesettler. One deployment serves one Bridge
 ///      card program (`SPENDER_ID`), so one program's approval can never pay through another's. It has
 ///      no owner and holds no Zone code: the router authenticates the withdrawal, caps the input at
 ///      `maxInput` and returns unused input to the Zone. The router transfers `maxInput` to the

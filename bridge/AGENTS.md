@@ -1,7 +1,7 @@
 # Tempo's card integration
 
 Card spend on Tempo: the card spender contracts vendored as they are, the "TS" handler
-(`SpenderTempoSpend`) that runs inside the issuer's system, the card E2E harness, and the deploy
+(`SpenderTempoSpend`) that runs inside the issuer's system, the program settler (`BridgeSettler`), the card E2E harness, and the deploy
 scripts the issuer runs. [README.md](README.md) maps the project and
 [docs/bridge/design.md](../docs/bridge/design.md) owns the design.
 
@@ -11,8 +11,8 @@ scripts the issuer runs. [README.md](README.md) maps the project and
   or `zone-router/foundry.toml`: their remappings feed the metadata hash of their releases, and
   tempoxyz/tempo builds `earn/src/`.
 - Import Earn through `tempo-earn/` (`earn/src/`) and the Zone router through `zone-router/`
-  (`zone-router/src/`), never a copy. `BridgeSettler` and the `Spend` struct the handler settles
-  live in the Zone router's `src/settlers/`; the Zone router never imports from here. A change to
+  (`zone-router/src/`), never a copy. `BridgeSettler` and the `Spend` struct live here, in `src/`;
+  the Zone router never imports from here. A change to
   Earn's or the Zone router's interfaces that breaks this project is fixed in the same pull request.
 - Issuer-specific code stays here; `earn/` stays customer-agnostic and never imports from
   `bridge/`.
@@ -21,7 +21,8 @@ scripts the issuer runs. [README.md](README.md) maps the project and
 - No contract here emits or stores the Zone callback `senderTag` or a cardholder address; the issuer
   matches private spends by the Portal's own events.
 
-Validate with `forge fmt --check src test script`, `forge build`, and `FOUNDRY_PROFILE=ci forge test`
+Validate with `forge fmt --check src test script`, `forge build`, `forge lint --deny warnings src/BridgeSettler.sol`,
+`forge build --sizes src` and `FOUNDRY_PROFILE=ci forge test`
 here, plus `python3 script/matrix.py --out reports/matrix.md` and a diff against
 `../docs/bridge/matrix.md` when card scenarios or setups change. `script/smoke.sh` and
 `pnpm e2e:bridge` need Docker ([Running it](README.md#running-it)).

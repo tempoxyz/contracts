@@ -37,9 +37,9 @@ must explicitly discover descendant guides rather than assume they were loaded.
 - A project imports another's contracts through a remapping to its `src/`, never a copy. Shared
   Solidity belongs in the project that owns it until a second owner needs it.
 - Imports flow one way: `earn/` imports neither other project, `zone-router/` imports only Earn's
-  interfaces, and `bridge/` imports both. Settlers are a Zone router concept and live in
-  `zone-router/src/settlers/`; a settler may hold a minimal interface for the system it pays into,
-  never vendored code.
+  interfaces, and `bridge/` imports both. Generic settlers live in `zone-router/src/settlers/`; a
+  settler built for one integrator lives with that integration (`BridgeSettler` in `bridge/`) and
+  implements the Zone router's `ISpendSettler`.
 - Integrator-specific code (the issuer's vendored contracts, the "TS" handler, card logic) stays in
   `bridge/`; `earn/` stays integrator-agnostic.
 - Secrets and funded private keys stay out of source, logs, and generated records.

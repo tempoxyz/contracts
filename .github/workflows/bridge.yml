@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: true
 
 # Tempo's Bridge integration (bridge/), a separate Foundry project that imports Earn's earn/src/ and the
-# Zone router's zone-router/src/ (BridgeSettler and the Spend struct). Not a required check: it covers
+# Zone router's zone-router/src/ (ZoneRouter and the settler interface). Not a required check: it covers
 # integrator-specific code and runs only when bridge/, earn/src/, Earn's DeterministicRelease,
 # zone-router/src/, e2e/bridge/, localnet/ (with its pinned images) or scripts/solidity-deps.sh change.
 jobs:
@@ -68,6 +68,13 @@ jobs:
 
       - name: Build
         run: forge build
+
+      # BridgeSettler kept the lint and size checks zone-router.yml ran on it before it moved here.
+      - name: Lint BridgeSettler
+        run: forge lint --deny warnings src/BridgeSettler.sol
+
+      - name: Contract sizes
+        run: forge build --sizes src
 
       - name: Test
         env:
