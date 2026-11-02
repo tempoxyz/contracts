@@ -1,0 +1,9 @@
+/out/
+/lib/
+/cache/
+/broadcast/
+/reports/
+.env
+.env.*
+!.env.example
+/foundry-pp/

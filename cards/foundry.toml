@@ -1,0 +1,57 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib", "vendor"]
+# Imports Earn's sources (`tempo-earn/` = ../earn/src) and the Zone router's (`zone-router/` =
+# ../zone-router/src) directly, with this project's remappings and Tempo hardfork; their own build
+# settings are unaffected.
+allow_paths = ["../earn", "../zone-router"]
+# Real Tempo precompiles (TIP-20, AccountKeychain, TIP-403, ...) in the test EVM.
+hardfork = "tempo:T8"
+# No pinned solc: the card contracts compile with 0.8.36, and the vendored Rain contracts, whose
+# exact pragma is 0.8.17, with the compiler they were verified with.
+auto_detect_solc = true
+via_ir = true
+optimizer = true
+optimizer_runs = 200
+evm_version = "cancun"
+auto_detect_remappings = false
+fs_permissions = [
+    { access = "read-write", path = "./reports" },
+    { access = "read", path = "./test/fixtures" },
+]
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "tempo-std/=lib/tempo-std/src/",
+    "solady/=lib/solady/src/",
+    "openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/",
+    "openzeppelin-contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
+    "tempo-earn/=../earn/src/",
+    "zone-router/=../zone-router/src/",
+]
+
+[profile.ci]
+fuzz = { runs = 512 }
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = true
+sort_imports = true
+number_underscore = "thousands"
+ignore = ["vendor/**"]
+
+[lint]
+lint_on_build = false
+exclude_lints = [
+    "encode-packed-collision",
+    "incorrect-strict-equality",
+    "reentrancy-events",
+    "require-revert-in-loop",
+    "uninitialized-local",
+    "unused-return",
+]
