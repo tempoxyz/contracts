@@ -287,12 +287,14 @@ struct SpendReturn {
 
 ### BridgeSettler
 
-- The `Spend` must be for the settler's program (`WrongProgram`).
+- The `Spend` must be for the settler's program (`WrongProgram`), and `maxInput` must be more than
+  zero and at most `type(uint128).max` (`InvalidAmount`).
 - The input must be the spend token when `fromVault` is zero, or the vault's EarnShare when
   `fromVault` equals `amount` (`WrongInputToken`).
-- The settler must hold at least `maxInput`. It uses its balance minus `maxInput` as its baseline.
-- After the clone call, some input must be used (`NothingSettled`), and the destination must get
-  exactly `amount` (`DestinationNotPaid`).
+- The settler must hold at least `maxInput` (`InsufficientInput`). It uses its balance minus
+  `maxInput` as its baseline.
+- After the clone call, the handler must have used some input and no more than it was given
+  (`NothingSettled`), and the destination must get exactly `amount` (`DestinationNotPaid`).
 - The settler returns the unused input to the caller and must end at its baseline
   (`ResidualBalance`).
 - `settle` is permissionless. A transient lock stops reentry (`Reentrancy`).
