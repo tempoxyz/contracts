@@ -40,7 +40,7 @@ Shared topics. Each project's index above owns its own topics.
 - **One canonical page per topic.** Update the page that owns the changed behavior; other pages link
   to it rather than restating it.
 - **Addresses have one owner.** Generated `deployment.json` records own profile deployments;
-  `earn/app/deployments/` owns browser catalogs; a test profile's `fixture.json` owns its E2E fixture;
+  a test profile's `fixture.json` owns its E2E fixture;
   factory registries own shared releases. Other pages link rather than copy.
 - **Security claims are explicit.** “Private” always identifies the observer, the sequencer's
   visibility, and public amount/timing leakage.

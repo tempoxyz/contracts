@@ -372,15 +372,6 @@ viem helpers, event correlation, router revert handling, and bounce-back behavio
 
 ## Validation in this repository
 
-- **App:** [`earn/app/src/public/Write.ts`](../../../earn/app/src/public/Write.ts) implements this sequence.
-  `prepare` revalidates the deployment, simulates the batch that the action's `calls` in
-  [`earn/app/src/earn/Actions.ts`](../../../earn/app/src/earn/Actions.ts) builds, and `send` submits it
-  unchanged. [`PublicActions.tsx`](../../../earn/app/src/public/PublicActions.tsx) drives it, and
-  [`earn/app/src/Errors.ts`](../../../earn/app/src/Errors.ts) decodes nested reverts.
-- **Type check:** [`ClientExamples.test-d.ts`](../../../earn/app/src/public/ClientExamples.test-d.ts) keeps
-  this guide's viem calls, the [Veda request](../modules/veda.md#build-a-queued-request), and the
-  [private Zone](../modules/zone-router.md#client-integration) examples compiling under
-  `pnpm --filter app check:types`.
 - **E2E:** `pnpm e2e:local -- --case public-bounds-roll-back` simulates an approval-plus-deposit
   batch, asserts that viem decodes the live `MinimumEarnSharesNotMet`, and confirms that a missed
   bound on deposit, in-kind entry, redemption, and exact withdrawal rolls back atomically.

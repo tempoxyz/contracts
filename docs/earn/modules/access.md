@@ -55,7 +55,7 @@ because `deploy-core` passes it to `EarnFactory`.
 - **Inspection** requires EarnShare's policy ID to equal the profile's, or `1` when open.
 
 Membership is mutable operational state: it never blocks publishing the deployment record. Hosted
-E2E acceptance checks that every required member is authorized, and the published stack records the
+E2E acceptance checks that every required member is authorized, and the loaded stack records the
 administrator read live from the registry.
 
 ```bash

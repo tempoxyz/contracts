@@ -40,7 +40,7 @@ Neither report covers:
 - `EarnRewardsFactory`, `EarnFactory`, and `ERC4626EngineFactory`;
 - the current Foundry deployment scripts and the profile lifecycle tooling;
 - the oracle and rebalance controller used with a DirectPropAMM pool; and
-- contracts under `src/demo/`, the browser app, Worker, offchain services, or the external venue,
+- contracts under `src/demo/`, offchain services, or the external venue,
   Zone, token, oracle, and pool dependencies.
 
 Before a release, review anything outside that coverage and record the review alongside the

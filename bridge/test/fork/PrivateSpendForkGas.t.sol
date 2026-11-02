@@ -25,11 +25,11 @@ library Mainnet {
     uint256 internal constant CHAIN_ID = 4217;
     /// @dev OUSD (tempoxyz/tempo crates/hardfork/src/constants.rs OUSD_ADDRESS), the Earn vault's asset.
     address internal constant OUSD = 0x20c0000000000000000000006a37DA5C996874BE;
-    /// @dev DLUSD, Zone 2's private stablecoin (enabled on its portal).
-    address internal constant DLUSD = 0x20c0000000000000000000006fD9A167923ba194;
-    /// @dev "Sentora OUSD Main" EarnVault (ERC-1967 proxy to the official EarnVault 0xFa07…D94a).
+    /// @dev Zone 2's private stablecoin (enabled on its portal).
+    address internal constant ZONE_STABLECOIN = 0x20c0000000000000000000006fD9A167923ba194;
+    /// @dev The production OUSD EarnVault (ERC-1967 proxy to the official EarnVault 0xFa07…D94a).
     address internal constant EARN_VAULT = 0x23D26636B00195204D25F85Bb3FF692Cd68DD7ce;
-    /// @dev Its EarnShare (senOUSDmainE), enabled on Zone 2's portal.
+    /// @dev Its EarnShare, enabled on Zone 2's portal.
     address internal constant EARN_SHARE = 0x20C000000000000000000000d0b63F23bb6CE50c;
     uint32 internal constant ZONE_ID = 2;
     address internal constant PORTAL = 0x5Ad0000000000000000000000000000000000002;
@@ -179,9 +179,9 @@ contract PrivateSpendForkGasTest is Test {
         vm.label(clone, "Bridge.SpenderClone");
         vm.label(Mainnet.PORTAL, "Zone2Portal");
         vm.label(Mainnet.EARN_VAULT, "EarnVault.OUSD");
-        vm.label(Mainnet.EARN_SHARE, "EarnShare.senOUSDmainE");
+        vm.label(Mainnet.EARN_SHARE, "EarnShare.OUSD");
         vm.label(Mainnet.OUSD, "OUSD");
-        vm.label(Mainnet.DLUSD, "DLUSD");
+        vm.label(Mainnet.ZONE_STABLECOIN, "ZoneStablecoin");
     }
 
     function test_privateSpendCallbackGas() public {
@@ -205,7 +205,7 @@ contract PrivateSpendForkGasTest is Test {
     ///      once through the portal's own delivery, each from the same starting state.
     function _measure(bool earn, uint256 dollars, bool prepared) internal {
         Row memory row;
-        row.kind = earn ? "Earn (EarnShare -> OUSD)" : "Stablecoin (DLUSD)";
+        row.kind = earn ? "Earn (EarnShare -> OUSD)" : "Stablecoin";
         row.setup = prepared ? "warmed, clone holds 1 EarnShare" : "as deployed";
         row.dollars = dollars;
         uint256 amount = dollars * 1e6;
@@ -249,7 +249,7 @@ contract PrivateSpendForkGasTest is Test {
     {
         Spend memory spend = Spend({
             spenderId: SPENDER_ID,
-            token: earn ? Mainnet.OUSD : Mainnet.DLUSD,
+            token: earn ? Mainnet.OUSD : Mainnet.ZONE_STABLECOIN,
             amount: amount,
             destination: destination,
             vault: earn ? Mainnet.EARN_VAULT : address(0),
@@ -258,7 +258,7 @@ contract PrivateSpendForkGasTest is Test {
             ref: keccak256(abi.encode("fork.ref", amount, destination))
         });
         uint256 maxInput = amount;
-        token = Mainnet.DLUSD;
+        token = Mainnet.ZONE_STABLECOIN;
         if (earn) {
             // Bridge's buffer for price moves between its quote and settlement: 10 bps.
             spend.maxShares = ITempoEarnVault(Mainnet.EARN_VAULT).previewWithdraw(amount) * 10_010 / 10_000 + 1;
@@ -283,7 +283,7 @@ contract PrivateSpendForkGasTest is Test {
     }
 
     function _paid(bool earn) internal pure returns (address) {
-        return earn ? Mainnet.OUSD : Mainnet.DLUSD;
+        return earn ? Mainnet.OUSD : Mainnet.ZONE_STABLECOIN;
     }
 
     function _portalFees() internal view returns (uint256) {
@@ -319,7 +319,7 @@ contract PrivateSpendForkGasTest is Test {
     ///      warmed (the clone's to the vault is set when governance allows it), and 1 EarnShare unit
     ///      in the clone, which holds the shares an Earn spend redeems, so that balance slot stays set.
     function _prepare() internal {
-        address[2] memory tokens = [Mainnet.DLUSD, Mainnet.EARN_SHARE];
+        address[2] memory tokens = [Mainnet.ZONE_STABLECOIN, Mainnet.EARN_SHARE];
         for (uint256 i; i < tokens.length; ++i) {
             router.warm(tokens[i]);
             settler.warm(tokens[i]);

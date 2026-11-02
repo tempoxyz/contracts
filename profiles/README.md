@@ -12,8 +12,8 @@ addresses, and progress never belong in the authored file.
 `id` names the profile directory and is the permanent deployment identity. `version` is its
 positive onchain deployment revision. Factories derive their deterministic salt from
 `<id>:v<version>`, so a new version is a fresh stack and the same version resumes the same stack.
-Directory IDs follow `<deployment>-<l1-network>[-<zone>]`, for example `e2e-moderato`,
-`veda-moderato`, and `app-moderato`; the Zone suffix is omitted without a `zone`.
+Directory IDs follow `<deployment>-<l1-network>[-<zone>]`, for example `e2e-moderato`
+and `veda-moderato`; the Zone suffix is omitted without a `zone`.
 
 `chainId` selects Tempo mainnet (`4217`) or Moderato (`42431`); no other chain parses. Runtime
 values come from `.env.<id>` ([commands](../docs/deployment/deployment.md#commands)). The deployer

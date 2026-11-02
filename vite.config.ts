@@ -64,31 +64,6 @@ export default {
           ],
         },
       },
-      {
-        // Browser and Worker code loads only the browser-safe deployment entries, never localnet.
-        files: ['earn/app/src/**', 'earn/app/worker/**'],
-        rules: {
-          'no-restricted-imports': [
-            'error',
-            {
-              patterns: [
-                {
-                  regex: '^(@tempoxyz/contracts/deployments/(node|operations)|localnet)(/|$)',
-                  message: 'Browser and Worker code uses only the browser-safe deployment entries.',
-                },
-              ],
-            },
-          ],
-        },
-      },
-      {
-        // Browser style: `type` over `interface`; PascalCase modules beside the `main.tsx` entry.
-        files: ['earn/app/src/**/*.ts', 'earn/app/src/**/*.tsx'],
-        rules: {
-          'typescript/consistent-type-definitions': ['error', 'type'],
-          'unicorn/filename-case': ['error', { case: 'pascalCase', ignore: ['^main\\.tsx$'] }],
-        },
-      },
       { files: ['**/*.test.ts'], rules: { 'no-restricted-imports': 'off' } },
     ],
   },

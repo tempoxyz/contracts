@@ -25,15 +25,10 @@ export {
 export {
   capabilityKeys,
   inspectStackBinding,
-  parsePublicStackCatalog,
-  publicStack,
   type DeploymentCapabilities,
   type EngineKind,
-  type PublicEarnStack,
-  type PublicNetwork,
-  type PublicStackCatalog,
   type TokenMetadata,
 } from './core/stack.js'
-export type { ZoneConfiguration } from './modules/earn/zone-router/catalog.js'
+export type { ZoneConfiguration } from './modules/earn/zone-router/stack.js'
 // The strict parser kit, for consumers that validate their own JSON the same way.
 export { address, array, exactKeys, isBytes32, nonemptyString, object } from './core/parse.js'

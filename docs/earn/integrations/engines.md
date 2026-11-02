@@ -10,7 +10,7 @@ installation checks, and the recipe for a new engine kind. Each kind is a module
 | `veda`    | `VedaEngine`    | BoringVault        | Existing engine                 | No            | When a Queue is active | [Veda](../modules/veda.md)               |
 | `propamm` | `PropAMMEngine` | DirectPropAMM pool | Existing engine                 | No            | No                     | [PropAMM](../modules/propamm.md)         |
 
-Every kind supports immediate redemption and exact withdrawal. Tooling, localnet, E2E, and the app
+Every kind supports immediate redemption and exact withdrawal. Tooling, localnet, and E2E
 read each kind's properties from the shared
 [engine registry](../../../deployments/modules/earn/engines/index.ts) instead of branching on the kind.
 
@@ -156,14 +156,10 @@ A kind whose engines the lifecycle provisions from a venue also adds:
   `Record<EngineFactoryKey, Address | null>`, so type checking fails until every network has the
   key ([shared factory releases](../../deployment/deployment.md#shared-factory-releases)).
 
-The app needs no change: it lists kinds from `engineKinds` and labels them from the definition. Add
-an `engineVerification` entry in [`earn/app/src/earn/Verification.ts`](../../../earn/app/src/earn/Verification.ts)
-only for browser checks that the shared stack inspection lacks, as Veda does.
-
 ### Definition fields
 
 A definition requires `label`, `engineContract`, `engineSource` (its Solidity path), `venueLabel`,
-the app topology's one-line `venueDetail`, `periphery`, `capabilities`, `readVenue`, and
+a one-line `venueDetail`, `periphery`, `capabilities`, `readVenue`, and
 `quoteDeposit`. `exitSolver`, `readPeriphery`, `inspectBindings`, and `factory` are optional.
 
 - `capabilities` declares in-kind deposit and each exit (`redeem`, `boundedRedeem`,
@@ -179,16 +175,14 @@ the app topology's one-line `venueDetail`, `periphery`, `capabilities`, `readVen
   `engineConstructorArgs` for source verification, and `venueAsset`.
 - `periphery` names the contracts an engine relies on beside itself and its venue
   ([`veda.ts`](../../../deployments/modules/earn/engines/veda.ts)). A stack records them in
-  `contracts.periphery` under those names, `readPeriphery` reads them from a deployed engine, catalog
-  parsing accepts exactly that set, and only the engine's own modules read a typed view
+  `contracts.periphery` under those names, `readPeriphery` reads them from a deployed engine, and only the engine's own modules read a typed view
   (`vedaPeriphery`).
 
-The registry derives `EngineKind`, `engineKinds`, `FactoryEngineKind`, the profile and catalog
-parsers' accepted kinds, the local variants, and the literals that
+The registry derives `EngineKind`, `engineKinds`, `FactoryEngineKind`, the profile parser's
+accepted kinds, the local variants, and the literals that
 [`boundary.test.ts`](../../../deployments/modules/earn/engines/boundary.test.ts) rejects in generic code:
 outside test files, no file under `deployments/core`, `deployments/chain`, `e2e/harness`,
-`e2e/fixtures`, `e2e/modules`, `localnet/src` (except `localnet/src/engines`), `earn/app/src`, or
-`earn/app/worker` may quote a kind name.
+`e2e/fixtures`, `e2e/modules`, or `localnet/src` (except `localnet/src/engines`) may quote a kind name.
 
 ### Localnet and E2E
 

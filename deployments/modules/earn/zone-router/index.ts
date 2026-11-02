@@ -16,7 +16,7 @@ import {
   requiredOutput,
   type CapabilityModule,
 } from '../../../../deployments/modules/module.js'
-import { zoneRouterStackFields } from './catalog.js'
+import { zoneRouterStackFields } from './stack.js'
 import { inspectRouterBinding, inspectRouterReadiness } from './inspection.js'
 import { discoverZoneOutputs, isZoneSequencerOutput } from './outputs.js'
 import { configuredZone, routerArgs, zoneIdentityAddresses } from './profile.js'

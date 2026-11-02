@@ -10,7 +10,7 @@ import {
   type SliceProfile,
   type TargetSlice,
 } from '../../../../deployments/modules/module.js'
-import { zoneRouterStack } from './catalog.js'
+import type { ZoneRouterStack } from './stack.js'
 
 /** The authored single-Zone router: the Zone it serves and how its private asset converts. */
 export type ZoneRouterIntent = {
@@ -143,7 +143,8 @@ export const zoneRouterProfile = {
     privateRouting: (profile: ZoneProfile) => profile.zone !== null,
     routerSwaps: (profile: ZoneProfile) => profile.zone !== null,
   },
-  stack: zoneRouterStack,
+  // Type-only: declares the stack fields `zoneRouterStackFields` fills.
+  stack: {} as ZoneRouterStack,
 } as const satisfies ProfileSlice<ZoneRouterFields>
 
 /** Flattened operational view of the configured Zone router. */

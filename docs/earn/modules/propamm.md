@@ -142,9 +142,8 @@ recovery and the handoff record check
 ([`reconcile.test.ts`](../../../deployments/core/reconcile.test.ts)) and paused-pool readiness
 ([`propamm.test.ts`](../../../deployments/modules/earn/engines/propamm.test.ts)).
 
-`viem/tempo` has no PropAMM provisioning or route-aware quotes; E2E and the app's deposit preview
-read them through the engine definition and the generated ABIs in `@tempoxyz/contracts/abis`
-([deposit previews](../../development/app-browser.md#public-transaction-preparation)).
+`viem/tempo` has no PropAMM provisioning or route-aware quotes; E2E reads
+them through the engine definition and the generated ABIs in `@tempoxyz/contracts/abis`.
 
 ### Pinned DirectPropAMM fixture
 

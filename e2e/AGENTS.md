@@ -10,8 +10,7 @@ owns the test fixture bootstrap.
   Environment-specific fixtures and addresses belong in the environment loaders, not branches
   inside shared case logic.
 - Hosted runs target a deployed profile through `harness/hosted.ts`; local runs consume typed
-  `Environment.run` state. E2E owns fixtures and acceptance, not another engine/core/router deployer,
-  and its fixtures stay out of browser catalogs.
+  `Environment.run` state. E2E owns fixtures and acceptance, not another engine/core/router deployer.
 - Reuse the Zone transport in `harness/context.ts`. API-key runs do not prove caller-token RPC
   isolation.
 - Before blaming Earn code, check canonical Zone identity, protocol compatibility, access controls,

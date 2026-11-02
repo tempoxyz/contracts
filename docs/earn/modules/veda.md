@@ -293,8 +293,7 @@ Teller accepting the base asset. `pnpm earn deploy` preflight and E2E acceptance
 mode; `pnpm earn verify` runs the bindings checks only. The hosted stack built from a Veda record reads the Teller, optional
 Queue, Accountant, registry, and RolesAuthority into `contracts.periphery`, so
 [rechecking a deployed profile](../../deployment/deployment.md#rechecking-deployed-profiles) fails on
-broken wiring, a missing capability, an untracked Queue, or a stale report. Before enabling writes,
-the app runs `inspectVedaPeriphery` and compares the periphery the engine reports with its catalog.
+broken wiring, a missing capability, an untracked Queue, or a stale report.
 
 For queued mode, stop unless the reviewed release satisfies all of the following; do not accept an
 event-only or untracked Queue:
@@ -338,7 +337,7 @@ Tempo-owned test stacks run over Veda-compatible fixtures
 compatibility and never stand in for a production venue. The fixture BoringVault doubles as a
 RolesAuthority that allows every call, the test deployer owns the BoringVault (and so controls the
 ownerless registry), the `VedaEngine`, the `VedaForwardingSolver`, and every fixture, and a hosted
-fixture's base asset is PATHUSD. Which stacks exist and which the app lists is in
+fixture's base asset is PATHUSD. Which stacks exist is in
 [hosted environments](../../deployment/hosted-environments.md).
 
 The [test fixture bootstrap](../../../profiles/README.md#acceptance-and-test-fixtures) provisions the

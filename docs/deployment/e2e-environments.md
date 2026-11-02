@@ -108,7 +108,7 @@ scheduling, and distribution E2E coverage.
 
 Hosted private acceptance reaches the Zone through Tempo API with `TEMPO_API_KEY`, or through an
 explicit `ZONE_RPC_URL`, using the transport in `e2e/harness/context.ts`. With the API key it
-matches the app Worker's path, so it validates signed transactions and contract permissions, not
+validates signed transactions and contract permissions, not
 caller-token RPC isolation. An HTTP 502 from the API's caller-token upstream differs from the Portal
 error `AccountNotAllowed(address)` (`0xedd9a13e`), which needs account admission. Check admission
 with the `zonePortalAbi` views `isAccessEnforced()`, `isGatewayOpen()` (`true` when
@@ -153,8 +153,7 @@ Veda fixture's `engineFixtures` exactly as local cases do
 
 Production scripts never deploy fixture funders or demo pools. The E2E stack's `stablecoinFixture`
 (`e2e/fixtures/profile-fixture.ts`) is the one in `fixture.json` when there is one, otherwise the
-profile's own conversion pair with no funder, so E2E uses prefunded actors. App catalogs contain no
-E2E fixture, role, receipt, or transaction history.
+profile's own conversion pair with no funder, so E2E uses prefunded actors.
 
 ## Existing devnet chains
 

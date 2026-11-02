@@ -112,30 +112,6 @@ export function url(value: unknown, path: string): string {
   return result
 }
 
-/**
- * Parses a published stack mode's availability, requiring a reason exactly when it is unavailable;
- * a capability's mode adds its `requiredFields`.
- */
-export function parseMode(value: unknown, path: string, requiredFields: readonly string[] = []) {
-  const mode = object(value, path)
-  exactKeys(mode, path, ['availability', ...requiredFields], ['reason'])
-  const availability = literal(mode.availability, `${path}.availability`, [
-    'available',
-    'unverified',
-    'blocked',
-    'unavailable',
-  ] as const)
-  const reason =
-    mode.reason === undefined ? undefined : nonemptyString(mode.reason, `${path}.reason`)
-  if (availability === 'available' && reason !== undefined) {
-    throw new Error(`${path}.reason is not allowed when availability is available`)
-  }
-  if (availability !== 'available' && reason === undefined) {
-    throw new Error(`${path}.reason is required when availability is ${availability}`)
-  }
-  return { availability, reason }
-}
-
 /** Rejects a repeated value; parse addresses first so equal addresses compare equal. */
 export function unique(values: readonly string[], label: string) {
   const seen = new Set<string>()

@@ -98,7 +98,7 @@ abstract contract TempoEnv is Test {
     }
 
     function _deployEarn() private {
-        venue = new Simple4626Vault(address(usd), "Sentora OUSD", "sOUSD", 6);
+        venue = new Simple4626Vault(address(usd), "Vault OUSD", "vOUSD", 6);
         engine = new ERC4626Engine(IERC4626Vault(address(venue)), address(this), "", "");
         EarnFactory factory = new EarnFactory(address(tip20Factory), address(new EarnVault()), address(new EarnFees()));
         FeeConfig memory noFees;

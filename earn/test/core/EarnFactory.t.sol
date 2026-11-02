@@ -24,7 +24,7 @@ import { AdversarialERC4626Vault } from "../helpers/AdversarialERC4626Vault.sol"
 contract FactoryMockEngine {
     address public immutable asset;
     address public earnVault;
-    string public name = "Sentora Vault";
+    string public name = "Test Vault";
     string public symbol = "senV";
     uint8 public immutable decimals;
     bool private coreCapability = true;
@@ -272,7 +272,7 @@ contract EarnFactoryTest is Test {
         assertEq(earnShare, factory.predictEarnShare(params));
         assertEq(address(earnFees), factory.predictEarnFees(params));
         assertEq(tip20Factory.lastSalt(), expectedSalt);
-        assertEq(tip20Factory.lastName(), "Sentora Vault (Earn)");
+        assertEq(tip20Factory.lastName(), "Test Vault (Earn)");
         assertEq(tip20Factory.lastSymbol(), "senVE");
         assertEq(tip20Factory.lastCurrency(), factory.EARN_SHARE_CURRENCY());
         assertEq(bytes(tip20Factory.lastCurrency()).length, 0);
@@ -471,7 +471,7 @@ contract EarnFactoryTest is Test {
 
         engine.setMetadata("", "senV");
         _expectDeployRevert(_baseParams(), abi.encodeWithSelector(EarnFactory.EmptyEarnShareMetadata.selector));
-        engine.setMetadata("Sentora Vault", "");
+        engine.setMetadata("Test Vault", "");
         _expectDeployRevert(_baseParams(), abi.encodeWithSelector(EarnFactory.EmptyEarnShareMetadata.selector));
     }
 

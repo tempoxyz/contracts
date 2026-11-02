@@ -26,7 +26,6 @@ In scope:
 
 Out of scope:
 
-- Earn's demo application in [`earn/app/`](earn/app/);
 - `earn/src/demo/` and test fixtures, including every `test/` directory, `localnet/`, `e2e/`, and
   committed fixture artifacts, which are not production code;
 - vendored third-party code, such as the issuer's contracts in `bridge/vendor/`, and third-party venues

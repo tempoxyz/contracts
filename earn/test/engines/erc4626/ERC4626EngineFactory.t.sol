@@ -62,9 +62,9 @@ contract ERC4626EngineFactoryTest is Test {
     }
 
     function testDeployAppliesMetadataOverrides() public {
-        ERC4626Engine engine = factory.deploy(DEPLOYMENT_ID, _venue(), OWNER, "Sentora USD", "senUSD");
+        ERC4626Engine engine = factory.deploy(DEPLOYMENT_ID, _venue(), OWNER, "Test USD", "tstUSD");
 
-        _assertEngine(engine, address(venue), OWNER, "Sentora USD", "senUSD");
+        _assertEngine(engine, address(venue), OWNER, "Test USD", "tstUSD");
     }
 
     function testDeployEmitsEngineConfiguration() public {

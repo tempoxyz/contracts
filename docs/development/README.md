@@ -2,8 +2,7 @@
 
 This page owns the toolchain, the checks a change must pass, and continuous integration.
 [CONTRIBUTING.md](../../CONTRIBUTING.md) is the short path for a first change; the
-[app](app-browser.md), [Worker](app-runtime.md), and
-[localnet](localnet.md) references hold implementation constraints for those packages.
+[localnet](localnet.md) reference holds implementation constraints for that package.
 
 ## Toolchain
 
@@ -20,9 +19,8 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version
   deployments target, so tests and the gas snapshot run on the deployed EVM version.
 - **Node.js 22.23.4 or newer in the 22.x line**, pinned by `.nvmrc` and enforced by the root `engines` field.
-- **pnpm 11** (`packageManager` in the root `package.json`). The workspace holds Earn's app
-  (`earn/app/`), the shared deployment package (`deployments/`, named `@tempoxyz/contracts`),
-  `localnet/`, and `e2e/`; viem, Cloudflare, and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
+- **pnpm 11** (`packageManager` in the root `package.json`). The workspace holds the shared deployment package (`deployments/`, named `@tempoxyz/contracts`),
+  `localnet/`, and `e2e/`; viem and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
 - **Docker**, for local end-to-end runs only.
 
 Each Foundry project (`earn/`, `zone-router/`, `bridge/`) pins its Solidity dependencies in its own
@@ -37,32 +35,10 @@ Every dependency is public. Contract tests and every
 local stack deploy the committed [DirectPropAMM fixture](../earn/modules/propamm.md#pinned-directpropamm-fixture),
 so no PropAMM checkout or build is needed.
 
-## App environment
-
-`pnpm dev` runs the app against hosted Moderato. Create the ignored local file (the template
-carries the public Privy application ID), set `TEMPO_API_KEY` in it, and restart the dev server
-after any change:
-
-```bash
-cp earn/app/.env.example earn/app/.env.local
-pnpm dev
-```
-
-The Worker returns the public `PRIVY_APP_ID` to the browser; browser-owned Privy signing needs no
-application secret. Bindings, secrets, and production builds are in the
-[Worker reference](app-runtime.md#configuration-and-secrets).
-
 ## Local Tempo and Zone
 
 Local runs need Docker, Foundry, pnpm, and installed Solidity dependencies, and no credentials. Start a
-disposable Tempo L1 and Zone, deploy and verify a local Earn stack, and run the app against it:
-
-```bash
-pnpm dev:local
-pnpm dev:local -- --smoke   # stop after setup and verification
-```
-
-`pnpm e2e:local` runs the default cases on the `erc4626` variant. `--variant <kind>` selects another
+disposable Tempo L1 and Zone, and run end-to-end cases against a local Earn stack with `pnpm e2e:local`, which runs the default cases on the `erc4626` variant. `--variant <kind>` selects another
 [engine kind](../earn/integrations/engines.md), and `--variant all` runs every kind in turn; each variant
 starts a fresh L1 and Zone. Each run writes its deployment manifest under the ignored `e2e/.local/`
 and a structured JSON result under `e2e/.results/`. The pinned images and the `Environment.run` API
@@ -92,7 +68,7 @@ those scripts are the list of checks:
   `FOUNDRY_PROFILE=ci`), and the [gas snapshot](#gas-baseline).
 - `verify:typescript`: `pnpm check` (lint, formatting, and profile validation), `pnpm check:types`,
   `pnpm test` (every workspace's tests, including the documentation link and anchor check in
-  `deployments/docs.test.ts`), and `pnpm build`.
+  `deployments/docs.test.ts`).
 
 CI also runs the bounded symbolic fee proofs, the PropAMM fixture rebuild, the brutalized-memory
 router fuzz, and local E2E ([continuous integration](#continuous-integration)); `pnpm verify` does
@@ -168,27 +144,26 @@ Branch protection on `main` requires `Required / Core` and `Required / Local E2E
 ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Actions` and
 `dependency-scan / Dependency Scan`.
 
-| Workflow                  | Trigger                                                                                                                                | Runs                                                                                                                                                                                                                                                                                          |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pull-request.yml`        | Pull request                                                                                                                           | Verify, Actions security, dependency scan, `Required / Core` over those three, and Build Preview, which uploads the static `earn/app/dist/client` artifact                                                                                                                                    |
-| `verify.yml`              | Called by Pull Request and Main; manual                                                                                                | Contracts, PropAMM fixture, Symbolic, TypeScript checks, the app and Worker build, and TypeScript tests, under `FOUNDRY_PROFILE=ci`                                                                                                                                                           |
-| `local-zone.yml`          | Pull request; push to `main`                                                                                                           | On a pull request, two shards per engine kind and `Required / Local E2E` over them; on `main`, only a `deploy`-profile build that warms the Forge cache                                                                                                                                       |
-| `preview.yml`             | `workflow_run` after Pull Request succeeds                                                                                             | Deploy Preview for same-repository pull requests                                                                                                                                                                                                                                              |
-| `main.yml`                | Push to `main`                                                                                                                         | Verify, then Deploy Production                                                                                                                                                                                                                                                                |
-| `scan-github-actions.yml` | Called by Pull Request; weekly; manual                                                                                                 | The shared GitHub Actions scan                                                                                                                                                                                                                                                                |
-| `pr-audit.yml`            | Pull request label, push, or comment                                                                                                   | The Cyclops audit                                                                                                                                                                                                                                                                             |
-| `zones-compatibility.yml` | Push to `main` touching `earn/src/`, `earn/foundry.*`, `earn/solar*`, the deps script, itself, or the remediation-event action; manual | Builds `earn/`'s contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                                                                                                                                                             |
-| `factory-release.yml`     | Manual (`main` only)                                                                                                                   | The [shared factory releases](../deployment/deployment.md#releasing-from-ci) on Moderato, mainnet, or both, simulated or broadcast and source verified, then a branch recording them in `releases.ts` for review                                                                              |
-| `zone-router-release.yml` | Manual (`main` only)                                                                                                                   | One of [`zone-router/`](../../zone-router/README.md)'s [ownerless contracts](../deployment/deployment.md#zone-router-releases), the `ZoneRouterFactory`, a `SendSettler`, or a `ZoneRouter`, with its parameters, on Moderato, mainnet, or both, simulated or broadcast and source verified   |
-| `bridge-release.yml`      | Manual (`main` only)                                                                                                                   | [`bridge/`](../../bridge/README.md)'s ownerless "TS" handler or a program's `BridgeSettler` at its [deterministic address](../bridge/deploy.md#deploying-from-ci) on Moderato or mainnet, simulated or broadcast and source verified, with the calls the issuer's roles submit in its summary |
-| `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                                            | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                                                                                                                                                                    |
-| `bridge.yml`              | Pull request or push to `main` touching `bridge/` or its inputs (`earn/src/`, `zone-router/src/`, `e2e/bridge/`, `localnet/`)          | The separate [`bridge/`](../../bridge/README.md) project's format, build, tests, card matrix, Zone E2E, and smoke run; not a required check                                                                                                                                                   |
-| `zone-router.yml`         | Pull request or push to `main` touching `zone-router/` or its Earn inputs                                                              | The separate [`zone-router/`](../../zone-router/README.md) project's format, lint, build with sizes, and tests; not a required check                                                                                                                                                          |
+| Workflow                  | Trigger                                                                                                                                | Runs                                                                                                                                                                                                                                                                                                           |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pull-request.yml`        | Pull request                                                                                                                           | Verify, Actions security, dependency scan, `Required / Core` over those three                                                                                                                                                                                                                                  |
+| `verify.yml`              | Called by Pull Request and Main; manual                                                                                                | Contracts, PropAMM fixture, Symbolic, TypeScript checks, and TypeScript tests, under `FOUNDRY_PROFILE=ci`                                                                                                                                                                                                      |
+| `local-zone.yml`          | Pull request; push to `main`                                                                                                           | On a pull request, two shards per engine kind and `Required / Local E2E` over them; on `main`, only a `deploy`-profile build that warms the Forge cache                                                                                                                                                        |
+| `main.yml`                | Push to `main`                                                                                                                         | Verify                                                                                                                                                                                                                                                                                                         |
+| `scan-github-actions.yml` | Called by Pull Request; weekly; manual                                                                                                 | The shared GitHub Actions scan                                                                                                                                                                                                                                                                                 |
+| `pr-audit.yml`            | Pull request label, push, or comment                                                                                                   | The Cyclops audit                                                                                                                                                                                                                                                                                              |
+| `zones-compatibility.yml` | Push to `main` touching `earn/src/`, `earn/foundry.*`, `earn/solar*`, the deps script, itself, or the remediation-event action; manual | Builds `earn/`'s contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                                                                                                                                                                              |
+| `factory-release.yml`     | Manual (`main` only)                                                                                                                   | The [shared factory releases](../deployment/deployment.md#releasing-from-ci) on Moderato, mainnet, or both, simulated or broadcast and source verified, then a branch recording them in `releases.ts` for review                                                                                               |
+| `zone-router-release.yml` | Manual (`main` only)                                                                                                                   | One of [`zone-router/`](../../zone-router/README.md)'s [ownerless contracts](../deployment/deployment.md#zone-router-releases), the `ZoneRouterFactory`, a `SendSettler`, a `BridgeSettler`, or a `ZoneRouter`, with its parameters, on Moderato, mainnet, or both, simulated or broadcast and source verified |
+| `bridge-release.yml`      | Manual (`main` only)                                                                                                                   | [`bridge/`](../../bridge/README.md)'s ownerless "TS" handler at its [deterministic address](../bridge/deploy.md#deploying-from-ci) on Moderato or mainnet, simulated or broadcast and source verified, with the calls Bridge's roles submit in its summary                                                     |
+| `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                                            | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                                                                                                                                                                                     |
+| `bridge.yml`              | Pull request or push to `main` touching `bridge/` or its inputs (`earn/src/`, `zone-router/src/`, `e2e/bridge/`, `localnet/`)          | The separate [`bridge/`](../../bridge/README.md) project's format, build, tests, card matrix, Zone E2E, and smoke run; not a required check                                                                                                                                                                    |
+| `zone-router.yml`         | Pull request or push to `main` touching `zone-router/` or its Earn inputs                                                              | The separate [`zone-router/`](../../zone-router/README.md) project's format, lint, build with sizes, and tests; not a required check                                                                                                                                                                           |
 
 - **Verify jobs.** Contracts runs the same steps as `verify:contracts`, except that its Forge test
   step skips `test/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
   fuzzes the whole `SingleZoneEarnRouterAbiFuzzTest` contract over brutalized memory at 4,096 runs;
-  `main` does not, so production deploys never wait on it. Symbolic proves the
+  `main` does not, so `main` never waits on it. Symbolic proves the
   `EarnFeeMathFuzzTest` `prove*` properties with z3 at a loop bound of 32. TypeScript checks and
   build typechecks one workspace at a time (local `pnpm check:types` runs them in parallel).
 - **PropAMM fixture.** The job checks out the
@@ -203,17 +178,9 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
   (`earn/foundry.toml`, `earn/foundry.lock`, `package.json`, `pnpm-lock.yaml`,
   `pnpm-workspace.yaml`, `.nvmrc`). An out-of-scope shard passes without running, so
   `Required / Local E2E` still reports.
-- **Deployments.** Deploy Preview checks out and builds the Worker from the default branch, never
-  from the pull request, and installs the pull request's static artifact only after rejecting
-  symbolic links, non-regular files, files outside `client/`, and a missing `index.html`. It
-  requires the preview Worker's `PRIVY_APP_ID` and `TEMPO_API_KEY` secrets, uploads a Worker version
-  with the `pr-<number>` alias, and comments its URL. Deploy Production runs in the `production`
-  environment after Verify. Both smoke-test `/` and `/health` and parse the live `/api/config` with
-  `earn/app/deployments/check-live-config.ts`.
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
-  Only the two deploy jobs receive the `DEV_CLOUDFLARE_*` credentials, which are secrets of the
-  `production` and `preview` environments, and both environments deploy only from `main`; the
-  benchmark job receives `TEMPO_API_KEY`; the factory release, Zone router release and the Bridge Release jobs receive the shared
+  The
+  benchmark job receives `TEMPO_API_KEY`; the factory release, Zone router release and Bridge release jobs receive the shared
   `DEPLOYER_PRIVATE_KEY` and RPC credentials from the `factory-release-<network>` environment, which
   accepts only `main` and has no required reviewer, so dispatching a release is its approval; the factory release's registry job, with no secrets, gets a `GITHUB_TOKEN` that may push a
   `factory-release/<run>-<attempt>` branch; the audit and remediation-event jobs receive the

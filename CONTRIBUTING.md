@@ -25,20 +25,18 @@ and local stacks deploy a committed [DirectPropAMM fixture](docs/earn/modules/pr
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | Earn contracts ([`earn/src/`](earn/src/), [`earn/test/`](earn/test/)) | `pnpm test:contracts`, or `forge test --match-path <path> -vvv` in `earn/`         |
 | Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/contracts test --run`, `check`, and `typecheck`           |
-| App ([`earn/app/`](earn/app/))                                        | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack           |
-| Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`; `pnpm dev:local -- --smoke` sets up and verifies a stack         |
+| Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`                                                                   |
 | Zone router ([`zone-router/`](zone-router/))                          | `forge test` in `zone-router/`; see [zone-router/AGENTS.md](zone-router/AGENTS.md) |
 | Card integration ([`bridge/`](bridge/))                               | `forge test` in `bridge/`; see [bridge/AGENTS.md](bridge/AGENTS.md)                |
 
-`pnpm dev` runs the app against the hosted Moderato testnet and needs a Tempo API key
-([app environment](docs/development/README.md#app-environment)); the local commands need no credentials.
+The local commands need no credentials.
 The [test map](docs/development/README.md#test-map) shows where existing coverage lives, and
 [development](docs/development/README.md) owns every other command.
 
 ## Before you open a pull request
 
 1. Run `pnpm verify`. It runs formatting, lint, the contract build, size check, and tests, the ABI
-   and gas snapshots, TypeScript checks and tests, the documentation link check, and the app build.
+   and gas snapshots, TypeScript checks and tests, and the documentation link check.
    CI adds the symbolic proofs, the PropAMM fixture rebuild, and local E2E
    ([required checks](docs/development/README.md#required-checks)).
 2. Update the one page that owns the behavior you changed; the
