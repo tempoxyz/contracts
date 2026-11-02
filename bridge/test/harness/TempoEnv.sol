@@ -69,7 +69,7 @@ abstract contract TempoEnv is Test {
     address internal bridgePauser = makeAddr("bridge.pauser");
     uint256 internal bridgeDebitorPk = uint256(keccak256("bridge.debitor"));
     address internal bridgeDebitor = vm.addr(uint256(keccak256("bridge.debitor")));
-    /// @dev Stripe settlement wallet: the only destination pulls may land in.
+    /// @dev Program settlement wallet: the only destination pulls may land in.
     address internal settlement = makeAddr("bridge.settlement");
     /// @dev Bridge program liquidity used to return excess holds, refunds and dispute credits.
     address internal programWallet = makeAddr("bridge.program-wallet");

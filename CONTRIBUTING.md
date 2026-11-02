@@ -28,7 +28,7 @@ and local stacks deploy a committed [DirectPropAMM fixture](docs/earn/modules/pr
 | App ([`earn/app/`](earn/app/))                                        | `pnpm --filter app test`; `pnpm dev:local` runs it against a local stack           |
 | Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`; `pnpm dev:local -- --smoke` sets up and verifies a stack         |
 | Zone router ([`zone-router/`](zone-router/))                          | `forge test` in `zone-router/`; see [zone-router/AGENTS.md](zone-router/AGENTS.md) |
-| Bridge integration ([`bridge/`](bridge/))                             | `forge test` in `bridge/`; see [bridge/AGENTS.md](bridge/AGENTS.md)                |
+| Card integration ([`bridge/`](bridge/))                               | `forge test` in `bridge/`; see [bridge/AGENTS.md](bridge/AGENTS.md)                |
 
 `pnpm dev` runs the app against the hosted Moderato testnet and needs a Tempo API key
 ([app environment](docs/development/README.md#app-environment)); the local commands need no credentials.

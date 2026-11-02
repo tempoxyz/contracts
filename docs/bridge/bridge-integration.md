@@ -1,39 +1,33 @@
-# Bridge backend integration
+# Issuer backend integration
 
-How Bridge's card backend (monorail) uses Tempo's Bridge integration: enrollment, the authorization path for
+How the issuer's card backend uses Tempo's card integration: enrollment, the authorization path for
 public and private spend, settlement tracking, refunds and retries. The contracts are in
 [`design.md`](design.md) and deploying them is in [`deploy.md`](deploy.md).
 
 ## How it fits today's pull path
 
-Today a just-in-time card pull runs:
-
-1. `StripeRpcController` (`packs/cards/app/controllers/stripe_rpc_controller.rb:67`).
-2. `ProcessStripeAuthorizationRpc`, then `ApplyStripeAuthHold`, then `DebitCustomerWallet`.
-3. `SynchronousNoncustodialJitManager#submit_using_crypto_pulls!`
-   (`packs/cards/.../synchronous_noncustodial_jit_manager.rb:167`).
-4. `CryptoPulls::Api#pull!` (`packs/crypto_pulls/app/public/api.rb:253`), then `AdvancePull`.
-5. `Chains::Evm::TransferToDestination`, where the card-controllers hot wallet sends the debitor's
-   `transferToDestination`.
+Today a just-in-time card pull runs in four stages: the processor's authorization request, the
+issuer's authorization hold, its crypto pull, and an EVM transfer in which the issuer's hot wallet
+(the debitor) calls `transferToDestination`.
 
 The card is approved once the pull is `Submitted`, and a failure after that is a double spend
-Bridge absorbs.
+the issuer absorbs.
 
-Card spend on Tempo keeps steps 1 to 4 and replaces step 5 with a new mechanism, `TS`. The transaction is
-signed by a Bridge-held **access key on the cardholder's account**, not by the debitor, and it
+Card spend on Tempo keeps the first three stages and replaces the transfer with a new mechanism, `TS`. The transaction is
+signed by an issuer-held **access key on the cardholder's account**, not by the debitor, and it
 calls the program clone's `publicCall`, not `transferToDestination`, which `TS` reverts.
 
 |                         | Today (`EA`, `P2`, `TF`)              | `TS`, public                                 | `TS`, private                                  |
 | ----------------------- | ------------------------------------- | -------------------------------------------- | ---------------------------------------------- |
-| Signer                  | Card-controllers hot wallet (debitor) | Bridge access key, as the cardholder         | Bridge Zone access key, as the cardholder      |
+| Signer                  | Card-controllers hot wallet (debitor) | The issuer access key, as the cardholder     | The issuer Zone access key, as the cardholder  |
 | Sent to                 | Tempo L1                              | Tempo L1                                     | The Zone RPC                                   |
 | Call                    | `transferToDestination`               | `approve` + `publicCall "PS"` + `approve(0)` | `approve(outbox)` + `requestWithdrawal`        |
-| Bridge approves on      | Submission                            | The L1 receipt                               | The Zone receipt                               |
+| The issuer approves on  | Submission                            | The L1 receipt                               | The Zone receipt                               |
 | Can fail after approval | Yes (double spend)                    | No: the receipt is the settlement            | Yes: the callback can revert, the reserve pays |
 
 ## Enrollment
 
-The cardholder authorizes Bridge's key once per account, in the wallet that holds the key's root.
+The cardholder authorizes the issuer's key once per account, in the wallet that holds the key's root.
 The authorization is a keychain `authorizeKey` with:
 
 - **Public:** a limit on each token the card spends, `approve` scoped to the clone as recipient,
@@ -42,8 +36,8 @@ The authorization is a keychain `authorizeKey` with:
   `requestWithdrawal`. See `e2e/bridge/src/run.ts` step 6.
 - An expiry. A key is good until it expires or the cardholder revokes it.
 
-Bridge uses **one access key per program**: every cardholder of a program authorizes the same
-Bridge key. Bridge keeps per cardholder the limits and expiry they authorized, and for private
+The issuer uses **one access key per program**: every cardholder of a program authorizes the same
+the issuer key. The issuer keeps per cardholder the limits and expiry they authorized, and for private
 cards the Zone ID. A leaked key therefore reaches every cardholder of its program, up to each one's
 limit, which tight limits and short expiries bound.
 
@@ -64,21 +58,21 @@ Before signing, decline if any of these fail. Each is a read:
 - **Handler:** `getSpenderHandlerWithCheckedPermissions("TS", clone)` does not revert, so the
   handler is enabled, or gated with the program allowed.
 - **Destination:** `isAuthorizedDestination(spenderId, destination)`.
-- **Balance:** the cardholder's token balance, plus share value for Earn. On the L1 that is
+- **Balance:** The cardholder's token balance, plus share value for Earn. On the L1 that is
   `availableBalance` on the clone. In a Zone it is `balanceOf` through an authenticated Zone RPC,
   for the one token the spend withdraws.
-- **Key headroom:** the spend fits the key's remaining periodic limit.
+- **Key headroom:** The spend fits the key's remaining periodic limit.
 - **Zone health, private only**, read on the L1:
   - the portal is not paused and `areDepositsActive(token)` is true;
   - the router still has its Zone role, and the refund recipient and program wallet are still
     admitted;
-  - `calculateDepositFee() + calculateBouncebackFee()` is within the change Bridge adds;
-  - batches are still posting, and Bridge's oldest unsettled withdrawal is younger than its
+  - `calculateDepositFee() + calculateBouncebackFee()` is within the change the issuer adds;
+  - batches are still posting, and the issuer's oldest unsettled withdrawal is younger than its
     threshold, so a request will settle.
 
 ### Public spend
 
-One Tempo transaction from the cardholder's account, signed by Bridge's access key, with Bridge as
+One Tempo transaction from the cardholder's account, signed by the issuer's access key, with the issuer as
 fee payer:
 
 ```text
@@ -91,7 +85,7 @@ earnShare.approve(clone, 0)               only when spending from Earn
 
 `Spend` is `spenderId, token, amount, destination, vault, fromVault, maxShares, ref`:
 
-- `ref` is Bridge's own reference. Use the crypto pull's ID.
+- `ref` is the issuer's own reference. Use the crypto pull's ID.
 - `fromVault` is how much of `amount` comes from Earn.
 - `maxShares` is the live `previewWithdraw(fromVault)` plus a tolerance. The harness uses 0.5%.
   Always set it: it sizes the share approval, and zero would approve no shares.
@@ -100,7 +94,7 @@ Approve the card on the receipt. A revert means nothing moved: decline.
 
 ### Private spend
 
-One Zone transaction from the cardholder's Zone account, signed by Bridge's Zone key:
+One Zone transaction from the cardholder's Zone account, signed by the issuer's Zone key:
 
 ```text
 inputToken.approve(outbox, input)
@@ -110,7 +104,7 @@ outbox.requestWithdrawal(inputToken, router, input, memo, callbackGas,
 
 `router` is the program's Spend-mode `ZoneRouter` for that Zone (see [`deploy.md`](deploy.md)).
 
-Bridge sponsors the transaction, and the outbox then takes the withdrawal fee from Bridge's fee
+The issuer sponsors the transaction, and the outbox then takes the withdrawal fee from the issuer's fee
 payer in the input token: stablecoin, or EarnShare for an Earn spend. The fee payer holds and
 approves those tokens. Unsponsored, the cardholder approves `input + withdrawalFee` and pays it.
 
@@ -139,9 +133,8 @@ approves those tokens. Unsponsored, the cardholder approves `input + withdrawalF
   the cardholder, a public `refundRecipient` for when the Zone rejects
   it, and `maxDepositFee`, the most the portal may keep, which is the fee the change covers. Build a
   fresh encrypted deposit for each spend, so no two returns match on the L1. Encrypt it to the portal's sequencer key, as `prepareRecipient` does in the E2E.
-  monorail builds encrypted Zone deposits in `packs/hot_wallet/.../tempo_zone/encrypt_deposit_payload.rb`.
 - `refundRecipient` appears on the L1 with every return, so it is never the cardholder. It is one
-  dedicated Bridge-controlled account per program, admitted on the Zone.
+  dedicated issuer-controlled account per program, admitted on the Zone.
 
 Approve the card on the Zone receipt. Settlement on the L1 follows once the Zone posts its batch
 (see [`design.md`](design.md#latency)).
@@ -150,15 +143,15 @@ Approve the card on the Zone receipt. Settlement on the L1 follows once the Zone
 
 A private spend ends in one of three ways:
 
-| Outcome | What Bridge sees                                                                                                                                                                                                                                                                                                                     | Bridge records                                                                                       |
+| Outcome | What the issuer sees                                                                                                                                                                                                                                                                                                                 | The issuer records                                                                                   |
 | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | Settled | The portal's `WithdrawalProcessed(to = router, senderTag, token, amount, callbackSuccess = true)`, and in the same transaction the router's `Spent(settler, token, used, change, zoneDepositHash)` and the settler's `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`. The settler has checked the destination was paid | Pull `Completed`                                                                                     |
 | Bounced | The portal's `WithdrawalProcessed` for the router and `senderTag` with `callbackSuccess = false`, and no `Spent` or `SpendSettled`                                                                                                                                                                                                   | Failed after approval: draw the reserve, record cardholder debt, as the double-spend path does today |
-| Pending | Neither, past Bridge's timeout: the portal is paused, the Zone stopped posting batches, or the Zone dropped the receipt                                                                                                                                                                                                              | Unresolved: hold the authorization's exposure and escalate to the Zone operator                      |
+| Pending | Neither, past the issuer's timeout: the portal is paused, the Zone stopped posting batches, or the Zone dropped the receipt                                                                                                                                                                                                          | Unresolved: hold the authorization's exposure and escalate to the Zone operator                      |
 
 - Match both outcomes by the `senderTag` in the portal's `WithdrawalProcessed`:
   `keccak256(abi.encodePacked(sender, txHash, fallbackNonce))`, where `fallbackNonce` is in the
-  outbox's withdrawal event in Bridge's own Zone receipt. Neither the router nor the settler emits
+  outbox's withdrawal event in the issuer's own Zone receipt. Neither the router nor the settler emits
   it, so read `Spent` and `SpendSettled` from the same transaction. Trust only events emitted by the
   program's portal, router and settler. `ref` and the `Spend`
   fields come from callback data anyone can write, so never match on `ref` alone.
@@ -176,9 +169,9 @@ A private spend ends in one of three ways:
 - On a bounce, the full input goes back to the cardholder's Zone balance through the fallback. The
   withdrawal fee is not returned.
 - A bounce carries no reason. The messenger replaces every callback revert with `CallbackRejected()`,
-  so the errors under [Events and errors](#events-and-errors) reach Bridge only by simulating the
+  so the errors under [Events and errors](#events-and-errors) reach the issuer only by simulating the
   callback or tracing the settlement transaction.
-- A cardholder can revoke Bridge's key or spend the returned input after a bounce, so the debt may
+- A cardholder can revoke the issuer's key or spend the returned input after a bounce, so the debt may
   not be collectable on chain.
 
 ## Refunds
@@ -186,14 +179,14 @@ A private spend ends in one of three ways:
 Refunds are stablecoin, as today's crypto-return trips are:
 
 - **Public:** a transfer from the program wallet to the cardholder's account.
-- **Private:** the program wallet, admitted on the Zone, approves the portal and calls its own
+- **Private:** The program wallet, admitted on the Zone, approves the portal and calls its own
   `depositEncrypted(token, amount, keyIndex, encrypted, refundRecipient)` with a fresh deposit
   encrypted to the cardholder and the program's `refundRecipient`. No contract of the integration is
   involved, and nothing on the L1 names the cardholder. The cardholder receives `amount` less the
   portal's deposit fee, and the portal reverts `DepositTooSmall` for an amount below the deposit and
   bounce-back fees.
 - **Returns the Zone rejects:** a change return or refund the Zone side rejects comes back to the
-  program's `refundRecipient`, with no deposit ID. Bridge matches it by token, amount and time, and
+  program's `refundRecipient`, with no deposit ID. The issuer matches it by token, amount and time, and
   pays the cardholder again. `amount` is net of the bounce-back fee. It arrives one of two ways:
   - paid, as the portal's `DepositBounceBack(tempoRefundRecipient, token, amount, bouncebackFee)`;
   - parked in the portal, as `DepositBounceBackPending` with the same fields, when the portal cannot
@@ -201,37 +194,37 @@ Refunds are stablecoin, as today's crypto-return trips are:
     it, then the refund recipient calls the portal's `claimRefund(token)`, which emits
     `RefundClaimed(recipient, token, amount)`.
 - **Programs with two tokens:** a stablecoin spend settles in that stablecoin and an Earn spend in
-  the vault's asset, which can differ (DLUSD and OUSD). The settlement and program wallets then
+  the vault's asset, which can differ. The settlement and program wallets then
   hold both, and refunds go in the token the spend settled in.
 
 ## Retries
 
-`TS` has no on-chain idempotency. Bridge dedupes by pull ID, as `AdvancePull` already does by
+`TS` has no on-chain idempotency. The issuer dedupes by pull ID, as its pull pipeline already does by
 `external_id`, and must not resubmit a spend whose first attempt may have landed:
 
 - **Public:** look up the transaction hash.
 - **Private:** look up the Zone receipt, or the `senderTag` in the portal's `WithdrawalProcessed`
   on the L1. Set `validBefore` on the Zone
-  request, so a request Bridge gave up on cannot land after the card was declined.
+  request, so a request the issuer gave up on cannot land after the card was declined.
 
 ## Events and errors
 
-Events Bridge reads:
+Events the issuer reads:
 
 - `TempoSpendExecuted(ref, from, destination, token, amount, fromStable, fromVault, sharesBurned)`
   from the clone, on every spend. `from` is the cardholder for a public spend and the settler for a
   private one. Anyone can call `publicCall "PS"` with any token, so reconcile public spends by the
-  transaction hash Bridge sent, never by this event alone.
+  transaction hash the issuer sent, never by this event alone.
 - `Spent(settler, token, used, change, zoneDepositHash)` from the router and
   `SpendSettled(ref, inputToken, inputConsumed, inputReturned)` from the settler, on every settled
   private spend. Neither carries the `senderTag` or a cardholder address.
 - `SpendVaultUpdated(vault, allowed)` from the clone, on governance's `"UV"` call.
 - From the program's portal: `WithdrawalProcessed(to, senderTag, token, amount, callbackSuccess)`
-  for every settlement, which carries the `senderTag` Bridge matches, `DepositBounceBack` and `DepositBounceBackPending` for rejected returns, and
+  for every settlement, which carries the `senderTag` the issuer matches, `DepositBounceBack` and `DepositBounceBackPending` for rejected returns, and
   `RefundClaimed` when a parked return is claimed.
 
-Reverts a spend can hit. A public spend reverts with them in Bridge's transaction. A private spend
-only bounces, so they show up when Bridge simulates the callback or traces the settlement:
+Reverts a spend can hit. A public spend reverts with them in the issuer's transaction. A private spend
+only bounces, so they show up when the issuer simulates the callback or traces the settlement:
 
 - **The factory and clone:** `FactoryPaused`, `SpenderHandlerDisabled`, `SpenderHandlerNotAllowed`
   and `PrefixUnknown`.

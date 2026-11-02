@@ -13,7 +13,7 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
   Never copy Earn code here.
 - Settlers live in `src/settlers/`, each adapting one payee system. A settler may hold a minimal
   interface for the external system it pays into, under `src/settlers/<system>/` (as `bridge/` holds
-  the `Spend` struct and the two Bridge calls `BridgeSettler` makes), but never vendored code. This
+  the `Spend` struct and the two issuer calls `BridgeSettler` makes), but never vendored code. This
   project never imports from `bridge/`; `bridge/` imports `Spend` from here, so a change to it
   changes the "TS" handler's ABI too.
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical

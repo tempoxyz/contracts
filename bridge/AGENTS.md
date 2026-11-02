@@ -1,8 +1,8 @@
-# Tempo's Bridge integration
+# Tempo's card integration
 
-Bridge card spend on Tempo: Bridge's card contracts vendored as they are, the "TS" handler
-(`SpenderTempoSpend`) that runs inside Bridge's system, the card E2E harness, and the deploy
-scripts Bridge runs. [README.md](README.md) maps the project and
+Card spend on Tempo: the card spender contracts vendored as they are, the "TS" handler
+(`SpenderTempoSpend`) that runs inside the issuer's system, the card E2E harness, and the deploy
+scripts the issuer runs. [README.md](README.md) maps the project and
 [docs/bridge/design.md](../docs/bridge/design.md) owns the design.
 
 - This is its own Foundry project. Run every `forge` command from `bridge/`, after
@@ -14,11 +14,11 @@ scripts Bridge runs. [README.md](README.md) maps the project and
   (`zone-router/src/`), never a copy. `BridgeSettler` and the `Spend` struct the handler settles
   live in the Zone router's `src/settlers/`; the Zone router never imports from here. A change to
   Earn's or the Zone router's interfaces that breaks this project is fixed in the same pull request.
-- Bridge-specific code stays here; `earn/` stays customer-agnostic and never imports from
+- Issuer-specific code stays here; `earn/` stays customer-agnostic and never imports from
   `bridge/`.
-- `vendor/` holds Bridge and Zone sources at the commits in [vendor/VENDORED.md](vendor/VENDORED.md),
+- `vendor/` holds the issuer and Zone sources at the commits in [vendor/VENDORED.md](vendor/VENDORED.md),
   unmodified except for the changes it lists; refresh them only by re-copying.
-- No contract here emits or stores the Zone callback `senderTag` or a cardholder address; Bridge
+- No contract here emits or stores the Zone callback `senderTag` or a cardholder address; the issuer
   matches private spends by the Portal's own events.
 
 Validate with `forge fmt --check src test script`, `forge build`, and `FOUNDRY_PROFILE=ci forge test`

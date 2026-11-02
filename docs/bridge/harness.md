@@ -5,15 +5,15 @@ a small set of hooks, so a new design gets the whole suite by writing one adapte
 
 ## What is real and what is modeled
 
-| Layer                                    | In the harness                                                                                 | Real or modeled                |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------ |
-| TIP-20, AccountKeychain, TIP-403, fees   | Tempo precompiles in Foundry (`hardfork = "tempo:T8"`)                                         | Real                           |
-| Access-key transactions                  | Signed Tempo transactions via `vm.executeTransaction`                                          | Real                           |
-| Tempo Earn                               | `EarnFactory`, `EarnVault`, native EarnShare, `ERC4626Engine` over a demo venue                | Real contracts, demo venue     |
-| Bridge                                   | `SpenderFactory`, EA, P2 (with Uniswap Permit2), TF and the unmerged EV handler                | Real contracts                 |
-| Zone, Tempo side                         | `ZonePortal`, `ZoneMessenger`, `Verifier` at canonical addresses, with the Zone factory mocked | Real contracts, mocked factory |
-| Zone, Zone side                          | `ZoneEnv`: shadow TIP-20 balances, outbox, sequencer, encrypted deposits                       | Modeled                        |
-| Stripe Issuing and Bridge's card backend | `CardProgram`                                                                                  | Modeled                        |
+| Layer                                        | In the harness                                                                                 | Real or modeled                |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------ |
+| TIP-20, AccountKeychain, TIP-403, fees       | Tempo precompiles in Foundry (`hardfork = "tempo:T8"`)                                         | Real                           |
+| Access-key transactions                      | Signed Tempo transactions via `vm.executeTransaction`                                          | Real                           |
+| Tempo Earn                                   | `EarnFactory`, `EarnVault`, native EarnShare, `ERC4626Engine` over a demo venue                | Real contracts, demo venue     |
+| The issuer                                   | `SpenderFactory`, EA, P2 (with Uniswap Permit2), TF and the unmerged EV handler                | Real contracts                 |
+| Zone, Tempo side                             | `ZonePortal`, `ZoneMessenger`, `Verifier` at canonical addresses, with the Zone factory mocked | Real contracts, mocked factory |
+| Zone, Zone side                              | `ZoneEnv`: shadow TIP-20 balances, outbox, sequencer, encrypted deposits                       | Modeled                        |
+| The card processor and issuer's card backend | `CardProgram`                                                                                  | Modeled                        |
 
 [`e2e/bridge`](../../e2e/bridge/) runs the private path on a real L1 and Zone, so it covers what the model cannot, such
 as the Zone's ban on contract creation.
@@ -28,7 +28,7 @@ real keychain enforces Zone key limits and scopes. `ZoneEnv` plays sequencer:
 Deposit payloads are XOR-encrypted with a per-deposit nonce, so Tempo data never carries the
 recipient.
 
-**The card program model.** `CardProgram` follows monorail's noncustodial just-in-time cards:
+**The card program model.** `CardProgram` follows the issuer's noncustodial just-in-time cards:
 
 - An authorization pulls its hold first: the amount, a 20% buffer for restaurants, bars, fast
   food, taxis and car rentals, a $100 hold for a $1 fuel-pump preauthorization, plus any estimated
@@ -36,17 +36,17 @@ recipient.
 - A capture above the hold pulls the difference.
 - A final capture, reversal or expiry returns the unused hold. Holds expire after 7 days, or 31
   for lodging, airlines and rentals.
-- Refunds and won disputes credit the cardholder from Bridge liquidity.
+- Refunds and won disputes credit the cardholder from issuer liquidity.
 - A pull that fails after approval is paid by the platform reserve and becomes cardholder debt.
 
 ## Structure
 
 ```text
-TempoEnv        tokens, Earn, Bridge factory with EA/P2/TF/EV/TS
+TempoEnv        tokens, Earn, spender factory with EA/P2/TF/EV/TS
   ZoneEnv       real portal and messenger, modeled Zone sequencer
     AccessKeys  keychain authorization and access-key transactions
       SpendRail       the hooks a setup implements
-        CardProgram   Stripe Issuing and Bridge model, drives the hooks
+        CardProgram   card processor and issuer model, drives the hooks
           CardScenarios  every scenario
           RailDefaults   default hook bodies
             BridgeErc20Rail, BridgePermit2Rail, BridgeTewfRail, BridgeErc4626Rail
@@ -64,13 +64,13 @@ TempoEnv        tokens, Earn, Bridge factory with EA/P2/TF/EV/TS
 | `_railCaps()`                                     | Capabilities, which decide how capability-dependent scenarios assert                  |
 | `_railSetUp()`                                    | Deploy anything beyond the shared world                                               |
 | `_railEnroll(user, amount)`                       | Fund the funding source and link the card                                             |
-| `_railPull(user, amount, actionId)`               | Bridge pulls: `Settled`, `Rejected` or `FailedAfterApproval`                          |
+| `_railPull(user, amount, actionId)`               | The issuer pulls: `Settled`, `Rejected` or `FailedAfterApproval`                      |
 | `_railDeclineError(reason)`                       | The error a pull fails with for a `Decline` reason, or zero to check only the outcome |
-| `_railCredit(user, amount, actionId)`             | Bridge returns funds                                                                  |
+| `_railCredit(user, amount, actionId)`             | The issuer returns funds                                                              |
 | `_railValue(user)`, `_railShares(user)`           | What the cardholder holds                                                             |
 | `_railSetSpendLimit`, `_railRevoke`, `_railDrain` | Cardholder controls and adversarial moves                                             |
 | `_railPullSplit`                                  | One pull from stablecoin and Earn (with `splitFunding`)                               |
-| `_railZoneKeyWithdrawTo`                          | Uses Bridge's Zone key as if leaked (private rails)                                   |
+| `_railZoneKeyWithdrawTo`                          | Uses the issuer's Zone key as if leaked (private rails)                               |
 
 ## Extending it
 
