@@ -173,14 +173,13 @@ Earn comes from `../earn/src`.
 
 ## Documents
 
-- [`docs/bridge/design.md`](../docs/bridge/design.md): the design, flows, security model and decisions.
+- [`docs/bridge/design.md`](../docs/bridge/design.md): the design, flows, security model, decisions and audit scope.
 - [`docs/zone-router/zone-router.md`](../docs/zone-router/zone-router.md): the [Zone router](../zone-router/README.md)
   private spends go through, and its `BridgeSettler`.
 - [`docs/bridge/deploy.md`](../docs/bridge/deploy.md): deploying into Bridge's factory, and the calls
   each role submits. The handler lands at a deterministic address, so Bridge running the deploy
   scripts and Tempo's Bridge Release workflow ([`bridge-release.yml`](../.github/workflows/bridge-release.yml))
   deploy the same contract; a program's `BridgeSettler` comes from Zone Router Release.
-- [`docs/bridge/audit-scope.md`](../docs/bridge/audit-scope.md): what an audit covers, the invariants to check and where to look hardest.
 - [`docs/bridge/bridge-integration.md`](../docs/bridge/bridge-integration.md): how Bridge's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
 - [`docs/bridge/harness.md`](../docs/bridge/harness.md): what is real and what is modeled, and how to extend it.
 - [`docs/bridge/scenarios.md`](../docs/bridge/scenarios.md): every card scenario and what it asserts.

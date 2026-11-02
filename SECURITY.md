@@ -47,4 +47,5 @@ These contracts have no bug bounty.
 
 Earn's completed audits, their scope, and the contracts changed or added since are listed on its
 [audits page](docs/earn/audit/README.md). The Bridge integration's
-[audit scope](docs/bridge/audit-scope.md) covers the "TS" handler and `BridgeSettler`.
+[design](docs/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeSettler`,
+`ZoneRouter` and `ZoneRouterFactory`.
