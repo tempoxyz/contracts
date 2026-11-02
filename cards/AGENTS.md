@@ -15,8 +15,8 @@
   it from `CardSpend.destinationHint`.
 - `vendor/` holds providers' sources unmodified at the provenance in [vendor/VENDORED.md](vendor/VENDORED.md).
   Rain's exact pragma (0.8.17) does not build here: tests and scripts deploy
-  `test/fixtures/rain.json`, which `script/rain/build-fixture.sh` rebuilds; commit it with any vendor
-  change.
+  `test/fixtures/rain.json`, which `script/rain/build-fixture.sh` rebuilds (`--check` compares it
+  without the metadata hashes, which differ by checkout path); commit it with any vendor change.
 - No contract here emits or stores the Zone callback `senderTag` or a cardholder address on the private
   path.
 

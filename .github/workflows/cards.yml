@@ -75,11 +75,10 @@ jobs:
       - name: Contract sizes
         run: forge build --sizes src
 
-      # The committed Rain bytecode is what vendor/rain builds to with Rain's own compiler settings.
+      # The committed Rain bytecode is what vendor/rain builds to with Rain's own compiler settings,
+      # apart from the metadata hashes, which name each checkout's absolute paths.
       - name: Rain fixture is current
-        run: |
-          script/rain/build-fixture.sh
-          git diff --exit-code test/fixtures/rain.json
+        run: script/rain/build-fixture.sh --check
 
       - name: Test
         env:

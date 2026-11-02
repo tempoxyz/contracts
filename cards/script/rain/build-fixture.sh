@@ -4,7 +4,10 @@
 # which tests and scripts deploy, because their exact pragma cannot compile with this project's
 # settings. --verify also checks each build against the bytecode Rain deployed on Polygon, through
 # Sourcify, ignoring only the CBOR metadata hashes (they hash source paths, which differ here).
-# Usage (from cards/): script/rain/build-fixture.sh [--verify]
+# The sources sit outside this build's root, so solc names them by absolute path and the metadata
+# hashes differ between checkouts. --check therefore leaves the fixture alone and fails unless a fresh
+# build matches it apart from those hashes.
+# Usage (from cards/): script/rain/build-fixture.sh [--verify] [--check]
 set -euo pipefail
 cd "$(dirname "$0")"
 forge build --quiet
@@ -28,6 +31,15 @@ for name, polygon in contracts.items():
         print(f"{name}: {'matches' if same else 'DIFFERS FROM'} Polygon {polygon}")
         if not same:
             sys.exit(1)
+if "--check" in sys.argv:
+    committed = json.load(open("test/fixtures/rain.json"))["contracts"]
+    stale = [n for n, c in fixture["contracts"].items()
+             if n not in committed or strip(committed[n]["bytecode"]) != strip(c["bytecode"])]
+    if stale:
+        print("test/fixtures/rain.json is stale for: " + ", ".join(stale) + "; run script/rain/build-fixture.sh")
+        sys.exit(1)
+    print("test/fixtures/rain.json matches vendor/rain apart from metadata hashes")
+    sys.exit(0)
 json.dump(fixture, open("test/fixtures/rain.json", "w"), indent=2)
 open("test/fixtures/rain.json", "a").write("\n")
 print("wrote test/fixtures/rain.json")
