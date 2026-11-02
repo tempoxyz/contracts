@@ -21,7 +21,8 @@ scripts the issuer runs. [README.md](README.md) maps the project and
 - No contract here emits or stores the Zone callback `senderTag` or a cardholder address; the issuer
   matches private spends by the Portal's own events.
 
-Validate with `forge fmt --check src test script`, `forge build`, and `FOUNDRY_PROFILE=ci forge test`
+Validate with `forge fmt --check src test script`, `forge build`, `forge lint --deny warnings src/BridgeSettler.sol`,
+`forge build --sizes src` and `FOUNDRY_PROFILE=ci forge test`
 here, plus `python3 script/matrix.py --out reports/matrix.md` and a diff against
 `../docs/bridge/matrix.md` when card scenarios or setups change. `script/smoke.sh` and
 `pnpm e2e:bridge` need Docker ([Running it](README.md#running-it)).

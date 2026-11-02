@@ -69,6 +69,13 @@ jobs:
       - name: Build
         run: forge build
 
+      # BridgeSettler kept the lint and size checks zone-router.yml ran on it before it moved here.
+      - name: Lint BridgeSettler
+        run: forge lint --deny warnings src/BridgeSettler.sol
+
+      - name: Contract sizes
+        run: forge build --sizes src
+
       - name: Test
         env:
           FOUNDRY_PROFILE: ci

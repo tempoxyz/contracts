@@ -50,3 +50,12 @@ ignore = ["vendor/**"]
 
 [lint]
 lint_on_build = false
+# The same exclusions as zone-router/foundry.toml, where BridgeSettler was linted before it moved here.
+exclude_lints = [
+    "encode-packed-collision",
+    "incorrect-strict-equality",
+    "reentrancy-events",
+    "require-revert-in-loop",
+    "uninitialized-local",
+    "unused-return",
+]
