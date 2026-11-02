@@ -20,11 +20,11 @@ import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice Read-only check of one card program before private spend goes live: the "TS" handler,
 ///         the program and its destination, the Zone's portal and token, the program's Spend-mode

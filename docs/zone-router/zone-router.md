@@ -3,8 +3,9 @@
 [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) takes a Zone's withdrawal callbacks on Tempo: Earn
 deposits and redemptions, and spends through settlers fixed at deployment.
 [`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it, and the
-[settlers](#settlers) in [`src/settlers/`](../../zone-router/src/settlers/) pay a spend: `SendSettler`
-to a public address, `BridgeSettler` through a card program. All live in the
+[settlers](#settlers) pay a spend: `SendSettler`, in [`src/settlers/`](../../zone-router/src/settlers/),
+to a public address, and a card program's `BridgeSettler`, in [`bridge/`](../../bridge/README.md), through
+its clone. The router, its factory and `SendSettler` live in the
 [`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
 interfaces. Card spend through it is in the [card integration's design](../bridge/design.md).
 
@@ -139,10 +140,10 @@ exactly like it.
 
 ## Settlers
 
-A settler adapts one payee system to the Spend op. Each lives in
-[`zone-router/src/settlers/`](../../zone-router/src/settlers/), has no owner, and keeps none of a
-callback's input. A settler may carry a minimal interface for the external system it pays into,
-never that system's code. A mode lists the settlers it allows, and only those can be named in a
+A settler adapts one payee system to the Spend op through `ISpendSettler`. A generic one lives in
+[`zone-router/src/settlers/`](../../zone-router/src/settlers/); one built for a single integrator lives
+with that integration and imports the interface from here. Each has no owner and keeps none of a
+callback's input. A mode lists the settlers it allows, and only those can be named in a
 callback.
 
 | Settler         | Pays                                                           | `settlerData`       | Binding fixed at deployment              |
@@ -150,8 +151,9 @@ callback.
 | `SendSettler`   | A public address, in the withdrawn token or redeemed from Earn | `abi.encode(Send)`  | Optional vault, par pool and customer ID |
 | `BridgeSettler` | A card program's destination, through its clone                | `abi.encode(Spend)` | The spender factory and the program's ID |
 
-Both are released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) at a
-deterministic address and listed in a profile's `zoneRouter.settlers`.
+`SendSettler` is released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) and
+`BridgeSettler` by [Bridge Release](../deployment/deployment.md#bridge-releases), each at a deterministic
+address, and listed in a profile's `zoneRouter.settlers`.
 
 ### `ISpendSettler`
 
@@ -196,38 +198,10 @@ profile's `zoneRouter.settlers`.
 
 ### `BridgeSettler`
 
-[`BridgeSettler`](../../zone-router/src/settlers/BridgeSettler.sol) settles a card spend through one
-card program: one deployment per program (`SPENDER_ID`) of one issuer `SpenderFactory`
-(`FACTORY`), both fixed at deployment, so one program's approval can never pay through another's.
-Its `settlerData` is `abi.encode(Spend)`, the struct the issuer's "TS" handler
-(`SpenderTempoSpend`, in [`bridge/`](../../bridge/README.md)) settles for public spend too.
-[`settlers/bridge/IBridgeSpender.sol`](../../zone-router/src/settlers/bridge/IBridgeSpender.sol) holds
-that struct, its only definition, and the two issuer calls the settler makes: the factory's
-`getSpenderAddress` and the clone's `publicCall`. A `settle`:
-
-1. requires the `Spend` to be for its program (`WrongProgram`) and `0 < maxInput <= type(uint128).max`
-   (`InvalidAmount`);
-2. requires the input to be the spend's token, or, when the vault funds all of it
-   (`fromVault == amount`), that vault's EarnShare (`WrongInputToken`); a spend split between both
-   cannot come from one withdrawal;
-3. requires the `maxInput` the router sent (`InsufficientInput`), makes sure its standing approval
-   to the program's clone covers it, and calls `publicCall("TS" "PS" abi.encode(spend))`, so the
-   handler sees the settler as the payer;
-4. requires the handler to have used some input and no more than it was given (`NothingSettled`),
-   and the destination's balance of `Spend.token` to have risen by exactly `amount`
-   (`DestinationNotPaid`), so a replaced handler cannot look settled;
-5. hands the unused input back to the router and requires its own balance to be what it held before
-   the router's input arrived (`ResidualBalance`).
-
-It emits `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`, with no cardholder address or
-`senderTag`. Its approval to the clone stays at the maximum for the same reason as the router's to
-the Portal; between spends the settler holds nothing the clone could take, and the router's
-`maxInput` transfer still bounds what a spend can use. `warm(token)` sets it ahead of the first spend.
-Tokens sent to it outside a `settle` call are not rescued: a later `settle` caller can
-spend them, only to a destination the program authorizes, and gets back what the spend did not use.
-Deploy one per program with the [Zone Router Release `bridgeSettler`](../deployment/deployment.md#zone-router-releases),
-after the issuer has created the program, and list it in the card mode's `settlers`. The flows, the issuer's
-governance and the decisions behind it are in the [card integration's design](../bridge/design.md).
+[`BridgeSettler`](../../bridge/src/BridgeSettler.sol) settles a card spend through one card program's
+clone and its "TS" handler. It lives in [`bridge/`](../../bridge/README.md) with the handler and the
+`Spend` struct both settle; its checks are in the
+[card integration's design](../bridge/design.md#bridgesettler).
 
 ## Invariants
 

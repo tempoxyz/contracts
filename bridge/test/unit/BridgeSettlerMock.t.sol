@@ -3,8 +3,8 @@ pragma solidity ^0.8.36;
 
 import { Test } from "forge-std/Test.sol";
 
-import { BridgeSettler } from "../src/settlers/BridgeSettler.sol";
-import { IBridgeSpenderFactory, Spend } from "../src/settlers/bridge/IBridgeSpender.sol";
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
+import { IBridgeSpenderFactory, Spend } from "../../src/interfaces/IBridgeSpender.sol";
 
 /// @dev A plain ERC-20 whose transfers out of one address can be made to report success without moving
 ///      anything, to leave a residual balance behind.
@@ -91,7 +91,7 @@ contract MockVault {
 
 /// @notice BridgeSettler's own checks against a mock factory and clone; bridge/test runs it against
 ///         Bridge's real factory and the "TS" handler.
-contract BridgeSettlerTest is Test {
+contract BridgeSettlerMockTest is Test {
     bytes32 internal constant SPENDER_ID = keccak256("program");
     uint256 internal constant AMOUNT = 25e6;
 

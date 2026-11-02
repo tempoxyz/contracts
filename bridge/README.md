@@ -16,10 +16,10 @@ Earn from [`earn/src/`](../earn/src/) and the Zone router from
   EA (ERC-20), P2 (Permit2) and TF handlers, plus the EV handler from the issuer's unmerged PR #14,
   vendored with only import paths changed ([`vendor/VENDORED.md`](vendor/VENDORED.md)). They are
   the baseline.
-- **One Tempo contract inside the issuer's system.** `SpenderTempoSpend` ("TS"), a spender handler
-  the issuer registers like any other. Private spends reach it through the Zone router's
-  [`BridgeSettler`](../zone-router/src/settlers/BridgeSettler.sol), which lives with the other
-  settlers in `zone-router/`. See [`docs/bridge/design.md`](../docs/bridge/design.md).
+- **Two Tempo contracts for the issuer's system.** `SpenderTempoSpend` ("TS"), a spender handler
+  the issuer registers like any other, and [`BridgeSettler`](src/BridgeSettler.sol), the Zone
+  router settler through which private spends reach it. See
+  [`docs/bridge/design.md`](../docs/bridge/design.md).
 - **A card E2E harness** that runs every card scenario against any contract setup,
   so the issuer today and the Tempo handler are tested side by side. See
   [`docs/bridge/harness.md`](../docs/bridge/harness.md).
@@ -168,18 +168,18 @@ script/                     Deploy scripts, real-node smoke test, Zone E2E deplo
 vendor/                     Pinned Bridge and Zones sources (VENDORED.md)
 ```
 
-`BridgeSettler` and the `Spend` struct are in [`zone-router/src/settlers/`](../zone-router/src/settlers/);
+The router and the `ISpendSettler` interface `BridgeSettler` implements come from `../zone-router/src`;
 Earn comes from `../earn/src`.
 
 ## Documents
 
 - [`docs/bridge/design.md`](../docs/bridge/design.md): the design, flows, security model, decisions and audit scope.
 - [`docs/zone-router/zone-router.md`](../docs/zone-router/zone-router.md): the [Zone router](../zone-router/README.md)
-  private spends go through, and its `BridgeSettler`.
+  private spends go through.
 - [`docs/bridge/deploy.md`](../docs/bridge/deploy.md): deploying into the spender factory, and the calls
   each role submits. The handler lands at a deterministic address, so the issuer running the deploy
   scripts and Tempo's Bridge Release workflow ([`bridge-release.yml`](../.github/workflows/bridge-release.yml))
-  deploy the same contract; a program's `BridgeSettler` comes from Zone Router Release.
+  deploy the same contracts: the handler and each program's `BridgeSettler`.
 - [`docs/bridge/bridge-integration.md`](../docs/bridge/bridge-integration.md): how the issuer's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
 - [`docs/bridge/harness.md`](../docs/bridge/harness.md): what is real and what is modeled, and how to extend it.
 - [`docs/bridge/scenarios.md`](../docs/bridge/scenarios.md): every card scenario and what it asserts.

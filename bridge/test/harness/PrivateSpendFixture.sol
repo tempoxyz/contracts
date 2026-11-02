@@ -7,13 +7,13 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { Spend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { IZoneOutbox } from "../../src/interfaces/IZoneOutbox.sol";
 import { AccessKeys } from "./AccessKeys.sol";
 import { isStandingOrNone } from "./StandingApproval.sol";
 import { TxCall } from "./lib/TempoTx.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice A Zone with portal and outbox fees switched on, the program's BridgeSettler behind a
 ///         factory-deployed Spend-mode ZoneRouter registered as the Zone's callback gateway, and

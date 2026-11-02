@@ -11,11 +11,9 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
 - `src/` imports only Earn's interfaces, through `tempo-earn/` (`earn/src/`); tests may also use
   Earn's contracts through `tempo-earn/` and its test helpers through `earn-test/` (`earn/test/`).
   Never copy Earn code here.
-- Settlers live in `src/settlers/`, each adapting one payee system. A settler may hold a minimal
-  interface for the external system it pays into, under `src/settlers/<system>/` (as `bridge/` holds
-  the `Spend` struct and the two issuer calls `BridgeSettler` makes), but never vendored code. This
-  project never imports from `bridge/`; `bridge/` imports `Spend` from here, so a change to it
-  changes the "TS" handler's ABI too.
+- Generic settlers live in `src/settlers/`, each adapting one payee system. A settler built for one
+  integrator lives with that integration, as `BridgeSettler` does in `bridge/`, and implements
+  `ISpendSettler` from here. This project never imports from `bridge/`.
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical
   Messenger, Zone and Portal authentication, conversion only at exact par with measured 1:1 output,
   no balance left after a callback and no approval except a spend's standing one to its own Zone's
@@ -25,6 +23,6 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
   callback data byte for byte.
 
 Validate with `forge fmt --check`, `forge lint --deny warnings src`, `forge build --sizes src`,
-and `FOUNDRY_PROFILE=ci forge test` here, plus `bridge/`'s tests when `ISpendSettler`, the callback
-format, `BridgeSettler` or `settlers/bridge/` changes ([bridge/AGENTS.md](../bridge/AGENTS.md)), and
+and `FOUNDRY_PROFILE=ci forge test` here, plus `bridge/`'s tests when `ISpendSettler` or the callback
+format changes ([bridge/AGENTS.md](../bridge/AGENTS.md)), and
 `pnpm --filter @tempoxyz/contracts abis` after an interface change.

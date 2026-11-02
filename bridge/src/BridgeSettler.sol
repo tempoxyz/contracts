@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { IERC20Allowance } from "../interfaces/IERC20Allowance.sol";
-import { ISpendSettler } from "../interfaces/ISpendSettler.sol";
-import { IBridgeSpenderClone, IBridgeSpenderFactory, Spend } from "./bridge/IBridgeSpender.sol";
+import { IBridgeSpenderClone, IBridgeSpenderFactory, Spend } from "./interfaces/IBridgeSpender.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
+import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
+import { ISpendSettler } from "zone-router/interfaces/ISpendSettler.sol";
 
 /// @title BridgeSettler
 /// @notice Settles a Zone router's Spend op through one Bridge card program's spender clone, with

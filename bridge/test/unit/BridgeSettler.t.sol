@@ -5,6 +5,7 @@ import { ISpenderHandler } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { AccessKeys } from "../harness/AccessKeys.sol";
@@ -15,7 +16,6 @@ import {
     ShortPayingSpendHandler
 } from "../harness/Mocks.sol";
 import { isStandingOrNone } from "../harness/StandingApproval.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice Hands input to a settler as the Zone router does: transfers exactly `maxInput` and calls
 ///         `settle` in one call, so a revert returns the input.

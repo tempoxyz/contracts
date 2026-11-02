@@ -1,9 +1,9 @@
 name: Zone Router Release
 
 # Deploys one of the Zone router project's ownerless contracts (zone-router/) from main on the hosted networks:
-# the ZoneRouterFactory, a SendSettler, a Bridge card program's BridgeSettler, or a ZoneRouter its factory
-# creates. Each lands at its
-# deterministic address, and one already there is reused. After a broadcast it is source verified on
+# the ZoneRouterFactory, a SendSettler, or a ZoneRouter its factory creates. A card program's BridgeSettler
+# releases with the card integration (bridge-release.yml). Each lands at its deterministic address, and
+# one already there is reused. After a broadcast it is source verified on
 # Tempo's verifier. These contracts are in no release registry, so nothing is recorded afterwards; the
 # job summary and artifact hold the addresses. Earn's shared factory releases run in factory-release.yml.
 on:
@@ -19,9 +19,9 @@ on:
         description: Zone router contract to deploy
         required: true
         type: choice
-        options: [zoneRouterFactory, sendSettler, bridgeSettler, zoneRouter]
+        options: [zoneRouterFactory, sendSettler, zoneRouter]
       parameters:
-        description: 'JSON parameters: sendSettler {"vault", "pool", "customerId"} (all three, or {} for none); bridgeSettler {"factory", "spenderId"}; zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for zoneRouterFactory'
+        description: 'JSON parameters: sendSettler {"vault", "pool", "customerId"} (all three, or {} for none); zoneRouter {"factory", "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset", "pool", "customerId", "settlers"}}; {} for zoneRouterFactory'
         required: false
         type: string
         default: '{}'

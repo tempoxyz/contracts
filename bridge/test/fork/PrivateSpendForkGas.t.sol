@@ -15,10 +15,10 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @dev Tempo mainnet (chain 4217) production addresses this measurement runs against.
 library Mainnet {

@@ -21,14 +21,12 @@ This is a separate Foundry project beside [Earn](../earn/README.md) and the
   - [`SendSettler`](src/settlers/SendSettler.sol) pays a public address in the withdrawn token, in
     the vault asset redeemed from EarnShare, or, for the one vault it is bound to at deployment, in
     the stablecoin that vault's asset converts into at par.
-  - [`BridgeSettler`](src/settlers/BridgeSettler.sol) settles a card spend through one card
-    program's spender clone and its "TS" handler. [`settlers/bridge/`](src/settlers/bridge/IBridgeSpender.sol)
-    holds the `Spend` struct and the two issuer calls it makes.
+  - A card program's `BridgeSettler` implements the same interface in [`bridge/`](../bridge/README.md).
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
   [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the
   [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) workflow runs for the
-  factory, each settler and routers.
+  factory, a `SendSettler` and routers.
 
 ## Running it
 

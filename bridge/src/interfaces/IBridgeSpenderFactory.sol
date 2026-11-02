@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IBridgeSpenderFactory as ISettlerFactory } from "zone-router/settlers/bridge/IBridgeSpender.sol";
+import { IBridgeSpenderFactory as ISettlerFactory } from "./IBridgeSpender.sol";
 
 /// @notice The subset of Bridge's `SpenderFactory` that the "TS" handler and the deploy scripts read to
 ///         stay inside a card program's governance: pause state, allowed settlement destinations, and

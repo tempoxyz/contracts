@@ -4,11 +4,11 @@ pragma solidity ^0.8.36;
 import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { Spend, SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../src/interfaces/ITempoEarnVault.sol";
 import { OverQuotingEarnVault } from "../harness/Mocks.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice A private spend from Earn always returns its unused shares to the Zone, so with the
 ///         portal's deposit and bounce-back fees on it must carry change that covers them, on an

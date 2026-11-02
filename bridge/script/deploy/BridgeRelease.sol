@@ -4,17 +4,15 @@ pragma solidity ^0.8.36;
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { DeterministicRelease } from "tempo-earn/../script/deploy/DeterministicRelease.sol";
 
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
-/// @notice Deterministic creation of the Bridge integration's ownerless contracts: the "TS" handler and,
-///         for the E2E and local deploys, a program's `BridgeSettler`. Each is created through the
-///         CREATE2 deployer with Earn's release salt (`DeterministicRelease`), so the same build and
-///         constructor arguments land at the same address whoever deploys them, Bridge or Tempo's Bridge
-///         Release workflow, and a contract that already exists there is reused instead of created again.
-///         The settler is the Zone router's (zone-router/src/settlers/), compiled here with this
-///         project's settings, so its address differs from the one Zone Router Release gives it.
+/// @notice Deterministic creation of the card integration's ownerless contracts: the "TS" handler and a
+///         program's `BridgeSettler`. Each is created through the CREATE2 deployer with Earn's release
+///         salt (`DeterministicRelease`), so the same build and constructor arguments land at the same
+///         address whoever deploys them, the issuer or Tempo's Bridge Release workflow, and a contract
+///         that already exists there is reused instead of created again.
 /// @dev Call the creating functions while broadcasting: Forge routes a broadcast `new X{salt: s}`
 ///      through the CREATE2 deployer. Neither contract has an owner, so anyone creating one first at
 ///      its address only pays its fee. The address follows the build: a change to the source, the

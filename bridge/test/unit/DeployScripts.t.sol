@@ -12,6 +12,7 @@ import { DeployTempoSpend } from "../../script/deploy/DeployTempoSpend.s.sol";
 import { DeployZoneRouter } from "../../script/deploy/DeployZoneRouter.s.sol";
 import { Preflight } from "../../script/deploy/Preflight.s.sol";
 import { ProgramCalls } from "../../script/deploy/ProgramCalls.s.sol";
+import { BridgeSettler } from "../../src/BridgeSettler.sol";
 import { Spend } from "../../src/SpenderTempoSpend.sol";
 import { SpenderTempoSpend } from "../../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/interfaces/IBridgeSpenderFactory.sol";
@@ -30,7 +31,6 @@ import {
 } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice The deployment scripts against an existing Bridge factory: deploy, submit the calls
 ///         they write with the role each one needs, then spend.

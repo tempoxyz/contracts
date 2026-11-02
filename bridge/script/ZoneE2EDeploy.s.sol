@@ -14,10 +14,10 @@ import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
+import { BridgeSettler } from "../src/BridgeSettler.sol";
 import { SpenderTempoSpend } from "../src/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../src/interfaces/IBridgeSpenderFactory.sol";
 import { SpendMode } from "./deploy/DeployZoneRouter.s.sol";
-import { BridgeSettler } from "zone-router/settlers/BridgeSettler.sol";
 
 /// @notice Deploys a Bridge card program with the "TS" handler, its `BridgeSettler`, and the
 ///         Spend-mode `ZoneRouter` for ZONE_ID through a new `ZoneRouterFactory` to an L1 for the

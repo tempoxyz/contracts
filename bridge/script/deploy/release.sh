@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Deploys the Bridge integration's ownerless "TS" handler (tempoSpend) for a Bridge SpenderFactory at
-# its deterministic release address (script/deploy/BridgeRelease.sol), or reuses the one already
-# there. It checks that the run created exactly that contract, at the address predicted here from the
+# Deploys one of the card integration's ownerless contracts for a SpenderFactory at its deterministic
+# release address (script/deploy/BridgeRelease.sol), or reuses the one already there: the "TS" handler
+# (tempoSpend) or a card program's BridgeSettler (bridgeSettler). It checks that the run created exactly that contract, at the address predicted here from the
 # locally compiled creation code, and, after a broadcast to a hosted network, that Tempo's verifier
 # has its source. Bridge running the deploy scripts itself lands on the same address. The Bridge
-# Release workflow (.github/workflows/bridge-release.yml) runs this; it runs locally too. A program's
-# BridgeSettler is a Zone router settler, released by Zone Router Release (pnpm zone-router-release).
+# Release workflow (.github/workflows/bridge-release.yml) runs this; it runs locally too.
 #
-# Usage: script/deploy/release.sh <moderato|mainnet|local> tempoSpend [--broadcast]
-# Env:   FACTORY               the Bridge SpenderFactory
+# Usage: script/deploy/release.sh <moderato|mainnet|local> <tempoSpend|bridgeSettler> [--broadcast]
+# Env:   FACTORY               the SpenderFactory
+#        SPENDER_ID            bridgeSettler only: the card program's spender ID (bytes32)
 #        DEPLOYER_PRIVATE_KEY  pays for the creation; it holds no role anywhere
 #        TEMPO_RPC_URL         optional on moderato and mainnet, required for local; with
 #                              TEMPO_RPC_USERNAME and TEMPO_RPC_PASSWORD (both or neither) as basic auth
@@ -30,7 +30,7 @@ broadcast=false
 if [[ $# -eq 3 && "$3" == --broadcast ]]; then
   broadcast=true
 elif [[ $# -ne 2 ]]; then
-  echo "usage: $0 <moderato|mainnet|local> tempoSpend [--broadcast]" >&2
+  echo "usage: $0 <moderato|mainnet|local> <tempoSpend|bridgeSettler> [--broadcast]" >&2
   exit 2
 fi
 
@@ -76,15 +76,22 @@ case "$network" in
 esac
 case "$contract" in
   tempoSpend) script=script/deploy/DeployTempoSpend.s.sol name=SpenderTempoSpend output_field=handler ;;
-  bridgeSettler) die "a program's BridgeSettler is released by Zone Router Release (pnpm zone-router-release <network> bridgeSettler)" ;;
-  *) die "unknown contract '$contract'; expected tempoSpend" ;;
+  bridgeSettler) script=script/deploy/DeployBridgeSettler.s.sol name=BridgeSettler output_field=settler ;;
+  *) die "unknown contract '$contract'; expected tempoSpend or bridgeSettler" ;;
 esac
-source=src/SpenderTempoSpend.sol:$name
+source=src/$name.sol:$name
 record name "$name"
 
 [[ "${FACTORY:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "FACTORY must be an address"
 record factory "$FACTORY"
-constructor_args=$(cast abi-encode "f(address)" "$FACTORY")
+if [[ "$contract" == bridgeSettler ]]; then
+  [[ "${SPENDER_ID:-}" =~ ^0x[0-9a-fA-F]{64}$ && ! "$SPENDER_ID" =~ ^0x0{64}$ ]] ||
+    die "SPENDER_ID must be a nonzero bytes32"
+  record spenderId "$SPENDER_ID"
+  constructor_args=$(cast abi-encode "f(address,bytes32)" "$FACTORY" "$SPENDER_ID")
+else
+  constructor_args=$(cast abi-encode "f(address)" "$FACTORY")
+fi
 [[ -n "${DEPLOYER_PRIVATE_KEY:-}" ]] || die "DEPLOYER_PRIVATE_KEY is required"
 
 # The RPC URL with its basic-auth credentials, given to forge and cast only through the environment.
@@ -191,7 +198,7 @@ if [[ "$broadcast" == true ]]; then
   [[ "$(cast code "$address")" != 0x ]] || die "$address has no code after the broadcast"
 elif [[ "$forge_status" != 0 ]]; then
   die "forge script failed (status $forge_status)"
-else
+elif [[ "$contract" == tempoSpend ]]; then
   # A dry run writes no OUT; the admin call depends only on the address.
   record --json output "$(jq -n --arg call "$(cast calldata "setSpenderHandler(bytes2,address)" 0x5453 "$address")" \
     '{adminRegisterHandler: $call}')"
