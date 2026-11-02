@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # The handler imports the Spend struct from zone-router/src/, which needs no dependency of its own.
+      # BridgeSettler imports the settler interface from zone-router/src/, which needs no dependency of its own.
       - name: Install the Bridge integration's Solidity dependencies
         working-directory: .
         run: scripts/solidity-deps.sh bridge

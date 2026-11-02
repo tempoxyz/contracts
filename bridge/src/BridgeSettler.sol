@@ -10,7 +10,7 @@ import { ISpendSettler } from "zone-router/interfaces/ISpendSettler.sol";
 /// @title BridgeSettler
 /// @notice Settles a Zone router's Spend op through one Bridge card program's spender clone, with
 ///         the same `Spend` public spend uses.
-/// @dev Specified in docs/zone-router/zone-router.md#bridgesettler. One deployment serves one Bridge
+/// @dev Specified in docs/bridge/design.md#bridgesettler. One deployment serves one Bridge
 ///      card program (`SPENDER_ID`), so one program's approval can never pay through another's. It has
 ///      no owner and holds no Zone code: the router authenticates the withdrawal, caps the input at
 ///      `maxInput` and returns unused input to the Zone. The router transfers `maxInput` to the

@@ -6,8 +6,8 @@ settler are in [docs/zone-router/zone-router.md](../docs/zone-router/zone-router
 
 This is a separate Foundry project beside [Earn](../earn/README.md) and the
 [card integration](../bridge/README.md), compiled with solc. It imports Earn's interfaces from
-[`earn/src/`](../earn/src/) rather than a copy. The issuer's "TS" handler in `bridge/` imports the
-`Spend` struct from here, so the handler and `BridgeSettler` encode the same spend.
+[`earn/src/`](../earn/src/) rather than a copy. `bridge/`'s `BridgeSettler` implements
+`ISpendSettler` from here; this project never imports from `bridge/`.
 
 ## What is here
 
