@@ -61,6 +61,19 @@ contract CardSettlerTest is CardsEnv {
         settler.settle(address(usd), 1e6, abi.encode(s));
     }
 
+    /// @dev A cardholder who hands their own collateral to the settler still cannot receive a private spend.
+    function test_revert_settle_toCollateralOwnedBySettler() public {
+        vm.prank(alice);
+        (bool ok,) = aliceCollateral.call(abi.encodeWithSignature("transferOwnership(address)", address(settler)));
+        assertTrue(ok, "ownership moved to the settler");
+        CardSpend memory s = _stableSpend(aliceCollateral, aliceNonce, 1e6, "private.owned");
+        vm.prank(router);
+        usd.transfer(address(settler), 1e6);
+        vm.prank(router);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, aliceCollateral));
+        settler.settle(address(usd), 1e6, abi.encode(s));
+    }
+
     function test_revert_settle_wrongInputToken() public {
         CardSpend memory s = _stableSpend(programCollateral, programCollateralNonce, 1e6, "input");
         vm.prank(router);

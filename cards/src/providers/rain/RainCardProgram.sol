@@ -12,7 +12,8 @@ import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 ///         Rain's contracts are used as they are (vendor/rain); nothing here asks them to change.
 ///         Specified in docs/cards/rain.md.
 /// @dev A destination is authorized when it is a collateral contract Rain's factory created and either:
-///      - the payer owns it: a public spend into the cardholder's own collateral (Rain-managed); or
+///      - the payer owns it and is not one of this program's settlers: a public spend into the
+///        cardholder's own collateral (Rain-managed); or
 ///      - it is one of the program's pooled collateral contracts: a private spend, which must not name
 ///        the cardholder, or a partner-managed program.
 ///      Rain's factory keeps no lookup of its collateral contracts, so the spend names the factory nonce
@@ -68,7 +69,10 @@ contract RainCardProgram is ICardProgram {
         returns (bool)
     {
         if (!isAcceptedToken[token] || !isRainCollateral(destination, hint)) return false;
-        return isProgramCollateral[destination] || _owner(destination) == payer;
+        if (isProgramCollateral[destination]) return true;
+        // A settler of this program pays private spends, which must reach only pooled collateral, even
+        // one a cardholder has made the owner of their own collateral.
+        return !_isProgramSettler(payer) && _owner(destination) == payer;
     }
 
     /// @notice Whether `collateral` is a collateral contract Rain's factory created with nonce `nonce`.
@@ -90,6 +94,14 @@ contract RainCardProgram is ICardProgram {
 
     function programCollaterals() external view returns (address[] memory) {
         return _programCollaterals;
+    }
+
+    /// @dev Whether `payer` reports this adapter as its `PROGRAM`, as every `CardSettler` (and `CardSpender`)
+    ///      of this program does. An account without code reports nothing.
+    function _isProgramSettler(address payer) private view returns (bool) {
+        if (payer.code.length == 0) return false;
+        (bool ok, bytes memory ret) = payer.staticcall(abi.encodeWithSignature("PROGRAM()"));
+        return ok && ret.length >= 32 && abi.decode(ret, (address)) == address(this);
     }
 
     /// @dev The collateral's owner, or zero when it cannot report one.

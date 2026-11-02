@@ -24,7 +24,9 @@ card's spending power. That is where a Tempo spend lands.
 it is a collateral contract Rain's factory created and either:
 
 - **the payer owns it** (Rain-managed, public spend): the cardholder's account funds its own
-  collateral. Another cardholder's collateral is refused; or
+  collateral. Another cardholder's collateral is refused, and so is any collateral when the payer is
+  one of the program's settlers (it reports the adapter as its `PROGRAM`), even one a cardholder has
+  made the settler own; or
 - **it is one of the program's pooled collateral contracts** (partner-managed, and every private
   spend): fixed at deployment. Rain or the partner credits each cardholder off chain. The settler owns
   no collateral, so a private spend can reach only a pooled one and never names the cardholder.
