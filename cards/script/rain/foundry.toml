@@ -1,0 +1,14 @@
+# Builds the vendored Rain contracts (../../vendor/rain) with the settings Polygonscan verified them
+# with, so the fixture's bytecode is Rain's own. Run by script/rain/build-fixture.sh.
+[profile.default]
+src = "../../vendor/rain/contracts"
+libs = ["../../vendor/rain"]
+out = "../../out/rain"
+cache_path = "../../cache/rain"
+solc_version = "0.8.17"
+optimizer = false
+evm_version = "london"
+bytecode_hash = "ipfs"
+cbor_metadata = true
+auto_detect_remappings = false
+remappings = ["@openzeppelin/=../../vendor/rain/@openzeppelin/"]

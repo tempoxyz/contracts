@@ -115,7 +115,7 @@ protected-item and three-slot rules.
 - `settlers`, required with `spend` and rejected otherwise, lists the deployed `ISpendSettler`
   contracts, such as a `SendSettler` from
   [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) or a card program's
-  `BridgeSettler` from [Bridge Release](../docs/deployment/deployment.md#bridge-releases), without repeats. Their order is part of the
+  `CardSpender` from [Bridge Release](../docs/deployment/deployment.md#bridge-releases), without repeats. Their order is part of the
   mode, so of the router's address.
 - `factory` names an existing `ZoneRouterFactory`. Omitted, the lifecycle deploys one as its own
   `zoneRouterFactory` component, so a later mode change deploys only a new router through it.

@@ -5,9 +5,10 @@ Foundry project with its own build settings, dependencies, and guide:
 
 - [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues.
 - [zone-router/](zone-router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and
-  spends, and the settlers a spend pays through (`SendSettler`, `BridgeSettler`).
-- [bridge/](bridge/AGENTS.md): Tempo's card integration: the card spender contracts vendored as they
-  are, the "TS" handler (`SpenderTempoSpend`), the card E2E harness, and the issuer's deploy scripts.
+  spends, and the generic settlers a spend pays through (`SendSettler`).
+- [cards/](cards/AGENTS.md): card spend on Tempo: our provider-agnostic contracts (`src/core/`), our
+  code for each card provider (`src/providers/<provider>/`: Bridge's `BridgeProvider` and "TS" handler,
+  Rain's `RainProvider`), and each provider's own contracts vendored as they are (`vendor/<provider>/`).
 
 Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with module
 folders for Earn and the Zone router) and its `profiles/`, the disposable Tempo L1 and Zone
@@ -24,7 +25,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
 | ---------------------------------------------------------- | ---------------------------------------------- |
 | Tempo Earn, including its deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)               |
 | Zone router and its settlers                               | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
-| Card integration (card spend)                              | [bridge/AGENTS.md](bridge/AGENTS.md)           |
+| Card spend: core, providers (Bridge, Rain), vendored code  | [cards/AGENTS.md](cards/AGENTS.md)             |
 | Integration cases and hosted environments                  | [e2e/AGENTS.md](e2e/AGENTS.md)                 |
 | Disposable chain lifecycle                                 | [localnet/AGENTS.md](localnet/AGENTS.md)       |
 | CI and repository automation                               | [.github/AGENTS.md](.github/AGENTS.md)         |
@@ -37,19 +38,19 @@ must explicitly discover descendant guides rather than assume they were loaded.
 - A project imports another's contracts through a remapping to its `src/`, never a copy. Shared
   Solidity belongs in the project that owns it until a second owner needs it.
 - Imports flow one way: `earn/` imports neither other project, `zone-router/` imports only Earn's
-  interfaces, and `bridge/` imports both. Generic settlers live in `zone-router/src/settlers/`; a
-  settler built for one integrator lives with that integration (`BridgeSettler` in `bridge/`) and
-  implements the Zone router's `ISpendSettler`.
-- Integrator-specific code (the issuer's vendored contracts, the "TS" handler, card logic) stays in
-  `bridge/`; `earn/` stays integrator-agnostic.
+  interfaces, and `cards/` imports both. Generic settlers live in `zone-router/src/settlers/`; a card
+  program's settler is its `CardSpender` (`cards/src/core/`), which implements the Zone router's
+  `ISpendSettler`.
+- Provider-specific code (each provider's vendored contracts and our code for it) stays under its
+  provider in `cards/`; `earn/` and `cards/src/core/` stay provider-agnostic.
 - Secrets and funded private keys stay out of source, logs, and generated records.
 
 ## Validation and documentation
 
 Use the commands in [development](docs/development/README.md). Start with focused checks; before
 pushing meaningful implementation changes, run `pnpm verify`, plus the project's own checks for
-`zone-router/` ([zone-router/AGENTS.md](zone-router/AGENTS.md)) and `bridge/`
-([bridge/AGENTS.md](bridge/AGENTS.md)). Hosted or private behavior changes also need the relevant
+`zone-router/` ([zone-router/AGENTS.md](zone-router/AGENTS.md)) and `cards/`
+([cards/AGENTS.md](cards/AGENTS.md)). Hosted or private behavior changes also need the relevant
 E2E case and composed group. Report unrun checks and external blockers explicitly; after pushing a
 PR update, report with CI pending unless asked to monitor it. For documentation-only
 changes, run the link check (`pnpm --filter @tempoxyz/contracts test --run docs`), format changed files,

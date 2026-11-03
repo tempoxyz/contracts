@@ -1,0 +1,285 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import { Spend } from "./interfaces/IBridgeSpender.sol";
+import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
+import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
+import { IERC20 } from "openzeppelin-contracts/token/ERC20/IERC20.sol";
+import { LibClone } from "solady/utils/LibClone.sol";
+import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+
+import { IBridgeSpenderFactory } from "./interfaces/IBridgeSpenderFactory.sol";
+import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
+
+struct SpenderTempoSpendStorage {
+    mapping(address vault => bool allowed) allowedVaults;
+    /// @dev The share the clone holds a standing approval to `vault` on, so a disallow clears that
+    ///      share's approval without trusting what the vault reports then.
+    mapping(address vault => address share) approvedShare;
+}
+
+library SpenderTempoSpendStorageLib {
+    /// @custom:storage-location erc7201:tempo.spend.SpenderTempoSpend
+    bytes32 internal constant SLOT = 0xbc7f0a75443d84f208551e2e19a839e794ecf9029344e5d8e1a095f84e555400;
+
+    function load() internal pure returns (SpenderTempoSpendStorage storage $) {
+        assembly {
+            $.slot := SLOT
+        }
+    }
+}
+
+/// @title SpenderTempoSpend
+/// @notice Bridge spender handler (prefix "TS") that settles Tempo card spend from stablecoin,
+///         Tempo Earn shares, or both, publicly or from a Zone.
+/// @dev Runs by delegatecall inside a Bridge spender clone, so the factory's destinations and
+///      pause govern every spend. The payer is the program's `CardSpender`, which submits a `Spend`
+///      through `publicCall "PS"` (built by its `BridgeProvider`) from the input of a public spend or of a
+///      Zone withdrawal its router sent it.
+///      Bridge's pull pipeline (`transferToDestination`) is not used: it needs a standing
+///      allowance and cannot reach Zone balances.
+///      A spend settles in the stablecoin the funds are held in. Earn shares redeem into the
+///      vault's own asset, so a spend from Earn names that asset as `token`.
+///
+/// Payload layouts (after the factory strips the 2-byte handler prefix):
+///   balance:  from(20) token(20) [vault(20)]
+///   governorCall "UV": flag(1) vault(20)
+///   publicCall  "PS": abi.encode(Spend), paid by msg.sender
+///   publicGetCall "GV" vault(20)
+contract SpenderTempoSpend is SpenderBase {
+    error DestinationNotAuthorized(address destination);
+    error ExpectedBooleanByte();
+    error IncorrectAssetForVault();
+    error ShareCostExceeded(uint256 required, uint256 maxShares);
+    error PipelineDisabled();
+    error VaultNotAllowed();
+    error WrongProgram(bytes32 spenderId);
+
+    /// @dev Named apart from the Tempo Earn handler's `VaultStatusUpdated`, which the same clone
+    ///      can emit with a different signature.
+    event SpendVaultUpdated(address indexed vault, bool allowed);
+    event TempoSpendExecuted(
+        bytes32 indexed ref,
+        address indexed from,
+        address indexed destination,
+        address token,
+        uint256 amount,
+        uint256 fromStable,
+        uint256 fromVault,
+        uint256 sharesBurned
+    );
+
+    /// @dev Gas for the vault's `earnShare()` read in `UV`: a storage read or an immutable.
+    uint256 private constant EARN_SHARE_READ_GAS = 30_000;
+    /// @dev Gas for the share's `approve` in `UV`: enough to create the allowance slot (~250k on Tempo,
+    ///      TIP-1000) with room to spare.
+    uint256 private constant SHARE_APPROVE_GAS = 400_000;
+
+    constructor(IFactory factory_) SpenderBase(factory_) { }
+
+    // ------------------------------------------------------------------
+    // Factory entrypoints
+    // ------------------------------------------------------------------
+
+    function transferToDestination(address, bytes calldata) external pure override {
+        revert PipelineDisabled();
+    }
+
+    function transferToDestinationStrict(address, bytes calldata) external pure override {
+        revert PipelineDisabled();
+    }
+
+    /// @notice Stablecoin balance of `from`, plus the value of its shares in `vault` when given
+    ///         and the vault holds `token`.
+    function availableBalance(bytes calldata data) external view override returns (uint256) {
+        require(data.length == 40 || data.length == 60, DataIncorrectLength());
+        address from = address(bytes20(data[0:20]));
+        address token = address(bytes20(data[20:40]));
+        uint256 total = IERC20(token).balanceOf(from);
+        if (data.length == 60) {
+            address vault = address(bytes20(data[40:60]));
+            if (_storage().allowedVaults[vault]) {
+                total += _vaultValue(ITempoEarnVault(vault), from, token);
+            }
+        }
+        return total;
+    }
+
+    /// @dev Governance, not the manager, allows vaults: a vault's `withdrawExact` decides where
+    ///      redeemed value goes, so allowing one is as strong as adding a destination.
+    function governorCall(bytes calldata data) external override onlyFactory {
+        bytes2 action = _prefix(data);
+        require(action == "UV", PrefixUnknown(action));
+        require(data.length == 23, DataIncorrectLength());
+        require(data[2] == 0x00 || data[2] == 0x01, ExpectedBooleanByte());
+        address vault = address(bytes20(data[3:23]));
+        bool allowed = data[2] == 0x01;
+        _storage().allowedVaults[vault] = allowed;
+        // The clone's standing EarnShare approval follows the allowlist: set for an allowed vault, so its
+        // spends need not create the allowance slot, and cleared for a disallowed one. Best effort, so a
+        // vault whose share cannot be read or refuses `approve` is still allowed or disallowed: the
+        // allowlist write never depends on the vault, and a spend sets the approval when it needs one.
+        if (allowed) {
+            address share = _tryReadShare(vault);
+            if (share != address(0)) _setStandingApproval(vault, share);
+        } else {
+            _clearStandingApproval(vault);
+        }
+        emit SpendVaultUpdated(vault, allowed);
+    }
+
+    /// @dev The share `vault` reports, or zero. The call has a fixed gas cap and copies at most one word
+    ///      back, so a vault that burns gas, reverts or returns a huge payload cannot make governance fail.
+    function _tryReadShare(address vault) private view returns (address share) {
+        if (vault.code.length == 0) return address(0);
+        assembly ("memory-safe") {
+            mstore(0x00, 0xdab0322f) // earnShare()
+            // Yul evaluates arguments right to left, so the call goes first and its size is read after it.
+            let ok := staticcall(EARN_SHARE_READ_GAS, vault, 0x1c, 0x04, 0x00, 0x20)
+            if and(ok, iszero(lt(returndatasize(), 0x20))) {
+                let word := mload(0x00)
+                if iszero(shr(160, word)) { share := word }
+            }
+        }
+    }
+
+    /// @dev Sets the clone's standing approval of `share` to `vault` and records it, first clearing one
+    ///      recorded on another share. Best effort: the approve calls have a fixed gas cap and their result
+    ///      is ignored, so a share that misbehaves cannot make governance fail.
+    function _setStandingApproval(address vault, address share) private {
+        SpenderTempoSpendStorage storage $ = _storage();
+        address recorded = $.approvedShare[vault];
+        if (recorded != address(0) && recorded != share) _tryApprove(recorded, vault, 0);
+        _tryApprove(share, vault, type(uint256).max);
+        if (recorded != share) $.approvedShare[vault] = share;
+    }
+
+    /// @dev Clears the standing approval on the share recorded for `vault`, whatever the vault reports now.
+    function _clearStandingApproval(address vault) private {
+        SpenderTempoSpendStorage storage $ = _storage();
+        address recorded = $.approvedShare[vault];
+        if (recorded == address(0)) return;
+        _tryApprove(recorded, vault, 0);
+        delete $.approvedShare[vault];
+    }
+
+    /// @dev `share.approve(spender, amount)` with a fixed gas cap, its result ignored and no return data
+    ///      copied. No code check: a TIP-20 share is a precompile, and a call without code is a no-op.
+    function _tryApprove(address share, address spender, uint256 amount) private {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, 0x095ea7b3) // approve(address,uint256)
+            mstore(add(m, 0x20), spender)
+            mstore(add(m, 0x40), amount)
+            pop(call(SHARE_APPROVE_GAS, share, 0, add(m, 0x1c), 0x44, 0x00, 0x00))
+        }
+    }
+
+    /// @dev The clone has already checked the factory's pause.
+    function publicCall(bytes calldata data) external override {
+        bytes2 action = _prefix(data);
+        require(action == "PS", PrefixUnknown(action));
+        _spend(abi.decode(data[2:], (Spend)));
+    }
+
+    function publicGetCall(bytes calldata data) external view override returns (bytes memory) {
+        bytes2 query = _prefix(data);
+        require(query == "GV", PrefixUnknown(query));
+        require(data.length == 22, DataIncorrectLength());
+        return abi.encode(_storage().allowedVaults[address(bytes20(data[2:22]))]);
+    }
+
+    // ------------------------------------------------------------------
+    // Settlement
+    // ------------------------------------------------------------------
+
+    function _spend(Spend memory s) private {
+        IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(FACTORY));
+        require(_isCanonical(s.spenderId), WrongProgram(s.spenderId));
+        require(factory.getSpenderAddress(s.spenderId) == address(this), WrongProgram(s.spenderId));
+        require(factory.isAuthorizedDestination(s.spenderId, s.destination), DestinationNotAuthorized(s.destination));
+        require(s.amount > 0 && s.fromVault <= s.amount, InvalidAmount());
+
+        uint256 fromStable = s.amount - s.fromVault;
+        uint256 before = IERC20(s.token).balanceOf(s.destination);
+        if (fromStable != 0) {
+            SafeTransferLib.safeTransferFrom(s.token, msg.sender, s.destination, fromStable);
+        }
+        uint256 sharesBurned;
+        if (s.fromVault != 0) {
+            require(_storage().allowedVaults[s.vault], VaultNotAllowed());
+            require(ITempoEarnVault(s.vault).asset() == s.token, IncorrectAssetForVault());
+            sharesBurned = _withdrawFromEarn(s.vault, s.destination, s.fromVault, s.maxShares);
+        }
+        require(IERC20(s.token).balanceOf(s.destination) == before + s.amount, DestinationNotCredited());
+
+        emit TempoSpendExecuted(
+            s.ref, msg.sender, s.destination, s.token, s.amount, fromStable, s.fromVault, sharesBurned
+        );
+    }
+
+    /// @dev Pulls only the shares `assets` costs, burns them and returns any the vault left over.
+    function _withdrawFromEarn(address vault, address receiver, uint256 assets, uint256 maxShares)
+        private
+        returns (uint256 burned)
+    {
+        ITempoEarnVault v = ITempoEarnVault(vault);
+        uint256 required = v.previewWithdraw(assets);
+        require(maxShares == 0 || required <= maxShares, ShareCostExceeded(required, maxShares));
+
+        address share = v.earnShare();
+        SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
+        // A standing maximum approval, set when governance allowed the vault and topped up here when
+        // another handler (such as TF, which clears its own) has lowered it. Clearing it after each spend
+        // would create the allowance slot again on every spend, which Tempo charges as a new storage slot
+        // (TIP-1000). The clone holds no EarnShare between spends.
+        // The approval is recorded, so governance clears it on the right share when it disallows the vault.
+        if (IERC20(share).allowance(address(this), vault) < required) {
+            SafeTransferLib.safeApprove(share, vault, type(uint256).max);
+            SpenderTempoSpendStorage storage $ = _storage();
+            address recorded = $.approvedShare[vault];
+            if (recorded != share) {
+                if (recorded != address(0)) SafeTransferLib.safeApprove(recorded, vault, 0);
+                $.approvedShare[vault] = share;
+            }
+        }
+        burned = v.withdrawExact(assets, receiver, required);
+        if (burned < required) SafeTransferLib.safeTransfer(share, msg.sender, required - burned);
+    }
+
+    /// @dev Value of `from`'s shares in `vault` when it holds `token`. A vault that cannot report
+    ///      its asset, share or redemption value adds nothing, so the stablecoin stays readable.
+    ///      Reads are low-level: `try` cannot catch a call to an address without code or return
+    ///      data it cannot decode, which would revert the whole balance query.
+    function _vaultValue(ITempoEarnVault vault, address from, address token) private view returns (uint256) {
+        (bool ok, uint256 word) = _readWord(address(vault), abi.encodeCall(vault.asset, ()));
+        if (!ok || word != uint256(uint160(token))) return 0;
+        (ok, word) = _readWord(address(vault), abi.encodeCall(vault.earnShare, ()));
+        if (!ok || word >> 160 != 0) return 0;
+        address share = address(uint160(word));
+        uint256 shares;
+        (ok, shares) = _readWord(share, abi.encodeCall(IERC20.balanceOf, (from)));
+        if (!ok || shares == 0) return 0;
+        (ok, word) = _readWord(address(vault), abi.encodeCall(vault.previewRedeem, (shares)));
+        return ok ? word : 0;
+    }
+
+    /// @dev False unless `target` has code, the call succeeds and it returns at least one word.
+    function _readWord(address target, bytes memory data) private view returns (bool ok, uint256 word) {
+        if (target.code.length == 0) return (false, 0);
+        (bool success, bytes memory ret) = target.staticcall(data);
+        if (!success || ret.length < 32) return (false, 0);
+        return (true, abi.decode(ret, (uint256)));
+    }
+
+    /// @dev True when `createSpender(spenderId)` deployed this clone. A manager can register more
+    ///      IDs on an existing clone, each with its own destinations, and those must not pay.
+    function _isCanonical(bytes32 spenderId) private view returns (bool) {
+        return LibClone.predictDeterministicAddressERC1967BeaconProxy(address(FACTORY), spenderId, address(FACTORY))
+            == address(this);
+    }
+
+    function _storage() private pure returns (SpenderTempoSpendStorage storage) {
+        return SpenderTempoSpendStorageLib.load();
+    }
+}

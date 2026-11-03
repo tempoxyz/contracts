@@ -7,11 +7,11 @@ documentation edit.
 
 ## Projects
 
-| Project                                 | Start here                                                                                                         |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| [Tempo Earn](../earn/README.md)         | [Earn documentation](earn/README.md): architecture, engines, modules, integrations, audits, glossary               |
-| [Zone router](../zone-router/README.md) | [Zone router](zone-router/zone-router.md): `ZoneRouter`, its factory and settlers                                  |
-| [Card integration](../bridge/README.md) | [Card integration documents](../bridge/README.md#documents): design and audit scope, the issuer's side, deployment |
+| Project                                 | Start here                                                                                                                                 |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| [Tempo Earn](../earn/README.md)         | [Earn documentation](earn/README.md): architecture, engines, modules, integrations, audits, glossary                                       |
+| [Zone router](../zone-router/README.md) | [Zone router](zone-router/zone-router.md): `ZoneRouter`, its factory and settlers                                                          |
+| [Card spend](../cards/README.md)        | [Design](cards/design.md): the provider-agnostic core; providers: [Bridge](cards/bridge/README.md#documents), [Rain](cards/rain/README.md) |
 
 ## Document ownership
 

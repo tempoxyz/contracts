@@ -1,0 +1,210 @@
+name: Cards
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - 'cards/**'
+      - 'earn/src/**'
+      - 'earn/script/deploy/DeterministicRelease.sol'
+      - 'zone-router/src/**'
+      - 'scripts/solidity-deps.sh'
+      - 'localnet/**'
+      - 'e2e/cards/**'
+      - 'e2e/harness/**'
+      - 'e2e/package.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/actions/setup/**'
+      - '.github/workflows/cards.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cards/**'
+      - 'earn/src/**'
+      - 'earn/script/deploy/DeterministicRelease.sol'
+      - 'zone-router/src/**'
+      - 'scripts/solidity-deps.sh'
+      - 'localnet/**'
+      - 'e2e/cards/**'
+      - 'e2e/harness/**'
+      - 'e2e/package.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/actions/setup/**'
+      - '.github/workflows/cards.yml'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Card spend on Tempo (cards/): the provider-agnostic contracts and each provider's (Bridge, Rain), one
+# Foundry project that imports Earn's earn/src/ and the Zone router's zone-router/src/. Not a required
+# check: it runs only when cards/, earn/src/, Earn's DeterministicRelease, zone-router/src/, e2e/cards/,
+# localnet/ (with its pinned images) or scripts/solidity-deps.sh change.
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Required by tempoxyz/gh-actions secure-runner.
+      id-token: write
+    defaults:
+      run:
+        working-directory: cards
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the cards project's Solidity dependencies
+        working-directory: .
+        run: scripts/solidity-deps.sh cards
+
+      # Needs native Tempo precompiles (hardfork = "tempo:T8").
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - name: Format
+        run: forge fmt --check src test script
+
+      - name: Build
+        run: forge build
+
+      # Bridge's "TS" handler keeps the lint scope it had before it moved here.
+      - name: Lint
+        run: forge lint --deny warnings src/core src/providers/rain src/providers/bridge/BridgeProvider.sol
+
+      - name: Contract sizes
+        run: forge build --sizes src
+
+      # The committed Rain bytecode is what vendor/rain builds to with Rain's own compiler settings,
+      # apart from the metadata hashes, which name each checkout's absolute paths.
+      - name: Rain fixture is current
+        run: script/rain/build-fixture.sh --check
+
+      - name: Test
+        env:
+          FOUNDRY_PROFILE: ci
+        run: forge test
+
+      - name: Bridge matrix is current
+        working-directory: .
+        run: |
+          (cd cards && python3 script/bridge/matrix.py --out reports/matrix.md)
+          diff -u docs/cards/bridge/matrix.md cards/reports/matrix.md
+
+  # Public and private card spend end to end, from pathUSD and from Earn shares, with Rain as the
+  # provider, on a disposable Tempo L1 and Zone started by the shared localnet.
+  e2e:
+    name: Rain E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Runners are discarded after the job, so the testcontainers reaper is unneeded.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the cards project's Solidity dependencies
+        run: scripts/solidity-deps.sh cards
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: e2e
+
+      - name: Build contracts
+        working-directory: cards
+        run: forge build
+
+      - name: Run
+        run: pnpm e2e:cards -- --provider rain --earn
+
+  # A private spend end to end, from pathUSD and from Earn shares, on a disposable Tempo L1 and Zone
+  # started by the shared localnet, from the images localnet/fixtures/runtime-lock.json pins.
+  bridge-zone-e2e:
+    name: Bridge Zone E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Runners are discarded after the job, so the testcontainers reaper is unneeded.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the cards project's Solidity dependencies
+        run: scripts/solidity-deps.sh cards
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: e2e
+
+      - name: Build contracts
+        working-directory: cards
+        run: forge build
+
+      # --earn also deploys Tempo Earn's e2e-moderato stack locally, so the Earn spend steps run.
+      - name: Run
+        run: pnpm e2e:bridge -- --earn
+
+  # Public pulls and Bridge's access key on a disposable Tempo dev node.
+  bridge-smoke:
+    name: Bridge smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: cards
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the cards project's Solidity dependencies
+        working-directory: .
+        run: scripts/solidity-deps.sh cards
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - name: Bridge smoke
+        run: bash script/bridge/smoke.sh

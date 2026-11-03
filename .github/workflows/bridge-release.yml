@@ -1,12 +1,14 @@
 name: Bridge Release
 
-# Deploys one of the card integration's ownerless contracts for a SpenderFactory from main: the "TS"
-# handler (SpenderTempoSpend) or a card program's BridgeSettler. Each lands at its deterministic
-# release address (the CREATE2 deployer with Earn's release salt), the same address the issuer reaches
-# running the deploy scripts itself, and one already there is reused. After a broadcast it is source
-# verified on Tempo's verifier. Registering the handler stays with the issuer's admin and governance,
-# so the job summary lists the calls each submits; nothing here holds a role on the factory. Listing a
-# settler in a Spend-mode router is a Zone Router Release (zone-router-release.yml).
+# Deploys our ownerless contracts for a Bridge SpenderFactory from main: the "TS" handler
+# (SpenderTempoSpend), or a Bridge card program's CardSpender, with the release CardFactory and the
+# program's BridgeProvider it needs. The handler, factory and provider contract land at their deterministic
+# release addresses (the CREATE2 deployer with Earn's release salt) and the factory creates the program at
+# the address its spender ID and provider contract fix: the same addresses Bridge reaches running
+# the deploy scripts itself. Any already there is reused. After a broadcast each is source verified on
+# Tempo's verifier. Registering the handler stays with Bridge's admin and governance, so the job
+# summary lists the calls each submits; nothing here holds a role on the factory. Listing the program
+# in a Spend-mode router is a Zone Router Release (zone-router-release.yml).
 on:
   workflow_dispatch:
     inputs:
@@ -16,16 +18,16 @@ on:
         type: choice
         options: [moderato, mainnet]
       contract:
-        description: tempoSpend is the "TS" handler; bridgeSettler is a card program's settler
+        description: tempoSpend is the "TS" handler; bridgeProgram is a card program's CardSpender
         required: true
         type: choice
-        options: [tempoSpend, bridgeSettler]
+        options: [tempoSpend, bridgeProgram]
       factory:
         description: The SpenderFactory address
         required: true
         type: string
       spenderId:
-        description: bridgeSettler only, the card program's spender ID (bytes32)
+        description: bridgeProgram only, the card program's spender ID (bytes32)
         required: false
         type: string
         default: ''
@@ -58,7 +60,7 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: bridge
+        working-directory: cards
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -67,10 +69,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # BridgeSettler imports the settler interface from zone-router/src/, which needs no dependency of its own.
-      - name: Install the Bridge integration's Solidity dependencies
+      # CardSpender imports the settler interface from zone-router/src/ and Earn's from earn/src/, which need
+      # no dependency of their own.
+      - name: Install the cards project's Solidity dependencies
         working-directory: .
-        run: scripts/solidity-deps.sh bridge
+        run: scripts/solidity-deps.sh cards
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -92,9 +95,9 @@ jobs:
           set -euo pipefail
           arguments=("$NETWORK" "$CONTRACT")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
-          RESULT="$RUNNER_TEMP/bridge-release.json" script/deploy/release.sh "${arguments[@]}"
+          RESULT="$RUNNER_TEMP/bridge-release.json" script/bridge/deploy/release.sh "${arguments[@]}"
 
-      # Forge records the authenticated RPC URL in its script sequences under bridge/cache; the script
+      # Forge records the authenticated RPC URL in its script sequences under cards/cache; the script
       # deletes them, and this removes any it could not, whatever the outcome.
       - name: Remove Forge script sequences
         if: ${{ always() }}
@@ -115,7 +118,7 @@ jobs:
             echo
             echo '| Contract | Address | Transaction | Source match |'
             echo '| --- | --- | --- | --- |'
-            jq -r 'select(.address) | "| \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" elif .existed then "already deployed" elif .broadcast then "-" else "would be created" end) | \(.match // "-") |"' "$result"
+            jq -r '.broadcast as $broadcast | .contracts[]? | "| \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" elif .existed then "already deployed" elif $broadcast then "-" else "would be created" end) | \(.match // "-") |"' "$result"
             jq -r 'select(.factory) | "\nFactory `\(.factory)`."' "$result"
             jq -r 'select(.spenderId) | "\nCard program `\(.spenderId)`."' "$result"
             if jq -e '.contract == "tempoSpend" and .output.adminRegisterHandler' "$result" >/dev/null; then
@@ -127,7 +130,7 @@ jobs:
               echo '| --- | --- | --- |'
               jq -r '"| Admin (timelock) | `setSpenderHandler(\"TS\", handler)` | `\(.output.adminRegisterHandler)` |"' "$result"
               jq -r '.output | if (.governanceGateHandler // "0x") != "0x" then "| Governance | `updateSpenderHandlerStatus(\"TS\", Gated)` | `\(.governanceGateHandler)` |" else empty end' "$result"
-              jq -r '.output | if .status then "\nThe prefix was `\(.status)` before this deploy; docs/bridge/deploy.md says when governance gates it." else "\nA broadcast also writes the governance gate call when the factory needs one." end' "$result"
+              jq -r '.output | if .status then "\nThe prefix was `\(.status)` before this deploy; docs/cards/bridge/deploy.md says when governance gates it." else "\nA broadcast also writes the governance gate call when the factory needs one." end' "$result"
             fi
             if jq -e '.error' "$result" >/dev/null; then
               echo
@@ -142,5 +145,5 @@ jobs:
           name: bridge-release-${{ inputs.network }}-${{ inputs.contract }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/bridge-release.json
-            bridge/broadcast/
+            cards/broadcast/
           if-no-files-found: ignore

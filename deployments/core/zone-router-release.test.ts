@@ -89,7 +89,7 @@ describe('planRouterRelease', () => {
 
   test('leaves the card program settler to the card integration release', () => {
     expect(() => planRouterRelease('bridgeSettler', 4217)).toThrow(
-      'bridge/script/deploy/release.sh <network> bridgeSettler',
+      'cards/script/bridge/deploy/release.sh <network> bridgeProgram',
     )
   })
 
