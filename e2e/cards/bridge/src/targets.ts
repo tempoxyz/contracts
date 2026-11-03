@@ -862,10 +862,10 @@ export async function hosted(
     Partial<RouterDeployment> & {
       refundRecipient: Address
       receiver?: Address
-      spender?: Address
+      settler?: Address
     }
   // A record without a program or router: deploy the CardSpender and its router for the record's
-  // spender ID and record them, dropping any retired receiver and spender fields.
+  // spender ID and record them, dropping any retired receiver and settler fields.
   if (
     !record.program ||
     !record.provider ||
@@ -884,15 +884,15 @@ export async function hosted(
       spenderId: record.spenderId,
       zoneId: moderato.zone.id,
     })
-    const { receiver: _receiver, spender: _spender, ...rest } = record
+    const { receiver: _receiver, settler: _settler, ...rest } = record
     writeFileSync(moderatoRecord, `${JSON.stringify({ ...rest, ...routed }, null, 2)}\n`)
     Object.assign(record, routed)
-    delete record.spender
+    delete record.settler
     console.log(
       `    deployed: CardSpender ${routed.program} (provider ${routed.provider}) and Spend ZoneRouter ${routed.router}`,
     )
   }
-  const { refundRecipient, receiver: _receiver, spender: _spender, ...recorded } = record
+  const { refundRecipient, receiver: _receiver, settler: _settler, ...recorded } = record
   const program: Program = { ...recorded, ...(record as RouterDeployment) }
   step(
     2,
