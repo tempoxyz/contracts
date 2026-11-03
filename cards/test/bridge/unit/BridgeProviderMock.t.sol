@@ -149,6 +149,9 @@ contract MockFactory is IBridgeSpenderFactory {
 }
 
 contract MockVault {
+    /// @dev No fees to accrue.
+    function accrueFees() external pure returns (uint256, uint256) { }
+
     address public earnShare;
     address public asset;
 

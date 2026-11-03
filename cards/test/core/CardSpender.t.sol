@@ -4,6 +4,8 @@ pragma solidity ^0.8.36;
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
+import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
+
 import { CardSpend } from "../../src/core/CardSpend.sol";
 import { CardSpender } from "../../src/core/CardSpender.sol";
 import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
@@ -575,6 +577,24 @@ contract CardSpenderPayoutTest is CardSpenderBehavior {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, 0, 3e6));
         program.spend(s);
+    }
+
+    /// @dev Fees accrued since the last accrual are minted as EarnShare when the vault next accrues, which
+    ///      would otherwise shrink the drop in supply a private Earn payout is measured against.
+    function test_privateEarnPayout_withFeesAccrued() public {
+        FeeConfig memory fees;
+        fees.fixedFeeCount = 1;
+        fees.fixedFees[0].account = makeAddr("earn.fee-recipient");
+        fees.fixedFees[0].rateBps = 1000;
+        earnVault.setFeeConfig(fees);
+        _depositEarn(router, 100e6);
+        vm.warp(block.timestamp + 90 days);
+        usd.mint(address(venue), usd.balanceOf(address(venue)) * 200 / 10_000);
+
+        CardSpend memory e = _earnSpend(pooledWallet, 0, 5e6, 5e6, "fees.earn");
+        _routerSpend(address(earnShare), e.maxShares, e);
+        assertEq(usd.balanceOf(pooledWallet), 5e6);
+        _assertEmpty();
     }
 
     function test_warmVault_doesNothingThroughATarget() public {

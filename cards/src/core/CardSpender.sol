@@ -148,7 +148,10 @@ contract CardSpender is ISpender {
             _payout(s, token, address(0));
         } else {
             // The vault burns every share it takes, so the shares used must equal the drop in supply: a target
-            // cannot keep any of the input. Cheaper than quoting the cost, and exact.
+            // cannot keep any input. Fees are accrued first, so the withdrawal mints no fee shares in this block.
+            // Every entry point holds the transient lock for this whole call.
+            // forge-lint: disable-next-line(reentrancy-no-eth)
+            ITempoEarnVault(s.vault).accrueFees();
             uint256 supplyBefore = IERC20(token).totalSupply();
             _payout(s, token, address(0));
             expected = supplyBefore - IERC20(token).totalSupply();

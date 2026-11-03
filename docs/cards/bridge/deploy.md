@@ -234,7 +234,7 @@ so while TF pulls from the same vault the next private Earn spend sets it again,
 
 Then request callback gas per spend type rather than one figure, sized for the worst case of a
 prepared program: about 0.3M for a stablecoin spend (measured 0.19M) and 0.55M for an Earn spend
-(measured 0.47M), or 0.8M while TF pulls from the same vault and clears the approval (about 250k
+(measured 0.49M), or 0.8M while TF pulls from the same vault and clears the approval (about 250k
 more). That fits 4 spends of each into a default withdrawal batch, or 3 at 0.8M
 ([design](design.md#callback-gas)). The figures hold only once all of
 step 6 is done, the settlement wallet's balance included: a callback that runs out of gas bounces

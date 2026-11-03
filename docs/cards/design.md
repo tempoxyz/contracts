@@ -117,7 +117,7 @@ program holds as its baseline and leaves it there, so a spend never creates the 
   the unused input goes back to the caller and the program ends at its baseline (`ResidualBalance`). On
   the direct path the vault prices the shares, capped by the lower of `maxInput` and `maxShares`.
 - A payout through the provider's target uses exactly the stablecoin part, and for a private Earn spend
-  exactly the shares the vault burned, the drop in the EarnShare's supply (`InputNotConsumed`), so a
+  exactly the shares the vault burned, the drop in the EarnShare's supply after the program accrues the vault's fees (`InputNotConsumed`), so a
   replaced target cannot keep any of the input. A public Earn spend can use at most the share cost the
   program quoted to pull. Anything beyond the spend's input reverts.
 - A transient lock stops reentry. Standing approvals (to an allowed vault, or to the payout target) are

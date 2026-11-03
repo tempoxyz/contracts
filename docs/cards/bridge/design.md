@@ -528,7 +528,7 @@ returned to the Zone ([`PrivateSpendForkGas.t.sol`](../../../cards/test/bridge/f
 | ---------- | ----------- | ------------------------------------- | ----------- |
 | Earn       | As deployed | 1.98M                                 | 1.22M       |
 | Stablecoin | As deployed | 1.19M                                 | 0.44M       |
-| Earn       | Prepared    | 0.73M                                 | 0.47M       |
+| Earn       | Prepared    | 0.75M                                 | 0.49M       |
 | Stablecoin | Prepared    | 0.44M                                 | 0.19M       |
 
 Most of the cost is Tempo's charge for each storage slot that goes from zero to nonzero (TIP-1000).
