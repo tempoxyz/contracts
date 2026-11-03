@@ -609,6 +609,34 @@ contract DeployScriptsTest is ZoneEnv {
         assertTrue(r.messengerAllowedByPolicy, "messenger on the share whitelist");
     }
 
+    /// @notice An Earn spend to a virtual settlement goes through the clone, which redeems the vault asset to
+    ///         itself and forwards it: the clone must hold a seed of the asset and pass the asset's policy.
+    function test_preflightForAnEarnShareToAVirtualSettlementChecksTheClonesAsset() public {
+        _deployZone(false);
+        Preflight preflight = new Preflight();
+        address registry = StdPrecompiles.ADDRESS_REGISTRY_ADDRESS;
+        address master = makeAddr("settlement.master");
+        vm.mockCall(registry, abi.encodeCall(IAddressRegistry.isVirtualAddress, (settlement)), abi.encode(true));
+        vm.mockCall(registry, abi.encodeCall(IAddressRegistry.resolveRecipient, (settlement)), abi.encode(master));
+        address[] memory vaults = new address[](1);
+        vaults[0] = address(earnVault);
+        uint64 policy = StdPrecompiles.TIP403_REGISTRY.createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
+        vm.mockCall(address(usd), abi.encodeCall(ITIP20.transferPolicyId, ()), abi.encode(policy));
+
+        Preflight.Report memory r = _earnPreflight(preflight, address(0), vaults);
+        assertTrue(r.tokenIsEarnShare && r.settlementVirtual);
+        assertEq(r.stablecoin, address(usd));
+        assertFalse(r.cloneAssetAllowedByPolicy, "clone not on the asset whitelist");
+        assertFalse(r.cloneAssetSeeded, "no asset in the clone yet");
+        preflight.print(r, vaults);
+
+        StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(policy, spender, true);
+        _mintUsd(spender, 1);
+        r = _earnPreflight(preflight, address(0), vaults);
+        assertTrue(r.cloneAssetAllowedByPolicy, "clone on the asset whitelist");
+        assertTrue(r.cloneAssetSeeded, "clone holds a seed of the asset");
+    }
+
     /// @notice A VAULTS entry that answers `earnShare()` with no data still yields the whole report.
     function test_preflightWithAVaultThatReturnsNothing() public {
         _deployZone(false);

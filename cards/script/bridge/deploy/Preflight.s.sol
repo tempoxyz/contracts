@@ -162,6 +162,12 @@ contract Preflight is BridgeProgramRelease {
         bool routerSeeded;
         /// @dev For an EarnShare TOKEN, the clone holds some of it.
         bool cloneSeeded;
+        /// @dev For an EarnShare TOKEN paid to a virtual settlement, the clone holds some of the vault asset, which
+        ///      it redeems to itself and forwards on every such spend.
+        bool cloneAssetSeeded;
+        /// @dev For an EarnShare TOKEN paid to a virtual settlement, the vault asset's policy lets the clone
+        ///      receive and send it.
+        bool cloneAssetAllowedByPolicy;
         /// @dev The clone's standing approval of each vault's share to the vault (governance's `UV`).
         bool[] cloneVaultApproved;
         /// @dev The program pays directly, without a payout target.
@@ -257,6 +263,7 @@ contract Preflight is BridgeProgramRelease {
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(stablePolicy, r.settlementPayee);
             r.programWalletAllowedByPolicy = programWallet != address(0)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(stablePolicy, programWallet);
+            r.cloneAssetAllowedByPolicy = _sendsAndReceives(stablePolicy, r.clone);
         }
         (bool tokenOk, uint64 tokenPolicy) = _policy(token);
         if (tokenOk) {
@@ -361,8 +368,8 @@ contract Preflight is BridgeProgramRelease {
                 : "policy admin: authorize the settlement wallet under the token's TIP-403 policy"
         );
         _line(!r.paused, "factory not paused", "governance: unpause");
-        // Bridge's trust anchors: Bridge holds them, so each todo is a question for Bridge before going live.
-        _line(
+        // Bridge's trust anchors: Bridge holds them, so each warn is a question for Bridge before going live.
+        _warn(
             r.adminIsTimelock,
             string.concat(
                 "factory default admin ",
@@ -417,7 +424,7 @@ contract Preflight is BridgeProgramRelease {
             "router takes this Zone's spends through this program's CardSpender",
             "deployer: DeployZoneRouter for this program and Zone"
         );
-        _line(
+        _warn(
             r.programAtRelease,
             "CardSpender is the release program for FACTORY, SPENDER_ID and ROUTER_FACTORY",
             "deployer: DeployZoneRouter with the release ROUTER_FACTORY, then use its router"
@@ -470,6 +477,14 @@ contract Preflight is BridgeProgramRelease {
                 "share policy lets the clone receive and send",
                 "policy admin: authorize the clone under the share's TIP-403 policy"
             );
+            // A virtual settlement is paid through the clone: it redeems the asset to itself and forwards it.
+            if (r.settlementVirtual) {
+                _line(
+                    r.cloneAssetAllowedByPolicy,
+                    "vault asset's policy lets the clone receive and send",
+                    "policy admin: authorize the clone under the vault asset's TIP-403 policy"
+                );
+            }
             _line(
                 r.vaultAllowedByPolicy,
                 "share policy lets the vault receive",
@@ -521,29 +536,37 @@ contract Preflight is BridgeProgramRelease {
     /// @dev The warm-ups and seeds step 6 of docs/cards/bridge/deploy.md describes, and the callback gas to
     ///      request until they are all done.
     function _printGas(Report memory r, address[] memory vaults) private pure {
-        _line(
+        _warn(
             r.settlementFunded,
             r.tokenIsEarnShare ? "settlement wallet holds the vault asset" : "settlement wallet holds the token",
             "Bridge: send the settlement wallet 1 unit, and never sweep it to zero"
         );
-        _line(r.programWarm, "program's standing approval of the token to its clone", "anyone: program.warm(TOKEN)");
-        _line(r.routerWarm, "router's standing approval of the token to the portal", "anyone: router.warm(TOKEN)");
-        _line(r.programSeeded, "program holds a seed of the token", "anyone: send the program 1 unit of TOKEN");
-        _line(r.routerSeeded, "router holds a seed of the token", "anyone: send the router 1 unit of TOKEN");
+        _warn(r.programWarm, "program's standing approval of the token to its clone", "anyone: program.warm(TOKEN)");
+        _warn(r.routerWarm, "router's standing approval of the token to the portal", "anyone: router.warm(TOKEN)");
+        _warn(r.programSeeded, "program holds a seed of the token", "anyone: send the program 1 unit of TOKEN");
+        _warn(r.routerSeeded, "router holds a seed of the token", "anyone: send the router 1 unit of TOKEN");
         bool ready = r.settlementFunded && r.programWarm && r.routerWarm && r.programSeeded && r.routerSeeded;
         if (r.tokenIsEarnShare) {
-            _line(r.cloneSeeded, "clone holds a seed of the share", "anyone: send the clone 1 unit of the share");
+            _warn(r.cloneSeeded, "clone holds a seed of the share", "anyone: send the clone 1 unit of the share");
             ready = ready && r.cloneSeeded;
+            if (r.settlementVirtual) {
+                _warn(
+                    r.cloneAssetSeeded,
+                    "clone holds a seed of the vault asset, which a virtual settlement is paid through",
+                    "anyone: send the clone 1 unit of the vault asset"
+                );
+                ready = ready && r.cloneAssetSeeded;
+            }
         }
         for (uint256 i; i < vaults.length; ++i) {
-            _line(
+            _warn(
                 r.cloneVaultApproved[i],
                 string.concat("clone's standing share approval to vault ", vm.toString(vaults[i])),
                 "governance: ProgramCalls' governanceAllowVaults, which sets it"
             );
             ready = ready && r.cloneVaultApproved[i];
             if (!r.paysDirect) continue;
-            _line(
+            _warn(
                 r.programVaultApproved[i],
                 string.concat("program's standing share approval to vault ", vm.toString(vaults[i])),
                 "anyone: program.warmVault(vault)"
@@ -551,7 +574,7 @@ contract Preflight is BridgeProgramRelease {
             ready = ready && r.programVaultApproved[i];
         }
         if (ready) console.log("ok    every warm-up is done, so the prepared callback gas figures apply");
-        else console.log("todo  a warm-up is missing: request 3M callback gas until every one above is done");
+        else console.log("warn  a warm-up is missing: request 3M callback gas until every one above is done");
     }
 
     /// @dev Finds the `CardSpender` ROUTER lists for this program: one whose provider is a `BridgeProvider`
@@ -678,6 +701,7 @@ contract Preflight is BridgeProgramRelease {
             r.routerSeeded = _balance(token, router) != 0;
         }
         r.cloneSeeded = r.tokenIsEarnShare && r.clone != address(0) && _balance(token, r.clone) != 0;
+        r.cloneAssetSeeded = r.tokenIsEarnShare && r.clone != address(0) && _balance(r.stablecoin, r.clone) != 0;
         r.cloneVaultApproved = new bool[](vaults.length);
         r.programVaultApproved = new bool[](vaults.length);
         for (uint256 i; i < vaults.length; ++i) {
@@ -736,5 +760,12 @@ contract Preflight is BridgeProgramRelease {
     function _line(bool ok, string memory what, string memory fix) private pure {
         if (ok) console.log(string.concat("ok    ", what));
         else console.log(string.concat("todo  ", what, ": ", fix));
+    }
+
+    /// @dev Like `_line`, for advice that does not stop a spend: a missing warm-up only needs more callback gas,
+    ///      and Bridge's governance and release provenance are questions for Bridge, not failures.
+    function _warn(bool ok, string memory what, string memory fix) private pure {
+        if (ok) console.log(string.concat("ok    ", what));
+        else console.log(string.concat("warn  ", what, ": ", fix));
     }
 }

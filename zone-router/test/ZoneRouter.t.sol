@@ -23,7 +23,8 @@ contract MockSpender is ISpender {
         PullMore,
         HandBackExtra,
         KeepInput,
-        Reenter
+        Reenter,
+        RaiseFee
     }
 
     Behavior public behavior;
@@ -34,6 +35,15 @@ contract MockSpender is ISpender {
         behavior = behavior_;
         use = use_;
         payee = payee_;
+    }
+
+    /// @dev For RaiseFee: the Portal whose deposit fee the spender sets to `fee` before paying.
+    ZoneRouterMockPortal public feePortal;
+    uint128 public fee;
+
+    function configureFee(ZoneRouterMockPortal feePortal_, uint128 fee_) external {
+        feePortal = feePortal_;
+        fee = fee_;
     }
 
     function spendFrom(address token, uint256 maxInput, bytes calldata) external {
@@ -47,6 +57,7 @@ contract MockSpender is ISpender {
             ZoneRouter(msg.sender).onWithdrawalReceived(0, address(0), bytes32(0), token, 1, "");
             return;
         }
+        if (behavior == Behavior.RaiseFee) feePortal.setDepositFee(fee);
         input.transfer(payee, use);
         if (behavior == Behavior.KeepInput) return;
         uint256 back = maxInput - use;
@@ -348,6 +359,16 @@ contract ZoneRouterTest is EarnRouterTestBase {
 
         portalA.setToken(address(alternate), true, true);
         portalA.setDepositFee(100);
+        _expectSpendRevert(
+            zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.DepositFeeTooHigh.selector, uint128(100))
+        );
+    }
+
+    /// @notice A fee raised while the spender runs is caught when the change returns, not only before.
+    function testSpendRechecksTheDepositFeeAfterTheSpenderRuns() public {
+        ZoneRouter zr = _spendRouter();
+        spender.configure(MockSpender.Behavior.RaiseFee, ONE, payee);
+        spender.configureFee(feePortal, 100);
         _expectSpendRevert(
             zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.DepositFeeTooHigh.selector, uint128(100))
         );

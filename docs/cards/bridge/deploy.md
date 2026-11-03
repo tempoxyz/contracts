@@ -145,7 +145,9 @@ FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... SETTLEMENT=0x... TOKEN
 Nothing is sent. `ROUTER_FACTORY`, `ROUTER`, `REFUND_RECIPIENT` and `PROGRAM_WALLET` are optional,
 and each one left out reports `todo`; the router checks need both `ROUTER_FACTORY` and `ROUTER`.
 `VAULTS` is optional too: without it no vault is checked, as for a stablecoin-only program. It
-prints `ok` or `todo` for each item, with who submits the fix:
+prints `ok` or `todo` for each item, with who submits the fix. Advice that does not stop a spend reads
+`warn` instead of `todo`: Bridge's timelock, the release-address check, and each gas-readiness item, whose
+only cost is the larger callback gas:
 
 - the program's clone was created for `SPENDER_ID`, which `TS` requires;
 - `TS` is registered, has code, was built for this factory, and is usable by the program;
@@ -155,7 +157,10 @@ prints `ok` or `todo` for each item, with who submits the fix:
   matches;
 - the settlement destination is authorized, and the factory has not paused the program;
 - whether `SETTLEMENT` is a TIP-1022 virtual address, and if so the master its transfers credit, which
-  must be registered. The policy and balance checks of the settlement wallet read that master;
+  must be registered. The policy and balance checks of the settlement wallet read that master. An
+  Earn spend to a virtual settlement redeems the vault asset to the clone and forwards it, so the clone
+  must also be authorized under the vault asset's policy and, for the callback gas figures, hold a seed
+  of the vault asset;
 - Bridge's trust anchors, which only Bridge can change and which are worth reviewing before going live:
   the factory's `defaultAdmin()`, whether it is a `TimelockController` and its `getMinDelay()`, and
   `defaultAdminDelay()`; the factory proxy's ERC-1967 implementation; whether `factory.implementation()`,

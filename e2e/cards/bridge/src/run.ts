@@ -403,7 +403,7 @@ async function privateSpend(t: Prepared, run: string) {
   assert(
     !names(settlementReceipt.logs, cardholder.address) &&
       !inputNames(
-        (await l1Public.getTransaction({ hash: settlementReceipt.transactionHash })).input,
+        await l1Public.getTransaction({ hash: settlementReceipt.transactionHash }),
         cardholder.address,
       ),
     'no L1 log or input of the settlement, callback data included, names the cardholder',
@@ -784,7 +784,7 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   assert(
     !names(settlement.logs, cardholder.address) &&
       !inputNames(
-        (await l1Public.getTransaction({ hash: settlement.transactionHash })).input,
+        await l1Public.getTransaction({ hash: settlement.transactionHash }),
         cardholder.address,
       ),
     'no L1 log or input of the settlement, callback data included, names the cardholder',

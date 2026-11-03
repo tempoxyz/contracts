@@ -134,12 +134,24 @@ export function names(logs: readonly Log[], address: Address) {
 }
 
 /**
- * Whether calldata carries `address`, such as a settlement transaction's input: the Portal's withdrawal
- * batch with each callback's data, which names a sender only through its `senderTag` commitment.
+ * Whether a transaction's calldata carries `address`, such as a settlement transaction's: the Portal's withdrawal
+ * batch with each callback's data, which names a sender only through its `senderTag` commitment. A Tempo
+ * transaction carries its calldata in `calls`, others in `input`; one with neither cannot be checked.
  */
-export function inputNames(input: Hex | undefined, address: Address) {
-  if (input === undefined) throw new Error('the settlement transaction has no input to check')
-  return input.toLowerCase().includes(address.slice(2).toLowerCase())
+export function inputNames(
+  transaction: {
+    input?: Hex | undefined
+    calls?: readonly { data?: Hex | undefined }[] | undefined
+  },
+  address: Address,
+) {
+  const calldata = [
+    transaction.input,
+    ...(transaction.calls ?? []).map((call) => call.data),
+  ].filter((data): data is Hex => data !== undefined && data !== '0x')
+  if (calldata.length === 0) throw new Error('the settlement transaction has no calldata to check')
+  const needle = address.slice(2).toLowerCase()
+  return calldata.some((data) => data.toLowerCase().includes(needle))
 }
 
 export function assert(condition: unknown, message: string): asserts condition {

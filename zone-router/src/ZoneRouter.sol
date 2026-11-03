@@ -306,10 +306,9 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (!isSpender[data.spender]) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        // A maxInput below the amount always leaves change, so its return is checked before the spender pays.
-        bool changeChecked = data.maxInput < amount;
-        uint128 fee;
-        if (changeChecked) fee = _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
+        // A maxInput below the amount always leaves change, so its return is checked before the spender pays,
+        // and checked again once it has: the Portal's fee may change while the spender runs.
+        if (data.maxInput < amount) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
 
         uint256 balanceBefore = IERC20Like(token).balanceOf(address(this));
         // A transfer instead of an approval: the spender holds no allowance from the router, so it can
@@ -326,7 +325,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         uint256 change = amount - used;
         bytes32 zoneDepositHash;
         if (change != 0) {
-            if (!changeChecked) fee = _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
+            uint128 fee = _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
             // The Portal's depositEncrypted reverts DepositTooSmall below this; named here for the sender.
             uint256 minimum = uint256(fee) + IZonePortalFees(sourcePortal).calculateBouncebackFee();
             if (change < minimum) revert ChangeBelowDepositFee(change, minimum);
