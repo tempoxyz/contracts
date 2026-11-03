@@ -198,8 +198,8 @@ contract OlderCardSpender {
     address public immutable GUARDIAN;
     bool public guardianPaused;
 
-    constructor(address issuer_, address guardian_) {
-        PROVIDER = issuer_;
+    constructor(address provider_, address guardian_) {
+        PROVIDER = provider_;
         GUARDIAN = guardian_;
     }
 

@@ -14,7 +14,7 @@ export type Destination = { address: Address; hint: bigint; label: string }
 export type Deployed = {
   /** The program's CardSpender: the public spend entry point and the router's settler. */
   program: Address
-  /** The provider's ICardProvider. */
+  /** The program's provider contract (its ICardProvider). */
   provider: Address
   router: Address
   routerFactory: Address
@@ -43,7 +43,7 @@ export interface CardProvider {
   name: string
   /** L1 accounts the provider needs funded with gas before `deploy`. */
   accounts: PrivateKeyAccount[]
-  /** Deploys the provider's own contracts, its provider and a CardSpender over it. */
+  /** Deploys the provider's own contracts, its provider contract and a CardSpender over it. */
   deploy(input: {
     rpcUrl: string
     deployerPk: Hex

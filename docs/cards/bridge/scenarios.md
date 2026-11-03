@@ -1,14 +1,14 @@
 # Card scenarios
 
-Every scenario in [`test/e2e/CardScenarios.sol`](../../../cards/test/bridge/e2e/CardScenarios.sol) runs against
+Every scenario in [`test/bridge/e2e/CardScenarios.sol`](../../../cards/test/bridge/e2e/CardScenarios.sol) runs against
 every setup. The cardholder starts with $1,000 in the setup's funding source. Unless noted, each
 scenario also checks the program ledger:
 
 - the settlement wallet received every settled pull plus reserve draws;
-- Issuer liquidity paid every credit;
+- Bridge's liquidity paid every credit;
 - each closed authorization pulled what it captured plus fees, minus what it returned.
 
-"Gap" marks where a setup falls short of the ideal. Some gaps are the issuer's setups today. Others
+"Gap" marks where a setup falls short of the ideal. Some gaps are Bridge's setups today. Others
 are decisions for the Tempo handler ([`design.md`](design.md#decisions)).
 
 ## Purchases
@@ -42,35 +42,35 @@ are decisions for the Tempo handler ([`design.md`](design.md#decisions)).
 
 ## Declines and controls
 
-| Scenario                         | Situation                               | Expected                                                 |
-| -------------------------------- | --------------------------------------- | -------------------------------------------------------- |
-| `decline_insufficientFunds`      | $1,500 on $1,000                        | Declined, nothing moves                                  |
-| `decline_afterCardholderRevokes` | Cardholder revokes the card's authority | Declined                                                 |
-| `decline_whenProgramPaused`      | The issuer pauses the program           | Declined. Private: approved, bounced, reserve pays       |
-| `spendLimit_capsSpend`           | $100 limit, two $60 auths               | Second declined                                          |
-| `spendLimit_resetsEachPeriod`    | Next 30-day period                      | Limit refreshed (gap for the issuer: lifetime allowance) |
-| `standingAllowance_betweenPulls` | After a pull                            | Nothing approved (gap for the issuer: allowance remains) |
+| Scenario                         | Situation                               | Expected                                             |
+| -------------------------------- | --------------------------------------- | ---------------------------------------------------- |
+| `decline_insufficientFunds`      | $1,500 on $1,000                        | Declined, nothing moves                              |
+| `decline_afterCardholderRevokes` | Cardholder revokes the card's authority | Declined                                             |
+| `decline_whenProgramPaused`      | Bridge pauses the program               | Declined. Private: approved, bounced, reserve pays   |
+| `spendLimit_capsSpend`           | $100 limit, two $60 auths               | Second declined                                      |
+| `spendLimit_resetsEachPeriod`    | Next 30-day period                      | Limit refreshed (gap for Bridge: lifetime allowance) |
+| `standingAllowance_betweenPulls` | After a pull                            | Nothing approved (gap for Bridge: allowance remains) |
 
 ## Concurrency and failures
 
-| Scenario                                | Situation                              | Expected                                                                                                                                              |
-| --------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `concurrentAuthorizations_noOverspend`  | $700 and $400 back to back             | Second declined                                                                                                                                       |
-| `fundsMovedAfterApproval_reserveCovers` | Funds moved between preflight and pull | Reserve pays, cardholder owes                                                                                                                         |
-| `retrySameAction_neverDoubleCharges`    | The issuer resubmits a settled pull    | Ideal: rejected on chain. Every setup relies on the issuer's off-chain dedupe (gap; decided for the Tempo handler, [decision 3](design.md#decisions)) |
+| Scenario                                | Situation                              | Expected                                                                                                                                          |
+| --------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `concurrentAuthorizations_noOverspend`  | $700 and $400 back to back             | Second declined                                                                                                                                   |
+| `fundsMovedAfterApproval_reserveCovers` | Funds moved between preflight and pull | Reserve pays, cardholder owes                                                                                                                     |
+| `retrySameAction_neverDoubleCharges`    | Bridge resubmits a settled pull        | Ideal: rejected on chain. Every setup relies on Bridge's off-chain dedupe (gap; decided for the Tempo handler, [decision 3](design.md#decisions)) |
 
 ## Earn
 
-| Scenario                                   | Situation                                    | Expected                                              |
-| ------------------------------------------ | -------------------------------------------- | ----------------------------------------------------- |
-| `earn_yieldAccruesUntilSpent`              | 1% yield before a purchase                   | Fewer shares burned, yield kept                       |
-| `earn_priceDropAfterQuote_boundsShareCost` | Share price drops 2% after the issuer quotes | Pull refused (gap for TF, EV: burns beyond the quote) |
-| `earn_illiquidVenue`                       | Venue cannot redeem                          | Declined. Private: approved, bounced, reserve pays    |
-| `split_stablecoinFirstThenEarn`            | $30 stablecoin, $50 purchase                 | $30 stablecoin and $20 from Earn in one pull          |
+| Scenario                                   | Situation                                | Expected                                              |
+| ------------------------------------------ | ---------------------------------------- | ----------------------------------------------------- |
+| `earn_yieldAccruesUntilSpent`              | 1% yield before a purchase               | Fewer shares burned, yield kept                       |
+| `earn_priceDropAfterQuote_boundsShareCost` | Share price drops 2% after Bridge quotes | Pull refused (gap for TF, EV: burns beyond the quote) |
+| `earn_illiquidVenue`                       | Venue cannot redeem                      | Declined. Private: approved, bounced, reserve pays    |
+| `split_stablecoinFirstThenEarn`            | $30 stablecoin, $50 purchase             | $30 stablecoin and $20 from Earn in one pull          |
 
 ## Privacy
 
-| Scenario                                | Situation                                                                               | Expected                                                                                                                            |
-| --------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `private_cardholderNeverAppearsOnTempo` | Pull, capture return and refund                                                         | No Tempo log contains the cardholder's address                                                                                      |
-| `private_leakedZoneKeyStaysInProgram`   | The issuer's Zone key withdraws to an outside address, then to another admitted account | Ideal: nothing leaves the program. Accepted risk (decision 7): any address in open Zones, any admitted account in closed-loop Zones |
+| Scenario                                | Situation                                                                           | Expected                                                                                                                            |
+| --------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `private_cardholderNeverAppearsOnTempo` | Pull, capture return and refund                                                     | No Tempo log contains the cardholder's address                                                                                      |
+| `private_leakedZoneKeyStaysInProgram`   | Bridge's Zone key withdraws to an outside address, then to another admitted account | Ideal: nothing leaves the program. Accepted risk (decision 7): any address in open Zones, any admitted account in closed-loop Zones |

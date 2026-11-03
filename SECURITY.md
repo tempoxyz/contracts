@@ -29,7 +29,7 @@ Out of scope:
 
 - `earn/src/demo/` and test fixtures, including every `test/` directory, `localnet/`, `e2e/`, and
   committed fixture artifacts, which are not production code;
-- vendored third-party code, such as the issuer's contracts in `cards/vendor/`, and third-party venues
+- vendored third-party code, such as the card providers' contracts in `cards/vendor/`, and third-party venues
   such as ERC-4626 vaults, Veda, and PropAMM. Report issues in them to their owners. A bug in how
   Tempo's contracts integrate with them is in scope.
 
@@ -46,6 +46,6 @@ These contracts have no bug bounty.
 ## Audits
 
 Earn's completed audits, their scope, and the contracts changed or added since are listed on its
-[audits page](docs/earn/audit/README.md). The card integration's
+[audits page](docs/earn/audit/README.md). Bridge card spend's
 [design](docs/cards/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeProvider`,
 `CardSpender`, `CardFactory`, `ZoneRouter` and `ZoneRouterFactory`.

@@ -63,8 +63,9 @@ contract BridgeProgramTest is AccessKeys {
         new BridgeProvider(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("no such program"));
     }
 
-    /// @notice The program is bound to its clone, and the issuer reads Bridge's own state as it changes.
-    function test_issuerFollowsBridgesGovernance() public {
+    /// @notice The program is bound to its clone, and its provider contract reads Bridge's own state as it
+    ///         changes.
+    function test_providerFollowsBridgesGovernance() public {
         assertEq(provider.CLONE(), spender);
         assertEq(program.PAYOUT_TARGET(), spender);
         assertEq(address(program.PROVIDER()), address(provider));

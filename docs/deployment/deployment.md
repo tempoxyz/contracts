@@ -396,8 +396,8 @@ or router, and the Zone's Portal administrator a router
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
 deploys the card integration's "TS" handler (`SpenderTempoSpend`), or a Bridge card program (its
-`BridgeProvider` and `CardSpender`, through the `CardFactory`) for an issuer's `SpenderFactory` from `main`, at its deterministic address, with [`cards/`](../../cards/README.md)' own build.
+`BridgeProvider` and `CardSpender`, through the `CardFactory`) for Bridge's `SpenderFactory` from `main`, at its deterministic address, with [`cards/`](../../cards/README.md)' own build.
 It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue,
-one network per dispatch, and lists in its summary the calls the issuer's admin and governance submit to
+one network per dispatch, and lists in its summary the calls Bridge's admin and governance submit to
 register and gate the handler; it never submits them. [Deploying from CI](../cards/bridge/deploy.md#deploying-from-ci) owns the
 details.

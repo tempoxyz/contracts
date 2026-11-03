@@ -4,7 +4,7 @@ How a card from any provider pays from funds a cardholder keeps on Tempo, public
 stablecoin or Tempo Earn shares. Every program is a `CardSpender` over one provider engine, its
 `ICardProvider`, deployed by a `CardFactory`. The shape follows Tempo Earn: a stable contract users
 point at (Earn's `EarnVault`, here the program), over a provider-specific engine (Earn's
-`IEarnEngine`, here the provider) whose optional behavior is an ERC-165 capability. This page owns the
+`IEarnEngine`, here the provider contract) whose optional behavior is an ERC-165 capability. This page owns the
 shared design; [bridge/](bridge/README.md) and [rain/](rain/README.md) own each provider.
 
 ## Components
@@ -16,7 +16,7 @@ shared design; [bridge/](bridge/README.md) and [rain/](rain/README.md) own each 
 | [`ICardProvider`](../../cards/src/core/interfaces/ICardProvider.sol) engine | The provider's contracts | Decides destinations, Earn vaults and the provider's pause; optionally names what the program pays through.    |
 | [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)             | None                     | Receives the Zone withdrawal, hands `maxInput` to the program (its listed settler), returns the change.        |
 
-| Provider | Provider                                                                | How the program pays                                                                       |
+| Provider | Provider contract                                                       | How the program pays                                                                       |
 | -------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Rain     | [`RainProvider`](../../cards/src/providers/rain/RainProvider.sol)       | Directly, into a Rain collateral contract.                                                 |
 | Bridge   | [`BridgeProvider`](../../cards/src/providers/bridge/BridgeProvider.sol) | Through the program's Bridge spender clone and the "TS" handler, into a settlement wallet. |
@@ -33,8 +33,8 @@ key in the audit scope.
 
 - `isAuthorizedDestination(payer, destination, token, hint, isPrivate)`: may this payer's spend of this
   token pay this destination? `hint` is the provider's evidence about the destination, carried in
-  `CardSpend.destinationHint`. `isPrivate` comes from the program, true only for `settle`, so an provider
-  applies "a private spend must not name the cardholder" without inspecting the payer.
+  `CardSpend.destinationHint`. `isPrivate` comes from the program, true only for `settle`, so a provider
+  contract applies "a private spend must not name the cardholder" without inspecting the payer.
 - `isAllowedVault(vault)`: may spends redeem this Earn vault's shares? A vault's `withdrawExact` decides
   where redeemed value goes, so allowing one is as strong as adding a destination.
 - `paused()`: have the provider's own contracts stopped spends?
@@ -117,7 +117,7 @@ outbox's 1,024.
 8. A program's provider and guardian never change; its address commits to them.
 
 Tests: [`cards/test/core/`](../../cards/test/core/) runs every program behavior twice, paying directly and
-through a payout target, with mock providers and no provider; each provider's tests run its provider on a
+through a payout target, with mock provider contracts and no real provider; each provider's tests run its provider contract on a
 real program ([bridge](bridge/harness.md), [rain](rain/README.md#evidence)), and
 [`e2e/cards`](../../e2e/cards/) runs both on a real L1 and Zone.
 
@@ -126,7 +126,7 @@ real program ([bridge](bridge/harness.md), [rain](rain/README.md#evidence)), and
 "Private" means the L1 settlement does not name the cardholder: the payer is the router, the destination
 is one the program shares across cardholders, and the change returns as an encrypted deposit. The Zone's
 sequencer sees the cardholder's withdrawal, and the L1 shows each spend's amount, token, destination and
-time. An provider that authorized a cardholder-specific destination when `isPrivate` is true would break
+time. A provider contract that authorized a cardholder-specific destination when `isPrivate` is true would break
 this, so providers authorize only pooled destinations for a private spend (Rain:
 [destinations](rain/README.md#destinations)).
 
@@ -137,14 +137,14 @@ withdraw a cardholder's Zone balance outside the program; there is no on-chain i
 provider dedupes spends off chain; the provider approves a private spend on the Zone receipt and its
 reserve pays if settlement fails; spend events are not proof of payment. In addition:
 
-- An provider is as strong as what it reads. It decides every destination, so a provider whose own
+- A provider contract is as strong as what it reads. It decides every destination, so a provider whose own
   contracts can be upgraded (Rain's factory, Bridge's spender factory) is trusted for that, and a payout
   target is trusted to pay the spend it is handed (the program bounds what it can take).
-- Programs are immutable. Changing an provider, its tokens or vaults, or the guardian means deploying a new
+- Programs are immutable. Changing a program's provider contract, its tokens or vaults, or the guardian means deploying a new
   program and a router that lists it, and cardholders authorizing a new key. The guardian (or the
-  provider's own pause, through the provider) stops spends meanwhile; a private spend while paused bounces
+  provider's own pause, through the provider contract) stops spends meanwhile; a private spend while paused bounces
   back into the Zone in full.
-- `settle` is permissionless, as the Bridge settler was: anyone can call it with their own funds, but only
+- `settle` is permissionless: anyone can call it with their own funds, but only
   to pay a destination the provider allows for a private spend.
 
 ## Adding a provider

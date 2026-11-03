@@ -426,10 +426,10 @@ contract Preflight is Script {
             (bool providerOk, address provider) =
                 ProgramChecks.readAddress(settlers[i], bytes4(keccak256("PROVIDER()")));
             if (!providerOk) continue;
-            (bool factoryOk, address issuerFactory) =
+            (bool factoryOk, address providerFactory) =
                 ProgramChecks.readAddress(provider, bytes4(keccak256("FACTORY()")));
             (bool ok, bytes memory id) = provider.staticcall(abi.encodeWithSignature("SPENDER_ID()"));
-            if (!factoryOk || issuerFactory != factory || !ok || id.length != 32) continue;
+            if (!factoryOk || providerFactory != factory || !ok || id.length != 32) continue;
             if (abi.decode(id, (bytes32)) != spenderId) continue;
             r.routerMatches = true;
             r.program = settlers[i];

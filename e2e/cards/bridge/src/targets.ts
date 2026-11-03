@@ -865,9 +865,8 @@ export async function hosted(
       receiver?: Address
       settler?: Address
     }
-  // A record from before the CardSpender has no program or router, or a BridgeSettler's router:
-  // deploy the CardSpender and its router for the record's spender and record them, dropping the
-  // retired receiver and settler.
+  // A record without a program or router: deploy the CardSpender and its router for the record's
+  // spender ID and record them, dropping any retired receiver and settler fields.
   if (
     !record.program ||
     !record.provider ||

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Deploys the card integration's ownerless contracts for a SpenderFactory at their deterministic
+# Deploys our ownerless contracts for a Bridge SpenderFactory at their deterministic
 # addresses, or reuses those already there: the "TS" handler (tempoSpend), at its release address
 # (script/bridge/deploy/BridgeRelease.sol), or a Bridge card program's CardSpender (bridgeProgram):
 # the release CardFactory and the program's BridgeProvider, each at its release address, and the
-# program, which that CardFactory creates at the address its program ID (the spender ID), provider and
-# guardian fix. It checks that the run created exactly the missing contracts, each at the address
+# program, which that CardFactory creates at the address its program ID (the spender ID), provider contract
+# and guardian fix. It checks that the run created exactly the missing contracts, each at the address
 # predicted here from the locally compiled creation code, and, after a broadcast to a hosted
 # network, that Tempo's verifier has the source of every one. Bridge running the deploy scripts
 # itself lands on the same addresses. The Bridge Release workflow

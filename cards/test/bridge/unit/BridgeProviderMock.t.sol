@@ -178,7 +178,7 @@ contract BridgeProviderMockTest is Test {
         new BridgeProvider(IBridgeSpenderFactory(address(0)), SPENDER_ID);
     }
 
-    /// @notice A provider is bound to the program's clone when it is created, so one must exist.
+    /// @notice A `BridgeProvider` is bound to the program's clone when it is created, so one must exist.
     function testConstructorRefusesAProgramWithoutAClone() public {
         bytes32 empty = keccak256("no code");
         factory.setClone(empty, makeAddr("no code"));

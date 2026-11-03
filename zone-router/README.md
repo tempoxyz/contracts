@@ -5,7 +5,7 @@ redemptions, and spends through settlers fixed at deployment. The design, its in
 settler are in [docs/zone-router/zone-router.md](../docs/zone-router/zone-router.md).
 
 This is a separate Foundry project beside [Earn](../earn/README.md) and the
-[card integration](../docs/cards/bridge/README.md), compiled with solc. It imports Earn's interfaces from
+[card spend](../cards/README.md), compiled with solc. It imports Earn's interfaces from
 [`earn/src/`](../earn/src/) rather than a copy. `cards/`' `CardSpender` implements
 `ISpendSettler` from here; this project never imports from `cards/`.
 

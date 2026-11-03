@@ -1,12 +1,12 @@
-# How the issuer moves card money on Tempo today
+# How Bridge moves card money on Tempo today
 
-A summary of the vendored card spender contracts at `9675cb0` and the issuer's card flow. The harness runs these contracts as the "issuer" setups. What the issuer's
+A summary of the vendored card spender contracts at `9675cb0` and Bridge's card flow. The harness runs these contracts as the "Bridge" setups. What Bridge's
 backend needs for card spend on Tempo is in [`bridge-integration.md`](bridge-integration.md).
 
 ## Contracts
 
 - **`SpenderFactory`** (UUPS, roles: admin/timelock, governance, manager, debitor, pauser).
-  `createSpender` deploys one beacon-proxy clone per spender ID. The issuer creates one per developer
+  `createSpender` deploys one beacon-proxy clone per spender ID. Bridge creates one per developer
   per chain, so allowances are scoped to a program, not global.
 - **`SpenderDelegator`** routes each call by a 2-byte prefix to a registered handler by
   delegatecall.
@@ -21,11 +21,11 @@ backend needs for card spend on Tempo is in [`bridge-integration.md`](bridge-int
 - Handlers only pull. There is no on-chain refund path and no on-chain spend limit beyond the
   allowance.
 
-## The issuer's card backend (cards and crypto-pulls)
+## Bridge's card backend (cards and crypto-pulls)
 
 - The processor calls `authorize_and_transfer`. Noncustodial just-in-time pulls on Tempo go through
   crypto-pulls and are approved after broadcast, not after confirmation. A revert after approval is
-  recorded as a double spend that the issuer absorbs.
+  recorded as a double spend that Bridge absorbs.
 - Returns, refunds and reversals create a crypto-return trip that delivers the card's account
   currency (stablecoin) to the wallet. They never re-enter a vault.
 - Vault configuration is one vault per developer per chain (`approval_config.vault_address`).

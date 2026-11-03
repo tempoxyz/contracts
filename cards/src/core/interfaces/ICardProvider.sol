@@ -9,13 +9,13 @@ import { CardSpend } from "../CardSpend.sol";
 /// @notice A card provider's engine for one or more `CardSpender`s: what the provider decides about a
 ///         spend. Every provider implements this; what it pays through is an optional capability
 ///         (`ICardProviderPayout`), discovered with ERC-165 when the program is deployed, as Earn
-///         discovers an engine's exit capabilities. Providers hold no funds and read the provider's own
+///         discovers an engine's exit capabilities. Provider contracts hold no funds and read the provider's own
 ///         contracts as they are.
 interface ICardProvider is IERC165 {
     /// @notice Whether a spend of `token` from `payer` may pay `destination`.
     /// @param payer The cardholder's account (public) or whoever settles a Zone withdrawal (private).
     /// @param hint Provider-specific evidence that `destination` belongs to the program.
-    /// @param isPrivate True for a private spend, which must not name the cardholder: an provider authorizes
+    /// @param isPrivate True for a private spend, which must not name the cardholder: the provider authorizes
     ///        only destinations the program shares across cardholders for it.
     function isAuthorizedDestination(address payer, address destination, address token, uint256 hint, bool isPrivate)
         external
@@ -33,8 +33,8 @@ interface ICardProvider is IERC165 {
 /// @title ICardProviderPayout
 /// @notice Optional capability: the provider's own contracts pay the spend. The program approves
 ///         `payoutTarget` for the spend's input and calls it with `payoutData(spend)` as the payer, then
-///         checks the destination got exactly the amount and takes back what was not used. Bridge's provider
-///         names its spender clone, so Bridge's factory still governs every spend.
+///         checks the destination got exactly the amount and takes back what was not used. `BridgeProvider`
+///         names the program's spender clone, so Bridge's factory still governs every spend.
 interface ICardProviderPayout {
     /// @notice The contract the program pays through. Fixed for the provider's life.
     function payoutTarget() external view returns (address);

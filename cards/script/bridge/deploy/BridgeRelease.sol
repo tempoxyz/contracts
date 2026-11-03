@@ -11,9 +11,9 @@ import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 
-/// @notice Deterministic creation of the card integration's ownerless contracts. Each is created
+/// @notice Deterministic creation of our ownerless contracts for Bridge card programs. Each is created
 ///         through the CREATE2 deployer with Earn's release salt (`DeterministicRelease`), so the same
-///         build and constructor arguments land at the same address whoever deploys them, the issuer or
+///         build and constructor arguments land at the same address whoever deploys them, Bridge or
 ///         Tempo's Bridge Release workflow, and a contract that already exists there is reused instead of
 ///         created again.
 /// @dev Call the creating functions while broadcasting: Forge routes a broadcast `new X{salt: s}`
@@ -90,7 +90,7 @@ abstract contract BridgeProgramRelease is ReleaseAt {
         _requireAt(address(provider), predicted);
     }
 
-    /// @dev Creates the factory, the issuer and the program, each only when missing. The program is the
+    /// @dev Creates the factory, the provider contract and the program, each only when missing. The program is the
     ///      factory's `deploy`, called only when it does not exist yet.
     function _bridgeProgram(IBridgeSpenderFactory factory, bytes32 spenderId, address guardian)
         internal

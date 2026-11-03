@@ -2,9 +2,9 @@
 //
 //   pnpm e2e:cards                         Rain, stablecoin spends
 //   pnpm e2e:cards -- --earn               Rain, plus spends from Tempo Earn shares, public and private
-//   pnpm e2e:cards -- --provider rain      the provider to run (rain is the only one so far)
+//   pnpm e2e:cards -- --provider rain      the provider to run (rain; Bridge runs with pnpm e2e:bridge)
 //
-// 1. Starts the L1, has the provider deploy its own contracts, its provider and a CardSpender over it,
+// 1. Starts the L1, has the provider deploy its own contracts, its provider contract and a CardSpender over it,
 //    with a Spend-mode ZoneRouter listing the program as its settler,
 //    then starts the Zone and registers the router as its gateway.
 // 2. Public: the cardholder authorizes the provider's access key, scoped to approving the program and

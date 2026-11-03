@@ -1,10 +1,10 @@
 # Deploying
 
-The card integration deploys into the issuer's existing `SpenderFactory`: the "TS" handler, and for
+The card integration deploys into Bridge's existing `SpenderFactory`: the "TS" handler, and for
 each program its `CardSpender` with its `BridgeProvider`, deployed by a shared `CardFactory`, and the
 program's Zone router. None has an owner; a program's optional guardian can only pause it. The
 handler, the `CardFactory` and each `BridgeProvider` land at deterministic release addresses, and a
-program at the `CardFactory`'s CREATE2 address for its `spenderId`, issuer and guardian, so the issuer
+program at the `CardFactory`'s CREATE2 address for its `spenderId`, provider and guardian, so Bridge
 can deploy them with the scripts below or Tempo with the [Bridge Release workflow](#deploying-from-ci),
 and either lands on the same contracts. Every factory change is a role-gated call, so the scripts
 write those calls as calldata for the multisig that holds each role, instead of sending them.
@@ -18,7 +18,7 @@ the preflight both read the Zone factory.
 
 ```bash
 FACTORY=0x... OUT=reports/tempo-spend.json \
-  forge script script/deploy/DeployTempoSpend.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
+  forge script script/bridge/deploy/DeployTempoSpend.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
 ```
 
 The script creates the handler through the CREATE2 deployer
@@ -27,7 +27,7 @@ The script creates the handler through the CREATE2 deployer
 ([`BridgeRelease`](../../../cards/script/bridge/deploy/BridgeRelease.sol)), so the same build for the same
 factory lands at the same address whoever deploys it. A handler already at that address is reused
 and nothing is sent. The address follows this repository's build of `cards/`: a change to the
-handler's source, including the `Spend` struct it imports from `zone-router/`, the compiler settings
+handler's source, including the `Spend` struct in `interfaces/IBridgeSpender.sol`, the compiler settings
 or the project's remappings moves it.
 
 The deploy scripts sign with forge's `--account` or `--ledger`. `DEPLOYER_PK` also works, for test
@@ -58,21 +58,21 @@ the existing handler, and once that one is registered the admin call changes not
 
 ## 2. Deploy the program (once per program)
 
-The program's clone exists already: the issuer's manager created it with `createSpender(spenderId,
+The program's clone exists already: Bridge's manager created it with `createSpender(spenderId,
 destinations)`, with the settlement wallet as a destination.
 
 ```bash
 FACTORY=0x... SPENDER_ID=0x... GUARDIAN=0x... OUT=reports/bridge-program.json \
-  forge script script/deploy/DeployBridgeProgram.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
+  forge script script/bridge/deploy/DeployBridgeProgram.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
 ```
 
 The script checks that the program's clone was created for its ID. It creates `CardFactory` and the
 program's `BridgeProvider(factory, spenderId)` through the CREATE2 deployer with the release salt, as
-the handler, reusing either one already there, then calls `cardFactory.deploy(spenderId, issuer,
+the handler, reusing either one already there, then calls `cardFactory.deploy(spenderId, provider,
 guardian)`, which returns the program if it exists. `GUARDIAN` is optional: left out or zero, nobody
 can pause the program but the factory's own pause. A program's provider and guardian never change, so
 a new guardian means a new program. `OUT` holds `factory`, `spenderId`, `clone`, `guardian`,
-`cardFactory`, `issuer`, `program` and whether this run `created` the program, and is written only
+`cardFactory`, `provider`, `program` and whether this run `created` the program, and is written only
 with `--broadcast`. The program needs no factory call: the cardholders' access keys and the Zone's
 router name it.
 
@@ -82,7 +82,7 @@ router name it.
 
 ```bash
 FACTORY=0x... SPENDER_ID=0x... VAULTS=0xVault1,0xVault2 OUT=reports/program.json \
-  forge script script/deploy/ProgramCalls.s.sol --rpc-url $TEMPO_RPC
+  forge script script/bridge/deploy/ProgramCalls.s.sol --rpc-url $TEMPO_RPC
 ```
 
 Nothing is sent. The script refuses a spender ID that was added to an existing clone, which `TS`
@@ -102,7 +102,7 @@ calls until it is allowlisted. Leave `VAULTS` unset for a stablecoin-only progra
 ```bash
 FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... GUARDIAN=0x... ZONE_ID=7 ROUTER_FACTORY=0x... \
   OUT=reports/zone-router-7.json \
-  forge script script/deploy/DeployZoneRouter.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
+  forge script script/bridge/deploy/DeployZoneRouter.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
 ```
 
 The script checks that the program's clone was created for its ID, that `ZONE_ID` is a valid Zone
@@ -110,7 +110,7 @@ ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the 
 [step 2](#2-deploy-the-program-once-per-program), or reuses it, then, through the
 `ZoneRouterFactory`, a [`ZoneRouter`](../../zone-router/zone-router.md) whose mode allows only Spend,
 only from `ZONE_ID`, with the program as its only settler. Leave `ROUTER_FACTORY` unset to deploy a
-new factory. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `issuer`,
+new factory. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `provider`,
 `program`, `routerFactory` and `router`, and is written only with `--broadcast`.
 
 For a hosted program, release the program with the Bridge Release workflow's `bridgeProgram`
@@ -138,7 +138,7 @@ role, `setAllowedAccount(router, false)` first.
 ```bash
 FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... SETTLEMENT=0x... TOKEN=0x... ZONE_ID=2 \
   ROUTER_FACTORY=0x... ROUTER=0x... REFUND_RECIPIENT=0x... PROGRAM_WALLET=0x... VAULTS=0xVault1 \
-  forge script script/deploy/Preflight.s.sol --rpc-url $TEMPO_RPC
+  forge script script/bridge/deploy/Preflight.s.sol --rpc-url $TEMPO_RPC
 ```
 
 Nothing is sent. `ROUTER_FACTORY`, `ROUTER`, `REFUND_RECIPIENT` and `PROGRAM_WALLET` are optional,
@@ -196,7 +196,7 @@ program: `settle` is permissionless and counts whatever it holds as the caller's
 spend a seed there.
 
 The settlement wallet must also hold a balance of each token it receives (the stablecoin, and the
-vault's asset for Earn) before the first spend, and the issuer must never sweep it to zero: a spend to a
+vault's asset for Earn) before the first spend, and Bridge must never sweep it to zero: a spend to a
 wallet with no balance creates that slot, about 250k more gas. Send it 1 unit of each, or leave 1 unit
 after every sweep.
 
@@ -208,17 +208,17 @@ prepared program: about 0.6M for a stablecoin spend (measured 0.44M) and 1.4M fo
 (measured 0.98M, plus about 250k when TF cleared the vault approval). That is what fits 4 and 3 spends
 into a default withdrawal batch ([design](design.md#callback-gas)). The figures hold only once all of
 step 6 is done, the settlement wallet's balance included: a callback that runs out of gas bounces
-after the issuer approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
+after Bridge approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
 measure the program's own vault first.
 
 ## Deploying from CI
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../../.github/workflows/bridge-release.yml))
 deploys the handler (`tempoSpend`) or a program (`bridgeProgram`) from `main`, with the same scripts
-and so at the same deterministic addresses as a deploy by the issuer. Choose the network (Moderato or
-mainnet), the contract, the issuer's factory, for a program its `spenderId` and optional guardian, and
+and so at the same deterministic addresses as a deploy by Bridge. Choose the network (Moderato or
+mainnet), the contract, Bridge's factory, for a program its `spenderId` and optional guardian, and
 whether to broadcast; without broadcast Forge only simulates. It runs
-[`script/deploy/release.sh`](../../../cards/script/bridge/deploy/release.sh)
+[`script/bridge/deploy/release.sh`](../../../cards/script/bridge/deploy/release.sh)
 (`release.sh <moderato|mainnet|local> <tempoSpend|bridgeProgram> [--broadcast]`; `bridgeProgram` reads
 `FACTORY`, `SPENDER_ID` and optional `GUARDIAN`), which:
 
@@ -233,26 +233,26 @@ whether to broadcast; without broadcast Forge only simulates. It runs
   program's release verifies all three.
 
 The job summary lists the address, the transaction and the source match, and the admin and
-governance calls above for the issuer to submit; the `bridge-release-<network>-<contract>-<attempt>`
+governance calls above for Bridge to submit; the `bridge-release-<network>-<contract>-<attempt>`
 artifact holds the result and Forge's broadcast files. The workflow never submits those calls:
-registering and gating stay with the issuer's roles. A program needs no factory call; list it in the
+registering and gating stay with Bridge's roles. A program needs no factory call; list it in the
 Zone's Spend-mode router.
 
 Dispatching it from `main` is the approval: the job runs in the `factory-release-<network>`
 environment, which has no required reviewer and accepts only `main`, with the deployer key
 and RPC credentials of the [factory releases](../../deployment/deployment.md#releasing-from-ci), and
-shares their `hosted-contracts-<network>` queue. The handler, `CardFactory`, issuer and program are
+shares their `hosted-contracts-<network>` queue. The handler, `CardFactory`, provider and program are
 ownerless, so the key only pays fees. The script also runs locally, for example against a dev node:
 
 ```bash
 FACTORY=0x... DEPLOYER_PRIVATE_KEY=0x... TEMPO_RPC_URL=http://127.0.0.1:8545 \
-  script/deploy/release.sh local tempoSpend --broadcast
+  script/bridge/deploy/release.sh local tempoSpend --broadcast
 ```
 
 ## Testing the scripts
 
-`test/unit/DeployScripts.t.sol` runs each script against the harness's factory, submits the calls
+`test/bridge/unit/DeployScripts.t.sol` runs each script against the harness's factory, submits the calls
 it writes with the matching role, and settles a spend through the new handler.
-`test/unit/DeterministicDeploy.t.sol` checks that the handler, `CardFactory`, `BridgeProvider` and
+`test/bridge/unit/DeterministicDeploy.t.sol` checks that the handler, `CardFactory`, `BridgeProvider` and
 program land at their predicted addresses for any deployer, and that deploying again reuses them
 without sending anything.

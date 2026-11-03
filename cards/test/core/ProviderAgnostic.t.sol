@@ -56,8 +56,8 @@ contract SettlementWalletProvider is ICardProvider {
     }
 }
 
-/// @notice A second provider runs on the same `CardSpender` with only its own provider, and one program's spend
-///         never pays through another's.
+/// @notice A second provider runs on the same `CardSpender` with only its own provider contract, and one
+///         program's spend never pays through another's.
 contract ProviderAgnosticTest is CoreEnv {
     SettlementWalletRegistry internal registry;
     CardSpender internal walletProgram;

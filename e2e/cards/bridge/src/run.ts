@@ -11,7 +11,7 @@
 //                                               ZONE_ADMIN_PRIVATE_KEY
 //
 // 1. Prepares the target: its L1, its Zone, and a Bridge card program with the "TS" handler, its
-//    CardSpender (a BridgeProvider over the clone, deployed by the CardFactory), and a
+//    CardSpender (over a BridgeProvider for the clone, deployed by the CardFactory), and a
 //    factory-deployed ZoneRouter in Spend mode listing that program as its settler
 //    (script/bridge/ZoneE2EDeploy.s.sol). The local target then requires script/bridge/deploy/Preflight.s.sol to
 //    report no todo.

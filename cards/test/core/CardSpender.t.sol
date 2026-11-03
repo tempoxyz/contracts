@@ -10,7 +10,7 @@ import { MockPayoutTarget, NotAProvider } from "./harness/Mocks.sol";
 /// @notice `CardSpender` behavior every provider gets, run once with a program that pays directly and once
 ///         with one that pays through its provider's payout target: public and private spends from stablecoin,
 ///         Earn or both, every check, the pause, and the program holding nothing afterwards.
-abstract contract CardProgramBehavior is CoreEnv {
+abstract contract CardSpenderBehavior is CoreEnv {
     function _payout() internal pure virtual returns (bool);
 
     function setUp() public {
@@ -137,7 +137,7 @@ abstract contract CardProgramBehavior is CoreEnv {
 
     /// @dev The program tells the provider the path: a destination open only to private spends refuses a
     ///      public one, and the reverse.
-    function test_issuerSeesWhichPathASpendTakes() public {
+    function test_providerSeesWhichPathASpendTakes() public {
         address privateOnly = makeAddr("private-only");
         mock.setDestination(privateOnly, false, true);
         CardSpend memory s = _stableSpend(privateOnly, 0, 1e6, "path");
@@ -271,7 +271,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         assertEq(usd.balanceOf(pooledWallet), 1e6);
     }
 
-    function test_issuerPause_stopsPublicAndPrivate() public {
+    function test_providerPause_stopsPublicAndPrivate() public {
         mock.setPaused(true);
         assertTrue(program.paused());
         _expectPaused();
@@ -317,7 +317,7 @@ abstract contract CardProgramBehavior is CoreEnv {
     }
 }
 
-contract CardProgramDirectTest is CardProgramBehavior {
+contract CardSpenderDirectTest is CardSpenderBehavior {
     function _payout() internal pure override returns (bool) {
         return false;
     }
@@ -328,7 +328,7 @@ contract CardProgramDirectTest is CardProgramBehavior {
 }
 
 /// @notice The same behavior through a payout target, plus what a target that misbehaves can and cannot do.
-contract CardProgramPayoutTest is CardProgramBehavior {
+contract CardSpenderPayoutTest is CardSpenderBehavior {
     function _payout() internal pure override returns (bool) {
         return true;
     }
@@ -394,14 +394,14 @@ contract CardFactoryTest is CoreEnv {
     }
 
     /// @dev The address commits to the provider and guardian, so nobody can take it with other settings.
-    function test_addressCommitsToIssuerAndGuardian() public view {
+    function test_addressCommitsToProviderAndGuardian() public view {
         address a = factory.predict("p", ICardProvider(address(mock)), guardian);
         assertTrue(a != factory.predict("p", ICardProvider(address(mock)), address(0)));
         assertTrue(a != factory.predict("p", ICardProvider(address(0xBEEF)), guardian));
         assertTrue(a != factory.predict("q", ICardProvider(address(mock)), guardian));
     }
 
-    function test_revert_notAnIssuer() public {
+    function test_revert_notAProvider() public {
         NotAProvider bad = new NotAProvider();
         vm.expectRevert();
         factory.deploy("bad", ICardProvider(address(bad)), guardian);

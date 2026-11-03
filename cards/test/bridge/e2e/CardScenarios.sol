@@ -8,7 +8,7 @@ import { Simple4626Vault } from "tempo-earn/demo/Simple4626Vault.sol";
 import { CardProgramModel } from "../harness/CardProgramModel.sol";
 import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.sol";
 
-/// @notice Every card product scenario the card processor and issuer must handle, written once against the
+/// @notice Every card product scenario the card processor and Bridge must handle, written once against the
 ///         rail hooks so it runs unchanged on every contract setup.
 /// @dev Where a setup lacks a capability, the scenario pins what the setup actually does (marked
 ///      "Gap") instead of failing, so the suite stays green while documenting the difference.
