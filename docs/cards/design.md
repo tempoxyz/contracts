@@ -128,17 +128,7 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 
 ## Invariants
 
-1. A spend pays only a destination its provider authorizes for that payer, token and path, and none while
-   the program is paused.
-2. The destination gets exactly `amount`.
-3. A spend from Earn burns no more than `maxShares` when set; unused shares go back to the payer.
-4. The program and the router hold no input after a spend; the program keeps any seed it held before.
-5. A private spend uses at most `maxInput`, which the cardholder's Zone transaction sets, and only a
-   router the program's router factory deployed and lists it in may call `spendFrom`; a payout target
-   uses exactly the stablecoin and at most the quoted share cost.
-6. No event from these contracts on the private path names the cardholder or the Zone `senderTag`.
-7. One program's spend never pays through another program.
-8. A program's provider never changes; its address commits to it and the program ID.
+The [card spend threat model](../threat-models/card-spend.md#security-invariants) owns the invariants every program keeps.
 
 Tests: [`cards/test/core/`](../../cards/test/core/) runs every program behavior twice, paying directly and
 through a payout target, with mock provider contracts and no real provider; each provider's tests run its provider contract on a
@@ -169,24 +159,7 @@ stablecoin and shares.
 
 ## Accepted risks
 
-The Bridge design's [accepted risks](bridge/design.md#accepted-risks) carry over: a leaked Zone key can
-withdraw a cardholder's Zone balance outside the program; there is no on-chain idempotency, so the
-provider dedupes spends off chain; the provider approves a private spend on the Zone receipt and its
-reserve pays if settlement fails; spend events are not proof of payment. In addition:
-
-- A provider contract is as strong as what it reads. It decides every destination, so a provider whose own
-  contracts can be upgraded (Rain's factory, Bridge's spender factory) is trusted for that, and a payout
-  target is trusted to pay the spend it is handed (the program bounds what it can take).
-- Programs are immutable and have no pause of their own. Changing a program's provider contract, its
-  tokens or vaults means deploying a new program and a router that lists it, and cardholders authorizing
-  a new key. Meanwhile the provider's own pause, read through the provider contract, stops spends where
-  it has one (Bridge's spender factory), and a private spend while paused bounces back into the Zone in
-  full; a provider without one (Rain) stops spends by revoking the keys that send them.
-- Only routers can call `spendFrom`: one the program's `ROUTER_FACTORY` deployed whose mode lists the
-  program. Tokens sent to a program outside a spend stay there as part of its baseline, which no spend
-  touches and nothing recovers; a one-unit seed per token is the only balance a program is meant to hold.
-- A provider whose destination check ignores `isPrivate` (Bridge) relies on its governance to authorize
-  only destinations every cardholder shares.
+The [card spend threat model](../threat-models/card-spend.md#accepted-risks) owns the risks the design accepts.
 
 ## Adding a provider
 

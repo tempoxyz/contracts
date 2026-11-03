@@ -22,6 +22,7 @@ Shared topics. Each project's index above owns its own topics.
 | Repository map: the projects and shared tooling                                 | [README](../README.md#repository-layout)                                       |
 | Contribution setup, per-area commands, and pull request conventions             | [Contributing](../CONTRIBUTING.md)                                             |
 | Vulnerability reporting and security scope                                      | [Security policy](../SECURITY.md)                                              |
+| Threat models: attackers, trust boundaries, invariants, accepted risks          | [Threat models](threat-models/README.md)                                       |
 | Toolchain, required checks, contract size, gas, coverage, CI, dependency policy | [Development](development/README.md)                                           |
 | Localnet consumer API, layer, lifecycle, and image and fixture constraints      | [Localnet](development/localnet.md)                                            |
 | Shared deployment lifecycle, records, verification, handoffs, hosted releases   | [Deployment](deployment/deployment.md)                                         |

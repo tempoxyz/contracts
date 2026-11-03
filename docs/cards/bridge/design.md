@@ -36,7 +36,7 @@ spends:
 - **One program cannot use the approval of another program.** Each `CardSpender`, `BridgeProvider`, clone and
   access key belongs to exactly one program.
 - **Funds go only to an authorized destination.** The destination must be on the program's allowlist
-  for each spend. The one exception is a leaked Zone key ([accepted risks](#accepted-risks)).
+  for each spend. The one exception is a leaked Zone key ([accepted risks](../../threat-models/card-spend.md#accepted-risks)).
 
 ## Components
 
@@ -94,7 +94,7 @@ The cardholder authorizes a Tempo access key that Bridge holds. Tempo enforces t
 and expiry of the key in the protocol. The cardholder can revoke the key at any time.
 
 - **Tempo account.** Scope: `token.approve(recipient = program)`, `earnShare.approve(recipient =
-  program)` for Earn, and `program.spend`.
+program)` for Earn, and `program.spend`.
 - **Zone account.** Scope: `zoneToken.approve(recipient = outbox)` and `outbox.requestWithdrawal`.
 - **Limits.** Each key has a periodic limit for each token and an expiry. Bridge uses one key for
   each program. Limits count gross debits.
@@ -375,73 +375,18 @@ are:
 
 ## Trust boundaries
 
-- The spender factory controls each program: destinations, pause, roles and handler routing. Only
-  governance can allow an Earn vault, because a vault's `withdrawExact` decides where redeemed value
-  goes.
-- Only the Zone messenger can call the router. The router accepts only its one Zone and the canonical
-  portal of that Zone.
-- Any Zone user can send a withdrawal to the router with any callback data. That user can only pay a
-  program destination through the listed program, from their own funds, up to their `maxInput`. Nobody
-  else can call the program's `spendFrom`.
-- The router, the program, its provider and the `CardFactory` have no owner, no setters and no sweep.
-  The program has no pause of its own: the factory's pause stops it. The router must keep no balance
-  after a spend, and the program none beyond the seed it held before.
-
-The contracts assume this behavior from code outside the [audit scope](#audit-scope):
-
-- The Zone messenger is the only caller of `onWithdrawalReceived` and passes the true source Zone and
-  portal.
-- `EarnVault.withdrawExact` burns at most `maxEarnShares` and sends exactly `assets`.
-- The spender factory authorizes destinations per program, pauses every clone, and routes `publicCall`
-  to a handler by its 2-byte prefix.
-- TIP-20 tokens revert on failure and need no return-value handling beyond what the handler's and
-  the program's `SafeTransferLib` and the program's own call check handle.
+The [card spend threat model](../../threat-models/card-spend.md#trust-domains-and-boundaries) owns the trust boundaries, and its
+[Outside this repository](../../threat-models/card-spend.md#outside-this-repository) section lists what the in-scope code
+assumes from code outside the [audit scope](#audit-scope).
 
 ## Invariants
 
-1. A spend pays only an authorized destination of the clone's own program.
-2. The destination gets exactly `amount`.
-3. A spend from Earn burns no more than `maxShares` when it is set. Unused shares go back to the
-   payer.
-4. The router and the program hold no input token after a spend.
-5. A private spend uses at most `maxInput`, which the cardholder's Zone transaction sets, and a public
-   one at most what the cardholder approved. A replaced handler can take at most the spend, never the
-   change.
-6. A callback that moves nothing, or returns more than it got, does not settle.
-7. The portal keeps no more deposit fee than `maxDepositFee`.
-8. No event from these contracts contains a cardholder address or the Zone `senderTag`. The change
-   goes back as an encrypted deposit.
-9. The handler storage cannot collide with the clone storage.
-10. Bridge's pull pipeline is off for TS.
-11. A program serves only its own spends, pays only through its own clone, and settles only the
-    spend token or its vault's EarnShare.
+The [card spend threat model](../../threat-models/card-spend.md#security-invariants) owns the invariants.
 
 ## Accepted risks
 
-- A leaked Zone access key can withdraw a cardholder's Zone balance, up to the key limit, to any
-  address in an open Zone or any admitted account in a closed-loop Zone. Bridge uses one key for
-  each program, so one leak affects all cardholders of that program. The withdrawer also chooses
-  where the change goes.
-- A leaked public access key can spend a cardholder's funds, up to the key limit, only to the
-  program's destinations: its scope names the program's `spend`, which reaches the clone only through
-  "TS" "PS".
-- There is no on-chain idempotency. Bridge removes duplicate spends off chain by its pull ID.
-- Bridge approves a private spend on the Zone receipt. If L1 settlement fails after approval,
-  Bridge's reserve pays.
-- Spend events are not proof of payment. Anyone can emit one with any `ref`, which is advisory. Bridge
-  reconciles by transaction and log index, binding a private spend's `CardSpent` and `InputSpent` to the
-  portal's `WithdrawalProcessed` and the router's `Spent` in the same transaction, and a public one to its
-  own access key's transaction. A private spend's `ref` is public on the L1, so Bridge uses one that
-  cannot be linked to the cardholder, such as `keccak256(pullId, programSecret)` with a per-program
-  secret.
-- Tokens sent to the router outside a callback cannot be recovered. Tokens sent to the program
-  outside a spend stay there as its baseline: only the program's routers can call `spendFrom`, and no
-  spend touches the baseline.
-- Programs are immutable. A new provider contract or clone means a new program, a router that lists
-  it and new cardholder keys ([core accepted risks](../design.md#accepted-risks)).
-- A vault that cannot report its asset, shares or redemption value makes `availableBalance` report
-  the stablecoin alone. The deploy scripts refuse a vault without exact withdrawals or redeem
-  previews.
+The [card spend threat model](../../threat-models/card-spend.md#accepted-risks) owns the accepted risks, including a
+leaked Zone key, the one exception to paying only authorized destinations.
 
 ## Refunds
 
@@ -580,8 +525,9 @@ since the program pulls the stablecoin before the clone pays it out.
   ([Earn audits](../../earn/audit/README.md)).
 - Tests, fixtures, the deploy scripts, `e2e/` and `localnet/`.
 
-A bug in how the in-scope code integrates with out-of-scope code is in scope. The
-[trust boundaries](#trust-boundaries) list what the in-scope code assumes from it. Report findings
+A bug in how the in-scope code integrates with out-of-scope code is in scope. The threat
+model's [Outside this repository](../../threat-models/card-spend.md#outside-this-repository) lists what the in-scope code assumes
+from it. Report findings
 as the [security policy](../../../SECURITY.md) describes.
 
 ### Areas to examine most
