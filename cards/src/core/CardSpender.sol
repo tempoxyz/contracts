@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
@@ -147,21 +146,17 @@ contract CardSpender is ISpender {
             expected = s.amount;
             _payout(s, token, address(0));
         } else {
-            // The vault burns every share it takes, so the shares used must equal the drop in supply: a target
-            // cannot keep any input. Fees are accrued first, so the withdrawal mints no fee shares in this block.
-            // Every entry point holds the transient lock for this whole call.
-            // forge-lint: disable-next-line(reentrancy-no-eth)
-            ITempoEarnVault(s.vault).accrueFees();
-            uint256 supplyBefore = IERC20(token).totalSupply();
+            // At most the share cost quoted before the payout: a target can neither keep the rest of the input
+            // nor burn more shares than the amount costs and keep the surplus assets.
+            expected = ITempoEarnVault(s.vault).previewWithdraw(s.fromVault);
             _payout(s, token, address(0));
-            expected = supplyBefore - IERC20(token).totalSupply();
         }
 
         // Reverts if the spend took more than maxInput, since the balance would be below the baseline.
         uint256 unused = IERC20Like(token).balanceOf(address(this)) - baseline;
         if (unused >= maxInput) revert NothingSpent();
         uint256 consumed = maxInput - unused;
-        if (PAYOUT_TARGET != address(0) && consumed != expected) {
+        if (PAYOUT_TARGET != address(0) && (s.fromVault == 0 ? consumed != expected : consumed > expected)) {
             revert InputNotConsumed(consumed, expected);
         }
         if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();

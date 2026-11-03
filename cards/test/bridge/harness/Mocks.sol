@@ -57,9 +57,6 @@ contract ReentrantToken is MockToken {
 /// @notice An Earn vault that quotes a withdrawal at two shares per asset but burns `burnBps` of
 ///         the quote, as a vault whose price moves in the payer's favor between quote and burn.
 contract PartialBurnEarnVault is ITempoEarnVault {
-    /// @dev No fees to accrue.
-    function accrueFees() external pure returns (uint256, uint256) { }
-
     address public immutable override asset;
     MockToken public immutable SHARE;
     uint256 public immutable BURN_BPS;
@@ -97,9 +94,6 @@ contract PartialBurnEarnVault is ITempoEarnVault {
 /// @notice Fronts a real Tempo Earn vault but quotes 10% more shares than it burns, as an engine
 ///         whose preview overestimates would. The shares it does not burn stay with the payer.
 contract OverQuotingEarnVault is ITempoEarnVault {
-    /// @dev No fees to accrue.
-    function accrueFees() external pure returns (uint256, uint256) { }
-
     ITempoEarnVault internal immutable VAULT;
 
     constructor(ITempoEarnVault vault) {

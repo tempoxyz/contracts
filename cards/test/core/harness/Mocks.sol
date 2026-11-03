@@ -222,9 +222,6 @@ contract VirtualAwareToken is ERC20 {
 /// @notice An Earn vault at two shares per asset that, like Earn's engines, checks the literal receiver got
 ///         the assets, so it refuses a virtual receiver.
 contract LiteralReceiverVault is ITempoEarnVault {
-    /// @dev No fees to accrue.
-    function accrueFees() external pure returns (uint256, uint256) { }
-
     address public immutable asset;
     VirtualAwareToken public immutable SHARE;
 

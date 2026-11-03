@@ -11,9 +11,6 @@ interface ITempoEarnVault {
 
     function previewRedeem(uint256 earnShares) external view returns (uint256 assets);
 
-    /// @notice Settles the fees accrued since the last accrual, minting their EarnShare to the vault's fee contract.
-    function accrueFees() external returns (uint256 feeAssets, uint256 feeEarnShares);
-
     /// @notice Burns at most `maxEarnShares` from the caller and sends exactly `assets` to `receiver`.
     function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares)
         external

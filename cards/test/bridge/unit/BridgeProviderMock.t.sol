@@ -149,9 +149,6 @@ contract MockFactory is IBridgeSpenderFactory {
 }
 
 contract MockVault {
-    /// @dev No fees to accrue.
-    function accrueFees() external pure returns (uint256, uint256) { }
-
     address public earnShare;
     address public asset;
 
@@ -477,16 +474,15 @@ contract BridgeProviderMockTest is Test {
         );
     }
 
-    /// @notice A private Earn spend uses exactly the shares the vault burned, so a clone cannot keep any of
-    ///         `maxInput`: here it burns all but one of the shares it took.
-    function testRefusesAPayoutThatKeepsShares() public {
-        clone.configure(50e6, AMOUNT);
-        clone.setKeep(1);
+    /// @notice A private Earn spend uses at most the share cost quoted before the payout, so a clone cannot
+    ///         keep the rest of `maxInput` or burn more than the amount costs and keep the surplus.
+    function testRefusesAPayoutThatUsesSharesAboveTheQuote() public {
+        clone.configure(50e6 + 1, AMOUNT);
         CardSpend memory spend = _spend(address(usd));
         spend.vault = address(vault);
         spend.fromVault = AMOUNT;
         _expectSpendRevert(
-            address(share), 60e6, spend, abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, 50e6, 50e6 - 1)
+            address(share), 60e6, spend, abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, 50e6 + 1, 50e6)
         );
     }
 

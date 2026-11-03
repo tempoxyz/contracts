@@ -860,6 +860,13 @@ export async function hosted(
       programWallet,
       zoneId: moderato.zone.id,
     })
+    // The script only predicts the router; Moderato's Zone exists, so deploy it now.
+    await deploySpendRouter(l1Public, l1Wallet(privateKeyToAccount(deployerPk)), {
+      routerFactory: deployed.routerFactory,
+      program: deployed.program,
+      router: deployed.router,
+      zoneId: moderato.zone.id,
+    })
     // The deployer doubles as the program's refund account: admitted, and a key the test holds.
     const refundRecipient = privateKeyToAccount(deployerPk).address
     writeFileSync(

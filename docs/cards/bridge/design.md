@@ -350,8 +350,8 @@ are:
   `type(uint128).max` (`InvalidAmount`). The program must hold at least `maxInput`
   (`InsufficientInput`) and uses its balance minus `maxInput` as its baseline. The clone must use some
   input (`NothingSpent`) and no more than `maxInput` (the balance check reverts): exactly `amount` of a
-  stablecoin, and exactly the shares the vault burned for shares, the drop in the EarnShare's supply
-  across the call (`InputNotConsumed`), so a replaced handler cannot keep any of it. The program returns the unused input
+  stablecoin, and at most the `previewWithdraw(fromVault)` the program quoted before the call for shares
+  (`InputNotConsumed`), so a replaced handler cannot keep the rest or over-burn and keep the surplus. The program returns the unused input
   to the caller and must end at its baseline (`ResidualBalance`). The provider is asked with no payer.
 - On both paths the destination must get exactly `amount` (`DestinationNotCredited`).
 - `spend` is permissionless. `spendFrom` accepts only a router the program's `ROUTER_FACTORY` deployed
@@ -528,7 +528,7 @@ returned to the Zone ([`PrivateSpendForkGas.t.sol`](../../../cards/test/bridge/f
 | ---------- | ----------- | ------------------------------------- | ----------- |
 | Earn       | As deployed | 1.98M                                 | 1.22M       |
 | Stablecoin | As deployed | 1.19M                                 | 0.44M       |
-| Earn       | Prepared    | 0.75M                                 | 0.49M       |
+| Earn       | Prepared    | 0.75M                                 | 0.50M       |
 | Stablecoin | Prepared    | 0.44M                                 | 0.19M       |
 
 Most of the cost is Tempo's charge for each storage slot that goes from zero to nonzero (TIP-1000).
