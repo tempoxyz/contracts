@@ -2,7 +2,7 @@
 pragma solidity ^0.8.36;
 
 /// @notice One card spend, for every provider. The same struct settles a public spend (`CardSpender.spend`,
-///         paid by the cardholder's account) and a private one (`CardSpender.settle`, paid from a Zone
+///         paid by the cardholder's account) and a private one (`CardSpender.spendFrom`, paid from a Zone
 ///         withdrawal), so both encode `abi.encode(CardSpend)` identically. Kept to static words so a
 ///         private spend's callback fits the Zone outbox's 1,024 bytes.
 struct CardSpend {

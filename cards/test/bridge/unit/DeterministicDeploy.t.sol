@@ -160,7 +160,7 @@ contract DeterministicDeployTest is ZoneEnv {
         DeployZoneRouter.Output memory o =
             script.deploy(factory, SPENDER_ID, ZONE_ID, ZoneRouterFactory(address(0)), BRIDGE_PK);
         assertEq(address(o.program), address(released.program), "the release program");
-        assertEq(o.router.settlers()[0], address(released.program));
+        assertEq(o.router.spenders()[0], address(released.program));
 
         uint64 nonce = vm.getNonce(vm.addr(BRIDGE_PK));
         DeployZoneRouter.Output memory again = script.deploy(factory, SPENDER_ID, ZONE_ID, o.routerFactory, BRIDGE_PK);

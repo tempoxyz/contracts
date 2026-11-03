@@ -15,7 +15,7 @@ router from [`zone-router/src/`](../zone-router/src/) rather than copies.
 ```text
 src/
   core/                     Ours, provider-agnostic
-    CardSpender.sol           One program: public spends, and the Zone router's settler for private ones
+    CardSpender.sol           One program: public spends, and the Zone router's spender for private ones
     CardFactory.sol           Deploys programs at addresses fixed by their ID and provider
     CardSpend.sol             The one struct public and private spends settle
     interfaces/               ICardProvider and ICardProviderPayout (the provider engine), the Earn vault subset
@@ -39,7 +39,7 @@ script/
 
 - **Core.** Every program is a `CardSpender` over one provider engine, its `ICardProvider`, deployed by
   `CardFactory`, as an Earn vault sits over an engine. The program is the address cardholders' access keys
-  and the Zone's router point at: `spend` for a public spend, `settle` for a private one. It never changes;
+  and the Zone's router point at: `spend` for a public spend, `spendFrom` for a private one. It never changes;
   a provider replaces it with a new one. [docs/cards/design.md](../docs/cards/design.md).
 - **Bridge.** `BridgeProvider` has the program pay through its Bridge spender clone and the "TS" handler, so
   Bridge's factory governs every spend. [docs/cards/bridge/](../docs/cards/bridge/README.md).

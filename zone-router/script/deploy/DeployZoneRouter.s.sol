@@ -45,7 +45,7 @@ contract DeployZoneRouterScript is Script {
             router.allowedZoneId() != mode.zoneId || router.enabledOps() != mode.enabledOps
                 || router.earnVault() != mode.earnVault || router.privateAsset() != mode.privateAsset
                 || address(router.pool()) != mode.pool || router.customerId() != mode.customerId
-                || keccak256(abi.encode(router.settlers())) != keccak256(abi.encode(mode.settlers))
+                || keccak256(abi.encode(router.spenders())) != keccak256(abi.encode(mode.spenders))
         ) revert BindingFailed();
     }
 }

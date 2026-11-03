@@ -128,7 +128,7 @@ function isZoneRouterMetadataOutput(key: string) {
 }
 
 /**
- * Before any key is used: the Zone is registered (discovery reads it), every settler and a named
+ * Before any key is used: the Zone is registered (discovery reads it), every spender and a named
  * factory hold code and the factory answers as one, and an Earn binding's route matches the vault
  * asset as `ZoneRouter`'s constructor requires.
  */
@@ -140,7 +140,7 @@ async function preflightZoneRouter(
   if (!router) return
   await requireCode(client, {
     ...Object.fromEntries(
-      (router.settlers ?? []).map((settler, index) => [`settler ${index}`, settler]),
+      (router.spenders ?? []).map((spender, index) => [`spender ${index}`, spender]),
     ),
     ...(router.factory ? { ZoneRouterFactory: router.factory } : {}),
   } as Record<string, Address>)

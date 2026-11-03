@@ -15,7 +15,7 @@ import { ProgramChecks } from "./ProgramChecks.sol";
 ///         for its ID: the release `CardFactory` and the program's `BridgeProvider` at their deterministic
 ///         addresses (`BridgeProgramRelease`), then `CardFactory.deploy(spenderId, provider)`. Each
 ///         one already there is reused. The program is the cardholders' public spend entry point and the
-///         settler a Spend-mode Zone router lists, which is a Zone router release (`DeployZoneRouter`).
+///         spender a Spend-mode Zone router lists, which is a Zone router release (`DeployZoneRouter`).
 ///         `run` reads FACTORY (the spender factory), SPENDER_ID, OUT, and DEPLOYER_PK unless the signer
 ///         comes from `--account` or `--ledger`. OUT is written only with `--broadcast`.
 contract DeployBridgeProgram is BridgeProgramRelease {

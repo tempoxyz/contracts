@@ -1,6 +1,6 @@
 // Every ZoneRouter flow on the local L1 and Zone, through one router with every op: Earn deposit and
 // redeem of a private stablecoin that converts to the vault asset at par through a DirectPropAMM pool,
-// card spends through the CardSpender as the router's settler, sends through a SendSettler, refunds
+// card spends through the CardSpender as the router's spender, sends through a SendSpender, refunds
 // into the Zone, and the guards that bounce a withdrawal back into the Zone. Each flow is a real Zone
 // withdrawal the sequencer batches to the L1, where the portal calls the router; the checks read the
 // L1 settlement and the cardholder's Zone balance once any return lands.
@@ -62,7 +62,7 @@ const earnDataType = parseAbiParameters([
   'struct ZoneReturn { uint256 keyIndex; DepositPayload encrypted; address refundRecipient; }',
   'struct DepositPayload { bytes32 ephemeralPubkeyX; uint8 ephemeralPubkeyYParity; bytes ciphertext; bytes12 nonce; bytes16 tag; }',
 ])
-/** SendSettler.Send: pay to exactly amount of token, redeemed from vault's EarnShare when vault is set. */
+/** SendSpender.Send: pay to exactly amount of token, redeemed from vault's EarnShare when vault is set. */
 const sendType = parseAbiParameters([
   'Send send',
   'struct Send { address to; address token; uint128 amount; address vault; bytes32 ref; }',
@@ -150,7 +150,7 @@ export async function routerFlows(
       functionName: 'calculateBouncebackFee',
     }),
   ])
-  // A spend or send returns what its settler (the CardSpender or the SendSettler) did not use as an
+  // A spend or send returns what its spender (the CardSpender or the SendSpender) did not use as an
   // encrypted deposit, which the portal rejects below its fees, so each carries change that covers
   // them.
   const change = depositFee + bouncebackFee + 1n
@@ -212,13 +212,13 @@ export async function routerFlows(
         zoneReturn: await zoneReturn(),
       },
     ])
-  const spendData = async (settler: Address, maxInput: bigint, settlerData: Hex) =>
+  const spendData = async (spender: Address, maxInput: bigint, spenderData: Hex) =>
     encodeAbiParameters(spendDataType, [
       {
         op: OP_SPEND,
-        settler,
+        spender,
         maxInput,
-        settlerData,
+        spenderData,
         zoneReturn: { ...(await zoneReturn()), maxDepositFee: depositFee },
       },
     ])
@@ -255,7 +255,7 @@ export async function routerFlows(
     label: string,
   ) =>
     spendData(
-      r.sendSettler,
+      r.sendSpender,
       maxInput,
       encodeAbiParameters(sendType, [{ to, token, amount, vault, ref: ref(label) }]),
     )
@@ -482,7 +482,7 @@ export async function routerFlows(
     )
   }
 
-  // Card spends through the same router: the CardSpender, as its settler, pays through Bridge's clone.
+  // Card spends through the same router: the CardSpender, as its spender, pays through Bridge's clone.
   const spend = 20_000_000n
   {
     const paidBefore = await l1Balance(r.privateAsset, program.settlement)
@@ -496,7 +496,7 @@ export async function routerFlows(
     assert(s.ok, 'stablecoin card spend: the router callback succeeded')
     const spent = routerEvent(s, 'Spent')
     assert(
-      isAddressEqual(spent.settler as Address, program.program) &&
+      isAddressEqual(spent.spender as Address, program.program) &&
         spent.used === spend &&
         spent.change === change,
       'stablecoin card spend: the CardSpender used the spend, the router returned the change',
@@ -554,7 +554,7 @@ export async function routerFlows(
     )
   }
 
-  // Sends to a public address through the SendSettler.
+  // Sends to a public address through the SendSpender.
   const recipient = privateKeyToAccount(generatePrivateKey()).address
   const send = 10_000_000n
   {

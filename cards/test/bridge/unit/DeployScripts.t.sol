@@ -141,9 +141,9 @@ contract DeployScriptsTest is ZoneEnv {
         assertEq(o.router.allowedZoneId(), ZONE_ID);
         assertEq(o.router.enabledOps(), o.router.OP_SPEND(), "Spend only");
         assertEq(o.router.earnVault(), address(0), "no Earn bindings");
-        address[] memory settlers = o.router.settlers();
-        assertEq(settlers.length, 1);
-        assertEq(settlers[0], address(o.program));
+        address[] memory spenders = o.router.spenders();
+        assertEq(spenders.length, 1);
+        assertEq(spenders[0], address(o.program));
 
         string memory path = "reports/test-deploy-zone-router.json";
         script.write(o, path);
@@ -226,14 +226,14 @@ contract DeployScriptsTest is ZoneEnv {
     }
 
     /// @notice A router the given factory did not deploy, one for another Zone, and one whose only
-    ///         settler is another program's `CardSpender` are each reported, and none is read as the program's.
+    ///         spender is another program's `CardSpender` are each reported, and none is read as the program's.
     function test_preflightReportsARouterThatIsNotTheProgramsOwn() public {
         _deployZone(false);
         Preflight preflight = new Preflight();
         address router = _deployRouter();
 
         // The same mode deployed by another factory.
-        ZoneRouter.Mode memory mode = _spendMode(ZONE_ID, ZoneRouter(router).settlers()[0]);
+        ZoneRouter.Mode memory mode = _spendMode(ZONE_ID, ZoneRouter(router).spenders()[0]);
         address direct = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode);
         Preflight.Report memory r = _preflight(preflight, direct, address(0), new address[](0));
         assertFalse(r.routerFromFactory, "not from the given factory");
@@ -241,7 +241,7 @@ contract DeployScriptsTest is ZoneEnv {
         preflight.print(r, new address[](0));
 
         // Another Zone.
-        address elsewhere = routerFactory.deploy(_spendMode(ZONE_ID + 1, mode.settlers[0]));
+        address elsewhere = routerFactory.deploy(_spendMode(ZONE_ID + 1, mode.spenders[0]));
         r = _preflight(preflight, elsewhere, address(0), new address[](0));
         assertTrue(r.routerFromFactory);
         assertFalse(r.routerMatches, "another Zone");
@@ -261,7 +261,7 @@ contract DeployScriptsTest is ZoneEnv {
         assertEq(r.program, address(0));
         assertFalse(r.programAllowedByPolicy, "no program to check");
 
-        // A settler that is not a CardSpender at all.
+        // A spender that is not a CardSpender at all.
         address notAProgram = routerFactory.deploy(_spendMode(ZONE_ID, address(new SilentFallback())));
         r = _preflight(preflight, notAProgram, address(0), new address[](0));
         assertFalse(r.routerMatches, "not a CardSpender");
@@ -707,7 +707,7 @@ contract DeployScriptsTest is ZoneEnv {
         Preflight.Report memory r = _preflight(preflight, router, address(0), new address[](0));
         assertTrue(r.handlerValid, "handler belongs to the factory");
         assertFalse(r.handlerCurrent, "handler is another build");
-        assertTrue(r.routerMatches, "settler answers for the program");
+        assertTrue(r.routerMatches, "spender answers for the program");
         assertEq(r.program, older);
         assertFalse(r.programCurrent, "program is another build");
         preflight.print(r, new address[](0));
@@ -806,11 +806,11 @@ contract DeployScriptsTest is ZoneEnv {
         return DeployZoneRouter(deployCode("DeployZoneRouter.s.sol:DeployZoneRouter"));
     }
 
-    function _spendMode(uint32 zoneId, address settler) internal pure returns (ZoneRouter.Mode memory mode) {
+    function _spendMode(uint32 zoneId, address spender) internal pure returns (ZoneRouter.Mode memory mode) {
         mode.zoneId = zoneId;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = settler;
+        mode.spenders = new address[](1);
+        mode.spenders[0] = spender;
     }
 
     function submitAs(address role, bytes memory data) external {

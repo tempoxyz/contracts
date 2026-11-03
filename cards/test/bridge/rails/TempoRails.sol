@@ -213,8 +213,8 @@ abstract contract TempoPrivateRail is TempoRailBase {
         ZoneRouter.Mode memory mode;
         mode.zoneId = ZONE_ID;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = address(program);
+        mode.spenders = new address[](1);
+        mode.spenders[0] = address(program);
         zoneRouter = ZoneRouter(ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode));
         vm.label(address(zoneRouter), "ZoneRouter");
         _zoneRegisterGateway(address(zoneRouter));
@@ -259,9 +259,9 @@ abstract contract TempoPrivateRail is TempoRailBase {
         bytes memory callbackData = abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: address(program),
+                spender: address(program),
                 maxInput: uint128(earn ? maxShares : amount),
-                settlerData: abi.encode(spend),
+                spenderData: abi.encode(spend),
                 zoneReturn: _zoneReturnTo(user)
             })
         );

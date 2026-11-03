@@ -108,7 +108,7 @@ The script checks that the program's clone was created for its ID, that `ZONE_ID
 ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program as in
 [step 2](#2-deploy-the-program-once-per-program), or reuses it, then, through the
 `ZoneRouterFactory`, a [`ZoneRouter`](../../zone-router/zone-router.md) whose mode allows only Spend,
-only from `ZONE_ID`, with the program as its only settler. Leave `ROUTER_FACTORY` unset to deploy a
+only from `ZONE_ID`, with the program as its only spender. Leave `ROUTER_FACTORY` unset to deploy a
 new factory. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `provider`,
 `program`, `routerFactory` and `router`, and is written only with `--broadcast`.
 
@@ -190,7 +190,7 @@ For Earn, also send 1 unit of the EarnShare to the program's clone. The clone ho
 Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
 the unit stays and no spend creates that balance slot again (about 245k). It cannot be recovered.
 Under a whitelist policy the clone must already be admitted, as preflight checks. Do not seed the
-program: `settle` is permissionless and counts whatever it holds as the caller's input, so anyone could
+program: `spendFrom` is permissionless and counts whatever it holds as the caller's input, so anyone could
 spend a seed there.
 
 The settlement wallet must also hold a balance of each token it receives (the stablecoin, and the

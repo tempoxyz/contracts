@@ -5,7 +5,7 @@
 //   pnpm e2e:cards -- --provider rain      the provider to run (rain; Bridge runs with pnpm e2e:bridge)
 //
 // 1. Starts the L1, has the provider deploy its own contracts, its provider contract and a CardSpender over it,
-//    with a Spend-mode ZoneRouter listing the program as its settler,
+//    with a Spend-mode ZoneRouter listing the program as its spender,
 //    then starts the Zone and registers the router as its gateway.
 // 2. Public: the cardholder authorizes the provider's access key, scoped to approving the program and
 //    calling `spend`; the provider sends single L1 transactions (approve exact, spend, clear) that pay
@@ -81,10 +81,10 @@ const cardProgramAbi = parseAbi([
   'function spend(CardSpend s)',
 ])
 const settledAbi = parseAbi([
-  'event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',
+  'event InputSpent(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',
 ])
 const routerAbi = parseAbi([
-  'event Spent(address indexed settler, address indexed token, uint256 used, uint256 change, bytes32 zoneDepositHash)',
+  'event Spent(address indexed spender, address indexed token, uint256 used, uint256 change, bytes32 zoneDepositHash)',
 ])
 const earnVaultAbi = parseAbi([
   'function deposit(uint256 assets, address receiver, uint256 minEarnShares) returns (uint256)',
@@ -512,9 +512,9 @@ async function main() {
       return encodeAbiParameters(spendDataType, [
         {
           op: OP_SPEND,
-          settler: deployed.program,
+          spender: deployed.program,
           maxInput,
-          settlerData: encodeAbiParameters(cardSpendType, [spend]),
+          spenderData: encodeAbiParameters(cardSpendType, [spend]),
           zoneReturn: {
             keyIndex: recipient.keyIndex,
             encrypted: {
@@ -565,7 +565,7 @@ async function main() {
       l1Public.getContractEvents({
         address: deployed.program,
         abi: settledAbi,
-        eventName: 'SpendSettled',
+        eventName: 'InputSpent',
         args: { ref: spendRef },
         fromBlock,
       })

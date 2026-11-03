@@ -11,10 +11,10 @@ shared design; [bridge/](bridge/README.md) and [rain/](rain/README.md) own each 
 
 | Contract                                                                    | Admin                    | Function                                                                                                       |
 | --------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| [`CardSpender`](../../cards/src/core/CardSpender.sol)                       | None                     | Pays a `CardSpend` to a destination its provider authorizes; public entry point and the Zone router's settler. |
+| [`CardSpender`](../../cards/src/core/CardSpender.sol)                       | None                     | Pays a `CardSpend` to a destination its provider authorizes; public entry point and the Zone router's spender. |
 | [`CardFactory`](../../cards/src/core/CardFactory.sol)                       | None                     | Deploys a program at a CREATE2 address fixed by its ID and provider.                                           |
 | [`ICardProvider`](../../cards/src/core/interfaces/ICardProvider.sol) engine | The provider's contracts | Decides destinations, Earn vaults and the provider's pause; optionally names what the program pays through.    |
-| [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)             | None                     | Receives the Zone withdrawal, hands `maxInput` to the program (its listed settler), returns the change.        |
+| [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)             | None                     | Receives the Zone withdrawal, hands `maxInput` to the program (its listed spender), returns the change.        |
 
 | Provider | Provider contract                                                       | How the program pays                                                                       |
 | -------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -39,7 +39,7 @@ fix to the core means a new program either way.
 
 - `isAuthorizedDestination(payer, destination, token, hint, isPrivate)`: may this payer's spend of this
   token pay this destination? `hint` is the provider's evidence about the destination, carried in
-  `CardSpend.destinationHint`. `isPrivate` comes from the program, true only for `settle`, so a provider
+  `CardSpend.destinationHint`. `isPrivate` comes from the program, true only for `spendFrom`, so a provider
   contract applies "a private spend must not name the cardholder" without inspecting the payer.
 - `isAllowedVault(vault)`: may spends redeem this Earn vault's shares? A vault's `withdrawExact` decides
   where redeemed value goes, so allowing one is as strong as adding a destination.
@@ -69,7 +69,7 @@ sequenceDiagram
     Note over P,Z: Private
     P->>Z: Zone tx, provider Zone key
     Z->>R: requestWithdrawal (callback)
-    R->>C: transfer maxInput, settle
+    R->>C: transfer maxInput, spendFrom
     C->>D: pay directly, or through T
     C->>R: return unused input
     R->>Z: depositEncrypted(change)
@@ -81,7 +81,7 @@ sequenceDiagram
   The provider approves the card on the L1 receipt.
 - **Private.** The provider sends one Zone transaction from the cardholder's Zone account, signed with a
   Zone key scoped to the outbox, that withdraws `maxInput` plus change to the router with Spend callback
-  data naming the program as settler. The provider approves the card on the Zone receipt; the L1 settles
+  data naming the program as spender. The provider approves the card on the Zone receipt; the L1 settles
   about a second later on a local Zone. If settlement reverts, the portal returns the whole withdrawal to
   the Zone and the provider's reserve covers the card.
 
@@ -100,16 +100,16 @@ first private Earn spend for that or make its first Earn spend public. The Rain 
   Earn spend's vault is allowed and holds `token` (`VaultNotAllowed`, `IncorrectAssetForVault`), and burns at
   most `maxShares` (`ShareCostExceeded`; zero accepts the live price).
 - The destination's balance of `token` rises by exactly `amount` (`DestinationNotCredited`).
-- `settle`: the input is the stablecoin, or the vault's EarnShare when Earn funds all of it
+- `spendFrom`: the input is the stablecoin, or the vault's EarnShare when Earn funds all of it
   (`WrongInputToken`); the program holds at least `maxInput` (`InsufficientInput`) and spends from no more
-  than it; the spend consumes some input (`NothingSettled`); the unused input goes back to the caller and
+  than it; the spend consumes some input (`NothingSpent`); the unused input goes back to the caller and
   the program ends at its baseline (`ResidualBalance`).
 - A payout through the provider's target can take at most the spend's input: what the payer approved
   (public) or `maxInput` (private). Anything more reverts.
 - A transient lock stops reentry. Standing approvals (to an allowed vault, or to the payout target) are
   harmless because the program holds nothing between spends.
 - Events: `CardSpent(ref, payer, destination, token, amount, fromVault, sharesUsed, isPrivate)`, and for a
-  private spend `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`. A private spend's payer is
+  private spend `InputSpent(ref, inputToken, inputConsumed, inputReturned)`. A private spend's payer is
   the router, so neither names a cardholder or the Zone `senderTag`.
 
 ## Invariants
@@ -154,9 +154,9 @@ reserve pays if settlement fails; spend events are not proof of payment. In addi
   a new key. Meanwhile the provider's own pause, read through the provider contract, stops spends where
   it has one (Bridge's spender factory), and a private spend while paused bounces back into the Zone in
   full; a provider without one (Rain) stops spends by not sending them.
-- `settle` is permissionless: anyone can call it with their own funds, but only
+- `spendFrom` is permissionless: anyone can call it with their own funds, but only
   to pay a destination the provider allows for a private spend. It counts `maxInput` as the caller's
-  input without verifying it, so tokens sent to a program outside a spend can be spent by any `settle`
+  input without verifying it, so tokens sent to a program outside a spend can be spent by any `spendFrom`
   caller, only to such a destination, with the rest returned to that caller as change. A program is
   meant to hold nothing between spends.
 

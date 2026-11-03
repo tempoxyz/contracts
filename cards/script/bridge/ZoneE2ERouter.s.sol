@@ -7,11 +7,11 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
-import { SendSettler } from "zone-router/settlers/SendSettler.sol";
+import { SendSpender } from "zone-router/spenders/SendSpender.sol";
 
-/// @notice Deploys, for the Zone E2E (`e2e/cards/bridge`), a `SendSettler` converting through the Earn stack's par pool and a
+/// @notice Deploys, for the Zone E2E (`e2e/cards/bridge`), a `SendSpender` converting through the Earn stack's par pool and a
 ///         `ZoneRouter` with every op: Earn deposit and redeem of the private asset through that pool, and Spend
-///         through the card program's `CardSpender` and the `SendSettler`. The pool owner must still admit
+///         through the card program's `CardSpender` and the `SendSpender`. The pool owner must still admit
 ///         both as taker and recipient.
 ///         Reads DEPLOYER_PK, ROUTER_FACTORY, BRIDGE_PROGRAM, ZONE_ID, EARN_VAULT, PRIVATE_ASSET, POOL,
 ///         CUSTOMER_ID, SEND_CUSTOMER_ID and OUT from the env.
@@ -22,7 +22,7 @@ contract ZoneE2ERouter is Script {
         address pool = vm.envAddress("POOL");
 
         vm.startBroadcast(deployerPk);
-        SendSettler sender = new SendSettler(IEarnVault(vault), IPropAMMVenue(pool), vm.envBytes32("SEND_CUSTOMER_ID"));
+        SendSpender sender = new SendSpender(IEarnVault(vault), IPropAMMVenue(pool), vm.envBytes32("SEND_CUSTOMER_ID"));
 
         ZoneRouter.Mode memory mode;
         mode.zoneId = uint32(vm.envUint("ZONE_ID"));
@@ -31,14 +31,14 @@ contract ZoneE2ERouter is Script {
         mode.privateAsset = vm.envAddress("PRIVATE_ASSET");
         mode.pool = pool;
         mode.customerId = vm.envBytes32("CUSTOMER_ID");
-        mode.settlers = new address[](2);
-        mode.settlers[0] = vm.envAddress("BRIDGE_PROGRAM");
-        mode.settlers[1] = address(sender);
+        mode.spenders = new address[](2);
+        mode.spenders[0] = vm.envAddress("BRIDGE_PROGRAM");
+        mode.spenders[1] = address(sender);
         address router = ZoneRouterFactory(vm.envAddress("ROUTER_FACTORY")).deploy(mode);
         vm.stopBroadcast();
 
         string memory key = "zone-e2e-router";
-        vm.serializeAddress(key, "sendSettler", address(sender));
+        vm.serializeAddress(key, "sendSpender", address(sender));
         string memory json = vm.serializeAddress(key, "router", router);
         vm.writeJson(json, vm.envString("OUT"));
     }

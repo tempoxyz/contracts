@@ -92,7 +92,7 @@ contract RainProviderTest is RainEnv {
     // ------------------------------------------------------------------
 
     function test_privateSpend_fundsPooledCollateral() public {
-        _routerSettle(address(usd), 20e6 + 7, _stableSpend(programCollateral, programCollateralIndex, 20e6, "p.1"));
+        _routerSpend(address(usd), 20e6 + 7, _stableSpend(programCollateral, programCollateralIndex, 20e6, "p.1"));
         assertEq(usd.balanceOf(programCollateral), 20e6);
         assertEq(usd.balanceOf(router), 1000e6 - 20e6);
     }
@@ -100,7 +100,7 @@ contract RainProviderTest is RainEnv {
     function test_privateSpend_fromEarn_fundsPooledCollateral() public {
         _depositEarn(router, 200e6);
         CardSpend memory s = _earnSpend(programCollateral, programCollateralIndex, 15e6, 15e6, "p.earn");
-        _routerSettle(address(earnShare), s.maxShares, s);
+        _routerSpend(address(earnShare), s.maxShares, s);
         assertEq(usd.balanceOf(programCollateral), 15e6);
     }
 
@@ -145,7 +145,7 @@ contract RainProviderTest is RainEnv {
         usd.transfer(address(program), 1e6);
         vm.prank(router);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, destination));
-        program.settle(address(usd), 1e6, abi.encode(s));
+        program.spendFrom(address(usd), 1e6, abi.encode(s));
         // Not settled: take the input back for the next attempt.
         vm.prank(address(program));
         usd.transfer(router, 1e6);

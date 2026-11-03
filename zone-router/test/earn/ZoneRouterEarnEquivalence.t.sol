@@ -5,7 +5,7 @@ pragma solidity ^0.8.36;
 // forge-lint: disable-start(erc20-unchecked-transfer,unsafe-typecast,low-level-calls)
 
 import { ZoneRouter } from "../../src/ZoneRouter.sol";
-import { ISpendSettler } from "../../src/interfaces/ISpendSettler.sol";
+import { ISpender } from "../../src/interfaces/ISpender.sol";
 import { ZoneRouterEarnTestBase } from "./ZoneRouterEarnTestBase.sol";
 import { IRouterPropAMMPool } from "earn-test/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "earn-test/helpers/PropAMMEngineMocks.sol";
@@ -18,7 +18,7 @@ import {
 import { SingleZoneEarnRouter } from "tempo-earn/router/SingleZoneEarnRouter.sol";
 
 /// @dev Pays a configured part of the input the router sent to a payee and hands the rest back.
-contract PayingSettler is ISpendSettler {
+contract PayingSpender is ISpender {
     address public immutable payee;
     uint256 public use;
 
@@ -30,7 +30,7 @@ contract PayingSettler is ISpendSettler {
         use = use_;
     }
 
-    function settle(address token, uint256 maxInput, bytes calldata) external {
+    function spendFrom(address token, uint256 maxInput, bytes calldata) external {
         MemoMockToken(token).transfer(payee, use);
         MemoMockToken(token).transfer(msg.sender, maxInput - use);
     }
@@ -64,7 +64,7 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
     }
 
     IRouterPropAMMPool private pool;
-    PayingSettler private settler;
+    PayingSpender private spender;
     address private payee = makeAddr("payee");
 
     SingleZoneEarnRouter private legacy;
@@ -77,7 +77,7 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
     function setUp() public override {
         super.setUp();
         pool = _routerPool(address(alternate), address(assetA));
-        settler = new PayingSettler(payee);
+        spender = new PayingSpender(payee);
 
         legacy = new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
         earnOnly = _zoneRouterFor(3, address(alternate), address(pool), CUSTOMER_ID);
@@ -261,11 +261,11 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
 
     /// @dev With Spend enabled, Spend and Earn ops interleave on one router without affecting each other.
     function testSpendAndEarnOpsInterleave() public {
-        ZoneRouter zr = _zoneRouterFor(7, address(alternate), address(pool), CUSTOMER_ID, address(settler));
+        ZoneRouter zr = _zoneRouterFor(7, address(alternate), address(pool), CUSTOMER_ID, address(spender));
         pool.setTakerAllowed(address(zr), true);
         pool.setRecipientAllowed(address(zr), true);
         _use(zr);
-        settler.setUse(ONE);
+        spender.setUse(ONE);
 
         _deposit(2 * ONE, 2 * ONE, 2 * ONE);
         assertEq(earnA.balanceOf(address(portalA)), 2 * ONE);
@@ -283,7 +283,7 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         uint256 standing = alternate.allowance(address(zr), address(portalA));
         assertGt(standing, type(uint128).max);
         _assertBalances(zr);
-        assertEq(alternate.allowance(address(zr), address(settler)), 0);
+        assertEq(alternate.allowance(address(zr), address(spender)), 0);
 
         portalA.release(address(earnA), address(zr), 2 * ONE);
         _redeem(2 * ONE, 2 * ONE, 2 * ONE);
@@ -335,17 +335,17 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         private
         returns (ZoneRouter)
     {
-        return _zoneRouterFor(ops, privateAsset, pool_, customerId, address(idleSettler));
+        return _zoneRouterFor(ops, privateAsset, pool_, customerId, address(idleSpender));
     }
 
-    function _zoneRouterFor(uint8 ops, address privateAsset, address pool_, bytes32 customerId, address settler_)
+    function _zoneRouterFor(uint8 ops, address privateAsset, address pool_, bytes32 customerId, address spender_)
         private
         returns (ZoneRouter)
     {
         ZoneRouter.Mode memory mode = _earnMode(ZONE_A, privateAsset, pool_, customerId);
         mode.enabledOps = ops;
-        mode.settlers = new address[](ops & 4 != 0 ? 1 : 0);
-        if (ops & 4 != 0) mode.settlers[0] = settler_;
+        mode.spenders = new address[](ops & 4 != 0 ? 1 : 0);
+        if (ops & 4 != 0) mode.spenders[0] = spender_;
         return ZoneRouter(factory.deploy(mode));
     }
 
@@ -390,9 +390,9 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         return abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: address(settler),
+                spender: address(spender),
                 maxInput: uint128(maxInput),
-                settlerData: hex"",
+                spenderData: hex"",
                 zoneReturn: ZoneRouter.SpendReturn({
                     keyIndex: 1, encrypted: _encrypted(), refundRecipient: refundRecipient, maxDepositFee: 0
                 })

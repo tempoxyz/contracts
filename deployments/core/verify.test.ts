@@ -345,7 +345,7 @@ describe('deployment source verification', () => {
         zoneRouter: {
           zoneId: 7,
           ops: ['spend'],
-          settlers: [address('5e')],
+          spenders: [address('5e')],
           factory: address('fac'),
         },
       },

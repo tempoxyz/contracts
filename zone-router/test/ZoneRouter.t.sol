@@ -6,16 +6,16 @@ pragma solidity ^0.8.36;
 
 import { ZoneRouter } from "../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
-import { ISpendSettler } from "../src/interfaces/ISpendSettler.sol";
+import { ISpender } from "../src/interfaces/ISpender.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "earn-test/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "earn-test/helpers/PropAMMEngineMocks.sol";
 import { ZONE_MESSENGER_ADDRESS } from "tempo-earn/interfaces/external/tempo/IZone.sol";
 import { SingleZoneEarnRouter } from "tempo-earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev A settler whose behavior each test picks. The router sends it `maxInput` up front: pay `use`
+/// @dev A spender whose behavior each test picks. The router sends it `maxInput` up front: pay `use`
 ///      of it to `payee` and hand back the rest, optionally try to pull more from the router, hand back
 ///      extra, keep the rest of the input, or re-enter the router.
-contract MockSettler is ISpendSettler {
+contract MockSpender is ISpender {
     enum Behavior {
         Pay,
         PullMore,
@@ -34,7 +34,7 @@ contract MockSettler is ISpendSettler {
         payee = payee_;
     }
 
-    function settle(address token, uint256 maxInput, bytes calldata) external {
+    function spendFrom(address token, uint256 maxInput, bytes calldata) external {
         MemoMockToken input = MemoMockToken(token);
         if (behavior == Behavior.PullMore) {
             // The router grants no allowance, so this reverts.
@@ -55,7 +55,7 @@ contract MockSettler is ISpendSettler {
 
 contract ZoneRouterTest is EarnRouterTestBase {
     ZoneRouterFactory internal factory;
-    MockSettler internal settler;
+    MockSpender internal spender;
     IRouterPropAMMPool internal pool;
     address internal payee = makeAddr("payee");
 
@@ -67,10 +67,10 @@ contract ZoneRouterTest is EarnRouterTestBase {
     function setUp() public override {
         super.setUp();
         factory = new ZoneRouterFactory();
-        settler = new MockSettler();
+        spender = new MockSpender();
         pool = _routerPool(address(alternate), address(assetA));
-        // Settlers hand back their unused input, so they hold some to return extra from.
-        alternate.mint(address(settler), ONE);
+        // Spenders hand back their unused input, so they hold some to return extra from.
+        alternate.mint(address(spender), ONE);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -122,23 +122,23 @@ contract ZoneRouterTest is EarnRouterTestBase {
         assertTrue(factory.isRouter(router_));
         assertEq(factory.deploy(mode), router_);
 
-        address[] memory listed = ZoneRouter(router_).settlers();
+        address[] memory listed = ZoneRouter(router_).spenders();
         assertEq(listed.length, 1);
-        assertEq(listed[0], address(settler));
+        assertEq(listed[0], address(spender));
         assertEq(ZoneRouter(router_).enabledOps(), uint8(1 << 2));
         assertEq(ZoneRouter(router_).earnVault(), address(0));
     }
 
-    function testSettlerOrderIsPartOfTheMode() public {
-        MockSettler other = new MockSettler();
+    function testSpenderOrderIsPartOfTheMode() public {
+        MockSpender other = new MockSpender();
         ZoneRouter.Mode memory a = _spendMode();
-        a.settlers = new address[](2);
-        a.settlers[0] = address(settler);
-        a.settlers[1] = address(other);
+        a.spenders = new address[](2);
+        a.spenders[0] = address(spender);
+        a.spenders[1] = address(other);
         ZoneRouter.Mode memory b = _spendMode();
-        b.settlers = new address[](2);
-        b.settlers[0] = address(other);
-        b.settlers[1] = address(settler);
+        b.spenders = new address[](2);
+        b.spenders[0] = address(other);
+        b.spenders[1] = address(spender);
         assertTrue(factory.predict(a) != factory.predict(b));
     }
 
@@ -158,20 +158,20 @@ contract ZoneRouterTest is EarnRouterTestBase {
         new ZoneRouter(mode);
 
         mode = _spendMode();
-        mode.settlers = new address[](0);
-        vm.expectRevert(ZoneRouter.InvalidSettlers.selector);
+        mode.spenders = new address[](0);
+        vm.expectRevert(ZoneRouter.InvalidSpenders.selector);
         new ZoneRouter(mode);
 
         mode = _spendMode();
-        mode.settlers = new address[](2);
-        mode.settlers[0] = address(settler);
-        mode.settlers[1] = address(settler);
-        vm.expectRevert(ZoneRouter.InvalidSettlers.selector);
+        mode.spenders = new address[](2);
+        mode.spenders[0] = address(spender);
+        mode.spenders[1] = address(spender);
+        vm.expectRevert(ZoneRouter.InvalidSpenders.selector);
         new ZoneRouter(mode);
 
         mode = _spendMode();
-        mode.settlers[0] = makeAddr("eoa");
-        vm.expectRevert(ZoneRouter.InvalidSettlers.selector);
+        mode.spenders[0] = makeAddr("eoa");
+        vm.expectRevert(ZoneRouter.InvalidSpenders.selector);
         new ZoneRouter(mode);
 
         mode = _spendMode();
@@ -180,9 +180,9 @@ contract ZoneRouterTest is EarnRouterTestBase {
         new ZoneRouter(mode);
 
         mode = _earnMode(false);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = address(settler);
-        vm.expectRevert(ZoneRouter.InvalidSettlers.selector);
+        mode.spenders = new address[](1);
+        mode.spenders[0] = address(spender);
+        vm.expectRevert(ZoneRouter.InvalidSpenders.selector);
         new ZoneRouter(mode);
     }
 
@@ -192,7 +192,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.OpDisabled.selector);
         earnOnly.onWithdrawalReceived(
-            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), _spend(address(settler), ONE, 0)
+            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), _spend(address(spender), ONE, 0)
         );
 
         ZoneRouter spendOnly = _spendRouter();
@@ -210,13 +210,13 @@ contract ZoneRouterTest is EarnRouterTestBase {
     // Spend
     // ---------------------------------------------------------------------------------------------
 
-    function testSpendPaysThroughSettlerAndReturnsChange() public {
+    function testSpendPaysThroughSpenderAndReturnsChange() public {
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.Pay, 5 * ONE, payee);
+        spender.configure(MockSpender.Behavior.Pay, 5 * ONE, payee);
         alternate.mint(address(zr), 10 * ONE);
 
         vm.expectEmit(true, true, false, false, address(zr));
-        emit ZoneRouter.Spent(address(settler), address(alternate), 5 * ONE, 5 * ONE, bytes32(0));
+        emit ZoneRouter.Spent(address(spender), address(alternate), 5 * ONE, 5 * ONE, bytes32(0));
         _deliverSpend(zr, 10 * ONE, 6 * ONE, 0);
 
         assertEq(alternate.balanceOf(payee), 5 * ONE);
@@ -224,14 +224,14 @@ contract ZoneRouterTest is EarnRouterTestBase {
         assertEq(portalA.lastAmount(), 5 * ONE);
         assertEq(portalA.lastRefundRecipient(), refundRecipient);
         _assertEmpty(zr);
-        assertEq(alternate.allowance(address(zr), address(settler)), 0);
+        assertEq(alternate.allowance(address(zr), address(spender)), 0);
     }
 
     /// @notice The change's approval to the Portal stays standing, so a later spend sets no new slot,
     ///         and the Portal still takes exactly the change.
     function testSpendLeavesAStandingPortalApproval() public {
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.Pay, 5 * ONE, payee);
+        spender.configure(MockSpender.Behavior.Pay, 5 * ONE, payee);
         alternate.mint(address(zr), 10 * ONE);
         _deliverSpend(zr, 10 * ONE, 6 * ONE, 0);
         assertGt(alternate.allowance(address(zr), address(portalA)), type(uint128).max);
@@ -260,7 +260,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
 
     function testSpendUsingEverythingReturnsNothing() public {
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.Pay, 3 * ONE, payee);
+        spender.configure(MockSpender.Behavior.Pay, 3 * ONE, payee);
         alternate.mint(address(zr), 3 * ONE);
         uint256 depositsBefore = portalA.depositCount();
         _deliverSpend(zr, 3 * ONE, 3 * ONE, 0);
@@ -268,18 +268,18 @@ contract ZoneRouterTest is EarnRouterTestBase {
         _assertEmpty(zr);
     }
 
-    /// @notice The cardholder's maxInput bounds what any settler, or a handler behind it, can take: the
+    /// @notice The cardholder's maxInput bounds what any spender, or a handler behind it, can take: the
     ///         router sends exactly maxInput and grants no allowance to pull more.
-    function testSettlerCannotTakeMoreThanMaxInput() public {
+    function testSpenderCannotTakeMoreThanMaxInput() public {
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.PullMore, 0, payee);
+        spender.configure(MockSpender.Behavior.PullMore, 0, payee);
         _expectSpendRevert(zr, 10 * ONE, 4 * ONE, bytes(""));
     }
 
-    function testSettlerThatKeepsInputCountsOnlyWithinMaxInput() public {
-        // Keeping unused input is bounded by the transfer: the settler got maxInput and the rest returns.
+    function testSpenderThatKeepsInputCountsOnlyWithinMaxInput() public {
+        // Keeping unused input is bounded by the transfer: the spender got maxInput and the rest returns.
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.KeepInput, ONE, payee);
+        spender.configure(MockSpender.Behavior.KeepInput, ONE, payee);
         alternate.mint(address(zr), 10 * ONE);
         _deliverSpend(zr, 10 * ONE, 4 * ONE, 0);
         assertEq(portalA.lastAmount(), 6 * ONE);
@@ -288,19 +288,19 @@ contract ZoneRouterTest is EarnRouterTestBase {
 
     function testSettlementThatUsesNothingOrHandsBackExtraReverts() public {
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.Pay, 0, payee);
-        _expectSpendRevert(zr, ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidSettlement.selector));
+        spender.configure(MockSpender.Behavior.Pay, 0, payee);
+        _expectSpendRevert(zr, ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidSpend.selector));
 
-        settler.configure(MockSettler.Behavior.HandBackExtra, 0, payee);
-        _expectSpendRevert(zr, ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidSettlement.selector));
+        spender.configure(MockSpender.Behavior.HandBackExtra, 0, payee);
+        _expectSpendRevert(zr, ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidSpend.selector));
     }
 
-    function testSpendRejectsUnknownSettlerAndBadMaxInput() public {
+    function testSpendRejectsUnknownSpenderAndBadMaxInput() public {
         ZoneRouter zr = _spendRouter();
-        MockSettler stranger = new MockSettler();
+        MockSpender stranger = new MockSpender();
         alternate.mint(address(zr), ONE);
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        vm.expectRevert(ZoneRouter.UnknownSettler.selector);
+        vm.expectRevert(ZoneRouter.UnknownSpender.selector);
         zr.onWithdrawalReceived(
             ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), _spend(address(stranger), ONE, 0)
         );
@@ -308,35 +308,35 @@ contract ZoneRouterTest is EarnRouterTestBase {
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.InvalidMaxInput.selector);
         zr.onWithdrawalReceived(
-            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), _spend(address(settler), 0, 0)
+            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), _spend(address(spender), 0, 0)
         );
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.InvalidMaxInput.selector);
         zr.onWithdrawalReceived(
-            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), _spend(address(settler), ONE + 1, 0)
+            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), _spend(address(spender), ONE + 1, 0)
         );
     }
 
     function testSpendCapsTheDepositFee() public {
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.Pay, ONE, payee);
+        spender.configure(MockSpender.Behavior.Pay, ONE, payee);
         portalA.setDepositFee(100);
         _expectSpendRevert(
             zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.DepositFeeTooHigh.selector, uint128(100))
         );
     }
 
-    function testSpendRejectsReentryFromSettler() public {
+    function testSpendRejectsReentryFromSpender() public {
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.Reenter, 0, payee);
+        spender.configure(MockSpender.Behavior.Reenter, 0, payee);
         _expectSpendRevert(zr, ONE, ONE, abi.encodeWithSelector(ZoneRouter.ReentrantCall.selector));
     }
 
     function testSpendOnlyFromMessengerZoneAndPortal() public {
         ZoneRouter zr = _spendRouter();
         alternate.mint(address(zr), ONE);
-        bytes memory data = _spend(address(settler), ONE, 0);
+        bytes memory data = _spend(address(spender), ONE, 0);
         vm.expectRevert(ZoneRouter.NotZoneMessenger.selector);
         zr.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
 
@@ -354,7 +354,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
         maxInput = uint96(bound(maxInput, 1, amount));
         use = uint96(bound(use, 1, maxInput));
         ZoneRouter zr = _spendRouter();
-        settler.configure(MockSettler.Behavior.Pay, use, payee);
+        spender.configure(MockSpender.Behavior.Pay, use, payee);
         alternate.mint(address(zr), amount);
         _deliverSpend(zr, amount, maxInput, 0);
         assertEq(alternate.balanceOf(payee), use);
@@ -373,15 +373,15 @@ contract ZoneRouterTest is EarnRouterTestBase {
         mode.privateAsset = address(alternate);
         mode.pool = address(pool);
         mode.customerId = CUSTOMER_ID;
-        mode.settlers = new address[](withSpend ? 1 : 0);
-        if (withSpend) mode.settlers[0] = address(settler);
+        mode.spenders = new address[](withSpend ? 1 : 0);
+        if (withSpend) mode.spenders[0] = address(spender);
     }
 
     function _spendMode() internal view returns (ZoneRouter.Mode memory mode) {
         mode.zoneId = ZONE_A;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = address(settler);
+        mode.spenders = new address[](1);
+        mode.spenders[0] = address(spender);
     }
 
     function _earnRouter(bool withSpend) internal returns (ZoneRouter zr) {
@@ -394,13 +394,13 @@ contract ZoneRouterTest is EarnRouterTestBase {
         return ZoneRouter(factory.deploy(_spendMode()));
     }
 
-    function _spend(address settler_, uint256 maxInput, uint128 maxDepositFee) internal view returns (bytes memory) {
+    function _spend(address spender_, uint256 maxInput, uint128 maxDepositFee) internal view returns (bytes memory) {
         return abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: settler_,
+                spender: spender_,
                 maxInput: uint128(maxInput),
-                settlerData: hex"",
+                spenderData: hex"",
                 zoneReturn: ZoneRouter.SpendReturn({
                     keyIndex: 1, encrypted: _encrypted(), refundRecipient: refundRecipient, maxDepositFee: maxDepositFee
                 })
@@ -416,16 +416,16 @@ contract ZoneRouterTest is EarnRouterTestBase {
             bytes32(0),
             address(alternate),
             uint128(amount),
-            _spend(address(settler), maxInput, maxDepositFee)
+            _spend(address(spender), maxInput, maxDepositFee)
         );
     }
 
-    /// @dev A rejected spend moves nothing: the payee, Zone and settler balances are unchanged and the
+    /// @dev A rejected spend moves nothing: the payee, Zone and spender balances are unchanged and the
     ///      router holds exactly the delivered input, with no allowance left.
     function _expectSpendRevert(ZoneRouter zr, uint256 amount, uint256 maxInput, bytes memory reason) internal {
         alternate.mint(address(zr), amount);
         uint256 payeeBefore = alternate.balanceOf(payee);
-        uint256 settlerBefore = alternate.balanceOf(address(settler));
+        uint256 spenderBefore = alternate.balanceOf(address(spender));
         uint256 depositsBefore = portalA.depositCount();
         vm.prank(ZONE_MESSENGER_ADDRESS);
         if (reason.length == 0) vm.expectRevert();
@@ -436,13 +436,13 @@ contract ZoneRouterTest is EarnRouterTestBase {
             bytes32(0),
             address(alternate),
             uint128(amount),
-            _spend(address(settler), maxInput, 0)
+            _spend(address(spender), maxInput, 0)
         );
         assertEq(alternate.balanceOf(payee), payeeBefore);
-        assertEq(alternate.balanceOf(address(settler)), settlerBefore);
+        assertEq(alternate.balanceOf(address(spender)), spenderBefore);
         assertEq(portalA.depositCount(), depositsBefore);
         assertEq(alternate.balanceOf(address(zr)), amount);
-        assertEq(alternate.allowance(address(zr), address(settler)), 0);
+        assertEq(alternate.allowance(address(zr), address(spender)), 0);
         // Clear the undelivered input so later cases start empty.
         vm.prank(address(zr));
         alternate.transfer(address(0xdead), amount);
@@ -455,7 +455,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
             // A spend leaves its standing approval to the Portal (less what deposits used); nothing else.
             uint256 portalAllowance = tokens[i].allowance(address(zr), address(portalA));
             assertTrue(portalAllowance == 0 || portalAllowance > type(uint128).max, "portal allowance");
-            assertEq(tokens[i].allowance(address(zr), address(settler)), 0);
+            assertEq(tokens[i].allowance(address(zr), address(spender)), 0);
             assertEq(tokens[i].allowance(address(zr), address(earnVaultA)), 0);
             assertEq(tokens[i].allowance(address(zr), address(pool)), 0);
         }

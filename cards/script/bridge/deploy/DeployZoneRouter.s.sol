@@ -16,19 +16,19 @@ import { BridgeProgramRelease } from "./BridgeRelease.sol";
 import { checkProgram, requireProgram } from "./DeployBridgeProgram.s.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
-/// @notice A card program's router mode: Spend only on `zoneId`, through `settler` alone, with no Earn
+/// @notice A card program's router mode: Spend only on `zoneId`, through `spender` alone, with no Earn
 ///         bindings.
 library SpendMode {
-    function forSettler(uint32 zoneId, address settler) internal pure returns (ZoneRouter.Mode memory mode) {
+    function forSpender(uint32 zoneId, address spender) internal pure returns (ZoneRouter.Mode memory mode) {
         mode.zoneId = zoneId;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = settler;
+        mode.spenders = new address[](1);
+        mode.spenders[0] = spender;
     }
 }
 
 /// @notice Deploys one Bridge card program's `CardSpender` (as `DeployBridgeProgram` does) and the
-///         Spend-mode `ZoneRouter` that lists it as its only settler on one Zone, through a
+///         Spend-mode `ZoneRouter` that lists it as its only spender on one Zone, through a
 ///         `ZoneRouterFactory`, after checking the program's clone was created for its ID and the Zone has
 ///         a registered portal. The release `CardFactory`, the program's `BridgeProvider` and its program
 ///         land at their deterministic addresses (`BridgeProgramRelease`), and one already there is reused;
@@ -92,7 +92,7 @@ contract DeployZoneRouter is BridgeProgramRelease {
         else vm.startBroadcast(deployerPk);
         if (address(routerFactory) == address(0)) routerFactory = new ZoneRouterFactory();
         Created memory c = _bridgeProgram(factory, spenderId);
-        o.router = ZoneRouter(routerFactory.deploy(SpendMode.forSettler(zoneId, address(c.program))));
+        o.router = ZoneRouter(routerFactory.deploy(SpendMode.forSpender(zoneId, address(c.program))));
         vm.stopBroadcast();
         requireProgram(c.program, factory, spenderId);
         o.factory = address(factory);

@@ -99,7 +99,7 @@ protected-item and three-slot rules.
       "pool": "0x...",
       "customerId": "0x..."
     },
-    "settlers": ["0x..."],
+    "spenders": ["0x..."],
     "factory": "0x..."
   }
 }
@@ -112,8 +112,8 @@ protected-item and three-slot rules.
 - `earn` is required with `deposit` or `redeem` and rejected otherwise. The router binds the
   profile's own EarnVault; `privateAsset`, `pool` and `customerId` follow `zone.router`'s rules
   (omit both `pool` and `customerId` when the private asset is the vault asset).
-- `settlers`, required with `spend` and rejected otherwise, lists the deployed `ISpendSettler`
-  contracts, such as a `SendSettler` from
+- `spenders`, required with `spend` and rejected otherwise, lists the deployed `ISpender`
+  contracts, such as a `SendSpender` from
   [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) or a card program's
   `CardSpender` from [Bridge Release](../docs/deployment/deployment.md#bridge-releases), without repeats. Their order is part of the
   mode, so of the router's address.

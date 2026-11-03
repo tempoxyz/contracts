@@ -169,12 +169,12 @@ abstract contract CoreEnv is Test {
     }
 
     /// @dev What a ZoneRouter does for a Spend op: transfer `maxInput` of `token` to the program (its
-    ///      settler), call `settle` and take back what the program returns.
-    function _routerSettle(address token, uint256 maxInput, CardSpend memory s) internal {
+    ///      spender), call `spendFrom` and take back what the program returns.
+    function _routerSpend(address token, uint256 maxInput, CardSpend memory s) internal {
         vm.prank(router);
         ITIP20Token(token).transfer(address(program), maxInput);
         vm.prank(router);
-        program.settle(token, maxInput, abi.encode(s));
+        program.spendFrom(token, maxInput, abi.encode(s));
     }
 
     function _depositEarn(address user, uint256 assets) internal returns (uint256 shares) {

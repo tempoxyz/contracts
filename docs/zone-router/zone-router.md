@@ -1,11 +1,11 @@
 # Zone router
 
 [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) takes a Zone's withdrawal callbacks on Tempo: Earn
-deposits and redemptions, and spends through settlers fixed at deployment.
+deposits and redemptions, and spends through spenders fixed at deployment.
 [`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it, and the
-[settlers](#settlers) pay a spend: `SendSettler`, in [`src/settlers/`](../../zone-router/src/settlers/),
+[spenders](#spenders) pay a spend: `SendSpender`, in [`src/spenders/`](../../zone-router/src/spenders/),
 to a public address, and a card program's `CardSpender`, in [`cards/`](../../cards/README.md), through
-its card provider. The router, its factory and `SendSettler` live in the
+its card provider. The router, its factory and `SendSpender` live in the
 [`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
 interfaces. Card spend through it is in the [card spend design](../cards/design.md).
 
@@ -20,16 +20,16 @@ router.
 
 - **`zoneId`**, the only source Zone (`allowedZoneId`).
 - **`enabledOps`**, a bitmask of Deposit, Redeem and Spend. A disabled op reverts `OpDisabled`.
-- **`settlers`**, the `ISpendSettler` contracts Spend may use, written once by the constructor.
+- **`spenders`**, the `ISpender` contracts Spend may use, written once by the constructor.
   Required when Spend is enabled, empty otherwise.
 - **`earnVault`, `privateAsset`, `pool`, `customerId`**, as `SingleZoneEarnRouter` binds them.
   Required when Deposit or Redeem is enabled (`pool` and `customerId` only when the private asset is
   not the vault asset), and all zero otherwise.
 
 The constructor rejects inconsistent combinations. A profile states its mode as `ops`, `earn` and
-`settlers`; the common modes are:
+`spenders`; the common modes are:
 
-| Mode                       | Ops                    | Settlers      | Vault |
+| Mode                       | Ops                    | Spenders      | Vault |
 | -------------------------- | ---------------------- | ------------- | ----- |
 | Earn                       | Deposit, Redeem        | —             | Yes   |
 | Card, closed loop          | Spend                  | `CardSpender` | —     |
@@ -48,7 +48,7 @@ One router per Zone can serve several programs by listing each one's `CardSpende
   working, and each customer moves by deploying its mode there and having its Zone admit it.
 - **Size.** The router's runtime is 10.2 KiB and the factory's 13.4 KiB, under the 24 KiB limit.
 
-Nobody can change a deployed router. Enabling a settler or op means deploying a new router through
+Nobody can change a deployed router. Enabling a spender or op means deploying a new router through
 the factory and having the Zone's Portal admin admit it as a gateway; the old router stays deployed
 so callbacks already on their way finish or bounce. The only authority is the one Zones already
 have: which gateways they admit.
@@ -82,13 +82,13 @@ contracts:
 The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers as
 [required members](../earn/modules/access.md#required-members) of EarnShare's access policy.
 `pnpm earn verify` rechecks the factory provenance and mode and reports gateway, account,
-token and conversion readiness. A profile deploys no settler: it lists deployed ones in
-`settlers`, such as a release's `SendSettler` or a card program's `CardSpender`.
+token and conversion readiness. A profile deploys no spender: it lists deployed ones in
+`spenders`, such as a release's `SendSpender` or a card program's `CardSpender`.
 
 Outside a profile, the **Zone Router Release** workflow deploys and source-verifies a
-`ZoneRouterFactory`, a `SendSettler`, or a mode's router from
+`ZoneRouterFactory`, a `SendSpender`, or a mode's router from
 `main` ([Zone router releases](../deployment/deployment.md#zone-router-releases)). Each lands at an address its
-build and settings fix: the factory and settlers through the CREATE2 deployer with Earn's release
+build and settings fix: the factory and spenders through the CREATE2 deployer with Earn's release
 salt, and a router at its factory's `predict(mode)`, so whoever deploys the same one, Tempo or an
 integrator, gets the same contract, and a release reuses one that exists. Admission and pool
 authorization stay with their owners, as above.
@@ -102,7 +102,7 @@ The router reads the first callback word before decoding, so ops 0 and 1 keep
 | --------- | ----------------------------------- | --------------------------------------------------------------- | ---------------- |
 | 0 Deposit | Private asset                       | As `SingleZoneEarnRouter`                                       | EarnShare        |
 | 1 Redeem  | EarnShare                           | As `SingleZoneEarnRouter`                                       | Private asset    |
-| 2 Spend   | Any token the source Portal enables | Transfers `maxInput` to a listed settler, measures what it used | Unused input     |
+| 2 Spend   | Any token the source Portal enables | Transfers `maxInput` to a listed spender, measures what it used | Unused input     |
 
 Every return to the source Zone is an encrypted deposit, with a refund recipient, of a token enabled
 with deposits active. Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn`
@@ -111,24 +111,24 @@ input to the withdrawal's fallback recipient in the Zone.
 
 ### Spend
 
-Callback data: `op`, `settler`, `maxInput`, `settlerData` and `SpendReturn`, 864 of the outbox's
+Callback data: `op`, `spender`, `maxInput`, `spenderData` and `SpendReturn`, 864 of the outbox's
 1,024 bytes with a 64-byte ciphertext. A Spend callback:
 
-1. authenticates as ops 0 and 1, and requires the settler to be listed;
-2. requires `0 < maxInput <= amount`, transfers exactly `maxInput` to the settler and calls
-   `settle(token, maxInput, settlerData)`; the settler hands back what it did not use;
+1. authenticates as ops 0 and 1, and requires the spender to be listed;
+2. requires `0 < maxInput <= amount`, transfers exactly `maxInput` to the spender and calls
+   `spendFrom(token, maxInput, spenderData)`; the spender hands back what it did not use;
 3. requires `0 < used <= maxInput`, measured from its own balance;
 4. returns the change, `amount - used`, to the source Zone when it is not zero, through a standing
    approval to that Portal (below);
-5. emits `Spent(settler, token, used, change, zoneDepositHash)`, with a zero hash when there is no
-   change, and no `senderTag`, action ID or Zone account. The settler emits its own detail.
+5. emits `Spent(spender, token, used, change, zoneDepositHash)`, with a zero hash when there is no
+   change, and no `senderTag`, action ID or Zone account. The spender emits its own detail.
 
-`maxInput` is set in the sender's Zone transaction, not by the settler, so no settler can take more
+`maxInput` is set in the sender's Zone transaction, not by the spender, so no spender can take more
 than the sender allowed, and the change always returns. The router transfers rather than approves:
-the settler never holds an allowance from it, and the callback skips the roughly 250k gas Tempo
-charges for writing an allowance slot. A listed settler that keeps its input without paying looks
-settled, within `maxInput`, so settlers are trusted to the extent of the sender's `maxInput`. The
-router accepts any enabled token and leaves it to the settler to refuse one it cannot use.
+the spender never holds an allowance from it, and the callback skips the roughly 250k gas Tempo
+charges for writing an allowance slot. A listed spender that keeps its input without paying looks
+settled, within `maxInput`, so spenders are trusted to the extent of the sender's `maxInput`. The
+router accepts any enabled token and leaves it to the spender to refuse one it cannot use.
 
 The change goes back through a standing maximum approval to the source Portal, set on the first
 spend of a token and topped up only when it runs low. Clearing it after each deposit would create
@@ -138,41 +138,41 @@ set it ahead of the first spend with `warm(token)`. An Earn op on a router that 
 `SingleZoneEarnRouter`'s exact approval, cleared after the deposit, so an Earn-only router behaves
 exactly like it.
 
-## Settlers
+## Spenders
 
-A settler adapts one payee system to the Spend op through `ISpendSettler`. A generic one lives in
-[`zone-router/src/settlers/`](../../zone-router/src/settlers/); one built for a single integrator lives
+A spender adapts one payee system to the Spend op through `ISpender`. A generic one lives in
+[`zone-router/src/spenders/`](../../zone-router/src/spenders/); one built for a single integrator lives
 with that integration and imports the interface from here. Each has no owner and keeps none of a
-callback's input. A mode lists the settlers it allows, and only those can be named in a
+callback's input. A mode lists the spenders it allows, and only those can be named in a
 callback.
 
-| Settler       | Pays                                                                                | `settlerData`           | Binding fixed at deployment              |
+| Spender       | Pays                                                                                | `spenderData`           | Binding fixed at deployment              |
 | ------------- | ----------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------- |
-| `SendSettler` | A public address, in the withdrawn token or redeemed from Earn                      | `abi.encode(Send)`      | Optional vault, par pool and customer ID |
+| `SendSpender` | A public address, in the withdrawn token or redeemed from Earn                      | `abi.encode(Send)`      | Optional vault, par pool and customer ID |
 | `CardSpender` | A destination its provider authorizes (Rain collateral, a Bridge settlement wallet) | `abi.encode(CardSpend)` | The provider                             |
 
-`SendSettler` is released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) and
+`SendSpender` is released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) and
 a Bridge program's `CardSpender` by [Bridge Release](../deployment/deployment.md#bridge-releases), each at a
-deterministic address, and listed in a profile's `zoneRouter.settlers`.
+deterministic address, and listed in a profile's `zoneRouter.spenders`.
 
-### `ISpendSettler`
+### `ISpender`
 
 ```text
-interface ISpendSettler {
+interface ISpender {
     // Pays from the maxInput of token the router transferred to it before the call. Reverts
     // unless the payment it makes is complete. Transfers all unused input back to the router
     // before returning and keeps none.
-    function settle(address token, uint256 maxInput, bytes calldata data) external;
+    function spendFrom(address token, uint256 maxInput, bytes calldata data) external;
 }
 ```
 
-### `SendSettler`
+### `SendSpender`
 
-[`SendSettler`](../../zone-router/src/settlers/SendSettler.sol) pays a public address. A mode allows sends only if
-it lists a `SendSettler`; a closed-loop mode, listing only its card program's settler, does not. It
+[`SendSpender`](../../zone-router/src/spenders/SendSpender.sol) pays a public address. A mode allows sends only if
+it lists a `SendSpender`; a closed-loop mode, listing only its card program's spender, does not. It
 has no owner or setters, and its only setting is an optional conversion binding fixed at deployment:
 a vault, a pool pairing that vault's asset with one other stablecoin of equal decimals (its par
-stablecoin), and a customer ID, all set or all zero. Its `settlerData` is
+stablecoin), and a customer ID, all set or all zero. Its `spenderData` is
 `abi.encode(Send(to, token, amount, vault, ref))`, and `to` receives exactly `amount` of `token`:
 
 | `vault`         | `token`                     | Input         | How it pays                                                              |
@@ -183,7 +183,7 @@ stablecoin), and a customer ID, all set or all zero. Its `settlerData` is
 
 Conversion runs only from the bound vault's asset into its par stablecoin; any other vault, token
 or direction reverts with `ConversionNotAllowed`, so a vault the caller makes up cannot trade through
-the pool. The constructor checks the pair and the equal decimals. The settler checks that `to`'s
+the pool. The constructor checks the pair and the equal decimals. The spender checks that `to`'s
 balance rose by exactly `amount`, so a vault or pool that reports success without paying cannot
 settle. For a [virtual address](https://github.com/tempoxyz/tempo/blob/main/tips/tip-1022.md), which
 a TIP-20 transfer credits to its registered master, it measures the master that Tempo's address
@@ -191,15 +191,15 @@ registry resolves, redeems to itself and transfers to `to` (Earn's engines measu
 receiver), and reverts for an unregistered one, as the transfer would. It hands every unused unit
 back to the router and keeps no balance or allowance. Whoever builds the callback picks `to` and
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
-admit the settler as a taker and recipient.
-It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
-no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSettler`](../deployment/deployment.md#zone-router-releases) and list it in a
-profile's `zoneRouter.settlers`.
+admit the spender as a taker and recipient.
+It emits `Sent(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
+no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSpender`](../deployment/deployment.md#zone-router-releases) and list it in a
+profile's `zoneRouter.spenders`.
 
 ### `CardSpender`
 
-[`CardSpender`](../../cards/src/core/CardSpender.sol) is a card program's settler: `settle` pays the
-`CardSpend` in `settlerData` to a destination its provider authorizes for a private spend, directly or through
+[`CardSpender`](../../cards/src/core/CardSpender.sol) is a card program's spender: `spendFrom` pays the
+`CardSpend` in `spenderData` to a destination its provider authorizes for a private spend, directly or through
 the provider's payout target (a Bridge program's spender clone and "TS" handler), and returns the unused
 input. Its checks are in the [card spend design](../cards/design.md#what-the-program-checks).
 
@@ -209,7 +209,7 @@ input. Its checks are in the [card spend design](../cards/design.md#what-the-pro
 2. Callbacks accept only the canonical Zone Messenger, the router's Zone and that Zone's
    Factory-registered Portal.
 3. Every successful callback returns its output through the source Portal, except what a listed
-   settler uses, at most the callback's `maxInput`.
+   spender uses, at most the callback's `maxInput`.
 4. Conversion happens only at the pool oracle's exact par price with measured 1:1 output.
 5. No balance stays with the router after a callback, and no allowance except a spend's standing
    approval to its own Zone's Portal.

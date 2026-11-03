@@ -121,7 +121,7 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
             spend.ref, address(zoneRouter), settlement, address(usd), AMOUNT, AMOUNT, burned, true
         );
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardSpender.SpendSettled(spend.ref, address(earnShare), burned, maxShares - burned);
+        emit CardSpender.InputSpent(spend.ref, address(earnShare), burned, maxShares - burned);
         // The Zone deposit hash is the portal's; the rest is checked.
         vm.expectEmit(true, true, false, false, address(zoneRouter));
         emit ZoneRouter.Spent(address(program), address(earnShare), burned, input - burned, bytes32(0));

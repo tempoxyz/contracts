@@ -5,7 +5,7 @@ Foundry project with its own build settings, dependencies, and guide:
 
 - [earn/](earn/AGENTS.md): Tempo Earn, the EarnVault and EarnShare over replaceable yield venues.
 - [zone-router/](zone-router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and
-  spends, and the generic settlers a spend pays through (`SendSettler`).
+  spends, and the generic spenders a spend pays through (`SendSpender`).
 - [cards/](cards/AGENTS.md): card spend on Tempo: our provider-agnostic contracts (`src/core/`), our
   code for each card provider (`src/providers/<provider>/`: Bridge's `BridgeProvider` and "TS" handler,
   Rain's `RainProvider`), and each provider's own contracts vendored as they are (`vendor/<provider>/`).
@@ -24,7 +24,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
 | Area                                                       | Guide                                          |
 | ---------------------------------------------------------- | ---------------------------------------------- |
 | Tempo Earn, including its deployment modules, and profiles | [earn/AGENTS.md](earn/AGENTS.md)               |
-| Zone router and its settlers                               | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
+| Zone router and its spenders                               | [zone-router/AGENTS.md](zone-router/AGENTS.md) |
 | Card spend: core, providers (Bridge, Rain), vendored code  | [cards/AGENTS.md](cards/AGENTS.md)             |
 | Integration cases and hosted environments                  | [e2e/AGENTS.md](e2e/AGENTS.md)                 |
 | Disposable chain lifecycle                                 | [localnet/AGENTS.md](localnet/AGENTS.md)       |
@@ -38,9 +38,9 @@ must explicitly discover descendant guides rather than assume they were loaded.
 - A project imports another's contracts through a remapping to its `src/`, never a copy. Shared
   Solidity belongs in the project that owns it until a second owner needs it.
 - Imports flow one way: `earn/` imports neither other project, `zone-router/` imports only Earn's
-  interfaces, and `cards/` imports both. Generic settlers live in `zone-router/src/settlers/`; a card
-  program's settler is its `CardSpender` (`cards/src/core/`), which implements the Zone router's
-  `ISpendSettler`.
+  interfaces, and `cards/` imports both. Generic spenders live in `zone-router/src/spenders/`; a card
+  program's spender is its `CardSpender` (`cards/src/core/`), which implements the Zone router's
+  `ISpender`.
 - Provider-specific code (each provider's vendored contracts and our code for it) stays under its
   provider in `cards/`; `earn/` and `cards/src/core/` stay provider-agnostic.
 - Secrets and funded private keys stay out of source, logs, and generated records.

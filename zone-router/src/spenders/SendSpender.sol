@@ -4,25 +4,25 @@ pragma solidity ^0.8.36;
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "../interfaces/IAddressRegistry.sol";
-import { ISpendSettler } from "../interfaces/ISpendSettler.sol";
+import { ISpender } from "../interfaces/ISpender.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 
-/// @title SendSettler
+/// @title SendSpender
 /// @notice Settles a Zone router's Spend op by paying a public address exactly `amount` of a token: the
 ///         withdrawn token itself (a stablecoin or EarnShare), a vault asset redeemed from EarnShare, or
 ///         the stablecoin its bound vault's asset converts into at par.
-/// @dev Specified in docs/zone-router/zone-router.md#sendsettler. It has no owner and no setters; its only
+/// @dev Specified in docs/zone-router/zone-router.md#sendspender. It has no owner and no setters; its only
 ///      setting is an optional conversion binding (a vault, its par pool and a customer ID) fixed at
-///      deployment. A router allows sends only if its mode lists this settler. The router transfers
-///      `maxInput` before calling `settle`; the settler pays, hands every unused unit straight back and
+///      deployment. A router allows sends only if its mode lists this spender. The router transfers
+///      `maxInput` before calling `spendFrom`; the spender pays, hands every unused unit straight back and
 ///      keeps nothing. Whoever builds the callback picks the vault and recipient and spends only their own
 ///      input, which the router caps at `maxInput`; only the bound vault's EarnShare reaches the pool, and
-///      only from its asset into the paired stablecoin. Tokens sent here outside a `settle` call are not
-///      rescued: a later `settle` caller can spend them and gets back what its send did not use. It
+///      only from its asset into the paired stablecoin. Tokens sent here outside a `spendFrom` call are not
+///      rescued: a later `spendFrom` caller can spend them and gets back what its send did not use. It
 ///      neither emits nor stores the Zone's sender commitment.
-contract SendSettler is ISpendSettler {
+contract SendSpender is ISpender {
     /// @notice One send: `to` receives exactly `amount` of `token`.
     /// @dev With `vault` zero, `token` is the withdrawn token. Otherwise the input is `vault`'s
     ///      EarnShare, redeemed with `withdrawExact` into `token`, which is the vault asset or, only for
@@ -57,7 +57,7 @@ contract SendSettler is ISpendSettler {
     error InvalidPool();
     error InvalidRoutePair();
     error InvalidVault();
-    error NothingSettled();
+    error NothingSpent();
     error Reentrancy();
     error ResidualBalance(address token);
     error TokenCallFailed();
@@ -67,7 +67,7 @@ contract SendSettler is ISpendSettler {
     error ZeroAddress();
 
     /// @notice A send settled. Carries no Zone sender commitment or Zone account.
-    event SendSettled(
+    event Sent(
         bytes32 indexed ref,
         address indexed to,
         address inputToken,
@@ -84,7 +84,7 @@ contract SendSettler is ISpendSettler {
         locked = 1;
     }
 
-    /// @param convertVault_ The vault whose asset converts at par, or zero for a settler that only sends
+    /// @param convertVault_ The vault whose asset converts at par, or zero for a spender that only sends
     ///        and redeems.
     /// @param pool_ The pool pairing that asset with one other stablecoin of equal decimals.
     /// @param customerId_ The pool customer identifier. All three are set, or all three are zero.
@@ -119,13 +119,13 @@ contract SendSettler is ISpendSettler {
         assetIsBase = isBase;
     }
 
-    /// @inheritdoc ISpendSettler
+    /// @inheritdoc ISpender
     /// @dev `data` is `abi.encode(Send)`.
-    function settle(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
-        _settle(token, maxInput, abi.decode(data, (Send)));
+    function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
+        _spendFrom(token, maxInput, abi.decode(data, (Send)));
     }
 
-    function _settle(address token, uint256 maxInput, Send memory send) private {
+    function _spendFrom(address token, uint256 maxInput, Send memory send) private {
         if (send.to == address(0) || send.token == address(0)) revert ZeroAddress();
         if (send.amount == 0 || maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
         if (send.to == address(this)) revert ZeroAddress();
@@ -156,14 +156,14 @@ contract SendSettler is ISpendSettler {
             }
             _safeApprove(token, send.vault, maxInput);
             if (!converts && payee == send.to) {
-                // Every entry point is nonReentrant; the lock is released only after settle returns.
+                // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
                 // forge-lint: disable-next-line(reentrancy-no-eth)
                 IEarnVault(send.vault).withdrawExact(send.amount, send.to, maxInput);
             } else {
                 // Redeemed here first when it converts, or when `to` is virtual: Earn's engines measure the
-                // literal receiver, which a virtual address never is, so this settler transfers to it instead.
+                // literal receiver, which a virtual address never is, so this spender transfers to it instead.
                 uint256 assetBefore = IERC20Like(asset).balanceOf(address(this));
-                // Every entry point is nonReentrant; the lock is released only after settle returns.
+                // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
                 // forge-lint: disable-next-line(reentrancy-no-eth)
                 IEarnVault(send.vault).withdrawExact(send.amount, address(this), maxInput);
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore + send.amount) {
@@ -180,14 +180,14 @@ contract SendSettler is ISpendSettler {
         if (IERC20Like(send.token).balanceOf(payee) != paidBefore + send.amount) revert DestinationNotPaid();
 
         uint256 unused = IERC20Like(token).balanceOf(address(this)) - baseline;
-        if (unused >= maxInput) revert NothingSettled();
+        if (unused >= maxInput) revert NothingSpent();
         if (unused != 0) _safeTransfer(token, msg.sender, unused);
         if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
         if (send.token != token && IERC20Like(send.token).balanceOf(address(this)) != outputBaseline) {
             revert ResidualBalance(send.token);
         }
 
-        emit SendSettled(send.ref, send.to, token, send.token, send.amount, maxInput - unused, unused);
+        emit Sent(send.ref, send.to, token, send.token, send.amount, maxInput - unused, unused);
     }
 
     /// @notice The pool's par price, or zero without a pool.
@@ -213,11 +213,11 @@ contract SendSettler is ISpendSettler {
     }
 
     /// @dev Swaps exactly `amount` of `convertAsset` for exactly `amount` of `parToken` at the oracle's par
-    ///      price, into this settler; any other price or output reverts.
+    ///      price, into this spender; any other price or output reverts.
     function _convertAtPar(uint256 amount) private {
         uint256 outBefore = IERC20Like(parToken).balanceOf(address(this));
         _safeApprove(convertAsset, address(pool), amount);
-        // Every entry point is nonReentrant; the lock is released only after settle returns.
+        // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
         // forge-lint: disable-start(reentrancy-no-eth)
         pool.swapExactInput(
             assetIsBase, amount, amount, address(this), customerId, bytes32(0), block.timestamp, parPrice(), 0, 0
@@ -237,7 +237,7 @@ contract SendSettler is ISpendSettler {
     }
 
     function _callOptionalReturn(address token, bytes memory data) private {
-        // Every entry point is nonReentrant; the lock is released only after settle returns.
+        // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         (bool ok, bytes memory returnData) = token.call(data);
         if (!ok) revert TokenCallFailed();

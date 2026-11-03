@@ -37,20 +37,20 @@ export const zoneTokenAbi = parseAbi([
   'function transfer(address to, uint256 amount) returns (bool)',
   'error Unauthorized()',
 ])
-/** `CardSpend`: one card spend, the same for a public spend and a private one's settler data. */
+/** `CardSpend`: one card spend, the same for a public spend and a private one's spender data. */
 export const cardSpendType = parseAbiParameters([
   'CardSpend spend',
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
 ])
 /**
- * The CardSpender's public spend and its events: `CardSpent` for every spend, and `SpendSettled`
+ * The CardSpender's public spend and its events: `CardSpent` for every spend, and `InputSpent`
  * for a private one, with the input accounting the router sees.
  */
 export const programAbi = parseAbi([
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
   'function spend(CardSpend s)',
   'event CardSpent(bytes32 indexed ref, address indexed payer, address indexed destination, address token, uint256 amount, uint256 fromVault, uint256 sharesUsed, bool isPrivate)',
-  'event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',
+  'event InputSpent(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',
 ])
 /** The selector a public spend's access key is scoped to on the program. */
 export const PROGRAM_SPEND_SELECTOR =
@@ -62,7 +62,7 @@ export const tempoSpendAbi = parseAbi([
 /** `ZoneRouter.SpendData`, the callback data of the router's Spend op. */
 export const spendDataType = parseAbiParameters([
   'SpendData data',
-  'struct SpendData { uint8 op; address settler; uint128 maxInput; bytes settlerData; SpendReturn zoneReturn; }',
+  'struct SpendData { uint8 op; address spender; uint128 maxInput; bytes spenderData; SpendReturn zoneReturn; }',
   'struct SpendReturn { uint256 keyIndex; DepositPayload encrypted; address refundRecipient; uint128 maxDepositFee; }',
   'struct DepositPayload { bytes32 ephemeralPubkeyX; uint8 ephemeralPubkeyYParity; bytes ciphertext; bytes12 nonce; bytes16 tag; }',
 ])

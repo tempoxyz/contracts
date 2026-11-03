@@ -40,7 +40,7 @@ abstract contract PrivateSpendFixture is AccessKeys {
         _deployZone(closedLoop);
         // From its artifact: inlining the factory, which nests the router, would bloat every test.
         routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
-        zoneRouter = _deployRouter(_settlers(address(program)));
+        zoneRouter = _deployRouter(_spenders(address(program)));
 
         vm.fee(BASE_FEE);
         vm.startPrank(zoneAdmin);
@@ -58,18 +58,18 @@ abstract contract PrivateSpendFixture is AccessKeys {
     // Helpers
     // ------------------------------------------------------------------
 
-    /// @notice Deploys the Spend-mode router for this Zone and `settlers` through the factory and
+    /// @notice Deploys the Spend-mode router for this Zone and `spenders` through the factory and
     ///         registers it as the Zone's callback gateway.
-    function _deployRouter(address[] memory settlers) internal returns (ZoneRouter router) {
+    function _deployRouter(address[] memory spenders) internal returns (ZoneRouter router) {
         ZoneRouter.Mode memory mode;
         mode.zoneId = ZONE_ID;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = settlers;
+        mode.spenders = spenders;
         router = ZoneRouter(routerFactory.deploy(mode));
         _zoneRegisterGateway(address(router));
     }
 
-    function _settlers(address one) internal pure returns (address[] memory list) {
+    function _spenders(address one) internal pure returns (address[] memory list) {
         list = new address[](1);
         list[0] = one;
     }
@@ -122,7 +122,7 @@ abstract contract PrivateSpendFixture is AccessKeys {
         s.maxShares = maxShares;
     }
 
-    /// @notice Callback data for `spend` in the stablecoin, through the program as the router's settler.
+    /// @notice Callback data for `spend` in the stablecoin, through the program as the router's spender.
     function _callback(CardSpend memory spend) internal returns (bytes memory) {
         spend.token = address(usd);
         return _callbackAsIs(spend);
@@ -136,15 +136,15 @@ abstract contract PrivateSpendFixture is AccessKeys {
         return _spendData(address(program), maxInput, spend);
     }
 
-    /// @notice Spend-op callback data: `settler_` may use at most `maxInput` to settle `spend`, and
+    /// @notice Spend-op callback data: `spender_` may use at most `maxInput` to settle `spend`, and
     ///         the router returns the rest of the withdrawal to alice in the Zone.
-    function _spendData(address settler_, uint256 maxInput, CardSpend memory spend) internal returns (bytes memory) {
+    function _spendData(address spender_, uint256 maxInput, CardSpend memory spend) internal returns (bytes memory) {
         return abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: settler_,
+                spender: spender_,
                 maxInput: uint128(maxInput),
-                settlerData: abi.encode(spend),
+                spenderData: abi.encode(spend),
                 zoneReturn: _zoneReturn(alice)
             })
         );

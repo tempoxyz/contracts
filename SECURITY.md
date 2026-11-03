@@ -19,7 +19,7 @@ Keep the report confidential until we have confirmed a fix and agreed on disclos
 In scope:
 
 - Tempo Earn: the contracts in [`earn/src/`](earn/src/), except `earn/src/demo/`;
-- the Zone router: the contracts in [`zone-router/src/`](zone-router/src/), including its settlers;
+- the Zone router: the contracts in [`zone-router/src/`](zone-router/src/), including its spenders;
 - card spend: [`cards/src/`](cards/src/), the provider-agnostic core and our code for each provider
   (Bridge's "TS" handler and `BridgeProvider`, Rain's `RainProvider`); and
 - the deployment tooling: [`deployments/`](deployments/), each project's `script/`, and the
