@@ -4,6 +4,8 @@ pragma solidity ^0.8.36;
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
+import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
+
 import { CardSpend } from "../../src/core/CardSpend.sol";
 import { CardSpender } from "../../src/core/CardSpender.sol";
 import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
@@ -153,28 +155,6 @@ abstract contract CardSpenderBehavior is CoreEnv {
         _assertEmpty();
     }
 
-    /// @dev The program tells the provider the path: a destination open only to private spends refuses a
-    ///      public one, and the reverse.
-    function test_providerSeesWhichPathASpendTakes() public {
-        address privateOnly = makeAddr("private-only");
-        mock.setDestination(privateOnly, false, true);
-        CardSpend memory s = _stableSpend(privateOnly, 0, 1e6, "path");
-        vm.prank(alice);
-        usd.approve(address(program), 1e6);
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, privateOnly));
-        program.spend(s);
-        _routerSpend(address(usd), 1e6, s);
-        assertEq(usd.balanceOf(privateOnly), 1e6, "a private spend reaches it");
-
-        CardSpend memory p = _stableSpend(publicWallet, 0, 1e6, "path.2");
-        vm.prank(router);
-        usd.transfer(address(program), 1e6);
-        vm.prank(router);
-        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, publicWallet));
-        program.spendFrom(address(usd), 1e6, abi.encode(p));
-    }
-
     function test_revert_spendFrom_wrongInputToken() public {
         CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "input");
         vm.prank(router);
@@ -234,16 +214,6 @@ abstract contract CardSpenderBehavior is CoreEnv {
         vm.expectRevert(CardSpender.NotRouter.selector);
         program.spendFrom(address(usd), 1e6, abi.encode(s));
         assertEq(usd.balanceOf(address(program)), 1e6, "the stray balance stays");
-    }
-
-    /// @dev A private spend names no cardholder, so the provider is asked with no payer.
-    function test_privateSpend_asksTheProviderWithNoPayer() public {
-        CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "zero.payer");
-        vm.expectCall(
-            address(mock),
-            abi.encodeCall(ICardProvider.isAuthorizedDestination, (address(0), pooledWallet, address(usd), 0, true))
-        );
-        _routerSpend(address(usd), 1e6, s);
     }
 
     /// @dev A one-unit seed of each token is the baseline every spend leaves untouched, public or private,
@@ -460,6 +430,38 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
         return false;
     }
 
+    /// @dev The program tells the provider the path: a destination open only to private spends refuses a
+    ///      public one, and the reverse.
+    function test_providerSeesWhichPathASpendTakes() public {
+        address privateOnly = makeAddr("private-only");
+        mock.setDestination(privateOnly, false, true);
+        CardSpend memory s = _stableSpend(privateOnly, 0, 1e6, "path");
+        vm.prank(alice);
+        usd.approve(address(program), 1e6);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, privateOnly));
+        program.spend(s);
+        _routerSpend(address(usd), 1e6, s);
+        assertEq(usd.balanceOf(privateOnly), 1e6, "a private spend reaches it");
+
+        CardSpend memory p = _stableSpend(publicWallet, 0, 1e6, "path.2");
+        vm.prank(router);
+        usd.transfer(address(program), 1e6);
+        vm.prank(router);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, publicWallet));
+        program.spendFrom(address(usd), 1e6, abi.encode(p));
+    }
+
+    /// @dev A private spend names no cardholder, so the provider is asked with no payer.
+    function test_privateSpend_asksTheProviderWithNoPayer() public {
+        CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "zero.payer");
+        vm.expectCall(
+            address(mock),
+            abi.encodeCall(ICardProvider.isAuthorizedDestination, (address(0), pooledWallet, address(usd), 0, true))
+        );
+        _routerSpend(address(usd), 1e6, s);
+    }
+
     function test_paysDirectly() public view {
         assertEq(program.PAYOUT_TARGET(), address(0));
     }
@@ -575,6 +577,24 @@ contract CardSpenderPayoutTest is CardSpenderBehavior {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, 0, 3e6));
         program.spend(s);
+    }
+
+    /// @dev Fees accrued since the last accrual are minted as EarnShare when the vault next accrues, which
+    ///      would otherwise shrink the drop in supply a private Earn payout is measured against.
+    function test_privateEarnPayout_withFeesAccrued() public {
+        FeeConfig memory fees;
+        fees.fixedFeeCount = 1;
+        fees.fixedFees[0].account = makeAddr("earn.fee-recipient");
+        fees.fixedFees[0].rateBps = 1000;
+        earnVault.setFeeConfig(fees);
+        _depositEarn(router, 100e6);
+        vm.warp(block.timestamp + 90 days);
+        usd.mint(address(venue), usd.balanceOf(address(venue)) * 200 / 10_000);
+
+        CardSpend memory e = _earnSpend(pooledWallet, 0, 5e6, 5e6, "fees.earn");
+        _routerSpend(address(earnShare), e.maxShares, e);
+        assertEq(usd.balanceOf(pooledWallet), 5e6);
+        _assertEmpty();
     }
 
     function test_warmVault_doesNothingThroughATarget() public {
@@ -704,6 +724,7 @@ contract CardSpenderVirtualDestinationTest is CoreEnv {
         if (payout) {
             target = new MockPayoutTarget();
             mock = new MockPayoutProvider(address(target));
+            target.setProvider(mock);
         } else {
             mock = new MockProvider();
         }

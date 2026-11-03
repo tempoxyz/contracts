@@ -247,8 +247,8 @@ only bounces, so they show up when Bridge simulates the callback or traces the s
 
 - **The factory and clone:** `FactoryPaused`, `SpenderHandlerDisabled`, `SpenderHandlerNotAllowed`
   and `PrefixUnknown`.
-- **The program:** `WrongProgram`, `ProgramPaused`, `InvalidAmount`, `DestinationNotAuthorized`,
-  `VaultNotAllowed`, `IncorrectAssetForVault`, `DestinationNotCredited`, `InputNotConsumed` (the clone
+- **The program:** `WrongProgram`, `InvalidAmount`, `DestinationNotAuthorized` (a destination the program
+  itself cannot pay), `DestinationNotCredited`, `InputNotConsumed` (the clone
   kept or skipped part of the input) and `Reentrancy`; on `spendFrom` also `NotRouter`,
   `WrongInputToken`, `InsufficientInput`, `NothingSpent` and `ResidualBalance`.
 - **The handler:** `WrongProgram`, `DestinationNotAuthorized`, `DestinationNotCredited`,

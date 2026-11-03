@@ -4,6 +4,11 @@ pragma solidity ^0.8.36;
 import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import {
+    IZoneFactory as IRouterZoneFactory,
+    ZONE_FACTORY_ADDRESS as ROUTER_ZONE_FACTORY,
+    ZoneInfo as RouterZoneInfo
+} from "tempo-earn/interfaces/external/tempo/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
@@ -106,7 +111,8 @@ contract BridgeProgramTest is AccessKeys {
         bridgeFactory.pause();
         _mintUsd(router, AMOUNT);
         bytes memory data = abi.encode(_stableSpend(AMOUNT));
-        vm.expectRevert(CardSpender.ProgramPaused.selector);
+        // The clone refuses it before any funds move.
+        vm.expectRevert(bytes4(keccak256("FactoryPaused()")));
         caller.spendFrom(program, address(usd), AMOUNT, data);
 
         vm.prank(bridgeGovernor);
@@ -238,6 +244,14 @@ contract BridgeProgramTest is AccessKeys {
         mode.enabledOps = uint8(1 << 2);
         mode.spenders = new address[](1);
         mode.spenders[0] = address(program);
+        // A router reads its Zone's Portal when it is created.
+        RouterZoneInfo memory zone;
+        zone.zoneId = 7;
+        zone.portal = 0x5Ad0000000000000000000000000000000000007;
+        vm.mockCall(ROUTER_ZONE_FACTORY, abi.encodeCall(IRouterZoneFactory.zones, (7)), abi.encode(zone));
+        vm.mockCall(
+            ROUTER_ZONE_FACTORY, abi.encodeCall(IRouterZoneFactory.isZonePortal, (zone.portal)), abi.encode(true)
+        );
         address real = routerFactory.deploy(mode);
         address foreign = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode);
         _mintUsd(real, AMOUNT);

@@ -141,10 +141,14 @@ contract CardSpender is ISpender {
         uint256 expected;
         if (PAYOUT_TARGET == address(0)) {
             _spendDirect(s, maxInput, payee);
+        } else if (s.fromVault == 0) {
+            // A payout uses exactly the stablecoin spend, so a target cannot keep the rest as a buffer.
+            expected = s.amount;
+            _payout(s, token, address(0));
         } else {
-            // A payout uses exactly the stablecoin spend, or at most the share cost quoted before it, so a
-            // target cannot keep the rest of the input as a buffer.
-            expected = s.fromVault == 0 ? s.amount : ITempoEarnVault(s.vault).previewWithdraw(s.fromVault);
+            // At most the share cost quoted before the payout: a target can neither keep the rest of the input
+            // nor burn more shares than the amount costs and keep the surplus assets.
+            expected = ITempoEarnVault(s.vault).previewWithdraw(s.fromVault);
             _payout(s, token, address(0));
         }
 
@@ -218,14 +222,17 @@ contract CardSpender is ISpender {
     /// @dev Checks `s` and returns its payee: who a transfer to `s.destination` credits.
     function _check(CardSpend memory s, address payer, bool isPrivate) private view returns (address payee) {
         if (s.program != address(this)) revert WrongProgram(s.program);
-        if (paused()) revert ProgramPaused();
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
-        if (!PROVIDER.isAuthorizedDestination(payer, s.destination, s.token, s.destinationHint, isPrivate)) {
-            revert DestinationNotAuthorized(s.destination);
-        }
         payee = _payee(s.destination);
         // The program's own balance is the baseline it measures input against, so it never pays itself.
         if (payee == address(0) || payee == address(this)) revert DestinationNotAuthorized(s.destination);
+        // A payout target enforces the provider's pause, destination and vault rules in the same call
+        // (ICardProviderPayout), so asking the provider first would only repeat them.
+        if (PAYOUT_TARGET != address(0)) return payee;
+        if (paused()) revert ProgramPaused();
+        if (!PROVIDER.isAuthorizedDestination(payer, s.destination, s.token, s.destinationHint, isPrivate)) {
+            revert DestinationNotAuthorized(s.destination);
+        }
         if (s.fromVault != 0) {
             if (!PROVIDER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
             if (ITempoEarnVault(s.vault).asset() != s.token) revert IncorrectAssetForVault();

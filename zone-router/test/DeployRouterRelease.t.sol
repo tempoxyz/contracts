@@ -9,6 +9,7 @@ import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
 import { SendSpender } from "../src/spenders/SendSpender.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
+import { IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneInfo } from "tempo-earn/interfaces/external/tempo/IZone.sol";
 
 /// @dev Runs the router's release entry points as Zone Router Release does, with a throwaway deployer key.
 contract DeployRouterReleaseTest is Test {
@@ -16,6 +17,7 @@ contract DeployRouterReleaseTest is Test {
     address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
     bytes32 internal constant RELEASE_SALT = keccak256("tempoxyz/earn shared factory release");
     uint256 internal constant DEPLOYER_KEY = 0xA11CE;
+    address internal constant ZONE_7_PORTAL = 0x5Ad0000000000000000000000000000000000007;
 
     DeployRouterReleaseScript internal script;
 
@@ -23,6 +25,12 @@ contract DeployRouterReleaseTest is Test {
         vm.setEnv("FOUNDRY_PROFILE", "deploy");
         vm.setEnv("DEPLOYER_PRIVATE_KEY", vm.toString(DEPLOYER_KEY));
         script = new DeployRouterReleaseScript();
+        // A router reads its Zone's Portal from the Zone factory when it is created.
+        ZoneInfo memory zone;
+        zone.zoneId = 7;
+        zone.portal = ZONE_7_PORTAL;
+        vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (7)), abi.encode(zone));
+        vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.isZonePortal, (ZONE_7_PORTAL)), abi.encode(true));
     }
 
     function testZoneRouterFactoryIsDeterministicAndReused() public {
@@ -86,6 +94,7 @@ contract DeployRouterReleaseTest is Test {
         );
         assertTrue(factory.isRouter(address(router)));
         assertEq(router.spenders(), mode.spenders);
+        assertEq(router.portal(), ZONE_7_PORTAL);
         assertEq(address(script.zoneRouter(block.chainid, factory, mode)), address(router));
     }
 

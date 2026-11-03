@@ -81,11 +81,19 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.InvalidSourcePortal.selector);
         router.onWithdrawalReceived(ZONE_A, address(portalB), bytes32(0), address(alternate), uint128(ONE), data);
+    }
 
+    /// @notice The Portal is read once, at deployment: a router for a Zone without a registered Portal is refused.
+    function testRefusesAZoneWithoutARegisteredPortal() public {
+        assertEq(zoneRouter.portal(), address(portalA));
+        // The Portal is checked before the rest of the mode.
+        ZoneRouter.Mode memory mode = _earnMode(ZONE_A, address(alternate), address(0), bytes32(0));
         zoneFactory.setPortal(address(portalA), false);
-        vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.InvalidSourcePortal.selector);
-        router.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
+        new ZoneRouter(mode);
+        zoneFactory.setZone(ZONE_A, address(0));
+        vm.expectRevert(ZoneRouter.InvalidSourcePortal.selector);
+        new ZoneRouter(mode);
     }
 
     function testRejectsDifferentCanonicalZone() public {

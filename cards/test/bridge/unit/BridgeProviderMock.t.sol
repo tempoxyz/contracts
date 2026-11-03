@@ -17,11 +17,18 @@ import { MockRouter, MockRouterFactory } from "../../core/harness/Mocks.sol";
 contract SpenderMockToken {
     mapping(address account => uint256) public balanceOf;
     mapping(address owner => mapping(address spender => uint256)) public allowance;
+    uint256 public totalSupply;
     address public stuck;
     bool public refuseApprovals;
 
     function mint(address to, uint256 amount) external {
         balanceOf[to] += amount;
+        totalSupply += amount;
+    }
+
+    function burn(uint256 amount) external {
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
     }
 
     function setStuck(address account) external {
@@ -54,11 +61,13 @@ contract SpenderMockToken {
 }
 
 /// @dev Stands in for a Bridge spender clone running the "TS" handler: `publicCall` pulls `consume` of the
-///      input from the caller and pays the destination `pay` of the spend's token from its own balance;
+///      input from the caller, burns the shares it took for an Earn spend (as the vault does) but `keep`, and pays
+///      the destination `pay` of the spend's token from its own balance;
 ///      `publicGetCall` answers "GV" with `vaultAnswer`, raw.
 contract MockClone {
     uint256 public consume;
     uint256 public pay;
+    uint256 public keep;
     bytes public lastCall;
     bytes public vaultAnswer;
     bool public getReverts;
@@ -66,6 +75,10 @@ contract MockClone {
     function configure(uint256 consume_, uint256 pay_) external {
         consume = consume_;
         pay = pay_;
+    }
+
+    function setKeep(uint256 keep_) external {
+        keep = keep_;
     }
 
     function setVaultAnswer(bytes calldata answer, bool reverts) external {
@@ -78,6 +91,7 @@ contract MockClone {
         Spend memory spend = abi.decode(data[4:], (Spend));
         address input = spend.fromVault == 0 ? spend.token : MockVault(spend.vault).earnShare();
         if (consume != 0) SpenderMockToken(input).transferFrom(msg.sender, address(this), consume);
+        if (spend.fromVault != 0 && consume > keep) SpenderMockToken(input).burn(consume - keep);
         if (pay != 0) SpenderMockToken(spend.token).transfer(spend.destination, pay);
     }
 
@@ -234,14 +248,12 @@ contract BridgeProviderMockTest is Test {
     }
 
     /// @notice A "TS" handler the factory would not route for the clone (disabled, or gated without it) stops
-    ///         spends as the pause does, so the program reports itself paused.
+    ///         spends as the pause does, so the program reports itself paused. The clone itself refuses the
+    ///         spend (BridgeProgram.t.sol runs that against Bridge's factory).
     function testPausedWhileTheFactoryRefusesTheHandler() public {
         factory.setHandlerRefused(true);
         assertTrue(provider.paused());
         assertTrue(program.paused());
-        _expectSpendRevert(
-            address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(CardSpender.ProgramPaused.selector)
-        );
         factory.setHandlerRefused(false);
         assertFalse(program.paused());
     }
@@ -364,25 +376,19 @@ contract BridgeProviderMockTest is Test {
         );
     }
 
-    function testRefusesADestinationTheFactoryDoesNotAuthorize() public {
+    /// @notice Through a payout target the program leaves the pause, destination and vault rules to the clone,
+    ///         which enforces them in the same call (BridgeProgram.t.sol), and asks the provider nothing.
+    function testLeavesTheProviderRulesToTheClone() public {
+        clone.configure(AMOUNT, 0);
         CardSpend memory spend = _spend(address(usd));
-        spend.destination = makeAddr("elsewhere");
-        _expectSpendRevert(
-            address(usd),
-            AMOUNT,
-            spend,
-            abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, spend.destination)
-        );
-    }
-
-    function testRefusesAVaultTheCloneDoesNotAllow() public {
-        clone.setVaultAnswer(abi.encode(abi.encode(false)), false);
-        CardSpend memory spend = _spend(address(usd));
-        spend.vault = address(vault);
-        spend.fromVault = AMOUNT;
-        _expectSpendRevert(
-            address(share), AMOUNT, spend, abi.encodeWithSelector(CardSpender.VaultNotAllowed.selector, address(vault))
-        );
+        vm.expectCall(address(provider), abi.encodeWithSelector(BridgeProvider.isAuthorizedDestination.selector), 0);
+        vm.expectCall(address(provider), abi.encodeWithSelector(BridgeProvider.paused.selector), 0);
+        usd.mint(router, AMOUNT);
+        vm.prank(router);
+        usd.transfer(address(program), AMOUNT);
+        vm.prank(router);
+        vm.expectRevert(CardSpender.DestinationNotCredited.selector);
+        program.spendFrom(address(usd), AMOUNT, abi.encode(spend));
     }
 
     function testRefusesAWrongInputToken() public {
@@ -469,8 +475,8 @@ contract BridgeProviderMockTest is Test {
     }
 
     /// @notice A private Earn spend uses at most the share cost quoted before the payout, so a clone cannot
-    ///         keep the rest of `maxInput` as a buffer.
-    function testRefusesAPayoutThatKeepsSharesAboveTheQuote() public {
+    ///         keep the rest of `maxInput` or burn more than the amount costs and keep the surplus.
+    function testRefusesAPayoutThatUsesSharesAboveTheQuote() public {
         clone.configure(50e6 + 1, AMOUNT);
         CardSpend memory spend = _spend(address(usd));
         spend.vault = address(vault);

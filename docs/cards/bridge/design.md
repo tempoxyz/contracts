@@ -199,7 +199,8 @@ independently.
 - `input`: `maxInput` plus change. When anything goes back, the change must be at least
   `depositFee + bouncebackFee + 1`, plus a margin for fees that rise before the batch. This applies
   on an access-enforced Zone and on each Earn spend.
-- `callbackGas`: 600,000 for stablecoin and 1,400,000 for Earn ([callback gas](#callback-gas)).
+- `callbackGas`: 300,000 for stablecoin and 550,000 for Earn, or 800,000 while the TF handler pulls from
+  the same vault, once the program is prepared ([callback gas](#callback-gas)).
   `fallbackRecipient` is the cardholder.
 - Fees: Bridge sponsors gas on the L1 and in the Zone. The outbox takes its withdrawal fee from
   Bridge's fee payer, in `inputToken`. The portal deposit fee comes from the change, up to
@@ -326,16 +327,17 @@ struct SpendReturn {
 The program's checks are the [core design's](../design.md#what-the-program-checks); for Bridge they
 are:
 
-- The `CardSpend` must name this program (`WrongProgram`). The program must not be paused: `paused()`
-  is `factory.paused()`, or true while the factory would not route "TS" for the clone (handler
-  disabled, or gated without the program), read through the provider contract (`ProgramPaused`). `amount` must be
-  more than zero and `fromVault` at most `amount` (`InvalidAmount`).
-- The destination must be authorized for `spenderId` in the factory (`DestinationNotAuthorized`), on
-  both paths: `BridgeProvider` ignores `isPrivate`, so Bridge governance must authorize only settlement
-  wallets every cardholder shares, which then serve private spends too.
-- An Earn spend's vault must be allowed in the clone, read through `publicGetCall "TS" "GV"`
-  (`VaultNotAllowed`), and hold `token` (`IncorrectAssetForVault`). These checks mirror the handler's,
-  so a spend Bridge would refuse is refused before funds move; the clone stays the authority.
+- The `CardSpend` must name this program (`WrongProgram`), `amount` must be more than zero and
+  `fromVault` at most `amount` (`InvalidAmount`).
+- The pause, the destination and the vault are the clone's to enforce, in the same call, so the program
+  does not ask `BridgeProvider` first: the clone refuses a paused factory (`FactoryPaused`) and a "TS"
+  handler it would not route for the program (`SpenderHandlerDisabled`, `SpenderHandlerNotAllowed`), and
+  the handler a destination the factory does not authorize for `spenderId` (`DestinationNotAuthorized`),
+  a vault the clone does not allow, and one that does not hold `token` (`VaultNotAllowed`,
+  `IncorrectAssetForVault`). The program's `paused()` view still reads `factory.paused()` and the "TS"
+  routing through the provider, for Bridge's backend to check before it sends a spend.
+- Destinations serve both paths: the handler does not tell them apart, so Bridge governance must
+  authorize only settlement wallets every cardholder shares, which then serve private spends too.
 - The program pays through the clone (`BridgeProvider.CLONE`, read once in the program's constructor)
   with `publicCall "TS" "PS" abi.encode(Spend)` as the payer, so the clone's routing, pause and
   handler permissions apply, and the handler enforces `maxShares`.
@@ -349,7 +351,7 @@ are:
   (`InsufficientInput`) and uses its balance minus `maxInput` as its baseline. The clone must use some
   input (`NothingSpent`) and no more than `maxInput` (the balance check reverts): exactly `amount` of a
   stablecoin, and at most the `previewWithdraw(fromVault)` the program quoted before the call for shares
-  (`InputNotConsumed`), so a replaced handler cannot keep the rest. The program returns the unused input
+  (`InputNotConsumed`), so a replaced handler cannot keep the rest or over-burn and keep the surplus. The program returns the unused input
   to the caller and must end at its baseline (`ResidualBalance`). The provider is asked with no payer.
 - On both paths the destination must get exactly `amount` (`DestinationNotCredited`).
 - `spend` is permissionless. `spendFrom` accepts only a router the program's `ROUTER_FACTORY` deployed
@@ -524,17 +526,21 @@ returned to the Zone ([`PrivateSpendForkGas.t.sol`](../../../cards/test/bridge/f
 
 | Spend      | Program     | First spend (empty settlement wallet) | Later spend |
 | ---------- | ----------- | ------------------------------------- | ----------- |
-| Earn       | As deployed | 2.01M                                 | 1.25M       |
-| Stablecoin | As deployed | 1.21M                                 | 0.45M       |
-| Earn       | Prepared    | 1.25M                                 | 1.00M       |
-| Stablecoin | Prepared    | 0.70M                                 | 0.45M       |
+| Earn       | As deployed | 1.98M                                 | 1.22M       |
+| Stablecoin | As deployed | 1.19M                                 | 0.44M       |
+| Earn       | Prepared    | 0.75M                                 | 0.50M       |
+| Stablecoin | Prepared    | 0.44M                                 | 0.19M       |
 
 Most of the cost is Tempo's charge for each storage slot that goes from zero to nonzero (TIP-1000).
 So the router hands the program its input by transfer, not approval; the program's approval to the
 clone, the router's to the portal and the clone's to an allowed vault are standing maximum approvals;
-and the reentrancy locks are transient. The program's own balance slot is created and cleared on
-every spend (about 250k) unless it holds a one-unit seed of the token, which `spendFrom` (callable only
-by the program's routers) keeps as its baseline; the figures above are for an unseeded program.
+and the reentrancy locks are transient. A balance that a spend fills and empties is created and cleared
+on every spend (about 250k each) unless it holds a one-unit seed: the program's (which `spendFrom`,
+callable only by the program's routers, keeps as its baseline), the router's, the clone's EarnShare,
+and the vault's own EarnShare, since `withdrawExact` pulls the shares it burns into the vault. A
+prepared program is warmed and holds every seed ([deploy](deploy.md#6-prepare-the-program-for-low-callback-gas)).
+Returning change costs about 57k more; an access-enforced Zone such as Zone 2 requires every callback
+to deposit back (`CallbackDidNotReturnToZone`), so a spend there always returns some.
 
 The Zone sequencer packs withdrawals into a 10M gas batch, reserving 0.5M per transaction and 1.75M
 plus the requested callback gas per spend:
@@ -545,10 +551,10 @@ plus the requested callback gas per spend:
 | up to 1.42M            | 3                    |
 | up to 0.63M            | 4                    |
 
-With a prepared program whose settlement wallet already holds each token, Bridge requests about 0.6M
-for a stablecoin spend (4 per batch) and 1.4M for an Earn spend (3 per batch). The Earn figure also
-covers the vault approval the TF handler may have cleared. A settlement wallet with no balance
-needs about 250k more.
+With a prepared program whose settlement wallet already holds each token, Bridge requests about 0.3M
+for a stablecoin spend and 0.55M for an Earn spend, 4 per batch each. While the TF handler pulls from
+the same vault it clears the clone's vault approval, about 250k more, so request 0.8M for Earn then
+(3 per batch). A settlement wallet with no balance needs about 250k more.
 
 A public spend from stablecoin, approving the program, spending and clearing the approval in one
 transaction, used 135,854 gas on a local L1 signed by the cardholder's own key and 153,007 signed by an

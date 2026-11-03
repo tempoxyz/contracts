@@ -214,7 +214,7 @@ contract PrivateSpendForkGasTest is Test {
     function _measure(bool earn, uint256 dollars, bool prepared) internal {
         Row memory row;
         row.kind = earn ? "Earn (EarnShare -> OUSD)" : "Stablecoin";
-        row.setup = prepared ? "warmed, clone holds 1 EarnShare" : "as deployed";
+        row.setup = prepared ? "prepared: warmed and seeded" : "as deployed";
         row.dollars = dollars;
         uint256 amount = dollars * 1e6;
 
@@ -274,6 +274,8 @@ contract PrivateSpendForkGasTest is Test {
             maxInput = spend.maxShares;
             token = Mainnet.EARN_SHARE;
         }
+        // Zone 2 enforces access, so its portal requires every callback to deposit back into the Zone: a
+        // withdrawal carries change above maxInput even when the spend uses all of it.
         input = uint128(maxInput + CHANGE + _portalFees());
         data = abi.encode(
             ZoneRouter.SpendData({
@@ -319,22 +321,30 @@ contract PrivateSpendForkGasTest is Test {
     }
 
     function _assertNothingHeld(address token) internal view {
-        assertEq(ITIP20(token).balanceOf(address(router)), 0, "router");
-        assertEq(ITIP20(token).balanceOf(address(program)), 0, "program");
+        // At most the one-unit seed a prepared program and router keep.
+        assertLe(ITIP20(token).balanceOf(address(router)), 1, "router");
+        assertLe(ITIP20(token).balanceOf(address(program)), 1, "program");
         assertLe(ITIP20(token).balanceOf(clone), 1, "clone");
     }
 
-    /// @dev A program set up ahead of its first spend: the router's and program's standing approvals
-    ///      warmed (the clone's to the vault is set when governance allows it), and 1 EarnShare unit
-    ///      in the clone, which holds the shares an Earn spend redeems, so that balance slot stays set.
+    /// @dev A program set up ahead of its first spend, as docs/cards/bridge/deploy.md step 6 describes: the
+    ///      router's and program's standing approvals warmed (the clone's to the vault is set when governance
+    ///      allows it), and one unit of each token in the program and router, and of the EarnShare in the
+    ///      clone and the vault, so no spend creates those balance slots.
     function _prepare() internal {
         address[2] memory tokens = [Mainnet.ZONE_STABLECOIN, Mainnet.EARN_SHARE];
+        vm.startPrank(Mainnet.PORTAL);
+        for (uint256 i; i < tokens.length; ++i) {
+            ITIP20(tokens[i]).transfer(address(program), 1);
+            ITIP20(tokens[i]).transfer(address(router), 1);
+        }
+        ITIP20(Mainnet.EARN_SHARE).transfer(clone, 1);
+        ITIP20(Mainnet.EARN_SHARE).transfer(Mainnet.EARN_VAULT, 1);
+        vm.stopPrank();
         for (uint256 i; i < tokens.length; ++i) {
             router.warm(tokens[i]);
             program.warm(tokens[i]);
         }
-        vm.prank(Mainnet.PORTAL);
-        ITIP20(Mainnet.EARN_SHARE).transfer(clone, 1);
     }
 
     // ------------------------------------------------------------------

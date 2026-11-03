@@ -72,7 +72,9 @@ contract CardsE2EDeploy is Script, RainStack {
         ZoneRouterFactory routerFactory = new ZoneRouterFactory();
         CardFactory cardFactory = new CardFactory(address(routerFactory));
         address program = cardFactory.deploy("cards-e2e.rain", ICardProvider(address(provider)));
-        address router = routerFactory.deploy(CardSpendMode.forSpender(uint32(zoneIdValue), program));
+        // A router reads its Zone's Portal when it is created, so the E2E deploys it once the Zone exists;
+        // its address is fixed by the mode already.
+        address router = routerFactory.predict(CardSpendMode.forSpender(uint32(zoneIdValue), program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
         address zoneToken = StdPrecompiles.TIP20_FACTORY
             .createToken(

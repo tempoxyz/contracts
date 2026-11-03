@@ -65,7 +65,9 @@ contract ZoneE2EDeploy is Script {
         CardFactory cardFactory = new CardFactory(address(routerFactory));
         BridgeProvider provider = new BridgeProvider(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
         address program = cardFactory.deploy(SPENDER_ID, ICardProvider(address(provider)));
-        address router = routerFactory.deploy(SpendMode.forSpender(zoneId, program));
+        // A router reads its Zone's Portal when it is created, so the E2E deploys it once the Zone exists;
+        // its address is fixed by the mode already.
+        address router = routerFactory.predict(SpendMode.forSpender(zoneId, program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
         address zoneToken = StdPrecompiles.TIP20_FACTORY
             .createToken(

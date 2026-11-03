@@ -132,10 +132,11 @@ contract RolesTest is PrivateSpendFixture {
     function test_pauseStopsPublicSpendUntilGovernanceUnpauses() public {
         vm.prank(bridgePauser);
         bridgeFactory.pause();
-        // The program reads the factory's pause through its provider, before the clone would.
+        // The program's view reads the factory's pause through its provider.
         assertTrue(program.paused(), "program paused with the factory");
+        // The clone refuses the spend.
         vm.prank(alice);
-        vm.expectRevert(CardSpender.ProgramPaused.selector);
+        vm.expectRevert(bytes4(keccak256("FactoryPaused()")));
         program.spend(_publicSpend(10e6));
         // The clone refuses on its own as well.
         vm.prank(alice);
@@ -168,9 +169,10 @@ contract RolesTest is PrivateSpendFixture {
         vm.prank(bridgeGovernor);
         bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Disabled);
 
+        // The program reads the disabled handler as a pause, and the clone refuses before any funds move.
+        assertTrue(program.paused());
         vm.prank(alice);
-        // The program reads the disabled handler as a pause, before any funds move.
-        vm.expectRevert(CardSpender.ProgramPaused.selector);
+        vm.expectRevert(bytes4(keccak256("SpenderHandlerDisabled()")));
         program.spend(_publicSpend(10e6));
         vm.prank(bridgeGovernor);
         vm.expectRevert(SpenderFactoryErrorsAndEvents.SpenderHandlerDisabled.selector);

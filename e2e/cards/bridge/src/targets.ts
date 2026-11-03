@@ -26,12 +26,14 @@ import {
   pad,
   parseAbi,
   zeroAddress,
+  zeroHash,
   type Account as ViemAccount,
   type Address,
   type Hex,
   type Transport,
 } from 'viem'
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts'
+import { zoneRouterFactoryAbi } from '@tempoxyz/contracts/abis'
 import { createClient as createTempoClient, Store, http as zoneHttp } from 'viem/tempo'
 import { tempoModerato } from 'viem/tempo/chains'
 
@@ -423,13 +425,19 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
     const program = { ...deployed, settlement, programWallet }
     step(
       2,
-      `Bridge program (clone ${program.clone}), CardSpender (${program.program}) and Spend ZoneRouter (${program.router}) deployed on L1`,
+      `Bridge program (clone ${program.clone}) and CardSpender (${program.program}) deployed on L1`,
     )
 
     zone = await Network.startZone({
       l1,
       initialToken: deployed.zoneToken,
       privateKey: zoneAdminPk,
+    })
+    await deploySpendRouter(l1Public, l1Wallet(privateKeyToAccount(deployerPk)), {
+      routerFactory: program.routerFactory,
+      program: program.program,
+      router: program.router,
+      zoneId: 1,
     })
     step(3, `Tempo Zone 1 at ${zone.publicRpcUrl}, portal ${zone.portal}`)
 
@@ -852,6 +860,13 @@ export async function hosted(
       programWallet,
       zoneId: moderato.zone.id,
     })
+    // The script only predicts the router; Moderato's Zone exists, so deploy it now.
+    await deploySpendRouter(l1Public, l1Wallet(privateKeyToAccount(deployerPk)), {
+      routerFactory: deployed.routerFactory,
+      program: deployed.program,
+      router: deployed.router,
+      zoneId: moderato.zone.id,
+    })
     // The deployer doubles as the program's refund account: admitted, and a key the test holds.
     const refundRecipient = privateKeyToAccount(deployerPk).address
     writeFileSync(
@@ -1128,6 +1143,41 @@ async function prepareEarn(
  * `recovered` marks sends whose receipt was read back by hash: their time includes up to one 100 ms
  * poll.
  */
+/**
+ * Deploys a card program's Spend-mode router (Spend only, the program its one spender) through its factory.
+ * A router reads its Zone's Portal when it is created, so this runs once the Zone exists; the deploy scripts
+ * predicted its address, which this checks.
+ */
+export async function deploySpendRouter(
+  l1Public: PublicClient,
+  wallet: WalletClient,
+  options: { routerFactory: Address; program: Address; router: Address; zoneId: number },
+) {
+  const mode = {
+    zoneId: options.zoneId,
+    enabledOps: 4,
+    earnVault: zeroAddress,
+    privateAsset: zeroAddress,
+    pool: zeroAddress,
+    customerId: zeroHash,
+    spenders: [options.program],
+  } as const
+  await sendL1Sync(wallet, l1Public, [
+    {
+      to: options.routerFactory,
+      data: encodeFunctionData({ abi: zoneRouterFactoryAbi, functionName: 'deploy', args: [mode] }),
+    },
+  ])
+  const deployed = await l1Public.readContract({
+    address: options.routerFactory,
+    abi: zoneRouterFactoryAbi,
+    functionName: 'isRouter',
+    args: [options.router],
+  })
+  if (!deployed)
+    throw new Error(`router ${options.router} was not deployed by ${options.routerFactory}`)
+}
+
 export async function sendL1Sync(
   wallet: WalletClient,
   l1Public: PublicClient,

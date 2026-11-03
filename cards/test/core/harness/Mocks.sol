@@ -7,6 +7,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "zone-router/interfaces/IAddressRegistry.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { ICardProvider, ICardProviderPayout } from "../../../src/core/interfaces/ICardProvider.sol";
 import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 
@@ -50,7 +51,8 @@ contract MockProvider is ICardProvider {
     }
 }
 
-/// @notice A provider's own payout contract, shaped like Bridge's clone and "TS" handler: it pays a spend from
+/// @notice A provider's own payout contract, shaped like Bridge's clone and "TS" handler: it enforces its
+///         provider's pause, destination and vault rules, as `ICardProviderPayout` requires, then pays a spend from
 ///         its caller, stablecoin by `transferFrom` and Earn by pulling the share cost, redeeming it and
 ///         returning the rest. `mode` makes it misbehave.
 contract MockPayoutTarget {
@@ -66,12 +68,18 @@ contract MockPayoutTarget {
     }
 
     Mode public mode;
+    ICardProvider public provider;
 
     function setMode(Mode mode_) external {
         mode = mode_;
     }
 
+    function setProvider(ICardProvider provider_) external {
+        provider = provider_;
+    }
+
     function pay(CardSpend calldata s) external {
+        _enforce(s);
         if (mode == Mode.PayNothing) return;
         if (mode == Mode.PayFromOwn) {
             SafeTransferLib.safeTransfer(s.token, s.destination, s.amount);
@@ -93,6 +101,19 @@ contract MockPayoutTarget {
         uint256 burned = v.withdrawExact(s.fromVault, s.destination, required);
         if (burned < required) SafeTransferLib.safeTransfer(share, msg.sender, required - burned);
         if (mode == Mode.KeepSurplus) _keepAll(share);
+    }
+
+    /// @dev Like Bridge's handler, it does not tell public and private spends apart.
+    function _enforce(CardSpend calldata s) private view {
+        if (provider.paused()) revert CardSpender.ProgramPaused();
+        if (
+            !provider.isAuthorizedDestination(address(0), s.destination, s.token, s.destinationHint, false)
+                && !provider.isAuthorizedDestination(address(0), s.destination, s.token, s.destinationHint, true)
+        ) revert CardSpender.DestinationNotAuthorized(s.destination);
+        if (s.fromVault != 0) {
+            if (!provider.isAllowedVault(s.vault)) revert CardSpender.VaultNotAllowed(s.vault);
+            if (ITempoEarnVault(s.vault).asset() != s.token) revert CardSpender.IncorrectAssetForVault();
+        }
     }
 
     function _keepAll(address token) private {

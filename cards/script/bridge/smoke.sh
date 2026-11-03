@@ -122,12 +122,11 @@ expect_revert "CallNotAllowed" cast send "$CLONE" "publicCall(bytes)" 0x5453 \
   --tempo.access-key "$BRIDGE_KEY_PK" --tempo.root-account "$ALICE" --rpc-url "$RPC"
 echo "access key cannot call the clone itself"
 
-# Governance takes the program off the gated handler's allowlist: the program then reports itself
-# paused (the factory no longer routes "TS" for its clone), so the key's spend stops before any
-# transfer. The deployment scripts below put it back.
+# Governance takes the program off the gated handler's allowlist: the key's spend to a program
+# destination then stops at the factory's gate. The deployment scripts below put it back.
 submit() { cast send "$FACTORY" "$1" --private-key "$DEPLOYER_PK" --rpc-url "$RPC" >/dev/null; }
 submit "$(cast calldata "updateSpenderHandlerAllowlist(bytes2,bytes32,bool)" 0x5453 "$SPENDER_ID" false)"
-expect_revert "$(cast sig "ProgramPaused()")" spend 1000000 "$SETTLEMENT"
+expect_revert "$(cast sig "SpenderHandlerNotAllowed()")" spend 1000000 "$SETTLEMENT"
 echo "access key cannot spend through a gated handler the program is not allowlisted for"
 
 # Deploys a replacement "TS" handler with the deployment scripts, submits the calls they write
@@ -159,9 +158,8 @@ echo "access key stops at its 50 USD limit"
 
 # The private path's contracts on a real node: the program's CardSpender, released with release.sh
 # (the release CardFactory and BridgeProvider through the node's CREATE2 deployer, then
-# CardFactory.deploy) for LocalSmoke's ZoneRouterFactory, and its Spend-mode ZoneRouter, deployed
-# through that factory as script/bridge/deploy/DeployZoneRouter.s.sol does. The node runs no Zone, so this checks deployment,
-# the router's fixed mode and its messenger gate; e2e/cards/bridge runs a private spend through them.
+# CardFactory.deploy) for LocalSmoke's ZoneRouterFactory. The node runs no Zone, so this checks the
+# program's deployment and that no router is created for a Zone without a Portal.
 ROUTER_FACTORY=$(json routerFactory)
 release() {
   DEPLOYER_PRIVATE_KEY=$DEPLOYER_PK TEMPO_RPC_URL=$RPC FACTORY=$FACTORY SPENDER_ID=$SPENDER_ID ROUTER_FACTORY=$ROUTER_FACTORY \
@@ -192,14 +190,10 @@ ZERO=0x0000000000000000000000000000000000000000
 ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
 MODE_T="(uint32,uint8,address,address,address,bytes32,address[])"
 MODE="(1,4,$ZERO,$ZERO,$ZERO,$ZERO32,[$RELEASED])"
-cast send "$ROUTER_FACTORY" "deploy($MODE_T)" "$MODE" --private-key "$DEPLOYER_PK" --rpc-url "$RPC" >/dev/null
-ROUTER=$(cast call "$ROUTER_FACTORY" "predict($MODE_T)(address)" "$MODE" --rpc-url "$RPC")
-expect "router deployed by the factory" "$(cast call "$ROUTER_FACTORY" "isRouter(address)(bool)" "$ROUTER" --rpc-url "$RPC")" true
-expect "router lists the program" "$(cast call "$ROUTER" "isSpender(address)(bool)" "$RELEASED" --rpc-url "$RPC")" true
-expect "router takes Spend only" "$(cast call "$ROUTER" "enabledOps()(uint8)" --rpc-url "$RPC")" 4
-expect_revert "$(cast sig "NotZoneMessenger()")" cast call "$ROUTER" \
-  "onWithdrawalReceived(uint32,address,bytes32,address,uint128,bytes)(bytes4)" 1 "$ZERO" \
-  $ZERO32 "$USD" 1 0x --rpc-url "$RPC"
-echo "private path: program released with release.sh and reused, a Spend-mode router listing it, callbacks only from the Zone messenger"
+# A router reads its Zone's Portal when it is created, and this node runs no Zone, so the factory
+# refuses it; e2e/cards/bridge deploys one against a real Zone and runs a private spend through it.
+expect_revert "$(cast sig "InvalidSourcePortal()")" cast call "$ROUTER_FACTORY" "deploy($MODE_T)(address)" "$MODE" \
+  --rpc-url "$RPC"
+echo "private path: program released with release.sh and reused, no router for a Zone without a Portal"
 
 echo "smoke: real-node checks passed"

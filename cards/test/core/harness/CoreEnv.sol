@@ -82,6 +82,7 @@ abstract contract CoreEnv is Test {
         if (payout) {
             target = new MockPayoutTarget();
             mock = new MockPayoutProvider(address(target));
+            target.setProvider(mock);
             vm.label(address(target), "MockPayoutTarget");
         } else {
             mock = new MockProvider();

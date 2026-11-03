@@ -127,7 +127,8 @@ words of `CardSpend`) 896; a test pins both. A Spend callback:
    the spender hands back what it did not use;
 4. requires `0 < used <= maxInput`, measured from its own balance;
 5. returns the change, `amount - used`, to the source Zone when it is not zero, through a standing
-   approval to that Portal (below), after the same token and fee checks when step 2 skipped them. The
+   approval to that Portal (below), after checking the deposit fee again (the Portal's admin may change it
+   while the spender runs) and, when step 2 skipped them, the token checks. The
    Portal refuses a deposit below its deposit fee plus its bounce-back reserve
    (`calculateDepositFee() + calculateBouncebackFee()`), so change below that reverts
    `ChangeBelowDepositFee(change, minimum)` and the whole input bounces. A sender sizes `maxInput`
@@ -237,12 +238,13 @@ input. Its checks are in the [card spend design](../cards/design.md#what-the-pro
 
 1. No owner, setters or rescue; the mode is fixed at deployment.
 2. Callbacks accept only the canonical Zone Messenger, the router's Zone and that Zone's
-   Factory-registered Portal.
+   Factory-registered Portal, which the constructor reads once: a Zone's Portal never changes, so a
+   router cannot be deployed for a Zone that has none.
 3. Every successful callback returns its output through the source Portal, except what a listed
    spender uses, at most the callback's `maxInput`.
 4. Conversion happens only at the pool oracle's exact par price with measured 1:1 output.
-5. No balance stays with the router after a callback, and no allowance except a spend's standing
-   approval to its own Zone's Portal.
+5. No balance a callback brings stays with the router (a one-unit seed anyone sends it stays as it
+   is), and no allowance except a spend's standing approval to its own Zone's Portal.
 6. The router never emits or stores `senderTag`.
 7. A spender pays only inside a spend from a router its factory deployed whose mode lists it.
 

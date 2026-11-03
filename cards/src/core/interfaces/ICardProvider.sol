@@ -35,6 +35,9 @@ interface ICardProvider is IERC165 {
 ///         `payoutTarget` for the spend's input and calls it with `payoutData(spend)` as the payer, then
 ///         checks the destination got exactly the amount and takes back what was not used. `BridgeProvider`
 ///         names the program's spender clone, so Bridge's factory still governs every spend.
+/// @dev The target must enforce the provider's pause, destination and vault rules itself, in the same call:
+///      a program with a payout target skips those views and checks only the outcome (destination credited
+///      exactly, input used exactly).
 interface ICardProviderPayout {
     /// @notice The contract the program pays through. Fixed for the provider's life.
     function payoutTarget() external view returns (address);
