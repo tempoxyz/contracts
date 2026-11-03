@@ -94,7 +94,7 @@ The cardholder authorizes a Tempo access key that Bridge holds. Tempo enforces t
 and expiry of the key in the protocol. The cardholder can revoke the key at any time.
 
 - **Tempo account.** Scope: `token.approve(recipient = program)`, `earnShare.approve(recipient =
-program)` for Earn, and `program.spend`.
+  program)` for Earn, and `program.spend`.
 - **Zone account.** Scope: `zoneToken.approve(recipient = outbox)` and `outbox.requestWithdrawal`.
 - **Limits.** Each key has a periodic limit for each token and an expiry. Bridge uses one key for
   each program. Limits count gross debits.
