@@ -150,8 +150,7 @@ contract PrivateSpendForkGasTest is Test {
         address provider =
             deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(address(bridgeFactory), SPENDER_ID));
         program = CardSpender(
-            CardFactory(deployCode("CardFactory.sol:CardFactory"))
-                .deploy(SPENDER_ID, ICardProvider(provider), address(0))
+            CardFactory(deployCode("CardFactory.sol:CardFactory")).deploy(SPENDER_ID, ICardProvider(provider))
         );
         routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
         ZoneRouter.Mode memory mode;

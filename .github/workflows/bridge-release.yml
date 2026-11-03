@@ -4,7 +4,7 @@ name: Bridge Release
 # (SpenderTempoSpend), or a Bridge card program's CardSpender, with the release CardFactory and the
 # program's BridgeProvider it needs. The handler, factory and provider contract land at their deterministic
 # release addresses (the CREATE2 deployer with Earn's release salt) and the factory creates the program at
-# the address its spender ID, provider contract and guardian fix: the same addresses Bridge reaches running
+# the address its spender ID and provider contract fix: the same addresses Bridge reaches running
 # the deploy scripts itself. Any already there is reused. After a broadcast each is source verified on
 # Tempo's verifier. Registering the handler stays with Bridge's admin and governance, so the job
 # summary lists the calls each submits; nothing here holds a role on the factory. Listing the program
@@ -28,11 +28,6 @@ on:
         type: string
       spenderId:
         description: bridgeProgram only, the card program's spender ID (bytes32)
-        required: false
-        type: string
-        default: ''
-      guardian:
-        description: bridgeProgram only, the account that can pause the program; empty for none
         required: false
         type: string
         default: ''
@@ -91,7 +86,6 @@ jobs:
           CONTRACT: ${{ inputs.contract }}
           FACTORY: ${{ inputs.factory }}
           SPENDER_ID: ${{ inputs.spenderId }}
-          GUARDIAN: ${{ inputs.guardian }}
           BROADCAST: ${{ inputs.broadcast }}
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
@@ -99,8 +93,6 @@ jobs:
           TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
-          # An empty guardian is none: release.sh reads an unset GUARDIAN as zero.
-          if [[ -z "$GUARDIAN" ]]; then unset GUARDIAN; fi
           arguments=("$NETWORK" "$CONTRACT")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
           RESULT="$RUNNER_TEMP/bridge-release.json" script/bridge/deploy/release.sh "${arguments[@]}"
@@ -128,7 +120,7 @@ jobs:
             echo '| --- | --- | --- | --- |'
             jq -r '.broadcast as $broadcast | .contracts[]? | "| \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" elif .existed then "already deployed" elif $broadcast then "-" else "would be created" end) | \(.match // "-") |"' "$result"
             jq -r 'select(.factory) | "\nFactory `\(.factory)`."' "$result"
-            jq -r 'select(.spenderId) | "\nCard program `\(.spenderId)`, guardian `\(.guardian)`."' "$result"
+            jq -r 'select(.spenderId) | "\nCard program `\(.spenderId)`."' "$result"
             if jq -e '.contract == "tempoSpend" and .output.adminRegisterHandler' "$result" >/dev/null; then
               echo
               echo '### Calls for Bridge to submit'

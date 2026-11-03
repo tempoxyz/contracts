@@ -37,9 +37,9 @@ address lookup, so the spend's `destinationHint` is the collateral's index in th
 provider requires `collateralProxies(hint)` to be the destination. One read of Rain's factory proves
 provenance without trusting the destination's code. Rain's backend knows each index from the order of
 the factory's `NewRainCollateral` events. The provider also fixes the accepted tokens, Earn vaults and pooled
-collateral; it has no owner and reports no pause of its own. Rain pauses a program as its guardian: Rain's
-pause key, set when the program is deployed, can stop every spend of the program and resume them, and
-change nothing else.
+collateral; it has no owner and reports no pause, since Rain's contracts have none, and neither has the
+program. Rain stops a program by not sending spends: only Rain's access keys and Zone keys send them,
+and they can pay only collateral Rain controls.
 
 ## Token policies
 
@@ -96,13 +96,13 @@ committed collateral stays Rain's to settle; that is the guarantee its card prog
   from stablecoin and Earn; refusals for another cardholder's collateral, one handed over without admin
   rights, a collateral the factory did not create, the beacon, a wrong or out-of-range index and an
   unaccepted token; private settlement into the pooled collateral and refusal of a cardholder's own,
-  even one handed to the program; Rain's pause key as the program's guardian; Rain's payment, refund, replay, expiry and
+  even one handed to the program; the program reporting no pause; Rain's payment, refund, replay, expiry and
   liquidation against its real controller. The core's own checks run without Rain in
   [`cards/test/core/`](../../../cards/test/core/).
 - [`e2e/cards`](../../../e2e/cards/) (`pnpm e2e:cards -- --earn`), on a disposable Tempo L1 and Zone:
   public spends with an access key, from stablecoin and Earn (one L1 transaction, about 490 ms to the
   receipt on a 500 ms local chain); private spends into the pooled collateral, from stablecoin and Earn,
   settled on the L1 about a second after the Zone receipt, with no L1 log naming the cardholder; a
-  private spend into the cardholder's own collateral bouncing back into the Zone in full; Rain's pause
-  key stopping and resuming spends; then Rain's signed refund and its daily payment of both collaterals
+  private spend into the cardholder's own collateral bouncing back into the Zone in full; the program
+  reporting no pause; then Rain's signed refund and its daily payment of both collaterals
   to its treasury.

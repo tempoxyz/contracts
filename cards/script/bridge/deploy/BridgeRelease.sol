@@ -47,8 +47,8 @@ abstract contract BridgeRelease is ReleaseAt {
 
 /// @notice A Bridge card program's release (`DeployBridgeProgram`, `DeployZoneRouter`): the shared
 ///         `CardFactory` and the program's `BridgeProvider` at their release addresses, and the program's
-///         `CardSpender`, which that factory creates at the address its program ID (the Bridge spender ID),
-///         provider and guardian fix.
+///         `CardSpender`, which that factory creates at the address its program ID (the Bridge spender ID)
+///         and provider fix.
 abstract contract BridgeProgramRelease is ReleaseAt {
     /// @notice The address the release `CardFactory` is created at, shared by every program.
     function cardFactoryAddress() public pure returns (address) {
@@ -60,15 +60,11 @@ abstract contract BridgeProgramRelease is ReleaseAt {
         return _releaseAddress(abi.encodePacked(type(BridgeProvider).creationCode, abi.encode(factory, spenderId)));
     }
 
-    /// @notice The address the release `CardFactory` creates the program's `CardSpender` at, with
-    ///         `guardian` (zero for none) able to pause it.
-    function bridgeProgramAddress(address factory, bytes32 spenderId, address guardian) public pure returns (address) {
+    /// @notice The address the release `CardFactory` creates the program's `CardSpender` at.
+    function bridgeProgramAddress(address factory, bytes32 spenderId) public pure returns (address) {
         address provider = bridgeProviderAddress(factory, spenderId);
-        bytes32 initCodeHash =
-            keccak256(abi.encodePacked(type(CardSpender).creationCode, abi.encode(provider, guardian)));
-        return vm.computeCreate2Address(
-            keccak256(abi.encode(spenderId, provider, guardian)), initCodeHash, cardFactoryAddress()
-        );
+        bytes32 initCodeHash = keccak256(abi.encodePacked(type(CardSpender).creationCode, abi.encode(provider)));
+        return vm.computeCreate2Address(keccak256(abi.encode(spenderId, provider)), initCodeHash, cardFactoryAddress());
     }
 
     /// @dev Creates the release `CardFactory`, or returns the one there.
@@ -92,17 +88,14 @@ abstract contract BridgeProgramRelease is ReleaseAt {
 
     /// @dev Creates the factory, the provider contract and the program, each only when missing. The program is the
     ///      factory's `deploy`, called only when it does not exist yet.
-    function _bridgeProgram(IBridgeSpenderFactory factory, bytes32 spenderId, address guardian)
-        internal
-        returns (Created memory c)
-    {
+    function _bridgeProgram(IBridgeSpenderFactory factory, bytes32 spenderId) internal returns (Created memory c) {
         (c.cardFactory, c.cardFactoryCreated) = _cardFactory();
         (c.provider, c.providerCreated) = _bridgeProvider(factory, spenderId);
-        address predicted = bridgeProgramAddress(address(factory), spenderId, guardian);
+        address predicted = bridgeProgramAddress(address(factory), spenderId);
         c.programCreated = predicted.code.length == 0;
-        if (c.programCreated) c.cardFactory.deploy(spenderId, ICardProvider(address(c.provider)), guardian);
+        if (c.programCreated) c.cardFactory.deploy(spenderId, ICardProvider(address(c.provider)));
         c.program = CardSpender(predicted);
-        _requireAt(predicted, c.cardFactory.predict(spenderId, ICardProvider(address(c.provider)), guardian));
+        _requireAt(predicted, c.cardFactory.predict(spenderId, ICardProvider(address(c.provider))));
     }
 
     struct Created {

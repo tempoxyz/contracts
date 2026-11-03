@@ -195,12 +195,9 @@ contract OverReturningSpendHandler is SpenderBase {
 ///         settles nothing.
 contract OlderCardSpender {
     address public immutable PROVIDER;
-    address public immutable GUARDIAN;
-    bool public guardianPaused;
 
-    constructor(address provider_, address guardian_) {
+    constructor(address provider_) {
         PROVIDER = provider_;
-        GUARDIAN = guardian_;
     }
 
     function settle(address, uint256, bytes calldata) external { }

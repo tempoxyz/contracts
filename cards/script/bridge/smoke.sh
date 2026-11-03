@@ -184,7 +184,6 @@ expect "program's provider" "$(lower "$(cast call "$RELEASED" "PROVIDER()(addres
 expect "program pays through the clone" "$(lower "$(cast call "$RELEASED" "PAYOUT_TARGET()(address)" --rpc-url "$RPC")")" "$(lower "$CLONE")"
 expect "provider's program" "$(cast call "$PROVIDER" "SPENDER_ID()(bytes32)" --rpc-url "$RPC")" "$SPENDER_ID"
 expect "provider's factory" "$(lower "$(cast call "$PROVIDER" "FACTORY()(address)" --rpc-url "$RPC")")" "$(lower "$FACTORY")"
-expect "no guardian" "$(cast call "$RELEASED" "GUARDIAN()(address)" --rpc-url "$RPC")" 0x0000000000000000000000000000000000000000
 
 create() {
   # Flags first: --constructor-args takes every argument after it.

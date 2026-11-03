@@ -36,10 +36,9 @@ library SpendMode {
 ///         else is configured here. A Zone with a closed callback gateway must still grant the router the
 ///         gateway role, and one that enforces access must admit the program's refund recipient and the
 ///         program wallet that deposits refunds.
-///         `run` reads FACTORY (the Bridge spender factory), SPENDER_ID, GUARDIAN (optional: zero for no
-///         guardian pause), ZONE_ID, OUT, ROUTER_FACTORY (optional: a new ZoneRouterFactory is deployed
-///         without it) and DEPLOYER_PK unless the signer comes from `--account` or `--ledger`. OUT is
-///         written only with `--broadcast`.
+///         `run` reads FACTORY (the Bridge spender factory), SPENDER_ID, ZONE_ID, OUT, ROUTER_FACTORY
+///         (optional: a new ZoneRouterFactory is deployed without it) and DEPLOYER_PK unless the signer
+///         comes from `--account` or `--ledger`. OUT is written only with `--broadcast`.
 contract DeployZoneRouter is BridgeProgramRelease {
     struct Output {
         address factory;
@@ -58,7 +57,6 @@ contract DeployZoneRouter is BridgeProgramRelease {
         Output memory o = deploy(
             IBridgeSpenderFactory(vm.envAddress("FACTORY")),
             vm.envBytes32("SPENDER_ID"),
-            vm.envOr("GUARDIAN", address(0)),
             ProgramChecks.zoneId(vm.envUint("ZONE_ID")),
             ZoneRouterFactory(vm.envOr("ROUTER_FACTORY", address(0))),
             vm.envOr("DEPLOYER_PK", uint256(0))
@@ -71,13 +69,11 @@ contract DeployZoneRouter is BridgeProgramRelease {
         return o.router;
     }
 
-    /// @param guardian The only account that can pause the program, or zero for none.
     /// @param routerFactory The ZoneRouterFactory to deploy through, or zero to deploy one.
     /// @param deployerPk The deployer's key, or zero to sign with forge's `--account` or `--ledger`.
     function deploy(
         IBridgeSpenderFactory factory,
         bytes32 spenderId,
-        address guardian,
         uint32 zoneId,
         ZoneRouterFactory routerFactory,
         uint256 deployerPk
@@ -95,10 +91,10 @@ contract DeployZoneRouter is BridgeProgramRelease {
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
         if (address(routerFactory) == address(0)) routerFactory = new ZoneRouterFactory();
-        Created memory c = _bridgeProgram(factory, spenderId, guardian);
+        Created memory c = _bridgeProgram(factory, spenderId);
         o.router = ZoneRouter(routerFactory.deploy(SpendMode.forSettler(zoneId, address(c.program))));
         vm.stopBroadcast();
-        requireProgram(c.program, factory, spenderId, guardian);
+        requireProgram(c.program, factory, spenderId);
         o.factory = address(factory);
         o.spenderId = spenderId;
         o.zoneId = zoneId;

@@ -19,8 +19,9 @@ import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 ///      Rain's factory records every collateral contract it creates in its public `collateralProxies` array
 ///      but keeps no address lookup, so the spend names the collateral's index in that array (`hint`): one
 ///      read proves the factory created it, without trusting the destination's code. Tokens, vaults and
-///      pooled collateral are fixed at deployment: there is no owner. Rain pauses a program with the
-///      program's guardian, so this provider reports no pause of its own.
+///      pooled collateral are fixed at deployment: there is no owner. Rain's contracts have no pause, so this
+///      provider reports none: Rain stops a program by not sending spends, since only its access keys and
+///      Zone keys send them and they can pay only collateral Rain controls.
 contract RainProvider is ICardProvider {
     /// @notice Rain's `RainCollateralFactory` (its proxy, where it is behind one).
     address public immutable FACTORY;

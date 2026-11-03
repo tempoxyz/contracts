@@ -41,7 +41,7 @@ existing card contracts. It is one provider of the [card spend project](../../..
 - A spend pays from stablecoin, Earn shares, or both, and settles in the stablecoin the funds
   are held in. Bridge accepts any stablecoin, so nothing is converted.
 - The spender factory governs everything: settlement destinations, pause, handler routing and the
-  vault allowlist. The only new key is the program's optional guardian, which can only pause it.
+  vault allowlist. The integration adds no key: the program has no owner and no pause of its own.
 
 ## Results
 

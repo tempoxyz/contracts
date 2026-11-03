@@ -11,8 +11,8 @@ shared design; [bridge/](bridge/README.md) and [rain/](rain/README.md) own each 
 
 | Contract                                                                    | Admin                    | Function                                                                                                       |
 | --------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| [`CardSpender`](../../cards/src/core/CardSpender.sol)                       | Guardian (pause only)    | Pays a `CardSpend` to a destination its provider authorizes; public entry point and the Zone router's settler. |
-| [`CardFactory`](../../cards/src/core/CardFactory.sol)                       | None                     | Deploys a program at a CREATE2 address fixed by its ID, provider and guardian.                                 |
+| [`CardSpender`](../../cards/src/core/CardSpender.sol)                       | None                     | Pays a `CardSpend` to a destination its provider authorizes; public entry point and the Zone router's settler. |
+| [`CardFactory`](../../cards/src/core/CardFactory.sol)                       | None                     | Deploys a program at a CREATE2 address fixed by its ID and provider.                                           |
 | [`ICardProvider`](../../cards/src/core/interfaces/ICardProvider.sol) engine | The provider's contracts | Decides destinations, Earn vaults and the provider's pause; optionally names what the program pays through.    |
 | [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)             | None                     | Receives the Zone withdrawal, hands `maxInput` to the program (its listed settler), returns the change.        |
 
@@ -22,10 +22,16 @@ shared design; [bridge/](bridge/README.md) and [rain/](rain/README.md) own each 
 | Bridge   | [`BridgeProvider`](../../cards/src/providers/bridge/BridgeProvider.sol) | Through the program's Bridge spender clone and the "TS" handler, into a settlement wallet. |
 
 A program has one address for its life, and cardholders' access keys and the Zone's router name it. It
-is never upgraded or migrated: its provider and guardian are constructor arguments, and a provider
-replaces a program by deploying a new one, which means cardholders authorize a new key and the Zone
-admits a new router. That keeps the program ownerless apart from the guardian's pause, with no operator
-key in the audit scope.
+is never upgraded or migrated: its provider is its only constructor argument, and a provider replaces a
+program by deploying a new one, which means cardholders authorize a new key and the Zone admits a new
+router. The program is ownerless, with no setter, no pause of its own and no operator key in the audit
+scope.
+
+A program needs no pause of its own. Bridge's spender factory pause stops its programs through
+`BridgeProvider.paused()`. Rain's contracts have no pause, and Rain stops a program by not sending
+spends: only the provider's access keys and Zone keys send spends, and they can pay only destinations
+the provider authorizes (for Rain, collateral Rain controls). Cardholders can revoke their keys, and a
+fix to the core means a new program either way.
 
 ## The provider
 
@@ -88,7 +94,7 @@ first private Earn spend for that or make its first Earn spend public. The Rain 
 
 ## What the program checks
 
-- `CardSpend.program` is this program (`WrongProgram`), and it is not paused by its guardian or its provider
+- `CardSpend.program` is this program (`WrongProgram`), and its provider has not paused it
   (`ProgramPaused`); `amount` is above zero and `fromVault` at most `amount` (`InvalidAmount`).
 - The provider authorizes the destination for this payer, token and path (`DestinationNotAuthorized`); an
   Earn spend's vault is allowed and holds `token` (`VaultNotAllowed`, `IncorrectAssetForVault`), and burns at
@@ -117,7 +123,7 @@ first private Earn spend for that or make its first Earn spend public. The Rain 
    can take at most the spend's input.
 6. No event from these contracts on the private path names the cardholder or the Zone `senderTag`.
 7. One program's spend never pays through another program.
-8. A program's provider and guardian never change; its address commits to them.
+8. A program's provider never changes; its address commits to it and the program ID.
 
 Tests: [`cards/test/core/`](../../cards/test/core/) runs every program behavior twice, paying directly and
 through a payout target, with mock provider contracts and no real provider; each provider's tests run its provider contract on a
@@ -143,10 +149,11 @@ reserve pays if settlement fails; spend events are not proof of payment. In addi
 - A provider contract is as strong as what it reads. It decides every destination, so a provider whose own
   contracts can be upgraded (Rain's factory, Bridge's spender factory) is trusted for that, and a payout
   target is trusted to pay the spend it is handed (the program bounds what it can take).
-- Programs are immutable. Changing a program's provider contract, its tokens or vaults, or the guardian means deploying a new
-  program and a router that lists it, and cardholders authorizing a new key. The guardian (or the
-  provider's own pause, through the provider contract) stops spends meanwhile; a private spend while paused bounces
-  back into the Zone in full.
+- Programs are immutable and have no pause of their own. Changing a program's provider contract, its
+  tokens or vaults means deploying a new program and a router that lists it, and cardholders authorizing
+  a new key. Meanwhile the provider's own pause, read through the provider contract, stops spends where
+  it has one (Bridge's spender factory), and a private spend while paused bounces back into the Zone in
+  full; a provider without one (Rain) stops spends by not sending them.
 - `settle` is permissionless: anyone can call it with their own funds, but only
   to pay a destination the provider allows for a private spend. It counts `maxInput` as the caller's
   input without verifying it, so tokens sent to a program outside a spend can be spent by any `settle`
@@ -160,7 +167,7 @@ reserve pays if settlement fails; spend events are not proof of payment. In addi
 2. Write its `ICardProvider` in `cards/src/providers/<provider>/`, reading the provider's contracts as they
    are. Authorize only pooled destinations when `isPrivate` is true. Implement `ICardProviderPayout` only if
    the provider's own contracts must move the funds.
-3. Deploy a program with `CardFactory.deploy(programId, provider, guardian)` and a Spend-mode router that
+3. Deploy a program with `CardFactory.deploy(programId, provider)` and a Spend-mode router that
    lists it.
 4. Add a provider to [`e2e/cards/src/providers/`](../../e2e/cards/src/providers/) implementing
    [`CardProvider`](../../e2e/cards/src/provider.ts): deploy, the three destinations, and its own

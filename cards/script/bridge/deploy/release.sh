@@ -3,8 +3,8 @@
 # addresses, or reuses those already there: the "TS" handler (tempoSpend), at its release address
 # (script/bridge/deploy/BridgeRelease.sol), or a Bridge card program's CardSpender (bridgeProgram):
 # the release CardFactory and the program's BridgeProvider, each at its release address, and the
-# program, which that CardFactory creates at the address its program ID (the spender ID), provider contract
-# and guardian fix. It checks that the run created exactly the missing contracts, each at the address
+# program, which that CardFactory creates at the address its program ID (the spender ID) and provider
+# contract fix. It checks that the run created exactly the missing contracts, each at the address
 # predicted here from the locally compiled creation code, and, after a broadcast to a hosted
 # network, that Tempo's verifier has the source of every one. Bridge running the deploy scripts
 # itself lands on the same addresses. The Bridge Release workflow
@@ -13,8 +13,6 @@
 # Usage: script/bridge/deploy/release.sh <moderato|mainnet|local> <tempoSpend|bridgeProgram> [--broadcast]
 # Env:   FACTORY               the SpenderFactory
 #        SPENDER_ID            bridgeProgram only: the card program's spender ID (bytes32)
-#        GUARDIAN              bridgeProgram only, optional: the account that can pause the program;
-#                              zero or unset for none
 #        DEPLOYER_PRIVATE_KEY  pays for the creation; it holds no role anywhere
 #        TEMPO_RPC_URL         optional on moderato and mainnet, required for local; with
 #                              TEMPO_RPC_USERNAME and TEMPO_RPC_PASSWORD (both or neither) as basic auth
@@ -25,7 +23,6 @@ cd "$(dirname "$0")/../../.."
 
 readonly CREATE2_DEPLOYER=0x4e59b44847b379578588920ca78fbf26c0b4956c
 readonly VERIFIER_URL=https://contracts.tempo.xyz
-readonly ZERO_ADDRESS=0x0000000000000000000000000000000000000000
 # Earn's release salt (earn/script/deploy/DeterministicRelease.sol), predicted independently of the
 # scripts, so a drift between the two fails the release instead of hiding it.
 RELEASE_SALT=$(cast keccak "tempoxyz/earn shared factory release")
@@ -98,9 +95,6 @@ if [[ "$contract" == bridgeProgram ]]; then
   [[ "${SPENDER_ID:-}" =~ ^0x[0-9a-fA-F]{64}$ && ! "$SPENDER_ID" =~ ^0x0{64}$ ]] ||
     die "SPENDER_ID must be a nonzero bytes32"
   record spenderId "$SPENDER_ID"
-  guardian=${GUARDIAN:-$ZERO_ADDRESS}
-  [[ "$guardian" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "GUARDIAN must be an address, or unset for none"
-  record guardian "$guardian"
 fi
 [[ -n "${DEPLOYER_PRIVATE_KEY:-}" ]] || die "DEPLOYER_PRIVATE_KEY is required"
 
@@ -168,10 +162,10 @@ for i in "${!names[@]}"; do
   creation=$(env -u DEPLOYER_PRIVATE_KEY forge inspect "${sources[$i]}" bytecode)
   [[ "$creation" =~ ^0x[0-9a-fA-F]+$ ]] || die "forge returned no creation code for ${sources[$i]}"
   if [[ "${names[$i]}" == CardSpender ]]; then
-    # CardFactory.deploy: salt keccak256(abi.encode(programId, provider, guardian)), under the factory.
-    args[i]=$(cast abi-encode "f(address,address)" "${addresses[1]}" "$guardian")
+    # CardFactory.deploy: salt keccak256(abi.encode(programId, provider)), under the factory.
+    args[i]=$(cast abi-encode "f(address)" "${addresses[1]}")
     inits[i]=$(tr '[:upper:]' '[:lower:]' <<<"${creation}${args[$i]#0x}")
-    salt=$(cast keccak "$(cast abi-encode "f(bytes32,address,address)" "$SPENDER_ID" "${addresses[1]}" "$guardian")")
+    salt=$(cast keccak "$(cast abi-encode "f(bytes32,address)" "$SPENDER_ID" "${addresses[1]}")")
     addresses[i]=$(create2 "${addresses[0]}" "$salt" "$(cast keccak "${inits[$i]}")")
   else
     inits[i]=$(tr '[:upper:]' '[:lower:]' <<<"${creation}${args[$i]#0x}")
@@ -200,7 +194,7 @@ rm -f "$sequence"
 # A verification failure after the broadcast is handled below, so the status is kept rather than fatal.
 forge_status=0
 # The scripts read the key from DEPLOYER_PK; it goes through the environment, never the command line.
-DEPLOYER_PK=$DEPLOYER_PRIVATE_KEY GUARDIAN=${guardian:-$ZERO_ADDRESS} OUT=$out forge "${forge_args[@]}" || forge_status=$?
+DEPLOYER_PK=$DEPLOYER_PRIVATE_KEY OUT=$out forge "${forge_args[@]}" || forge_status=$?
 record --json forgeStatus "$forge_status"
 [[ "$forge_status" == 0 || -f "$sequence" ]] || die "forge script failed (status $forge_status)"
 
@@ -222,7 +216,7 @@ for i in "${!names[@]}"; do
     [[ "$(jq -r '.[0].transaction.input // .[0].transaction.data // "" | ascii_downcase' <<<"$sent")" == "${RELEASE_SALT}${inits[$i]#0x}" ]] ||
       die "$name creation input is not the release salt and its locally compiled creation code"
   else
-    call=$(cast calldata "deploy(bytes32,address,address)" "$SPENDER_ID" "${addresses[1]}" "$guardian")
+    call=$(cast calldata "deploy(bytes32,address)" "$SPENDER_ID" "${addresses[1]}")
     sent=$(jq -c --arg to "${addresses[0],,}" --arg input "${call,,}" \
       '[.[] | select(((.transaction.to // "") | ascii_downcase) == $to and ((.transaction.input // .transaction.data // "") | ascii_downcase) == $input)]' <<<"$transactions")
     [[ "$(jq length <<<"$sent")" == 1 ]] || die "the run did not call CardFactory.deploy for the program"

@@ -165,7 +165,7 @@ contract BridgeProviderMockTest is Test {
         factory.setClone(SPENDER_ID, address(clone));
         factory.setDestination(SPENDER_ID, destination, true);
         provider = new BridgeProvider(factory, SPENDER_ID);
-        program = new CardSpender(provider, address(0));
+        program = new CardSpender(provider);
         usd.mint(address(clone), 1000e6);
     }
 

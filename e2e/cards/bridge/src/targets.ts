@@ -190,7 +190,6 @@ const FORGE_WITHHELD = [
   'PROGRAM_WALLET',
   'VAULTS',
   'BRIDGE_PROGRAM',
-  'GUARDIAN',
   'EARN_VAULT',
   'PRIVATE_ASSET',
   'POOL',
@@ -261,8 +260,8 @@ type RouterDeployment = Pick<
 >
 
 /**
- * Deploys a program's CardSpender, through the CardFactory with a BridgeProvider over its clone and no
- * guardian, and its Spend-mode ZoneRouter through the router factory.
+ * Deploys a program's CardSpender, through the CardFactory with a BridgeProvider over its clone, and its
+ * Spend-mode ZoneRouter through the router factory.
  */
 async function deployRouter(
   l1Public: PublicClient,

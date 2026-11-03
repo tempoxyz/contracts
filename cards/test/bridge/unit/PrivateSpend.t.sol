@@ -179,9 +179,9 @@ contract PrivateSpendTest is PrivateSpendFixture {
     }
 
     /// @notice A settler the router was not deployed with cannot be named, even a program over the same
-    ///         provider, here one with another guardian.
+    ///         provider, here one under another program ID.
     function test_unlistedSettlerBounces() public {
-        address other = cardFactory.deploy(SPENDER_ID, provider, makeAddr("another.guardian"));
+        address other = cardFactory.deploy(keccak256("another.program"), provider);
         assertTrue(other != address(program));
         CardSpend memory spend = _spend(10e6, settlement);
         spend.token = address(usd);

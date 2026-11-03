@@ -100,8 +100,6 @@ contract Preflight is Script {
         /// @dev The program and its provider run this repo's code, ignoring solc's metadata, so they have
         ///      every check this version makes.
         bool programCurrent;
-        /// @dev The program's guardian has paused it (the factory's pause is `paused`).
-        bool programPaused;
         /// @dev The router has the Zone role its callbacks need: callback gateway when the
         ///      gateway is closed, the account role when it is open and access is enforced.
         bool routerAdmitted;
@@ -317,7 +315,6 @@ contract Preflight is Script {
             "CardSpender and BridgeProvider are this repo's build",
             "deployer: DeployZoneRouter, then grant the new router its Zone role and use it"
         );
-        _line(!r.programPaused, "CardSpender not paused by its guardian", "guardian: setPaused(false)");
         _line(
             r.routerAdmitted,
             "router has its Zone role",
@@ -433,16 +430,11 @@ contract Preflight is Script {
             if (abi.decode(id, (bytes32)) != spenderId) continue;
             r.routerMatches = true;
             r.program = settlers[i];
-            (, address guardian) = ProgramChecks.readAddress(settlers[i], bytes4(keccak256("GUARDIAN()")));
-            (bool pausedOk, bytes memory paused) = settlers[i].staticcall(abi.encodeWithSignature("guardianPaused()"));
-            r.programPaused = pausedOk && paused.length == 32 && abi.decode(paused, (bool));
             // Copies from the artifacts, so this script does not carry their creation code.
             r.programCurrent = ProgramChecks.sameLogic(
                 provider, vm.deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(factory, spenderId))
             )
-            && ProgramChecks.sameLogic(
-                settlers[i], vm.deployCode("CardSpender.sol:CardSpender", abi.encode(provider, guardian))
-            );
+            && ProgramChecks.sameLogic(settlers[i], vm.deployCode("CardSpender.sol:CardSpender", abi.encode(provider)));
             return;
         }
     }

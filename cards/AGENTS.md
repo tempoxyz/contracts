@@ -34,8 +34,8 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   `test/rain/fixtures/rain.json`, rebuilt by `script/rain/build-fixture.sh` (`--check` compares it
   without the path-dependent metadata hashes; commit it with any vendor change), and
   `test/bridge/harness/fixtures/Permit2.json`.
-- Programs are immutable: no upgrade, migration or setter beyond the guardian's pause. A change of provider
-  or settings is a new program.
+- Programs are immutable: no upgrade, migration, setter or pause of their own (the provider's pause, read
+  live, is the only one). A change of provider or settings is a new program.
 - Bridge's "TS" handler, the `CardFactory` and a program's `BridgeProvider` deploy at deterministic
   addresses that follow their build
   ([docs/cards/bridge/deploy.md](../docs/cards/bridge/deploy.md)): a change to their source, this

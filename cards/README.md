@@ -16,7 +16,7 @@ router from [`zone-router/src/`](../zone-router/src/) rather than copies.
 src/
   core/                     Ours, provider-agnostic
     CardSpender.sol           One program: public spends, and the Zone router's settler for private ones
-    CardFactory.sol           Deploys programs at addresses fixed by their ID, provider and guardian
+    CardFactory.sol           Deploys programs at addresses fixed by their ID and provider
     CardSpend.sol             The one struct public and private spends settle
     interfaces/               ICardProvider and ICardProviderPayout (the provider engine), the Earn vault subset
   providers/                Ours, one directory per card provider

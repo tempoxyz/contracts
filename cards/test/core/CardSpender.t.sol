@@ -325,36 +325,17 @@ abstract contract CardSpenderBehavior is CoreEnv {
 
     // Pause -------------------------------------------------------------
 
-    function test_guardianPause_stopsPublicAndPrivate() public {
-        vm.prank(guardian);
-        vm.expectEmit(address(program));
-        emit CardSpender.GuardianPausedSet(true);
-        program.setPaused(true);
-        assertTrue(program.paused());
-        _expectPaused();
-        vm.prank(guardian);
-        program.setPaused(false);
-        _publicSpend(alice, _stableSpend(pooledWallet, 0, 1e6, "resumed"));
-        assertEq(usd.balanceOf(pooledWallet), 1e6);
-    }
-
+    /// @notice The program has no pause of its own: it reads the provider's, live, so the provider's pause
+    ///         stops public and private spends and its resume lets them through again.
     function test_providerPause_stopsPublicAndPrivate() public {
+        assertFalse(program.paused());
         mock.setPaused(true);
         assertTrue(program.paused());
         _expectPaused();
-    }
-
-    function test_revert_onlyTheGuardianPauses() public {
-        vm.prank(alice);
-        vm.expectRevert(CardSpender.NotGuardian.selector);
-        program.setPaused(true);
-    }
-
-    function test_revert_noGuardianMeansNoGuardianPause() public {
-        CardSpender unguarded = CardSpender(factory.deploy("unguarded", ICardProvider(address(mock)), address(0)));
-        vm.prank(address(0));
-        vm.expectRevert(CardSpender.NotGuardian.selector);
-        unguarded.setPaused(true);
+        mock.setPaused(false);
+        assertFalse(program.paused());
+        _publicSpend(alice, _stableSpend(pooledWallet, 0, 1e6, "resumed"));
+        assertEq(usd.balanceOf(pooledWallet), 1e6);
     }
 
     function test_availableBalance_countsAllowedVault() public {
@@ -465,26 +446,24 @@ contract CardFactoryTest is CoreEnv {
     }
 
     function test_deploy_atPredictedAddress_andIdempotent() public {
-        address predicted = factory.predict("p", ICardProvider(address(mock)), guardian);
-        address deployed = factory.deploy("p", ICardProvider(address(mock)), guardian);
+        address predicted = factory.predict("p", ICardProvider(address(mock)));
+        address deployed = factory.deploy("p", ICardProvider(address(mock)));
         assertEq(deployed, predicted);
         assertTrue(factory.isSpender(deployed));
-        assertEq(factory.deploy("p", ICardProvider(address(mock)), guardian), deployed, "deploying again returns it");
+        assertEq(factory.deploy("p", ICardProvider(address(mock))), deployed, "deploying again returns it");
         assertEq(address(CardSpender(deployed).PROVIDER()), address(mock));
-        assertEq(CardSpender(deployed).GUARDIAN(), guardian);
     }
 
-    /// @dev The address commits to the provider and guardian, so nobody can take it with other settings.
-    function test_addressCommitsToProviderAndGuardian() public view {
-        address a = factory.predict("p", ICardProvider(address(mock)), guardian);
-        assertTrue(a != factory.predict("p", ICardProvider(address(mock)), address(0)));
-        assertTrue(a != factory.predict("p", ICardProvider(address(0xBEEF)), guardian));
-        assertTrue(a != factory.predict("q", ICardProvider(address(mock)), guardian));
+    /// @dev The address commits to the program ID and provider, so nobody can take it with another provider.
+    function test_addressCommitsToProgramAndProvider() public view {
+        address a = factory.predict("p", ICardProvider(address(mock)));
+        assertTrue(a != factory.predict("p", ICardProvider(address(0xBEEF))));
+        assertTrue(a != factory.predict("q", ICardProvider(address(mock))));
     }
 
     function test_revert_notAProvider() public {
         NotAProvider bad = new NotAProvider();
         vm.expectRevert();
-        factory.deploy("bad", ICardProvider(address(bad)), guardian);
+        factory.deploy("bad", ICardProvider(address(bad)));
     }
 }

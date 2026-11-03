@@ -149,7 +149,7 @@ callback.
 | Settler       | Pays                                                                                | `settlerData`           | Binding fixed at deployment              |
 | ------------- | ----------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------- |
 | `SendSettler` | A public address, in the withdrawn token or redeemed from Earn                      | `abi.encode(Send)`      | Optional vault, par pool and customer ID |
-| `CardSpender` | A destination its provider authorizes (Rain collateral, a Bridge settlement wallet) | `abi.encode(CardSpend)` | The provider and guardian                |
+| `CardSpender` | A destination its provider authorizes (Rain collateral, a Bridge settlement wallet) | `abi.encode(CardSpend)` | The provider                             |
 
 `SendSettler` is released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) and
 a Bridge program's `CardSpender` by [Bridge Release](../deployment/deployment.md#bridge-releases), each at a

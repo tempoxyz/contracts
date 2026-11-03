@@ -131,7 +131,7 @@ contract LocalSmoke is Script {
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
         factory.governorCall(SPENDER_ID, abi.encodePacked(bytes2("TS"), bytes2("UV"), uint8(1), address(earnVault)));
         provider = new BridgeProvider(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
-        program = CardSpender(new CardFactory().deploy(SPENDER_ID, ICardProvider(address(provider)), address(0)));
+        program = CardSpender(new CardFactory().deploy(SPENDER_ID, ICardProvider(address(provider))));
         vm.stopBroadcast();
         console.log("deployed factory", address(factory), "clone", clone);
         console.log("deployed program", address(program), "provider", address(provider));

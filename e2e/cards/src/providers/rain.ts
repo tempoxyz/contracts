@@ -13,30 +13,19 @@ import {
   formatUnits,
   keccak256,
   parseAbi,
-  toFunctionSelector,
   toHex,
-  zeroAddress,
-  zeroHash,
   type Address,
   type Hex,
 } from 'viem'
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts'
 
 import { forgeEnv } from '../../bridge/src/targets.js'
-import { assert, revertData } from '../../bridge/src/support.js'
+import { assert } from '../../bridge/src/support.js'
 import type { CardProvider, Context, Deployed } from '../provider.js'
 
 export const cardsRoot = resolve(new URL('.', import.meta.url).pathname, '../../../../cards')
 
-const programAbi = parseAbi([
-  'function setPaused(bool paused)',
-  'function paused() view returns (bool)',
-])
-const cardProgramAbi = parseAbi([
-  'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
-  'function spend(CardSpend s)',
-  'error ProgramPaused()',
-])
+const programAbi = parseAbi(['function paused() view returns (bool)'])
 const controllerAbi = parseAbi([
   'function nonce(address collateral) view returns (uint256)',
   'function treasury() view returns (address)',
@@ -104,7 +93,6 @@ export function rain(): CardProvider {
               DEPLOYER_PK: input.deployerPk,
               RAIN_ADMIN: admin.address,
               RAIN_TREASURY: treasury,
-              RAIN_GUARDIAN: backend.address,
               CARDHOLDER: input.cardholder,
               PARTNER: partner,
               ZONE_ID: String(input.zoneId),
@@ -181,79 +169,17 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
         )
       assert(direct === 'reverted', 'a direct withdrawal from the collateral contract reverts')
 
-      // Rain's pause key stops every spend of the program, and only Rain's key resumes them.
-      const setPaused = async (paused: boolean) => {
-        const receipt = await ctx.l1Wallet(backend).writeContractSync({
-          address: d.program,
-          abi: programAbi,
-          functionName: 'setPaused',
-          args: [paused],
-          feeToken: token,
-        } as never)
-        assert(receipt.status === 'success', 'Rain set the pause')
-      }
-      const probe = () =>
-        l1Public
-          .simulateContract({
-            account: cardholder,
-            address: deployed.program,
-            abi: cardProgramAbi,
-            functionName: 'spend',
-            args: [
-              {
-                program: d.program,
-                token,
-                amount: 1n,
-                destination: deployed.publicDestination.address,
-                destinationHint: deployed.publicDestination.hint,
-                vault: zeroAddress,
-                fromVault: 0n,
-                maxShares: 0n,
-                ref: zeroHash,
-              },
-            ],
-          })
-          .then(
-            () => 'allowed',
-            (error: unknown) =>
-              revertData(error) === toFunctionSelector('ProgramPaused()') ? 'paused' : 'refused',
-          )
-      await setPaused(true)
-      assert(
-        await l1Public.readContract({
-          address: d.program,
-          abi: programAbi,
-          functionName: 'paused',
-        }),
-        'the program is paused',
-      )
-      assert((await probe()) === 'paused', 'a spend reverts with ProgramPaused while paused')
-      const strangerPause = await l1Public
-        .simulateContract({
-          account: cardholder,
-          address: d.program,
-          abi: programAbi,
-          functionName: 'setPaused',
-          args: [false],
-        })
-        .then(
-          () => 'allowed',
-          () => 'refused',
-        )
-      assert(strangerPause === 'refused', "only Rain's pause key can resume spends")
-      await setPaused(false)
+      // Rain's contracts have no pause, so neither has the program: Rain stops a program by not sending
+      // spends, since only its keys send them and they can pay only collateral Rain controls.
       assert(
         !(await l1Public.readContract({
           address: d.program,
           abi: programAbi,
           functionName: 'paused',
         })),
-        'the program resumed',
+        'the program reports no pause',
       )
-      ctx.step(
-        n++,
-        "Rain's pause key stopped every spend (ProgramPaused) and resumed them; nobody else can",
-      )
+      ctx.step(n++, 'The program reports no pause: Rain stops a program by not sending spends')
 
       // A reversal: the cardholder, admin of their own collateral, withdraws with Rain's signature.
       const refund = 1_000_000n

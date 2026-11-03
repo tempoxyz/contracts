@@ -16,8 +16,9 @@ import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 ///         Zone's router point at. It pays a spend from stablecoin, Tempo Earn shares, or both, to a
 ///         destination its provider authorizes, publicly (`spend`) or from a Zone withdrawal (`settle`, as the
 ///         router's settler). Specified in docs/cards/design.md.
-/// @dev Deployed by `CardFactory` with a fixed provider and guardian, and never changed: a provider replaces a
-///      program by deploying another. It holds nothing between spends. Two ways to pay, fixed by the provider:
+/// @dev Deployed by `CardFactory` with a fixed provider, and never changed: no owner, setter or pause of its
+///      own, so a provider replaces a program by deploying another and stops one through its own `paused()`.
+///      It holds nothing between spends. Two ways to pay, fixed by the provider:
 ///      - direct: the program moves the funds itself (Rain);
 ///      - payout: the provider supports `ICardProviderPayout`, and the program pays through its target as the
 ///        payer (Bridge, through its spender clone and "TS" handler, so Bridge's factory governs the spend).
@@ -29,13 +30,8 @@ contract CardSpender is ISpendSettler {
     bytes4 private constant APPROVE_FAILED = 0x3e3f8f73;
 
     ICardProvider public immutable PROVIDER;
-    /// @notice The only account that can pause this program; zero for none.
-    address public immutable GUARDIAN;
     /// @notice The provider's payout target, or zero when the program pays directly.
     address public immutable PAYOUT_TARGET;
-
-    /// @notice Whether the guardian has stopped every spend.
-    bool public guardianPaused;
 
     bool private transient _locked;
 
@@ -44,7 +40,6 @@ contract CardSpender is ISpendSettler {
     error IncorrectAssetForVault();
     error InsufficientInput();
     error InvalidAmount();
-    error NotGuardian();
     error NotProvider();
     error NothingSettled();
     error ProgramPaused();
@@ -70,7 +65,6 @@ contract CardSpender is ISpendSettler {
     );
     /// @dev A private spend's input accounting, as the Zone router sees it. No cardholder or `senderTag`.
     event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned);
-    event GuardianPausedSet(bool paused);
 
     modifier nonReentrant() {
         if (_locked) revert Reentrancy();
@@ -79,15 +73,12 @@ contract CardSpender is ISpendSettler {
         _locked = false;
     }
 
-    /// @param guardian_ The account that can pause this program, or zero for none.
-    // forge-lint: disable-next-line(missing-zero-check)
-    constructor(ICardProvider provider_, address guardian_) {
+    constructor(ICardProvider provider_) {
         if (address(provider_) == address(0)) revert ZeroAddress();
         if (!ERC165Checker.supportsInterface(address(provider_), type(ICardProvider).interfaceId)) {
             revert NotProvider();
         }
         PROVIDER = provider_;
-        GUARDIAN = guardian_;
         if (ERC165Checker.supportsInterface(address(provider_), type(ICardProviderPayout).interfaceId)) {
             address target = ICardProviderPayout(address(provider_)).payoutTarget();
             if (target == address(0)) revert ZeroAddress();
@@ -160,19 +151,13 @@ contract CardSpender is ISpendSettler {
     }
 
     // ------------------------------------------------------------------
-    // Pause and views
+    // Views
     // ------------------------------------------------------------------
 
-    /// @notice Whether spends are stopped, by the guardian or by the provider's own contracts.
+    /// @notice Whether spends are stopped: the provider's own pause, read live (Bridge's factory pause; Rain
+    ///         reports none). The program has no pause of its own.
     function paused() public view returns (bool) {
-        return guardianPaused || PROVIDER.paused();
-    }
-
-    /// @notice Stops (`true`) or resumes (`false`) every spend. Only `GUARDIAN`; nothing else changes.
-    function setPaused(bool paused_) external {
-        if (msg.sender != GUARDIAN || GUARDIAN == address(0)) revert NotGuardian();
-        guardianPaused = paused_;
-        emit GuardianPausedSet(paused_);
+        return PROVIDER.paused();
     }
 
     /// @notice Sets the program's standing approval of `token` to its payout target before the first spend,

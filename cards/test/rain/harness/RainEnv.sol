@@ -10,14 +10,12 @@ import { CoreEnv } from "../../core/harness/CoreEnv.sol";
 
 /// @notice The core world (`CoreEnv`) with Rain as the provider: Rain's own collateral contracts from the
 ///         vendored sources, cardholders' and the program's collateral, and a `CardSpender` over a
-///         `RainProvider`, with Rain's pause key as its guardian.
+///         `RainProvider`.
 abstract contract RainEnv is CoreEnv, RainStack {
     Rain internal rain;
     uint256 internal rainAdminPk = uint256(keccak256("rain.controller-admin"));
     address internal rainAdmin = vm.addr(uint256(keccak256("rain.controller-admin")));
     address internal rainTreasury = makeAddr("rain.treasury");
-    /// @dev Rain's key that can pause the program: its guardian.
-    address internal rainPauser = makeAddr("rain.pauser");
     /// @dev The partner's account that owns the program's pooled collateral (partner-managed, private spend).
     address internal partner = makeAddr("rain.partner");
     address internal programCollateral;
@@ -43,7 +41,7 @@ abstract contract RainEnv is CoreEnv, RainStack {
         (bobCollateral, bobIndex) = _createCollateral("bob", bob);
         (programCollateral, programCollateralIndex) = _createCollateral("program", partner);
         provider = _deployProvider(address(earnVault));
-        program = CardSpender(factory.deploy("rain", ICardProvider(address(provider)), rainPauser));
+        program = CardSpender(factory.deploy("rain", ICardProvider(address(provider))));
         vm.label(address(provider), "RainProvider");
         vm.label(address(program), "CardSpender");
     }

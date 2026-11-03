@@ -88,21 +88,19 @@ contract BridgeProgramTest is AccessKeys {
         assertTrue(program.paused());
     }
 
-    /// @notice The guardian pauses the program alone; Bridge's factory and the clone stay as they are.
-    function test_guardianPausesOnlyTheProgram() public {
-        vm.prank(programGuardian);
-        program.setPaused(true);
-        assertFalse(bridgeFactory.paused());
+    /// @notice The program has no pause of its own: Bridge's factory pause stops a private settle before any
+    ///         funds move, and governance's unpause resumes it.
+    function test_factoryPauseStopsThePrivateSettle() public {
+        vm.prank(bridgePauser);
+        bridgeFactory.pause();
         _mintUsd(router, AMOUNT);
         bytes memory data = abi.encode(_stableSpend(AMOUNT));
         vm.expectRevert(CardSpender.ProgramPaused.selector);
         caller.settle(program, address(usd), AMOUNT, data);
 
-        vm.prank(bridgePauser);
-        vm.expectRevert(CardSpender.NotGuardian.selector);
-        program.setPaused(false);
-        vm.prank(programGuardian);
-        program.setPaused(false);
+        vm.prank(bridgeGovernor);
+        bridgeFactory.unpause();
+        assertFalse(program.paused());
         _settle(address(usd), AMOUNT, _stableSpend(AMOUNT));
     }
 
@@ -247,7 +245,7 @@ contract BridgeProgramTest is AccessKeys {
         bridgeFactory.createSpenderWithExistingContract(aliasId, destinations, spender);
         BridgeProvider aliasProvider = new BridgeProvider(IBridgeSpenderFactory(address(bridgeFactory)), aliasId);
         assertEq(aliasProvider.CLONE(), spender, "the same clone");
-        CardSpender aliasProgram = CardSpender(cardFactory.deploy(aliasId, aliasProvider, address(0)));
+        CardSpender aliasProgram = CardSpender(cardFactory.deploy(aliasId, aliasProvider));
 
         CardSpend memory spend = _stableSpend(AMOUNT);
         spend.program = address(aliasProgram);

@@ -22,7 +22,7 @@ import { IBridgeSpenderFactory } from "../../src/providers/bridge/interfaces/IBr
 import { SpendMode } from "./deploy/DeployZoneRouter.s.sol";
 
 /// @notice Deploys a Bridge card program with the "TS" handler, its `CardSpender` (through a
-///         `CardFactory`, over the program's `BridgeProvider`, with no guardian), and the Spend-mode
+///         `CardFactory`, over the program's `BridgeProvider`), and the Spend-mode
 ///         `ZoneRouter` for ZONE_ID listing that program, through a new `ZoneRouterFactory`, to an L1 for the
 ///         Zone E2E (`e2e/cards/bridge`), plus a TIP-20 with a transfer policy to launch the Zone with. The
 ///         router needs no Zone at deployment, so it can be deployed before the Zone launches.
@@ -62,7 +62,7 @@ contract ZoneE2EDeploy is Script {
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
         CardFactory cardFactory = new CardFactory();
         BridgeProvider provider = new BridgeProvider(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
-        address program = cardFactory.deploy(SPENDER_ID, ICardProvider(address(provider)), address(0));
+        address program = cardFactory.deploy(SPENDER_ID, ICardProvider(address(provider)));
         ZoneRouterFactory routerFactory = new ZoneRouterFactory();
         address router = routerFactory.deploy(SpendMode.forSettler(zoneId, program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.

@@ -48,7 +48,6 @@ abstract contract CoreEnv is Test {
 
     MockProvider internal mock;
     MockPayoutTarget internal target;
-    address internal guardian = makeAddr("guardian");
     address internal publicWallet = makeAddr("mock.public-destination");
     address internal pooledWallet = makeAddr("mock.pooled-destination");
 
@@ -79,7 +78,7 @@ abstract contract CoreEnv is Test {
         mock.setVault(address(earnVault), true);
         mock.setDestination(publicWallet, true, false);
         mock.setDestination(pooledWallet, true, true);
-        program = CardSpender(factory.deploy("mock", ICardProvider(address(mock)), guardian));
+        program = CardSpender(factory.deploy("mock", ICardProvider(address(mock))));
         vm.label(address(mock), "MockProvider");
         vm.label(address(program), "CardSpender");
     }

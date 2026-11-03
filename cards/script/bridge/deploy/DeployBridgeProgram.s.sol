@@ -13,18 +13,16 @@ import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice Deploys one Bridge card program's `CardSpender`, after checking the program's clone was created
 ///         for its ID: the release `CardFactory` and the program's `BridgeProvider` at their deterministic
-///         addresses (`BridgeProgramRelease`), then `CardFactory.deploy(spenderId, provider, guardian)`. Each
+///         addresses (`BridgeProgramRelease`), then `CardFactory.deploy(spenderId, provider)`. Each
 ///         one already there is reused. The program is the cardholders' public spend entry point and the
 ///         settler a Spend-mode Zone router lists, which is a Zone router release (`DeployZoneRouter`).
-///         `run` reads FACTORY (the spender factory), SPENDER_ID, GUARDIAN (optional: zero, the default,
-///         leaves the program without a guardian pause), OUT, and DEPLOYER_PK unless the signer comes from
-///         `--account` or `--ledger`. OUT is written only with `--broadcast`.
+///         `run` reads FACTORY (the spender factory), SPENDER_ID, OUT, and DEPLOYER_PK unless the signer
+///         comes from `--account` or `--ledger`. OUT is written only with `--broadcast`.
 contract DeployBridgeProgram is BridgeProgramRelease {
     struct Output {
         address factory;
         bytes32 spenderId;
         address clone;
-        address guardian;
         CardFactory cardFactory;
         BridgeProvider provider;
         CardSpender program;
@@ -36,7 +34,6 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         Output memory o = deploy(
             IBridgeSpenderFactory(vm.envAddress("FACTORY")),
             vm.envBytes32("SPENDER_ID"),
-            vm.envOr("GUARDIAN", address(0)),
             vm.envOr("DEPLOYER_PK", uint256(0))
         );
         if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
@@ -47,21 +44,19 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         return o.program;
     }
 
-    /// @param guardian The only account that can pause the program, or zero for none.
     /// @param deployerPk The deployer's key, or zero to sign with forge's `--account` or `--ledger`.
-    function deploy(IBridgeSpenderFactory factory, bytes32 spenderId, address guardian, uint256 deployerPk)
+    function deploy(IBridgeSpenderFactory factory, bytes32 spenderId, uint256 deployerPk)
         public
         returns (Output memory o)
     {
         o.clone = checkProgram(factory, spenderId);
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
-        Created memory c = _bridgeProgram(factory, spenderId, guardian);
+        Created memory c = _bridgeProgram(factory, spenderId);
         vm.stopBroadcast();
-        requireProgram(c.program, factory, spenderId, guardian);
+        requireProgram(c.program, factory, spenderId);
         o.factory = address(factory);
         o.spenderId = spenderId;
-        o.guardian = guardian;
         o.cardFactory = c.cardFactory;
         o.provider = c.provider;
         o.program = c.program;
@@ -73,7 +68,6 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         vm.serializeAddress(key, "factory", o.factory);
         vm.serializeBytes32(key, "spenderId", o.spenderId);
         vm.serializeAddress(key, "clone", o.clone);
-        vm.serializeAddress(key, "guardian", o.guardian);
         vm.serializeAddress(key, "cardFactory", address(o.cardFactory));
         vm.serializeAddress(key, "provider", address(o.provider));
         vm.serializeBool(key, "created", o.created);
@@ -95,12 +89,12 @@ function checkProgram(IBridgeSpenderFactory factory, bytes32 spenderId) view ret
     );
 }
 
-/// @dev The program pays through `factory`'s clone for `spenderId` and `guardian` alone can pause it.
-function requireProgram(CardSpender program, IBridgeSpenderFactory factory, bytes32 spenderId, address guardian) view {
+/// @dev The program pays through `factory`'s clone for `spenderId`.
+function requireProgram(CardSpender program, IBridgeSpenderFactory factory, bytes32 spenderId) view {
     BridgeProvider provider = BridgeProvider(address(program.PROVIDER()));
     require(
         address(provider.FACTORY()) == address(factory) && provider.SPENDER_ID() == spenderId
-            && program.PAYOUT_TARGET() == provider.CLONE() && program.GUARDIAN() == guardian,
+            && program.PAYOUT_TARGET() == provider.CLONE(),
         "program is bound to another Bridge program"
     );
 }

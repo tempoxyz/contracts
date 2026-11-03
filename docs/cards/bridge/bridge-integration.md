@@ -56,9 +56,9 @@ limit, which tight limits and short expiries bound.
 
 Before signing, decline if any of these fail. Each is a read:
 
-- **Program pause:** `program.paused()` on the L1, which is the guardian's pause or
-  `SpenderFactory.paused()`. A private spend reverts on the L1 after approval if the program is
-  paused, so check it first.
+- **Program pause:** `program.paused()` on the L1, which reads `SpenderFactory.paused()` through
+  the provider. A private spend reverts on the L1 after approval if the program is paused, so check
+  it first.
 - **Handler:** `getSpenderHandlerWithCheckedPermissions("TS", clone)` does not revert, so the
   handler is enabled, or gated with the program allowed.
 - **Destination:** `isAuthorizedDestination(spenderId, destination)`.
@@ -167,7 +167,7 @@ A private spend ends in one of three ways:
   program's portal, router and program. `ref` and the `CardSpend`
   fields come from callback data anyone can write, so never match on `ref` alone.
 - A spend can bounce after approval for:
-  - **The program:** a paused factory or guardian pause, a disabled or un-allowlisted `TS` handler, a destination
+  - **The program:** a paused factory, a disabled or un-allowlisted `TS` handler, a destination
     removed while the spend was in flight (add the new one before removing the old), or a vault
     governance disallowed.
   - **The Zone admin:** paused deposits of the token, a deposit or bounce-back fee raised above the
@@ -263,7 +263,7 @@ Reads:
 - `program.availableBalance(from, token, vault)`, or the clone's `availableBalance("TS" from token [vault])`:
   `from`'s balance of `token`, plus the value of its shares in `vault` when the vault is allowed and
   holds `token`. Otherwise the vault is ignored.
-- `program.paused()`: whether the guardian or the factory has stopped spends.
+- `program.paused()`: whether the factory has stopped spends.
 - `publicGetCall("TS" "GV" vault)`: whether the program allows `vault`.
 
 ## Accepted behavior

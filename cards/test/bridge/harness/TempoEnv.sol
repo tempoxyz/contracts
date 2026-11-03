@@ -72,7 +72,6 @@ abstract contract TempoEnv is Test {
     CardFactory internal cardFactory;
     BridgeProvider internal provider;
     CardSpender internal program;
-    address internal programGuardian = makeAddr("bridge.program-guardian");
     address internal bridgeAdmin = makeAddr("bridge.admin");
     address internal bridgeGovernor = makeAddr("bridge.governor");
     address internal bridgeManager = makeAddr("bridge.manager");
@@ -192,7 +191,7 @@ abstract contract TempoEnv is Test {
         provider = BridgeProvider(
             deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(address(bridgeFactory), SPENDER_ID))
         );
-        program = CardSpender(cardFactory.deploy(SPENDER_ID, provider, programGuardian));
+        program = CardSpender(cardFactory.deploy(SPENDER_ID, provider));
         vm.label(address(cardFactory), "CardFactory");
         vm.label(address(provider), "BridgeProvider");
         vm.label(address(program), "CardSpender");

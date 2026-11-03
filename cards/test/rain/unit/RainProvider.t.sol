@@ -118,49 +118,14 @@ contract RainProviderTest is RainEnv {
     }
 
     // ------------------------------------------------------------------
-    // Rain's pause key
+    // No pause
     // ------------------------------------------------------------------
 
-    function test_pause_stopsEverySpendUntilResumed() public {
-        vm.prank(rainPauser);
-        vm.expectEmit(address(program));
-        emit CardSpender.GuardianPausedSet(true);
-        program.setPaused(true);
-
-        CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 1e6, "paused");
-        vm.prank(alice);
-        usd.approve(address(program), 1e6);
-        vm.prank(alice);
-        vm.expectRevert(CardSpender.ProgramPaused.selector);
-        program.spend(s);
-
-        CardSpend memory p = _stableSpend(programCollateral, programCollateralIndex, 1e6, "paused.private");
-        vm.prank(router);
-        usd.transfer(address(program), 1e6);
-        vm.prank(router);
-        vm.expectRevert(CardSpender.ProgramPaused.selector);
-        program.settle(address(usd), 1e6, abi.encode(p));
-
-        vm.prank(rainPauser);
-        program.setPaused(false);
-        vm.prank(alice);
-        program.spend(s);
-        assertEq(usd.balanceOf(aliceCollateral), 1e6);
-    }
-
-    function test_revert_onlyThePauserPauses() public {
-        vm.prank(alice);
-        vm.expectRevert(CardSpender.NotGuardian.selector);
-        program.setPaused(true);
-    }
-
-    function test_revert_noPauserMeansNoPause() public {
-        CardSpender unpausable =
-            CardSpender(factory.deploy("rain.unguarded", ICardProvider(address(provider)), address(0)));
-        vm.prank(address(0));
-        vm.expectRevert(CardSpender.NotGuardian.selector);
-        unpausable.setPaused(true);
-        assertFalse(unpausable.paused());
+    /// @notice Rain's contracts have no pause, so the provider reports none and neither does the program:
+    ///         Rain stops a program by not sending spends.
+    function test_noPause() public view {
+        assertFalse(provider.paused());
+        assertFalse(program.paused());
     }
 
     // ------------------------------------------------------------------
