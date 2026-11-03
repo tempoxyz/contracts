@@ -34,6 +34,7 @@ import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { Spend, SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderClone } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 /// @notice Deploys the on-chain world a Tempo card program runs on: TIP-20 stablecoins (real
 ///         precompiles), a Tempo Earn stack over an ERC-4626 venue, Bridge's SpenderFactory with
@@ -69,6 +70,8 @@ abstract contract TempoEnv is Test {
     SpenderFactory internal bridgeFactory;
     address internal spender; // the program's spender clone
     /// @dev The program's CardSpender: the public spend entry point and the Zone router's spender.
+    /// @dev The router factory whose routers may call the program's `spendFrom`.
+    ZoneRouterFactory internal routerFactory;
     CardFactory internal cardFactory;
     BridgeProvider internal provider;
     CardSpender internal program;
@@ -185,9 +188,12 @@ abstract contract TempoEnv is Test {
         _deployCardSpender();
     }
 
-    /// @dev From their artifacts: inlining the factory, which nests the program, would bloat every suite.
+    /// @dev From their artifacts: inlining the factories, which nest the program and the router, would bloat
+    ///      every suite. The router factory comes first: only its routers may call the program's `spendFrom`.
     function _deployCardSpender() private {
-        cardFactory = CardFactory(deployCode("CardFactory.sol:CardFactory"));
+        routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
+        vm.label(address(routerFactory), "ZoneRouterFactory");
+        cardFactory = CardFactory(deployCode("CardFactory.sol:CardFactory", abi.encode(address(routerFactory))));
         provider = BridgeProvider(
             deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(address(bridgeFactory), SPENDER_ID))
         );

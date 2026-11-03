@@ -13,7 +13,7 @@ import { CardSpend } from "../CardSpend.sol";
 ///         contracts as they are.
 interface ICardProvider is IERC165 {
     /// @notice Whether a spend of `token` from `payer` may pay `destination`.
-    /// @param payer The cardholder's account (public) or whoever settles a Zone withdrawal (private).
+    /// @param payer The cardholder's account for a public spend; zero for a private spend, which has none.
     /// @param hint Provider-specific evidence that `destination` belongs to the program.
     /// @param isPrivate True for a private spend, which must not name the cardholder: the provider authorizes
     ///        only destinations the program shares across cardholders for it.

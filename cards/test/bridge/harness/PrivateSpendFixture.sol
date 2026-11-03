@@ -5,11 +5,10 @@ import { EncryptedDepositPayload } from "tempo-earn/interfaces/external/tempo/IZ
 import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { IZoneOutbox } from "../../../src/providers/bridge/interfaces/IZoneOutbox.sol";
 import { AccessKeys } from "./AccessKeys.sol";
+import { IZoneOutbox } from "./IZoneOutbox.sol";
 import { isStandingOrNone } from "./StandingApproval.sol";
 import { TxCall } from "./lib/TempoTx.sol";
 
@@ -22,7 +21,6 @@ abstract contract PrivateSpendFixture is AccessKeys {
     /// @dev Tempo base fee, which prices the portal's bounce-back fee.
     uint256 internal constant BASE_FEE = 20 gwei;
 
-    ZoneRouterFactory internal routerFactory;
     ZoneRouter internal zoneRouter;
     address internal alice = makeAddr("alice");
     address internal mallory = makeAddr("mallory");
@@ -38,8 +36,6 @@ abstract contract PrivateSpendFixture is AccessKeys {
     function _setUpPrivateSpend(bool closedLoop) internal {
         _deployTempo();
         _deployZone(closedLoop);
-        // From its artifact: inlining the factory, which nests the router, would bloat every test.
-        routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
         zoneRouter = _deployRouter(_spenders(address(program)));
 
         vm.fee(BASE_FEE);

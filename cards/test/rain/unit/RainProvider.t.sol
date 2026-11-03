@@ -44,7 +44,7 @@ contract RainProviderTest is RainEnv {
     }
 
     /// @dev Alice hands Bob ownership of her collateral, which keeps her as its only admin: Bob's spends
-    ///      cannot fund it until he also administers it, at which point Rain lets him withdraw it.
+    ///      cannot fund it while she can still withdraw it, even once he administers it too, until he removes her.
     function test_revert_transferredCollateralWithoutAdminRights() public {
         vm.prank(alice);
         (bool ok,) = aliceCollateral.call(abi.encodeWithSignature("transferOwnership(address)", bob));
@@ -53,7 +53,31 @@ contract RainProviderTest is RainEnv {
         vm.prank(bob);
         (ok,) = aliceCollateral.call(abi.encodeWithSignature("addAdmin(address)", bob));
         assertTrue(ok);
+        _expectRefused(bob, aliceCollateral, aliceIndex);
+        vm.prank(bob);
+        (ok,) = aliceCollateral.call(abi.encodeWithSignature("removeAdmin(address)", alice));
+        assertTrue(ok);
         assertTrue(provider.isAuthorizedDestination(bob, aliceCollateral, address(usd), aliceIndex, false));
+        assertFalse(provider.isAuthorizedDestination(alice, aliceCollateral, address(usd), aliceIndex, false));
+    }
+
+    /// @dev An owner who adds a co-admin before handing the collateral over keeps a way to withdraw it, so the
+    ///      new owner's spends cannot fund it, though they own and administer it.
+    function test_revert_preAddedCoAdminHandover() public {
+        address mallory = makeAddr("mallory");
+        vm.startPrank(alice);
+        (bool ok,) = aliceCollateral.call(abi.encodeWithSignature("addAdmin(address)", mallory));
+        assertTrue(ok);
+        (ok,) = aliceCollateral.call(abi.encodeWithSignature("addAdmin(address)", bob));
+        assertTrue(ok);
+        (ok,) = aliceCollateral.call(abi.encodeWithSignature("transferOwnership(address)", bob));
+        assertTrue(ok);
+        vm.stopPrank();
+        vm.prank(bob);
+        (ok,) = aliceCollateral.call(abi.encodeWithSignature("removeAdmin(address)", alice));
+        assertTrue(ok);
+        _expectRefused(bob, aliceCollateral, aliceIndex);
+        // Alice owned it with a co-admin too, which the same rule refused.
         assertFalse(provider.isAuthorizedDestination(alice, aliceCollateral, address(usd), aliceIndex, false));
     }
 
@@ -117,12 +141,36 @@ contract RainProviderTest is RainEnv {
         _expectPrivateRefused(aliceCollateral, aliceIndex);
     }
 
+    /// @dev A provider deployed without public access to the pooled collateral funds it only privately.
+    function test_pooledCollateral_privateOnly() public {
+        provider = _deployProvider(address(earnVault), false);
+        program = CardSpender(factory.deploy("rain.private-pool", ICardProvider(address(provider))));
+        _listInRouter(address(program));
+        assertFalse(provider.POOLED_ACCEPTS_PUBLIC());
+        _expectRefused(alice, programCollateral, programCollateralIndex);
+        _routerSpend(address(usd), 3e6, _stableSpend(programCollateral, programCollateralIndex, 3e6, "p.pool"));
+        assertEq(usd.balanceOf(programCollateral), 3e6);
+    }
+
+    /// @dev The private path names no payer: the program asks the provider with the zero address.
+    function test_privateSpend_askedWithZeroPayer() public {
+        CardSpend memory s = _stableSpend(programCollateral, programCollateralIndex, 1e6, "p.zero");
+        vm.expectCall(
+            address(provider),
+            abi.encodeCall(
+                provider.isAuthorizedDestination,
+                (address(0), programCollateral, address(usd), programCollateralIndex, true)
+            )
+        );
+        _routerSpend(address(usd), 1e6, s);
+    }
+
     // ------------------------------------------------------------------
     // No pause
     // ------------------------------------------------------------------
 
     /// @notice Rain's contracts have no pause, so the provider reports none and neither does the program:
-    ///         Rain stops a program by not sending spends.
+    ///         Rain stops a program by revoking its access keys and Zone keys.
     function test_noPause() public view {
         assertFalse(provider.paused());
         assertFalse(program.paused());

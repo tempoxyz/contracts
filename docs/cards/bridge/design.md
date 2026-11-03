@@ -75,15 +75,17 @@ The contracts convert nothing: a spend settles in the stablecoin that funds it.
 2. **Governance.** Calls `governorCall("UV", vault, allowed)` for each Earn vault the program can
    spend from. This also sets the clone's standing EarnShare approval to the vault. Disallowing
    clears it.
-3. **Tempo.** Deploys `CardFactory` and the program's `BridgeProvider` (`factory`, `spenderId`) at
-   their release addresses, then `CardFactory.deploy(spenderId, provider)`, with
+3. **Tempo.** Deploys the `CardFactory` for the Zone's `ZoneRouterFactory` and the program's
+   `BridgeProvider` (`factory`, `spenderId`) at their release addresses, then
+   `CardFactory.deploy(spenderId, provider)`, with
    [Bridge Release](../../deployment/deployment.md#bridge-releases).
 4. **Tempo.** Deploys the Zone's `ZoneRouter` through `ZoneRouterFactory`, with the program as its
    only spender.
 5. **Zone admin.** Gives the router its gateway role. Admits the program's `refundRecipient` and
    program wallet.
 6. **Anyone (once for each token).** Calls `router.warm(token)` and `program.warm(token)`, sends 1
-   EarnShare unit to the clone and 1 unit of each token to the settlement wallet
+   EarnShare unit to the clone, 1 unit of each token to the program and 1 unit of each token to the
+   settlement wallet
    ([deploy](deploy.md#6-prepare-the-program-for-low-callback-gas)).
 
 ### Card enrollment
@@ -298,7 +300,10 @@ struct SpendReturn {
 - Governance action "UV" (factory only) allows or disallows a vault, and sets or clears the clone's
   share approval to that vault.
 - `availableBalance` reports the payer's balance of `token` plus the value of its shares in an
-  allowed vault that holds `token`.
+  allowed vault that holds `token`: an upper bound, since a spend pays at the `previewWithdraw` cost.
+- A virtual destination (TIP-1022) is credited through its master: the handler checks the master's
+  balance, and redeems Earn shares for one to the clone and transfers them on, since Earn's engines
+  check the literal receiver.
 - Storage is at an ERC-7201 slot (`tempo.spend.SpenderTempoSpend`), so it cannot collide with the
   clone's storage.
 
@@ -322,11 +327,12 @@ The program's checks are the [core design's](../design.md#what-the-program-check
 are:
 
 - The `CardSpend` must name this program (`WrongProgram`). The program must not be paused: `paused()`
-  is `factory.paused()`, read through the provider contract (`ProgramPaused`). `amount` must be
+  is `factory.paused()`, or true while the factory would not route "TS" for the clone (handler
+  disabled, or gated without the program), read through the provider contract (`ProgramPaused`). `amount` must be
   more than zero and `fromVault` at most `amount` (`InvalidAmount`).
 - The destination must be authorized for `spenderId` in the factory (`DestinationNotAuthorized`), on
-  both paths. A Bridge settlement wallet is shared by every cardholder, so it serves private spends
-  too.
+  both paths: `BridgeProvider` ignores `isPrivate`, so Bridge governance must authorize only settlement
+  wallets every cardholder shares, which then serve private spends too.
 - An Earn spend's vault must be allowed in the clone, read through `publicGetCall "TS" "GV"`
   (`VaultNotAllowed`), and hold `token` (`IncorrectAssetForVault`). These checks mirror the handler's,
   so a spend Bridge would refuse is refused before funds move; the clone stays the authority.
@@ -335,16 +341,19 @@ are:
   handler permissions apply, and the handler enforces `maxShares`.
 - `spend`: the program pulls `amount - fromVault` of `token` and, for Earn, the live
   `previewWithdraw(fromVault)` of the EarnShare from the caller (`ShareCostExceeded` when a nonzero
-  `maxShares` is below it), and returns what the clone did not use. The clone can take at most what the
-  caller put in.
+  `maxShares` is below it). The clone must use all of the stablecoin (`InputNotConsumed`) and can take
+  at most the share quote; the program returns the shares it did not use.
 - `spendFrom`: the input must be the spend token when `fromVault` is zero, or the vault's EarnShare when
   `fromVault` equals `amount` (`WrongInputToken`), and `maxInput` more than zero and at most
   `type(uint128).max` (`InvalidAmount`). The program must hold at least `maxInput`
   (`InsufficientInput`) and uses its balance minus `maxInput` as its baseline. The clone must use some
-  input (`NothingSpent`) and no more than `maxInput` (the balance check reverts). The program returns the unused input to the
-  caller and must end at its baseline (`ResidualBalance`).
+  input (`NothingSpent`) and no more than `maxInput` (the balance check reverts): exactly `amount` of a
+  stablecoin, and at most the `previewWithdraw(fromVault)` the program quoted before the call for shares
+  (`InputNotConsumed`), so a replaced handler cannot keep the rest. The program returns the unused input
+  to the caller and must end at its baseline (`ResidualBalance`). The provider is asked with no payer.
 - On both paths the destination must get exactly `amount` (`DestinationNotCredited`).
-- `spend` and `spendFrom` are permissionless. A transient lock stops reentry (`Reentrancy`).
+- `spend` is permissionless. `spendFrom` accepts only a router the program's `ROUTER_FACTORY` deployed
+  whose mode lists the program (`NotRouter`). A transient lock stops reentry (`Reentrancy`).
 - `warm(token)` sets the program's standing maximum approval to the clone before the first spend.
 - It emits `CardSpent(ref, payer, destination, token, amount, fromVault, sharesUsed, isPrivate)` and,
   on `spendFrom`, `InputSpent(ref, inputToken, inputConsumed, inputReturned)`. A private spend's payer
@@ -352,10 +361,10 @@ are:
 
 ### CardFactory
 
-- The factory deploys a program at a CREATE2 address from `keccak256(programId, provider)`,
-  so one program has one address whoever deploys it, and deploying it again returns it.
-  `isSpender(program)` and `SpenderDeployed` prove a program's provenance. For Bridge, the program ID
-  is the `spenderId`.
+- The factory deploys a program at a CREATE2 address from `keccak256(programId, provider)` and an init
+  code carrying the provider and the factory's `ROUTER_FACTORY`, so one program has one address whoever
+  deploys it, and deploying it again returns it. `isDeployed(program)` and `ProgramDeployed` prove a
+  program's provenance. For Bridge, the program ID is the `spenderId`.
 
 ### ZoneRouterFactory
 
@@ -370,10 +379,11 @@ are:
 - Only the Zone messenger can call the router. The router accepts only its one Zone and the canonical
   portal of that Zone.
 - Any Zone user can send a withdrawal to the router with any callback data. That user can only pay a
-  program destination through the listed program, from their own funds, up to their `maxInput`.
+  program destination through the listed program, from their own funds, up to their `maxInput`. Nobody
+  else can call the program's `spendFrom`.
 - The router, the program, its provider and the `CardFactory` have no owner, no setters and no sweep.
-  The program has no pause of its own: the factory's pause stops it. The router and the program must
-  keep no balance after a spend.
+  The program has no pause of its own: the factory's pause stops it. The router must keep no balance
+  after a spend, and the program none beyond the seed it held before.
 
 The contracts assume this behavior from code outside the [audit scope](#audit-scope):
 
@@ -416,10 +426,15 @@ The contracts assume this behavior from code outside the [audit scope](#audit-sc
 - There is no on-chain idempotency. Bridge removes duplicate spends off chain by its pull ID.
 - Bridge approves a private spend on the Zone receipt. If L1 settlement fails after approval,
   Bridge's reserve pays.
-- Spend events are not proof of payment. Anyone can emit one with any `ref`. Bridge reconciles with
-  its own transactions and the portal's `WithdrawalProcessed` event.
+- Spend events are not proof of payment. Anyone can emit one with any `ref`, which is advisory. Bridge
+  reconciles by transaction and log index, binding a private spend's `CardSpent` and `InputSpent` to the
+  portal's `WithdrawalProcessed` and the router's `Spent` in the same transaction, and a public one to its
+  own access key's transaction. A private spend's `ref` is public on the L1, so Bridge uses one that
+  cannot be linked to the cardholder, such as `keccak256(pullId, programSecret)` with a per-program
+  secret.
 - Tokens sent to the router outside a callback cannot be recovered. Tokens sent to the program
-  outside a spend can be spent by the next `spendFrom` caller, but only to a program destination.
+  outside a spend stay there as its baseline: only the program's routers can call `spendFrom`, and no
+  spend touches the baseline.
 - Programs are immutable. A new provider contract or clone means a new program, a router that lists
   it and new cardholder keys ([core accepted risks](../design.md#accepted-risks)).
 - A vault that cannot report its asset, shares or redemption value makes `availableBalance` report
@@ -518,8 +533,8 @@ Most of the cost is Tempo's charge for each storage slot that goes from zero to 
 So the router hands the program its input by transfer, not approval; the program's approval to the
 clone, the router's to the portal and the clone's to an allowed vault are standing maximum approvals;
 and the reentrancy locks are transient. The program's own balance slot is created and cleared on
-every spend (about 250k); seeding it would not help, because `spendFrom` is permissionless and counts
-what the program holds as the caller's input.
+every spend (about 250k) unless it holds a one-unit seed of the token, which `spendFrom` (callable only
+by the program's routers) keeps as its baseline; the figures above are for an unseeded program.
 
 The Zone sequencer packs withdrawals into a 10M gas batch, reserving 0.5M per transaction and 1.75M
 plus the requested callback gas per spend:

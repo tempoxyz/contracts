@@ -6,6 +6,7 @@ pragma solidity ^0.8.36;
 
 import { ZoneRouter } from "../../src/ZoneRouter.sol";
 import { ISpender } from "../../src/interfaces/ISpender.sol";
+import { ZoneRouterMockPortal } from "../helpers/ZoneRouterMockPortal.sol";
 import { ZoneRouterEarnTestBase } from "./ZoneRouterEarnTestBase.sol";
 import { IRouterPropAMMPool } from "earn-test/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "earn-test/helpers/PropAMMEngineMocks.sol";
@@ -76,6 +77,8 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
 
     function setUp() public override {
         super.setUp();
+        // Spend reads the Portal's bounce-back reserve, which Earn's mock lacks.
+        vm.etch(address(portalA), address(new ZoneRouterMockPortal()).code);
         pool = _routerPool(address(alternate), address(assetA));
         spender = new PayingSpender(payee);
 

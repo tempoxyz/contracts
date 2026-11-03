@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "zone-router/interfaces/IAddressRegistry.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { ICardProvider, ICardProviderPayout } from "../../../src/core/interfaces/ICardProvider.sol";
@@ -57,7 +58,11 @@ contract MockPayoutTarget {
         Honest,
         PayNothing,
         TakeExtra,
-        PayShort
+        PayShort,
+        /// @dev Pays the destination from its own balance and takes nothing from the caller.
+        PayFromOwn,
+        /// @dev Pays honestly, then keeps everything else the caller holds of the spend's input token.
+        KeepSurplus
     }
 
     Mode public mode;
@@ -68,11 +73,18 @@ contract MockPayoutTarget {
 
     function pay(CardSpend calldata s) external {
         if (mode == Mode.PayNothing) return;
+        if (mode == Mode.PayFromOwn) {
+            SafeTransferLib.safeTransfer(s.token, s.destination, s.amount);
+            return;
+        }
         uint256 fromStable = s.amount - s.fromVault;
         if (mode == Mode.PayShort) fromStable -= 1;
         if (fromStable != 0) SafeTransferLib.safeTransferFrom(s.token, msg.sender, s.destination, fromStable);
         if (mode == Mode.TakeExtra) SafeTransferLib.safeTransferFrom(s.token, msg.sender, address(this), 1);
-        if (s.fromVault == 0) return;
+        if (s.fromVault == 0) {
+            if (mode == Mode.KeepSurplus) _keepAll(s.token);
+            return;
+        }
         ITempoEarnVault v = ITempoEarnVault(s.vault);
         uint256 required = v.previewWithdraw(s.fromVault);
         address share = v.earnShare();
@@ -80,6 +92,12 @@ contract MockPayoutTarget {
         SafeTransferLib.safeApprove(share, address(v), required);
         uint256 burned = v.withdrawExact(s.fromVault, s.destination, required);
         if (burned < required) SafeTransferLib.safeTransfer(share, msg.sender, required - burned);
+        if (mode == Mode.KeepSurplus) _keepAll(share);
+    }
+
+    function _keepAll(address token) private {
+        uint256 held = ERC20(token).balanceOf(msg.sender);
+        if (held != 0) SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), held);
     }
 }
 
@@ -101,6 +119,25 @@ contract MockPayoutProvider is MockProvider, ICardProviderPayout {
 
     function supportsInterface(bytes4 id) public view override returns (bool) {
         return id == type(ICardProviderPayout).interfaceId || super.supportsInterface(id);
+    }
+}
+
+/// @notice A `ZoneRouterFactory` stand-in whose routers the test registers.
+contract MockRouterFactory {
+    mapping(address router => bool) public isRouter;
+
+    function register(address router, bool registered) external {
+        isRouter[router] = registered;
+    }
+}
+
+/// @notice A `ZoneRouter` stand-in whose spender list the test sets. Tests prank it to transfer a withdrawal's
+///         input and call `spendFrom`, as a router does.
+contract MockRouter {
+    mapping(address spender => bool) public isSpender;
+
+    function list(address spender, bool listed) external {
+        isSpender[spender] = listed;
     }
 }
 
@@ -139,5 +176,57 @@ contract ReentrantToken is ERC20 {
             reentryError = err;
         }
         super._update(from, to, value);
+    }
+}
+
+/// @notice An ERC-20 anyone can mint that, like a TIP-20, credits a virtual recipient's master, as Tempo's
+///         TIP-1022 registry precompile resolves it (which a test mocks for its virtual addresses).
+contract VirtualAwareToken is ERC20 {
+    constructor(string memory symbol) ERC20(symbol, symbol) { }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (to != address(0)) to = IAddressRegistry(ADDRESS_REGISTRY_ADDRESS).resolveRecipient(to);
+        super._update(from, to, value);
+    }
+}
+
+/// @notice An Earn vault at two shares per asset that, like Earn's engines, checks the literal receiver got
+///         the assets, so it refuses a virtual receiver.
+contract LiteralReceiverVault is ITempoEarnVault {
+    address public immutable asset;
+    VirtualAwareToken public immutable SHARE;
+
+    constructor(address asset_) {
+        asset = asset_;
+        SHARE = new VirtualAwareToken("vES");
+    }
+
+    function earnShare() external view returns (address) {
+        return address(SHARE);
+    }
+
+    function previewWithdraw(uint256 assets) public pure returns (uint256) {
+        return assets * 2;
+    }
+
+    function previewRedeem(uint256 earnShares) external pure returns (uint256) {
+        return earnShares / 2;
+    }
+
+    function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares) external returns (uint256 burned) {
+        burned = previewWithdraw(assets);
+        require(burned <= maxEarnShares, "max shares");
+        SafeTransferLib.safeTransferFrom(address(SHARE), msg.sender, address(0xdead), burned);
+        uint256 before = ERC20(asset).balanceOf(receiver);
+        SafeTransferLib.safeTransfer(asset, receiver, assets);
+        require(ERC20(asset).balanceOf(receiver) == before + assets, "receiver not credited");
     }
 }

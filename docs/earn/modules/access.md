@@ -36,7 +36,9 @@ authorized: the EarnVault, `EarnFees`, every recipient of the current fee config
 configured, the Merkle distributor and its treasury, the Zone router with the Zone's Portal,
 Messenger, every active sequencer, and Outbox, and the profile's `zoneRouter`
 ([`ZoneRouter`](../../zone-router/zone-router.md#deployment)) with its own Zone's Portal, Messenger,
-sequencers, and Outbox, whatever its ops. Authorities that never hold EarnShare (owner,
+sequencers, and Outbox, whatever its ops, plus its spenders when that Portal enables EarnShare (an
+EarnShare spend moves shares through them; `pnpm earn verify` reports a spender the policy omits).
+Authorities that never hold EarnShare (owner,
 deployer, fee distributor) are not members. Zone account admission and token enablement are separate
 Zone-administrator permissions ([Zones](zone-router.md#token-enablement-policy-and-admission)).
 

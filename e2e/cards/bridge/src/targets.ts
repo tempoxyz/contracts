@@ -6,7 +6,8 @@
 //   its accounts, then runs the deployment preflight against it.
 // - moderato: Tempo's testnet L1 and its hosted Zone 3, reached through Tempo API. The program is
 //   deployed once (`--deploy`) and recorded in targets/moderato.json; a record without a CardSpender
-//   and router gets them from script/bridge/deploy/DeployZoneRouter.s.sol. A run changes the Zone's Portal
+//   and router gets them from script/bridge/deploy/DeployZoneRouter.s.sol, through the ZoneRouterFactory
+//   ROUTER_FACTORY names, the only factory whose routers the program accepts. A run changes the Zone's Portal
 //   only with `--admit`: otherwise, when the router, cardholder, program wallet or refund recipient
 //   lacks the role the Portal requires, the private steps report BLOCKED with the call the Zone administrator must make.
 import { execFileSync } from 'node:child_process'
@@ -266,7 +267,13 @@ type RouterDeployment = Pick<
 async function deployRouter(
   l1Public: PublicClient,
   rpcUrl: string,
-  env: { deployerPk: Hex; factory: Address; spenderId: Hex; zoneId: number },
+  env: {
+    deployerPk: Hex
+    factory: Address
+    spenderId: Hex
+    zoneId: number
+    routerFactory: Address
+  },
 ): Promise<RouterDeployment> {
   // The script reads the Zone factory, which forge runs only at the L1's hardfork.
   const foundryHardfork = await hardfork(l1Public)
@@ -293,6 +300,7 @@ async function deployRouter(
         FACTORY: env.factory,
         SPENDER_ID: env.spenderId,
         ZONE_ID: String(env.zoneId),
+        ROUTER_FACTORY: env.routerFactory,
         OUT: out,
       }),
     },
@@ -883,6 +891,7 @@ export async function hosted(
       factory: record.factory,
       spenderId: record.spenderId,
       zoneId: moderato.zone.id,
+      routerFactory: required(env, 'ROUTER_FACTORY', 'moderato') as Address,
     })
     const { receiver: _receiver, settler: _settler, ...rest } = record
     writeFileSync(moderatoRecord, `${JSON.stringify({ ...rest, ...routed }, null, 2)}\n`)

@@ -78,6 +78,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     }
 
     /// @notice Op 2: the spender, the most input it may use, its own data, and the change return.
+    /// @dev Size `maxInput` so the change is zero or at least the Portal's deposit fee plus bounce-back reserve.
     struct SpendData {
         Op op;
         address spender;
@@ -137,10 +138,15 @@ contract ZoneRouter is IWithdrawalReceiver {
         bytes32 zoneDepositHash
     );
     /// @notice A Spend settled. Carries no senderTag, action ID or Zone account.
+    /// @dev Not proof of a Zone spend by itself: bind it to the source Portal's `WithdrawalProcessed` for this
+    ///      router in the same transaction.
     event Spent(address indexed spender, address indexed token, uint256 used, uint256 change, bytes32 zoneDepositHash);
 
     error AmountOverflow();
     error BadFlow();
+    /// @notice A Spend's nonzero change is below the Portal's minimum deposit, its deposit fee plus its
+    ///         bounce-back reserve, so its return would revert.
+    error ChangeBelowDepositFee(uint256 change, uint256 fee);
     error DepositFeeTooHigh(uint128 fee);
     error InsufficientOutput();
     error InvalidCustomerId();
@@ -220,6 +226,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     ///         change would otherwise set on its first callback. Earn ops then use it too. Permissionless:
     ///         the router holds no balance between callbacks, and the Portal is the Zone's own.
     ///         Only a router that spends has one: an Earn-only router keeps SingleZoneEarnRouter's exact approvals.
+    /// @dev Invariant: the Portal moves the router's tokens only inside a `depositEncrypted` call the router makes.
     function warm(address token) external {
         if (enabledOps & OP_SPEND == 0) revert OpDisabled();
         _approvePortal(token, IZoneFactory(ZONE_FACTORY_ADDRESS).zones(allowedZoneId).portal, type(uint256).max);
@@ -299,6 +306,9 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (!isSpender[data.spender]) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
+        // A maxInput below the amount always leaves change, so its return is checked before the spender pays,
+        // and checked again once it has: the Portal's fee may change while the spender runs.
+        if (data.maxInput < amount) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
 
         uint256 balanceBefore = IERC20Like(token).balanceOf(address(this));
         // A transfer instead of an approval: the spender holds no allowance from the router, so it can
@@ -315,12 +325,10 @@ contract ZoneRouter is IWithdrawalReceiver {
         uint256 change = amount - used;
         bytes32 zoneDepositHash;
         if (change != 0) {
-            if (!IZonePortal(sourcePortal).isTokenEnabled(token) || !IZonePortal(sourcePortal).areDepositsActive(token))
-            {
-                revert InvalidReturnToken();
-            }
-            uint128 fee = IZonePortalFees(sourcePortal).calculateDepositFee();
-            if (fee > data.zoneReturn.maxDepositFee) revert DepositFeeTooHigh(fee);
+            uint128 fee = _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
+            // The Portal's depositEncrypted reverts DepositTooSmall below this; named here for the sender.
+            uint256 minimum = uint256(fee) + IZonePortalFees(sourcePortal).calculateBouncebackFee();
+            if (change < minimum) revert ChangeBelowDepositFee(change, minimum);
             _approvePortal(token, sourcePortal, change);
             zoneDepositHash = IZonePortal(sourcePortal)
                 .depositEncrypted(
@@ -332,6 +340,19 @@ contract ZoneRouter is IWithdrawalReceiver {
                 );
         }
         emit Spent(data.spender, token, used, change, zoneDepositHash);
+    }
+
+    /// @dev Requires the Portal to take `token` back and its deposit fee to be within the sender's cap.
+    function _checkChangeReturn(address sourcePortal, address token, uint128 maxDepositFee)
+        private
+        view
+        returns (uint128 fee)
+    {
+        if (!IZonePortal(sourcePortal).isTokenEnabled(token) || !IZonePortal(sourcePortal).areDepositsActive(token)) {
+            revert InvalidReturnToken();
+        }
+        fee = IZonePortalFees(sourcePortal).calculateDepositFee();
+        if (fee > maxDepositFee) revert DepositFeeTooHigh(fee);
     }
 
     function _handleDeposit(
@@ -499,7 +520,8 @@ contract ZoneRouter is IWithdrawalReceiver {
 
     /// @dev Leaves a standing maximum approval to the Portal, topped up only when it falls below `amount`.
     ///      Clearing it after each deposit would create its allowance slot again on every callback, which
-    ///      Tempo charges as a new storage slot (TIP-1000) against the callback's gas limit.
+    ///      Tempo charges as a new storage slot (TIP-1000) against the callback's gas limit. Safe only under the
+    ///      invariant that the Portal moves the router's tokens only inside a `depositEncrypted` call the router makes.
     function _approvePortal(address token, address portal, uint256 amount) private {
         if (IERC20Allowance(token).allowance(address(this), portal) < amount) {
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (portal, type(uint256).max)));

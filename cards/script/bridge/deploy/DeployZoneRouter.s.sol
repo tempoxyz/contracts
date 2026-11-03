@@ -13,7 +13,7 @@ import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeProgramRelease } from "./BridgeRelease.sol";
-import { checkProgram, requireProgram } from "./DeployBridgeProgram.s.sol";
+import { checkProgram, requireProgram, requireRouterFactory } from "./DeployBridgeProgram.s.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice A card program's router mode: Spend only on `zoneId`, through `spender` alone, with no Earn
@@ -30,15 +30,17 @@ library SpendMode {
 /// @notice Deploys one Bridge card program's `CardSpender` (as `DeployBridgeProgram` does) and the
 ///         Spend-mode `ZoneRouter` that lists it as its only spender on one Zone, through a
 ///         `ZoneRouterFactory`, after checking the program's clone was created for its ID and the Zone has
-///         a registered portal. The release `CardFactory`, the program's `BridgeProvider` and its program
-///         land at their deterministic addresses (`BridgeProgramRelease`), and one already there is reused;
-///         so is a router the factory already deployed for this mode. None of them has an owner, so nothing
-///         else is configured here. A Zone with a closed callback gateway must still grant the router the
+///         a registered portal. The release `CardFactory` for that router factory, the program's
+///         `BridgeProvider` and its program land at their deterministic addresses (`BridgeProgramRelease`),
+///         and one already there is reused; so is a router the factory already deployed for this mode. The
+///         program takes `spendFrom` only from that factory's routers, so the factory is the release
+///         `ZoneRouterFactory` (`pnpm zone-router-release <network> zoneRouterFactory`), never a new one. None
+///         of them has an owner, so nothing else is configured here. A Zone with a closed callback gateway must still grant the router the
 ///         gateway role, and one that enforces access must admit the program's refund recipient and the
 ///         program wallet that deposits refunds.
-///         `run` reads FACTORY (the Bridge spender factory), SPENDER_ID, ZONE_ID, OUT, ROUTER_FACTORY
-///         (optional: a new ZoneRouterFactory is deployed without it) and DEPLOYER_PK unless the signer
-///         comes from `--account` or `--ledger`. OUT is written only with `--broadcast`.
+///         `run` reads FACTORY (the Bridge spender factory), SPENDER_ID, ZONE_ID, OUT, ROUTER_FACTORY (the
+///         release ZoneRouterFactory) and DEPLOYER_PK unless the signer comes from `--account` or
+///         `--ledger`. OUT is written only with `--broadcast`.
 contract DeployZoneRouter is BridgeProgramRelease {
     struct Output {
         address factory;
@@ -58,7 +60,7 @@ contract DeployZoneRouter is BridgeProgramRelease {
             IBridgeSpenderFactory(vm.envAddress("FACTORY")),
             vm.envBytes32("SPENDER_ID"),
             ProgramChecks.zoneId(vm.envUint("ZONE_ID")),
-            ZoneRouterFactory(vm.envOr("ROUTER_FACTORY", address(0))),
+            ZoneRouterFactory(vm.envAddress("ROUTER_FACTORY")),
             vm.envOr("DEPLOYER_PK", uint256(0))
         );
         if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
@@ -69,7 +71,8 @@ contract DeployZoneRouter is BridgeProgramRelease {
         return o.router;
     }
 
-    /// @param routerFactory The ZoneRouterFactory to deploy through, or zero to deploy one.
+    /// @param routerFactory The release ZoneRouterFactory to deploy through. Its address is the Zone router
+    ///        project's build, which this project cannot derive, so it is named rather than created here.
     /// @param deployerPk The deployer's key, or zero to sign with forge's `--account` or `--ledger`.
     function deploy(
         IBridgeSpenderFactory factory,
@@ -84,17 +87,15 @@ contract DeployZoneRouter is BridgeProgramRelease {
             zone.portal != address(0) && IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal),
             "ZONE_ID has no portal"
         );
-        require(
-            address(routerFactory) == address(0) || address(routerFactory).code.length != 0,
-            "ROUTER_FACTORY has no code"
-        );
+        require(address(routerFactory) != address(0), "ROUTER_FACTORY unset");
+        require(address(routerFactory).code.length != 0, "ROUTER_FACTORY has no code");
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
-        if (address(routerFactory) == address(0)) routerFactory = new ZoneRouterFactory();
-        Created memory c = _bridgeProgram(factory, spenderId);
+        Created memory c = _bridgeProgram(factory, spenderId, address(routerFactory));
         o.router = ZoneRouter(routerFactory.deploy(SpendMode.forSpender(zoneId, address(c.program))));
         vm.stopBroadcast();
         requireProgram(c.program, factory, spenderId);
+        requireRouterFactory(c.program, address(routerFactory));
         o.factory = address(factory);
         o.spenderId = spenderId;
         o.zoneId = zoneId;

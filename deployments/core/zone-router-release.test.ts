@@ -63,7 +63,10 @@ describe('planRouterRelease', () => {
     })
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: spender.calldata }),
-    ).toEqual({ functionName: 'sendSpender', args: [42431n, zeroAddress, zeroAddress, zeroHash] })
+    ).toEqual({
+      functionName: 'sendSpender',
+      args: [42431n, zeroAddress, zeroAddress, zeroAddress, zeroHash],
+    })
     const router = planRouterRelease('zoneRouter', 4217, routerParameters)
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: router.calldata }),
@@ -139,6 +142,28 @@ describe('release parameters', () => {
     )
   })
 
+  test('a SendSpender binds the release ZoneRouterFactory unless a factory is named', () => {
+    const factory = address('f1')
+    const named = planRouterRelease('sendSpender', 4217, { factory: factory.toLowerCase() })
+    expect(named.parameters).toEqual({
+      factory,
+      vault: zeroAddress,
+      pool: zeroAddress,
+      customerId: zeroHash,
+    })
+    expect(named.contracts.map((contract) => contract.name)).toEqual(['SendSpender'])
+    expect(
+      decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: named.calldata }).args,
+    ).toEqual([4217n, factory, zeroAddress, zeroAddress, zeroHash])
+    // Omitted, the entry point deploys or reuses the release factory before the spender that binds it.
+    expect(
+      planRouterRelease('sendSpender', 4217).contracts.map((contract) => contract.name),
+    ).toEqual(['ZoneRouterFactory', 'SendSpender'])
+    expect(() => planRouterRelease('sendSpender', 4217, { factory: zeroAddress })).toThrow(
+      'parameters.factory must be a nonzero address',
+    )
+  })
+
   test('a ZoneRouter mode keeps the constructor rules that need no chain state', () => {
     const plan = (mode: Record<string, unknown>, factory: unknown = routerParameters.factory) =>
       planRouterRelease('zoneRouter', 4217, { factory, mode })
@@ -195,8 +220,8 @@ describe('release parameters', () => {
 describe('predictRelease for router releases', () => {
   test('a SendSpender is created through the CREATE2 deployer with its settings as arguments', () => {
     const customerId = keccak256(stringToBytes('customer'))
-    const [poolless] = predictRelease(planRouterRelease('sendSpender', 4217), bytecode)
-    const [converting] = predictRelease(
+    const [factory, poolless] = predictRelease(planRouterRelease('sendSpender', 4217), bytecode)
+    const [, converting] = predictRelease(
       planRouterRelease('sendSpender', 4217, {
         vault: address('b1'),
         pool: address('b0'),
@@ -204,7 +229,17 @@ describe('predictRelease for router releases', () => {
       }),
       bytecode,
     )
-    const args = encodeAbiParameters(parseAbiParameters('address, address, bytes32'), [
+    // The release ZoneRouterFactory's own deterministic address, which the spender binds.
+    expect(factory!.address).toBe(
+      getContractAddress({
+        opcode: 'CREATE2',
+        from: create2Deployer,
+        salt: releaseSalt,
+        bytecode: bytecode('src/ZoneRouterFactory.sol:ZoneRouterFactory'),
+      }),
+    )
+    const args = encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
+      factory!.address,
       address('b1'),
       address('b0'),
       customerId,
@@ -219,13 +254,28 @@ describe('predictRelease for router releases', () => {
       }),
     )
     expect(poolless!.constructorArgs).toBe(
-      encodeAbiParameters(parseAbiParameters('address, address, bytes32'), [
+      encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
+        factory!.address,
         zeroAddress,
         zeroAddress,
         zeroHash,
       ]),
     )
     expect(poolless!.address).not.toBe(converting!.address)
+
+    const [named] = predictRelease(
+      planRouterRelease('sendSpender', 4217, { factory: address('f1') }),
+      bytecode,
+    )
+    expect(named!.constructorArgs).toBe(
+      encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
+        address('f1'),
+        zeroAddress,
+        zeroAddress,
+        zeroHash,
+      ]),
+    )
+    expect(named!.address).not.toBe(poolless!.address)
   })
 
   test('a ZoneRouter is the CREATE2 address its factory creates for the mode', () => {

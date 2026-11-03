@@ -140,7 +140,8 @@ Moderato uses the test program recorded in `e2e/cards/bridge/targets/moderato.js
 `TEMPO_API_KEY` and an admitted `CARDHOLDER_PRIVATE_KEY` from `e2e/cards/bridge/.env.moderato` (see
 `.env.example`). `--deploy` also needs `DEPLOYER_PRIVATE_KEY`, a test-only key that deploys a new
 test program and records it in `targets/moderato.json`. A run also needs it when the record has no
-program and router, which it then deploys and records, and to allow the Earn vault for the program.
+program and router, which it then deploys and records, with `ROUTER_FACTORY` (the Moderato
+`ZoneRouterFactory` whose routers the program accepts), and to allow the Earn vault for the program.
 Zone 3 enforces account admission and a closed callback gateway. A plain run never changes its
 Portal: if the router, cardholder, program wallet or refund recipient lacks a role, the private
 steps report `BLOCKED` with the call to make and the run exits with code 3 after the public steps.

@@ -8,12 +8,11 @@ import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { DepositPayload } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
-import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { IZoneOutbox } from "../../../src/providers/bridge/interfaces/IZoneOutbox.sol";
+import { IZoneOutbox } from "../harness/IZoneOutbox.sol";
 
 import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.sol";
 import { TxCall } from "../harness/lib/TempoTx.sol";
@@ -208,14 +207,14 @@ abstract contract TempoPrivateRail is TempoRailBase {
 
     function _railSetUp() internal override {
         _deployZone(_closedLoop());
-        // The router factory comes from its artifact: inlining its creation code would bloat every matrix
-        // suite, and puts the private ones at a size solc's via-IR assembler fails on.
+        // Through the program's router factory (TempoEnv), from its artifact: inlining its creation code would
+        // bloat every matrix suite, and puts the private ones at a size solc's via-IR assembler fails on.
         ZoneRouter.Mode memory mode;
         mode.zoneId = ZONE_ID;
         mode.enabledOps = uint8(1 << 2);
         mode.spenders = new address[](1);
         mode.spenders[0] = address(program);
-        zoneRouter = ZoneRouter(ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode));
+        zoneRouter = ZoneRouter(routerFactory.deploy(mode));
         vm.label(address(zoneRouter), "ZoneRouter");
         _zoneRegisterGateway(address(zoneRouter));
         _zoneAllowAccount(programRefundRecipient);

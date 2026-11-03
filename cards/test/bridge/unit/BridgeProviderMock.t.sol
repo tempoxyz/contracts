@@ -10,6 +10,7 @@ import { ICardProvider, ICardProviderPayout } from "../../../src/core/interfaces
 import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { Spend } from "../../../src/providers/bridge/interfaces/IBridgeSpender.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
+import { MockRouter, MockRouterFactory } from "../../core/harness/Mocks.sol";
 
 /// @dev A plain ERC-20 whose transfers out of one address can be made to report success without moving
 ///      anything, to leave a residual balance behind.
@@ -95,6 +96,8 @@ contract MockFactory is IBridgeSpenderFactory {
     mapping(bytes32 spenderId => address) internal clones;
     mapping(bytes32 spenderId => mapping(address destination => bool)) public authorized;
     bool public paused;
+    /// @dev Whether the factory refuses to route "TS" for the clone (disabled, or gated without it).
+    bool public handlerRefused;
 
     function setClone(bytes32 spenderId, address clone) external {
         clones[spenderId] = clone;
@@ -106,6 +109,15 @@ contract MockFactory is IBridgeSpenderFactory {
 
     function setPaused(bool paused_) external {
         paused = paused_;
+    }
+
+    function setHandlerRefused(bool refused) external {
+        handlerRefused = refused;
+    }
+
+    function getSpenderHandlerWithCheckedPermissions(bytes2, address) external view returns (address) {
+        require(!handlerRefused, "handler refused");
+        return address(0x7);
     }
 
     function getSpenderAddress(bytes32 spenderId) external view returns (address clone) {
@@ -152,7 +164,8 @@ contract BridgeProviderMockTest is Test {
     MockFactory internal factory;
     BridgeProvider internal provider;
     CardSpender internal program;
-    address internal router = makeAddr("router");
+    /// @dev A router its factory registered, listing the program.
+    address internal router;
     address internal destination = makeAddr("destination");
 
     function setUp() public {
@@ -165,7 +178,11 @@ contract BridgeProviderMockTest is Test {
         factory.setClone(SPENDER_ID, address(clone));
         factory.setDestination(SPENDER_ID, destination, true);
         provider = new BridgeProvider(factory, SPENDER_ID);
-        program = new CardSpender(provider);
+        MockRouterFactory routerFactory = new MockRouterFactory();
+        router = address(new MockRouter());
+        routerFactory.register(router, true);
+        program = new CardSpender(provider, address(routerFactory));
+        MockRouter(router).list(address(program), true);
         usd.mint(address(clone), 1000e6);
     }
 
@@ -214,6 +231,19 @@ contract BridgeProviderMockTest is Test {
         factory.setPaused(true);
         assertTrue(provider.paused());
         assertTrue(program.paused(), "the program stops with the factory");
+    }
+
+    /// @notice A "TS" handler the factory would not route for the clone (disabled, or gated without it) stops
+    ///         spends as the pause does, so the program reports itself paused.
+    function testPausedWhileTheFactoryRefusesTheHandler() public {
+        factory.setHandlerRefused(true);
+        assertTrue(provider.paused());
+        assertTrue(program.paused());
+        _expectSpendRevert(
+            address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(CardSpender.ProgramPaused.selector)
+        );
+        factory.setHandlerRefused(false);
+        assertFalse(program.paused());
     }
 
     /// @notice The vault allowlist is the clone's "GV", and anything but a well-formed `true` is no vault.
@@ -293,30 +323,37 @@ contract BridgeProviderMockTest is Test {
         assertEq(share.balanceOf(address(program)), 0);
     }
 
-    /// @notice A public spend pulls only the stablecoin part and the live share quote (not the `maxShares` cap)
-    ///         from the payer, pays through the clone and returns what the clone did not use.
-    function testPublicSpendReturnsWhatTheCloneDidNotUse() public {
+    /// @notice A public spend pulls only the live share quote (not the `maxShares` cap) from the payer, pays
+    ///         through the clone and returns the shares the clone did not use.
+    function testPublicSpendReturnsSharesTheCloneDidNotUse() public {
         address payer = makeAddr("payer");
         CardSpend memory spend = _spend(address(usd));
         spend.vault = address(vault);
-        spend.fromVault = 20e6;
-        spend.maxShares = 45e6;
-        // Exactly the live quote (2 x 20e6), below the 45e6 cap: pulling the cap would fail.
-        share.mint(payer, 40e6);
-        usd.mint(payer, 100e6);
-        vm.startPrank(payer);
-        usd.approve(address(program), type(uint256).max);
+        spend.fromVault = AMOUNT;
+        spend.maxShares = 55e6;
+        // Exactly the live quote (2 x 25e6), below the 55e6 cap: pulling the cap would fail.
+        share.mint(payer, 50e6);
+        vm.prank(payer);
         share.approve(address(program), type(uint256).max);
-        vm.stopPrank();
-        // The clone takes only the stablecoin it is shown (the mock pulls one input) and pays in full.
-        clone.configure(0, AMOUNT);
+        clone.configure(40e6, AMOUNT);
         vm.prank(payer);
         program.spend(spend);
         assertEq(usd.balanceOf(destination), AMOUNT);
-        assertEq(usd.balanceOf(payer), 100e6, "the unused stablecoin came back");
-        assertEq(share.balanceOf(payer), 40e6, "the unused shares came back");
-        assertEq(usd.balanceOf(address(program)), 0);
+        assertEq(share.balanceOf(payer), 10e6, "the unused shares came back");
         assertEq(share.balanceOf(address(program)), 0);
+    }
+
+    /// @notice A public spend's stablecoin part is used in full: a clone that pays the destination some other
+    ///         way and leaves it with the program is refused.
+    function testPublicSpendRefusesUnusedStablecoin() public {
+        address payer = makeAddr("payer");
+        usd.mint(payer, 100e6);
+        vm.prank(payer);
+        usd.approve(address(program), type(uint256).max);
+        clone.configure(0, AMOUNT);
+        vm.prank(payer);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, 0, AMOUNT));
+        program.spend(_spend(address(usd)));
     }
 
     function testRefusesAnotherProgram() public {
@@ -402,10 +439,44 @@ contract BridgeProviderMockTest is Test {
         );
     }
 
+    /// @notice A private Earn spend whose clone pays from elsewhere and takes no shares is refused.
     function testRefusesASpendThatConsumedNothing() public {
         clone.configure(0, AMOUNT);
+        CardSpend memory spend = _spend(address(usd));
+        spend.vault = address(vault);
+        spend.fromVault = AMOUNT;
+        _expectSpendRevert(address(share), 60e6, spend, abi.encodeWithSelector(CardSpender.NothingSpent.selector));
+    }
+
+    /// @notice A private stablecoin spend uses exactly its amount: a clone (or a replaced "TS" handler) that
+    ///         keeps more of the withdrawal, or takes less, is refused.
+    function testRefusesAPayoutThatDoesNotUseExactlyTheAmount() public {
+        clone.configure(AMOUNT + 7e6, AMOUNT);
         _expectSpendRevert(
-            address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(CardSpender.NothingSpent.selector)
+            address(usd),
+            AMOUNT + 7e6,
+            _spend(address(usd)),
+            abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, AMOUNT + 7e6, AMOUNT)
+        );
+        clone.configure(AMOUNT - 1, AMOUNT);
+        usd.mint(address(clone), AMOUNT);
+        _expectSpendRevert(
+            address(usd),
+            AMOUNT,
+            _spend(address(usd)),
+            abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, AMOUNT - 1, AMOUNT)
+        );
+    }
+
+    /// @notice A private Earn spend uses at most the share cost quoted before the payout, so a clone cannot
+    ///         keep the rest of `maxInput` as a buffer.
+    function testRefusesAPayoutThatKeepsSharesAboveTheQuote() public {
+        clone.configure(50e6 + 1, AMOUNT);
+        CardSpend memory spend = _spend(address(usd));
+        spend.vault = address(vault);
+        spend.fromVault = AMOUNT;
+        _expectSpendRevert(
+            address(share), 60e6, spend, abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, 50e6 + 1, 50e6)
         );
     }
 

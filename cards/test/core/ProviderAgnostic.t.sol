@@ -70,6 +70,7 @@ contract ProviderAgnosticTest is CoreEnv {
         registry.set("program", settlementWallet, true);
         walletProgram =
             CardSpender(factory.deploy("wallet", new SettlementWalletProvider(registry, "program", address(usd))));
+        _listInRouter(address(walletProgram));
         usd.mint(alice, 100e6);
         usd.mint(router, 100e6);
     }

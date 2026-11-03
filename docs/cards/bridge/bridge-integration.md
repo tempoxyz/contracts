@@ -165,9 +165,14 @@ A private spend ends in one of three ways:
   outbox's withdrawal event in Bridge's own Zone receipt. Neither the router nor the program emits
   it, so read `Spent` and `InputSpent` from the same transaction. Trust only events emitted by the
   program's portal, router and program. `ref` and the `CardSpend`
-  fields come from callback data anyone can write, so never match on `ref` alone.
+  fields come from callback data anyone can write, so never match on `ref` alone: key each record on the
+  transaction hash and log index, and bind the program's `CardSpent` and `InputSpent` to the portal's
+  `WithdrawalProcessed` and the router's `Spent` in that transaction. `ref` is advisory and public on
+  the L1, so for a private spend use one that cannot be linked to the cardholder, such as
+  `keccak256(pullId, programSecret)` with a secret Bridge keeps per program.
 - A spend can bounce after approval for:
-  - **The program:** a paused factory, a disabled or un-allowlisted `TS` handler, a destination
+  - **The program:** a paused factory, a disabled or un-allowlisted `TS` handler (`program.paused()`
+    reports both), a destination
     removed while the spend was in flight (add the new one before removing the old), or a vault
     governance disallowed.
   - **The Zone admin:** paused deposits of the token, a deposit or bounce-back fee raised above the
@@ -243,17 +248,19 @@ only bounces, so they show up when Bridge simulates the callback or traces the s
 - **The factory and clone:** `FactoryPaused`, `SpenderHandlerDisabled`, `SpenderHandlerNotAllowed`
   and `PrefixUnknown`.
 - **The program:** `WrongProgram`, `ProgramPaused`, `InvalidAmount`, `DestinationNotAuthorized`,
-  `VaultNotAllowed`, `IncorrectAssetForVault`, `DestinationNotCredited` and `Reentrancy`; on
-  `spendFrom` also `WrongInputToken`, `InsufficientInput`, `NothingSpent` and `ResidualBalance`.
+  `VaultNotAllowed`, `IncorrectAssetForVault`, `DestinationNotCredited`, `InputNotConsumed` (the clone
+  kept or skipped part of the input) and `Reentrancy`; on `spendFrom` also `NotRouter`,
+  `WrongInputToken`, `InsufficientInput`, `NothingSpent` and `ResidualBalance`.
 - **The handler:** `WrongProgram`, `DestinationNotAuthorized`, `DestinationNotCredited`,
   `InvalidAmount`, `VaultNotAllowed`, `IncorrectAssetForVault`, `ShareCostExceeded`, and
   `PipelineDisabled` on the pull path.
 - **The router:** `NotZoneMessenger`, `WrongSourceZone`, `InvalidSourcePortal`, `BadFlow`,
   `OpDisabled`, `UnknownSpender`, `InvalidMaxInput`, `InvalidSpend`, `InvalidReturnToken`,
-  `DepositFeeTooHigh`, `TokenCallFailed` (a token transfer that reverts, such as one a policy
-  blocks), `ResidualBalance`, `ReentrantCall` and `ZeroAddress` (no refund recipient).
-- **The portal, on the return deposit:** `DepositTooSmall` when change does not cover its fees,
-  and on an access-enforced portal `CallbackDidNotReturnToZone` when nothing comes back.
+  `DepositFeeTooHigh`, `ChangeBelowDepositFee` (change below the portal's deposit and bounce-back
+  fees), `TokenCallFailed` (a token transfer that reverts, such as one a policy blocks),
+  `ResidualBalance`, `ReentrantCall` and `ZeroAddress` (no refund recipient).
+- **The portal, on the return deposit:** `CallbackDidNotReturnToZone` on an access-enforced portal
+  when nothing comes back.
 - **The keychain, on a public spend:** `SpendingLimitExceeded` and `CallNotAllowed`.
 - **The Zone outbox, before approval:** a callback gas limit above 10M reverts the Zone request,
   so the card is declined rather than bounced.
@@ -262,15 +269,20 @@ Reads:
 
 - `program.availableBalance(from, token, vault)`, or the clone's `availableBalance("TS" from token [vault])`:
   `from`'s balance of `token`, plus the value of its shares in `vault` when the vault is allowed and
-  holds `token`. Otherwise the vault is ignored.
-- `program.paused()`: whether the factory has stopped spends.
+  holds `token`. Otherwise the vault is ignored. It is an upper bound on one spend: shares are valued at
+  `previewRedeem` while a spend costs `previewWithdraw`, and a private spend pays from the stablecoin or
+  the shares, never both.
+- `program.paused()`: whether the factory has stopped spends, or would not route "TS" for the clone.
 - `publicGetCall("TS" "GV" vault)`: whether the program allows `vault`.
 
 ## Accepted behavior
 
 - Tokens sent to the router outside a callback stay there: it moves only the current call's input.
-  Tokens sent to the program outside a spend are not rescued either, but any later `spendFrom`
-  call can spend them, only to pay a destination the program authorizes, and gets back what that
-  spend did not use. Neither has an owner.
+  Tokens sent to the program outside a spend are not rescued either: only the program's routers can
+  call `spendFrom`, and every spend leaves them as its baseline. Neither has an owner. A one-unit seed of
+  each token in the program saves each spend the balance slot it would create (TIP-1000).
+- `BridgeProvider` authorizes the same destinations for public and private spends, so authorize only
+  settlement wallets every cardholder shares: a cardholder-specific destination would name the
+  cardholder on the private path.
 - The withdrawer writes the `SpendReturn`, so whoever sends a withdrawal to the router chooses
   where its change goes.

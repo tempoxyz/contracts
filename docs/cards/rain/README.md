@@ -23,13 +23,16 @@ card's spending power. That is where a Tempo spend lands.
 [`RainProvider`](../../../cards/src/providers/rain/RainProvider.sol) authorizes a destination when
 it is a collateral contract Rain's factory created and either:
 
-- **the spend is public and the payer owns it and is one of its admins** (Rain-managed): the
+- **the spend is public and the payer owns it and is its only admin** (Rain-managed): the
   cardholder's account funds its own collateral. Another cardholder's collateral is refused, including
-  one whose ownership was handed to the payer without admin rights (Rain's `transferOwnership` leaves
-  the admins as they were); or
+  one whose ownership was handed to the payer while someone else is still an admin (Rain's
+  `transferOwnership` leaves the admins as they were, and an owner can add admins before handing it
+  over). The provider reads Rain's public `admins` array: `admins(0)` is the payer and `admins(1)`
+  reverts. Private spends are asked with no payer; or
 - **it is one of the program's pooled collateral contracts** (partner-managed, and the only
   destination of a private spend): fixed at deployment. Rain or the partner credits each cardholder off
-  chain. The program tells the provider a spend is private (`isPrivate`), so a private spend never funds a
+  chain. Public spends may fund them too unless the provider was deployed with `POOLED_ACCEPTS_PUBLIC`
+  false. The program tells the provider a spend is private (`isPrivate`), so a private spend never funds a
   cardholder's own collateral, even one handed to the program, and never names the cardholder.
 
 Rain's factory records each collateral contract in its public `collateralProxies` array but keeps no
@@ -37,9 +40,11 @@ address lookup, so the spend's `destinationHint` is the collateral's index in th
 provider requires `collateralProxies(hint)` to be the destination. One read of Rain's factory proves
 provenance without trusting the destination's code. Rain's backend knows each index from the order of
 the factory's `NewRainCollateral` events. The provider also fixes the accepted tokens, Earn vaults and pooled
-collateral; it has no owner and reports no pause, since Rain's contracts have none, and neither has the
-program. Rain stops a program by not sending spends: only Rain's access keys and Zone keys send them,
-and they can pay only collateral Rain controls.
+collateral, and lists them once in its `Configured` event; it has no owner and reports no pause, since
+Rain's contracts have none, and neither has the program. There is no on-chain stop: Rain stops a program
+by revoking its access keys and Zone keys, the only senders of its spends, which can pay only collateral
+Rain controls. Anyone may call `program.warmVault(vault)` for an allowed vault, so the first Earn spend
+does not create the program's approval to it.
 
 ## Token policies
 
@@ -89,14 +94,21 @@ committed collateral stays Rain's to settle; that is the guarantee its card prog
   integration trusts its spender factory.
 - A public spend into a cardholder's own collateral names the cardholder on the L1, as any public
   spend does.
+- Pooled collateral accepts public spends from anyone when `POOLED_ACCEPTS_PUBLIC` is set (the Rain
+  E2E's setting): anyone may fund it, which costs them and credits nobody until Rain or the partner
+  attributes it off chain. A program whose pooled collateral serves only private spends deploys its
+  provider with it false.
+- Rain has no on-chain pause: stopping a program means revoking its access keys and Zone keys.
 
 ## Evidence
 
 - [`cards/test/rain/unit/`](../../../cards/test/rain/unit/): public spends into a cardholder's collateral
-  from stablecoin and Earn; refusals for another cardholder's collateral, one handed over without admin
-  rights, a collateral the factory did not create, the beacon, a wrong or out-of-range index and an
+  from stablecoin and Earn; refusals for another cardholder's collateral, one handed over while another
+  admin remains (including one the previous owner added before the handover), a collateral the factory
+  did not create, the beacon, a wrong or out-of-range index and an
   unaccepted token; private settlement into the pooled collateral and refusal of a cardholder's own,
-  even one handed to the program; the program reporting no pause; Rain's payment, refund, replay, expiry and
+  even one handed to the program, asked with no payer; pooled collateral closed to public spends; the
+  program reporting no pause; Rain's payment, refund, replay, expiry and
   liquidation against its real controller. The core's own checks run without Rain in
   [`cards/test/core/`](../../../cards/test/core/).
 - [`e2e/cards`](../../../e2e/cards/) (`pnpm e2e:cards -- --earn`), on a disposable Tempo L1 and Zone:

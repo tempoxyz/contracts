@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { ISpenderHandler } from "bridge-spender/src/ISpenderHandler.sol";
+import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { ZoneRouter } from "zone-router/ZoneRouter.sol";
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
@@ -22,8 +24,14 @@ import {
 import { isStandingOrNone } from "../harness/StandingApproval.sol";
 
 /// @notice Hands input to a program as the Zone router does: transfers exactly `maxInput` and calls
-///         `spendFrom` in one call, so a revert returns the input.
+///         `spendFrom` in one call, so a revert returns the input. Its spender list is the test's.
 contract SettleCaller {
+    mapping(address spender => bool) public isSpender;
+
+    function list(address spender) external {
+        isSpender[spender] = true;
+    }
+
     function spendFrom(CardSpender program, address token, uint256 maxInput, bytes calldata data) external {
         SafeTransferLib.safeTransfer(token, address(program), maxInput);
         program.spendFrom(token, maxInput, data);
@@ -36,7 +44,7 @@ contract SettleCaller {
 ///         cardholder's approval to it and returns what the clone did not use. Either way the clone sees
 ///         the program as the payer, and a replaced handler can take at most the spend.
 /// @dev No Zone: the program has no Zone code. `router` plays the Zone router, transferring `maxInput`
-///      and calling `spendFrom` in one call.
+///      and calling `spendFrom` in one call; the program's router factory reports it as one of its routers.
 contract BridgeProgramTest is AccessKeys {
     uint256 internal constant AMOUNT = 40e6;
 
@@ -49,6 +57,8 @@ contract BridgeProgramTest is AccessKeys {
         caller = new SettleCaller();
         router = address(caller);
         vm.label(router, "zone.router");
+        vm.mockCall(address(routerFactory), abi.encodeCall(routerFactory.isRouter, (router)), abi.encode(true));
+        caller.list(address(program));
     }
 
     // ------------------------------------------------------------------
@@ -69,7 +79,8 @@ contract BridgeProgramTest is AccessKeys {
         assertEq(provider.CLONE(), spender);
         assertEq(program.PAYOUT_TARGET(), spender);
         assertEq(address(program.PROVIDER()), address(provider));
-        assertTrue(cardFactory.isSpender(address(program)));
+        assertTrue(cardFactory.isDeployed(address(program)));
+        assertEq(program.ROUTER_FACTORY(), address(routerFactory));
 
         address next = makeAddr("bridge.settlement.next");
         assertFalse(provider.isAuthorizedDestination(alice, next, address(usd), 0, false));
@@ -202,26 +213,62 @@ contract BridgeProgramTest is AccessKeys {
         assertEq(usd.balanceOf(router), 100e6, "nothing taken");
     }
 
-    /// @notice Tokens sent to the program outside a spendFrom call are not accounted for: a later caller
-    ///         can spend them, but only through this program to a destination Bridge authorizes, and
-    ///         gets back only what that spend did not use.
-    function test_strayTokensOnlyPayTheProgramsDestination() public {
+    /// @notice Tokens sent to the program outside a spendFrom call stay there: only a router the program's
+    ///         router factory deployed, listing the program, may call `spendFrom`, and it accounts only for
+    ///         what it sends.
+    function test_strayTokensCannotBeSpent() public {
         address stranger = makeAddr("stranger");
         _mintUsd(address(program), AMOUNT + 5e6);
-
-        CardSpend memory elsewhere = _stableSpend(AMOUNT);
-        elsewhere.destination = stranger;
-        bytes memory data = abi.encode(elsewhere);
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, stranger));
-        program.spendFrom(address(usd), AMOUNT + 5e6, data);
+        vm.expectRevert(CardSpender.NotRouter.selector);
+        program.spendFrom(address(usd), AMOUNT + 5e6, abi.encode(_stableSpend(AMOUNT)));
+
+        _mintUsd(router, AMOUNT);
+        _spendFrom(address(usd), AMOUNT, _stableSpend(AMOUNT));
+        assertEq(usd.balanceOf(address(program)), AMOUNT + 5e6, "the stray balance is the baseline");
+    }
+
+    /// @notice A real router (deployed by the program's router factory, listing the program) passes, and
+    ///         one from another factory does not.
+    function test_onlyTheProgramsRoutersSettle() public {
+        vm.clearMockedCalls();
+        assertTrue(cardFactory.isDeployed(address(program)));
+        ZoneRouter.Mode memory mode;
+        mode.zoneId = 7;
+        mode.enabledOps = uint8(1 << 2);
+        mode.spenders = new address[](1);
+        mode.spenders[0] = address(program);
+        address real = routerFactory.deploy(mode);
+        address foreign = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode);
+        _mintUsd(real, AMOUNT);
+        _mintUsd(foreign, AMOUNT);
+
+        vm.startPrank(foreign);
+        usd.transfer(address(program), AMOUNT);
+        vm.expectRevert(CardSpender.NotRouter.selector);
+        program.spendFrom(address(usd), AMOUNT, abi.encode(_stableSpend(AMOUNT)));
+        vm.stopPrank();
 
         uint256 before = usd.balanceOf(settlement);
-        vm.prank(stranger);
-        program.spendFrom(address(usd), AMOUNT + 5e6, abi.encode(_stableSpend(AMOUNT)));
-        assertEq(usd.balanceOf(settlement) - before, AMOUNT, "program destination paid");
-        assertEq(usd.balanceOf(stranger), 5e6, "only the unused part returns");
-        assertEq(usd.balanceOf(address(program)), 0);
+        vm.startPrank(real);
+        usd.transfer(address(program), AMOUNT);
+        program.spendFrom(address(usd), AMOUNT, abi.encode(_stableSpend(AMOUNT)));
+        vm.stopPrank();
+        assertEq(usd.balanceOf(settlement) - before, AMOUNT);
+    }
+
+    /// @notice A "TS" handler the factory would not route for the clone stops the program as a pause does.
+    function test_disabledOrUnlistedHandlerReadsAsPaused() public {
+        assertFalse(program.paused());
+        vm.prank(bridgeGovernor);
+        bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Gated);
+        assertTrue(program.paused(), "gated without the clone");
+        vm.prank(bridgeGovernor);
+        bridgeFactory.updateSpenderHandlerAllowlist(PREFIX_TEMPO_SPEND, SPENDER_ID, true);
+        assertFalse(program.paused(), "gated with the clone allowlisted");
+        vm.prank(bridgeGovernor);
+        bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Disabled);
+        assertTrue(program.paused(), "disabled");
     }
 
     /// @notice A spend for another program cannot use this one, even with this program's clone.
@@ -246,6 +293,7 @@ contract BridgeProgramTest is AccessKeys {
         BridgeProvider aliasProvider = new BridgeProvider(IBridgeSpenderFactory(address(bridgeFactory)), aliasId);
         assertEq(aliasProvider.CLONE(), spender, "the same clone");
         CardSpender aliasProgram = CardSpender(cardFactory.deploy(aliasId, aliasProvider));
+        caller.list(address(aliasProgram));
 
         CardSpend memory spend = _stableSpend(AMOUNT);
         spend.program = address(aliasProgram);

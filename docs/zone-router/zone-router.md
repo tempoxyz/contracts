@@ -46,7 +46,7 @@ One router per Zone can serve several programs by listing each one's `CardSpende
   check that a gateway came from the factory, with the expected mode, before admitting it.
 - **One factory per router version.** A new version ships as a new factory; deployed routers keep
   working, and each customer moves by deploying its mode there and having its Zone admit it.
-- **Size.** The router's runtime is 10.2 KiB and the factory's 13.4 KiB, under the 24 KiB limit.
+- **Size.** The router's runtime is 10.7 KiB and the factory's 14.0 KiB, under the 24 KiB limit.
 
 Nobody can change a deployed router. Enabling a spender or op means deploying a new router through
 the factory and having the Zone's Portal admin admit it as a gateway; the old router stays deployed
@@ -79,10 +79,14 @@ contracts:
    off, for the pool owner or the Portal administrator to check that factory's verified source
    first.
 
-The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers as
+The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers, and its
+spenders when that Portal enables EarnShare, as
 [required members](../earn/modules/access.md#required-members) of EarnShare's access policy.
 `pnpm earn verify` rechecks the factory provenance and mode and reports gateway, account,
-token and conversion readiness. A profile deploys no spender: it lists deployed ones in
+token and conversion readiness, and for each spender: that its `ROUTER_FACTORY()` is the router's
+factory, that it is a `CardSpender` the release `CardFactory` for that factory deployed or the
+release `SendSpender` for its settings (both predicted from this checkout's builds), and, on a
+protected EarnShare its Portal enables, that the policy admits it. A profile deploys no spender: it lists deployed ones in
 `spenders`, such as a release's `SendSpender` or a card program's `CardSpender`.
 
 Outside a profile, the **Zone Router Release** workflow deploys and source-verifies a
@@ -111,17 +115,27 @@ input to the withdrawal's fallback recipient in the Zone.
 
 ### Spend
 
-Callback data: `op`, `spender`, `maxInput`, `spenderData` and `SpendReturn`, 864 of the outbox's
-1,024 bytes with a 64-byte ciphertext. A Spend callback:
+Callback data: `op`, `spender`, `maxInput`, `spenderData` and `SpendReturn`. With the Portal's 64-byte
+ciphertext, a `SendSpender` send is 768 of the outbox's 1,024 bytes and a card spend (nine static
+words of `CardSpend`) 896; a test pins both. A Spend callback:
 
 1. authenticates as ops 0 and 1, and requires the spender to be listed;
-2. requires `0 < maxInput <= amount`, transfers exactly `maxInput` to the spender and calls
-   `spendFrom(token, maxInput, spenderData)`; the spender hands back what it did not use;
-3. requires `0 < used <= maxInput`, measured from its own balance;
-4. returns the change, `amount - used`, to the source Zone when it is not zero, through a standing
-   approval to that Portal (below);
-5. emits `Spent(spender, token, used, change, zoneDepositHash)`, with a zero hash when there is no
-   change, and no `senderTag`, action ID or Zone account. The spender emits its own detail.
+2. requires `0 < maxInput <= amount`; when `maxInput < amount`, so change is certain, requires the
+   token enabled with deposits active on the source Portal and its deposit fee within
+   `maxDepositFee` before the spender runs;
+3. transfers exactly `maxInput` to the spender and calls `spendFrom(token, maxInput, spenderData)`;
+   the spender hands back what it did not use;
+4. requires `0 < used <= maxInput`, measured from its own balance;
+5. returns the change, `amount - used`, to the source Zone when it is not zero, through a standing
+   approval to that Portal (below), after the same token and fee checks when step 2 skipped them. The
+   Portal refuses a deposit below its deposit fee plus its bounce-back reserve
+   (`calculateDepositFee() + calculateBouncebackFee()`), so change below that reverts
+   `ChangeBelowDepositFee(change, minimum)` and the whole input bounces. A sender sizes `maxInput`
+   so the change is either zero or at least that minimum;
+6. emits `Spent(spender, token, used, change, zoneDepositHash)`, with a zero hash when there is no
+   change, and no `senderTag`, action ID or Zone account. The spender emits its own detail. Neither
+   event proves a Zone spend alone: bind it to the source Portal's `WithdrawalProcessed` for the
+   router in the same transaction.
 
 `maxInput` is set in the sender's Zone transaction, not by the spender, so no spender can take more
 than the sender allowed, and the change always returns. The router transfers rather than approves:
@@ -133,7 +147,9 @@ router accepts any enabled token and leaves it to the spender to refuse one it c
 The change goes back through a standing maximum approval to the source Portal, set on the first
 spend of a token and topped up only when it runs low. Clearing it after each deposit would create
 the allowance slot again on every callback, which Tempo charges (TIP-1000) against the callback's
-gas limit; the Portal is the Zone's own, and the router holds nothing between callbacks. Anyone can
+gas limit; the Portal is the Zone's own, and the router holds nothing between callbacks. This rests on
+an invariant of the Portal: it moves the router's tokens only inside a `depositEncrypted` call the
+router makes, pulling exactly that deposit's amount. Anyone can
 set it ahead of the first spend with `warm(token)`. An Earn op on a router that holds this approval uses and keeps it; without one, ops 0 and 1 keep
 `SingleZoneEarnRouter`'s exact approval, cleared after the deposit, so an Earn-only router behaves
 exactly like it.
@@ -145,6 +161,15 @@ A spender adapts one payee system to the Spend op through `ISpender`. A generic 
 with that integration and imports the interface from here. Each has no owner and keeps none of a
 callback's input. A mode lists the spenders it allows, and only those can be named in a
 callback.
+
+Each spender also authenticates the router: it binds one `ZoneRouterFactory` (`ROUTER_FACTORY`) at
+deployment and accepts `spendFrom` only from a router that factory deployed whose mode lists it
+([`SpenderAuth`](../../zone-router/src/spenders/SpenderAuth.sol)), otherwise reverting `NotRouter`.
+So `maxInput` is always what a router measured out, and nobody can spend a balance a spender holds
+or drive a pool that admitted it outside a router's spend. List a spender only in modes deployed
+through the factory it binds. A router trusts each listed spender up to `maxInput`, so before
+admitting a router a Zone admin checks that every listed spender has no proxy or upgrade path: its
+codehash matches its released build.
 
 | Spender       | Pays                                                                                | `spenderData`           | Binding fixed at deployment              |
 | ------------- | ----------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------- |
@@ -160,8 +185,8 @@ deterministic address, and listed in a profile's `zoneRouter.spenders`.
 ```text
 interface ISpender {
     // Pays from the maxInput of token the router transferred to it before the call. Reverts
-    // unless the payment it makes is complete. Transfers all unused input back to the router
-    // before returning and keeps none.
+    // unless the caller is a listed router of its factory and the payment it makes is complete.
+    // Transfers all unused input back to the router before returning and keeps none.
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external;
 }
 ```
@@ -170,7 +195,8 @@ interface ISpender {
 
 [`SendSpender`](../../zone-router/src/spenders/SendSpender.sol) pays a public address. A mode allows sends only if
 it lists a `SendSpender`; a closed-loop mode, listing only its card program's spender, does not. It
-has no owner or setters, and its only setting is an optional conversion binding fixed at deployment:
+has no owner or setters. Its settings, fixed at deployment, are the `ZoneRouterFactory` whose routers
+may call it and an optional conversion binding:
 a vault, a pool pairing that vault's asset with one other stablecoin of equal decimals (its par
 stablecoin), and a customer ID, all set or all zero. Its `spenderData` is
 `abi.encode(Send(to, token, amount, vault, ref))`, and `to` receives exactly `amount` of `token`:
@@ -188,13 +214,17 @@ balance rose by exactly `amount`, so a vault or pool that reports success withou
 settle. For a [virtual address](https://github.com/tempoxyz/tempo/blob/main/tips/tip-1022.md), which
 a TIP-20 transfer credits to its registered master, it measures the master that Tempo's address
 registry resolves, redeems to itself and transfers to `to` (Earn's engines measure the literal
-receiver), and reverts for an unregistered one, as the transfer would. It hands every unused unit
-back to the router and keeps no balance or allowance. Whoever builds the callback picks `to` and
+receiver), and reverts for an unregistered one, as the transfer would. It refuses `to`, or the master
+it resolves to, when that is itself or the calling router (`InvalidRecipient`): the router returns
+only the input token, so an output paid to it would stay there. It hands every unused unit
+back to the router and keeps no balance or allowance; tokens sent to it outside a spend stay there,
+since no call can move them. Whoever builds the callback picks `to` and
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the spender as a taker and recipient.
 It emits `Sent(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
-no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSpender`](../deployment/deployment.md#zone-router-releases) and list it in a
-profile's `zoneRouter.spenders`.
+no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSpender`](../deployment/deployment.md#zone-router-releases), which binds
+the release `ZoneRouterFactory` unless told another, and list it in a profile's `zoneRouter.spenders`
+for a router from that factory.
 
 ### `CardSpender`
 
@@ -214,9 +244,10 @@ input. Its checks are in the [card spend design](../cards/design.md#what-the-pro
 5. No balance stays with the router after a callback, and no allowance except a spend's standing
    approval to its own Zone's Portal.
 6. The router never emits or stores `senderTag`.
+7. A spender pays only inside a spend from a router its factory deployed whose mode lists it.
 
 ## Not built yet
 
 - **One shared router.** Once modes settle, each mode becomes an immutable route on one ownerless
   router, and each Zone's Portal admin approves the routes it accepts. `routeId` adds 32 bytes per
-  callback (Spend becomes 896).
+  callback (a `SendSpender` send becomes 800 bytes and a card spend 928).

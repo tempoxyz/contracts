@@ -2,17 +2,19 @@
 # Deploys our ownerless contracts for a Bridge SpenderFactory at their deterministic
 # addresses, or reuses those already there: the "TS" handler (tempoSpend), at its release address
 # (script/bridge/deploy/BridgeRelease.sol), or a Bridge card program's CardSpender (bridgeProgram):
-# the release CardFactory and the program's BridgeProvider, each at its release address, and the
-# program, which that CardFactory creates at the address its program ID (the spender ID) and provider
-# contract fix. It checks that the run created exactly the missing contracts, each at the address
-# predicted here from the locally compiled creation code, and, after a broadcast to a hosted
-# network, that Tempo's verifier has the source of every one. Bridge running the deploy scripts
-# itself lands on the same addresses. The Bridge Release workflow
+# the release CardFactory for the program's ZoneRouterFactory and the program's BridgeProvider, each at
+# its release address, and the program, which that CardFactory creates at the address its program ID
+# (the spender ID), provider contract and router factory fix. It checks that the run created exactly
+# the missing contracts, each at the address predicted here from the locally compiled creation code,
+# and, after a broadcast to a hosted network, that Tempo's verifier has the source of every one.
+# Bridge running the deploy scripts itself lands on the same addresses. The Bridge Release workflow
 # (.github/workflows/bridge-release.yml) runs this; it runs locally too.
 #
 # Usage: script/bridge/deploy/release.sh <moderato|mainnet|local> <tempoSpend|bridgeProgram> [--broadcast]
 # Env:   FACTORY               the SpenderFactory
 #        SPENDER_ID            bridgeProgram only: the card program's spender ID (bytes32)
+#        ROUTER_FACTORY        bridgeProgram only: the ZoneRouterFactory whose routers may call the
+#                              program's spendFrom
 #        DEPLOYER_PRIVATE_KEY  pays for the creation; it holds no role anywhere
 #        TEMPO_RPC_URL         optional on moderato and mainnet, required for local; with
 #                              TEMPO_RPC_USERNAME and TEMPO_RPC_PASSWORD (both or neither) as basic auth
@@ -95,6 +97,8 @@ if [[ "$contract" == bridgeProgram ]]; then
   [[ "${SPENDER_ID:-}" =~ ^0x[0-9a-fA-F]{64}$ && ! "$SPENDER_ID" =~ ^0x0{64}$ ]] ||
     die "SPENDER_ID must be a nonzero bytes32"
   record spenderId "$SPENDER_ID"
+  [[ "${ROUTER_FACTORY:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "ROUTER_FACTORY must be an address"
+  record routerFactory "$ROUTER_FACTORY"
 fi
 [[ -n "${DEPLOYER_PRIVATE_KEY:-}" ]] || die "DEPLOYER_PRIVATE_KEY is required"
 
@@ -140,6 +144,7 @@ export FOUNDRY_HARDFORK="tempo:$active"
 record hardfork "$FOUNDRY_HARDFORK"
 [[ "$(cast code "$CREATE2_DEPLOYER")" != 0x ]] || die "the chain has no CREATE2 deployer at $CREATE2_DEPLOYER"
 [[ "$(cast code "$FACTORY")" != 0x ]] || die "FACTORY has no code"
+[[ "$contract" != bridgeProgram || "$(cast code "$ROUTER_FACTORY")" != 0x ]] || die "ROUTER_FACTORY has no code"
 
 # The contracts this release consists of, in creation order: name, source, the field of the script's
 # OUT holding its address, ABI-encoded constructor arguments, and who creates it (the CREATE2
@@ -150,7 +155,8 @@ if [[ "$contract" == tempoSpend ]]; then
   add SpenderTempoSpend src/providers/bridge/SpenderTempoSpend.sol:SpenderTempoSpend handler \
     "$(cast abi-encode "f(address)" "$FACTORY")" deployer
 else
-  add CardFactory src/core/CardFactory.sol:CardFactory cardFactory 0x deployer
+  add CardFactory src/core/CardFactory.sol:CardFactory cardFactory \
+    "$(cast abi-encode "f(address)" "$ROUTER_FACTORY")" deployer
   add BridgeProvider src/providers/bridge/BridgeProvider.sol:BridgeProvider provider \
     "$(cast abi-encode "f(address,bytes32)" "$FACTORY" "$SPENDER_ID")" deployer
   add CardSpender src/core/CardSpender.sol:CardSpender program '' cardFactory
@@ -163,7 +169,7 @@ for i in "${!names[@]}"; do
   [[ "$creation" =~ ^0x[0-9a-fA-F]+$ ]] || die "forge returned no creation code for ${sources[$i]}"
   if [[ "${names[$i]}" == CardSpender ]]; then
     # CardFactory.deploy: salt keccak256(abi.encode(programId, provider)), under the factory.
-    args[i]=$(cast abi-encode "f(address)" "${addresses[1]}")
+    args[i]=$(cast abi-encode "f(address,address)" "${addresses[1]}" "$ROUTER_FACTORY")
     inits[i]=$(tr '[:upper:]' '[:lower:]' <<<"${creation}${args[$i]#0x}")
     salt=$(cast keccak "$(cast abi-encode "f(bytes32,address)" "$SPENDER_ID" "${addresses[1]}")")
     addresses[i]=$(create2 "${addresses[0]}" "$salt" "$(cast keccak "${inits[$i]}")")

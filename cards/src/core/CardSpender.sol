@@ -4,8 +4,10 @@ pragma solidity ^0.8.36;
 import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
+import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "zone-router/interfaces/IAddressRegistry.sol";
 import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
 import { ISpender } from "zone-router/interfaces/ISpender.sol";
+import { SpenderAuth } from "zone-router/spenders/SpenderAuth.sol";
 
 import { CardSpend } from "./CardSpend.sol";
 import { ICardProvider, ICardProviderPayout } from "./interfaces/ICardProvider.sol";
@@ -15,15 +17,16 @@ import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 /// @notice One card program on Tempo, for any provider: the stable address cardholders' access keys and a
 ///         Zone's router point at. It pays a spend from stablecoin, Tempo Earn shares, or both, to a
 ///         destination its provider authorizes, publicly (`spend`) or from a Zone withdrawal (`spendFrom`, as the
-///         router's spender). Specified in docs/cards/design.md.
-/// @dev Deployed by `CardFactory` with a fixed provider, and never changed: no owner, setter or pause of its
-///      own, so a provider replaces a program by deploying another and stops one through its own `paused()`.
-///      It holds nothing between spends. Two ways to pay, fixed by the provider:
+///         spender of a router `ROUTER_FACTORY` deployed). Specified in docs/cards/design.md.
+/// @dev Deployed by `CardFactory` with a fixed provider and router factory, and never changed: no owner, setter
+///      or pause of its own, so a provider replaces a program by deploying another and stops one through its own
+///      `paused()`. Between spends it holds nothing but an optional seed (see `spendFrom`). Two ways to pay,
+///      fixed by the provider:
 ///      - direct: the program moves the funds itself (Rain);
 ///      - payout: the provider supports `ICardProviderPayout`, and the program pays through its target as the
 ///        payer (Bridge, through its spender clone and "TS" handler, so Bridge's factory governs the spend).
-///      Either way it checks the destination got exactly the amount, and a payout can use at most the
-///      spend's input: what the payer approved (public) or the withdrawal's `maxInput` (private).
+///      Either way it checks the destination (its TIP-1022 master, for a virtual address) got exactly the
+///      amount, and a payout uses exactly the spend's input, no more than the share cost it quoted.
 contract CardSpender is ISpender {
     /// @dev Solady's `TransferFailed()` and `ApproveFailed()`.
     bytes4 private constant TRANSFER_FAILED = 0x90b8ec18;
@@ -32,20 +35,25 @@ contract CardSpender is ISpender {
     ICardProvider public immutable PROVIDER;
     /// @notice The provider's payout target, or zero when the program pays directly.
     address public immutable PAYOUT_TARGET;
+    /// @notice The `ZoneRouterFactory` whose routers may call `spendFrom`, when their mode lists this program.
+    address public immutable ROUTER_FACTORY;
 
     bool private transient _locked;
 
     error DestinationNotAuthorized(address destination);
     error DestinationNotCredited();
     error IncorrectAssetForVault();
+    error InputNotConsumed(uint256 consumed, uint256 expected);
     error InsufficientInput();
     error InvalidAmount();
     error NotProvider();
+    error NotRouter();
     error NothingSpent();
     error ProgramPaused();
     error Reentrancy();
     error ResidualBalance(address token);
     error ShareCostExceeded(uint256 required, uint256 maxShares);
+    error UnresolvedRecipient();
     error VaultNotAllowed(address vault);
     error WrongInputToken(address token);
     error WrongProgram(address program);
@@ -73,12 +81,13 @@ contract CardSpender is ISpender {
         _locked = false;
     }
 
-    constructor(ICardProvider provider_) {
-        if (address(provider_) == address(0)) revert ZeroAddress();
+    constructor(ICardProvider provider_, address routerFactory_) {
+        if (address(provider_) == address(0) || routerFactory_ == address(0)) revert ZeroAddress();
         if (!ERC165Checker.supportsInterface(address(provider_), type(ICardProvider).interfaceId)) {
             revert NotProvider();
         }
         PROVIDER = provider_;
+        ROUTER_FACTORY = routerFactory_;
         if (ERC165Checker.supportsInterface(address(provider_), type(ICardProviderPayout).interfaceId)) {
             address target = ICardProviderPayout(address(provider_)).payoutTarget();
             if (target == address(0)) revert ZeroAddress();
@@ -94,22 +103,23 @@ contract CardSpender is ISpender {
     ///         from the caller's `s.token` and `s.fromVault` redeemed from the caller's shares in `s.vault`.
     ///         The caller approves this program for both first.
     function spend(CardSpend calldata s) external nonReentrant {
-        _check(s, msg.sender, false);
-        uint256 destinationBefore = IERC20Like(s.token).balanceOf(s.destination);
-        uint256 sharesUsed = PAYOUT_TARGET == address(0) ? _payDirect(s, msg.sender) : _payThroughPublic(s);
-        if (IERC20Like(s.token).balanceOf(s.destination) != destinationBefore + s.amount) {
-            revert DestinationNotCredited();
-        }
+        address payee = _check(s, msg.sender, false);
+        uint256 destinationBefore = IERC20Like(s.token).balanceOf(payee);
+        uint256 sharesUsed = PAYOUT_TARGET == address(0) ? _payDirect(s, payee) : _payThroughPublic(s);
+        if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
         emit CardSpent(s.ref, msg.sender, s.destination, s.token, s.amount, s.fromVault, sharesUsed, false);
     }
 
     /// @inheritdoc ISpender
     /// @notice A private spend, as a Zone router's spender: pays `abi.decode(data, (CardSpend))` from the
     ///         `maxInput` of `token` the caller transferred first, and returns the rest in the same call.
-    /// @dev Permissionless: the router authenticates the Zone withdrawal and caps the input; anyone else can
-    ///      only pay a destination the provider allows for a private spend, from their own funds. One
+    /// @dev Only a router `ROUTER_FACTORY` deployed whose mode lists this program may call it, so `maxInput`
+    ///      is a router's measured transfer: nobody can spend what the program holds outside a spend. That
+    ///      lets a program keep a seed (one unit of each token it handles, sent by anyone) as the baseline
+    ///      every spend leaves untouched, so a spend never creates the program's balance slot (TIP-1000). One
     ///      withdrawal carries one token: the stablecoin, or the shares of the vault that funds all of it.
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
+        if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
         CardSpend memory s = abi.decode(data, (CardSpend));
         if (maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
         address input;
@@ -119,31 +129,36 @@ contract CardSpender is ISpender {
             input = ITempoEarnVault(s.vault).earnShare();
         }
         if (input == address(0) || input != token) revert WrongInputToken(token);
-        _check(s, msg.sender, true);
+        // A private spend names no cardholder, so the provider gets no payer.
+        address payee = _check(s, address(0), true);
 
-        // maxInput is the caller's claim of what it sent, not verified: whatever else the program holds is
-        // the baseline, and nothing beyond it may stay behind.
+        // Whatever else the program holds (a seed) is the baseline, and nothing beyond it may stay behind.
         uint256 balance = IERC20Like(token).balanceOf(address(this));
         if (balance < maxInput) revert InsufficientInput();
         uint256 baseline = balance - maxInput;
-        uint256 destinationBefore = IERC20Like(s.token).balanceOf(s.destination);
+        uint256 destinationBefore = IERC20Like(s.token).balanceOf(payee);
 
+        uint256 expected;
         if (PAYOUT_TARGET == address(0)) {
-            _spendDirect(s, maxInput);
+            _spendDirect(s, maxInput, payee);
         } else {
+            // A payout uses exactly the stablecoin spend, or at most the share cost quoted before it, so a
+            // target cannot keep the rest of the input as a buffer.
+            expected = s.fromVault == 0 ? s.amount : ITempoEarnVault(s.vault).previewWithdraw(s.fromVault);
             _payout(s, token, address(0));
         }
 
-        // Reverts if the payout took more than maxInput, since the balance would be below the baseline.
+        // Reverts if the spend took more than maxInput, since the balance would be below the baseline.
         uint256 unused = IERC20Like(token).balanceOf(address(this)) - baseline;
         if (unused >= maxInput) revert NothingSpent();
-        if (IERC20Like(s.token).balanceOf(s.destination) != destinationBefore + s.amount) {
-            revert DestinationNotCredited();
+        uint256 consumed = maxInput - unused;
+        if (PAYOUT_TARGET != address(0) && (s.fromVault == 0 ? consumed != expected : consumed > expected)) {
+            revert InputNotConsumed(consumed, expected);
         }
+        if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
         if (unused != 0) _tokenCall(token, IERC20Like.transfer.selector, msg.sender, unused, TRANSFER_FAILED);
         if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
 
-        uint256 consumed = maxInput - unused;
         emit CardSpent(
             s.ref, msg.sender, s.destination, s.token, s.amount, s.fromVault, s.fromVault == 0 ? 0 : consumed, true
         );
@@ -151,24 +166,35 @@ contract CardSpender is ISpender {
     }
 
     // ------------------------------------------------------------------
-    // Views
+    // Views and warm-up
     // ------------------------------------------------------------------
 
-    /// @notice Whether spends are stopped: the provider's own pause, read live (Bridge's factory pause; Rain
-    ///         reports none). The program has no pause of its own.
+    /// @notice Whether spends are stopped: the provider's own pause, read live (Bridge's factory pause and
+    ///         "TS" handler routing; Rain reports none). The program has no pause of its own.
     function paused() public view returns (bool) {
         return PROVIDER.paused();
     }
 
     /// @notice Sets the program's standing approval of `token` to its payout target before the first spend,
     ///         which would otherwise create the allowance slot in a spend (TIP-1000). Permissionless: the
-    ///         program holds nothing between spends. Does nothing for a program that pays directly.
+    ///         program holds nothing between spends but a seed. Does nothing for a program that pays directly.
     function warm(address token) external {
         if (PAYOUT_TARGET != address(0)) _approve(token, PAYOUT_TARGET, type(uint256).max);
     }
 
+    /// @notice Sets the program's standing approval of `vault`'s EarnShare to `vault`, which a program that pays
+    ///         directly would otherwise create in its first spend from it (TIP-1000). Permissionless, for a
+    ///         vault the provider allows. Does nothing for a program that pays through a payout target.
+    function warmVault(address vault) external {
+        if (!PROVIDER.isAllowedVault(vault)) revert VaultNotAllowed(vault);
+        if (PAYOUT_TARGET == address(0)) _approve(ITempoEarnVault(vault).earnShare(), vault, type(uint256).max);
+    }
+
     /// @notice `from`'s balance of `token`, plus the value of its shares in `vault` when the provider allows
     ///         it and it holds `token`. Pass `vault` zero for the stablecoin alone.
+    /// @dev An upper bound on what one spend can pay: shares are valued with `previewRedeem`, while a spend
+    ///      pays an exact amount at the `previewWithdraw` cost, which rounds against the payer, and a private
+    ///      spend carries one token, so it pays from the stablecoin or the shares, never both.
     function availableBalance(address from, address token, address vault) external view returns (uint256 total) {
         total = IERC20Like(token).balanceOf(from);
         if (vault == address(0) || !PROVIDER.isAllowedVault(vault)) return total;
@@ -189,13 +215,17 @@ contract CardSpender is ISpender {
     // Internals
     // ------------------------------------------------------------------
 
-    function _check(CardSpend memory s, address payer, bool isPrivate) private view {
+    /// @dev Checks `s` and returns its payee: who a transfer to `s.destination` credits.
+    function _check(CardSpend memory s, address payer, bool isPrivate) private view returns (address payee) {
         if (s.program != address(this)) revert WrongProgram(s.program);
         if (paused()) revert ProgramPaused();
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
         if (!PROVIDER.isAuthorizedDestination(payer, s.destination, s.token, s.destinationHint, isPrivate)) {
             revert DestinationNotAuthorized(s.destination);
         }
+        payee = _payee(s.destination);
+        // The program's own balance is the baseline it measures input against, so it never pays itself.
+        if (payee == address(0) || payee == address(this)) revert DestinationNotAuthorized(s.destination);
         if (s.fromVault != 0) {
             if (!PROVIDER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
             if (ITempoEarnVault(s.vault).asset() != s.token) revert IncorrectAssetForVault();
@@ -204,48 +234,54 @@ contract CardSpender is ISpender {
 
     /// @dev A direct public spend: stablecoin straight from the payer, shares pulled, redeemed for the
     ///      destination and the rest returned.
-    function _payDirect(CardSpend calldata s, address payer) private returns (uint256 sharesUsed) {
+    function _payDirect(CardSpend calldata s, address payee) private returns (uint256 sharesUsed) {
         uint256 fromStable = s.amount - s.fromVault;
-        if (fromStable != 0) SafeTransferLib.safeTransferFrom(s.token, payer, s.destination, fromStable);
+        if (fromStable != 0) SafeTransferLib.safeTransferFrom(s.token, msg.sender, s.destination, fromStable);
         if (s.fromVault == 0) return 0;
         ITempoEarnVault v = ITempoEarnVault(s.vault);
         uint256 required = v.previewWithdraw(s.fromVault);
         if (s.maxShares != 0 && required > s.maxShares) revert ShareCostExceeded(required, s.maxShares);
         address share = v.earnShare();
-        SafeTransferLib.safeTransferFrom(share, payer, address(this), required);
-        sharesUsed = _redeem(v, share, s.fromVault, s.destination, required);
-        if (sharesUsed < required) SafeTransferLib.safeTransfer(share, payer, required - sharesUsed);
+        SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
+        sharesUsed = _redeem(v, share, s, payee, required);
+        if (sharesUsed < required) SafeTransferLib.safeTransfer(share, msg.sender, required - sharesUsed);
     }
 
-    /// @dev A direct private spend, from the `maxInput` the router sent.
-    function _spendDirect(CardSpend memory s, uint256 maxInput) private {
+    /// @dev A direct private spend, from the `maxInput` the router sent. The vault prices shares itself and
+    ///      reverts when the cost is above the cap, the lower of `maxInput` and `maxShares`.
+    function _spendDirect(CardSpend memory s, uint256 maxInput, address payee) private {
         if (s.fromVault == 0) {
             if (s.amount > maxInput) revert InsufficientInput();
             SafeTransferLib.safeTransfer(s.token, s.destination, s.amount);
             return;
         }
         ITempoEarnVault v = ITempoEarnVault(s.vault);
-        uint256 required = v.previewWithdraw(s.fromVault);
-        if (s.maxShares != 0 && required > s.maxShares) revert ShareCostExceeded(required, s.maxShares);
-        if (required > maxInput) revert InsufficientInput();
-        _redeem(v, v.earnShare(), s.fromVault, s.destination, required);
+        uint256 cap = s.maxShares != 0 && s.maxShares < maxInput ? s.maxShares : maxInput;
+        _redeem(v, v.earnShare(), s, payee, cap);
     }
 
-    /// @dev Burns at most `required` of the program's shares for exactly `assets` to `receiver`. The approval
-    ///      to the vault is a standing maximum (TIP-1000); the provider decides on every spend which vaults may
-    ///      be used, and the program holds no shares between spends.
-    function _redeem(ITempoEarnVault v, address share, uint256 assets, address receiver, uint256 required)
+    /// @dev Burns at most `cap` of the program's shares for exactly `s.fromVault` to `s.destination`. Earn's
+    ///      engines check the literal receiver's balance, so a virtual destination is redeemed to the program
+    ///      first and transferred on. The approval to the vault is a standing maximum (TIP-1000); the provider
+    ///      decides on every spend which vaults may be used, and the program holds only a seed between spends.
+    function _redeem(ITempoEarnVault v, address share, CardSpend memory s, address payee, uint256 cap)
         private
         returns (uint256 burned)
     {
-        _approve(share, address(v), required);
+        _approve(share, address(v), cap);
         // Every entry point holds the transient lock for this whole call.
-        // forge-lint: disable-next-line(reentrancy-no-eth)
-        burned = v.withdrawExact(assets, receiver, required);
+        // forge-lint: disable-start(reentrancy-no-eth)
+        if (payee == s.destination) return v.withdrawExact(s.fromVault, s.destination, cap);
+        uint256 before = IERC20Like(s.token).balanceOf(address(this));
+        burned = v.withdrawExact(s.fromVault, address(this), cap);
+        if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) revert DestinationNotCredited();
+        SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);
+        // forge-lint: disable-end(reentrancy-no-eth)
     }
 
     /// @dev A public spend through the provider's payout target: pulls the stablecoin part and the share quote
-    ///      from the payer, pays through the target, and returns whatever the target did not use.
+    ///      from the payer and pays through the target, which must use all of the stablecoin and at most the
+    ///      quote; the program returns the shares it did not use.
     function _payThroughPublic(CardSpend calldata s) private returns (uint256 sharesUsed) {
         uint256 fromStable = s.amount - s.fromVault;
         address share;
@@ -267,7 +303,7 @@ contract CardSpender is ISpender {
 
         // Each reverts if the target took more than the payer put in.
         uint256 stableLeft = IERC20Like(s.token).balanceOf(address(this)) - stableBase;
-        if (stableLeft != 0) SafeTransferLib.safeTransfer(s.token, msg.sender, stableLeft);
+        if (stableLeft != 0) revert InputNotConsumed(fromStable - stableLeft, fromStable);
         if (share != address(0)) {
             uint256 shareLeft = IERC20Like(share).balanceOf(address(this)) - shareBase;
             sharesUsed = shareIn - shareLeft;
@@ -289,6 +325,22 @@ contract CardSpender is ISpender {
                 revert(add(ret, 0x20), mload(ret))
             }
         }
+    }
+
+    /// @dev Who a transfer to `to` credits: its TIP-1022 master if it is a virtual address, else `to`. Without
+    ///      the registry (empty return data) it is `to`; an unregistered virtual address reverts, as the
+    ///      transfer would.
+    function _payee(address to) private view returns (address) {
+        (bool ok, bytes memory ret) =
+            ADDRESS_REGISTRY_ADDRESS.staticcall(abi.encodeCall(IAddressRegistry.resolveRecipient, (to)));
+        if (!ok) {
+            assembly ("memory-safe") {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        if (ret.length == 0) return to;
+        if (ret.length != 32) revert UnresolvedRecipient();
+        return abi.decode(ret, (address));
     }
 
     /// @dev Sets a standing maximum approval of `token` to `spender` when it is below `amount`.

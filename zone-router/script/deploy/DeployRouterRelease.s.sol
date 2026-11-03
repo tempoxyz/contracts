@@ -15,8 +15,8 @@ import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVe
 /// @notice Release entry points for the router project's ownerless contracts, which Zone Router Release
 ///         deploys like Earn's shared factories (docs/deployment/deployment.md#zone-router-releases).
 ///         The ZoneRouterFactory and each SendSpender are created through the CREATE2
-///         deployer with Earn's release salt (DeterministicRelease); a ZoneRouter is created by its
-///         factory, at the address its mode fixes. Each entry point reuses a contract that already exists, so whoever
+///         deployer with Earn's release salt (DeterministicRelease); a SendSpender binds the release factory
+///         unless told another, and a ZoneRouter is created by its factory, at the address its mode fixes. Each entry point reuses a contract that already exists, so whoever
 ///         deploys the same release lands at the same address.
 contract DeployRouterReleaseScript is DeterministicRelease {
     error BindingFailed();
@@ -43,32 +43,33 @@ contract DeployRouterReleaseScript is DeterministicRelease {
         release(expectedChainId)
         returns (ZoneRouterFactory factory)
     {
-        address predicted = _releaseAddress(type(ZoneRouterFactory).creationCode);
-        factory =
-            predicted.code.length == 0 ? new ZoneRouterFactory{ salt: RELEASE_SALT }() : ZoneRouterFactory(predicted);
-        if (address(factory) != predicted) revert DeploymentVerificationFailed();
-        _requireCode(address(factory));
-        console2.log("ZONE_ROUTER_FACTORY_ADDRESS", address(factory));
+        factory = _releaseFactory();
     }
 
-    /// @notice An ownerless SendSpender; `vault`, `pool` and `customerId` are all zero for one that never
-    ///         converts, or all set for one that converts `vault`'s asset at par through `pool`.
-    function sendSpender(uint256 expectedChainId, IEarnVault vault, IPropAMMVenue pool, bytes32 customerId)
-        external
-        release(expectedChainId)
-        returns (SendSpender spender)
-    {
+    /// @notice An ownerless SendSpender that accepts spends only from `routerFactory`'s routers listing it, or,
+    ///         with `routerFactory` zero, from the release ZoneRouterFactory's, which this deploys or reuses.
+    ///         `vault`, `pool` and `customerId` are all zero for one that never converts, or all set for one
+    ///         that converts `vault`'s asset at par through `pool`.
+    function sendSpender(
+        uint256 expectedChainId,
+        address routerFactory,
+        IEarnVault vault,
+        IPropAMMVenue pool,
+        bytes32 customerId
+    ) external release(expectedChainId) returns (SendSpender spender) {
+        if (routerFactory == address(0)) routerFactory = address(_releaseFactory());
+        else if (routerFactory.code.length == 0) revert NoFactory(routerFactory);
         address predicted = _releaseAddress(
-            abi.encodePacked(type(SendSpender).creationCode, abi.encode(vault, pool, customerId))
+            abi.encodePacked(type(SendSpender).creationCode, abi.encode(routerFactory, vault, pool, customerId))
         );
         spender = predicted.code.length == 0
-            ? new SendSpender{ salt: RELEASE_SALT }(vault, pool, customerId)
+            ? new SendSpender{ salt: RELEASE_SALT }(routerFactory, vault, pool, customerId)
             : SendSpender(predicted);
         if (address(spender) != predicted) revert DeploymentVerificationFailed();
         _requireCode(address(spender));
         if (
-            address(spender.convertVault()) != address(vault) || address(spender.pool()) != address(pool)
-                || spender.customerId() != customerId
+            spender.ROUTER_FACTORY() != routerFactory || address(spender.convertVault()) != address(vault)
+                || address(spender.pool()) != address(pool) || spender.customerId() != customerId
         ) revert BindingFailed();
         console2.log("SEND_SPENDER_ADDRESS", address(spender));
     }
@@ -87,6 +88,16 @@ contract DeployRouterReleaseScript is DeterministicRelease {
         _requireCode(predicted);
         _verifyMode(router, mode);
         console2.log("ZONE_ROUTER_ADDRESS", predicted);
+    }
+
+    /// @dev The release ZoneRouterFactory, deployed unless it already exists.
+    function _releaseFactory() private returns (ZoneRouterFactory factory) {
+        address predicted = _releaseAddress(type(ZoneRouterFactory).creationCode);
+        factory =
+            predicted.code.length == 0 ? new ZoneRouterFactory{ salt: RELEASE_SALT }() : ZoneRouterFactory(predicted);
+        if (address(factory) != predicted) revert DeploymentVerificationFailed();
+        _requireCode(address(factory));
+        console2.log("ZONE_ROUTER_FACTORY_ADDRESS", address(factory));
     }
 
     function _verifyMode(ZoneRouter router, ZoneRouter.Mode calldata mode) private view {

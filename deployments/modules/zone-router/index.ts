@@ -12,11 +12,19 @@ import {
 } from '../../chain/zone.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
 import { stackAddress } from '../../core/stack.js'
+import { transferPolicyId } from '../earn/access-policy/profile.js'
 import { preflightRouterRoute } from '../earn/zone-router/index.js'
 import { inspectRouterReadiness } from '../earn/zone-router/inspection.js'
+import { configuredZone } from '../earn/zone-router/profile.js'
 import { requiredOutput, type CapabilityModule, type CapabilityReadiness } from '../module.js'
-import { inspectZoneRouterBinding } from './inspection.js'
+import {
+  inspectZoneRouterBinding,
+  nonMemberSpenders,
+  spenderProvenanceBlockers,
+  spenderRouterFactory,
+} from './inspection.js'
 import { zoneRouterFactory, zoneRouterMode, zoneRouterModeHash } from './profile.js'
+import { spenderReleases } from './releases.js'
 import { zoneRouterTokens } from './steps.js'
 
 /**
@@ -39,7 +47,8 @@ export const zoneRouterModeModule: CapabilityModule = {
     }
   },
   metadataOutput: isZoneRouterMetadataOutput,
-  // The Portal, Messenger, Outbox and sequencers move EarnShare in and out of the router's Zone.
+  // The Portal, Messenger, Outbox and sequencers move EarnShare in and out of the router's Zone, and
+  // the mode's spenders receive it from the router when the Portal enables it.
   accessPrincipals: (profile, outputs) =>
     profile.zoneRouter
       ? Object.entries(outputs)
@@ -47,17 +56,27 @@ export const zoneRouterModeModule: CapabilityModule = {
             (key === 'zoneRouterPortal' || isZoneRouterMetadataOutput(key)) && value ? [value] : [],
           )
           .concat(getAddress(Addresses.zoneOutbox))
+          .concat(enablesEarnShare(profile) ? (profile.zoneRouter.spenders ?? []) : [])
       : [],
   async stackAccessPrincipals(client, stack) {
     const router = stackAddress(stack, 'zoneRouter')
     if (!router) return []
-    const zoneId = await client.readContract({
-      address: router,
-      abi: zoneRouterAbi,
-      functionName: 'allowedZoneId',
-    })
+    const [zoneId, spenders] = await Promise.all([
+      client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'allowedZoneId' }),
+      client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'spenders' }),
+    ])
     const zone = await registeredZone(client, Number(zoneId))
-    return [zone.portal, zone.messenger, ...zone.sequencers, getAddress(Addresses.zoneOutbox)]
+    const earnShareEnabled =
+      spenders.length !== 0 &&
+      (await missingZoneTokens(client, zone.portal, [['EarnShare', stack.contracts.earnShare]]))
+        .length === 0
+    return [
+      zone.portal,
+      zone.messenger,
+      ...zone.sequencers,
+      getAddress(Addresses.zoneOutbox),
+      ...(earnShareEnabled ? spenders : []),
+    ]
   },
   async inspect(client, profile, outputs) {
     if (!profile.zoneRouter) return undefined
@@ -74,17 +93,27 @@ export const zoneRouterModeModule: CapabilityModule = {
       vaultAsset: requiredOutput(outputs, 'asset'),
     })
     const earn = profile.zoneRouter.earn
-    const [gateway, depositsBack, disabled, inactive, conversion] = await Promise.all([
-      zoneCallbackGatewayRegistered(client, portal, router),
-      zoneGatewayDepositsAdmitted(client, portal, router),
-      earn ? missingZoneTokens(client, portal, zoneRouterTokens(profile, outputs)) : [],
-      earn
-        ? missingZoneTokens(client, portal, zoneRouterTokens(profile, outputs), {
-            depositsActive: true,
-          })
-        : [],
-      earn?.pool ? inspectRouterReadiness(client, router, earn.pool) : undefined,
-    ])
+    const earnShare = requiredOutput(outputs, 'earnShare')
+    const policyId = transferPolicyId(profile)
+    const [gateway, depositsBack, disabled, inactive, conversion, earnShareMissing, provenance] =
+      await Promise.all([
+        zoneCallbackGatewayRegistered(client, portal, router),
+        zoneGatewayDepositsAdmitted(client, portal, router),
+        earn ? missingZoneTokens(client, portal, zoneRouterTokens(profile, outputs)) : [],
+        earn
+          ? missingZoneTokens(client, portal, zoneRouterTokens(profile, outputs), {
+              depositsActive: true,
+            })
+          : [],
+        earn?.pool ? inspectRouterReadiness(client, router, earn.pool) : undefined,
+        missingZoneTokens(client, portal, [['EarnShare', earnShare]]),
+        spenderProvenanceBlockers(client, { factory, spenders: mode.spenders }, spenderReleases),
+      ])
+    // EarnShare spends move shares through each spender, which a protected EarnShare must then admit.
+    const nonMembers =
+      policyId !== undefined && earnShareMissing.length === 0
+        ? await nonMemberSpenders(client, { policyId, spenders: mode.spenders })
+        : []
     const zoneId = profile.zoneRouter.zoneId
     const blockers = [
       ...(gateway ? [] : [`Zone ${zoneId} has not registered the router as a callback gateway`]),
@@ -106,6 +135,20 @@ export const zoneRouterModeModule: CapabilityModule = {
         details: { modeHash: zoneRouterModeHash(mode), factory },
       },
     }
+    if (mode.spenders.length !== 0) {
+      const spenderBlockers = [
+        ...provenance,
+        ...nonMembers.map(
+          (spender) =>
+            `Spender ${spender} is not a member of EarnShare's TIP-403 policy ${policyId}, so EarnShare spends through it bounce`,
+        ),
+      ]
+      report.zoneRouterSpenders = {
+        label: 'Zone router spenders',
+        status: spenderBlockers.length === 0 ? 'ready' : 'blocked',
+        blockers: spenderBlockers,
+      }
+    }
     if (conversion) {
       report.zoneRouterConversion = {
         label: 'Zone router conversion',
@@ -122,6 +165,17 @@ export const zoneRouterModeModule: CapabilityModule = {
   },
 }
 
+/**
+ * Whether the profile has the router's Portal enable EarnShare: through this mode's Earn binding, or
+ * through the single-Zone router on the same Zone. Inspection reads the Portal itself.
+ */
+function enablesEarnShare(profile: EarnDeploymentProfile) {
+  const router = profile.zoneRouter
+  return (
+    router !== null && (router.earn !== undefined || configuredZone(profile)?.id === router.zoneId)
+  )
+}
+
 /** Discovered Zone principals of the router's Zone, kept out of the deployment record. */
 function isZoneRouterMetadataOutput(key: string) {
   return key === 'zoneRouterMessenger' || /^zoneRouterSequencer\d+$/.test(key)
@@ -129,8 +183,8 @@ function isZoneRouterMetadataOutput(key: string) {
 
 /**
  * Before any key is used: the Zone is registered (discovery reads it), every spender and a named
- * factory hold code and the factory answers as one, and an Earn binding's route matches the vault
- * asset as `ZoneRouter`'s constructor requires.
+ * factory hold code and the factory answers as one, every spender takes `spendFrom` from that factory's
+ * routers, and an Earn binding's route matches the vault asset as `ZoneRouter`'s constructor requires.
  */
 async function preflightZoneRouter(
   client: Pick<PublicClient, 'getCode' | 'readContract'>,
@@ -151,6 +205,23 @@ async function preflightZoneRouter(
       functionName: 'isRouter',
       args: [zeroAddress],
     })
+  }
+  // A spender refuses `spendFrom` from any other factory's router, so a router through a factory this
+  // deployment creates could never spend through a spender already bound to another.
+  for (const [index, spender] of (router.spenders ?? []).entries()) {
+    const bound = await spenderRouterFactory(client, spender)
+    const path = `zoneRouter.spenders[${index}] ${spender}`
+    if (!bound) throw new Error(`${path} reports no ROUTER_FACTORY`)
+    if (!router.factory) {
+      throw new Error(
+        `${path} takes spendFrom only from routers of ZoneRouterFactory ${bound}; set zoneRouter.factory to it`,
+      )
+    }
+    if (bound !== getAddress(router.factory)) {
+      throw new Error(
+        `${path} takes spendFrom only from routers of ZoneRouterFactory ${bound}, not zoneRouter.factory ${router.factory}`,
+      )
+    }
   }
   if (router.earn) {
     await preflightRouterRoute(client, profile, {

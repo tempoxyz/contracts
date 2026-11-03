@@ -4,7 +4,9 @@ pragma solidity ^0.8.36;
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "../interfaces/IAddressRegistry.sol";
+import { IERC20Allowance } from "../interfaces/IERC20Allowance.sol";
 import { ISpender } from "../interfaces/ISpender.sol";
+import { SpenderAuth } from "./SpenderAuth.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
@@ -13,15 +15,15 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/extern
 /// @notice Settles a Zone router's Spend op by paying a public address exactly `amount` of a token: the
 ///         withdrawn token itself (a stablecoin or EarnShare), a vault asset redeemed from EarnShare, or
 ///         the stablecoin its bound vault's asset converts into at par.
-/// @dev Specified in docs/zone-router/zone-router.md#sendspender. It has no owner and no setters; its only
-///      setting is an optional conversion binding (a vault, its par pool and a customer ID) fixed at
-///      deployment. A router allows sends only if its mode lists this spender. The router transfers
-///      `maxInput` before calling `spendFrom`; the spender pays, hands every unused unit straight back and
-///      keeps nothing. Whoever builds the callback picks the vault and recipient and spends only their own
-///      input, which the router caps at `maxInput`; only the bound vault's EarnShare reaches the pool, and
-///      only from its asset into the paired stablecoin. Tokens sent here outside a `spendFrom` call are not
-///      rescued: a later `spendFrom` caller can spend them and gets back what its send did not use. It
-///      neither emits nor stores the Zone's sender commitment.
+/// @dev Specified in docs/zone-router/zone-router.md#sendspender. It has no owner and no setters; its
+///      settings, fixed at deployment, are the router factory it trusts and an optional conversion binding
+///      (a vault, its par pool and a customer ID). Only a router that factory deployed, and whose mode lists
+///      this spender, may call `spendFrom`. The router transfers `maxInput` before calling it; the spender
+///      pays, hands every unused unit straight back and keeps nothing. Whoever builds the callback picks the
+///      vault and recipient and spends only their own input, which the router caps at `maxInput`; only the
+///      bound vault's EarnShare reaches the pool, and only from its asset into the paired stablecoin. Tokens
+///      sent here outside a router's spend are not rescued and no call can move them. It neither emits nor
+///      stores the Zone's sender commitment.
 contract SendSpender is ISpender {
     /// @notice One send: `to` receives exactly `amount` of `token`.
     /// @dev With `vault` zero, `token` is the withdrawn token. Otherwise the input is `vault`'s
@@ -36,6 +38,8 @@ contract SendSpender is ISpender {
         bytes32 ref;
     }
 
+    /// @notice The ZoneRouterFactory whose routers, listing this spender, may call `spendFrom`.
+    address public immutable ROUTER_FACTORY;
     /// @notice The only vault whose asset converts at par; zero when sends never convert.
     IEarnVault public immutable convertVault;
     /// @notice The DirectPropAMM pool pairing `convertAsset` with `parToken`; zero without conversion.
@@ -48,16 +52,19 @@ contract SendSpender is ISpender {
     address public immutable parToken;
     bool private immutable assetIsBase;
 
-    uint256 private locked = 1;
+    bool private transient locked;
 
     error ConversionNotAllowed();
     error DestinationNotPaid();
     error InsufficientInput();
     error InvalidAmount();
     error InvalidPool();
+    error InvalidRecipient();
+    error InvalidRouterFactory();
     error InvalidRoutePair();
     error InvalidVault();
     error NothingSpent();
+    error NotRouter();
     error Reentrancy();
     error ResidualBalance(address token);
     error TokenCallFailed();
@@ -78,17 +85,19 @@ contract SendSpender is ISpender {
     );
 
     modifier nonReentrant() {
-        if (locked != 1) revert Reentrancy();
-        locked = 2;
+        if (locked) revert Reentrancy();
+        locked = true;
         _;
-        locked = 1;
+        locked = false;
     }
 
+    /// @param routerFactory_ The ZoneRouterFactory whose routers may call `spendFrom`.
     /// @param convertVault_ The vault whose asset converts at par, or zero for a spender that only sends
     ///        and redeems.
     /// @param pool_ The pool pairing that asset with one other stablecoin of equal decimals.
     /// @param customerId_ The pool customer identifier. All three are set, or all three are zero.
-    constructor(IEarnVault convertVault_, IPropAMMVenue pool_, bytes32 customerId_) {
+    constructor(address routerFactory_, IEarnVault convertVault_, IPropAMMVenue pool_, bytes32 customerId_) {
+        if (routerFactory_ == address(0) || routerFactory_.code.length == 0) revert InvalidRouterFactory();
         bool converts = address(convertVault_) != address(0);
         if (converts != (address(pool_) != address(0)) || converts != (customerId_ != bytes32(0))) {
             revert InvalidPool();
@@ -111,6 +120,7 @@ contract SendSpender is ISpender {
             // Equal units make the par price an exact 1:1 conversion with no rounding remainder.
             if (IERC20Metadata(asset).decimals() != IERC20Metadata(other).decimals()) revert InvalidRoutePair();
         }
+        ROUTER_FACTORY = routerFactory_;
         convertVault = convertVault_;
         pool = pool_;
         customerId = customerId_;
@@ -120,18 +130,22 @@ contract SendSpender is ISpender {
     }
 
     /// @inheritdoc ISpender
-    /// @dev `data` is `abi.encode(Send)`.
+    /// @dev `data` is `abi.encode(Send)`. Only a router from `ROUTER_FACTORY` listing this spender may call it, so
+    ///      `maxInput` is what that router measured out, never a caller's claim on balances held here.
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
+        if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
         _spendFrom(token, maxInput, abi.decode(data, (Send)));
     }
 
     function _spendFrom(address token, uint256 maxInput, Send memory send) private {
         if (send.to == address(0) || send.token == address(0)) revert ZeroAddress();
         if (send.amount == 0 || maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
-        if (send.to == address(this)) revert ZeroAddress();
+        // Paying the router would strand the output there: it measures and returns only the input token.
+        if (send.to == address(this) || send.to == msg.sender) revert InvalidRecipient();
         // A TIP-20 transfer to a virtual address credits its master, so that is whose balance must rise.
         address payee = _payee(send.to);
-        if (payee == address(0) || payee == address(this)) revert ZeroAddress();
+        if (payee == address(0)) revert ZeroAddress();
+        if (payee == address(this) || payee == msg.sender) revert InvalidRecipient();
 
         // The caller sent maxInput first; anything else held here is the baseline, and none may stay behind.
         uint256 balance = IERC20Like(token).balanceOf(address(this));
@@ -227,8 +241,11 @@ contract SendSpender is ISpender {
         if (IERC20Like(parToken).balanceOf(address(this)) != outBefore + amount) revert DestinationNotPaid();
     }
 
+    /// @dev Clears a leftover allowance first only when there is one; every path here leaves none.
     function _safeApprove(address token, address spender, uint256 value) private {
-        _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
+        if (IERC20Allowance(token).allowance(address(this), spender) != 0) {
+            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
+        }
         if (value != 0) _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, value)));
     }
 

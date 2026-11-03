@@ -53,8 +53,7 @@ export type ZoneRouterMode = {
 /** A router release's validated parameters, as the result records them. */
 export type RouterReleaseParameters =
   | Record<string, never>
-  | { vault: Address; pool: Address; customerId: Hex }
-  | { factory: Address; spenderId: Hex }
+  | { factory?: Address; vault: Address; pool: Address; customerId: Hex }
   | { factory: Address; mode: ZoneRouterMode }
 
 export type RouterReleasePlan = ReleasePlan<RouterReleaseKind> & {
@@ -64,6 +63,10 @@ export type RouterReleasePlan = ReleasePlan<RouterReleaseKind> & {
 const constructorInputs = (abi: Abi) =>
   (abi.find((item) => item.type === 'constructor') as Extract<Abi[number], { type: 'constructor' }>)
     .inputs
+const zoneRouterFactoryContract = {
+  name: 'ZoneRouterFactory',
+  contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+}
 const opDeposit = 1
 const opRedeem = 2
 const opSpend = 4
@@ -77,21 +80,34 @@ function noParameters(kind: string, value: unknown): Record<string, never> {
 }
 
 /**
- * A SendSpender's optional conversion binding: the vault whose asset it converts at par, the pool and
- * the customer ID all set, or all omitted for a spender that never converts.
+ * A SendSpender's settings: the ZoneRouterFactory whose routers may call it, omitted for the release
+ * ZoneRouterFactory, and its optional conversion binding: the vault whose asset it converts at par,
+ * the pool and the customer ID all set, or all omitted for a spender that never converts.
  */
-export function parseSendSpenderParameters(value: unknown) {
+export function parseSendSpenderParameters(value: unknown): {
+  factory?: Address
+  vault: Address
+  pool: Address
+  customerId: Hex
+} {
   const parameters = object(value, 'parameters')
   const keys = ['vault', 'pool', 'customerId'] as const
-  exactKeys(parameters, 'parameters', [], keys)
+  exactKeys(parameters, 'parameters', [], ['factory', ...keys])
+  const factory =
+    parameters.factory === undefined
+      ? {}
+      : { factory: address(parameters.factory, 'parameters.factory') }
   const set = keys.filter((key) => parameters[key] !== undefined)
-  if (set.length === 0) return { vault: zeroAddress, pool: zeroAddress, customerId: zeroHash }
+  if (set.length === 0) {
+    return { ...factory, vault: zeroAddress, pool: zeroAddress, customerId: zeroHash }
+  }
   if (set.length !== keys.length) {
     throw new Error(
       'parameters.vault, parameters.pool and parameters.customerId are set together or not at all',
     )
   }
   return {
+    ...factory,
     vault: address(parameters.vault, 'parameters.vault'),
     pool: address(parameters.pool, 'parameters.pool'),
     customerId: nonzeroBytes32(parameters.customerId, 'parameters.customerId'),
@@ -168,9 +184,9 @@ function nonzeroBytes32(value: unknown, path: string): Hex {
 }
 
 /**
- * The release entry point and the contract it creates for one router release kind on one chain,
- * with the kind's parameters: a SendSpender's optional conversion binding and a ZoneRouter's
- * factory and mode. The ZoneRouterFactory takes none.
+ * The release entry point and the contracts it creates for one router release kind on one chain,
+ * with the kind's parameters: a SendSpender's optional factory and conversion binding and a
+ * ZoneRouter's factory and mode. The ZoneRouterFactory takes none.
  */
 export function planRouterRelease(
   kind: string,
@@ -189,14 +205,19 @@ export function planRouterRelease(
         functionName: 'zoneRouterFactory',
         args: [expectedChainId],
       }),
-      contracts: [
-        { name: 'ZoneRouterFactory', contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory' },
-      ],
+      contracts: [zoneRouterFactoryContract],
       forgeArguments: [],
     }
   }
   if (kind === 'sendSpender') {
     const spender = parseSendSpenderParameters(parameters)
+    // Without a factory the entry point binds the release ZoneRouterFactory, deploying it first when it
+    // is not there yet, so the spender's address follows from this build alone.
+    const routerFactory = (addresses: Readonly<Record<string, Address>>) => {
+      const factory = spender.factory ?? addresses[zoneRouterFactoryContract.name]
+      if (!factory) throw new Error('The sendSpender release has no ZoneRouterFactory to bind')
+      return factory
+    }
     return {
       kind,
       project: 'zone-router',
@@ -205,14 +226,22 @@ export function planRouterRelease(
       calldata: encodeFunctionData({
         abi: deployRouterReleaseScriptAbi,
         functionName: 'sendSpender',
-        args: [expectedChainId, spender.vault, spender.pool, spender.customerId],
+        args: [
+          expectedChainId,
+          spender.factory ?? zeroAddress,
+          spender.vault,
+          spender.pool,
+          spender.customerId,
+        ],
       }),
       contracts: [
+        ...(spender.factory ? [] : [zoneRouterFactoryContract]),
         {
           name: 'SendSpender',
           contract: 'src/spenders/SendSpender.sol:SendSpender',
-          constructorArgs: () =>
+          constructorArgs: (addresses) =>
             encodeAbiParameters(constructorInputs(sendSpenderAbi), [
+              routerFactory(addresses),
               spender.vault,
               spender.pool,
               spender.customerId,
@@ -291,7 +320,8 @@ const usage =
   `  release: ${routerReleaseKinds.join(' | ')}\n` +
   '  parameters (JSON object; only these kinds take any):\n' +
   '    sendSpender: {} for a spender that never converts, or {"vault": <address>, "pool": <address>,\n' +
-  '                "customerId": <bytes32>} for one that converts the vault asset at par\n' +
+  '                "customerId": <bytes32>} for one that converts the vault asset at par; it binds the\n' +
+  '                release ZoneRouterFactory, deployed first if missing, unless "factory": <address> names another\n' +
   '    zoneRouter: {"factory": <address>, "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset",\n' +
   '                "pool", "customerId", "spenders"}}; bindings and spenders default to zero and []\n' +
   "Earn's factory releases run with pnpm factory-release."

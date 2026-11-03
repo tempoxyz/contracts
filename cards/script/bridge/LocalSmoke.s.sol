@@ -25,6 +25,8 @@ import {
     EngineMigrationMode
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
+import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
+
 import { CardFactory } from "../../src/core/CardFactory.sol";
 import { CardSpend } from "../../src/core/CardSpend.sol";
 import { CardSpender } from "../../src/core/CardSpender.sol";
@@ -61,6 +63,7 @@ contract LocalSmoke is Script {
     address internal clone;
     BridgeProvider internal provider;
     CardSpender internal program;
+    ZoneRouterFactory internal routerFactory;
 
     function run() external {
         deployerPk = vm.deriveKey(MNEMONIC, 0);
@@ -131,7 +134,10 @@ contract LocalSmoke is Script {
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
         factory.governorCall(SPENDER_ID, abi.encodePacked(bytes2("TS"), bytes2("UV"), uint8(1), address(earnVault)));
         provider = new BridgeProvider(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
-        program = CardSpender(new CardFactory().deploy(SPENDER_ID, ICardProvider(address(provider))));
+        // The router factory whose routers may call the program's spendFrom; smoke.sh releases with it too.
+        routerFactory = new ZoneRouterFactory();
+        program =
+            CardSpender(new CardFactory(address(routerFactory)).deploy(SPENDER_ID, ICardProvider(address(provider))));
         vm.stopBroadcast();
         console.log("deployed factory", address(factory), "clone", clone);
         console.log("deployed program", address(program), "provider", address(provider));
@@ -144,6 +150,7 @@ contract LocalSmoke is Script {
         vm.serializeAddress(key, "clone", clone);
         vm.serializeAddress(key, "provider", address(provider));
         vm.serializeAddress(key, "program", address(program));
+        vm.serializeAddress(key, "routerFactory", address(routerFactory));
         vm.serializeAddress(key, "settlement", settlement);
         vm.serializeAddress(key, "earnVault", address(earnVault));
         vm.serializeAddress(key, "earnShare", address(earnShare));

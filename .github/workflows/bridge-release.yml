@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: ''
+      routerFactory:
+        description: bridgeProgram only, the ZoneRouterFactory whose routers may call the program (the Zone router release's)
+        required: false
+        type: string
+        default: ''
       broadcast:
         description: Broadcast and source verify; unchecked only simulates
         required: true
@@ -86,6 +91,7 @@ jobs:
           CONTRACT: ${{ inputs.contract }}
           FACTORY: ${{ inputs.factory }}
           SPENDER_ID: ${{ inputs.spenderId }}
+          ROUTER_FACTORY: ${{ inputs.routerFactory }}
           BROADCAST: ${{ inputs.broadcast }}
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
@@ -121,6 +127,7 @@ jobs:
             jq -r '.broadcast as $broadcast | .contracts[]? | "| \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" elif .existed then "already deployed" elif $broadcast then "-" else "would be created" end) | \(.match // "-") |"' "$result"
             jq -r 'select(.factory) | "\nFactory `\(.factory)`."' "$result"
             jq -r 'select(.spenderId) | "\nCard program `\(.spenderId)`."' "$result"
+            jq -r 'select(.routerFactory) | "\nRouter factory `\(.routerFactory)`."' "$result"
             if jq -e '.contract == "tempoSpend" and .output.adminRegisterHandler' "$result" >/dev/null; then
               echo
               echo '### Calls for Bridge to submit'

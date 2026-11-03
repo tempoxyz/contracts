@@ -33,6 +33,14 @@ library ProgramChecks {
         return (true, address(uint160(word)));
     }
 
+    /// @dev A low-level read of one word, false unless `target` has code and the call returns at least one.
+    function readUint(address target, bytes memory data) internal view returns (bool ok, uint256 value) {
+        if (target.code.length == 0) return (false, 0);
+        (bool success, bytes memory ret) = target.staticcall(data);
+        if (!success || ret.length < 32) return (false, 0);
+        return (true, abi.decode(ret, (uint256)));
+    }
+
     /// @dev True when `a` and `b` run the same code. Solc appends a CBOR metadata blob, sized by the
     ///      code's last two bytes, that hashes the source text, so comments alone would differ.
     function sameLogic(address a, address b) internal view returns (bool) {

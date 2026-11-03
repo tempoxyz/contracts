@@ -12,7 +12,8 @@ import { SendSpender } from "zone-router/spenders/SendSpender.sol";
 /// @notice Deploys, for the Zone E2E (`e2e/cards/bridge`), a `SendSpender` converting through the Earn stack's par pool and a
 ///         `ZoneRouter` with every op: Earn deposit and redeem of the private asset through that pool, and Spend
 ///         through the card program's `CardSpender` and the `SendSpender`. The pool owner must still admit
-///         both as taker and recipient.
+///         both as taker and recipient. The program and the `SendSpender` take `spendFrom` only from
+///         ROUTER_FACTORY's routers, so it must be the factory the program was deployed for.
 ///         Reads DEPLOYER_PK, ROUTER_FACTORY, BRIDGE_PROGRAM, ZONE_ID, EARN_VAULT, PRIVATE_ASSET, POOL,
 ///         CUSTOMER_ID, SEND_CUSTOMER_ID and OUT from the env.
 contract ZoneE2ERouter is Script {
@@ -22,7 +23,9 @@ contract ZoneE2ERouter is Script {
         address pool = vm.envAddress("POOL");
 
         vm.startBroadcast(deployerPk);
-        SendSpender sender = new SendSpender(IEarnVault(vault), IPropAMMVenue(pool), vm.envBytes32("SEND_CUSTOMER_ID"));
+        address routerFactory = vm.envAddress("ROUTER_FACTORY");
+        SendSpender sender =
+            new SendSpender(routerFactory, IEarnVault(vault), IPropAMMVenue(pool), vm.envBytes32("SEND_CUSTOMER_ID"));
 
         ZoneRouter.Mode memory mode;
         mode.zoneId = uint32(vm.envUint("ZONE_ID"));
@@ -34,7 +37,7 @@ contract ZoneE2ERouter is Script {
         mode.spenders = new address[](2);
         mode.spenders[0] = vm.envAddress("BRIDGE_PROGRAM");
         mode.spenders[1] = address(sender);
-        address router = ZoneRouterFactory(vm.envAddress("ROUTER_FACTORY")).deploy(mode);
+        address router = ZoneRouterFactory(routerFactory).deploy(mode);
         vm.stopBroadcast();
 
         string memory key = "zone-e2e-router";

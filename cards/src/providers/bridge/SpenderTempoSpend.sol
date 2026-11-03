@@ -7,9 +7,10 @@ import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { IERC20 } from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { LibClone } from "solady/utils/LibClone.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "zone-router/interfaces/IAddressRegistry.sol";
 
+import { ITempoEarnVault } from "../../core/interfaces/ITempoEarnVault.sol";
 import { IBridgeSpenderFactory } from "./interfaces/IBridgeSpenderFactory.sol";
-import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 
 struct SpenderTempoSpendStorage {
     mapping(address vault => bool allowed) allowedVaults;
@@ -39,7 +40,8 @@ library SpenderTempoSpendStorageLib {
 ///      Bridge's pull pipeline (`transferToDestination`) is not used: it needs a standing
 ///      allowance and cannot reach Zone balances.
 ///      A spend settles in the stablecoin the funds are held in. Earn shares redeem into the
-///      vault's own asset, so a spend from Earn names that asset as `token`.
+///      vault's own asset, so a spend from Earn names that asset as `token`. A virtual
+///      destination (TIP-1022) is credited through its master, whose balance is checked.
 ///
 /// Payload layouts (after the factory strips the 2-byte handler prefix):
 ///   balance:  from(20) token(20) [vault(20)]
@@ -52,6 +54,7 @@ contract SpenderTempoSpend is SpenderBase {
     error IncorrectAssetForVault();
     error ShareCostExceeded(uint256 required, uint256 maxShares);
     error PipelineDisabled();
+    error UnresolvedRecipient();
     error VaultNotAllowed();
     error WrongProgram(bytes32 spenderId);
 
@@ -196,12 +199,16 @@ contract SpenderTempoSpend is SpenderBase {
     function _spend(Spend memory s) private {
         IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(FACTORY));
         require(_isCanonical(s.spenderId), WrongProgram(s.spenderId));
+        // Implied by `_isCanonical` under the vendored factory, which registers an ID once and deploys its clone
+        // only in `createSpender`; kept because the factory is upgradeable and could re-point an ID.
         require(factory.getSpenderAddress(s.spenderId) == address(this), WrongProgram(s.spenderId));
         require(factory.isAuthorizedDestination(s.spenderId, s.destination), DestinationNotAuthorized(s.destination));
         require(s.amount > 0 && s.fromVault <= s.amount, InvalidAmount());
+        address payee = _payee(s.destination);
+        require(payee != address(0) && payee != address(this), DestinationNotAuthorized(s.destination));
 
         uint256 fromStable = s.amount - s.fromVault;
-        uint256 before = IERC20(s.token).balanceOf(s.destination);
+        uint256 before = IERC20(s.token).balanceOf(payee);
         if (fromStable != 0) {
             SafeTransferLib.safeTransferFrom(s.token, msg.sender, s.destination, fromStable);
         }
@@ -209,23 +216,23 @@ contract SpenderTempoSpend is SpenderBase {
         if (s.fromVault != 0) {
             require(_storage().allowedVaults[s.vault], VaultNotAllowed());
             require(ITempoEarnVault(s.vault).asset() == s.token, IncorrectAssetForVault());
-            sharesBurned = _withdrawFromEarn(s.vault, s.destination, s.fromVault, s.maxShares);
+            sharesBurned = _withdrawFromEarn(s, payee);
         }
-        require(IERC20(s.token).balanceOf(s.destination) == before + s.amount, DestinationNotCredited());
+        require(IERC20(s.token).balanceOf(payee) == before + s.amount, DestinationNotCredited());
 
         emit TempoSpendExecuted(
             s.ref, msg.sender, s.destination, s.token, s.amount, fromStable, s.fromVault, sharesBurned
         );
     }
 
-    /// @dev Pulls only the shares `assets` costs, burns them and returns any the vault left over.
-    function _withdrawFromEarn(address vault, address receiver, uint256 assets, uint256 maxShares)
-        private
-        returns (uint256 burned)
-    {
+    /// @dev Pulls only the shares `s.fromVault` costs, burns them and returns any the vault left over. Earn's
+    ///      engines check the literal receiver's balance, so a virtual destination is redeemed to the clone
+    ///      first and transferred on.
+    function _withdrawFromEarn(Spend memory s, address payee) private returns (uint256 burned) {
+        address vault = s.vault;
         ITempoEarnVault v = ITempoEarnVault(vault);
-        uint256 required = v.previewWithdraw(assets);
-        require(maxShares == 0 || required <= maxShares, ShareCostExceeded(required, maxShares));
+        uint256 required = v.previewWithdraw(s.fromVault);
+        require(s.maxShares == 0 || required <= s.maxShares, ShareCostExceeded(required, s.maxShares));
 
         address share = v.earnShare();
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
@@ -243,8 +250,31 @@ contract SpenderTempoSpend is SpenderBase {
                 $.approvedShare[vault] = share;
             }
         }
-        burned = v.withdrawExact(assets, receiver, required);
+        if (payee == s.destination) {
+            burned = v.withdrawExact(s.fromVault, s.destination, required);
+        } else {
+            uint256 held = IERC20(s.token).balanceOf(address(this));
+            burned = v.withdrawExact(s.fromVault, address(this), required);
+            require(IERC20(s.token).balanceOf(address(this)) == held + s.fromVault, DestinationNotCredited());
+            SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);
+        }
         if (burned < required) SafeTransferLib.safeTransfer(share, msg.sender, required - burned);
+    }
+
+    /// @dev Who a transfer to `to` credits: its TIP-1022 master if it is a virtual address, else `to`.
+    ///      Without the registry (empty return data) it is `to`; an unregistered virtual address reverts,
+    ///      as the transfer would.
+    function _payee(address to) private view returns (address) {
+        (bool ok, bytes memory ret) =
+            ADDRESS_REGISTRY_ADDRESS.staticcall(abi.encodeCall(IAddressRegistry.resolveRecipient, (to)));
+        if (!ok) {
+            assembly ("memory-safe") {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        if (ret.length == 0) return to;
+        require(ret.length == 32, UnresolvedRecipient());
+        return abi.decode(ret, (address));
     }
 
     /// @dev Value of `from`'s shares in `vault` when it holds `token`. A vault that cannot report
