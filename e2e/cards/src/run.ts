@@ -60,7 +60,7 @@ import {
   withdrawalRequested,
   zoneTokenAbi,
 } from '../bridge/src/support.js'
-import { forgeEnv, portalAbi, sendL1Sync } from '../bridge/src/targets.js'
+import { deploySpendRouter, forgeEnv, portalAbi, sendL1Sync } from '../bridge/src/targets.js'
 import { l1Clients, zoneClients, type ZoneClient } from './clients.js'
 import type { CardProvider, Context, Deployed, Destination } from './provider.js'
 import { cardsRoot, rain } from './providers/rain.js'
@@ -170,6 +170,12 @@ async function main() {
       l1,
       initialToken: deployed.zoneToken,
       privateKey: zoneAdminPk,
+    })
+    await deploySpendRouter(l1Public, l1Wallet(privateKeyToAccount(deployerPk)), {
+      routerFactory: deployed.routerFactory,
+      program: deployed.program,
+      router: deployed.router,
+      zoneId: 1,
     })
     const portal = zone.portal
     const admin = l1Wallet(zoneAdmin)
