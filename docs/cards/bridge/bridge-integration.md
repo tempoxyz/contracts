@@ -94,8 +94,8 @@ earnShare.approve(program, 0)             only when spending from Earn
 - `ref` is the issuer's own reference. Use the crypto pull's ID.
 - `fromVault` is how much of `amount` comes from Earn.
 - `maxShares` is the live `previewWithdraw(fromVault)` plus a tolerance. The harness uses 0.5%.
-  Always set it: the program pulls exactly `maxShares` of EarnShare (the live quote when zero), so it
-  sizes the share approval, and the handler burns no more.
+  Approve `maxShares` of EarnShare: the program pulls only the live quote, refuses a quote above a nonzero
+  `maxShares` (`ShareCostExceeded`), and returns any share the handler did not burn.
 
 The program pulls the input, pays through the clone's `publicCall "TS" "PS"` as the payer and
 returns what the handler did not use, so the cardholder ends with no allowance and no leftover in

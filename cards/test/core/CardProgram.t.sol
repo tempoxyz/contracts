@@ -58,6 +58,33 @@ abstract contract CardProgramBehavior is CoreEnv {
         _assertEmpty();
     }
 
+    /// @dev A payer spending nearly all their shares, so they hold the live cost but less than the `maxShares`
+    ///      cap (live cost plus 0.5%), is still paid: only the live cost moves, whoever pays.
+    function test_publicSpend_fromEarn_sharesCoverCostButNotCap() public {
+        uint256 shares = _depositEarn(alice, 100e6);
+        uint256 amount = earnVault.previewRedeem(shares) - 1;
+        CardSpend memory s = _earnSpend(publicWallet, 0, amount, amount, "nearly.all");
+        assertGt(s.maxShares, shares, "the cap is above the payer's balance");
+        uint256 cost = earnVault.previewWithdraw(amount);
+        assertLe(cost, shares, "the live cost is within it");
+        _publicSpend(alice, s);
+        assertEq(usd.balanceOf(publicWallet), amount);
+        assertEq(earnShare.balanceOf(alice), shares - cost);
+        _assertEmpty();
+    }
+
+    function test_revert_publicSpend_liveCostAboveCap() public {
+        _depositEarn(alice, 100e6);
+        CardSpend memory s = _earnSpend(publicWallet, 0, 10e6, 10e6, "cap");
+        uint256 required = earnVault.previewWithdraw(10e6);
+        s.maxShares = required - 1;
+        vm.prank(alice);
+        earnShare.approve(address(program), type(uint256).max);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.ShareCostExceeded.selector, required, required - 1));
+        program.spend(s);
+    }
+
     function testFuzz_publicSpend_split(uint256 amount, uint256 fromVault) public {
         _depositEarn(alice, 500e6);
         amount = bound(amount, 1, 400e6);

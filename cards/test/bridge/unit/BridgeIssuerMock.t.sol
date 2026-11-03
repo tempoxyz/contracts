@@ -130,6 +130,11 @@ contract MockVault {
         earnShare = earnShare_;
         asset = asset_;
     }
+
+    /// @dev A fixed quote: two shares per unit of the asset.
+    function previewWithdraw(uint256 assets) external pure returns (uint256) {
+        return assets * 2;
+    }
 }
 
 /// @notice `BridgeIssuer` and the `CardProgram` it pays through, against a mock factory and clone: the
@@ -288,15 +293,16 @@ contract BridgeIssuerMockTest is Test {
         assertEq(share.balanceOf(address(program)), 0);
     }
 
-    /// @notice A public spend pulls only the stablecoin part and the share quote from the payer, pays
-    ///         through the clone and returns what the clone did not use.
+    /// @notice A public spend pulls only the stablecoin part and the live share quote (not the `maxShares` cap)
+    ///         from the payer, pays through the clone and returns what the clone did not use.
     function testPublicSpendReturnsWhatTheCloneDidNotUse() public {
         address payer = makeAddr("payer");
         CardSpend memory spend = _spend(address(usd));
         spend.vault = address(vault);
         spend.fromVault = 20e6;
         spend.maxShares = 45e6;
-        share.mint(payer, 100e6);
+        // Exactly the live quote (2 x 20e6), below the 45e6 cap: pulling the cap would fail.
+        share.mint(payer, 40e6);
         usd.mint(payer, 100e6);
         vm.startPrank(payer);
         usd.approve(address(program), type(uint256).max);
@@ -308,7 +314,7 @@ contract BridgeIssuerMockTest is Test {
         program.spend(spend);
         assertEq(usd.balanceOf(destination), AMOUNT);
         assertEq(usd.balanceOf(payer), 100e6, "the unused stablecoin came back");
-        assertEq(share.balanceOf(payer), 100e6, "the unused shares came back");
+        assertEq(share.balanceOf(payer), 40e6, "the unused shares came back");
         assertEq(usd.balanceOf(address(program)), 0);
         assertEq(share.balanceOf(address(program)), 0);
     }

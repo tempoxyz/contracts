@@ -266,7 +266,10 @@ contract CardProgram is ISpendSettler {
         if (s.fromVault != 0) {
             ITempoEarnVault v = ITempoEarnVault(s.vault);
             share = v.earnShare();
-            shareIn = s.maxShares != 0 ? s.maxShares : v.previewWithdraw(s.fromVault);
+            // The live cost, as the target computes it in this same call: pulling the `maxShares` cap instead
+            // would decline a payer whose shares cover the cost but not the cap.
+            shareIn = v.previewWithdraw(s.fromVault);
+            if (s.maxShares != 0 && shareIn > s.maxShares) revert ShareCostExceeded(shareIn, s.maxShares);
         }
         uint256 stableBase = IERC20Like(s.token).balanceOf(address(this));
         uint256 shareBase = share == address(0) ? 0 : IERC20Like(share).balanceOf(address(this));
