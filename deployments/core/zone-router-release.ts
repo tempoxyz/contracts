@@ -252,9 +252,7 @@ export function planRouterRelease(
 
 const unknownRouterRelease = (kind: string) =>
   new Error(
-    kind === 'bridgeSettler'
-      ? "Unknown router release bridgeSettler; a card program's spender is its CardSpender, which releases with the card integration (cards/script/bridge/deploy/release.sh <network> bridgeProgram)"
-      : `Unknown router release ${kind}; expected one of ${routerReleaseKinds.join(', ')} (Earn's factory releases run with pnpm factory-release)`,
+    `Unknown router release ${kind}; expected one of ${routerReleaseKinds.join(', ')} (Earn's factory releases run with pnpm factory-release)`,
   )
 
 /** The router release one selection deploys: a single kind, since none is in a registry `all`. */

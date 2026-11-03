@@ -87,12 +87,6 @@ describe('planRouterRelease', () => {
     }
   })
 
-  test('leaves the card program spender to the card integration release', () => {
-    expect(() => planRouterRelease('bridgeSettler', 4217)).toThrow(
-      'cards/script/bridge/deploy/release.sh <network> bridgeProgram',
-    )
-  })
-
   test("refuses Earn's factory releases, pointing to their own CLI", () => {
     for (const kind of ['all', ...factoryReleaseKinds]) {
       expect(() => planRouterRelease(kind, 4217)).toThrow(
@@ -448,7 +442,6 @@ describe('router release workflow', () => {
   test('offers every hosted network, both, and every router release, without all', () => {
     expect(options('network')?.sort()).toEqual(['both', ...Object.keys(hostedEnvironments)].sort())
     expect(options('release')).toEqual([...routerReleaseKinds])
-    expect(workflow).not.toContain('bridgeSettler')
     expect(workflow).toContain('["moderato","mainnet"]')
     expect(workflow).toContain('environment: factory-release-${{ matrix.network }}')
   })
