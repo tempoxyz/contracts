@@ -112,9 +112,10 @@ contract AccessKeySecurityTest is AccessKeys {
         vm.prank(bridgeGovernor);
         bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Gated);
         _scopePublicKey(1000e6);
-        // The program reads the factory's refusal to route "TS" for the clone as a pause.
+        // The factory refuses to route "TS" for the clone.
         _assertRejected(
-            _approveAndSpend(10e6, _spend(10e6)), abi.encodeWithSelector(CardSpender.ProgramPaused.selector)
+            _approveAndSpend(10e6, _spend(10e6)),
+            abi.encodeWithSelector(bytes4(keccak256("SpenderHandlerNotAllowed()")))
         );
         vm.prank(bridgeGovernor);
         bridgeFactory.updateSpenderHandlerAllowlist(PREFIX_TEMPO_SPEND, SPENDER_ID, true);

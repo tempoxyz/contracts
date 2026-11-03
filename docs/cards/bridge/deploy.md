@@ -209,6 +209,11 @@ Zone's portal and the program's to its clone. Without them the program's first s
 them, which costs that spend about 250k more gas each. The clone's approval to each allowed vault is
 set when governance allows it with `UV`.
 
+For Earn, also send 1 unit of the EarnShare to the vault itself. `withdrawExact` pulls the shares it
+burns into the vault before burning them, so without a seed every Earn spend creates and clears the
+vault's own balance slot (about 250k). The vault never reads its own EarnShare balance, so the unit only
+stays there (the last holder's full exit leaves it behind), and it serves every program on the vault.
+
 For Earn, also send 1 unit of the EarnShare to the program's clone. The clone holds the shares an
 Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
 the unit stays and no spend creates that balance slot again (about 245k). It cannot be recovered.
@@ -228,9 +233,10 @@ The TF handler, on the same clone, clears that vault approval after each of its 
 so while TF pulls from the same vault the next private Earn spend sets it again, about 250k more gas.
 
 Then request callback gas per spend type rather than one figure, sized for the worst case of a
-prepared program: about 0.6M for a stablecoin spend (measured 0.44M) and 1.4M for an Earn spend
-(measured 0.98M, plus about 250k when TF cleared the vault approval). That is what fits 4 and 3 spends
-into a default withdrawal batch ([design](design.md#callback-gas)). The figures hold only once all of
+prepared program: about 0.3M for a stablecoin spend (measured 0.19M) and 0.55M for an Earn spend
+(measured 0.47M), or 0.8M while TF pulls from the same vault and clears the approval (about 250k
+more). That fits 4 spends of each into a default withdrawal batch, or 3 at 0.8M
+([design](design.md#callback-gas)). The figures hold only once all of
 step 6 is done, the settlement wallet's balance included: a callback that runs out of gas bounces
 after Bridge approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
 measure the program's own vault first.

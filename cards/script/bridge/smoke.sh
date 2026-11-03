@@ -122,12 +122,11 @@ expect_revert "CallNotAllowed" cast send "$CLONE" "publicCall(bytes)" 0x5453 \
   --tempo.access-key "$BRIDGE_KEY_PK" --tempo.root-account "$ALICE" --rpc-url "$RPC"
 echo "access key cannot call the clone itself"
 
-# Governance takes the program off the gated handler's allowlist: the program then reports itself
-# paused (the factory no longer routes "TS" for its clone), so the key's spend stops before any
-# transfer. The deployment scripts below put it back.
+# Governance takes the program off the gated handler's allowlist: the key's spend to a program
+# destination then stops at the factory's gate. The deployment scripts below put it back.
 submit() { cast send "$FACTORY" "$1" --private-key "$DEPLOYER_PK" --rpc-url "$RPC" >/dev/null; }
 submit "$(cast calldata "updateSpenderHandlerAllowlist(bytes2,bytes32,bool)" 0x5453 "$SPENDER_ID" false)"
-expect_revert "$(cast sig "ProgramPaused()")" spend 1000000 "$SETTLEMENT"
+expect_revert "$(cast sig "SpenderHandlerNotAllowed()")" spend 1000000 "$SETTLEMENT"
 echo "access key cannot spend through a gated handler the program is not allowlisted for"
 
 # Deploys a replacement "TS" handler with the deployment scripts, submits the calls they write

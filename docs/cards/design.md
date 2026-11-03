@@ -98,10 +98,13 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 
 ## What the program checks
 
-- `CardSpend.program` is this program (`WrongProgram`), and its provider has not paused it
-  (`ProgramPaused`); `amount` is above zero and `fromVault` at most `amount` (`InvalidAmount`).
-- The provider authorizes the destination for this payer, token and path (`DestinationNotAuthorized`); an
-  Earn spend's vault is allowed and holds `token` (`VaultNotAllowed`, `IncorrectAssetForVault`), and burns at
+- `CardSpend.program` is this program (`WrongProgram`); `amount` is above zero and `fromVault` at most
+  `amount` (`InvalidAmount`).
+- A program that pays directly asks its provider: it has not paused the program (`ProgramPaused`), it
+  authorizes the destination for this payer, token and path (`DestinationNotAuthorized`), and an Earn
+  spend's vault is allowed and holds `token` (`VaultNotAllowed`, `IncorrectAssetForVault`). A program
+  that pays through a payout target leaves those rules to the target, which enforces them in the same call
+  (`ICardProviderPayout`); asking the provider first would only repeat them. Either way a spend burns at
   most `maxShares` (`ShareCostExceeded`; zero accepts the live price).
 - The destination's balance of `token` rises by exactly `amount` (`DestinationNotCredited`).
 - A virtual destination (TIP-1022) is credited through its master, so the program checks the master's
@@ -113,9 +116,10 @@ program holds as its baseline and leaves it there, so a spend never creates the 
   (`InsufficientInput`) and spends from no more than it; the spend consumes some input (`NothingSpent`);
   the unused input goes back to the caller and the program ends at its baseline (`ResidualBalance`). On
   the direct path the vault prices the shares, capped by the lower of `maxInput` and `maxShares`.
-- A payout through the provider's target uses exactly the stablecoin part, and for Earn at most the share
-  cost the program quoted before the call (`InputNotConsumed`), so a replaced target cannot keep the rest
-  of the input as a buffer. Anything beyond the spend's input reverts.
+- A payout through the provider's target uses exactly the stablecoin part, and for a private Earn spend
+  exactly the shares the vault burned, the drop in the EarnShare's supply (`InputNotConsumed`), so a
+  replaced target cannot keep any of the input. A public Earn spend can use at most the share cost the
+  program quoted to pull. Anything beyond the spend's input reverts.
 - A transient lock stops reentry. Standing approvals (to an allowed vault, or to the payout target) are
   harmless because the program holds at most a one-unit seed between spends.
 - Events: `CardSpent(ref, payer, destination, token, amount, fromVault, sharesUsed, isPrivate)`, and for a

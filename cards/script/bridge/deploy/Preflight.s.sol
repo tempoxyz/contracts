@@ -162,6 +162,9 @@ contract Preflight is BridgeProgramRelease {
         bool routerSeeded;
         /// @dev For an EarnShare TOKEN, the clone holds some of it.
         bool cloneSeeded;
+        /// @dev For an EarnShare TOKEN, its vault holds some of it: `withdrawExact` pulls the shares it burns into the
+        ///      vault, so without a seed every Earn spend creates and clears the vault's balance slot.
+        bool vaultSeeded;
         /// @dev For an EarnShare TOKEN paid to a virtual settlement, the clone holds some of the vault asset, which
         ///      it redeems to itself and forwards on every such spend.
         bool cloneAssetSeeded;
@@ -548,7 +551,12 @@ contract Preflight is BridgeProgramRelease {
         bool ready = r.settlementFunded && r.programWarm && r.routerWarm && r.programSeeded && r.routerSeeded;
         if (r.tokenIsEarnShare) {
             _warn(r.cloneSeeded, "clone holds a seed of the share", "anyone: send the clone 1 unit of the share");
-            ready = ready && r.cloneSeeded;
+            _warn(
+                r.vaultSeeded,
+                "vault holds a seed of its share, which it pulls in and burns on every Earn spend",
+                "anyone: send the vault 1 unit of the share"
+            );
+            ready = ready && r.cloneSeeded && r.vaultSeeded;
             if (r.settlementVirtual) {
                 _warn(
                     r.cloneAssetSeeded,
@@ -701,6 +709,7 @@ contract Preflight is BridgeProgramRelease {
             r.routerSeeded = _balance(token, router) != 0;
         }
         r.cloneSeeded = r.tokenIsEarnShare && r.clone != address(0) && _balance(token, r.clone) != 0;
+        r.vaultSeeded = r.tokenIsEarnShare && _balance(token, r.earnVault) != 0;
         r.cloneAssetSeeded = r.tokenIsEarnShare && r.clone != address(0) && _balance(r.stablecoin, r.clone) != 0;
         r.cloneVaultApproved = new bool[](vaults.length);
         r.programVaultApproved = new bool[](vaults.length);

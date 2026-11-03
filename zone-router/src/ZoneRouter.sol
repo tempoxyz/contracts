@@ -96,6 +96,8 @@ contract ZoneRouter is IWithdrawalReceiver {
 
     /// @notice The only accepted source Zone.
     uint32 public immutable allowedZoneId;
+    /// @notice That Zone's Portal, read once from the Zone factory: a Zone's Portal never changes.
+    address public immutable portal;
     /// @notice Bitmask of OP_DEPOSIT, OP_REDEEM and OP_SPEND.
     uint8 public immutable enabledOps;
     /// @notice The only EarnVault this router uses; zero without Earn ops.
@@ -182,6 +184,10 @@ contract ZoneRouter is IWithdrawalReceiver {
 
     constructor(Mode memory mode) {
         if (mode.zoneId == 0) revert WrongSourceZone();
+        address portal_ = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(mode.zoneId).portal;
+        if (portal_ == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(portal_)) {
+            revert InvalidSourcePortal();
+        }
         if (mode.enabledOps == 0 || mode.enabledOps & ~ALL_OPS != 0) revert InvalidOps();
 
         address vaultAsset_;
@@ -214,6 +220,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         }
 
         allowedZoneId = mode.zoneId;
+        portal = portal_;
         enabledOps = mode.enabledOps;
     }
 
@@ -229,7 +236,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @dev Invariant: the Portal moves the router's tokens only inside a `depositEncrypted` call the router makes.
     function warm(address token) external {
         if (enabledOps & OP_SPEND == 0) revert OpDisabled();
-        _approvePortal(token, IZoneFactory(ZONE_FACTORY_ADDRESS).zones(allowedZoneId).portal, type(uint256).max);
+        _approvePortal(token, portal, type(uint256).max);
     }
 
     function supportsFlow(uint8 flow) external view returns (bool) {
@@ -306,9 +313,10 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (!isSpender[data.spender]) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        // A maxInput below the amount always leaves change, so its return is checked before the spender pays,
-        // and checked again once it has: the Portal's fee may change while the spender runs.
-        if (data.maxInput < amount) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
+        // A maxInput below the amount always leaves change, so its return is checked before the spender pays.
+        // The fee is checked again once it has paid, since the Portal's fee may change while the spender runs.
+        bool returnChecked = data.maxInput < amount;
+        if (returnChecked) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
 
         uint256 balanceBefore = IERC20Like(token).balanceOf(address(this));
         // A transfer instead of an approval: the spender holds no allowance from the router, so it can
@@ -325,7 +333,9 @@ contract ZoneRouter is IWithdrawalReceiver {
         uint256 change = amount - used;
         bytes32 zoneDepositHash;
         if (change != 0) {
-            uint128 fee = _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
+            uint128 fee = returnChecked
+                ? _checkDepositFee(sourcePortal, data.zoneReturn.maxDepositFee)
+                : _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
             // The Portal's depositEncrypted reverts DepositTooSmall below this; named here for the sender.
             uint256 minimum = uint256(fee) + IZonePortalFees(sourcePortal).calculateBouncebackFee();
             if (change < minimum) revert ChangeBelowDepositFee(change, minimum);
@@ -351,6 +361,11 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (!IZonePortal(sourcePortal).isTokenEnabled(token) || !IZonePortal(sourcePortal).areDepositsActive(token)) {
             revert InvalidReturnToken();
         }
+        fee = _checkDepositFee(sourcePortal, maxDepositFee);
+    }
+
+    /// @dev Requires the Portal's deposit fee to be within the sender's cap.
+    function _checkDepositFee(address sourcePortal, uint128 maxDepositFee) private view returns (uint128 fee) {
         fee = IZonePortalFees(sourcePortal).calculateDepositFee();
         if (fee > maxDepositFee) revert DepositFeeTooHigh(fee);
     }
@@ -460,10 +475,8 @@ contract ZoneRouter is IWithdrawalReceiver {
 
     function _validateWithdrawal(uint32 sourceZoneId, address sourcePortal, uint128 amount) private view {
         if (msg.sender != ZONE_MESSENGER_ADDRESS) revert NotZoneMessenger();
-        ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(sourceZoneId);
-        if (zone.portal != sourcePortal || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(sourcePortal)) {
-            revert InvalidSourcePortal();
-        }
+        // The messenger relays only from the Zone's registered Portal, which the constructor read once.
+        if (sourcePortal != portal) revert InvalidSourcePortal();
         if (amount == 0) revert ZeroAmount();
     }
 

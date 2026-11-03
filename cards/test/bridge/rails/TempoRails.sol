@@ -48,8 +48,8 @@ abstract contract TempoRailBase is RailDefaults {
     /// @dev What both "TS" rails fail with once a spend reaches the program, the handler or the keychain.
     function _tempoDeclineError(Decline reason) internal pure returns (bytes4) {
         if (reason == Decline.Revoked) return IAccountKeychain.KeyAlreadyRevoked.selector;
-        // The program reads Bridge's factory pause through its provider before the clone does.
-        if (reason == Decline.Paused) return CardSpender.ProgramPaused.selector;
+        // The program leaves Bridge's factory pause to the clone, which refuses before funds move.
+        if (reason == Decline.Paused) return bytes4(keccak256("FactoryPaused()"));
         if (reason == Decline.SpendLimit) return IAccountKeychain.SpendingLimitExceeded.selector;
         if (reason == Decline.ShareCost) return SpenderTempoSpend.ShareCostExceeded.selector;
         if (reason == Decline.Illiquid) return bytes4(keccak256("Error(string)"));

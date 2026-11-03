@@ -27,6 +27,11 @@ import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol"
 import { IEarnEngineExactWithdraw } from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "tempo-earn/interfaces/engines/IEarnEngineRedeem.sol";
 import {
+    IZoneFactory as IRouterZoneFactory,
+    ZONE_FACTORY_ADDRESS as ROUTER_ZONE_FACTORY,
+    ZoneInfo as RouterZoneInfo
+} from "tempo-earn/interfaces/external/tempo/IZone.sol";
+import {
     IZoneFactory,
     IZonePortal,
     ZONE_FACTORY_ADDRESS,
@@ -62,9 +67,11 @@ contract DeployScriptsTest is ZoneEnv {
         assertEq(address(bridgeFactory.getSpenderHandler(PREFIX_TEMPO_SPEND)), address(handler.handler));
 
         _approve(10e6);
-        // The program's pause reads the "TS" routing, so a program not yet allowlisted reads as paused.
+        // The program's pause reads the "TS" routing, so a program not yet allowlisted reads as paused, and the
+        // clone refuses its spend.
+        assertTrue(program.paused());
         vm.prank(alice);
-        vm.expectRevert(CardSpender.ProgramPaused.selector);
+        vm.expectRevert(bytes4(keccak256("SpenderHandlerNotAllowed()")));
         program.spend(_stable(10e6));
 
         address[] memory vaults = new address[](1);
@@ -359,6 +366,7 @@ contract DeployScriptsTest is ZoneEnv {
         vaults[0] = address(earnVault);
         r = _earnPreflight(preflight, router, vaults);
         assertFalse(r.cloneSeeded, "no share in the clone yet");
+        assertFalse(r.vaultSeeded, "nor in the vault");
         assertFalse(r.programSeeded, "nor in the program");
         preflight.print(r, vaults);
     }
@@ -378,7 +386,14 @@ contract DeployScriptsTest is ZoneEnv {
         assertFalse(r.routerMatches);
         preflight.print(r, new address[](0));
 
-        // Another Zone.
+        // Another Zone, registered with a Portal of its own.
+        RouterZoneInfo memory zone;
+        zone.zoneId = ZONE_ID + 1;
+        zone.portal = makeAddr("other.portal");
+        vm.mockCall(ROUTER_ZONE_FACTORY, abi.encodeCall(IRouterZoneFactory.zones, (ZONE_ID + 1)), abi.encode(zone));
+        vm.mockCall(
+            ROUTER_ZONE_FACTORY, abi.encodeCall(IRouterZoneFactory.isZonePortal, (zone.portal)), abi.encode(true)
+        );
         address elsewhere = routerFactory.deploy(_spendMode(ZONE_ID + 1, mode.spenders[0]));
         r = _preflight(preflight, elsewhere, address(0), new address[](0));
         assertTrue(r.routerFromFactory);
