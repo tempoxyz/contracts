@@ -12,8 +12,8 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
   Earn's contracts through `tempo-earn/` and its test helpers through `earn-test/` (`earn/test/`).
   Never copy Earn code here.
 - Generic settlers live in `src/settlers/`, each adapting one payee system. A settler built for one
-  integrator lives with that integration, as `BridgeSettler` does in `bridge/`, and implements
-  `ISpendSettler` from here. This project never imports from `bridge/`.
+  integrator lives with that integration, as `BridgeSettler` does in `cards/src/providers/bridge/`, and
+  implements `ISpendSettler` from here. This project never imports from `cards/`.
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical
   Messenger, Zone and Portal authentication, conversion only at exact par with measured 1:1 output,
   no balance left after a callback and no approval except a spend's standing one to its own Zone's
@@ -23,6 +23,6 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
   callback data byte for byte.
 
 Validate with `forge fmt --check`, `forge lint --deny warnings src`, `forge build --sizes src`,
-and `FOUNDRY_PROFILE=ci forge test` here, plus `bridge/`'s tests when `ISpendSettler` or the callback
-format changes ([bridge/AGENTS.md](../bridge/AGENTS.md)), and
+and `FOUNDRY_PROFILE=ci forge test` here, plus `cards/`'s tests when `ISpendSettler` or the callback
+format changes ([cards/AGENTS.md](../cards/AGENTS.md)), and
 `pnpm --filter @tempoxyz/contracts abis` after an interface change.

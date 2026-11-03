@@ -1,25 +1,44 @@
-# Provider-agnostic card spend
+# Card spend
 
-`CardSpender`, `CardSettler` and `CardSpend` are provider-agnostic; each provider adds only an
-`ICardProgram` adapter under `src/providers/<provider>/` and its vendored contracts under
-`vendor/<provider>/`. [README.md](README.md) maps the project and
-[docs/cards/design.md](../docs/cards/design.md) owns the design.
+Card spend on Tempo for every card provider, in one Foundry project. Three kinds of code, kept apart
+so each is easy to find and review:
 
-- This is its own Foundry project. Run every `forge` command from `cards/`, after
-  `scripts/solidity-deps.sh cards` (from the repository root). Never add its remappings or settings to
-  another project's `foundry.toml`.
+| Path                        | What it is                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------------- |
+| `src/core/`                 | Ours, provider-agnostic: `CardSpend`, `CardSpender`, `CardSettler`, `ICardProgram`          |
+| `src/providers/<provider>/` | Ours, for one provider: Bridge's "TS" handler and `BridgeSettler`; Rain's `RainCardProgram` |
+| `vendor/<provider>/`        | The provider's own contracts, vendored unmodified (`vendor/bridge/`, `vendor/rain/`)        |
+
+Tests and scripts follow the same split (`test/core/`, `test/<provider>/`, `script/<provider>/`).
+[README.md](README.md) maps the project; [docs/cards/design.md](../docs/cards/design.md) owns the
+agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
+[docs/cards/rain/](../docs/cards/rain/README.md) each provider's.
+
+- Run every `forge` command from `cards/`, after `scripts/solidity-deps.sh cards` (from the repository
+  root) installs `lib/` at the revisions `foundry.lock` pins. Never add this project's remappings,
+  dependencies or hardfork to another project's `foundry.toml`: Earn's and the Zone router's feed the
+  metadata hash of their releases, and tempoxyz/tempo builds `earn/src/`.
 - Import Earn through `tempo-earn/` and the Zone router through `zone-router/`, never a copy. Nothing in
-  `earn/`, `zone-router/` or `bridge/` imports from here.
-- Provider code never enters the agnostic contracts: no provider name, address or rule in
-  `CardSpender`, `CardSettler` or `CardSpend`. A provider that needs evidence about a destination reads
-  it from `CardSpend.destinationHint`.
-- `vendor/` holds providers' sources unmodified at the provenance in [vendor/VENDORED.md](vendor/VENDORED.md).
-  Rain's exact pragma (0.8.17) does not build here: tests and scripts deploy
-  `test/fixtures/rain.json`, which `script/rain/build-fixture.sh` rebuilds (`--check` compares it
-  without the metadata hashes, which differ by checkout path); commit it with any vendor change.
+  `earn/` or `zone-router/` imports from here. A change to their interfaces that breaks this project is
+  fixed in the same pull request.
+- `src/core/` names no provider: no provider address, rule or import. A provider that needs evidence
+  about a destination reads it from `CardSpend.destinationHint`. One provider's code never imports
+  another's.
+- `vendor/` holds providers' (and the Zones runtime's) sources unmodified, at the provenance in
+  [vendor/VENDORED.md](vendor/VENDORED.md), except for the changes it lists; refresh them only by
+  re-copying. Code whose exact pragma does not build here is deployed from fixtures:
+  `test/rain/fixtures/rain.json`, rebuilt by `script/rain/build-fixture.sh` (`--check` compares it
+  without the path-dependent metadata hashes; commit it with any vendor change), and
+  `test/bridge/harness/fixtures/Permit2.json`.
+- Bridge's "TS" handler and `BridgeSettler` deploy at deterministic addresses that follow their build
+  ([docs/cards/bridge/deploy.md](../docs/cards/bridge/deploy.md)): a change to their source, this
+  project's remappings or its compiler settings moves them.
 - No contract here emits or stores the Zone callback `senderTag` or a cardholder address on the private
-  path.
+  path; providers match private spends by the Portal's own events.
 
-Validate with `forge fmt --check src test script`, `forge build`, `forge lint --deny warnings src`,
-`forge build --sizes src`, `FOUNDRY_PROFILE=ci forge test`, and `pnpm e2e:cards -- --earn` (Docker)
-when a spend flow changes.
+Validate with `forge fmt --check src test script`, `forge build`,
+`forge lint --deny warnings src/core src/providers/rain src/providers/bridge/BridgeSettler.sol`,
+`forge build --sizes src`, `FOUNDRY_PROFILE=ci forge test` and `script/rain/build-fixture.sh --check`,
+plus `python3 script/bridge/matrix.py --out reports/matrix.md` and a diff against
+`../docs/cards/bridge/matrix.md` when Bridge card scenarios or setups change. The E2E runs need Docker:
+`pnpm e2e:cards -- --earn` (Rain), `pnpm e2e:bridge -- --earn` and `script/bridge/smoke.sh` (Bridge).

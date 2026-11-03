@@ -17,6 +17,9 @@
       "rev": "2eb39b465d5262df297fb06be0e2cb2cbda81198"
     }
   },
+  "lib/permit2": {
+    "rev": "cc56ad0f3439c502c246fc5cfcc3db92bb8b7219"
+  },
   "lib/solady": {
     "tag": {
       "name": "v0.1.24",

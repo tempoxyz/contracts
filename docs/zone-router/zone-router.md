@@ -4,10 +4,10 @@
 deposits and redemptions, and spends through settlers fixed at deployment.
 [`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it, and the
 [settlers](#settlers) pay a spend: `SendSettler`, in [`src/settlers/`](../../zone-router/src/settlers/),
-to a public address, and a card program's `BridgeSettler`, in [`bridge/`](../../bridge/README.md), through
+to a public address, and a card program's `BridgeSettler`, in [`cards/`](../../cards/README.md), through
 its clone. The router, its factory and `SendSettler` live in the
 [`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
-interfaces. Card spend through it is in the [card integration's design](../bridge/design.md).
+interfaces. Card spend through it is in the [card integration's design](../cards/bridge/design.md).
 
 `SingleZoneEarnRouter` ([Earn's zone router](../earn/modules/zone-router.md)) is the router Earn runs in
 production today. `ZoneRouter`'s Earn ops accept its callback data byte for byte and report the same
@@ -198,10 +198,10 @@ profile's `zoneRouter.settlers`.
 
 ### `BridgeSettler`
 
-[`BridgeSettler`](../../bridge/src/BridgeSettler.sol) settles a card spend through one card program's
-clone and its "TS" handler. It lives in [`bridge/`](../../bridge/README.md) with the handler and the
+[`BridgeSettler`](../../cards/src/providers/bridge/BridgeSettler.sol) settles a card spend through one card program's
+clone and its "TS" handler. It lives in [`cards/src/providers/bridge/`](../../cards/src/providers/bridge/) with the handler and the
 `Spend` struct both settle; its checks are in the
-[card integration's design](../bridge/design.md#bridgesettler).
+[card integration's design](../cards/bridge/design.md#bridgesettler).
 
 ## Invariants
 

@@ -20,7 +20,7 @@ In scope:
 
 - Tempo Earn: the contracts in [`earn/src/`](earn/src/), except `earn/src/demo/`;
 - the Zone router: the contracts in [`zone-router/src/`](zone-router/src/), including its settlers;
-- the card integration: Tempo's "TS" handler, [`bridge/src/`](bridge/src/); and
+- the card integration: Tempo's "TS" handler, [`cards/src/providers/bridge/`](cards/src/providers/bridge/); and
 - the deployment tooling: [`deployments/`](deployments/), each project's `script/`, and the
   [profile lifecycle](docs/deployment/deployment.md) they implement.
 
@@ -28,14 +28,14 @@ Out of scope:
 
 - `earn/src/demo/` and test fixtures, including every `test/` directory, `localnet/`, `e2e/`, and
   committed fixture artifacts, which are not production code;
-- vendored third-party code, such as the issuer's contracts in `bridge/vendor/`, and third-party venues
+- vendored third-party code, such as the issuer's contracts in `cards/vendor/`, and third-party venues
   such as ERC-4626 vaults, Veda, and PropAMM. Report issues in them to their owners. A bug in how
   Tempo's contracts integrate with them is in scope.
 
 Each project documents its trust assumptions, privileged roles, and privacy boundary: Earn's
 [security and privacy model](docs/earn/architecture/security-and-privacy.md), the
 [Zone router](docs/zone-router/zone-router.md), and the card integration's
-[design](docs/bridge/design.md). Behavior documented there as trusted or visible is not a
+[design](docs/cards/bridge/design.md). Behavior documented there as trusted or visible is not a
 vulnerability by itself.
 
 ## Bug bounty
@@ -46,5 +46,5 @@ These contracts have no bug bounty.
 
 Earn's completed audits, their scope, and the contracts changed or added since are listed on its
 [audits page](docs/earn/audit/README.md). The card integration's
-[design](docs/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeSettler`,
+[design](docs/cards/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeSettler`,
 `ZoneRouter` and `ZoneRouterFactory`.

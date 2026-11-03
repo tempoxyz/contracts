@@ -10,7 +10,7 @@ localnet/.local/
 **/.env
 **/.env.*
 !/.env.example
-!/e2e/bridge/.env.example
+!/e2e/cards/bridge/.env.example
 *.log
 /earn/lib/
 /.solar/

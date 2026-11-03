@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the vendored Rain contracts (vendor/rain) with the settings Polygonscan verified them with
-# (solc 0.8.17, optimizer off, london) and writes their creation code to test/fixtures/rain.json,
+# (solc 0.8.17, optimizer off, london) and writes their creation code to test/rain/fixtures/rain.json,
 # which tests and scripts deploy, because their exact pragma cannot compile with this project's
 # settings. --verify also checks each build against the bytecode Rain deployed on Polygon, through
 # Sourcify, ignoring only the CBOR metadata hashes (they hash source paths, which differ here).
@@ -32,15 +32,15 @@ for name, polygon in contracts.items():
         if not same:
             sys.exit(1)
 if "--check" in sys.argv:
-    committed = json.load(open("test/fixtures/rain.json"))["contracts"]
+    committed = json.load(open("test/rain/fixtures/rain.json"))["contracts"]
     stale = [n for n, c in fixture["contracts"].items()
              if n not in committed or strip(committed[n]["bytecode"]) != strip(c["bytecode"])]
     if stale:
-        print("test/fixtures/rain.json is stale for: " + ", ".join(stale) + "; run script/rain/build-fixture.sh")
+        print("test/rain/fixtures/rain.json is stale for: " + ", ".join(stale) + "; run script/rain/build-fixture.sh")
         sys.exit(1)
-    print("test/fixtures/rain.json matches vendor/rain apart from metadata hashes")
+    print("test/rain/fixtures/rain.json matches vendor/rain apart from metadata hashes")
     sys.exit(0)
-json.dump(fixture, open("test/fixtures/rain.json", "w"), indent=2)
-open("test/fixtures/rain.json", "a").write("\n")
-print("wrote test/fixtures/rain.json")
+json.dump(fixture, open("test/rain/fixtures/rain.json", "w"), indent=2)
+open("test/rain/fixtures/rain.json", "a").write("\n")
+print("wrote test/rain/fixtures/rain.json")
 PY

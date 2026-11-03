@@ -27,7 +27,7 @@ and local stacks deploy a committed [DirectPropAMM fixture](docs/earn/modules/pr
 | Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/contracts test --run`, `check`, and `typecheck`           |
 | Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`                                                                   |
 | Zone router ([`zone-router/`](zone-router/))                          | `forge test` in `zone-router/`; see [zone-router/AGENTS.md](zone-router/AGENTS.md) |
-| Card integration ([`bridge/`](bridge/))                               | `forge test` in `bridge/`; see [bridge/AGENTS.md](bridge/AGENTS.md)                |
+| Card spend ([`cards/`](cards/))                                       | `forge test` in `cards/`; see [cards/AGENTS.md](cards/AGENTS.md)                   |
 
 The local commands need no credentials.
 The [test map](docs/development/README.md#test-map) shows where existing coverage lives, and
@@ -63,7 +63,7 @@ deployments, e2e: run the tooling against profiles that live in another reposito
 ci: run the symbolic proofs on stable Foundry
 ```
 
-Areas are project or top-level directories (`earn`, `zone-router`, `bridge`, `e2e`, `localnet`), a shared
+Areas are project or top-level directories (`earn`, `zone-router`, `cards`, `e2e`, `localnet`), a shared
 or narrower directory (`deployments`, `profiles`, `app`), or `ci`, `docs`, `repo`, and `chore`. Pull requests are squash-merged
 with the title as the commit subject, so describe the change and its validation in the body.
 

@@ -1,5 +1,5 @@
 // Rain as a card provider: Rain's own collateral contracts (cards/vendor/rain, deployed from
-// cards/test/fixtures/rain.json), a RainCardProgram adapter, and Rain's back office after a spend lands:
+// cards/test/rain/fixtures/rain.json), a RainCardProgram adapter, and Rain's back office after a spend lands:
 // a cardholder-signed refund withdrawal and the daily payment to Rain's treasury, both authorized by
 // Rain's controller admin's EIP-712 signature, as on Rain's live contracts.
 import { execFileSync } from 'node:child_process'
@@ -19,8 +19,8 @@ import {
 } from 'viem'
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts'
 
-import { forgeEnv } from '../../../bridge/src/targets.js'
-import { assert } from '../../../bridge/src/support.js'
+import { forgeEnv } from '../../bridge/src/targets.js'
+import { assert } from '../../bridge/src/support.js'
 import type { CardProvider, Context, Deployed } from '../provider.js'
 
 export const cardsRoot = resolve(new URL('.', import.meta.url).pathname, '../../../../cards')
@@ -76,7 +76,7 @@ export function rain(): CardProvider {
           'forge',
           [
             'script',
-            'script/CardsE2EDeploy.s.sol',
+            'script/rain/CardsE2EDeploy.s.sol',
             '--rpc-url',
             input.rpcUrl,
             '--broadcast',

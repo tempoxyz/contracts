@@ -2,7 +2,7 @@
 import { http, type Account as ViemAccount, type Address, type Transport } from 'viem'
 import { createClient as createTempoClient, Store, http as zoneHttp } from 'viem/tempo'
 
-import * as Network from '../../bridge/src/network.js'
+import * as Network from '../bridge/src/network.js'
 
 type TempoChain = ReturnType<typeof Network.chain>
 const publicClient = (chain: TempoChain, transport: Transport) =>

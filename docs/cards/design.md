@@ -2,18 +2,18 @@
 
 How a card from any provider pays from funds a cardholder keeps on Tempo, publicly or in a Zone, in
 stablecoin or Tempo Earn shares, through two provider-agnostic contracts and one adapter per provider.
-This page owns the agnostic design; [rain.md](rain.md) owns the Rain provider. The
-[Bridge integration](../bridge/design.md) came first and runs on its own contracts inside Bridge's
+This page owns the agnostic design; [rain.md](rain/README.md) owns the Rain provider. The
+[Bridge integration](bridge/design.md) came first and runs on its own contracts inside Bridge's
 spender factory; [Bridge on this design](#bridge-on-this-design) maps it onto the same seams.
 
 ## Components
 
-| Contract                                                              | Admin                         | Function                                                                                                  |
-| --------------------------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
-| [`CardSpender`](../../cards/src/CardSpender.sol)                      | None                          | Pays a `CardSpend` to a destination its program authorizes, from stablecoin, Earn shares, or both.        |
-| [`CardSettler`](../../cards/src/CardSettler.sol)                      | None                          | The Zone router's settler: spends the router's `maxInput` through the `CardSpender` and returns the rest. |
-| [`ICardProgram`](../../cards/src/interfaces/ICardProgram.sol) adapter | Set by the provider's adapter | Decides which destinations, tokens and Earn vaults a program's spends may use.                            |
-| [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)       | None                          | Receives the Zone withdrawal, hands `maxInput` to its listed settler, returns the change to the Zone.     |
+| Contract                                                                   | Admin                         | Function                                                                                                  |
+| -------------------------------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
+| [`CardSpender`](../../cards/src/core/CardSpender.sol)                      | None                          | Pays a `CardSpend` to a destination its program authorizes, from stablecoin, Earn shares, or both.        |
+| [`CardSettler`](../../cards/src/core/CardSettler.sol)                      | None                          | The Zone router's settler: spends the router's `maxInput` through the `CardSpender` and returns the rest. |
+| [`ICardProgram`](../../cards/src/core/interfaces/ICardProgram.sol) adapter | Set by the provider's adapter | Decides which destinations, tokens and Earn vaults a program's spends may use.                            |
+| [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)            | None                          | Receives the Zone withdrawal, hands `maxInput` to its listed settler, returns the change to the Zone.     |
 
 One `CardSpender` and one `CardSettler` serve one program: the spender names its adapter
 (`PROGRAM`) and every `CardSpend` must name the same one, so one program's approval never pays
@@ -67,7 +67,7 @@ sequenceDiagram
   the provider's reserve covers the card.
 
 The withdrawal parameters, fees, change and callback gas are those of the Bridge integration's
-[private spend](../bridge/design.md#withdrawal-parameters); the `CardSpend` callback is 896 bytes of the
+[private spend](bridge/design.md#withdrawal-parameters); the `CardSpend` callback is 896 bytes of the
 outbox's 1,024.
 
 ## What each contract checks
@@ -88,7 +88,7 @@ outbox's 1,024.
 
 ### CardSettler
 
-The checks of [`BridgeSettler`](../bridge/design.md#bridgesettler), with the program's `CardSpender`
+The checks of [`BridgeSettler`](bridge/design.md#bridgesettler), with the program's `CardSpender`
 in place of a Bridge clone: the spend names the settler's program, one input token per withdrawal
 (the stablecoin, or the vault's EarnShare when Earn funds all of it), the input is at least
 `maxInput`, the spend consumes some input and pays the destination exactly, and the settler returns the
@@ -105,8 +105,8 @@ inputReturned)`, with no cardholder address or `senderTag`.
 6. No event from these contracts on the private path names the cardholder or the Zone `senderTag`.
 7. One program's spend never pays through another program's spender or settler.
 
-Tests: [`cards/test/unit/`](../../cards/test/unit/) against Rain's real contracts, a second provider
-modeled on Bridge's settlement wallets ([`ProviderAgnostic.t.sol`](../../cards/test/unit/ProviderAgnostic.t.sol)),
+Tests: [`cards/test/unit/`](../../cards/test/rain/unit/) against Rain's real contracts, a second provider
+modeled on Bridge's settlement wallets ([`ProviderAgnostic.t.sol`](../../cards/test/core/ProviderAgnostic.t.sol)),
 and [`e2e/cards`](../../e2e/cards/) on a real L1 and Zone.
 
 ## Privacy
@@ -116,11 +116,11 @@ destination is one the program shares across cardholders, and the change returns
 deposit. The Zone's sequencer sees the cardholder's withdrawal, and the L1 shows each spend's amount,
 token, destination and time. A provider whose adapter authorizes a cardholder-specific destination for
 the settler would break this, so adapters authorize only pooled destinations for a settler payer
-(Rain's: [rain.md](rain.md#destinations)).
+(Rain's: [rain.md](rain/README.md#destinations)).
 
 ## Accepted risks
 
-The Bridge integration's [accepted risks](../bridge/design.md#accepted-risks) carry over: a leaked Zone
+The Bridge integration's [accepted risks](bridge/design.md#accepted-risks) carry over: a leaked Zone
 key can withdraw a cardholder's Zone balance outside the program; there is no on-chain idempotency, so
 the provider dedupes spends off chain; the provider approves a private spend on the Zone receipt and its
 reserve pays if settlement fails; spend events are not proof of payment. In addition:

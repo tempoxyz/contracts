@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { ICardProgram } from "../../interfaces/ICardProgram.sol";
+import { ICardProgram } from "../../core/interfaces/ICardProgram.sol";
 import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 
 /// @title RainCardProgram
 /// @notice The `ICardProgram` adapter for one Rain card program: a spend pays into a Rain collateral
 ///         contract, which backs the card's spending as Rain's real-time funding commits it at authorization.
 ///         Rain's contracts are used as they are (vendor/rain); nothing here asks them to change.
-///         Specified in docs/cards/rain.md.
+///         Specified in docs/cards/rain/README.md.
 /// @dev A destination is authorized when it is a collateral contract Rain's factory created and either:
 ///      - the payer owns and administers it and is not one of this program's settlers: a public spend
 ///        into the cardholder's own collateral (Rain-managed); or

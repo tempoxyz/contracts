@@ -6,7 +6,7 @@
     "./localnet": "./localnet/src/layer.ts"
   },
   "scripts": {
-    "check": "pnpm --filter @tempoxyz/contracts check && vp lint --deny-warnings e2e localnet vite.config.ts && vp fmt --check '.github/**' README.md earn/README.md bridge/README.md cards/README.md zone-router/README.md SKILL.md SECURITY.md CONTRIBUTING.md 'docs/**' '**/AGENTS.md' '!**/lib/**' 'profiles/**' 'e2e/**' 'localnet/**' vite.config.ts package.json pnpm-workspace.yaml",
+    "check": "pnpm --filter @tempoxyz/contracts check && vp lint --deny-warnings e2e localnet vite.config.ts && vp fmt --check '.github/**' README.md earn/README.md cards/README.md zone-router/README.md SKILL.md SECURITY.md CONTRIBUTING.md 'docs/**' '**/AGENTS.md' '!**/lib/**' 'profiles/**' 'e2e/**' 'localnet/**' vite.config.ts package.json pnpm-workspace.yaml",
     "check:types": "pnpm -r --parallel run '/^(typecheck|check:types)$/'",
     "earn": "pnpm --filter @tempoxyz/contracts exec tsx core/cli.ts",
     "factory-release": "pnpm --filter @tempoxyz/contracts exec tsx core/factory-release.ts",
@@ -26,7 +26,7 @@
     "verify": "pnpm run '/^verify:/'",
     "verify:contracts": "cd earn && forge fmt --check && forge lint --deny warnings --out out/lint --cache-path cache/lint && forge build src script test && (cd ../zone-router && forge build src script) && pnpm --filter @tempoxyz/contracts abis:check && FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol && cd .. && pnpm test:contracts && pnpm gas:snapshot",
     "verify:typescript": "pnpm check && pnpm check:types && pnpm test",
-    "deps": "scripts/solidity-deps.sh earn zone-router bridge cards",
+    "deps": "scripts/solidity-deps.sh earn zone-router cards",
     "e2e:bridge": "pnpm --filter e2e run bridge",
     "e2e:cards": "pnpm --filter e2e run cards"
   },

@@ -9,8 +9,8 @@
     "test": "vitest",
     "devnet": "tsx harness/cli.ts --devnet",
     "local": "tsx harness/cli.ts --local",
-    "bridge": "tsx bridge/src/run.ts",
-    "bridge:moderato": "tsx bridge/src/run.ts --target moderato",
+    "bridge": "tsx cards/bridge/src/run.ts",
+    "bridge:moderato": "tsx cards/bridge/src/run.ts --target moderato",
     "cards": "tsx cards/src/run.ts"
   },
   "dependencies": {

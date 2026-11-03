@@ -41,7 +41,7 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { Account, Actions } from 'viem/tempo'
 
-import * as Network from '../../bridge/src/network.js'
+import * as Network from '../bridge/src/network.js'
 import {
   CALLBACK_GAS,
   OP_SPEND,
@@ -59,8 +59,8 @@ import {
   waitFor,
   withdrawalRequested,
   zoneTokenAbi,
-} from '../../bridge/src/support.js'
-import { forgeEnv, portalAbi, sendL1Sync } from '../../bridge/src/targets.js'
+} from '../bridge/src/support.js'
+import { forgeEnv, portalAbi, sendL1Sync } from '../bridge/src/targets.js'
 import { l1Clients, zoneClients, type ZoneClient } from './clients.js'
 import type { CardProvider, Context, Deployed, Destination } from './provider.js'
 import { cardsRoot, rain } from './providers/rain.js'

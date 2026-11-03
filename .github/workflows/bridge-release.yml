@@ -58,7 +58,7 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: bridge
+        working-directory: cards
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -68,9 +68,9 @@ jobs:
           persist-credentials: false
 
       # BridgeSettler imports the settler interface from zone-router/src/, which needs no dependency of its own.
-      - name: Install the Bridge integration's Solidity dependencies
+      - name: Install the card integration's Solidity dependencies
         working-directory: .
-        run: scripts/solidity-deps.sh bridge
+        run: scripts/solidity-deps.sh cards
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -92,9 +92,9 @@ jobs:
           set -euo pipefail
           arguments=("$NETWORK" "$CONTRACT")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
-          RESULT="$RUNNER_TEMP/bridge-release.json" script/deploy/release.sh "${arguments[@]}"
+          RESULT="$RUNNER_TEMP/bridge-release.json" script/bridge/deploy/release.sh "${arguments[@]}"
 
-      # Forge records the authenticated RPC URL in its script sequences under bridge/cache; the script
+      # Forge records the authenticated RPC URL in its script sequences under cards/cache; the script
       # deletes them, and this removes any it could not, whatever the outcome.
       - name: Remove Forge script sequences
         if: ${{ always() }}
@@ -127,7 +127,7 @@ jobs:
               echo '| --- | --- | --- |'
               jq -r '"| Admin (timelock) | `setSpenderHandler(\"TS\", handler)` | `\(.output.adminRegisterHandler)` |"' "$result"
               jq -r '.output | if (.governanceGateHandler // "0x") != "0x" then "| Governance | `updateSpenderHandlerStatus(\"TS\", Gated)` | `\(.governanceGateHandler)` |" else empty end' "$result"
-              jq -r '.output | if .status then "\nThe prefix was `\(.status)` before this deploy; docs/bridge/deploy.md says when governance gates it." else "\nA broadcast also writes the governance gate call when the factory needs one." end' "$result"
+              jq -r '.output | if .status then "\nThe prefix was `\(.status)` before this deploy; docs/cards/bridge/deploy.md says when governance gates it." else "\nA broadcast also writes the governance gate call when the factory needs one." end' "$result"
             fi
             if jq -e '.error' "$result" >/dev/null; then
               echo
@@ -142,5 +142,5 @@ jobs:
           name: bridge-release-${{ inputs.network }}-${{ inputs.contract }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/bridge-release.json
-            bridge/broadcast/
+            cards/broadcast/
           if-no-files-found: ignore
