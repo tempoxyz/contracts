@@ -15,7 +15,8 @@ import { IBridgeSpenderClone, IBridgeSpenderFactory } from "./interfaces/IBridge
 ///         pause, handler routing and the Earn vault allowlist. Specified in docs/cards/bridge/design.md.
 /// @dev Reads Bridge's factory and clone and holds nothing. Its answers mirror what the clone itself
 ///      enforces, so a spend Bridge would refuse is refused before any funds move; the clone stays the
-///      authority. A Bridge settlement wallet is shared by every cardholder, so it serves private spends too.
+///      authority. It answers alike for public and private spends (`payer` and `isPrivate` are ignored), so
+///      Bridge governance must authorize only settlement wallets shared by every cardholder.
 contract BridgeProvider is ICardProvider, ICardProviderPayout {
     bytes2 private constant HANDLER = "TS";
     bytes2 private constant PUBLIC_SPEND = "PS";
@@ -60,8 +61,13 @@ contract BridgeProvider is ICardProvider, ICardProviderPayout {
     }
 
     /// @inheritdoc ICardProvider
+    /// @dev Also true while the factory would not route the clone's "TS" calls: the handler disabled, or
+    ///      allowlisted without this clone, so every spend would revert in the clone anyway.
     function paused() external view returns (bool) {
-        return FACTORY.paused();
+        if (FACTORY.paused()) return true;
+        (bool ok, bytes memory ret) = address(FACTORY)
+            .staticcall(abi.encodeCall(IBridgeSpenderFactory.getSpenderHandlerWithCheckedPermissions, (HANDLER, CLONE)));
+        return !ok || ret.length < 32 || abi.decode(ret, (address)) == address(0);
     }
 
     /// @inheritdoc ICardProviderPayout

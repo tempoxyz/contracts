@@ -363,11 +363,17 @@ required reviewer, `main` only, and the same deployer key; the contracts are own
 pays fees. It shares the network's
 `hosted-contracts-<network>` queue with the factory and Bridge releases.
 
-| Release             | Parameters                                                                  | Creates                                                                |
-| ------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `zoneRouterFactory` | None                                                                        | The `ZoneRouterFactory`                                                |
-| `sendSpender`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}` | A `SendSpender`, never converting or converting `vault`'s asset at par |
-| `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                     | The router `factory.deploy(mode)` creates                              |
+| Release             | Parameters                                                                                        | Creates                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `zoneRouterFactory` | None                                                                                              | The `ZoneRouterFactory`                                                |
+| `sendSpender`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}`; optional `"factory"` | A `SendSpender`, never converting or converting `vault`'s asset at par |
+| `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                                           | The router `factory.deploy(mode)` creates                              |
+
+A `SendSpender` accepts spends only from routers its factory deployed whose mode lists it. Without
+`factory`, the release binds the release `ZoneRouterFactory` (the `zoneRouterFactory` release's
+address) and deploys that factory first when it is missing, so operators pass no factory and the
+spender's address still follows from the build and settings alone. List it only in modes deployed
+through that factory.
 
 A `zoneRouter` mode has `ZoneRouter.Mode`'s fields: `zoneId`, `enabledOps` (deposit 1, redeem 2,
 spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool` and `customerId`
@@ -399,5 +405,7 @@ deploys the card integration's "TS" handler (`SpenderTempoSpend`), or a Bridge c
 `BridgeProvider` and `CardSpender`, through the `CardFactory`) for Bridge's `SpenderFactory` from `main`, at its deterministic address, with [`cards/`](../../cards/README.md)' own build.
 It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue,
 one network per dispatch, and lists in its summary the calls Bridge's admin and governance submit to
-register and gate the handler; it never submits them. [Deploying from CI](../cards/bridge/deploy.md#deploying-from-ci) owns the
+register and gate the handler; it never submits them. A program also takes `routerFactory`, the Zone
+router release's `ZoneRouterFactory`: only its routers may call the program's `spendFrom`, and the release
+`CardFactory` and the program's address depend on it. [Deploying from CI](../cards/bridge/deploy.md#deploying-from-ci) owns the
 details.

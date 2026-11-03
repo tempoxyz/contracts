@@ -169,7 +169,8 @@ contract RolesTest is PrivateSpendFixture {
         bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Disabled);
 
         vm.prank(alice);
-        vm.expectRevert(SpenderFactoryErrorsAndEvents.SpenderHandlerDisabled.selector);
+        // The program reads the disabled handler as a pause, before any funds move.
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         program.spend(_publicSpend(10e6));
         vm.prank(bridgeGovernor);
         vm.expectRevert(SpenderFactoryErrorsAndEvents.SpenderHandlerDisabled.selector);

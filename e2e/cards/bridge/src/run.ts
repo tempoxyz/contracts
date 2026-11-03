@@ -21,8 +21,8 @@
 //    The Zone batches it to the L1, where the portal calls the router, which transfers maxInput
 //    to the CardSpender. The program pays through Bridge's spender clone and the router
 //    returns the change to the Zone.
-// 4. Checks: a Zone token transfer reverts, the settlement wallet is paid on the L1, no L1 log of
-//    the settlement names the cardholder, the cardholder's private balance ends exactly the spend
+// 4. Checks: a Zone token transfer reverts, the settlement wallet is paid on the L1, no L1 log or
+//    input (callback data included) of the settlement names the cardholder, the cardholder's private balance ends exactly the spend
 //    and fees lower once any change is back, and a spend to an address outside the program bounces
 //    back into the Zone in full. On a disposable Zone it also shows the outbox-scoped key
 //    withdrawing to an address outside the program, an accepted risk.
@@ -30,7 +30,7 @@
 //    cardholder deposits into the vault and moves the EarnShare into the Zone, Bridge withdraws
 //    shares to the router, and the handler redeems exactly the spend for the settlement wallet.
 //    Checks: the settlement wallet is paid in the vault's asset, the shares spent stay within
-//    Bridge's quote, the unused shares come back to the Zone, and no L1 log names the cardholder.
+//    Bridge's quote, the unused shares come back to the Zone, and no L1 log or input names the cardholder.
 // 6. Times the card-approval path: Zone request to Zone receipt (what Bridge waits for before it
 //    approves), Zone receipt to L1 settlement (after approval), and a public spend's one L1
 //    transaction through the CardSpender's spend, signed with Bridge's L1 access key. Writes them,
@@ -75,6 +75,7 @@ import {
   cardSpendType,
   cardSpent,
   findCall,
+  inputNames,
   median,
   names,
   outbox,
@@ -398,6 +399,14 @@ async function privateSpend(t: Prepared, run: string) {
   assert(
     paid(settlementReceipt.logs, program.settlement),
     'the settlement transaction paid the settlement wallet',
+  )
+  assert(
+    !names(settlementReceipt.logs, cardholder.address) &&
+      !inputNames(
+        (await l1Public.getTransaction({ hash: settlementReceipt.transactionHash })).input,
+        cardholder.address,
+      ),
+    'no L1 log or input of the settlement, callback data included, names the cardholder',
   )
   const routed = routerSpent(settlementReceipt.logs, program.router)
   const carded = cardSpent(settlementReceipt.logs, program.program, spendRef)
@@ -773,8 +782,12 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
     'the settlement wallet received the vault asset',
   )
   assert(
-    !names(settlement.logs, cardholder.address),
-    'no L1 log of the settlement names the cardholder',
+    !names(settlement.logs, cardholder.address) &&
+      !inputNames(
+        (await l1Public.getTransaction({ hash: settlement.transactionHash })).input,
+        cardholder.address,
+      ),
+    'no L1 log or input of the settlement, callback data included, names the cardholder',
   )
   const settled = events[0]!.args as { inputConsumed: bigint; inputReturned: bigint }
   assert(

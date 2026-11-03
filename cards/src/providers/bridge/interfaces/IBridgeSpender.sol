@@ -20,14 +20,3 @@ struct Spend {
     /// @dev Bridge's own reference for reconciliation. Emitted, never enforced.
     bytes32 ref;
 }
-
-/// @notice The subset of Bridge's `SpenderFactory` that names a program's spender clone.
-interface IBridgeSpenderFactory {
-    function getSpenderAddress(bytes32 spenderId) external view returns (address);
-}
-
-/// @notice The subset of a Bridge spender clone (`SpenderDelegator`) a program pays through:
-///         `publicCall`, routed to a handler by the payload's 2-byte prefix.
-interface IBridgeSpenderClone {
-    function publicCall(bytes calldata data) external;
-}

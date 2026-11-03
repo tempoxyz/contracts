@@ -17,10 +17,11 @@ This is a separate Foundry project beside [Earn](../earn/README.md) and the
 - [`ZoneRouterFactory`](src/ZoneRouterFactory.sol): permissionless CREATE2 deployment at an address
   fixed by the mode, with `predict`, `isRouter` and `RouterDeployed` for Zone admins.
 - [`src/spenders/`](src/spenders/): the spenders a Spend mode can list, each adapting one payee
-  system. A mode allows a spender only if it lists it.
+  system. A mode allows a spender only if it lists it, and [`SpenderAuth`](src/spenders/SpenderAuth.sol)
+  lets a spender accept only its factory's routers that list it.
   - [`SendSpender`](src/spenders/SendSpender.sol) pays a public address in the withdrawn token, in
     the vault asset redeemed from EarnShare, or, for the one vault it is bound to at deployment, in
-    the stablecoin that vault's asset converts into at par.
+    the stablecoin that vault's asset converts into at par, for the routers of the factory it binds.
   - A card program's `CardSpender` implements the same interface in [`cards/src/core/`](../cards/src/core/).
 - [`ISpender`](src/interfaces/ISpender.sol): what a spender implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's

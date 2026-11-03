@@ -5,7 +5,7 @@ import { Script } from "forge-std/Script.sol";
 
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 
-import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
+import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice Writes the factory calls that turn the "TS" handler on for one card program: the

@@ -81,7 +81,9 @@ contract DeterministicDeployTest is ZoneEnv {
     function test_programLandsAtItsReleaseAddressesAndIsReused() public {
         DeployBridgeProgram script = _newDeployBridgeProgram();
         address cardFactory_ = vm.computeCreate2Address(
-            EARN_RELEASE_SALT, keccak256(vm.getCode("CardFactory.sol:CardFactory")), CREATE2_FACTORY
+            EARN_RELEASE_SALT,
+            keccak256(abi.encodePacked(vm.getCode("CardFactory.sol:CardFactory"), abi.encode(address(routerFactory)))),
+            CREATE2_FACTORY
         );
         address provider_ = vm.computeCreate2Address(
             EARN_RELEASE_SALT,
@@ -94,16 +96,20 @@ contract DeterministicDeployTest is ZoneEnv {
         );
         address program_ = vm.computeCreate2Address(
             keccak256(abi.encode(SPENDER_ID, provider_)),
-            keccak256(abi.encodePacked(vm.getCode("CardSpender.sol:CardSpender"), abi.encode(provider_))),
+            keccak256(
+                abi.encodePacked(
+                    vm.getCode("CardSpender.sol:CardSpender"), abi.encode(provider_, address(routerFactory))
+                )
+            ),
             cardFactory_
         );
-        assertEq(script.cardFactoryAddress(), cardFactory_);
+        assertEq(script.cardFactoryAddress(address(routerFactory)), cardFactory_);
         assertEq(script.bridgeProviderAddress(address(bridgeFactory), SPENDER_ID), provider_);
-        assertEq(script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID), program_);
+        assertEq(script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID, address(routerFactory)), program_);
         assertEq(program_.code.length, 0);
 
         IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
-        DeployBridgeProgram.Output memory first = script.deploy(factory, SPENDER_ID, TEMPO_PK);
+        DeployBridgeProgram.Output memory first = script.deploy(factory, SPENDER_ID, address(routerFactory), TEMPO_PK);
         assertEq(address(first.cardFactory), cardFactory_, "factory at its release address");
         assertEq(address(first.provider), provider_, "provider at its release address");
         assertEq(address(first.program), program_, "program where the factory predicts it");
@@ -112,10 +118,13 @@ contract DeterministicDeployTest is ZoneEnv {
         assertEq(address(first.provider.FACTORY()), address(bridgeFactory));
         assertEq(first.provider.SPENDER_ID(), SPENDER_ID);
         assertEq(first.program.PAYOUT_TARGET(), spender);
-        assertTrue(first.cardFactory.isSpender(program_));
+        assertEq(first.program.ROUTER_FACTORY(), address(routerFactory));
+        assertEq(first.routerFactory, address(routerFactory));
+        assertTrue(first.cardFactory.isDeployed(program_));
 
         uint64 nonce = vm.getNonce(vm.addr(BRIDGE_PK));
-        DeployBridgeProgram.Output memory again = _newDeployBridgeProgram().deploy(factory, SPENDER_ID, BRIDGE_PK);
+        DeployBridgeProgram.Output memory again =
+            _newDeployBridgeProgram().deploy(factory, SPENDER_ID, address(routerFactory), BRIDGE_PK);
         assertEq(address(again.program), program_, "same address for another deployer");
         assertFalse(again.created);
         assertEq(vm.getNonce(vm.addr(BRIDGE_PK)), nonce, "no transaction");
@@ -127,6 +136,7 @@ contract DeterministicDeployTest is ZoneEnv {
         assertEq(vm.parseJsonAddress(json, ".provider"), provider_);
         assertEq(vm.parseJsonAddress(json, ".cardFactory"), cardFactory_);
         assertEq(vm.parseJsonAddress(json, ".clone"), spender);
+        assertEq(vm.parseJsonAddress(json, ".routerFactory"), address(routerFactory));
         assertTrue(vm.parseJsonBool(json, ".created"));
     }
 
@@ -141,13 +151,35 @@ contract DeterministicDeployTest is ZoneEnv {
         IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
         DeployBridgeProgram script = _newDeployBridgeProgram();
 
-        DeployBridgeProgram.Output memory a = script.deploy(factory, SPENDER_ID, TEMPO_PK);
-        DeployBridgeProgram.Output memory b = script.deploy(factory, otherId, TEMPO_PK);
+        DeployBridgeProgram.Output memory a = script.deploy(factory, SPENDER_ID, address(routerFactory), TEMPO_PK);
+        DeployBridgeProgram.Output memory b = script.deploy(factory, otherId, address(routerFactory), TEMPO_PK);
         assertEq(address(a.cardFactory), address(b.cardFactory), "one release factory");
         assertTrue(address(a.provider) != address(b.provider), "a provider contract per Bridge program");
         assertTrue(address(a.program) != address(b.program));
         assertEq(b.provider.SPENDER_ID(), otherId);
-        assertEq(address(b.program), script.bridgeProgramAddress(address(bridgeFactory), otherId));
+        assertEq(
+            address(b.program), script.bridgeProgramAddress(address(bridgeFactory), otherId, address(routerFactory))
+        );
+    }
+
+    /// @notice A program's address commits to its router factory: another factory's routers get another
+    ///         program, from another release `CardFactory`.
+    function test_programAddressFollowsTheRouterFactory() public {
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+        address other = deployCode("ZoneRouterFactory.sol:ZoneRouterFactory");
+        assertTrue(script.cardFactoryAddress(other) != script.cardFactoryAddress(address(routerFactory)));
+        IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
+        DeployBridgeProgram.Output memory a = script.deploy(factory, SPENDER_ID, address(routerFactory), TEMPO_PK);
+        DeployBridgeProgram.Output memory b = script.deploy(factory, SPENDER_ID, other, TEMPO_PK);
+        assertEq(address(a.provider), address(b.provider), "one provider contract per Bridge program");
+        assertTrue(address(a.program) != address(b.program));
+        assertEq(b.program.ROUTER_FACTORY(), other);
+    }
+
+    function test_programReleaseScriptRefusesARouterFactoryWithoutCode() public {
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+        vm.expectRevert(bytes("ROUTER_FACTORY has no code"));
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, makeAddr("no.factory"), TEMPO_PK);
     }
 
     /// @notice DeployZoneRouter deploys the program at its release address, reusing one already there,
@@ -155,10 +187,10 @@ contract DeterministicDeployTest is ZoneEnv {
     function test_routerDeployUsesTheReleaseProgram() public {
         _deployZone(true);
         IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
-        DeployBridgeProgram.Output memory released = _newDeployBridgeProgram().deploy(factory, SPENDER_ID, TEMPO_PK);
+        DeployBridgeProgram.Output memory released =
+            _newDeployBridgeProgram().deploy(factory, SPENDER_ID, address(routerFactory), TEMPO_PK);
         DeployZoneRouter script = DeployZoneRouter(deployCode("DeployZoneRouter.s.sol:DeployZoneRouter"));
-        DeployZoneRouter.Output memory o =
-            script.deploy(factory, SPENDER_ID, ZONE_ID, ZoneRouterFactory(address(0)), BRIDGE_PK);
+        DeployZoneRouter.Output memory o = script.deploy(factory, SPENDER_ID, ZONE_ID, routerFactory, BRIDGE_PK);
         assertEq(address(o.program), address(released.program), "the release program");
         assertEq(o.router.spenders()[0], address(released.program));
 
@@ -180,15 +212,20 @@ contract DeterministicDeployTest is ZoneEnv {
     function test_programReleaseScriptRefusesAFactoryWithoutCode() public {
         DeployBridgeProgram script = _newDeployBridgeProgram();
         vm.expectRevert(bytes("FACTORY has no code"));
-        script.deploy(IBridgeSpenderFactory(makeAddr("missing")), SPENDER_ID, TEMPO_PK);
+        script.deploy(IBridgeSpenderFactory(makeAddr("missing")), SPENDER_ID, address(routerFactory), TEMPO_PK);
     }
 
     function test_programReleaseScriptRefusesAProgramWithoutAClone() public {
         DeployBridgeProgram script = _newDeployBridgeProgram();
         vm.expectRevert(bytes("SPENDER_ID has no clone"));
-        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("no such program"), TEMPO_PK);
+        script.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)),
+            keccak256("no such program"),
+            address(routerFactory),
+            TEMPO_PK
+        );
         vm.expectRevert(bytes("SPENDER_ID is zero"));
-        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), bytes32(0), TEMPO_PK);
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), bytes32(0), address(routerFactory), TEMPO_PK);
     }
 
     /// @notice An ID a manager added to an existing clone cannot spend through "TS", so no program is
@@ -201,20 +238,23 @@ contract DeterministicDeployTest is ZoneEnv {
         bridgeFactory.createSpenderWithExistingContract(aliasId, destinations, spender);
         DeployBridgeProgram script = _newDeployBridgeProgram();
         vm.expectRevert(bytes("SPENDER_ID was added to an existing clone, which TS rejects"));
-        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), aliasId, TEMPO_PK);
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), aliasId, address(routerFactory), TEMPO_PK);
     }
 
-    /// @notice `run` reads FACTORY and SPENDER_ID, and writes OUT only with a broadcast.
+    /// @notice `run` reads FACTORY, SPENDER_ID and ROUTER_FACTORY, and writes OUT only with a broadcast.
     /// @dev The environment is the process's, shared with DeployScripts.t.sol's suite running alongside, so
     ///      this sets the same values that one does.
     function test_programReleaseRunReadsTheEnvironment() public {
         vm.setEnv("FACTORY", vm.toString(address(bridgeFactory)));
         vm.setEnv("SPENDER_ID", vm.toString(SPENDER_ID));
+        vm.setEnv("ROUTER_FACTORY", vm.toString(address(routerFactory)));
         vm.setEnv("DEPLOYER_PK", vm.toString(uint256(keccak256("tempo.deployer"))));
         vm.setEnv("OUT", "reports/test-run.json");
         DeployBridgeProgram script = _newDeployBridgeProgram();
         CardSpender deployed = script.run();
-        assertEq(address(deployed), script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID));
+        assertEq(
+            address(deployed), script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID, address(routerFactory))
+        );
     }
 
     function _newBridgeFactory() internal returns (SpenderFactory factory) {

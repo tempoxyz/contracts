@@ -22,12 +22,12 @@ import { CardFactory } from "../../../src/core/CardFactory.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { ICardProvider } from "../../../src/core/interfaces/ICardProvider.sol";
-import { MockPayoutProvider, MockPayoutTarget, MockProvider } from "./Mocks.sol";
+import { MockPayoutProvider, MockPayoutTarget, MockProvider, MockRouter, MockRouterFactory } from "./Mocks.sol";
 
 /// @notice The world the provider-agnostic contracts run on, with no provider: TIP-20 stablecoins (real
-///         precompiles), Tempo Earn over an ERC-4626 venue, a `CardFactory`, and a `CardSpender` over a mock
-///         provider that pays directly or through a mock payout target. Provider harnesses extend it and point
-///         `program` at their own.
+///         precompiles), Tempo Earn over an ERC-4626 venue, a `CardFactory`, a `CardSpender` over a mock
+///         provider that pays directly or through a mock payout target, and a router its factory registered
+///         that lists the program. Provider harnesses extend it and point `program` at their own.
 abstract contract CoreEnv is Test {
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
     bytes32 internal constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
@@ -53,15 +53,27 @@ abstract contract CoreEnv is Test {
 
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
-    address internal router = makeAddr("zone-router");
+    MockRouterFactory internal routerFactory;
+    /// @dev A router `routerFactory` deployed; `_listInRouter` adds a program to its mode.
+    address internal router;
 
     function _deployCore() internal {
         vm.warp(1_790_000_000);
         usd = _createToken("Open USD", "OUSD");
         otherUsd = _createToken("Other USD", "XUSD");
         _deployEarn();
-        factory = new CardFactory();
+        routerFactory = new MockRouterFactory();
+        router = address(new MockRouter());
+        routerFactory.register(router, true);
+        factory = new CardFactory(address(routerFactory));
+        vm.label(address(routerFactory), "ZoneRouterFactory");
+        vm.label(router, "ZoneRouter");
         vm.label(address(factory), "CardFactory");
+    }
+
+    /// @dev Lists `spender` in `router`'s mode, so it takes the router's `spendFrom` calls.
+    function _listInRouter(address spender) internal {
+        MockRouter(router).list(spender, true);
     }
 
     /// @dev The core world with the mock provider: public spends may pay `publicWallet` and `pooledWallet`,
@@ -79,6 +91,7 @@ abstract contract CoreEnv is Test {
         mock.setDestination(publicWallet, true, false);
         mock.setDestination(pooledWallet, true, true);
         program = CardSpender(factory.deploy("mock", ICardProvider(address(mock))));
+        _listInRouter(address(program));
         vm.label(address(mock), "MockProvider");
         vm.label(address(program), "CardSpender");
     }

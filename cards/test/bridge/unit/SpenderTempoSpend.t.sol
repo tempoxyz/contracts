@@ -6,12 +6,13 @@ import { IAccessControl } from "openzeppelin-contracts/access/IAccessControl.sol
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
 
+import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 import {
     Spend,
     SpenderTempoSpend,
     SpenderTempoSpendStorageLib
 } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
+import { LiteralReceiverVault, VirtualAwareToken } from "../../core/harness/Mocks.sol";
 import {
     ApproveRevertingVault,
     FeeOnTransferToken,
@@ -23,6 +24,7 @@ import {
 } from "../harness/Mocks.sol";
 import { isStandingOrNone } from "../harness/StandingApproval.sol";
 import { TempoEnv } from "../harness/TempoEnv.sol";
+import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "zone-router/interfaces/IAddressRegistry.sol";
 
 /// @notice The "TS" handler: `publicCall "PS"` through the program's Bridge clone.
 contract SpenderTempoSpendTest is TempoEnv {
@@ -524,6 +526,45 @@ contract SpenderTempoSpendTest is TempoEnv {
         bytes32 expected =
             keccak256(abi.encode(uint256(keccak256("tempo.spend.SpenderTempoSpend")) - 1)) & ~bytes32(uint256(0xff));
         assertEq(SpenderTempoSpendStorageLib.SLOT, expected);
+    }
+
+    // ------------------------------------------------------------------
+    // Virtual destinations (TIP-1022)
+    // ------------------------------------------------------------------
+
+    /// @notice A virtual destination is credited through its master: "TS" checks the master's balance, and
+    ///         redeems Earn shares to the clone first, since Earn's engines check the literal receiver.
+    function test_spendToAVirtualDestination() public {
+        address virtualTo = address(uint160(0x12345678fDFDfDFdFDfdFdfdFDFd000000000001));
+        address master = makeAddr("virtual.master");
+        vm.mockCall(
+            ADDRESS_REGISTRY_ADDRESS, abi.encodeCall(IAddressRegistry.resolveRecipient, (virtualTo)), abi.encode(master)
+        );
+        VirtualAwareToken vusd = new VirtualAwareToken("VUSD");
+        LiteralReceiverVault vault = new LiteralReceiverVault(address(vusd));
+        VirtualAwareToken share = VirtualAwareToken(vault.earnShare());
+        vusd.mint(address(vault), 100e6);
+        vusd.mint(alice, 100e6);
+        share.mint(alice, 100e6);
+        _setVault(address(vault), true);
+        vm.prank(bridgeGovernor);
+        bridgeFactory.updateSpenderDestination(SPENDER_ID, virtualTo, true);
+        vm.startPrank(alice);
+        vusd.approve(spender, type(uint256).max);
+        share.approve(spender, type(uint256).max);
+        vm.stopPrank();
+
+        Spend memory s = _stable(10e6);
+        s.token = address(vusd);
+        s.destination = virtualTo;
+        s.vault = address(vault);
+        s.fromVault = 6e6;
+        _spendAs(alice, s);
+
+        assertEq(vusd.balanceOf(master), 10e6, "the master was credited");
+        assertEq(share.balanceOf(alice), 100e6 - 12e6, "burned only the cost");
+        assertEq(vusd.balanceOf(spender), 0, "nothing left in the clone");
+        assertEq(share.balanceOf(spender), 0);
     }
 
     // ------------------------------------------------------------------

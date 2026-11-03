@@ -15,14 +15,17 @@ import { ProgramChecks } from "./ProgramChecks.sol";
 ///         for its ID: the release `CardFactory` and the program's `BridgeProvider` at their deterministic
 ///         addresses (`BridgeProgramRelease`), then `CardFactory.deploy(spenderId, provider)`. Each
 ///         one already there is reused. The program is the cardholders' public spend entry point and the
-///         spender a Spend-mode Zone router lists, which is a Zone router release (`DeployZoneRouter`).
-///         `run` reads FACTORY (the spender factory), SPENDER_ID, OUT, and DEPLOYER_PK unless the signer
-///         comes from `--account` or `--ledger`. OUT is written only with `--broadcast`.
+///         spender a Spend-mode Zone router lists, which is a Zone router release (`DeployZoneRouter`). Only
+///         routers ROUTER_FACTORY deploys may call the program's `spendFrom`, so it is part of the
+///         program's address. `run` reads FACTORY (the spender factory), SPENDER_ID, ROUTER_FACTORY (the
+///         `ZoneRouterFactory`), OUT, and DEPLOYER_PK unless the signer comes from `--account` or `--ledger`.
+///         OUT is written only with `--broadcast`.
 contract DeployBridgeProgram is BridgeProgramRelease {
     struct Output {
         address factory;
         bytes32 spenderId;
         address clone;
+        address routerFactory;
         CardFactory cardFactory;
         BridgeProvider provider;
         CardSpender program;
@@ -34,6 +37,7 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         Output memory o = deploy(
             IBridgeSpenderFactory(vm.envAddress("FACTORY")),
             vm.envBytes32("SPENDER_ID"),
+            vm.envAddress("ROUTER_FACTORY"),
             vm.envOr("DEPLOYER_PK", uint256(0))
         );
         if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
@@ -44,19 +48,23 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         return o.program;
     }
 
+    /// @param routerFactory The `ZoneRouterFactory` whose routers may call the program's `spendFrom`.
     /// @param deployerPk The deployer's key, or zero to sign with forge's `--account` or `--ledger`.
-    function deploy(IBridgeSpenderFactory factory, bytes32 spenderId, uint256 deployerPk)
+    function deploy(IBridgeSpenderFactory factory, bytes32 spenderId, address routerFactory, uint256 deployerPk)
         public
         returns (Output memory o)
     {
         o.clone = checkProgram(factory, spenderId);
+        require(routerFactory.code.length != 0, "ROUTER_FACTORY has no code");
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
-        Created memory c = _bridgeProgram(factory, spenderId);
+        Created memory c = _bridgeProgram(factory, spenderId, routerFactory);
         vm.stopBroadcast();
         requireProgram(c.program, factory, spenderId);
+        requireRouterFactory(c.program, routerFactory);
         o.factory = address(factory);
         o.spenderId = spenderId;
+        o.routerFactory = routerFactory;
         o.cardFactory = c.cardFactory;
         o.provider = c.provider;
         o.program = c.program;
@@ -68,6 +76,7 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         vm.serializeAddress(key, "factory", o.factory);
         vm.serializeBytes32(key, "spenderId", o.spenderId);
         vm.serializeAddress(key, "clone", o.clone);
+        vm.serializeAddress(key, "routerFactory", o.routerFactory);
         vm.serializeAddress(key, "cardFactory", address(o.cardFactory));
         vm.serializeAddress(key, "provider", address(o.provider));
         vm.serializeBool(key, "created", o.created);
@@ -97,4 +106,9 @@ function requireProgram(CardSpender program, IBridgeSpenderFactory factory, byte
             && program.PAYOUT_TARGET() == provider.CLONE(),
         "program is bound to another Bridge program"
     );
+}
+
+/// @dev Only `routerFactory`'s routers may call the program's `spendFrom`.
+function requireRouterFactory(CardSpender program, address routerFactory) view {
+    require(program.ROUTER_FACTORY() == routerFactory, "program takes spends from another router factory");
 }

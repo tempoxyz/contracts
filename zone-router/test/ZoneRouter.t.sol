@@ -7,9 +7,11 @@ pragma solidity ^0.8.36;
 import { ZoneRouter } from "../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
 import { ISpender } from "../src/interfaces/ISpender.sol";
+import { SendSpender } from "../src/spenders/SendSpender.sol";
+import { ZoneRouterMockPortal } from "./helpers/ZoneRouterMockPortal.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "earn-test/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "earn-test/helpers/PropAMMEngineMocks.sol";
-import { ZONE_MESSENGER_ADDRESS } from "tempo-earn/interfaces/external/tempo/IZone.sol";
+import { EncryptedDepositPayload, ZONE_MESSENGER_ADDRESS } from "tempo-earn/interfaces/external/tempo/IZone.sol";
 import { SingleZoneEarnRouter } from "tempo-earn/router/SingleZoneEarnRouter.sol";
 
 /// @dev A spender whose behavior each test picks. The router sends it `maxInput` up front: pay `use`
@@ -57,6 +59,8 @@ contract ZoneRouterTest is EarnRouterTestBase {
     ZoneRouterFactory internal factory;
     MockSpender internal spender;
     IRouterPropAMMPool internal pool;
+    /// @dev `portalA` with the ZonePortal's deposit fee and minimum.
+    ZoneRouterMockPortal internal feePortal;
     address internal payee = makeAddr("payee");
 
     /// @dev Earn owns the pinned DirectPropAMM fixture; this project reads it from there.
@@ -66,6 +70,9 @@ contract ZoneRouterTest is EarnRouterTestBase {
 
     function setUp() public override {
         super.setUp();
+        vm.etch(address(portalA), address(new ZoneRouterMockPortal()).code);
+        vm.etch(address(portalB), address(new ZoneRouterMockPortal()).code);
+        feePortal = ZoneRouterMockPortal(address(portalA));
         factory = new ZoneRouterFactory();
         spender = new MockSpender();
         pool = _routerPool(address(alternate), address(assetA));
@@ -215,8 +222,10 @@ contract ZoneRouterTest is EarnRouterTestBase {
         spender.configure(MockSpender.Behavior.Pay, 5 * ONE, payee);
         alternate.mint(address(zr), 10 * ONE);
 
-        vm.expectEmit(true, true, false, false, address(zr));
-        emit ZoneRouter.Spent(address(spender), address(alternate), 5 * ONE, 5 * ONE, bytes32(0));
+        vm.expectEmit(true, true, false, true, address(zr));
+        emit ZoneRouter.Spent(
+            address(spender), address(alternate), 5 * ONE, 5 * ONE, _nextDepositHash(address(alternate), 5 * ONE)
+        );
         _deliverSpend(zr, 10 * ONE, 6 * ONE, 0);
 
         assertEq(alternate.balanceOf(payee), 5 * ONE);
@@ -327,6 +336,110 @@ contract ZoneRouterTest is EarnRouterTestBase {
         );
     }
 
+    /// @notice With maxInput below the amount there is always change, so a return the Portal would refuse
+    ///         reverts before the spender runs (a re-entering spender would revert otherwise).
+    function testSpendChecksTheChangeReturnBeforeTheSpenderPays() public {
+        ZoneRouter zr = _spendRouter();
+        spender.configure(MockSpender.Behavior.Reenter, 0, payee);
+        portalA.setToken(address(alternate), true, false);
+        _expectSpendRevert(zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
+        portalA.setToken(address(alternate), false, true);
+        _expectSpendRevert(zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
+
+        portalA.setToken(address(alternate), true, true);
+        portalA.setDepositFee(100);
+        _expectSpendRevert(
+            zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.DepositFeeTooHigh.selector, uint128(100))
+        );
+    }
+
+    /// @notice With maxInput equal to the amount, the return is checked only when there is change.
+    function testSpendOfTheWholeAmountNeedsNoReturn() public {
+        ZoneRouter zr = _spendRouter();
+        portalA.setToken(address(alternate), true, false);
+        spender.configure(MockSpender.Behavior.Pay, 2 * ONE, payee);
+        alternate.mint(address(zr), 2 * ONE);
+        _deliverSpend(zr, 2 * ONE, 2 * ONE, 0);
+        assertEq(alternate.balanceOf(payee), 2 * ONE);
+
+        spender.configure(MockSpender.Behavior.Pay, ONE, payee);
+        _expectSpendRevert(zr, 2 * ONE, 2 * ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
+    }
+
+    /// @notice Change below the Portal's minimum deposit (deposit fee plus bounce-back reserve) reverts with
+    ///         both numbers; change at the minimum returns, less the deposit fee.
+    function testSpendChangeMustCoverThePortalMinimum() public {
+        ZoneRouter zr = _spendRouter();
+        feePortal.setDepositFee(100);
+        feePortal.setBouncebackFee(50);
+        spender.configure(MockSpender.Behavior.Pay, 10 * ONE - 149, payee);
+        alternate.mint(address(zr), 10 * ONE);
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        vm.expectRevert(abi.encodeWithSelector(ZoneRouter.ChangeBelowDepositFee.selector, 149, 150));
+        zr.onWithdrawalReceived(
+            ZONE_A,
+            address(portalA),
+            bytes32(0),
+            address(alternate),
+            uint128(10 * ONE),
+            _spend(address(spender), 10 * ONE, 100)
+        );
+
+        spender.configure(MockSpender.Behavior.Pay, 10 * ONE - 150, payee);
+        _deliverSpend(zr, 10 * ONE, 10 * ONE, 100);
+        assertEq(alternate.balanceOf(address(portalA)), 50);
+        assertEq(alternate.balanceOf(feePortal.admin()), 100);
+        assertEq(feePortal.lastAmount(), 50);
+        _assertEmpty(zr);
+    }
+
+    /// @notice The Portal deducts its deposit fee from the change, within the sender's cap.
+    function testSpendChangePaysTheDepositFee() public {
+        ZoneRouter zr = _spendRouter();
+        feePortal.setDepositFee(100);
+        spender.configure(MockSpender.Behavior.Pay, 5 * ONE, payee);
+        alternate.mint(address(zr), 10 * ONE);
+        vm.expectEmit(true, true, false, true, address(zr));
+        emit ZoneRouter.Spent(
+            address(spender), address(alternate), 5 * ONE, 5 * ONE, _nextDepositHash(address(alternate), 5 * ONE)
+        );
+        _deliverSpend(zr, 10 * ONE, 6 * ONE, 100);
+        assertEq(feePortal.lastAmount(), 5 * ONE - 100);
+        assertEq(alternate.balanceOf(feePortal.admin()), 100);
+        _assertEmpty(zr);
+    }
+
+    /// @notice A spend that uses everything returns nothing, so the Portal's fees and minimum do not apply.
+    function testSpendWithoutChangeIgnoresThePortalFees() public {
+        ZoneRouter zr = _spendRouter();
+        feePortal.setDepositFee(100);
+        feePortal.setBouncebackFee(50);
+        spender.configure(MockSpender.Behavior.Pay, ONE, payee);
+        alternate.mint(address(zr), ONE);
+        _deliverSpend(zr, ONE, ONE, 0);
+        assertEq(alternate.balanceOf(payee), ONE);
+        _assertEmpty(zr);
+    }
+
+    /// @notice The largest real Spend callbacks, a SendSpender send and a 9-word card spend with the Portal's
+    ///         64-byte ciphertext, fit the outbox's 1,024-byte callback limit.
+    function testLargestSpendCallbacksFitTheOutboxLimit() public view {
+        bytes memory send = abi.encode(
+            SendSpender.Send({
+                to: payee, token: address(alternate), amount: type(uint128).max, vault: address(earnVaultA), ref: ""
+            })
+        );
+        // abi.encode(CardSpend) in cards/: nine static words.
+        bytes memory cardSpend = new bytes(9 * 32);
+        uint256 sendSize = _spendWith(send).length;
+        uint256 cardSize = _spendWith(cardSpend).length;
+        assertEq(send.length, 5 * 32);
+        assertEq(sendSize, 768);
+        assertEq(cardSize, 896);
+        assertLe(sendSize, 1024);
+        assertLe(cardSize, 1024);
+    }
+
     function testSpendRejectsReentryFromSpender() public {
         ZoneRouter zr = _spendRouter();
         spender.configure(MockSpender.Behavior.Reenter, 0, payee);
@@ -406,6 +519,28 @@ contract ZoneRouterTest is EarnRouterTestBase {
                 })
             })
         );
+    }
+
+    /// @dev Spend callback data around `spenderData` with the Portal's real 64-byte ciphertext.
+    function _spendWith(bytes memory spenderData) internal view returns (bytes memory) {
+        EncryptedDepositPayload memory encrypted = _encrypted();
+        encrypted.ciphertext = new bytes(64);
+        return abi.encode(
+            ZoneRouter.SpendData({
+                op: ZoneRouter.Op.Spend,
+                spender: address(spender),
+                maxInput: type(uint128).max,
+                spenderData: spenderData,
+                zoneReturn: ZoneRouter.SpendReturn({
+                    keyIndex: 1, encrypted: encrypted, refundRecipient: refundRecipient, maxDepositFee: 0
+                })
+            })
+        );
+    }
+
+    /// @dev The hash `portalA` returns for its next deposit of `amount` of `token`.
+    function _nextDepositHash(address token, uint256 amount) internal view returns (bytes32) {
+        return keccak256(abi.encode(address(portalA), token, amount, portalA.depositCount() + 1));
     }
 
     function _deliverSpend(ZoneRouter zr, uint256 amount, uint256 maxInput, uint128 maxDepositFee) internal {

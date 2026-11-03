@@ -5,6 +5,7 @@ import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandl
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
+import { IAddressRegistry } from "tempo-std/interfaces/IAddressRegistry.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
@@ -20,6 +21,8 @@ import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/
 import { NoopSpendHandler, OlderCardSpender } from "../harness/Mocks.sol";
 import { ZoneEnv } from "../harness/ZoneEnv.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
+import { TimelockController } from "openzeppelin-contracts/governance/TimelockController.sol";
+import { ERC1967Utils } from "openzeppelin-contracts/proxy/ERC1967/ERC1967Utils.sol";
 import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol";
 import { IEarnEngineExactWithdraw } from "tempo-earn/interfaces/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "tempo-earn/interfaces/engines/IEarnEngineRedeem.sol";
@@ -39,8 +42,6 @@ contract DeployScriptsTest is ZoneEnv {
     uint256 internal constant DEPLOYER_PK = uint256(keccak256("tempo.deployer"));
 
     address internal alice = makeAddr("alice");
-    /// @dev The factory the last `_deployRouter` used, which the preflight checks routers against.
-    ZoneRouterFactory internal routerFactory;
 
     function setUp() public {
         _deployTempo();
@@ -61,8 +62,9 @@ contract DeployScriptsTest is ZoneEnv {
         assertEq(address(bridgeFactory.getSpenderHandler(PREFIX_TEMPO_SPEND)), address(handler.handler));
 
         _approve(10e6);
+        // The program's pause reads the "TS" routing, so a program not yet allowlisted reads as paused.
         vm.prank(alice);
-        vm.expectRevert(SpenderFactoryErrorsAndEvents.SpenderHandlerNotAllowed.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         program.spend(_stable(10e6));
 
         address[] memory vaults = new address[](1);
@@ -126,17 +128,19 @@ contract DeployScriptsTest is ZoneEnv {
         _deployZone(true);
         DeployZoneRouter script = _newDeployZoneRouter();
         DeployZoneRouter.Output memory o = script.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)),
-            SPENDER_ID,
-            ZONE_ID,
-            ZoneRouterFactory(address(0)),
-            DEPLOYER_PK
+            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, routerFactory, DEPLOYER_PK
+        );
+        assertEq(address(o.routerFactory), address(routerFactory), "the factory named, never a new one");
+        assertEq(o.program.ROUTER_FACTORY(), address(routerFactory), "the program takes only its routers");
+        assertEq(address(o.cardFactory.ROUTER_FACTORY()), address(routerFactory));
+        assertEq(
+            address(o.program), script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID, address(routerFactory))
         );
         assertEq(address(o.provider.FACTORY()), address(bridgeFactory));
         assertEq(o.provider.SPENDER_ID(), SPENDER_ID);
         assertEq(address(o.program.PROVIDER()), address(o.provider));
         assertEq(o.program.PAYOUT_TARGET(), spender, "the program pays through the clone");
-        assertTrue(o.cardFactory.isSpender(address(o.program)), "deployed by the card factory");
+        assertTrue(o.cardFactory.isDeployed(address(o.program)), "deployed by the card factory");
         assertTrue(o.routerFactory.isRouter(address(o.router)), "deployed by the factory");
         assertEq(o.router.allowedZoneId(), ZONE_ID);
         assertEq(o.router.enabledOps(), o.router.OP_SPEND(), "Spend only");
@@ -162,6 +166,21 @@ contract DeployScriptsTest is ZoneEnv {
         );
         assertEq(address(again.routerFactory), address(o.routerFactory));
         assertTrue(o.routerFactory.isRouter(address(again.router)));
+    }
+
+    /// @notice Without ROUTER_FACTORY the script deploys nothing rather than a factory of its own, whose
+    ///         routers the release program would refuse.
+    function test_deployRouterRequiresARouterFactory() public {
+        _deployZone(true);
+        DeployZoneRouter script = _newDeployZoneRouter();
+        vm.expectRevert(bytes("ROUTER_FACTORY unset"));
+        script.deploy(
+            IBridgeSpenderFactory(address(bridgeFactory)),
+            SPENDER_ID,
+            ZONE_ID,
+            ZoneRouterFactory(address(0)),
+            DEPLOYER_PK
+        );
     }
 
     function test_deployRouterRejectsAFactoryWithoutCode() public {
@@ -223,6 +242,125 @@ contract DeployScriptsTest is ZoneEnv {
         assertTrue(r.routerAdmitted, "router is a gateway");
         assertTrue(r.refundRecipientAdmitted, "refund account admitted");
         assertTrue(r.programWalletAdmitted, "program wallet admitted");
+    }
+
+    /// @notice The release program is found at its release address and bound to the router's factory; a
+    ///         router another factory deployed for it reads as one its program refuses.
+    function test_preflightChecksTheProgramsReleaseAndRouterFactory() public {
+        _deployZone(false);
+        address router = _deployRouter();
+        Preflight preflight = new Preflight();
+        Preflight.Report memory r = _preflight(preflight, router, address(0), new address[](0));
+        assertTrue(r.programAtRelease, "the release program");
+        assertTrue(r.programRouterFactory, "bound to ROUTER_FACTORY");
+
+        ZoneRouterFactory other = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
+        address foreign = other.deploy(_spendMode(ZONE_ID, r.program));
+        r = preflight.check(
+            SpenderFactory(address(bridgeFactory)),
+            SPENDER_ID,
+            settlement,
+            address(usd),
+            ZONE_ID,
+            other,
+            foreign,
+            address(0),
+            programWallet,
+            new address[](0)
+        );
+        assertTrue(r.routerFromFactory && r.routerMatches, "a router for the program");
+        assertFalse(r.programRouterFactory, "whose spendFrom the program refuses");
+        assertFalse(r.programAtRelease, "not the release program for that factory");
+        preflight.print(r, new address[](0));
+    }
+
+    /// @notice Bridge's trust anchors: the harness admin is an account, not a timelock, until the default
+    ///         admin is one; the factory's delegator is this repo's, and the clone's beacon is the factory.
+    function test_preflightReportsBridgeTrustAnchors() public {
+        _deployZone(false);
+        Preflight preflight = new Preflight();
+        Preflight.Report memory r = _preflight(preflight, address(0), address(0), new address[](0));
+        assertEq(r.defaultAdmin, bridgeAdmin);
+        assertFalse(r.adminIsTimelock, "an account");
+        assertEq(r.defaultAdminDelay, bridgeFactory.defaultAdminDelay());
+        assertTrue(r.factoryImplementation.code.length != 0, "the proxy's implementation");
+        assertEq(r.delegator, bridgeFactory.implementation());
+        assertTrue(r.delegatorCurrent, "this repo's SpenderDelegator");
+        assertTrue(r.cloneBeaconIsFactory, "the clone's beacon");
+        preflight.print(r, new address[](0));
+
+        address[] memory accounts = new address[](1);
+        accounts[0] = bridgeAdmin;
+        address timelock = address(new TimelockController(2 days, accounts, accounts, address(0)));
+        vm.mockCall(address(bridgeFactory), abi.encodeWithSignature("defaultAdmin()"), abi.encode(timelock));
+        vm.store(spender, ERC1967Utils.BEACON_SLOT, bytes32(uint256(uint160(makeAddr("other.beacon")))));
+        r = _preflight(preflight, address(0), address(0), new address[](0));
+        assertTrue(r.adminIsTimelock, "a TimelockController");
+        assertEq(r.adminMinDelay, 2 days);
+        assertFalse(r.cloneBeaconIsFactory, "a clone on another beacon");
+    }
+
+    /// @notice A TIP-1022 virtual settlement address is checked through its master, which its transfers
+    ///         credit; one without a registered master is reported.
+    function test_preflightChecksAVirtualSettlementThroughItsMaster() public {
+        _deployZone(false);
+        Preflight preflight = new Preflight();
+        address registry = StdPrecompiles.ADDRESS_REGISTRY_ADDRESS;
+        address master = makeAddr("settlement.master");
+        vm.mockCall(registry, abi.encodeCall(IAddressRegistry.isVirtualAddress, (settlement)), abi.encode(true));
+        vm.mockCall(registry, abi.encodeCall(IAddressRegistry.resolveRecipient, (settlement)), abi.encode(master));
+        uint64 policy = StdPrecompiles.TIP403_REGISTRY.createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
+        vm.mockCall(address(usd), abi.encodeCall(ITIP20.transferPolicyId, ()), abi.encode(policy));
+        StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(policy, settlement, true);
+
+        Preflight.Report memory r = _preflight(preflight, address(0), address(0), new address[](0));
+        assertTrue(r.settlementVirtual);
+        assertEq(r.settlementPayee, master);
+        assertFalse(r.settlementAllowedByPolicy, "the master is not on the whitelist");
+        StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(policy, master, true);
+        r = _preflight(preflight, address(0), address(0), new address[](0));
+        assertTrue(r.settlementAllowedByPolicy, "the master is");
+        preflight.print(r, new address[](0));
+
+        vm.mockCallRevert(
+            registry,
+            abi.encodeCall(IAddressRegistry.resolveRecipient, (settlement)),
+            abi.encodeWithSignature("VirtualAddressUnregistered()")
+        );
+        r = _preflight(preflight, address(0), address(0), new address[](0));
+        assertEq(r.settlementPayee, address(0), "no master");
+        assertFalse(r.settlementAllowedByPolicy);
+        assertFalse(r.settlementFunded);
+    }
+
+    /// @notice The warm-ups and seeds a low callback gas assumes are reported until each is done.
+    function test_preflightReportsGasReadiness() public {
+        _deployZone(false);
+        address router = _deployRouter();
+        Preflight preflight = new Preflight();
+        Preflight.Report memory r = _preflight(preflight, router, address(0), new address[](0));
+        assertFalse(r.paysDirect, "a Bridge program pays through its clone");
+        assertFalse(r.programWarm || r.routerWarm || r.programSeeded || r.routerSeeded || r.settlementFunded);
+        preflight.print(r, new address[](0));
+
+        CardSpender(r.program).warm(address(usd));
+        ZoneRouter(router).warm(address(usd));
+        _mintUsd(r.program, 1);
+        _mintUsd(router, 1);
+        _mintUsd(settlement, 1);
+        r = _preflight(preflight, router, address(0), new address[](0));
+        assertTrue(r.programWarm, "program.warm");
+        assertTrue(r.routerWarm, "router.warm");
+        assertTrue(r.programSeeded && r.routerSeeded, "seeded");
+        assertTrue(r.settlementFunded, "settlement holds the stablecoin");
+        preflight.print(r, new address[](0));
+
+        address[] memory vaults = new address[](1);
+        vaults[0] = address(earnVault);
+        r = _earnPreflight(preflight, router, vaults);
+        assertFalse(r.cloneSeeded, "no share in the clone yet");
+        assertFalse(r.programSeeded, "nor in the program");
+        preflight.print(r, vaults);
     }
 
     /// @notice A router the given factory did not deploy, one for another Zone, and one whose only
@@ -552,7 +690,7 @@ contract DeployScriptsTest is ZoneEnv {
             IBridgeSpenderFactory(address(bridgeFactory)),
             keccak256("unknown.program"),
             ZONE_ID,
-            ZoneRouterFactory(address(0)),
+            routerFactory,
             DEPLOYER_PK
         );
     }
@@ -609,21 +747,20 @@ contract DeployScriptsTest is ZoneEnv {
         calls.calls(SpenderFactory(address(bridgeFactory)), aliasId, new address[](0));
         DeployZoneRouter router = _newDeployZoneRouter();
         vm.expectRevert(bytes("SPENDER_ID was added to an existing clone, which TS rejects"));
-        router.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)), aliasId, ZONE_ID, ZoneRouterFactory(address(0)), DEPLOYER_PK
-        );
+        router.deploy(IBridgeSpenderFactory(address(bridgeFactory)), aliasId, ZONE_ID, routerFactory, DEPLOYER_PK);
     }
 
     /// @notice A router listing the harness program matches it, and the only pause the report has is Bridge's
     ///         factory pause, which stops the program through its provider.
     function test_preflightReportsTheFactoryPauseForTheProgram() public {
         _deployZone(false);
-        routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
         address router = routerFactory.deploy(_spendMode(ZONE_ID, address(program)));
         Preflight preflight = new Preflight();
         Preflight.Report memory r = _preflight(preflight, router, address(0), new address[](0));
         assertTrue(r.routerMatches);
         assertTrue(r.programCurrent, "the harness program is this repo's build too");
+        assertTrue(r.programRouterFactory, "bound to the router's factory");
+        assertFalse(r.programAtRelease, "the harness CardFactory is not the release one");
         assertFalse(r.paused);
         vm.prank(bridgePauser);
         bridgeFactory.pause();
@@ -639,9 +776,7 @@ contract DeployScriptsTest is ZoneEnv {
         vm.mockCall(ZONE_FACTORY_ADDRESS, abi.encodeCall(IZoneFactory.zones, (uint32(99))), abi.encode(none));
         DeployZoneRouter script = _newDeployZoneRouter();
         vm.expectRevert(bytes("ZONE_ID has no portal"));
-        script.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, 99, ZoneRouterFactory(address(0)), DEPLOYER_PK
-        );
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, 99, routerFactory, DEPLOYER_PK);
     }
 
     function test_programCallsRejectAVaultThatIsNotAnEarnVault() public {
@@ -701,7 +836,6 @@ contract DeployScriptsTest is ZoneEnv {
         vm.prank(bridgeAdmin);
         bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, other);
         address older = address(new OlderCardSpender(address(provider)));
-        routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
         address router = routerFactory.deploy(_spendMode(ZONE_ID, older));
 
         Preflight.Report memory r = _preflight(preflight, router, address(0), new address[](0));
@@ -757,6 +891,7 @@ contract DeployScriptsTest is ZoneEnv {
         vm.setEnv("SETTLEMENT", vm.toString(settlement));
         vm.setEnv("TOKEN", vm.toString(address(usd)));
         vm.setEnv("OUT", "reports/test-run.json");
+        vm.setEnv("ROUTER_FACTORY", vm.toString(address(routerFactory)));
 
         SpenderTempoSpend handler = new DeployTempoSpend().run();
         assertEq(address(handler.FACTORY()), address(bridgeFactory));
@@ -784,18 +919,11 @@ contract DeployScriptsTest is ZoneEnv {
         preflight.run();
     }
 
-    /// @dev Deploys the program's CardSpender and Spend-mode router for ZONE_ID with the deploy script,
-    ///      remembering its router factory for `_preflight`.
+    /// @dev Deploys the release program's CardSpender and Spend-mode router for ZONE_ID with the deploy script,
+    ///      through the harness router factory, which `_preflight` checks routers against.
     function _deployRouter() internal returns (address) {
         DeployZoneRouter.Output memory o = _newDeployZoneRouter()
-            .deploy(
-                IBridgeSpenderFactory(address(bridgeFactory)),
-                SPENDER_ID,
-                ZONE_ID,
-                ZoneRouterFactory(address(0)),
-                DEPLOYER_PK
-            );
-        routerFactory = o.routerFactory;
+            .deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, routerFactory, DEPLOYER_PK);
         return address(o.router);
     }
 

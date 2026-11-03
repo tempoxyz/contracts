@@ -119,6 +119,9 @@ protected-item and three-slot rules.
   mode, so of the router's address.
 - `factory` names an existing `ZoneRouterFactory`. Omitted, the lifecycle deploys one as its own
   `zoneRouterFactory` component, so a later mode change deploys only a new router through it.
+  A spender accepts spends only from routers of the factory it binds (its `ROUTER_FACTORY`), so a
+  mode listing a release `SendSpender` or a card program's `CardSpender` names that factory here,
+  the release `ZoneRouterFactory` for a release `SendSpender`.
 
 A different mode is a new router at a new address, which the Zone must admit again
 ([lifecycle](../docs/zone-router/zone-router.md#deployment)).

@@ -35,18 +35,16 @@ contract DeployRouterReleaseTest is Test {
         assertEq(address(script.zoneRouterFactory(block.chainid)), address(factory));
     }
 
+    /// @notice Without a factory, a SendSpender binds the release ZoneRouterFactory, deploying it first when it
+    ///         is not there yet, so operators pass no factory and the spender's address stays deterministic.
     function testSendSpenderIsDeterministicPerSettingAndReused() public {
+        address releaseFactory =
+            vm.computeCreate2Address(RELEASE_SALT, keccak256(type(ZoneRouterFactory).creationCode), CREATE2_DEPLOYER);
+        assertEq(releaseFactory.code.length, 0);
         SendSpender spender = _plainSpender();
-        assertEq(
-            address(spender),
-            vm.computeCreate2Address(
-                RELEASE_SALT,
-                keccak256(
-                    abi.encodePacked(type(SendSpender).creationCode, abi.encode(address(0), address(0), bytes32(0)))
-                ),
-                CREATE2_DEPLOYER
-            )
-        );
+        assertGt(releaseFactory.code.length, 0);
+        assertEq(spender.ROUTER_FACTORY(), releaseFactory);
+        assertEq(address(spender), _spenderAddress(releaseFactory));
         assertEq(address(spender.convertVault()), address(0));
         assertEq(address(spender.pool()), address(0));
         assertEq(address(_plainSpender()), address(spender));
@@ -54,7 +52,23 @@ contract DeployRouterReleaseTest is Test {
         // Its settings are constructor arguments, so a converting spender is another contract, and the
         // constructor still refuses a partial binding (the CREATE2 deployer drops its revert data).
         vm.expectRevert(bytes(""));
-        script.sendSpender(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), keccak256("customer"));
+        script.sendSpender(
+            block.chainid, address(0), IEarnVault(address(0)), IPropAMMVenue(address(0)), keccak256("customer")
+        );
+    }
+
+    /// @notice A SendSpender for another factory is another contract, and a factory address without code is refused.
+    function testSendSpenderBindsAGivenFactory() public {
+        ZoneRouterFactory other = new ZoneRouterFactory();
+        SendSpender spender = script.sendSpender(
+            block.chainid, address(other), IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0)
+        );
+        assertEq(spender.ROUTER_FACTORY(), address(other));
+        assertEq(address(spender), _spenderAddress(address(other)));
+
+        address missing = makeAddr("missing");
+        vm.expectRevert(abi.encodeWithSelector(DeployRouterReleaseScript.NoFactory.selector, missing));
+        script.sendSpender(block.chainid, missing, IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
     }
 
     function testZoneRouterIsTheFactorysRouterForTheModeAndReused() public {
@@ -91,7 +105,21 @@ contract DeployRouterReleaseTest is Test {
     }
 
     function _plainSpender() internal returns (SendSpender) {
-        return script.sendSpender(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
+        return
+            script.sendSpender(block.chainid, address(0), IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
+    }
+
+    /// @dev A non-converting SendSpender's release address for `factory`.
+    function _spenderAddress(address factory) internal pure returns (address) {
+        return vm.computeCreate2Address(
+            RELEASE_SALT,
+            keccak256(
+                abi.encodePacked(
+                    type(SendSpender).creationCode, abi.encode(factory, address(0), address(0), bytes32(0))
+                )
+            ),
+            CREATE2_DEPLOYER
+        );
     }
 
     function _spendMode(SendSpender spender) internal pure returns (ZoneRouter.Mode memory mode) {

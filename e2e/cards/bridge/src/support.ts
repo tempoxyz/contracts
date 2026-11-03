@@ -133,6 +133,15 @@ export function names(logs: readonly Log[], address: Address) {
   )
 }
 
+/**
+ * Whether calldata carries `address`, such as a settlement transaction's input: the Portal's withdrawal
+ * batch with each callback's data, which names a sender only through its `senderTag` commitment.
+ */
+export function inputNames(input: Hex | undefined, address: Address) {
+  if (input === undefined) throw new Error('the settlement transaction has no input to check')
+  return input.toLowerCase().includes(address.slice(2).toLowerCase())
+}
+
 export function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`check failed: ${message}`)
 }

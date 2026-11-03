@@ -6,8 +6,8 @@ import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { ERC20 } from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import { IERC20 } from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
+import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 import { Spend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 
 /// @notice Plain ERC-20 anyone can mint.
 contract MockToken is ERC20 {
@@ -79,10 +79,6 @@ contract PartialBurnEarnVault is ITempoEarnVault {
         return earnShares / 2;
     }
 
-    function deposit(uint256, address, uint256) external pure override returns (uint256) {
-        revert("deposit unsupported");
-    }
-
     function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares)
         external
         override
@@ -118,10 +114,6 @@ contract OverQuotingEarnVault is ITempoEarnVault {
 
     function previewRedeem(uint256 earnShares) external view override returns (uint256) {
         return VAULT.previewRedeem(earnShares);
-    }
-
-    function deposit(uint256, address, uint256) external pure override returns (uint256) {
-        revert("deposit unsupported");
     }
 
     function withdrawExact(uint256 assets, address receiver, uint256) external override returns (uint256 burned) {

@@ -5,7 +5,7 @@ import { ISpenderHandler } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
-import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
+import { ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
@@ -69,7 +69,8 @@ contract PrivateSpendTest is PrivateSpendFixture {
         _zoneSettle();
 
         assertFalse(lastCallbackResults[0], "one unit of change cannot pay the deposit fee");
-        assertEq(bytes4(lastCallbackErrors[0]), IZonePortal.DepositTooSmall.selector);
+        // The router refuses change below the portal's deposit fee before it reaches the portal.
+        assertEq(bytes4(lastCallbackErrors[0]), ZoneRouter.ChangeBelowDepositFee.selector);
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertFalse(_lastSettlementLogged(ZoneRouter.Spent.selector));
     }

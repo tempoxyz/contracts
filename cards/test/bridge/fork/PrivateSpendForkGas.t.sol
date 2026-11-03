@@ -19,8 +19,8 @@ import { CardFactory } from "../../../src/core/CardFactory.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { ICardProvider } from "../../../src/core/interfaces/ICardProvider.sol";
+import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 
 /// @dev Tempo mainnet (chain 4217) production addresses this measurement runs against.
 library Mainnet {
@@ -149,10 +149,11 @@ contract PrivateSpendForkGasTest is Test {
         // From their artifacts, as the harness does.
         address provider =
             deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(address(bridgeFactory), SPENDER_ID));
-        program = CardSpender(
-            CardFactory(deployCode("CardFactory.sol:CardFactory")).deploy(SPENDER_ID, ICardProvider(provider))
-        );
         routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
+        program = CardSpender(
+            CardFactory(deployCode("CardFactory.sol:CardFactory", abi.encode(address(routerFactory))))
+                .deploy(SPENDER_ID, ICardProvider(provider))
+        );
         ZoneRouter.Mode memory mode;
         mode.zoneId = Mainnet.ZONE_ID;
         mode.enabledOps = uint8(1 << 2);

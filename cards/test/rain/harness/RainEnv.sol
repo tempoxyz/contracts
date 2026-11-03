@@ -42,18 +42,24 @@ abstract contract RainEnv is CoreEnv, RainStack {
         (programCollateral, programCollateralIndex) = _createCollateral("program", partner);
         provider = _deployProvider(address(earnVault));
         program = CardSpender(factory.deploy("rain", ICardProvider(address(provider))));
+        _listInRouter(address(program));
         vm.label(address(provider), "RainProvider");
         vm.label(address(program), "CardSpender");
     }
 
     function _deployProvider(address vault) internal returns (RainProvider) {
+        return _deployProvider(vault, true);
+    }
+
+    /// @dev With `pooledAcceptsPublic` false, only private spends may pay the pooled collateral.
+    function _deployProvider(address vault, bool pooledAcceptsPublic) internal returns (RainProvider) {
         address[] memory tokens = new address[](1);
         tokens[0] = address(usd);
         address[] memory vaults = new address[](vault == address(0) ? 0 : 1);
         if (vault != address(0)) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
-        return new RainProvider(address(rain.factory), tokens, vaults, pooled);
+        return new RainProvider(address(rain.factory), tokens, vaults, pooled, pooledAcceptsPublic);
     }
 
     /// @dev Rain's factory owner (this contract) creates `user`'s collateral contract.

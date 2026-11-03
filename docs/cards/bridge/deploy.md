@@ -105,11 +105,13 @@ FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... ZONE_ID=7 ROUTER_FACTO
 ```
 
 The script checks that the program's clone was created for its ID, that `ZONE_ID` is a valid Zone
-ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program as in
+ID with a registered portal, and that `ROUTER_FACTORY` is set and has code. It deploys the program as in
 [step 2](#2-deploy-the-program-once-per-program), or reuses it, then, through the
 `ZoneRouterFactory`, a [`ZoneRouter`](../../zone-router/zone-router.md) whose mode allows only Spend,
-only from `ZONE_ID`, with the program as its only spender. Leave `ROUTER_FACTORY` unset to deploy a
-new factory. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `provider`,
+only from `ZONE_ID`, with the program as its only spender. `ROUTER_FACTORY` is the release
+`ZoneRouterFactory` ([Zone router releases](../../deployment/deployment.md#zone-router-releases)): the
+program takes `spendFrom` only from that factory's routers that list it, and the release `CardFactory`,
+and so the program's address, follow it. The script never deploys a factory of its own. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `provider`,
 `program`, `routerFactory` and `router`, and is written only with `--broadcast`.
 
 For a hosted program, release the program with the Bridge Release workflow's `bridgeProgram`
@@ -120,8 +122,8 @@ either adopts a router this script already deployed for that mode
 ([Zone router deployment](../../zone-router/zone-router.md#deployment)).
 
 The router has no owner and needs no configuration. The Zone admin checks the router with the
-factory's `isRouter(router)`, and the program with `CardFactory.isSpender(program)`, then grants
-roles:
+factory's `isRouter(router)`, and the program with `CardFactory.isDeployed(program)` and
+`program.ROUTER_FACTORY()`, which must be that factory, then grants roles:
 
 - if the callback gateway is closed, `setGateway(router, true)`;
 - if the gateway is open and access is enforced, `setAllowedAccount(router, true)`;
@@ -152,6 +154,13 @@ prints `ok` or `todo` for each item, with who submits the fix:
   Solc's metadata hash is left out, so a build from source that differs only in comments still
   matches;
 - the settlement destination is authorized, and the factory has not paused the program;
+- whether `SETTLEMENT` is a TIP-1022 virtual address, and if so the master its transfers credit, which
+  must be registered. The policy and balance checks of the settlement wallet read that master;
+- Bridge's trust anchors, which only Bridge can change and which are worth reviewing before going live:
+  the factory's `defaultAdmin()`, whether it is a `TimelockController` and its `getMinDelay()`, and
+  `defaultAdminDelay()`; the factory proxy's ERC-1967 implementation; whether `factory.implementation()`,
+  the delegator every clone runs, is this repository's `SpenderDelegator`; and that the clone's ERC-1967
+  beacon slot names the factory;
 - the token's TIP-403 policy lets the settlement wallet receive, the router and program receive and
   send, the refund recipient receive, the program wallet send, the portal and its messenger send
   and receive, and the Zone admin, which the portal pays its deposit fee, receive. Under a
@@ -161,13 +170,21 @@ prints `ok` or `todo` for each item, with who submits the fix:
   messenger is the canonical one;
 - `ROUTER_FACTORY` deployed `ROUTER`, and `ROUTER` takes Spend callbacks from `ZONE_ID` through a
   `CardSpender` whose provider is a `BridgeProvider` for `FACTORY` and `SPENDER_ID`. Only a router the
-  factory deployed is read, so an arbitrary address cannot pass;
+  factory deployed is read, so an arbitrary address cannot pass. That `CardSpender` is the release
+  program for `FACTORY`, `SPENDER_ID` and `ROUTER_FACTORY` (`bridgeProgramAddress`), and its
+  `ROUTER_FACTORY()` is `ROUTER_FACTORY`, since it refuses `spendFrom` from any other factory's router;
 - `ROUTER` has its Zone role. That is the callback gateway role when the gateway is closed, or the
   account role when it is open and access is enforced;
 - `REFUND_RECIPIENT` is admitted, and `PROGRAM_WALLET` can deposit refunds into the Zone, which
   needs the account role when access is enforced;
 - each vault in `VAULTS` is allowed, which reads `todo` until `TS` is usable, and its engine
-  supports exact withdrawals and redeem previews.
+  supports exact withdrawals and redeem previews;
+- the gas readiness of [step 6](#6-prepare-the-program-for-low-callback-gas): the settlement wallet
+  holds the stablecoin it receives (the vault asset for Earn), `program.warm(TOKEN)` and
+  `router.warm(TOKEN)` are done, the program and the router each hold a seed of `TOKEN`, and for Earn
+  the clone holds a seed of the share and has its standing approval to each vault in `VAULTS`. A
+  program that pays directly, without a clone, also needs `program.warmVault(vault)` for each. The
+  last line says whether every one is done; until then request 3M callback gas.
 
 For Earn, run it again with `TOKEN` set to the vault's EarnShare and the vault in `VAULTS`. It then
 checks the settlement and program wallets against the vault asset's policy, and that a private
@@ -180,8 +197,9 @@ messenger and Zone admin are missing.
 
 ## 6. Prepare the program for low callback gas
 
-Optional. Anyone can do it, once per token the program spends from a Zone (its stablecoin, and the
-EarnShare for Earn): `router.warm(token)` and `program.warm(token)` set the router's standing approval to its
+Optional, and [preflight](#5-check-the-program-before-it-goes-live) reports each item. Anyone can do it,
+once per token the program spends from a Zone (its stablecoin, and the EarnShare for Earn):
+`router.warm(token)` and `program.warm(token)` set the router's standing approval to its
 Zone's portal and the program's to its clone. Without them the program's first spend sets
 them, which costs that spend about 250k more gas each. The clone's approval to each allowed vault is
 set when governance allows it with `UV`.
@@ -189,9 +207,12 @@ set when governance allows it with `UV`.
 For Earn, also send 1 unit of the EarnShare to the program's clone. The clone holds the shares an
 Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
 the unit stays and no spend creates that balance slot again (about 245k). It cannot be recovered.
-Under a whitelist policy the clone must already be admitted, as preflight checks. Do not seed the
-program: `spendFrom` is permissionless and counts whatever it holds as the caller's input, so anyone could
-spend a seed there.
+Under a whitelist policy the clone must already be admitted, as preflight checks.
+
+Send the program and the router 1 unit of each token too. Each receives a private spend's input and
+passes all of it on, so without a seed every spend creates its balance slot again. A seed is safe: the
+program's `spendFrom` takes calls only from a router its `ROUTER_FACTORY` deployed that lists it, and
+both count only what a callback brings, so neither can spend the seed. It cannot be recovered either.
 
 The settlement wallet must also hold a balance of each token it receives (the stablecoin, and the
 vault's asset for Earn) before the first spend, and Bridge must never sweep it to zero: a spend to a
@@ -214,11 +235,11 @@ measure the program's own vault first.
 The **Bridge Release** workflow ([`bridge-release.yml`](../../../.github/workflows/bridge-release.yml))
 deploys the handler (`tempoSpend`) or a program (`bridgeProgram`) from `main`, with the same scripts
 and so at the same deterministic addresses as a deploy by Bridge. Choose the network (Moderato or
-mainnet), the contract, Bridge's factory, for a program its `spenderId`, and
-whether to broadcast; without broadcast Forge only simulates. It runs
+mainnet), the contract, Bridge's factory, for a program its `spenderId` and `routerFactory` (the Zone router
+release's `ZoneRouterFactory`, whose routers alone may call it), and whether to broadcast; without broadcast Forge only simulates. It runs
 [`script/bridge/deploy/release.sh`](../../../cards/script/bridge/deploy/release.sh)
 (`release.sh <moderato|mainnet|local> <tempoSpend|bridgeProgram> [--broadcast]`; `bridgeProgram` reads
-`FACTORY` and `SPENDER_ID`), which:
+`FACTORY`, `SPENDER_ID` and `ROUTER_FACTORY`), which:
 
 - refuses an RPC serving another chain, and runs Forge at the chain's hardfork from
   `tempo_forkSchedule`;

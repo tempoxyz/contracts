@@ -3,7 +3,9 @@ pragma solidity ^0.8.36;
 
 import { Script } from "forge-std/Script.sol";
 import { console } from "forge-std/console.sol";
+import { ERC1967Utils } from "openzeppelin-contracts/proxy/ERC1967/ERC1967Utils.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
+import { IAddressRegistry } from "tempo-std/interfaces/IAddressRegistry.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import {
     IZoneFactory,
@@ -14,27 +16,32 @@ import {
     ZoneInfo
 } from "tempo-zones/interfaces/IZone.sol";
 
+import { SpenderDelegator } from "bridge-spender/src/SpenderDelegator.sol";
 import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
+import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
+import { BridgeProgramRelease } from "./BridgeRelease.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice Read-only check of one card program before private spend goes live: the "TS" handler,
 ///         the program and its destination, the Zone's portal and token, the program's Spend-mode
 ///         router and the `CardSpender` it lists as its spender, and the Zone roles of the router, the
-///         refund recipient and the program wallet that deposits refunds. Nothing is sent: the script
+///         refund recipient and the program wallet that deposits refunds, Bridge's trust anchors (its
+///         default admin, the factory's implementation, the clones' delegator and beacon), and the warm-ups
+///         and seeds a spend's callback gas assumes. Nothing is sent: the script
 ///         deploys copies of the handler, the program's `BridgeProvider` and its `CardSpender` only in its
 ///         own simulation, to compare their code. `run` reads
 ///         FACTORY, SPENDER_ID, SETTLEMENT, TOKEN, ZONE_ID, ROUTER_FACTORY and ROUTER (optional),
 ///         REFUND_RECIPIENT (optional), PROGRAM_WALLET (optional) and VAULTS (comma separated,
 ///         optional), and prints each missing step with who submits it. For an Earn spend, TOKEN is the EarnShare of one of
-///         VAULTS, and the settlement wallet and program wallet are checked against its asset.
-contract Preflight is Script {
+///         VAULTS, and the settlement wallet and program wallet are checked against its asset. A settlement
+///         wallet that is a TIP-1022 virtual address is checked through the master its transfers credit.
+contract Preflight is BridgeProgramRelease {
     bytes2 internal constant PREFIX = "TS";
 
     struct Report {
@@ -54,6 +61,10 @@ contract Preflight is Script {
         bool paused;
         /// @dev TOKEN is the EarnShare of one of VAULTS.
         bool tokenIsEarnShare;
+        /// @dev The stablecoin the destination receives: TOKEN, or the vault asset when TOKEN is an EarnShare.
+        address stablecoin;
+        /// @dev The vault whose EarnShare TOKEN is; zero otherwise.
+        address earnVault;
         /// @dev The policy of the stablecoin the destination receives lets the settlement wallet
         ///      receive it: TOKEN's, or the vault asset's when TOKEN is an EarnShare.
         bool settlementAllowedByPolicy;
@@ -114,6 +125,49 @@ contract Preflight is Script {
         /// @dev Each vault's engine supports the exact withdrawals a spend makes and the redeem
         ///      previews `availableBalance` uses.
         bool[] vaultsSpendable;
+        /// @dev Bridge's trust anchors, which this repository cannot change: the default admin upgrades
+        ///      the factory and grants every role, after `defaultAdminDelay` for a new admin.
+        address defaultAdmin;
+        /// @dev The default admin answers `getMinDelay()`, as a TimelockController does.
+        bool adminIsTimelock;
+        uint256 adminMinDelay;
+        uint48 defaultAdminDelay;
+        /// @dev The factory proxy's ERC-1967 implementation slot.
+        address factoryImplementation;
+        /// @dev `factory.implementation()`, the `SpenderDelegator` every clone runs.
+        address delegator;
+        /// @dev The delegator runs this repo's `SpenderDelegator` for this factory, ignoring solc's metadata.
+        bool delegatorCurrent;
+        /// @dev The clone's ERC-1967 beacon slot names the factory, so its logic is the factory's delegator.
+        bool cloneBeaconIsFactory;
+        /// @dev SETTLEMENT is a TIP-1022 virtual address.
+        bool settlementVirtual;
+        /// @dev Who a transfer to SETTLEMENT credits: its registered master when virtual, else itself;
+        ///      zero for a virtual address without one. The policy checks read this account.
+        address settlementPayee;
+        /// @dev The program is `bridgeProgramAddress(FACTORY, SPENDER_ID, ROUTER_FACTORY)`.
+        bool programAtRelease;
+        /// @dev The program takes `spendFrom` only from ROUTER_FACTORY's routers.
+        bool programRouterFactory;
+        /// @dev The settlement payee holds the stablecoin it receives, so no spend creates that balance.
+        bool settlementFunded;
+        /// @dev The program's standing approval of TOKEN to its payout target (`program.warm(TOKEN)`);
+        ///      true for a program that pays directly, which has none.
+        bool programWarm;
+        /// @dev The router's standing approval of TOKEN to the portal (`router.warm(TOKEN)`).
+        bool routerWarm;
+        /// @dev The program and the router each hold some TOKEN, so no callback creates their balances.
+        ///      Safe: only a router ROUTER_FACTORY deployed that lists the program may call `spendFrom`.
+        bool programSeeded;
+        bool routerSeeded;
+        /// @dev For an EarnShare TOKEN, the clone holds some of it.
+        bool cloneSeeded;
+        /// @dev The clone's standing approval of each vault's share to the vault (governance's `UV`).
+        bool[] cloneVaultApproved;
+        /// @dev The program pays directly, without a payout target.
+        bool paysDirect;
+        /// @dev For a program that pays directly, its standing share approval to each vault (`warmVault`).
+        bool[] programVaultApproved;
     }
 
     function run() external {
@@ -161,25 +215,46 @@ contract Preflight is Script {
         }
         r.destinationAuthorized = r.clone != address(0) && factory.isAuthorizedDestination(spenderId, settlement);
         r.paused = factory.paused();
+        _checkTrust(r, factory);
+        (r.settlementVirtual, r.settlementPayee) = _payee(settlement);
 
-        address stablecoin = token;
-        address earnVault;
+        _findEarnShare(r, token, vaults);
+        _checkPolicies(r, token, router, refundRecipient, programWallet);
+        _checkVaults(r, vaults);
+        _checkRouter(r, address(factory), spenderId, zoneId, routerFactory, router);
+        r.programAllowedByPolicy = _movesThrough(token, r.program) && _movesThrough(r.stablecoin, r.program);
+        _checkZone(r, token, zoneId, router, refundRecipient, programWallet);
+        _checkGas(r, token, router, vaults);
+    }
+
+    /// @dev Whether TOKEN is the EarnShare of one of VAULTS, and so the stablecoin the destination receives.
+    function _findEarnShare(Report memory r, address token, address[] memory vaults) private view {
+        r.stablecoin = token;
         for (uint256 i; i < vaults.length; ++i) {
             (bool shareOk, address share) = ProgramChecks.readAddress(vaults[i], ITempoEarnVault.earnShare.selector);
             if (!shareOk || share != token) continue;
             (bool assetOk, address asset) = ProgramChecks.readAddress(vaults[i], ITempoEarnVault.asset.selector);
             if (assetOk) {
                 r.tokenIsEarnShare = true;
-                stablecoin = asset;
-                earnVault = vaults[i];
+                r.stablecoin = asset;
+                r.earnVault = vaults[i];
             }
             break;
         }
+    }
 
-        // A token that is not a TIP-20 leaves its policy checks false instead of ending the report.
-        (bool stableOk, uint64 stablePolicy) = _policy(stablecoin);
+    /// @dev A token that is not a TIP-20 leaves its policy checks false instead of ending the report.
+    function _checkPolicies(
+        Report memory r,
+        address token,
+        address router,
+        address refundRecipient,
+        address programWallet
+    ) private view {
+        (bool stableOk, uint64 stablePolicy) = _policy(r.stablecoin);
         if (stableOk) {
-            r.settlementAllowedByPolicy = StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(stablePolicy, settlement);
+            r.settlementAllowedByPolicy = r.settlementPayee != address(0)
+                && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(stablePolicy, r.settlementPayee);
             r.programWalletAllowedByPolicy = programWallet != address(0)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(stablePolicy, programWallet);
         }
@@ -191,30 +266,23 @@ contract Preflight is Script {
             r.cloneAllowedByPolicy = r.clone != address(0)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, r.clone)
                 && StdPrecompiles.TIP403_REGISTRY.isAuthorizedSender(tokenPolicy, r.clone);
-            r.vaultAllowedByPolicy =
-                earnVault != address(0) && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, earnVault);
+            r.vaultAllowedByPolicy = r.earnVault != address(0)
+                && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, r.earnVault);
         }
+    }
 
-        r.vaultsSpendable = new bool[](vaults.length);
-        for (uint256 i; i < vaults.length; ++i) {
-            r.vaultsSpendable[i] = ProgramChecks.supportsEarnSpend(vaults[i]);
-        }
-        r.vaultsAllowed = new bool[](vaults.length);
-        for (uint256 i; i < vaults.length && r.clone != address(0) && r.handlerUsable; ++i) {
-            (bool ok, bytes memory data) = r.clone
-                .staticcall(
-                    abi.encodeWithSignature("publicGetCall(bytes)", abi.encodePacked(PREFIX, bytes2("GV"), vaults[i]))
-                );
-            r.vaultsAllowed[i] = ok && abi.decode(abi.decode(data, (bytes)), (bool));
-        }
-
-        _checkRouter(r, address(factory), spenderId, zoneId, routerFactory, router);
-        r.programAllowedByPolicy = _movesThrough(token, r.program) && _movesThrough(stablecoin, r.program);
-
+    /// @dev The Zone's portal and token, and the Zone roles and policy of the accounts a spend reaches.
+    function _checkZone(
+        Report memory r,
+        address token,
+        uint32 zoneId,
+        address router,
+        address refundRecipient,
+        address programWallet
+    ) private view {
         ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(zoneId);
-        if (zone.portal == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal)) {
-            return r;
-        }
+        if (zone.portal == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal)) return;
+        (bool tokenOk, uint64 tokenPolicy) = _policy(token);
         r.portal = zone.portal;
         IZonePortal portal = IZonePortal(zone.portal);
         r.tokenEnabled = portal.isTokenEnabled(token);
@@ -226,7 +294,7 @@ contract Preflight is Script {
         address admin = portal.admin();
         r.zoneAdminAllowedByPolicy = tokenOk && StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(tokenPolicy, admin);
         if (r.tokenIsEarnShare) {
-            _checkAssetRefunds(r, portal, stablecoin, admin, refundRecipient);
+            _checkAssetRefunds(r, portal, r.stablecoin, admin, refundRecipient);
         }
         address messenger = portal.messenger();
         r.messengerAllowedByPolicy = tokenOk && messenger == ZONE_MESSENGER_ADDRESS
@@ -293,6 +361,45 @@ contract Preflight is Script {
                 : "policy admin: authorize the settlement wallet under the token's TIP-403 policy"
         );
         _line(!r.paused, "factory not paused", "governance: unpause");
+        // Bridge's trust anchors: Bridge holds them, so each todo is a question for Bridge before going live.
+        _line(
+            r.adminIsTimelock,
+            string.concat(
+                "factory default admin ",
+                vm.toString(r.defaultAdmin),
+                " is a TimelockController, min delay ",
+                vm.toString(r.adminMinDelay),
+                "s"
+            ),
+            "Bridge: its default admin upgrades the factory and grants every role at once; ask for a timelock"
+        );
+        console.log(
+            string.concat("info  default admin transfer delay ", vm.toString(uint256(r.defaultAdminDelay)), "s")
+        );
+        _line(
+            r.factoryImplementation.code.length != 0,
+            string.concat("factory ERC-1967 implementation ", vm.toString(r.factoryImplementation)),
+            "check FACTORY: it is not an ERC-1967 proxy with an implementation"
+        );
+        _line(
+            r.delegatorCurrent,
+            string.concat("factory's delegator ", vm.toString(r.delegator), " is this repo's SpenderDelegator"),
+            "Bridge: review the delegator factory.implementation() names, which every clone runs"
+        );
+        _line(
+            r.cloneBeaconIsFactory,
+            "clone's ERC-1967 beacon is the factory",
+            "Bridge default admin: migrateBeacons([clone])"
+        );
+        if (r.settlementVirtual) {
+            _line(
+                r.settlementPayee != address(0),
+                string.concat("settlement is a TIP-1022 virtual address of ", vm.toString(r.settlementPayee)),
+                "settlement owner: register its virtual master, or authorize another destination"
+            );
+        } else {
+            console.log("info  settlement is not a TIP-1022 virtual address");
+        }
         _line(r.portal != address(0), "Zone has a registered portal", "check ZONE_ID");
         _line(r.tokenEnabled, "token enabled on the Zone portal", "Zone admin: enableToken(token)");
         _line(
@@ -309,6 +416,16 @@ contract Preflight is Script {
             r.routerMatches,
             "router takes this Zone's spends through this program's CardSpender",
             "deployer: DeployZoneRouter for this program and Zone"
+        );
+        _line(
+            r.programAtRelease,
+            "CardSpender is the release program for FACTORY, SPENDER_ID and ROUTER_FACTORY",
+            "deployer: DeployZoneRouter with the release ROUTER_FACTORY, then use its router"
+        );
+        _line(
+            r.programRouterFactory,
+            "CardSpender takes spendFrom only from ROUTER_FACTORY's routers",
+            "deployer: DeployZoneRouter with this ROUTER_FACTORY, then use its router"
         );
         _line(
             r.programCurrent,
@@ -386,6 +503,7 @@ contract Preflight is Script {
             "token policy lets the Zone messenger send and receive",
             "policy admin: authorize the portal's messenger under the token's TIP-403 policy"
         );
+        _printGas(r, vaults);
         for (uint256 i; i < vaults.length; ++i) {
             _line(
                 r.vaultsAllowed[i],
@@ -398,6 +516,42 @@ contract Preflight is Script {
                 "use a vault whose engine supports both"
             );
         }
+    }
+
+    /// @dev The warm-ups and seeds step 6 of docs/cards/bridge/deploy.md describes, and the callback gas to
+    ///      request until they are all done.
+    function _printGas(Report memory r, address[] memory vaults) private pure {
+        _line(
+            r.settlementFunded,
+            r.tokenIsEarnShare ? "settlement wallet holds the vault asset" : "settlement wallet holds the token",
+            "Bridge: send the settlement wallet 1 unit, and never sweep it to zero"
+        );
+        _line(r.programWarm, "program's standing approval of the token to its clone", "anyone: program.warm(TOKEN)");
+        _line(r.routerWarm, "router's standing approval of the token to the portal", "anyone: router.warm(TOKEN)");
+        _line(r.programSeeded, "program holds a seed of the token", "anyone: send the program 1 unit of TOKEN");
+        _line(r.routerSeeded, "router holds a seed of the token", "anyone: send the router 1 unit of TOKEN");
+        bool ready = r.settlementFunded && r.programWarm && r.routerWarm && r.programSeeded && r.routerSeeded;
+        if (r.tokenIsEarnShare) {
+            _line(r.cloneSeeded, "clone holds a seed of the share", "anyone: send the clone 1 unit of the share");
+            ready = ready && r.cloneSeeded;
+        }
+        for (uint256 i; i < vaults.length; ++i) {
+            _line(
+                r.cloneVaultApproved[i],
+                string.concat("clone's standing share approval to vault ", vm.toString(vaults[i])),
+                "governance: ProgramCalls' governanceAllowVaults, which sets it"
+            );
+            ready = ready && r.cloneVaultApproved[i];
+            if (!r.paysDirect) continue;
+            _line(
+                r.programVaultApproved[i],
+                string.concat("program's standing share approval to vault ", vm.toString(vaults[i])),
+                "anyone: program.warmVault(vault)"
+            );
+            ready = ready && r.programVaultApproved[i];
+        }
+        if (ready) console.log("ok    every warm-up is done, so the prepared callback gas figures apply");
+        else console.log("todo  a warm-up is missing: request 3M callback gas until every one above is done");
     }
 
     /// @dev Finds the `CardSpender` ROUTER lists for this program: one whose provider is a `BridgeProvider`
@@ -430,11 +584,17 @@ contract Preflight is Script {
             if (abi.decode(id, (bytes32)) != spenderId) continue;
             r.routerMatches = true;
             r.program = spenders[i];
+            r.programAtRelease = spenders[i] == bridgeProgramAddress(factory, spenderId, address(routerFactory));
+            (bool routerFactoryOk, address programRouterFactory) =
+                ProgramChecks.readAddress(spenders[i], bytes4(keccak256("ROUTER_FACTORY()")));
+            r.programRouterFactory = routerFactoryOk && programRouterFactory == address(routerFactory);
             // Copies from the artifacts, so this script does not carry their creation code.
             r.programCurrent = ProgramChecks.sameLogic(
                 provider, vm.deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(factory, spenderId))
             )
-            && ProgramChecks.sameLogic(spenders[i], vm.deployCode("CardSpender.sol:CardSpender", abi.encode(provider)));
+            && ProgramChecks.sameLogic(
+                spenders[i], vm.deployCode("CardSpender.sol:CardSpender", abi.encode(provider, address(routerFactory)))
+            );
             return;
         }
     }
@@ -458,6 +618,100 @@ contract Preflight is Script {
             && (refundRecipient == address(0)
                 || StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, refundRecipient));
         r.assetDepositsActive = portal.isTokenEnabled(asset) && portal.areDepositsActive(asset);
+    }
+
+    /// @dev Each vault's engine supports Earn spends, and the program allows it (`GV`) once "TS" is usable.
+    function _checkVaults(Report memory r, address[] memory vaults) private view {
+        r.vaultsSpendable = new bool[](vaults.length);
+        for (uint256 i; i < vaults.length; ++i) {
+            r.vaultsSpendable[i] = ProgramChecks.supportsEarnSpend(vaults[i]);
+        }
+        r.vaultsAllowed = new bool[](vaults.length);
+        for (uint256 i; i < vaults.length && r.clone != address(0) && r.handlerUsable; ++i) {
+            (bool ok, bytes memory data) = r.clone
+                .staticcall(
+                    abi.encodeWithSignature("publicGetCall(bytes)", abi.encodePacked(PREFIX, bytes2("GV"), vaults[i]))
+                );
+            r.vaultsAllowed[i] = ok && abi.decode(abi.decode(data, (bytes)), (bool));
+        }
+    }
+
+    /// @dev Bridge's trust anchors: who upgrades the factory and grants its roles, the factory's
+    ///      implementation, and the delegator and beacon every clone's logic comes from.
+    function _checkTrust(Report memory r, SpenderFactory factory) private {
+        try factory.defaultAdmin() returns (address admin) {
+            r.defaultAdmin = admin;
+        } catch { }
+        if (r.defaultAdmin.code.length != 0) {
+            (bool ok, bytes memory delay) = r.defaultAdmin.staticcall(abi.encodeWithSignature("getMinDelay()"));
+            if (ok && delay.length == 32) {
+                r.adminIsTimelock = true;
+                r.adminMinDelay = abi.decode(delay, (uint256));
+            }
+        }
+        try factory.defaultAdminDelay() returns (uint48 delay) {
+            r.defaultAdminDelay = delay;
+        } catch { }
+        r.factoryImplementation = _slotAddress(address(factory), ERC1967Utils.IMPLEMENTATION_SLOT);
+        try factory.implementation() returns (address delegator) {
+            r.delegator = delegator;
+        } catch { }
+        r.delegatorCurrent = r.delegator.code.length != 0
+            && ProgramChecks.sameLogic(r.delegator, address(new SpenderDelegator(IFactory(address(factory)))));
+        r.cloneBeaconIsFactory =
+            r.clone != address(0) && _slotAddress(r.clone, ERC1967Utils.BEACON_SLOT) == address(factory);
+    }
+
+    /// @dev The warm-ups and seeds the prepared callback gas figures assume: each one missing makes a spend
+    ///      create a storage slot (TIP-1000), about 250k more gas.
+    function _checkGas(Report memory r, address token, address router, address[] memory vaults) private view {
+        r.settlementFunded = r.settlementPayee != address(0) && _balance(r.stablecoin, r.settlementPayee) != 0;
+        if (r.program != address(0)) {
+            (bool ok, address target) = ProgramChecks.readAddress(r.program, bytes4(keccak256("PAYOUT_TARGET()")));
+            r.paysDirect = ok && target == address(0);
+            r.programWarm = ok && (target == address(0) || _allowance(token, r.program, target) >= type(uint128).max);
+            r.programSeeded = _balance(token, r.program) != 0;
+        }
+        if (r.routerMatches) {
+            // A standing approval is above `uint128`, as the router reads one.
+            r.routerWarm = r.portal != address(0) && _allowance(token, router, r.portal) > type(uint128).max;
+            r.routerSeeded = _balance(token, router) != 0;
+        }
+        r.cloneSeeded = r.tokenIsEarnShare && r.clone != address(0) && _balance(token, r.clone) != 0;
+        r.cloneVaultApproved = new bool[](vaults.length);
+        r.programVaultApproved = new bool[](vaults.length);
+        for (uint256 i; i < vaults.length; ++i) {
+            (bool shareOk, address share) = ProgramChecks.readAddress(vaults[i], ITempoEarnVault.earnShare.selector);
+            if (!shareOk) continue;
+            r.cloneVaultApproved[i] =
+                r.clone != address(0) && _allowance(share, r.clone, vaults[i]) >= type(uint128).max;
+            r.programVaultApproved[i] =
+                r.program != address(0) && _allowance(share, r.program, vaults[i]) >= type(uint128).max;
+        }
+    }
+
+    /// @dev Who a transfer to `account` credits under TIP-1022: its registered master when it is a virtual
+    ///      address (zero when it has none, as the transfer would revert), else itself. A chain without the
+    ///      registry has no virtual addresses.
+    function _payee(address account) private view returns (bool isVirtual, address payee) {
+        address registry = StdPrecompiles.ADDRESS_REGISTRY_ADDRESS;
+        (bool ok, bytes memory data) = registry.staticcall(abi.encodeCall(IAddressRegistry.isVirtualAddress, (account)));
+        isVirtual = ok && data.length == 32 && abi.decode(data, (bool));
+        if (!isVirtual) return (false, account);
+        (ok, data) = registry.staticcall(abi.encodeCall(IAddressRegistry.resolveRecipient, (account)));
+        if (ok && data.length == 32) payee = abi.decode(data, (address));
+    }
+
+    function _balance(address token, address account) private view returns (uint256 balance) {
+        (, balance) = ProgramChecks.readUint(token, abi.encodeCall(ITIP20.balanceOf, (account)));
+    }
+
+    function _allowance(address token, address owner, address spender) private view returns (uint256 allowance) {
+        (, allowance) = ProgramChecks.readUint(token, abi.encodeCall(ITIP20.allowance, (owner, spender)));
+    }
+
+    function _slotAddress(address account, bytes32 slot) private view returns (address) {
+        return address(uint160(uint256(vm.load(account, slot))));
     }
 
     /// @dev `token` is a TIP-20 whose policy lets `account` receive and send it.

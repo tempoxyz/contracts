@@ -6,6 +6,7 @@ import { describe, expect, test, vi } from 'vitest'
 import { deployZoneRouterScriptAbi, propAMMPoolAbi, zonePortalAbi } from '../../abis/index.js'
 import { planEarnDeployment } from '../../core/plan.js'
 import { parseEarnDeploymentProfile } from '../../core/profile.js'
+import { zoneFactoryAddress } from '../../chain/zone.js'
 import { accessMembers } from '../earn/access-policy/membership.js'
 import { accessMemberContracts, deploymentStep, executeAvailableAuthority } from '../index.js'
 import type { ChainClient, FoundryStep } from '../module.js'
@@ -221,6 +222,46 @@ describe('Zone router steps', () => {
     )
     expect(zoneRouterModeModule.metadataOutput?.('zoneRouterSequencer0')).toBe(true)
     expect(zoneRouterModeModule.metadataOutput?.('zoneRouterPortal')).toBe(false)
+  })
+
+  test('whitelists the spenders when the Portal enables EarnShare', () => {
+    const protectedEarn = profileWith(
+      { zoneId: 7, ops: ['deposit', 'redeem', 'spend'], earn: earnBinding, spenders: [spender] },
+      { tip403PolicyId: '469' },
+    )
+    expect(accessMembers(protectedEarn, outputs)).toContain(spender)
+    // A Spend-only mode moves EarnShare only when another router has its Zone enable it.
+    const protectedCard = profileWith(
+      { zoneId: 7, ops: ['spend'], spenders: [spender] },
+      { tip403PolicyId: '469' },
+    )
+    expect(accessMembers(protectedCard, outputs)).not.toContain(spender)
+  })
+
+  test('requires the live spenders of a stack whose Portal enables EarnShare', async () => {
+    const portal = address('8')
+    const stack = {
+      contracts: { earnShare: outputs.earnShare, zoneRouter: outputs.zoneRouter },
+      operations: {},
+    }
+    const principals = (enabled: boolean) =>
+      zoneRouterModeModule.stackAccessPrincipals!(
+        {
+          readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
+            const reads: Record<string, unknown> = {
+              allowedZoneId: 7,
+              spenders: [spender],
+              zones: { zoneId: 7, portal, sequencers: [address('5e9')] },
+              zoneFactory: zoneFactoryAddress,
+              isTokenEnabled: enabled,
+            }
+            return reads[functionName]
+          }),
+        } as never,
+        stack as never,
+      )
+    await expect(principals(true)).resolves.toContain(spender)
+    await expect(principals(false)).resolves.not.toContain(spender)
   })
 
   test('adopts the router another deployer created for the same mode', async () => {
@@ -539,6 +580,39 @@ describe('Zone router steps', () => {
   })
 })
 
+describe('Zone router preflight', () => {
+  /** A chain where every address has code and each spender reports `routerFactory`. */
+  const preflightChain = (routerFactory: unknown) =>
+    ({
+      getCode: vi.fn(async () => '0x6080' as const),
+      readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
+        if (functionName === 'isRouter') return false
+        if (functionName === 'ROUTER_FACTORY' && routerFactory) return routerFactory
+        throw new Error(`${functionName} reverted`)
+      }),
+    }) as never
+
+  test('accepts spenders bound to the factory the profile names', async () => {
+    await expect(
+      zoneRouterModeModule.preflight!(preflightChain(card.zoneRouter!.factory), card),
+    ).resolves.toBeUndefined()
+  })
+
+  test('refuses spenders whose routers would come from another factory', async () => {
+    const other = address('bad0')
+    await expect(zoneRouterModeModule.preflight!(preflightChain(other), card)).rejects.toThrow(
+      `zoneRouter.spenders[0] ${spender} takes spendFrom only from routers of ZoneRouterFactory ${other}, not zoneRouter.factory ${card.zoneRouter!.factory}`,
+    )
+    // A factory the lifecycle deploys is never the one an existing spender is bound to.
+    await expect(
+      zoneRouterModeModule.preflight!(preflightChain(other), cardAndEarn),
+    ).rejects.toThrow('set zoneRouter.factory to it')
+    await expect(zoneRouterModeModule.preflight!(preflightChain(undefined), card)).rejects.toThrow(
+      'reports no ROUTER_FACTORY',
+    )
+  })
+})
+
 describe('Zone router inspection', () => {
   test('reports gateway, token, and conversion readiness without failing', async () => {
     const reads = chain(cardAndEarn, {
@@ -561,6 +635,35 @@ describe('Zone router inspection', () => {
     expect(report?.zoneRouterConversion).toMatchObject({
       status: 'ready',
       details: { depositInventory: '1', redeemInventory: '2' },
+    })
+  })
+
+  test('reports spenders a protected EarnShare does not admit and spenders of unknown provenance', async () => {
+    const protectedEarn = profileWith(
+      { zoneId: 7, ops: ['deposit', 'redeem', 'spend'], earn: earnBinding, spenders: [spender] },
+      { tip403PolicyId: '469' },
+    )
+    const reads = chain(protectedEarn, {
+      isGatewayOpen: false,
+      hasRole: true,
+      isTokenEnabled: true,
+      areDepositsActive: true,
+      liquidityStatus: [false, true, true, 1n, 2n],
+      oracle: address('0c'),
+      maxOracleAge: 60n,
+      latestPrice: [1n, 100n],
+      ROUTER_FACTORY: outputs.zoneRouterFactory,
+      isAuthorized: false,
+    })
+    const client = { ...reads, getBlock: async () => ({ timestamp: 110n }) }
+    const report = await zoneRouterModeModule.inspect!(client, protectedEarn, outputs)
+    expect(report?.zoneRouterSpenders).toEqual({
+      label: 'Zone router spenders',
+      status: 'blocked',
+      blockers: [
+        `Spender ${spender} is neither a CardSpender nor a SendSpender`,
+        `Spender ${spender} is not a member of EarnShare's TIP-403 policy 469, so EarnShare spends through it bounce`,
+      ],
     })
   })
 

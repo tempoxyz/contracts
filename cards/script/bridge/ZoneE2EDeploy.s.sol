@@ -60,10 +60,11 @@ contract ZoneE2EDeploy is Script {
         destinations[1] = programWallet;
         address clone = factory.createSpender(SPENDER_ID, destinations);
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
-        CardFactory cardFactory = new CardFactory();
+        // The router factory first: only its routers may call the program's spendFrom.
+        ZoneRouterFactory routerFactory = new ZoneRouterFactory();
+        CardFactory cardFactory = new CardFactory(address(routerFactory));
         BridgeProvider provider = new BridgeProvider(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
         address program = cardFactory.deploy(SPENDER_ID, ICardProvider(address(provider)));
-        ZoneRouterFactory routerFactory = new ZoneRouterFactory();
         address router = routerFactory.deploy(SpendMode.forSpender(zoneId, program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
         address zoneToken = StdPrecompiles.TIP20_FACTORY

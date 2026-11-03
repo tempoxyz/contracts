@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
+import { ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 import { OverQuotingEarnVault } from "../harness/Mocks.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 
@@ -40,7 +40,8 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         _zoneSettle();
 
         assertFalse(lastCallbackResults[0], "callback rejected");
-        assertEq(bytes4(lastCallbackErrors[0]), IZonePortal.DepositTooSmall.selector);
+        // The router refuses change below the portal's deposit fee before it reaches the portal.
+        assertEq(bytes4(lastCallbackErrors[0]), ZoneRouter.ChangeBelowDepositFee.selector);
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertEq(
             zoneBefore - _zoneBalance(address(earnShare), alice),

@@ -158,11 +158,12 @@ echo "access key stops at its 50 USD limit"
 
 # The private path's contracts on a real node: the program's CardSpender, released with release.sh
 # (the release CardFactory and BridgeProvider through the node's CREATE2 deployer, then
-# CardFactory.deploy), and its Spend-mode ZoneRouter, deployed through a ZoneRouterFactory as
-# script/bridge/deploy/DeployZoneRouter.s.sol does. The node runs no Zone, so this checks deployment,
+# CardFactory.deploy) for LocalSmoke's ZoneRouterFactory, and its Spend-mode ZoneRouter, deployed
+# through that factory as script/bridge/deploy/DeployZoneRouter.s.sol does. The node runs no Zone, so this checks deployment,
 # the router's fixed mode and its messenger gate; e2e/cards/bridge runs a private spend through them.
+ROUTER_FACTORY=$(json routerFactory)
 release() {
-  DEPLOYER_PRIVATE_KEY=$DEPLOYER_PK TEMPO_RPC_URL=$RPC FACTORY=$FACTORY SPENDER_ID=$SPENDER_ID \
+  DEPLOYER_PRIVATE_KEY=$DEPLOYER_PK TEMPO_RPC_URL=$RPC FACTORY=$FACTORY SPENDER_ID=$SPENDER_ID ROUTER_FACTORY=$ROUTER_FACTORY \
     RESULT=reports/smoke-release.json script/bridge/deploy/release.sh local bridgeProgram "$@" \
     >reports/smoke-release.log 2>&1 || { tail -40 reports/smoke-release.log; exit 1; }
 }
@@ -179,21 +180,16 @@ release --broadcast
 expect "a second release reuses all three" "$(rjson '.contracts | map(.existed) | join(",")')" "true,true,true"
 rm -rf foundry-pp
 lower() { tr '[:upper:]' '[:lower:]' <<<"$1"; }
-expect "card factory deployed the program" "$(cast call "$CARD_FACTORY" "isSpender(address)(bool)" "$RELEASED" --rpc-url "$RPC")" true
+expect "card factory deployed the program" "$(cast call "$CARD_FACTORY" "isDeployed(address)(bool)" "$RELEASED" --rpc-url "$RPC")" true
+expect "program's routers" "$(lower "$(cast call "$RELEASED" "ROUTER_FACTORY()(address)" --rpc-url "$RPC")")" "$(lower "$ROUTER_FACTORY")"
 expect "program's provider" "$(lower "$(cast call "$RELEASED" "PROVIDER()(address)" --rpc-url "$RPC")")" "$(lower "$PROVIDER")"
 expect "program pays through the clone" "$(lower "$(cast call "$RELEASED" "PAYOUT_TARGET()(address)" --rpc-url "$RPC")")" "$(lower "$CLONE")"
 expect "provider's program" "$(cast call "$PROVIDER" "SPENDER_ID()(bytes32)" --rpc-url "$RPC")" "$SPENDER_ID"
 expect "provider's factory" "$(lower "$(cast call "$PROVIDER" "FACTORY()(address)" --rpc-url "$RPC")")" "$(lower "$FACTORY")"
 
-create() {
-  # Flags first: --constructor-args takes every argument after it.
-  forge create --rpc-url "$RPC" --private-key "$DEPLOYER_PK" --broadcast "$@" 2>&1 | awk '/Deployed to:/ {print $3}'
-}
 ZERO=0x0000000000000000000000000000000000000000
 ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
 MODE_T="(uint32,uint8,address,address,address,bytes32,address[])"
-ROUTER_FACTORY=$(create ../zone-router/src/ZoneRouterFactory.sol:ZoneRouterFactory)
-[[ -n "$ROUTER_FACTORY" ]] || { echo "router factory not deployed"; exit 1; }
 MODE="(1,4,$ZERO,$ZERO,$ZERO,$ZERO32,[$RELEASED])"
 cast send "$ROUTER_FACTORY" "deploy($MODE_T)" "$MODE" --private-key "$DEPLOYER_PK" --rpc-url "$RPC" >/dev/null
 ROUTER=$(cast call "$ROUTER_FACTORY" "predict($MODE_T)(address)" "$MODE" --rpc-url "$RPC")
