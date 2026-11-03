@@ -29,8 +29,8 @@ contract RainLifecycleTest is RainEnv {
 
     function test_pooledCollateral_settlesPrivateSpendsTogether() public {
         usd.mint(router, 100e6);
-        _routerSettle(address(usd), 10e6, _stableSpend(programCollateral, programCollateralIndex, 10e6, "p.1"));
-        _routerSettle(address(usd), 15e6, _stableSpend(programCollateral, programCollateralIndex, 15e6, "p.2"));
+        _routerSpend(address(usd), 10e6, _stableSpend(programCollateral, programCollateralIndex, 10e6, "p.1"));
+        _routerSpend(address(usd), 15e6, _stableSpend(programCollateral, programCollateralIndex, 15e6, "p.2"));
         uint256 expiresAt = block.timestamp + 1 hours;
         bytes memory sig = _signPay(rainBackend, programCollateral, address(usd), 25e6, expiresAt, "pay.pool");
         vm.prank(rainBackend);

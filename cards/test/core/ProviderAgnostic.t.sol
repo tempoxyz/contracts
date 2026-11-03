@@ -84,7 +84,7 @@ contract ProviderAgnosticTest is CoreEnv {
     function test_publicAndPrivate_withASecondProvider() public {
         program = walletProgram;
         _publicSpend(alice, _walletSpend(10e6));
-        _routerSettle(address(usd), 12e6, _walletSpend(12e6));
+        _routerSpend(address(usd), 12e6, _walletSpend(12e6));
         assertEq(usd.balanceOf(settlementWallet), 22e6);
     }
 
@@ -104,7 +104,7 @@ contract ProviderAgnosticTest is CoreEnv {
         usd.transfer(address(program), 1e6);
         vm.prank(router);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, s.program));
-        program.settle(address(usd), 1e6, abi.encode(s));
+        program.spendFrom(address(usd), 1e6, abi.encode(s));
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, s.program));
         program.spend(s);

@@ -35,7 +35,7 @@ runs every capability module's inspection, is exported from `/node` only.
 - the state-changing entry points of every deployment and localnet fixture script as
   `<name>ScriptAbi`; and
 - the derived `earnEngineBindingAbi`; and
-- `zoneRouterAbi`, `zoneRouterFactoryAbi`, the `sendSettlerAbi` settler, and
+- `zoneRouterAbi`, `zoneRouterFactoryAbi`, the `sendSpenderAbi` spender, and
   the `zone-router/` deployment scripts' `<name>ScriptAbi`, from the separate
   [`zone-router/`](../zone-router/README.md) project.
 

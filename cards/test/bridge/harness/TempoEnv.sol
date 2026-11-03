@@ -68,7 +68,7 @@ abstract contract TempoEnv is Test {
     // Bridge card program.
     SpenderFactory internal bridgeFactory;
     address internal spender; // the program's spender clone
-    /// @dev The program's CardSpender: the public spend entry point and the Zone router's settler.
+    /// @dev The program's CardSpender: the public spend entry point and the Zone router's spender.
     CardFactory internal cardFactory;
     BridgeProvider internal provider;
     CardSpender internal program;

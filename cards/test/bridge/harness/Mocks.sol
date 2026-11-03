@@ -200,7 +200,7 @@ contract OlderCardSpender {
         PROVIDER = provider_;
     }
 
-    function settle(address, uint256, bytes calldata) external { }
+    function spendFrom(address, uint256, bytes calldata) external { }
 }
 
 /// @notice A replacement handler that takes a spend's amount from the payer but pays the
@@ -251,9 +251,9 @@ contract ChangeKeepingSpendHandler is SpenderBase {
     }
 }
 
-/// @notice A settler that hands the router's whole input back and pays nothing.
-contract ReturningSettler {
-    function settle(address token, uint256 maxInput, bytes calldata) external {
+/// @notice A spender that hands the router's whole input back and pays nothing.
+contract ReturningSpender {
+    function spendFrom(address token, uint256 maxInput, bytes calldata) external {
         IERC20(token).transfer(msg.sender, maxInput);
     }
 }

@@ -26,13 +26,13 @@ import { IRainCollateralFactory } from "../../src/providers/rain/IRain.sol";
 import { RainProvider } from "../../src/providers/rain/RainProvider.sol";
 import { RainStack } from "./RainStack.sol";
 
-/// @notice A card program's router mode: Spend only on `zoneId`, through `settler` (the program) alone.
+/// @notice A card program's router mode: Spend only on `zoneId`, through `spender` (the program) alone.
 library CardSpendMode {
-    function forSettler(uint32 zoneId, address settler) internal pure returns (ZoneRouter.Mode memory mode) {
+    function forSpender(uint32 zoneId, address spender) internal pure returns (ZoneRouter.Mode memory mode) {
         mode.zoneId = zoneId;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = settler;
+        mode.spenders = new address[](1);
+        mode.spenders[0] = spender;
     }
 }
 
@@ -41,7 +41,7 @@ library CardSpendMode {
 ///         RAIN_ADMIN as its controller admin; the cardholder's own collateral contract and the program's
 ///         pooled one; with EARN=true, a Tempo Earn vault over pathUSD; a `RainProvider` accepting pathUSD
 ///         (and that vault); a `CardFactory` and the program's `CardSpender` over that provider; the
-///         Spend-mode `ZoneRouter` for ZONE_ID listing the program as its settler; and a TIP-20 to launch
+///         Spend-mode `ZoneRouter` for ZONE_ID listing the program as its spender; and a TIP-20 to launch
 ///         the Zone with. Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY, CARDHOLDER, PARTNER, ZONE_ID, EARN
 ///         and OUT.
 contract CardsE2EDeploy is Script, RainStack {
@@ -70,7 +70,7 @@ contract CardsE2EDeploy is Script, RainStack {
         CardFactory cardFactory = new CardFactory();
         address program = cardFactory.deploy("cards-e2e.rain", ICardProvider(address(provider)));
         ZoneRouterFactory routerFactory = new ZoneRouterFactory();
-        address router = routerFactory.deploy(CardSpendMode.forSettler(uint32(zoneIdValue), program));
+        address router = routerFactory.deploy(CardSpendMode.forSpender(uint32(zoneIdValue), program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
         address zoneToken = StdPrecompiles.TIP20_FACTORY
             .createToken(

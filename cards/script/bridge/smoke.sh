@@ -198,7 +198,7 @@ MODE="(1,4,$ZERO,$ZERO,$ZERO,$ZERO32,[$RELEASED])"
 cast send "$ROUTER_FACTORY" "deploy($MODE_T)" "$MODE" --private-key "$DEPLOYER_PK" --rpc-url "$RPC" >/dev/null
 ROUTER=$(cast call "$ROUTER_FACTORY" "predict($MODE_T)(address)" "$MODE" --rpc-url "$RPC")
 expect "router deployed by the factory" "$(cast call "$ROUTER_FACTORY" "isRouter(address)(bool)" "$ROUTER" --rpc-url "$RPC")" true
-expect "router lists the program" "$(cast call "$ROUTER" "isSettler(address)(bool)" "$RELEASED" --rpc-url "$RPC")" true
+expect "router lists the program" "$(cast call "$ROUTER" "isSpender(address)(bool)" "$RELEASED" --rpc-url "$RPC")" true
 expect "router takes Spend only" "$(cast call "$ROUTER" "enabledOps()(uint8)" --rpc-url "$RPC")" 4
 expect_revert "$(cast sig "NotZoneMessenger()")" cast call "$ROUTER" \
   "onWithdrawalReceived(uint32,address,bytes32,address,uint128,bytes)(bytes4)" 1 "$ZERO" \

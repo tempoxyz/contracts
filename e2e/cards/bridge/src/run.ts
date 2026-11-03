@@ -12,7 +12,7 @@
 //
 // 1. Prepares the target: its L1, its Zone, and a Bridge card program with the "TS" handler, its
 //    CardSpender (over a BridgeProvider for the clone, deployed by the CardFactory), and a
-//    factory-deployed ZoneRouter in Spend mode listing that program as its settler
+//    factory-deployed ZoneRouter in Spend mode listing that program as its spender
 //    (script/bridge/ZoneE2EDeploy.s.sol). The local target then requires script/bridge/deploy/Preflight.s.sol to
 //    report no todo.
 // 2. The cardholder moves pathUSD into the Zone with an encrypted deposit and authorizes Bridge's
@@ -109,7 +109,7 @@ const PUBLIC_SPENDS = 5
 /** Exit code when the private steps could not run because the Zone lacks a role grant. */
 const EXIT_BLOCKED = 3
 
-/** `CardSpend`, as a public spend passes it and a private one's settler data encodes it. */
+/** `CardSpend`, as a public spend passes it and a private one's spender data encodes it. */
 type SpendArgs = {
   program: Address
   token: Address
@@ -123,7 +123,7 @@ type SpendArgs = {
 }
 
 /**
- * The router's Spend callback data: the CardSpender, as the router's settler, may use at most
+ * The router's Spend callback data: the CardSpender, as the router's spender, may use at most
  * `maxInput` of the withdrawal, paying `spend`, and the router returns the rest to `recipient` in
  * the Zone.
  */
@@ -141,9 +141,9 @@ function spendCallback(
   return encodeAbiParameters(spendDataType, [
     {
       op: OP_SPEND,
-      settler: program.program,
+      spender: program.program,
       maxInput,
-      settlerData: encodeAbiParameters(cardSpendType, [spend]),
+      spenderData: encodeAbiParameters(cardSpendType, [spend]),
       zoneReturn: {
         keyIndex: recipient.keyIndex,
         encrypted: {
@@ -170,7 +170,7 @@ function routerSpent(logs: readonly Log[], router: Address) {
   assert(events.length === 1, 'one router Spent event in the settlement transaction')
   return (
     events[0] as unknown as {
-      args: { settler: Address; token: Address; used: bigint; change: bigint }
+      args: { spender: Address; token: Address; used: bigint; change: bigint }
     }
   ).args
 }
@@ -366,7 +366,7 @@ async function privateSpend(t: Prepared, run: string) {
     l1Public.getContractEvents({
       address: program.program,
       abi: programArtifact.abi,
-      eventName: 'SpendSettled',
+      eventName: 'InputSpent',
       args: { ref: spendRef },
       fromBlock,
     })
@@ -391,7 +391,7 @@ async function privateSpend(t: Prepared, run: string) {
     100,
   )
   const l1SettlementMs = since(zoneAccepted)
-  assert(events.length === 1, 'one CardSpender SpendSettled event for the spend')
+  assert(events.length === 1, 'one CardSpender InputSpent event for the spend')
   const settlementReceipt = await l1Public.getTransactionReceipt({
     hash: events[0]!.transactionHash,
   })
@@ -406,7 +406,7 @@ async function privateSpend(t: Prepared, run: string) {
     'the CardSpender recorded a private spend paid by the router, not the cardholder',
   )
   assert(
-    isAddressEqual(routed.settler, program.program) &&
+    isAddressEqual(routed.spender, program.program) &&
       routed.used === SPEND &&
       routed.change === change,
     `the router used exactly the spend and returned the change (used ${routed.used}, change ${routed.change})`,
@@ -759,14 +759,14 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
       l1Public.getContractEvents({
         address: program.program,
         abi: programArtifact.abi,
-        eventName: 'SpendSettled',
+        eventName: 'InputSpent',
         args: { ref: spendRef },
         fromBlock,
       }),
     (found) => found.length > 0,
     250,
   )
-  assert(events.length === 1, 'one CardSpender SpendSettled event for the Earn spend')
+  assert(events.length === 1, 'one CardSpender InputSpent event for the Earn spend')
   const settlement = await l1Public.getTransactionReceipt({ hash: events[0]!.transactionHash })
   assert(
     paid(settlement.logs, program.settlement, earn.asset),
@@ -783,7 +783,7 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   )
   const routed = routerSpent(settlement.logs, program.router)
   assert(
-    isAddressEqual(routed.settler, program.program) &&
+    isAddressEqual(routed.spender, program.program) &&
       routed.used === settled.inputConsumed &&
       routed.change === input - settled.inputConsumed,
     'the router used what the CardSpender consumed and returned the rest of the withdrawal',

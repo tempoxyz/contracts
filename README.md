@@ -25,7 +25,7 @@ local Tempo L1 and Zone, E2E harness, and CI.
 | Project                      | What it is                                                                                                    |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | [earn/](earn/)               | [Tempo Earn](earn/README.md): vault-backed stablecoin yield, the EarnVault and EarnShare                      |
-| [zone-router/](zone-router/) | [Zone router](zone-router/README.md): Zone withdrawal callbacks for Earn and spends, its factory and settlers |
+| [zone-router/](zone-router/) | [Zone router](zone-router/README.md): Zone withdrawal callbacks for Earn and spends, its factory and spenders |
 | [cards/](cards/)             | [Card spend](cards/README.md): provider-agnostic contracts and each card provider's (Bridge, Rain)            |
 
 `earn/` imports neither of the others; `zone-router/` imports Earn's interfaces; `cards/` imports
@@ -37,7 +37,7 @@ this repository.
 | Path                       | Purpose                                                                                                                                               |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `earn/`                    | Tempo Earn Foundry project (solar): contracts, tests, Forge scripts.                                                                                  |
-| `zone-router/`             | Zone router Foundry project (solc): `ZoneRouter`, its factory, `ISpendSettler` and `SendSettler`.                                                     |
+| `zone-router/`             | Zone router Foundry project (solc): `ZoneRouter`, its factory, `ISpender` and `SendSpender`.                                                          |
 | `cards/`                   | Card spend Foundry project (solc): our core (`src/core/`) and per-provider contracts (`src/providers/`), providers' vendored code (`vendor/`), tests. |
 | `deployments/`             | Shared deployment lifecycle (`pnpm earn`), releases, ABIs, and modules (`modules/earn/`, `modules/zone-router/`); the `@tempoxyz/contracts` package.  |
 | `profiles/`                | Deployment profiles and generated records.                                                                                                            |

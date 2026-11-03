@@ -14,7 +14,7 @@ import {
   type Hex,
 } from 'viem'
 
-import { deployRouterReleaseScriptAbi, sendSettlerAbi, zoneRouterAbi } from '../abis/index.js'
+import { deployRouterReleaseScriptAbi, sendSpenderAbi, zoneRouterAbi } from '../abis/index.js'
 import { hostedEnvironments } from '../chain/tempo.js'
 import {
   deployRelease,
@@ -32,10 +32,10 @@ const routerReleaseScript = 'script/deploy/DeployRouterRelease.s.sol:DeployRoute
 /**
  * The router project's ownerless contracts, released by the shared factory release engine
  * (`deployRelease`) from their own CLI and workflow, and named by no registry entry: the
- * ZoneRouterFactory, a SendSettler, and a ZoneRouter its factory creates. A card program's
- * settler, its CardSpender, releases with the card integration (cards/script/bridge/deploy/release.sh).
+ * ZoneRouterFactory, a SendSpender, and a ZoneRouter its factory creates. A card program's
+ * spender, its CardSpender, releases with the card integration (cards/script/bridge/deploy/release.sh).
  */
-export const routerReleaseKinds = ['zoneRouterFactory', 'sendSettler', 'zoneRouter'] as const
+export const routerReleaseKinds = ['zoneRouterFactory', 'sendSpender', 'zoneRouter'] as const
 
 export type RouterReleaseKind = (typeof routerReleaseKinds)[number]
 
@@ -47,7 +47,7 @@ export type ZoneRouterMode = {
   privateAsset: Address
   pool: Address
   customerId: Hex
-  settlers: Address[]
+  spenders: Address[]
 }
 
 /** A router release's validated parameters, as the result records them. */
@@ -77,10 +77,10 @@ function noParameters(kind: string, value: unknown): Record<string, never> {
 }
 
 /**
- * A SendSettler's optional conversion binding: the vault whose asset it converts at par, the pool and
- * the customer ID all set, or all omitted for a settler that never converts.
+ * A SendSpender's optional conversion binding: the vault whose asset it converts at par, the pool and
+ * the customer ID all set, or all omitted for a spender that never converts.
  */
-export function parseSendSettlerParameters(value: unknown) {
+export function parseSendSpenderParameters(value: unknown) {
   const parameters = object(value, 'parameters')
   const keys = ['vault', 'pool', 'customerId'] as const
   exactKeys(parameters, 'parameters', [], keys)
@@ -101,7 +101,7 @@ export function parseSendSettlerParameters(value: unknown) {
 /**
  * A ZoneRouter's factory and mode. The constructor's rules that need no chain state hold at parse
  * time: Earn bindings exactly with Deposit or Redeem (a pool and customer ID together), and distinct
- * settlers exactly with Spend. Omitted bindings and settlers are zero.
+ * spenders exactly with Spend. Omitted bindings and spenders are zero.
  */
 export function parseZoneRouterParameters(value: unknown) {
   const parameters = object(value, 'parameters')
@@ -110,7 +110,7 @@ export function parseZoneRouterParameters(value: unknown) {
   const path = 'parameters.mode'
   const mode = object(parameters.mode, path)
   const earnKeys = ['earnVault', 'privateAsset', 'pool', 'customerId'] as const
-  exactKeys(mode, path, ['zoneId', 'enabledOps'], [...earnKeys, 'settlers'])
+  exactKeys(mode, path, ['zoneId', 'enabledOps'], [...earnKeys, 'spenders'])
   const zoneId = positiveInteger(mode.zoneId, `${path}.zoneId`)
   if (zoneId > 0xffff_ffff) throw new Error(`${path}.zoneId must fit uint32`)
   const enabledOps = positiveInteger(mode.enabledOps, `${path}.enabledOps`)
@@ -124,7 +124,7 @@ export function parseZoneRouterParameters(value: unknown) {
     privateAsset: zeroAddress,
     pool: zeroAddress,
     customerId: zeroHash,
-    settlers: [],
+    spenders: [],
   }
   if (enabledOps & (opDeposit | opRedeem)) {
     result.earnVault = address(mode.earnVault, `${path}.earnVault`)
@@ -141,22 +141,22 @@ export function parseZoneRouterParameters(value: unknown) {
     if (key) throw new Error(`${path}.${key} is not supported without deposit or redeem`)
   }
   const spends = (enabledOps & opSpend) !== 0
-  if (spends !== (mode.settlers !== undefined)) {
+  if (spends !== (mode.spenders !== undefined)) {
     throw new Error(
       spends
-        ? `${path}.settlers is required with spend`
-        : `${path}.settlers is not supported without spend`,
+        ? `${path}.spenders is required with spend`
+        : `${path}.spenders is not supported without spend`,
     )
   }
   if (spends) {
-    const settlers = mode.settlers
-    if (!Array.isArray(settlers) || settlers.length === 0) {
-      throw new Error(`${path}.settlers must list at least one settler`)
+    const spenders = mode.spenders
+    if (!Array.isArray(spenders) || spenders.length === 0) {
+      throw new Error(`${path}.spenders must list at least one spender`)
     }
-    result.settlers = settlers.map((settler, index) =>
-      address(settler, `${path}.settlers[${index}]`),
+    result.spenders = spenders.map((spender, index) =>
+      address(spender, `${path}.spenders[${index}]`),
     )
-    unique(result.settlers, `${path}.settlers settler`)
+    unique(result.spenders, `${path}.spenders spender`)
   }
   return { factory, mode: result }
 }
@@ -169,7 +169,7 @@ function nonzeroBytes32(value: unknown, path: string): Hex {
 
 /**
  * The release entry point and the contract it creates for one router release kind on one chain,
- * with the kind's parameters: a SendSettler's optional conversion binding and a ZoneRouter's
+ * with the kind's parameters: a SendSpender's optional conversion binding and a ZoneRouter's
  * factory and mode. The ZoneRouterFactory takes none.
  */
 export function planRouterRelease(
@@ -195,27 +195,27 @@ export function planRouterRelease(
       forgeArguments: [],
     }
   }
-  if (kind === 'sendSettler') {
-    const settler = parseSendSettlerParameters(parameters)
+  if (kind === 'sendSpender') {
+    const spender = parseSendSpenderParameters(parameters)
     return {
       kind,
       project: 'zone-router',
       script: routerReleaseScript,
-      parameters: settler,
+      parameters: spender,
       calldata: encodeFunctionData({
         abi: deployRouterReleaseScriptAbi,
-        functionName: 'sendSettler',
-        args: [expectedChainId, settler.vault, settler.pool, settler.customerId],
+        functionName: 'sendSpender',
+        args: [expectedChainId, spender.vault, spender.pool, spender.customerId],
       }),
       contracts: [
         {
-          name: 'SendSettler',
-          contract: 'src/settlers/SendSettler.sol:SendSettler',
+          name: 'SendSpender',
+          contract: 'src/spenders/SendSpender.sol:SendSpender',
           constructorArgs: () =>
-            encodeAbiParameters(constructorInputs(sendSettlerAbi), [
-              settler.vault,
-              settler.pool,
-              settler.customerId,
+            encodeAbiParameters(constructorInputs(sendSpenderAbi), [
+              spender.vault,
+              spender.pool,
+              spender.customerId,
             ]),
         },
       ],
@@ -253,7 +253,7 @@ export function planRouterRelease(
 const unknownRouterRelease = (kind: string) =>
   new Error(
     kind === 'bridgeSettler'
-      ? "Unknown router release bridgeSettler; a card program's settler is its CardSpender, which releases with the card integration (cards/script/bridge/deploy/release.sh <network> bridgeProgram)"
+      ? "Unknown router release bridgeSettler; a card program's spender is its CardSpender, which releases with the card integration (cards/script/bridge/deploy/release.sh <network> bridgeProgram)"
       : `Unknown router release ${kind}; expected one of ${routerReleaseKinds.join(', ')} (Earn's factory releases run with pnpm factory-release)`,
   )
 
@@ -292,10 +292,10 @@ const usage =
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
   `  release: ${routerReleaseKinds.join(' | ')}\n` +
   '  parameters (JSON object; only these kinds take any):\n' +
-  '    sendSettler: {} for a settler that never converts, or {"vault": <address>, "pool": <address>,\n' +
+  '    sendSpender: {} for a spender that never converts, or {"vault": <address>, "pool": <address>,\n' +
   '                "customerId": <bytes32>} for one that converts the vault asset at par\n' +
   '    zoneRouter: {"factory": <address>, "mode": {"zoneId", "enabledOps", "earnVault", "privateAsset",\n' +
-  '                "pool", "customerId", "settlers"}}; bindings and settlers default to zero and []\n' +
+  '                "pool", "customerId", "spenders"}}; bindings and spenders default to zero and []\n' +
   "Earn's factory releases run with pnpm factory-release."
 
 /** CLI boundary; reads DEPLOYER_PRIVATE_KEY and the optional TEMPO_RPC_* from the environment. */

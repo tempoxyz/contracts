@@ -5,7 +5,7 @@ import { console2 } from "forge-std/Script.sol";
 
 import { ZoneRouter } from "../../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../src/ZoneRouterFactory.sol";
-import { SendSettler } from "../../src/settlers/SendSettler.sol";
+import { SendSpender } from "../../src/spenders/SendSpender.sol";
 // Earn's own DeterministicRelease, reached through the existing `tempo-earn/` (earn/src/) remapping: a new
 // remapping would change every router contract's metadata hash, and so its bytecode and address.
 import { DeterministicRelease } from "tempo-earn/../script/deploy/DeterministicRelease.sol";
@@ -14,7 +14,7 @@ import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVe
 
 /// @notice Release entry points for the router project's ownerless contracts, which Zone Router Release
 ///         deploys like Earn's shared factories (docs/deployment/deployment.md#zone-router-releases).
-///         The ZoneRouterFactory and each SendSettler are created through the CREATE2
+///         The ZoneRouterFactory and each SendSpender are created through the CREATE2
 ///         deployer with Earn's release salt (DeterministicRelease); a ZoneRouter is created by its
 ///         factory, at the address its mode fixes. Each entry point reuses a contract that already exists, so whoever
 ///         deploys the same release lands at the same address.
@@ -51,26 +51,26 @@ contract DeployRouterReleaseScript is DeterministicRelease {
         console2.log("ZONE_ROUTER_FACTORY_ADDRESS", address(factory));
     }
 
-    /// @notice An ownerless SendSettler; `vault`, `pool` and `customerId` are all zero for one that never
+    /// @notice An ownerless SendSpender; `vault`, `pool` and `customerId` are all zero for one that never
     ///         converts, or all set for one that converts `vault`'s asset at par through `pool`.
-    function sendSettler(uint256 expectedChainId, IEarnVault vault, IPropAMMVenue pool, bytes32 customerId)
+    function sendSpender(uint256 expectedChainId, IEarnVault vault, IPropAMMVenue pool, bytes32 customerId)
         external
         release(expectedChainId)
-        returns (SendSettler settler)
+        returns (SendSpender spender)
     {
         address predicted = _releaseAddress(
-            abi.encodePacked(type(SendSettler).creationCode, abi.encode(vault, pool, customerId))
+            abi.encodePacked(type(SendSpender).creationCode, abi.encode(vault, pool, customerId))
         );
-        settler = predicted.code.length == 0
-            ? new SendSettler{ salt: RELEASE_SALT }(vault, pool, customerId)
-            : SendSettler(predicted);
-        if (address(settler) != predicted) revert DeploymentVerificationFailed();
-        _requireCode(address(settler));
+        spender = predicted.code.length == 0
+            ? new SendSpender{ salt: RELEASE_SALT }(vault, pool, customerId)
+            : SendSpender(predicted);
+        if (address(spender) != predicted) revert DeploymentVerificationFailed();
+        _requireCode(address(spender));
         if (
-            address(settler.convertVault()) != address(vault) || address(settler.pool()) != address(pool)
-                || settler.customerId() != customerId
+            address(spender.convertVault()) != address(vault) || address(spender.pool()) != address(pool)
+                || spender.customerId() != customerId
         ) revert BindingFailed();
-        console2.log("SEND_SETTLER_ADDRESS", address(settler));
+        console2.log("SEND_SPENDER_ADDRESS", address(spender));
     }
 
     /// @notice The router `factory` deploys for `mode`, unless the factory already deployed it.
@@ -94,7 +94,7 @@ contract DeployRouterReleaseScript is DeterministicRelease {
             router.allowedZoneId() != mode.zoneId || router.enabledOps() != mode.enabledOps
                 || router.earnVault() != mode.earnVault || router.privateAsset() != mode.privateAsset
                 || address(router.pool()) != mode.pool || router.customerId() != mode.customerId
-                || keccak256(abi.encode(router.settlers())) != keccak256(abi.encode(mode.settlers))
+                || keccak256(abi.encode(router.spenders())) != keccak256(abi.encode(mode.spenders))
         ) revert BindingFailed();
     }
 

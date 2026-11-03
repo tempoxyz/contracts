@@ -3,15 +3,15 @@ pragma solidity ^0.8.36;
 
 import { ZoneRouter } from "../../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../src/ZoneRouterFactory.sol";
-import { ISpendSettler } from "../../src/interfaces/ISpendSettler.sol";
+import { ISpender } from "../../src/interfaces/ISpender.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "earn-test/helpers/EarnRouterTestBase.sol";
 import { SingleZoneEarnRouter } from "tempo-earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev A listed settler that the Earn-op suites never reach; it only makes a mode with Spend valid.
-contract IdleSettler is ISpendSettler {
+/// @dev A listed spender that the Earn-op suites never reach; it only makes a mode with Spend valid.
+contract IdleSpender is ISpender {
     error Unexpected();
 
-    function settle(address, uint256, bytes calldata) external pure {
+    function spendFrom(address, uint256, bytes calldata) external pure {
         revert Unexpected();
     }
 }
@@ -23,7 +23,7 @@ contract IdleSettler is ISpendSettler {
 ///      Spend also enabled (ops 7).
 abstract contract ZoneRouterEarnTestBase is EarnRouterTestBase {
     ZoneRouterFactory internal factory;
-    IdleSettler internal idleSettler;
+    IdleSpender internal idleSpender;
     ZoneRouter internal zoneRouter;
 
     /// @dev Earn owns the pinned DirectPropAMM fixture; this project reads it from there.
@@ -34,7 +34,7 @@ abstract contract ZoneRouterEarnTestBase is EarnRouterTestBase {
     function setUp() public virtual override {
         super.setUp();
         factory = new ZoneRouterFactory();
-        idleSettler = new IdleSettler();
+        idleSpender = new IdleSpender();
     }
 
     /// @dev Whether this suite's routers also enable Spend.
@@ -55,8 +55,8 @@ abstract contract ZoneRouterEarnTestBase is EarnRouterTestBase {
         mode.privateAsset = privateAsset;
         mode.pool = pool;
         mode.customerId = customerId;
-        mode.settlers = new address[](spends ? 1 : 0);
-        if (spends) mode.settlers[0] = address(idleSettler);
+        mode.spenders = new address[](spends ? 1 : 0);
+        if (spends) mode.spenders[0] = address(idleSpender);
     }
 
     /// @dev Deploys a Zone A Earn-mode router through the factory and points the base helpers at it.

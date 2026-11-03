@@ -4,7 +4,7 @@ pragma solidity ^0.8.36;
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import { IERC20Allowance } from "./interfaces/IERC20Allowance.sol";
-import { ISpendSettler } from "./interfaces/ISpendSettler.sol";
+import { ISpender } from "./interfaces/ISpender.sol";
 import { IZonePortalFees } from "./interfaces/IZonePortalFees.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
@@ -21,11 +21,11 @@ import {
 
 /// @title ZoneRouter
 /// @notice Ownerless router for one Zone's withdrawal callbacks: Earn deposits and redemptions, and spends
-///         through settlers fixed at deployment.
+///         through spenders fixed at deployment.
 /// @dev Specified in docs/zone-router/zone-router.md. Every setting is fixed by the constructor; a different
 ///      mode is a new router. Ops 0 and 1 keep SingleZoneEarnRouter's callback layout and behavior. Op 2
-///      (Spend) transfers exactly the sender's `maxInput` to a listed settler, measures what it used once
-///      the settler hands back the rest, and returns the change to the source Zone, so no settler can take
+///      (Spend) transfers exactly the sender's `maxInput` to a listed spender, measures what it used once
+///      the spender hands back the rest, and returns the change to the source Zone, so no spender can take
 ///      more than the sender allowed.
 contract ZoneRouter is IWithdrawalReceiver {
     enum Op {
@@ -40,8 +40,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     uint8 private constant ALL_OPS = OP_DEPOSIT | OP_REDEEM | OP_SPEND;
 
     /// @notice A router's complete, immutable configuration.
-    /// @dev Earn ops require the Earn bindings and forbid them otherwise; Spend requires settlers and
-    ///      forbids them otherwise. Settler order is part of the mode and so of its factory address.
+    /// @dev Earn ops require the Earn bindings and forbid them otherwise; Spend requires spenders and
+    ///      forbids them otherwise. Spender order is part of the mode and so of its factory address.
     struct Mode {
         uint32 zoneId;
         uint8 enabledOps;
@@ -49,7 +49,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         address privateAsset;
         address pool;
         bytes32 customerId;
-        address[] settlers;
+        address[] spenders;
     }
 
     /// @notice Ops 0 and 1: encrypted return data without a caller-selected Portal.
@@ -77,12 +77,12 @@ contract ZoneRouter is IWithdrawalReceiver {
         uint128 maxDepositFee;
     }
 
-    /// @notice Op 2: the settler, the most input it may use, its own data, and the change return.
+    /// @notice Op 2: the spender, the most input it may use, its own data, and the change return.
     struct SpendData {
         Op op;
-        address settler;
+        address spender;
         uint128 maxInput;
-        bytes settlerData;
+        bytes spenderData;
         SpendReturn zoneReturn;
     }
 
@@ -112,9 +112,9 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @notice Whether the private asset is the pool's base token; false without a pool.
     bool public immutable privateAssetIsBase;
 
-    /// @notice Settlers Spend may use, written once by the constructor.
-    mapping(address settler => bool listed) public isSettler;
-    address[] private settlerList;
+    /// @notice Spenders Spend may use, written once by the constructor.
+    mapping(address spender => bool listed) public isSpender;
+    address[] private spenderList;
 
     bool private transient locked;
 
@@ -137,7 +137,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         bytes32 zoneDepositHash
     );
     /// @notice A Spend settled. Carries no senderTag, action ID or Zone account.
-    event Spent(address indexed settler, address indexed token, uint256 used, uint256 change, bytes32 zoneDepositHash);
+    event Spent(address indexed spender, address indexed token, uint256 used, uint256 change, bytes32 zoneDepositHash);
 
     error AmountOverflow();
     error BadFlow();
@@ -152,8 +152,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     error InvalidPrivateAsset();
     error InvalidReturnToken();
     error InvalidRoutePair();
-    error InvalidSettlement();
-    error InvalidSettlers();
+    error InvalidSpend();
+    error InvalidSpenders();
     error InvalidSourcePortal();
     error NotZoneMessenger();
     error OpDisabled();
@@ -161,7 +161,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     error ResidualBalance();
     error TokenCallFailed();
     error TokenCallFalse();
-    error UnknownSettler();
+    error UnknownSpender();
     error WrongInputToken();
     error WrongSourceZone();
     error ZeroAddress();
@@ -199,21 +199,21 @@ contract ZoneRouter is IWithdrawalReceiver {
         privateAssetIsBase = privateIsBase;
 
         bool spends = mode.enabledOps & OP_SPEND != 0;
-        if (spends != (mode.settlers.length != 0)) revert InvalidSettlers();
-        for (uint256 i = 0; i < mode.settlers.length; i++) {
-            address settler = mode.settlers[i];
-            if (settler == address(0) || settler.code.length == 0 || isSettler[settler]) revert InvalidSettlers();
-            isSettler[settler] = true;
-            settlerList.push(settler);
+        if (spends != (mode.spenders.length != 0)) revert InvalidSpenders();
+        for (uint256 i = 0; i < mode.spenders.length; i++) {
+            address spender = mode.spenders[i];
+            if (spender == address(0) || spender.code.length == 0 || isSpender[spender]) revert InvalidSpenders();
+            isSpender[spender] = true;
+            spenderList.push(spender);
         }
 
         allowedZoneId = mode.zoneId;
         enabledOps = mode.enabledOps;
     }
 
-    /// @notice The settlers Spend may use, in deployment order.
-    function settlers() external view returns (address[] memory) {
-        return settlerList;
+    /// @notice The spenders Spend may use, in deployment order.
+    function spenders() external view returns (address[] memory) {
+        return spenderList;
     }
 
     /// @notice Sets the router's standing approval of `token` to its Zone's Portal, which a spend's
@@ -296,21 +296,21 @@ contract ZoneRouter is IWithdrawalReceiver {
     }
 
     function _handleSpend(address sourcePortal, address token, uint128 amount, SpendData memory data) private {
-        if (!isSettler[data.settler]) revert UnknownSettler();
+        if (!isSpender[data.spender]) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
 
         uint256 balanceBefore = IERC20Like(token).balanceOf(address(this));
-        // A transfer instead of an approval: the settler holds no allowance from the router, so it can
-        // never take more than maxInput, and no router -> settler allowance slot is written.
-        _safeTransfer(token, data.settler, data.maxInput);
-        ISpendSettler(data.settler).settle(token, data.maxInput, data.settlerData);
+        // A transfer instead of an approval: the spender holds no allowance from the router, so it can
+        // never take more than maxInput, and no router -> spender allowance slot is written.
+        _safeTransfer(token, data.spender, data.maxInput);
+        ISpender(data.spender).spendFrom(token, data.maxInput, data.spenderData);
         uint256 balanceAfter = IERC20Like(token).balanceOf(address(this));
 
-        // A settler that used nothing, or handed back more than it was sent, must not look settled.
-        if (balanceAfter >= balanceBefore) revert InvalidSettlement();
+        // A spender that used nothing, or handed back more than it was sent, must not look settled.
+        if (balanceAfter >= balanceBefore) revert InvalidSpend();
         uint256 used = balanceBefore - balanceAfter;
-        if (used > data.maxInput) revert InvalidSettlement();
+        if (used > data.maxInput) revert InvalidSpend();
 
         uint256 change = amount - used;
         bytes32 zoneDepositHash;
@@ -331,7 +331,7 @@ contract ZoneRouter is IWithdrawalReceiver {
                     data.zoneReturn.refundRecipient
                 );
         }
-        emit Spent(data.settler, token, used, change, zoneDepositHash);
+        emit Spent(data.spender, token, used, change, zoneDepositHash);
     }
 
     function _handleDeposit(

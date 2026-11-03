@@ -10,7 +10,7 @@ import { ICardProvider } from "./interfaces/ICardProvider.sol";
 ///      program has one address, known in advance through `predict`, whoever deploys it: deploying it again
 ///      returns the existing program, and nobody can take its address with another provider. A program cannot
 ///      be changed; a provider replaces one by deploying a new program. A Zone admin checks a router's
-///      settler's provenance through `isSpender` and `SpenderDeployed`.
+///      spender's provenance through `isSpender` and `SpenderDeployed`.
 contract CardFactory {
     /// @notice Whether this factory deployed `program`.
     mapping(address program => bool deployed) public isSpender;

@@ -366,29 +366,29 @@ pays fees. It shares the network's
 | Release             | Parameters                                                                  | Creates                                                                |
 | ------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `zoneRouterFactory` | None                                                                        | The `ZoneRouterFactory`                                                |
-| `sendSettler`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}` | A `SendSettler`, never converting or converting `vault`'s asset at par |
+| `sendSpender`       | `{}`, or `{"vault": <address>, "pool": <address>, "customerId": <bytes32>}` | A `SendSpender`, never converting or converting `vault`'s asset at par |
 | `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                     | The router `factory.deploy(mode)` creates                              |
 
 A `zoneRouter` mode has `ZoneRouter.Mode`'s fields: `zoneId`, `enabledOps` (deposit 1, redeem 2,
 spend 4), `earnVault` and `privateAsset` (exactly with deposit or redeem), `pool` and `customerId`
-(together, for a converting Earn mode), and `settlers` (exactly with spend; their order is part of
+(together, for a converting Earn mode), and `spenders` (exactly with spend; their order is part of
 the mode). Omitted fields are zero.
 
 ```bash
 pnpm zone-router-release moderato zoneRouter \
-  --parameters '{"factory": "<ZoneRouterFactory>", "mode": {"zoneId": 7, "enabledOps": 4, "settlers": ["<SendSettler>"]}}'
+  --parameters '{"factory": "<ZoneRouterFactory>", "mode": {"zoneId": 7, "enabledOps": 4, "spenders": ["<SendSpender>"]}}'
 ```
 
 [`DeployRouterRelease`](../../zone-router/script/deploy/DeployRouterRelease.s.sol) holds their entry
 points, with the same chain, profile, and deployer checks as `DeployFactoryRelease`. The factory and
-each settler are created through the CREATE2 deployer with Earn's release salt
+each spender are created through the CREATE2 deployer with Earn's release salt
 (`DeterministicRelease`), and a router by its factory at `predict(mode)`, salted by the mode's hash.
-So a `ZoneRouterFactory` or `SendSettler` of the same build and settings, and a
+So a `ZoneRouterFactory` or `SendSpender` of the same build and settings, and a
 `ZoneRouter` of the same factory and mode, lands at the same address whoever deploys it, on every network, and an entry
 point reuses one that exists (a router only if `factory.isRouter` says its factory made it). Forge
 records the router as a contract its factory call created; the command matches it by address and
 checks it like any other creation, then source-verifies it with `abi.encode(mode)` as its
-constructor arguments. A release deploys only: the pool owner still admits a converting settler
+constructor arguments. A release deploys only: the pool owner still admits a converting spender
 or router, and the Zone's Portal administrator a router
 ([Zone router deployment](../zone-router/zone-router.md#deployment)).
 

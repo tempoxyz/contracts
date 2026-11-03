@@ -156,8 +156,8 @@ contract PrivateSpendForkGasTest is Test {
         ZoneRouter.Mode memory mode;
         mode.zoneId = Mainnet.ZONE_ID;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = address(program);
+        mode.spenders = new address[](1);
+        mode.spenders[0] = address(program);
         router = ZoneRouter(routerFactory.deploy(mode));
         driver = new CallbackDriver();
 
@@ -277,9 +277,9 @@ contract PrivateSpendForkGasTest is Test {
         data = abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: address(program),
+                spender: address(program),
                 maxInput: uint128(maxInput),
-                settlerData: abi.encode(spend),
+                spenderData: abi.encode(spend),
                 zoneReturn: ZoneRouter.SpendReturn({
                     keyIndex: IPortalAdmin(Mainnet.PORTAL).encryptionKeyCount() - 1,
                     encrypted: _encrypted(),

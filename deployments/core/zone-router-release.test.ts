@@ -38,7 +38,7 @@ const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
 const bytecode = (contract: string) =>
   `0x6080${Buffer.from(contract.split(':')[1]!).toString('hex')}` as Hex
 const hash = (index: number) => `0x${String(index + 1).repeat(64)}` as Hex
-const spendMode = { zoneId: 7, enabledOps: 4, settlers: [address('5e771e')] }
+const spendMode = { zoneId: 7, enabledOps: 4, spenders: [address('5e771e')] }
 const routerParameters = { factory: address('f1'), mode: spendMode }
 
 describe('planRouterRelease', () => {
@@ -55,15 +55,15 @@ describe('planRouterRelease', () => {
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: factory.calldata }),
     ).toEqual({ functionName: 'zoneRouterFactory', args: [4217n] })
-    const settler = planRouterRelease('sendSettler', 42431)
-    expect(settler.parameters).toEqual({
+    const spender = planRouterRelease('sendSpender', 42431)
+    expect(spender.parameters).toEqual({
       vault: zeroAddress,
       pool: zeroAddress,
       customerId: zeroHash,
     })
     expect(
-      decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: settler.calldata }),
-    ).toEqual({ functionName: 'sendSettler', args: [42431n, zeroAddress, zeroAddress, zeroHash] })
+      decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: spender.calldata }),
+    ).toEqual({ functionName: 'sendSpender', args: [42431n, zeroAddress, zeroAddress, zeroHash] })
     const router = planRouterRelease('zoneRouter', 4217, routerParameters)
     expect(
       decodeFunctionData({ abi: deployRouterReleaseScriptAbi, data: router.calldata }),
@@ -81,13 +81,13 @@ describe('planRouterRelease', () => {
         },
       ],
     })
-    for (const plan of [factory, settler, router]) {
+    for (const plan of [factory, spender, router]) {
       expect(plan.project).toBe('zone-router')
       expect(plan.registryKey).toBeUndefined()
     }
   })
 
-  test('leaves the card program settler to the card integration release', () => {
+  test('leaves the card program spender to the card integration release', () => {
     expect(() => planRouterRelease('bridgeSettler', 4217)).toThrow(
       'cards/script/bridge/deploy/release.sh <network> bridgeProgram',
     )
@@ -96,7 +96,7 @@ describe('planRouterRelease', () => {
   test("refuses Earn's factory releases, pointing to their own CLI", () => {
     for (const kind of ['all', ...factoryReleaseKinds]) {
       expect(() => planRouterRelease(kind, 4217)).toThrow(
-        `Unknown router release ${kind}; expected one of zoneRouterFactory, sendSettler, zoneRouter (Earn's factory releases run with pnpm factory-release)`,
+        `Unknown router release ${kind}; expected one of zoneRouterFactory, sendSpender, zoneRouter (Earn's factory releases run with pnpm factory-release)`,
       )
       expect(() => routerReleaseKindFor(kind)).toThrow('pnpm factory-release')
     }
@@ -115,11 +115,11 @@ describe('release parameters', () => {
     )
   })
 
-  test('a SendSettler converts with a vault, pool and customer ID set together, or not at all', () => {
+  test('a SendSpender converts with a vault, pool and customer ID set together, or not at all', () => {
     const customerId = keccak256(stringToBytes('customer'))
     const binding = { vault: address('ab'), pool: address('aa'), customerId }
     expect(
-      planRouterRelease('sendSettler', 4217, {
+      planRouterRelease('sendSpender', 4217, {
         ...binding,
         vault: address('ab').toLowerCase(),
         pool: address('aa').toLowerCase(),
@@ -127,20 +127,20 @@ describe('release parameters', () => {
     ).toEqual(binding)
     for (const key of ['vault', 'pool', 'customerId'] as const) {
       const { [key]: _, ...partial } = binding
-      expect(() => planRouterRelease('sendSettler', 4217, partial)).toThrow(
+      expect(() => planRouterRelease('sendSpender', 4217, partial)).toThrow(
         'parameters.vault, parameters.pool and parameters.customerId are set together or not at all',
       )
     }
     expect(() =>
-      planRouterRelease('sendSettler', 4217, { ...binding, vault: zeroAddress }),
+      planRouterRelease('sendSpender', 4217, { ...binding, vault: zeroAddress }),
     ).toThrow('parameters.vault must be a nonzero address')
-    expect(() => planRouterRelease('sendSettler', 4217, { ...binding, pool: zeroAddress })).toThrow(
+    expect(() => planRouterRelease('sendSpender', 4217, { ...binding, pool: zeroAddress })).toThrow(
       'parameters.pool must be a nonzero address',
     )
     expect(() =>
-      planRouterRelease('sendSettler', 4217, { ...binding, customerId: zeroHash }),
+      planRouterRelease('sendSpender', 4217, { ...binding, customerId: zeroHash }),
     ).toThrow('parameters.customerId must be a nonzero bytes32')
-    expect(() => planRouterRelease('sendSettler', 4217, { owner: address('aa') })).toThrow(
+    expect(() => planRouterRelease('sendSpender', 4217, { owner: address('aa') })).toThrow(
       'parameters.owner is not supported',
     )
   })
@@ -157,7 +157,7 @@ describe('release parameters', () => {
         ...earn,
         pool: zeroAddress,
         customerId: zeroHash,
-        settlers: [],
+        spenders: [],
       },
     })
     expect(() => planRouterRelease('zoneRouter', 4217, { mode: spendMode })).toThrow(
@@ -183,15 +183,15 @@ describe('release parameters', () => {
       'parameters.mode.earnVault is not supported without deposit or redeem',
     )
     expect(() => plan({ zoneId: 3, enabledOps: 4 })).toThrow(
-      'parameters.mode.settlers is required with spend',
+      'parameters.mode.spenders is required with spend',
     )
-    expect(() => plan({ ...spendMode, settlers: [] })).toThrow('must list at least one settler')
-    expect(() => plan({ zoneId: 3, enabledOps: 1, ...earn, settlers: [address('5')] })).toThrow(
-      'parameters.mode.settlers is not supported without spend',
+    expect(() => plan({ ...spendMode, spenders: [] })).toThrow('must list at least one spender')
+    expect(() => plan({ zoneId: 3, enabledOps: 1, ...earn, spenders: [address('5')] })).toThrow(
+      'parameters.mode.spenders is not supported without spend',
     )
     expect(() =>
-      plan({ ...spendMode, settlers: [address('5'), address('5').toLowerCase()] }),
-    ).toThrow('Duplicate parameters.mode.settlers settler')
+      plan({ ...spendMode, spenders: [address('5'), address('5').toLowerCase()] }),
+    ).toThrow('Duplicate parameters.mode.spenders spender')
     expect(() => plan({ ...spendMode, routeId: 1 })).toThrow(
       'parameters.mode.routeId is not supported',
     )
@@ -199,11 +199,11 @@ describe('release parameters', () => {
 })
 
 describe('predictRelease for router releases', () => {
-  test('a SendSettler is created through the CREATE2 deployer with its settings as arguments', () => {
+  test('a SendSpender is created through the CREATE2 deployer with its settings as arguments', () => {
     const customerId = keccak256(stringToBytes('customer'))
-    const [poolless] = predictRelease(planRouterRelease('sendSettler', 4217), bytecode)
+    const [poolless] = predictRelease(planRouterRelease('sendSpender', 4217), bytecode)
     const [converting] = predictRelease(
-      planRouterRelease('sendSettler', 4217, {
+      planRouterRelease('sendSpender', 4217, {
         vault: address('b1'),
         pool: address('b0'),
         customerId,
@@ -221,7 +221,7 @@ describe('predictRelease for router releases', () => {
         opcode: 'CREATE2',
         from: create2Deployer,
         salt: releaseSalt,
-        bytecode: concatHex([bytecode('src/settlers/SendSettler.sol:SendSettler'), args]),
+        bytecode: concatHex([bytecode('src/spenders/SendSpender.sol:SendSpender'), args]),
       }),
     )
     expect(poolless!.constructorArgs).toBe(

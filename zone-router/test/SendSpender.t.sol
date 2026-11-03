@@ -7,7 +7,7 @@ pragma solidity ^0.8.36;
 import { ZoneRouter } from "../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "../src/interfaces/IAddressRegistry.sol";
-import { SendSettler } from "../src/settlers/SendSettler.sol";
+import { SendSpender } from "../src/spenders/SendSpender.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "earn-test/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "earn-test/helpers/PropAMMEngineMocks.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
@@ -31,7 +31,7 @@ contract ThievingVault {
 }
 
 /// @dev A caller-made "vault" that takes its EarnShare input and pays its asset from its own funds: with a
-///      pair of its choosing it would turn a converting settler into an open par swap through the pool.
+///      pair of its choosing it would turn a converting spender into an open par swap through the pool.
 contract PassThroughVault {
     address public immutable earnShare;
     address public immutable asset;
@@ -77,15 +77,15 @@ contract VirtualAwareToken is MemoMockToken {
     }
 }
 
-contract SendSettlerTest is EarnRouterTestBase {
+contract SendSpenderTest is EarnRouterTestBase {
     bytes32 private constant REF = keccak256("send");
     bytes4 private constant MASTER_ID = 0x12345678;
     address private constant VIRTUAL_TO = address(uint160(0x12345678fDFDfDFdFDfdFdfdFDFd000000000001));
     address private constant UNREGISTERED_VIRTUAL_TO = address(uint160(0x87654321fDfdFdFDfdFDfDfDfdfD000000000001));
 
     IRouterPropAMMPool internal pool;
-    SendSettler internal sends;
-    SendSettler internal plainSends;
+    SendSpender internal sends;
+    SendSpender internal plainSends;
     address internal to = makeAddr("to");
 
     /// @dev Earn owns the pinned DirectPropAMM fixture; this project reads it from there.
@@ -96,10 +96,10 @@ contract SendSettlerTest is EarnRouterTestBase {
     function setUp() public override {
         super.setUp();
         pool = _routerPool(address(alternate), address(assetA));
-        sends = new SendSettler(IEarnVault(address(earnVaultA)), IPropAMMVenue(address(pool)), CUSTOMER_ID);
+        sends = new SendSpender(IEarnVault(address(earnVaultA)), IPropAMMVenue(address(pool)), CUSTOMER_ID);
         pool.setTakerAllowed(address(sends), true);
         pool.setRecipientAllowed(address(sends), true);
-        plainSends = new SendSettler(IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
+        plainSends = new SendSpender(IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
     }
 
     function _send(address token, uint256 amount, address vault) internal view returns (bytes memory) {
@@ -112,7 +112,7 @@ contract SendSettlerTest is EarnRouterTestBase {
         returns (bytes memory)
     {
         return abi.encode(
-            SendSettler.Send({ to: recipient_, token: token, amount: uint128(amount), vault: vault, ref: REF })
+            SendSpender.Send({ to: recipient_, token: token, amount: uint128(amount), vault: vault, ref: REF })
         );
     }
 
@@ -130,12 +130,12 @@ contract SendSettlerTest is EarnRouterTestBase {
         _publicDeposit(address(this), amount);
     }
 
-    function _assertEmpty(SendSettler settler) internal view {
+    function _assertEmpty(SendSpender spender) internal view {
         MemoMockToken[3] memory tokens = [alternate, assetA, earnA];
         for (uint256 i = 0; i < tokens.length; i++) {
-            assertEq(tokens[i].balanceOf(address(settler)), 0);
-            assertEq(tokens[i].allowance(address(settler), address(earnVaultA)), 0);
-            assertEq(tokens[i].allowance(address(settler), address(pool)), 0);
+            assertEq(tokens[i].balanceOf(address(spender)), 0);
+            assertEq(tokens[i].allowance(address(spender), address(earnVaultA)), 0);
+            assertEq(tokens[i].allowance(address(spender), address(pool)), 0);
         }
     }
 
@@ -151,16 +151,16 @@ contract SendSettlerTest is EarnRouterTestBase {
     function testRejectsAPartialConversionBinding() public {
         IEarnVault vault = IEarnVault(address(earnVaultA));
         IPropAMMVenue venue = IPropAMMVenue(address(pool));
-        vm.expectRevert(SendSettler.InvalidPool.selector);
-        new SendSettler(vault, venue, bytes32(0));
-        vm.expectRevert(SendSettler.InvalidPool.selector);
-        new SendSettler(vault, IPropAMMVenue(address(0)), CUSTOMER_ID);
-        vm.expectRevert(SendSettler.InvalidPool.selector);
-        new SendSettler(IEarnVault(address(0)), venue, CUSTOMER_ID);
-        vm.expectRevert(SendSettler.InvalidPool.selector);
-        new SendSettler(IEarnVault(address(0)), IPropAMMVenue(address(0)), CUSTOMER_ID);
-        vm.expectRevert(SendSettler.InvalidVault.selector);
-        new SendSettler(IEarnVault(makeAddr("noVault")), venue, CUSTOMER_ID);
+        vm.expectRevert(SendSpender.InvalidPool.selector);
+        new SendSpender(vault, venue, bytes32(0));
+        vm.expectRevert(SendSpender.InvalidPool.selector);
+        new SendSpender(vault, IPropAMMVenue(address(0)), CUSTOMER_ID);
+        vm.expectRevert(SendSpender.InvalidPool.selector);
+        new SendSpender(IEarnVault(address(0)), venue, CUSTOMER_ID);
+        vm.expectRevert(SendSpender.InvalidPool.selector);
+        new SendSpender(IEarnVault(address(0)), IPropAMMVenue(address(0)), CUSTOMER_ID);
+        vm.expectRevert(SendSpender.InvalidVault.selector);
+        new SendSpender(IEarnVault(makeAddr("noVault")), venue, CUSTOMER_ID);
     }
 
     function testRejectsAPoolThatDoesNotPairTheVaultAssetWithAnotherEqualUnitStablecoin() public {
@@ -172,20 +172,20 @@ contract SendSettlerTest is EarnRouterTestBase {
             address(_routerPool(address(wide), address(assetA)))
         ];
         for (uint256 i = 0; i < pools.length; i++) {
-            vm.expectRevert(SendSettler.InvalidRoutePair.selector);
-            new SendSettler(vault, IPropAMMVenue(pools[i]), CUSTOMER_ID);
+            vm.expectRevert(SendSpender.InvalidRoutePair.selector);
+            new SendSpender(vault, IPropAMMVenue(pools[i]), CUSTOMER_ID);
         }
         // Either side of the pool may be the vault asset.
         IPropAMMVenue quoteSide = IPropAMMVenue(address(_routerPool(address(assetA), address(alternate))));
-        assertEq(new SendSettler(vault, quoteSide, CUSTOMER_ID).parToken(), address(alternate));
+        assertEq(new SendSpender(vault, quoteSide, CUSTOMER_ID).parToken(), address(alternate));
     }
 
     function testSendsAStablecoinAndHandsBackTheRest() public {
         alternate.mint(address(this), 5 * ONE);
         alternate.transfer(address(sends), 5 * ONE);
         vm.expectEmit(true, true, false, true, address(sends));
-        emit SendSettler.SendSettled(REF, to, address(alternate), address(alternate), 3 * ONE, 3 * ONE, 2 * ONE);
-        sends.settle(address(alternate), 5 * ONE, _send(address(alternate), 3 * ONE, address(0)));
+        emit SendSpender.Sent(REF, to, address(alternate), address(alternate), 3 * ONE, 3 * ONE, 2 * ONE);
+        sends.spendFrom(address(alternate), 5 * ONE, _send(address(alternate), 3 * ONE, address(0)));
         assertEq(alternate.balanceOf(to), 3 * ONE);
         assertEq(alternate.balanceOf(address(this)), 2 * ONE);
         _assertEmpty(sends);
@@ -194,7 +194,7 @@ contract SendSettlerTest is EarnRouterTestBase {
     function testSendsEarnShareAsIs() public {
         _shares(4 * ONE);
         earnA.transfer(address(plainSends), 4 * ONE);
-        plainSends.settle(address(earnA), 4 * ONE, _send(address(earnA), 4 * ONE, address(0)));
+        plainSends.spendFrom(address(earnA), 4 * ONE, _send(address(earnA), 4 * ONE, address(0)));
         assertEq(earnA.balanceOf(to), 4 * ONE);
         _assertEmpty(plainSends);
     }
@@ -203,7 +203,7 @@ contract SendSettlerTest is EarnRouterTestBase {
         _shares(10 * ONE);
         uint256 maxShares = earnVaultA.previewWithdraw(3 * ONE) + 2;
         earnA.transfer(address(plainSends), maxShares);
-        plainSends.settle(address(earnA), maxShares, _send(address(assetA), 3 * ONE, address(earnVaultA)));
+        plainSends.spendFrom(address(earnA), maxShares, _send(address(assetA), 3 * ONE, address(earnVaultA)));
         assertEq(assetA.balanceOf(to), 3 * ONE);
         assertEq(earnA.balanceOf(address(this)), 10 * ONE - maxShares + 2);
         _assertEmpty(plainSends);
@@ -213,7 +213,7 @@ contract SendSettlerTest is EarnRouterTestBase {
         _shares(10 * ONE);
         uint256 maxShares = earnVaultA.previewWithdraw(3 * ONE) + 2;
         earnA.transfer(address(sends), maxShares);
-        sends.settle(address(earnA), maxShares, _send(address(alternate), 3 * ONE, address(earnVaultA)));
+        sends.spendFrom(address(earnA), maxShares, _send(address(alternate), 3 * ONE, address(earnVaultA)));
         assertEq(alternate.balanceOf(to), 3 * ONE);
         assertEq(assetA.balanceOf(to), 0);
         _assertEmpty(sends);
@@ -222,8 +222,8 @@ contract SendSettlerTest is EarnRouterTestBase {
     function testCannotConvertWithoutAPool() public {
         _shares(10 * ONE);
         earnA.transfer(address(plainSends), 4 * ONE);
-        vm.expectRevert(SendSettler.ConversionNotAllowed.selector);
-        plainSends.settle(address(earnA), 4 * ONE, _send(address(alternate), 3 * ONE, address(earnVaultA)));
+        vm.expectRevert(SendSpender.ConversionNotAllowed.selector);
+        plainSends.spendFrom(address(earnA), 4 * ONE, _send(address(alternate), 3 * ONE, address(earnVaultA)));
     }
 
     function testAFakeVaultCannotConvertThroughThePool() public {
@@ -231,8 +231,8 @@ contract SendSettlerTest is EarnRouterTestBase {
         PassThroughVault fake = new PassThroughVault(address(junk), address(assetA));
         assetA.mint(address(fake), 3 * ONE);
         junk.mint(address(sends), 3 * ONE);
-        vm.expectRevert(SendSettler.ConversionNotAllowed.selector);
-        sends.settle(address(junk), 3 * ONE, _send(address(alternate), 3 * ONE, address(fake)));
+        vm.expectRevert(SendSpender.ConversionNotAllowed.selector);
+        sends.spendFrom(address(junk), 3 * ONE, _send(address(alternate), 3 * ONE, address(fake)));
     }
 
     function testCannotConvertTheStablecoinBackIntoTheVaultAsset() public {
@@ -240,8 +240,8 @@ contract SendSettlerTest is EarnRouterTestBase {
         PassThroughVault fake = new PassThroughVault(address(junk), address(alternate));
         alternate.mint(address(fake), 3 * ONE);
         junk.mint(address(sends), 3 * ONE);
-        vm.expectRevert(SendSettler.ConversionNotAllowed.selector);
-        sends.settle(address(junk), 3 * ONE, _send(address(assetA), 3 * ONE, address(fake)));
+        vm.expectRevert(SendSpender.ConversionNotAllowed.selector);
+        sends.spendFrom(address(junk), 3 * ONE, _send(address(assetA), 3 * ONE, address(fake)));
     }
 
     function testAnotherVaultCannotConvert() public {
@@ -249,12 +249,12 @@ contract SendSettlerTest is EarnRouterTestBase {
         assetB.approve(address(earnVaultB), 10 * ONE);
         earnVaultB.deposit(10 * ONE, address(this), 10 * ONE);
         earnB.transfer(address(sends), 4 * ONE);
-        vm.expectRevert(SendSettler.ConversionNotAllowed.selector);
-        sends.settle(address(earnB), 4 * ONE, _send(address(alternate), 3 * ONE, address(earnVaultB)));
+        vm.expectRevert(SendSpender.ConversionNotAllowed.selector);
+        sends.spendFrom(address(earnB), 4 * ONE, _send(address(alternate), 3 * ONE, address(earnVaultB)));
         // Its own asset still redeems without the pool.
         uint256 maxShares = earnVaultB.previewWithdraw(3 * ONE) + 2;
         earnB.transfer(address(plainSends), maxShares);
-        plainSends.settle(address(earnB), maxShares, _send(address(assetB), 3 * ONE, address(earnVaultB)));
+        plainSends.spendFrom(address(earnB), maxShares, _send(address(assetB), 3 * ONE, address(earnVaultB)));
         assertEq(assetB.balanceOf(to), 3 * ONE);
     }
 
@@ -263,17 +263,19 @@ contract SendSettlerTest is EarnRouterTestBase {
         address master = _virtualRecipients();
 
         alternate.mint(address(sends), 2 * ONE);
-        sends.settle(address(alternate), 2 * ONE, _sendTo(VIRTUAL_TO, address(alternate), 2 * ONE, address(0)));
+        sends.spendFrom(address(alternate), 2 * ONE, _sendTo(VIRTUAL_TO, address(alternate), 2 * ONE, address(0)));
         assertEq(alternate.balanceOf(master), 2 * ONE);
 
         uint256 maxShares = earnVaultA.previewWithdraw(3 * ONE) + 2;
         earnA.transfer(address(plainSends), maxShares);
-        plainSends.settle(address(earnA), maxShares, _sendTo(VIRTUAL_TO, address(assetA), 3 * ONE, address(earnVaultA)));
+        plainSends.spendFrom(
+            address(earnA), maxShares, _sendTo(VIRTUAL_TO, address(assetA), 3 * ONE, address(earnVaultA))
+        );
         assertEq(assetA.balanceOf(master), 3 * ONE);
 
         maxShares = earnVaultA.previewWithdraw(ONE) + 2;
         earnA.transfer(address(sends), maxShares);
-        sends.settle(address(earnA), maxShares, _sendTo(VIRTUAL_TO, address(alternate), ONE, address(earnVaultA)));
+        sends.spendFrom(address(earnA), maxShares, _sendTo(VIRTUAL_TO, address(alternate), ONE, address(earnVaultA)));
         assertEq(alternate.balanceOf(master), 3 * ONE);
 
         assertEq(alternate.balanceOf(VIRTUAL_TO), 0);
@@ -286,31 +288,31 @@ contract SendSettlerTest is EarnRouterTestBase {
         _virtualRecipients();
         alternate.mint(address(sends), ONE);
         vm.expectRevert(MockAddressRegistry.VirtualAddressUnregistered.selector);
-        sends.settle(address(alternate), ONE, _sendTo(UNREGISTERED_VIRTUAL_TO, address(alternate), ONE, address(0)));
+        sends.spendFrom(address(alternate), ONE, _sendTo(UNREGISTERED_VIRTUAL_TO, address(alternate), ONE, address(0)));
     }
 
     function testRejectsAnInputThatIsNotTheSentTokenOrTheVaultShare() public {
         alternate.mint(address(sends), ONE);
-        vm.expectRevert(abi.encodeWithSelector(SendSettler.WrongInputToken.selector, address(alternate)));
-        sends.settle(address(alternate), ONE, _send(address(assetA), ONE, address(0)));
-        vm.expectRevert(abi.encodeWithSelector(SendSettler.WrongInputToken.selector, address(alternate)));
-        sends.settle(address(alternate), ONE, _send(address(assetA), ONE, address(earnVaultA)));
+        vm.expectRevert(abi.encodeWithSelector(SendSpender.WrongInputToken.selector, address(alternate)));
+        sends.spendFrom(address(alternate), ONE, _send(address(assetA), ONE, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(SendSpender.WrongInputToken.selector, address(alternate)));
+        sends.spendFrom(address(alternate), ONE, _send(address(assetA), ONE, address(earnVaultA)));
     }
 
     function testRejectsASendAboveMaxInputOrWithoutInput() public {
         alternate.mint(address(sends), ONE);
-        vm.expectRevert(SendSettler.InvalidAmount.selector);
-        sends.settle(address(alternate), ONE, _send(address(alternate), 2 * ONE, address(0)));
-        vm.expectRevert(SendSettler.InsufficientInput.selector);
-        sends.settle(address(alternate), 2 * ONE, _send(address(alternate), ONE, address(0)));
+        vm.expectRevert(SendSpender.InvalidAmount.selector);
+        sends.spendFrom(address(alternate), ONE, _send(address(alternate), 2 * ONE, address(0)));
+        vm.expectRevert(SendSpender.InsufficientInput.selector);
+        sends.spendFrom(address(alternate), 2 * ONE, _send(address(alternate), ONE, address(0)));
     }
 
     function testAVaultThatDoesNotPayCannotSettle() public {
         ThievingVault thief = new ThievingVault(address(earnA), address(assetA));
         _shares(4 * ONE);
         earnA.transfer(address(plainSends), 4 * ONE);
-        vm.expectRevert(SendSettler.DestinationNotPaid.selector);
-        plainSends.settle(address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(thief)));
+        vm.expectRevert(SendSpender.DestinationNotPaid.selector);
+        plainSends.spendFrom(address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(thief)));
     }
 
     function testSendsThroughARouterAndReturnsTheChangeToTheZone() public {
@@ -318,17 +320,17 @@ contract SendSettlerTest is EarnRouterTestBase {
         ZoneRouter.Mode memory mode;
         mode.zoneId = ZONE_A;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = address(sends);
+        mode.spenders = new address[](1);
+        mode.spenders[0] = address(sends);
         ZoneRouter zr = ZoneRouter(factory.deploy(mode));
 
         alternate.mint(address(zr), 5 * ONE);
         bytes memory data = abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: address(sends),
+                spender: address(sends),
                 maxInput: uint128(4 * ONE),
-                settlerData: _send(address(alternate), 3 * ONE, address(0)),
+                spenderData: _send(address(alternate), 3 * ONE, address(0)),
                 zoneReturn: ZoneRouter.SpendReturn({
                     keyIndex: 1, encrypted: _encrypted(), refundRecipient: refundRecipient, maxDepositFee: 0
                 })

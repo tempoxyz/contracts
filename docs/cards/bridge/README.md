@@ -34,7 +34,7 @@ existing card contracts. It is one provider of the [card spend project](../../..
 - Public: one transaction from the cardholder's account approves the exact amount to the program,
   calls `program.spend` and clears the approval.
 - Private: Bridge's Zone key withdraws to the Zone's `ZoneRouter`, which transfers the
-  cardholder's `maxInput` to the program, its settler. The program settles the spend through
+  cardholder's `maxInput` to the program, its spender. The program settles the spend through
   the clone and hands back what it did not use, and the router returns the change to the Zone, so
   the settlement names no cardholder. Bridge approves the card on the Zone receipt, and the platform
   reserve covers a settlement that fails after approval.
@@ -171,7 +171,7 @@ cards/script/bridge/        Deploy scripts, release, real-node smoke test, Zone 
 e2e/cards/bridge/           The Zone E2E against a local or hosted target
 ```
 
-The router and the `ISpendSettler` interface `CardSpender` implements come from `zone-router/src/`;
+The router and the `ISpender` interface `CardSpender` implements come from `zone-router/src/`;
 Earn comes from `earn/src/`.
 
 ## Documents

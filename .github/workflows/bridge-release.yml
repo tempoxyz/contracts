@@ -69,7 +69,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # CardSpender imports the settler interface from zone-router/src/ and Earn's from earn/src/, which need
+      # CardSpender imports the spender interface from zone-router/src/ and Earn's from earn/src/, which need
       # no dependency of their own.
       - name: Install the cards project's Solidity dependencies
         working-directory: .

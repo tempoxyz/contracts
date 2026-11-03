@@ -13,7 +13,7 @@ import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/
 
 /// @dev A plain ERC-20 whose transfers out of one address can be made to report success without moving
 ///      anything, to leave a residual balance behind.
-contract SettlerMockToken {
+contract SpenderMockToken {
     mapping(address account => uint256) public balanceOf;
     mapping(address owner => mapping(address spender => uint256)) public allowance;
     address public stuck;
@@ -76,8 +76,8 @@ contract MockClone {
         lastCall = data;
         Spend memory spend = abi.decode(data[4:], (Spend));
         address input = spend.fromVault == 0 ? spend.token : MockVault(spend.vault).earnShare();
-        if (consume != 0) SettlerMockToken(input).transferFrom(msg.sender, address(this), consume);
-        if (pay != 0) SettlerMockToken(spend.token).transfer(spend.destination, pay);
+        if (consume != 0) SpenderMockToken(input).transferFrom(msg.sender, address(this), consume);
+        if (pay != 0) SpenderMockToken(spend.token).transfer(spend.destination, pay);
     }
 
     function publicGetCall(bytes calldata data) external view returns (bytes memory) {
@@ -145,8 +145,8 @@ contract BridgeProviderMockTest is Test {
     bytes32 internal constant SPENDER_ID = keccak256("program");
     uint256 internal constant AMOUNT = 25e6;
 
-    SettlerMockToken internal usd;
-    SettlerMockToken internal share;
+    SpenderMockToken internal usd;
+    SpenderMockToken internal share;
     MockVault internal vault;
     MockClone internal clone;
     MockFactory internal factory;
@@ -156,8 +156,8 @@ contract BridgeProviderMockTest is Test {
     address internal destination = makeAddr("destination");
 
     function setUp() public {
-        usd = new SettlerMockToken();
-        share = new SettlerMockToken();
+        usd = new SpenderMockToken();
+        share = new SpenderMockToken();
         vault = new MockVault(address(share), address(usd));
         clone = new MockClone();
         clone.setVaultAnswer(abi.encode(abi.encode(true)), false);
@@ -256,7 +256,7 @@ contract BridgeProviderMockTest is Test {
         clone.configure(AMOUNT, AMOUNT);
         usd.mint(address(program), AMOUNT);
         vm.prank(router);
-        program.settle(address(usd), AMOUNT, abi.encode(_spend(address(usd))));
+        program.spendFrom(address(usd), AMOUNT, abi.encode(_spend(address(usd))));
         assertEq(usd.allowance(address(program), address(clone)), type(uint256).max - AMOUNT);
     }
 
@@ -267,9 +267,9 @@ contract BridgeProviderMockTest is Test {
 
         usd.mint(address(program), maxInput);
         vm.expectEmit(address(program));
-        emit CardSpender.SpendSettled(spend.ref, address(usd), AMOUNT, 7e6);
+        emit CardSpender.InputSpent(spend.ref, address(usd), AMOUNT, 7e6);
         vm.prank(router);
-        program.settle(address(usd), maxInput, abi.encode(spend));
+        program.spendFrom(address(usd), maxInput, abi.encode(spend));
 
         assertEq(usd.balanceOf(destination), AMOUNT);
         assertEq(usd.balanceOf(router), 7e6);
@@ -286,7 +286,7 @@ contract BridgeProviderMockTest is Test {
         spend.vault = address(vault);
         spend.fromVault = AMOUNT;
 
-        _settle(address(share), maxInput, maxInput, spend);
+        _spendFrom(address(share), maxInput, maxInput, spend);
 
         assertEq(usd.balanceOf(destination), AMOUNT);
         assertEq(share.balanceOf(router), 6e6);
@@ -322,7 +322,7 @@ contract BridgeProviderMockTest is Test {
     function testRefusesAnotherProgram() public {
         CardSpend memory spend = _spend(address(usd));
         spend.program = makeAddr("other program");
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(usd), AMOUNT, spend, abi.encodeWithSelector(CardSpender.WrongProgram.selector, spend.program)
         );
     }
@@ -330,7 +330,7 @@ contract BridgeProviderMockTest is Test {
     function testRefusesADestinationTheFactoryDoesNotAuthorize() public {
         CardSpend memory spend = _spend(address(usd));
         spend.destination = makeAddr("elsewhere");
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(usd),
             AMOUNT,
             spend,
@@ -343,14 +343,14 @@ contract BridgeProviderMockTest is Test {
         CardSpend memory spend = _spend(address(usd));
         spend.vault = address(vault);
         spend.fromVault = AMOUNT;
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(share), AMOUNT, spend, abi.encodeWithSelector(CardSpender.VaultNotAllowed.selector, address(vault))
         );
     }
 
     function testRefusesAWrongInputToken() public {
         // A stablecoin spend must be funded in its token.
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(share),
             AMOUNT,
             _spend(address(usd)),
@@ -361,22 +361,22 @@ contract BridgeProviderMockTest is Test {
         CardSpend memory spend = _spend(address(usd));
         spend.vault = address(vault);
         spend.fromVault = AMOUNT;
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(usd), AMOUNT, spend, abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(usd))
         );
 
         // A spend split between stablecoin and shares cannot come from one withdrawal.
         spend.fromVault = AMOUNT / 2;
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(share), AMOUNT, spend, abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(share))
         );
     }
 
     function testRefusesAnInvalidAmount() public {
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(usd), 0, _spend(address(usd)), abi.encodeWithSelector(CardSpender.InvalidAmount.selector)
         );
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(usd),
             uint256(type(uint128).max) + 1,
             _spend(address(usd)),
@@ -389,12 +389,12 @@ contract BridgeProviderMockTest is Test {
         usd.mint(address(program), AMOUNT - 1);
         vm.prank(router);
         vm.expectRevert(CardSpender.InsufficientInput.selector);
-        program.settle(address(usd), AMOUNT, abi.encode(_spend(address(usd))));
+        program.spendFrom(address(usd), AMOUNT, abi.encode(_spend(address(usd))));
     }
 
     function testRefusesASpendThatDidNotPayTheDestination() public {
         clone.configure(AMOUNT, AMOUNT - 1);
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(usd),
             AMOUNT,
             _spend(address(usd)),
@@ -404,8 +404,8 @@ contract BridgeProviderMockTest is Test {
 
     function testRefusesASpendThatConsumedNothing() public {
         clone.configure(0, AMOUNT);
-        _expectSettleRevert(
-            address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(CardSpender.NothingSettled.selector)
+        _expectSpendRevert(
+            address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(CardSpender.NothingSpent.selector)
         );
     }
 
@@ -413,7 +413,7 @@ contract BridgeProviderMockTest is Test {
         // The hand-back reports success without moving the unused input.
         clone.configure(AMOUNT, AMOUNT);
         usd.setStuck(address(program));
-        _expectSettleRevert(
+        _expectSpendRevert(
             address(usd),
             AMOUNT + 1,
             _spend(address(usd)),
@@ -425,13 +425,13 @@ contract BridgeProviderMockTest is Test {
     function testRefusesATokenCallThatDoesNotSucceed() public {
         clone.configure(AMOUNT, AMOUNT);
         usd.setRefuseApprovals(true);
-        _expectSettleRevert(address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(bytes4(0x3e3f8f73)));
+        _expectSpendRevert(address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(bytes4(0x3e3f8f73)));
     }
 
     function testKeepsTokensHeldBeforeTheCallOutOfTheSettlement() public {
         usd.mint(address(program), 3e6);
         clone.configure(AMOUNT, AMOUNT);
-        _settle(address(usd), AMOUNT + 1e6, AMOUNT + 1e6, _spend(address(usd)));
+        _spendFrom(address(usd), AMOUNT + 1e6, AMOUNT + 1e6, _spend(address(usd)));
         assertEq(usd.balanceOf(router), 1e6);
         assertEq(usd.balanceOf(address(program)), 3e6);
     }
@@ -458,20 +458,18 @@ contract BridgeProviderMockTest is Test {
     }
 
     /// @dev Sends `sent` to the program as the router does, then settles with `maxInput`.
-    function _settle(address token, uint256 sent, uint256 maxInput, CardSpend memory spend) internal {
-        SettlerMockToken(token).mint(router, sent);
+    function _spendFrom(address token, uint256 sent, uint256 maxInput, CardSpend memory spend) internal {
+        SpenderMockToken(token).mint(router, sent);
         vm.startPrank(router);
-        SettlerMockToken(token).transfer(address(program), sent);
-        program.settle(token, maxInput, abi.encode(spend));
+        SpenderMockToken(token).transfer(address(program), sent);
+        program.spendFrom(token, maxInput, abi.encode(spend));
         vm.stopPrank();
     }
 
-    function _expectSettleRevert(address token, uint256 maxInput, CardSpend memory spend, bytes memory reason)
-        internal
-    {
-        SettlerMockToken(token).mint(address(program), maxInput);
+    function _expectSpendRevert(address token, uint256 maxInput, CardSpend memory spend, bytes memory reason) internal {
+        SpenderMockToken(token).mint(address(program), maxInput);
         vm.prank(router);
         vm.expectRevert(reason);
-        program.settle(token, maxInput, abi.encode(spend));
+        program.spendFrom(token, maxInput, abi.encode(spend));
     }
 }

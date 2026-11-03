@@ -10,7 +10,7 @@ documentation edit.
 | Project                                 | Start here                                                                                                                                 |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | [Tempo Earn](../earn/README.md)         | [Earn documentation](earn/README.md): architecture, engines, modules, integrations, audits, glossary                                       |
-| [Zone router](../zone-router/README.md) | [Zone router](zone-router/zone-router.md): `ZoneRouter`, its factory and settlers                                                          |
+| [Zone router](../zone-router/README.md) | [Zone router](zone-router/zone-router.md): `ZoneRouter`, its factory and spenders                                                          |
 | [Card spend](../cards/README.md)        | [Design](cards/design.md): the provider-agnostic core; providers: [Bridge](cards/bridge/README.md#documents), [Rain](cards/rain/README.md) |
 
 ## Document ownership

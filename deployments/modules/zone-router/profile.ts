@@ -38,14 +38,14 @@ export type ZoneRouterEarn =
 
 /**
  * One `ZoneRouter` mode and the factory that deploys it. The constructor's rules hold at parse time:
- * `earn` exactly when Deposit or Redeem is enabled, `settlers` exactly when Spend is.
+ * `earn` exactly when Deposit or Redeem is enabled, `spenders` exactly when Spend is.
  */
 export type ZoneRouterIntent = {
   zoneId: number
   ops: ZoneRouterOp[]
   earn?: ZoneRouterEarn
-  /** Settlers Spend may use; their order is part of the mode and so of the router's address. */
-  settlers?: Address[]
+  /** Spenders Spend may use; their order is part of the mode and so of the router's address. */
+  spenders?: Address[]
   /** An existing `ZoneRouterFactory`; the lifecycle deploys one when omitted. */
   factory?: Address
 }
@@ -119,7 +119,7 @@ export function zoneRouterMode(profile: ZoneRouterFields, outputs: Record<string
     privateAsset: router.earn?.privateAsset ?? zeroAddress,
     pool: router.earn?.pool ?? zeroAddress,
     customerId: router.earn?.customerId ?? zeroHash,
-    settlers: router.settlers ?? [],
+    spenders: router.spenders ?? [],
   }
 }
 
@@ -140,7 +140,7 @@ export function zoneRouterModeHash(mode: ZoneRouterMode): Hex {
 }
 
 function parseZoneRouter(value: Record<string, unknown>, path: string): ZoneRouterIntent {
-  exactKeys(value, path, ['zoneId', 'ops'], ['earn', 'settlers', 'factory'])
+  exactKeys(value, path, ['zoneId', 'ops'], ['earn', 'spenders', 'factory'])
   const zoneId = positiveInteger(value.zoneId, `${path}.zoneId`)
   if (zoneId > 4_294_967_295) throw new Error(`${path}.zoneId must fit uint32`)
   const ops = array(value.ops, `${path}.ops`).map((op, index) =>
@@ -160,22 +160,22 @@ function parseZoneRouter(value: Record<string, unknown>, path: string): ZoneRout
     )
   }
   const spends = ops.includes('spend')
-  if (spends !== (value.settlers !== undefined)) {
+  if (spends !== (value.spenders !== undefined)) {
     throw new Error(
       spends
-        ? `${path}.settlers is required with spend`
-        : `${path}.settlers is not supported without spend`,
+        ? `${path}.spenders is required with spend`
+        : `${path}.spenders is not supported without spend`,
     )
   }
-  const settlers =
-    value.settlers === undefined
+  const spenders =
+    value.spenders === undefined
       ? undefined
-      : array(value.settlers, `${path}.settlers`).map((settler, index) =>
-          address(settler, `${path}.settlers[${index}]`),
+      : array(value.spenders, `${path}.spenders`).map((spender, index) =>
+          address(spender, `${path}.spenders[${index}]`),
         )
-  if (settlers) {
-    if (settlers.length === 0) throw new Error(`${path}.settlers must list at least one settler`)
-    unique(settlers, `${path}.settlers settler`)
+  if (spenders) {
+    if (spenders.length === 0) throw new Error(`${path}.spenders must list at least one spender`)
+    unique(spenders, `${path}.spenders spender`)
   }
   return {
     zoneId,
@@ -183,7 +183,7 @@ function parseZoneRouter(value: Record<string, unknown>, path: string): ZoneRout
     ...(value.earn === undefined
       ? {}
       : { earn: parseEarn(object(value.earn, `${path}.earn`), `${path}.earn`) }),
-    ...(settlers ? { settlers } : {}),
+    ...(spenders ? { spenders } : {}),
     ...(value.factory === undefined ? {} : { factory: address(value.factory, `${path}.factory`) }),
   }
 }

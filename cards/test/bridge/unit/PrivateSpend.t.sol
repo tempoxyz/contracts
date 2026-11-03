@@ -11,7 +11,7 @@ import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { ChangeKeepingSpendHandler, DivertingSpendHandler, ReturningSettler } from "../harness/Mocks.sol";
+import { ChangeKeepingSpendHandler, DivertingSpendHandler, ReturningSpender } from "../harness/Mocks.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 
 /// @notice Private spend through the program's Spend-mode ZoneRouter and its CardSpender, on a
@@ -35,7 +35,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         uint256 spent = zoneBefore - _zoneBalance(address(usd), alice);
         assertEq(spent, 40e6 + withdrawalFee + portal.calculateDepositFee(), "amount plus fees");
         assertTrue(_lastSettlementLogged(ZoneRouter.Spent.selector), "router logged");
-        assertTrue(_lastSettlementLogged(CardSpender.SpendSettled.selector), "program logged");
+        assertTrue(_lastSettlementLogged(CardSpender.InputSpent.selector), "program logged");
         _assertNothingHeld(address(usd));
     }
 
@@ -94,7 +94,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         vm.expectEmit(true, true, true, true, address(program));
         emit CardSpender.CardSpent(spend.ref, address(zoneRouter), settlement, address(usd), 40e6, 0, 0, true);
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardSpender.SpendSettled(spend.ref, address(usd), 40e6, 0);
+        emit CardSpender.InputSpent(spend.ref, address(usd), 40e6, 0);
         // The Zone deposit hash is the portal's; the rest is checked.
         vm.expectEmit(true, true, false, false, address(zoneRouter));
         emit ZoneRouter.Spent(address(program), address(usd), 40e6, change, bytes32(0));
@@ -145,7 +145,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         );
     }
 
-    /// @notice A `maxInput` above the withdrawn input is refused before the settler is called.
+    /// @notice A `maxInput` above the withdrawn input is refused before the spender is called.
     function test_maxInputAboveTheInputBounces() public {
         uint256 input = 10e6 + _change();
         _assertBouncesWith(
@@ -178,22 +178,22 @@ contract PrivateSpendTest is PrivateSpendFixture {
         assertLe(zoneBefore - _zoneBalance(address(usd), mallory), fees, "input bounced back");
     }
 
-    /// @notice A settler the router was not deployed with cannot be named, even a program over the same
+    /// @notice A spender the router was not deployed with cannot be named, even a program over the same
     ///         provider, here one under another program ID.
-    function test_unlistedSettlerBounces() public {
+    function test_unlistedSpenderBounces() public {
         address other = cardFactory.deploy(keccak256("another.program"), provider);
         assertTrue(other != address(program));
         CardSpend memory spend = _spend(10e6, settlement);
         spend.token = address(usd);
         _assertBouncesWith(
-            10e6 + _change(), _spendData(other, 10e6, spend), abi.encodeWithSelector(ZoneRouter.UnknownSettler.selector)
+            10e6 + _change(), _spendData(other, 10e6, spend), abi.encodeWithSelector(ZoneRouter.UnknownSpender.selector)
         );
     }
 
-    /// @notice A listed settler that hands all its input back cannot make a spend look settled: the
+    /// @notice A listed spender that hands all its input back cannot make a spend look settled: the
     ///         router measures its own balance, so the spend bounces.
-    function test_settlerThatUsesNothingBounces() public {
-        ReturningSettler idle = new ReturningSettler();
+    function test_spenderThatUsesNothingBounces() public {
+        ReturningSpender idle = new ReturningSpender();
         address[] memory list = new address[](2);
         list[0] = address(program);
         list[1] = address(idle);
@@ -203,7 +203,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         _assertBouncesWith(
             10e6 + _change(),
             _spendData(address(idle), 10e6, spend),
-            abi.encodeWithSelector(ZoneRouter.InvalidSettlement.selector)
+            abi.encodeWithSelector(ZoneRouter.InvalidSpend.selector)
         );
     }
 
@@ -260,7 +260,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         assertEq(lastCallbackErrors[0], err, "callback error");
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertFalse(_lastSettlementLogged(ZoneRouter.Spent.selector));
-        assertFalse(_lastSettlementLogged(CardSpender.SpendSettled.selector));
+        assertFalse(_lastSettlementLogged(CardSpender.InputSpent.selector));
         assertEq(
             zoneBefore - _zoneBalance(address(usd), alice),
             zoneOutbox.calculateWithdrawalFee(callbackGas),

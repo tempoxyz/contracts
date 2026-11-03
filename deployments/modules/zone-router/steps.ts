@@ -133,7 +133,7 @@ export const deployZoneRouter = defineFoundryStep({
     return zoneRouterBound(client, profile, outputs)
   },
   // Anyone can deploy a mode through the factory, such as Bridge's spend script listing the same
-  // settler; the factory then returns that router, and its RouterDeployed event names the creation.
+  // spender; the factory then returns that router, and its RouterDeployed event names the creation.
   adopt: adoptPredictedZoneRouter,
 })
 

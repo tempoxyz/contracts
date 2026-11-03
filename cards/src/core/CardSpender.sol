@@ -5,7 +5,7 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
-import { ISpendSettler } from "zone-router/interfaces/ISpendSettler.sol";
+import { ISpender } from "zone-router/interfaces/ISpender.sol";
 
 import { CardSpend } from "./CardSpend.sol";
 import { ICardProvider, ICardProviderPayout } from "./interfaces/ICardProvider.sol";
@@ -14,8 +14,8 @@ import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 /// @title CardSpender
 /// @notice One card program on Tempo, for any provider: the stable address cardholders' access keys and a
 ///         Zone's router point at. It pays a spend from stablecoin, Tempo Earn shares, or both, to a
-///         destination its provider authorizes, publicly (`spend`) or from a Zone withdrawal (`settle`, as the
-///         router's settler). Specified in docs/cards/design.md.
+///         destination its provider authorizes, publicly (`spend`) or from a Zone withdrawal (`spendFrom`, as the
+///         router's spender). Specified in docs/cards/design.md.
 /// @dev Deployed by `CardFactory` with a fixed provider, and never changed: no owner, setter or pause of its
 ///      own, so a provider replaces a program by deploying another and stops one through its own `paused()`.
 ///      It holds nothing between spends. Two ways to pay, fixed by the provider:
@@ -24,7 +24,7 @@ import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 ///        payer (Bridge, through its spender clone and "TS" handler, so Bridge's factory governs the spend).
 ///      Either way it checks the destination got exactly the amount, and a payout can use at most the
 ///      spend's input: what the payer approved (public) or the withdrawal's `maxInput` (private).
-contract CardSpender is ISpendSettler {
+contract CardSpender is ISpender {
     /// @dev Solady's `TransferFailed()` and `ApproveFailed()`.
     bytes4 private constant TRANSFER_FAILED = 0x90b8ec18;
     bytes4 private constant APPROVE_FAILED = 0x3e3f8f73;
@@ -41,7 +41,7 @@ contract CardSpender is ISpendSettler {
     error InsufficientInput();
     error InvalidAmount();
     error NotProvider();
-    error NothingSettled();
+    error NothingSpent();
     error ProgramPaused();
     error Reentrancy();
     error ResidualBalance(address token);
@@ -64,7 +64,7 @@ contract CardSpender is ISpendSettler {
         bool isPrivate
     );
     /// @dev A private spend's input accounting, as the Zone router sees it. No cardholder or `senderTag`.
-    event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned);
+    event InputSpent(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned);
 
     modifier nonReentrant() {
         if (_locked) revert Reentrancy();
@@ -103,13 +103,13 @@ contract CardSpender is ISpendSettler {
         emit CardSpent(s.ref, msg.sender, s.destination, s.token, s.amount, s.fromVault, sharesUsed, false);
     }
 
-    /// @inheritdoc ISpendSettler
-    /// @notice A private spend, as a Zone router's settler: pays `abi.decode(data, (CardSpend))` from the
+    /// @inheritdoc ISpender
+    /// @notice A private spend, as a Zone router's spender: pays `abi.decode(data, (CardSpend))` from the
     ///         `maxInput` of `token` the caller transferred first, and returns the rest in the same call.
     /// @dev Permissionless: the router authenticates the Zone withdrawal and caps the input; anyone else can
     ///      only pay a destination the provider allows for a private spend, from their own funds. One
     ///      withdrawal carries one token: the stablecoin, or the shares of the vault that funds all of it.
-    function settle(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
+    function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
         CardSpend memory s = abi.decode(data, (CardSpend));
         if (maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
         address input;
@@ -129,14 +129,14 @@ contract CardSpender is ISpendSettler {
         uint256 destinationBefore = IERC20Like(s.token).balanceOf(s.destination);
 
         if (PAYOUT_TARGET == address(0)) {
-            _settleDirect(s, maxInput);
+            _spendDirect(s, maxInput);
         } else {
             _payout(s, token, address(0));
         }
 
         // Reverts if the payout took more than maxInput, since the balance would be below the baseline.
         uint256 unused = IERC20Like(token).balanceOf(address(this)) - baseline;
-        if (unused >= maxInput) revert NothingSettled();
+        if (unused >= maxInput) revert NothingSpent();
         if (IERC20Like(s.token).balanceOf(s.destination) != destinationBefore + s.amount) {
             revert DestinationNotCredited();
         }
@@ -147,7 +147,7 @@ contract CardSpender is ISpendSettler {
         emit CardSpent(
             s.ref, msg.sender, s.destination, s.token, s.amount, s.fromVault, s.fromVault == 0 ? 0 : consumed, true
         );
-        emit SpendSettled(s.ref, token, consumed, unused);
+        emit InputSpent(s.ref, token, consumed, unused);
     }
 
     // ------------------------------------------------------------------
@@ -218,7 +218,7 @@ contract CardSpender is ISpendSettler {
     }
 
     /// @dev A direct private spend, from the `maxInput` the router sent.
-    function _settleDirect(CardSpend memory s, uint256 maxInput) private {
+    function _spendDirect(CardSpend memory s, uint256 maxInput) private {
         if (s.fromVault == 0) {
             if (s.amount > maxInput) revert InsufficientInput();
             SafeTransferLib.safeTransfer(s.token, s.destination, s.amount);

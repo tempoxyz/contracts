@@ -342,7 +342,7 @@ describe('Earn deployment lifecycle', () => {
         zoneRouter: {
           zoneId: 7,
           ops: ['spend'],
-          settlers: [address('5e')],
+          spenders: [address('5e')],
           factory: address('fa'),
         },
       },
@@ -424,7 +424,7 @@ describe('Earn deployment lifecycle', () => {
         zoneRouter: {
           zoneId: 7,
           ops: ['spend'],
-          settlers: [address('5e')],
+          spenders: [address('5e')],
           factory: address('fa'),
         },
       },

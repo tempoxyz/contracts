@@ -6,7 +6,7 @@ import { Test } from "forge-std/Test.sol";
 import { DeployRouterReleaseScript } from "../script/deploy/DeployRouterRelease.s.sol";
 import { ZoneRouter } from "../src/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../src/ZoneRouterFactory.sol";
-import { SendSettler } from "../src/settlers/SendSettler.sol";
+import { SendSpender } from "../src/spenders/SendSpender.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IPropAMMVenue } from "tempo-earn/interfaces/external/propamm/IPropAMMVenue.sol";
 
@@ -35,31 +35,31 @@ contract DeployRouterReleaseTest is Test {
         assertEq(address(script.zoneRouterFactory(block.chainid)), address(factory));
     }
 
-    function testSendSettlerIsDeterministicPerSettingAndReused() public {
-        SendSettler settler = _plainSettler();
+    function testSendSpenderIsDeterministicPerSettingAndReused() public {
+        SendSpender spender = _plainSpender();
         assertEq(
-            address(settler),
+            address(spender),
             vm.computeCreate2Address(
                 RELEASE_SALT,
                 keccak256(
-                    abi.encodePacked(type(SendSettler).creationCode, abi.encode(address(0), address(0), bytes32(0)))
+                    abi.encodePacked(type(SendSpender).creationCode, abi.encode(address(0), address(0), bytes32(0)))
                 ),
                 CREATE2_DEPLOYER
             )
         );
-        assertEq(address(settler.convertVault()), address(0));
-        assertEq(address(settler.pool()), address(0));
-        assertEq(address(_plainSettler()), address(settler));
+        assertEq(address(spender.convertVault()), address(0));
+        assertEq(address(spender.pool()), address(0));
+        assertEq(address(_plainSpender()), address(spender));
 
-        // Its settings are constructor arguments, so a converting settler is another contract, and the
+        // Its settings are constructor arguments, so a converting spender is another contract, and the
         // constructor still refuses a partial binding (the CREATE2 deployer drops its revert data).
         vm.expectRevert(bytes(""));
-        script.sendSettler(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), keccak256("customer"));
+        script.sendSpender(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), keccak256("customer"));
     }
 
     function testZoneRouterIsTheFactorysRouterForTheModeAndReused() public {
         ZoneRouterFactory factory = script.zoneRouterFactory(block.chainid);
-        ZoneRouter.Mode memory mode = _spendMode(_plainSettler());
+        ZoneRouter.Mode memory mode = _spendMode(_plainSpender());
         ZoneRouter router = script.zoneRouter(block.chainid, factory, mode);
         assertEq(address(router), factory.predict(mode));
         assertEq(
@@ -71,13 +71,13 @@ contract DeployRouterReleaseTest is Test {
             )
         );
         assertTrue(factory.isRouter(address(router)));
-        assertEq(router.settlers(), mode.settlers);
+        assertEq(router.spenders(), mode.spenders);
         assertEq(address(script.zoneRouter(block.chainid, factory, mode)), address(router));
     }
 
     function testZoneRouterRefusesAnAddressWithoutAFactory() public {
         ZoneRouterFactory missing = ZoneRouterFactory(makeAddr("missing"));
-        ZoneRouter.Mode memory mode = _spendMode(SendSettler(makeAddr("settler")));
+        ZoneRouter.Mode memory mode = _spendMode(SendSpender(makeAddr("spender")));
         vm.expectRevert(abi.encodeWithSelector(DeployRouterReleaseScript.NoFactory.selector, address(missing)));
         script.zoneRouter(block.chainid, missing, mode);
     }
@@ -90,14 +90,14 @@ contract DeployRouterReleaseTest is Test {
         script.zoneRouterFactory(block.chainid + 1);
     }
 
-    function _plainSettler() internal returns (SendSettler) {
-        return script.sendSettler(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
+    function _plainSpender() internal returns (SendSpender) {
+        return script.sendSpender(block.chainid, IEarnVault(address(0)), IPropAMMVenue(address(0)), bytes32(0));
     }
 
-    function _spendMode(SendSettler settler) internal pure returns (ZoneRouter.Mode memory mode) {
+    function _spendMode(SendSpender spender) internal pure returns (ZoneRouter.Mode memory mode) {
         mode.zoneId = 7;
         mode.enabledOps = uint8(1 << 2);
-        mode.settlers = new address[](1);
-        mode.settlers[0] = address(settler);
+        mode.spenders = new address[](1);
+        mode.spenders[0] = address(spender);
     }
 }

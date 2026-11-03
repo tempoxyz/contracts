@@ -26,7 +26,7 @@ import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice Read-only check of one card program before private spend goes live: the "TS" handler,
 ///         the program and its destination, the Zone's portal and token, the program's Spend-mode
-///         router and the `CardSpender` it lists as its settler, and the Zone roles of the router, the
+///         router and the `CardSpender` it lists as its spender, and the Zone roles of the router, the
 ///         refund recipient and the program wallet that deposits refunds. Nothing is sent: the script
 ///         deploys copies of the handler, the program's `BridgeProvider` and its `CardSpender` only in its
 ///         own simulation, to compare their code. `run` reads
@@ -418,10 +418,10 @@ contract Preflight is Script {
         if (!r.routerFromFactory) return;
         ZoneRouter zoneRouter = ZoneRouter(router);
         if (zoneRouter.allowedZoneId() != zoneId || zoneRouter.enabledOps() & zoneRouter.OP_SPEND() == 0) return;
-        address[] memory settlers = zoneRouter.settlers();
-        for (uint256 i; i < settlers.length; ++i) {
+        address[] memory spenders = zoneRouter.spenders();
+        for (uint256 i; i < spenders.length; ++i) {
             (bool providerOk, address provider) =
-                ProgramChecks.readAddress(settlers[i], bytes4(keccak256("PROVIDER()")));
+                ProgramChecks.readAddress(spenders[i], bytes4(keccak256("PROVIDER()")));
             if (!providerOk) continue;
             (bool factoryOk, address providerFactory) =
                 ProgramChecks.readAddress(provider, bytes4(keccak256("FACTORY()")));
@@ -429,12 +429,12 @@ contract Preflight is Script {
             if (!factoryOk || providerFactory != factory || !ok || id.length != 32) continue;
             if (abi.decode(id, (bytes32)) != spenderId) continue;
             r.routerMatches = true;
-            r.program = settlers[i];
+            r.program = spenders[i];
             // Copies from the artifacts, so this script does not carry their creation code.
             r.programCurrent = ProgramChecks.sameLogic(
                 provider, vm.deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(factory, spenderId))
             )
-            && ProgramChecks.sameLogic(settlers[i], vm.deployCode("CardSpender.sol:CardSpender", abi.encode(provider)));
+            && ProgramChecks.sameLogic(spenders[i], vm.deployCode("CardSpender.sol:CardSpender", abi.encode(provider)));
             return;
         }
     }

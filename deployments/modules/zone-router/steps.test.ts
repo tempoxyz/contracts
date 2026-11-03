@@ -19,7 +19,7 @@ const authorityAccount = privateKeyToAccount(authorityKey).address
 const receiptHash = `0x${'a'.repeat(64)}` as const
 
 const earnBinding = { privateAsset: address('a'), pool: address('b'), customerId }
-const settler = address('5e771e')
+const spender = address('5e771e')
 
 function profileWith(zoneRouter: unknown, extra: Record<string, unknown> = {}) {
   return parseEarnDeploymentProfile(
@@ -39,12 +39,12 @@ const cardAndEarn = profileWith({
   zoneId: 7,
   ops: ['deposit', 'redeem', 'spend'],
   earn: earnBinding,
-  settlers: [settler],
+  spenders: [spender],
 })
 const card = profileWith({
   zoneId: 7,
   ops: ['spend'],
-  settlers: [settler],
+  spenders: [spender],
   factory: address('fac'),
 })
 
@@ -73,7 +73,7 @@ function chain(profile: typeof card, overrides: Record<string, unknown> = {}) {
     isRouter: true,
     predict: outputs.zoneRouter,
     enabledOps: mode.enabledOps,
-    settlers: mode.settlers,
+    spenders: mode.spenders,
     allowedZoneId: mode.zoneId,
     earnVault: mode.earnVault,
     privateAsset: mode.privateAsset,
@@ -159,7 +159,7 @@ describe('Zone router steps', () => {
       { isRouter: false },
       { predict: address('99') },
       { enabledOps: 5 },
-      { settlers: [address('5e772e')] },
+      { spenders: [address('5e772e')] },
       { allowedZoneId: 8 },
       { earnVault: outputs.earnVault },
     ]) {
@@ -333,7 +333,7 @@ describe('Zone router steps', () => {
       zoneId: 7,
       ops: ['deposit', 'redeem', 'spend'],
       earn: earnBinding,
-      settlers: [settler],
+      spenders: [spender],
       factory: address('fac'),
     })
     const step = deploymentStep('authorize-zone-router')

@@ -101,7 +101,7 @@ describe('planFactoryRelease', () => {
         parameters: {},
       })
     }
-    for (const kind of ['zoneRouterFactory', 'sendSettler', 'zoneRouter']) {
+    for (const kind of ['zoneRouterFactory', 'sendSpender', 'zoneRouter']) {
       expect(() => planFactoryRelease(kind, 4217)).toThrow(`Unknown factory release ${kind}`)
     }
   })

@@ -34,12 +34,12 @@ const presets = {
     earn: { privateAsset: address('a'), pool: address('b'), customerId },
   },
   sameAssetEarn: { zoneId: 7, ops: ['deposit', 'redeem'], earn: { privateAsset: address('a') } },
-  card: { zoneId: 7, ops: ['spend'], settlers: [address('5e771e'), address('5e772e')] },
+  card: { zoneId: 7, ops: ['spend'], spenders: [address('5e771e'), address('5e772e')] },
   cardAndEarn: {
     zoneId: 7,
     ops: ['deposit', 'redeem', 'spend'],
     earn: { privateAsset: address('a'), pool: address('b'), customerId },
-    settlers: [address('5e771e')],
+    spenders: [address('5e771e')],
     factory: address('fac'),
   },
 }
@@ -74,7 +74,7 @@ describe('zoneRouter profile', () => {
     ],
     [
       'a missing Zone',
-      { ops: ['spend'], settlers: [address('5')] },
+      { ops: ['spend'], spenders: [address('5')] },
       'zoneRouter.zoneId is required',
     ],
     ['Zone 0', { ...presets.card, zoneId: 0 }, 'zoneRouter.zoneId must be'],
@@ -115,29 +115,29 @@ describe('zoneRouter profile', () => {
       'zoneRouter.earn is not supported without deposit or redeem',
     ],
     [
-      'Spend without settlers',
+      'Spend without spenders',
       { zoneId: 7, ops: ['spend'] },
-      'zoneRouter.settlers is required with spend',
+      'zoneRouter.spenders is required with spend',
     ],
     [
-      'settlers without Spend',
-      { ...presets.earn, settlers: [address('5')] },
-      'zoneRouter.settlers is not supported without spend',
+      'spenders without Spend',
+      { ...presets.earn, spenders: [address('5')] },
+      'zoneRouter.spenders is not supported without spend',
     ],
     [
-      'an empty settler list',
-      { ...presets.card, settlers: [] },
-      'zoneRouter.settlers must list at least one settler',
+      'an empty spender list',
+      { ...presets.card, spenders: [] },
+      'zoneRouter.spenders must list at least one spender',
     ],
     [
-      'a zero settler',
-      { ...presets.card, settlers: [zeroAddress] },
-      'zoneRouter.settlers[0] must be a nonzero address',
+      'a zero spender',
+      { ...presets.card, spenders: [zeroAddress] },
+      'zoneRouter.spenders[0] must be a nonzero address',
     ],
     [
-      'a repeated settler',
-      { ...presets.card, settlers: [address('5'), address('5')] },
-      'Duplicate profile.json.zoneRouter.settlers settler',
+      'a repeated spender',
+      { ...presets.card, spenders: [address('5'), address('5')] },
+      'Duplicate profile.json.zoneRouter.spenders spender',
     ],
     [
       'a zero private asset',
@@ -188,11 +188,11 @@ describe('zoneRouter profile', () => {
       privateAsset: address('a'),
       pool: address('b'),
       customerId,
-      settlers: [address('5e771e')],
+      spenders: [address('5e771e')],
     })
     const encoded = encodeAbiParameters(
       parseAbiParameters(
-        '(uint32 zoneId, uint8 enabledOps, address earnVault, address privateAsset, address pool, bytes32 customerId, address[] settlers)',
+        '(uint32 zoneId, uint8 enabledOps, address earnVault, address privateAsset, address pool, bytes32 customerId, address[] spenders)',
       ),
       [mode],
     )
@@ -200,7 +200,7 @@ describe('zoneRouter profile', () => {
     expect(zoneRouterModeHash(mode)).toBe(keccak256(encoded))
   })
 
-  test('binds nothing but settlers in a Spend mode, and no settlers in an Earn mode', () => {
+  test('binds nothing but spenders in a Spend mode, and no spenders in an Earn mode', () => {
     expect(zoneRouterMode(parse(presets.card), outputs)).toEqual({
       zoneId: 7,
       enabledOps: 4,
@@ -208,14 +208,14 @@ describe('zoneRouter profile', () => {
       privateAsset: zeroAddress,
       pool: zeroAddress,
       customerId: zeroHash,
-      settlers: presets.card.settlers,
+      spenders: presets.card.spenders,
     })
     expect(zoneRouterMode(parse(presets.sameAssetEarn), outputs)).toMatchObject({
       enabledOps: 3,
       earnVault: outputs.earnVault,
       pool: zeroAddress,
       customerId: zeroHash,
-      settlers: [],
+      spenders: [],
     })
   })
 
@@ -224,14 +224,14 @@ describe('zoneRouter profile', () => {
     expect(without).toMatchObject({ zoneRouterFactory: null, zoneRouter: null })
 
     const card = parse(presets.card)
-    const moreSettlers = parse({ ...presets.card, settlers: [address('5e771e')] })
+    const moreSpenders = parse({ ...presets.card, spenders: [address('5e771e')] })
     const cardHashes = componentDeploymentIntentHashes(card)
-    const changed = componentDeploymentIntentHashes(moreSettlers)
+    const changed = componentDeploymentIntentHashes(moreSpenders)
     expect(cardHashes.zoneRouterFactory).toEqual(expect.any(String))
     expect(changed.zoneRouterFactory).toBe(cardHashes.zoneRouterFactory)
     expect(changed.zoneRouter).not.toBe(cardHashes.zoneRouter)
     expect(changed.core).toBe(without.core)
-    expect(deploymentIntentHash(card)).not.toBe(deploymentIntentHash(moreSettlers))
+    expect(deploymentIntentHash(card)).not.toBe(deploymentIntentHash(moreSpenders))
 
     // A named factory is the profile's, not a component the lifecycle deploys.
     const named = componentDeploymentIntentHashes(

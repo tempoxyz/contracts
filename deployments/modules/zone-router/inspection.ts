@@ -17,7 +17,7 @@ export type ExpectedZoneRouter = {
 
 /**
  * Checks that `factory` deployed `router` for exactly `mode` (`isRouter` and `predict`) and that every
- * immutable the router reports matches the mode: Zone, ops, settlers in order, and the Earn binding
+ * immutable the router reports matches the mode: Zone, ops, spenders in order, and the Earn binding
  * with its pool orientation, or no binding at all. Mismatches throw `InspectionMismatchError`.
  */
 export async function inspectZoneRouterBinding(
@@ -25,7 +25,7 @@ export async function inspectZoneRouterBinding(
   expected: ExpectedZoneRouter,
 ) {
   const { router, factory, mode } = expected
-  const [deployed, predicted, enabledOps, settlers] = await Promise.all([
+  const [deployed, predicted, enabledOps, spenders] = await Promise.all([
     client.readContract({
       address: factory,
       abi: zoneRouterFactoryAbi,
@@ -39,7 +39,7 @@ export async function inspectZoneRouterBinding(
       args: [mode],
     }),
     client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'enabledOps' }),
-    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'settlers' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'spenders' }),
   ])
   if (!deployed) {
     throw new InspectionMismatchError(
@@ -51,11 +51,11 @@ export async function inspectZoneRouterBinding(
     throw new InspectionMismatchError(`Router ops are ${enabledOps}, expected ${mode.enabledOps}`)
   }
   if (
-    settlers.length !== mode.settlers.length ||
-    settlers.some((settler, index) => getAddress(settler) !== getAddress(mode.settlers[index]!))
+    spenders.length !== mode.spenders.length ||
+    spenders.some((spender, index) => getAddress(spender) !== getAddress(mode.spenders[index]!))
   ) {
     throw new InspectionMismatchError(
-      `Router settlers are [${settlers.join(', ')}], expected [${mode.settlers.join(', ')}]`,
+      `Router spenders are [${spenders.join(', ')}], expected [${mode.spenders.join(', ')}]`,
     )
   }
   // Zone, vault, private asset, and route; a mode without Earn ops binds zero for each.

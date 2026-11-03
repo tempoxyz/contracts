@@ -66,8 +66,8 @@ export type Program = {
   factory: Address
   clone: Address
   /**
-   * The card program's CardSpender: takes public spends (`spend`) and, as the router's settler,
-   * private ones (`settle`), and pays both through the clone's "TS" handler.
+   * The card program's CardSpender: takes public spends (`spend`) and, as the router's spender,
+   * private ones (`spendFrom`), and pays both through the clone's "TS" handler.
    */
   program: Address
   /** The program's BridgeProvider: the CardSpender's provider over the clone. */
@@ -119,12 +119,12 @@ export type EarnTarget = {
 
 /**
  * A ZoneRouter with Earn deposit and redeem of a private stablecoin that converts to the vault asset at
- * par through a DirectPropAMM pool, and Spend through the program's CardSpender and a SendSettler,
+ * par through a DirectPropAMM pool, and Spend through the program's CardSpender and a SendSpender,
  * with the keys that administer its pool and Zone.
  */
 export type RouterFlowsTarget = {
   router: Address
-  sendSettler: Address
+  sendSpender: Address
   /** The private stablecoin: the pool's other token, enabled on the Zone. */
   privateAsset: Address
   pool: Address
@@ -501,7 +501,7 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
     if (routerFlows)
       step(
         4,
-        `Every-op ZoneRouter ${routerFlows.router} with SendSettler ${routerFlows.sendSettler}, admitted on pool ${routerFlows.pool}`,
+        `Every-op ZoneRouter ${routerFlows.router} with SendSpender ${routerFlows.sendSpender}, admitted on pool ${routerFlows.pool}`,
       )
 
     const localZoneChain = zoneChain(zone.chainId, zone.rpcUrl, 'Local Tempo Zone', l1.chainId)
@@ -629,7 +629,7 @@ const poolAdminAbi = parseAbi([
 ])
 
 /**
- * Deploys a SendSettler and an every-op ZoneRouter over the local Earn stack through the program's
+ * Deploys a SendSpender and an every-op ZoneRouter over the local Earn stack through the program's
  * router factory (script/bridge/ZoneE2ERouter.s.sol), and admits both on the pool as its owner.
  */
 async function deployRouterFlows(
@@ -670,9 +670,9 @@ async function deployRouterFlows(
       }),
     },
   )
-  const { router, sendSettler } = JSON.parse(readFileSync(resolve(root, out), 'utf8')) as {
+  const { router, sendSpender } = JSON.parse(readFileSync(resolve(root, out), 'utf8')) as {
     router: Address
-    sendSettler: Address
+    sendSpender: Address
   }
   const owner = await l1Public.readContract({
     address: conversion.pool,
@@ -682,7 +682,7 @@ async function deployRouterFlows(
   if (getAddress(owner) !== inputs.poolOwner.address)
     throw new Error(`pool ${conversion.pool} is owned by ${owner}, not the Earn deployer`)
   const admin = l1Wallet(inputs.poolOwner)
-  for (const account of [router, sendSettler]) {
+  for (const account of [router, sendSpender]) {
     for (const functionName of ['setTakerAllowed', 'setRecipientAllowed'] as const) {
       await admin.writeContractSync({
         address: conversion.pool,
@@ -695,7 +695,7 @@ async function deployRouterFlows(
   }
   return {
     router,
-    sendSettler,
+    sendSpender,
     privateAsset: conversion.privateAsset,
     pool: conversion.pool,
     poolOwner: inputs.poolOwner,
@@ -862,10 +862,10 @@ export async function hosted(
     Partial<RouterDeployment> & {
       refundRecipient: Address
       receiver?: Address
-      settler?: Address
+      spender?: Address
     }
   // A record without a program or router: deploy the CardSpender and its router for the record's
-  // spender ID and record them, dropping any retired receiver and settler fields.
+  // spender ID and record them, dropping any retired receiver and spender fields.
   if (
     !record.program ||
     !record.provider ||
@@ -884,15 +884,15 @@ export async function hosted(
       spenderId: record.spenderId,
       zoneId: moderato.zone.id,
     })
-    const { receiver: _receiver, settler: _settler, ...rest } = record
+    const { receiver: _receiver, spender: _spender, ...rest } = record
     writeFileSync(moderatoRecord, `${JSON.stringify({ ...rest, ...routed }, null, 2)}\n`)
     Object.assign(record, routed)
-    delete record.settler
+    delete record.spender
     console.log(
       `    deployed: CardSpender ${routed.program} (provider ${routed.provider}) and Spend ZoneRouter ${routed.router}`,
     )
   }
-  const { refundRecipient, receiver: _receiver, settler: _settler, ...recorded } = record
+  const { refundRecipient, receiver: _receiver, spender: _spender, ...recorded } = record
   const program: Program = { ...recorded, ...(record as RouterDeployment) }
   step(
     2,
