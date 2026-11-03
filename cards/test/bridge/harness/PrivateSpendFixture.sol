@@ -13,7 +13,7 @@ import { AccessKeys } from "./AccessKeys.sol";
 import { isStandingOrNone } from "./StandingApproval.sol";
 import { TxCall } from "./lib/TempoTx.sol";
 
-/// @notice A Zone with portal and outbox fees switched on, the program's CardProgram behind a
+/// @notice A Zone with portal and outbox fees switched on, the program's CardSpender behind a
 ///         factory-deployed Spend-mode ZoneRouter registered as the Zone's callback gateway, and
 ///         cardholders enrolled with Bridge's Zone key, for private spend tests.
 abstract contract PrivateSpendFixture is AccessKeys {

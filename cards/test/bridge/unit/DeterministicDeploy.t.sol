@@ -8,7 +8,7 @@ import { BridgeRelease } from "../../../script/bridge/deploy/BridgeRelease.sol";
 import { DeployBridgeProgram } from "../../../script/bridge/deploy/DeployBridgeProgram.s.sol";
 import { DeployTempoSpend } from "../../../script/bridge/deploy/DeployTempoSpend.s.sol";
 import { DeployZoneRouter } from "../../../script/bridge/deploy/DeployZoneRouter.s.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { ZoneEnv } from "../harness/ZoneEnv.sol";
@@ -21,9 +21,9 @@ contract UnbroadcastRelease is BridgeRelease {
     }
 }
 
-/// @notice The "TS" handler, the release `CardFactory` and a program's `BridgeIssuer` land at their
+/// @notice The "TS" handler, the release `CardFactory` and a program's `BridgeProvider` land at their
 ///         deterministic release addresses, the CREATE2 deployer with Earn's release salt, whoever deploys
-///         them, the factory creates the program's `CardProgram` at the address its ID, issuer and guardian
+///         them, the factory creates the program's `CardSpender` at the address its ID, provider and guardian
 ///         fix, and a second deploy reuses them all without sending anything.
 contract DeterministicDeployTest is ZoneEnv {
     /// @dev Earn's release salt (earn/script/deploy/DeterministicRelease.sol), which
@@ -88,33 +88,33 @@ contract DeterministicDeployTest is ZoneEnv {
             EARN_RELEASE_SALT,
             keccak256(
                 abi.encodePacked(
-                    vm.getCode("BridgeIssuer.sol:BridgeIssuer"), abi.encode(address(bridgeFactory), SPENDER_ID)
+                    vm.getCode("BridgeProvider.sol:BridgeProvider"), abi.encode(address(bridgeFactory), SPENDER_ID)
                 )
             ),
             CREATE2_FACTORY
         );
         address program_ = vm.computeCreate2Address(
             keccak256(abi.encode(SPENDER_ID, issuer_, guardian)),
-            keccak256(abi.encodePacked(vm.getCode("CardProgram.sol:CardProgram"), abi.encode(issuer_, guardian))),
+            keccak256(abi.encodePacked(vm.getCode("CardSpender.sol:CardSpender"), abi.encode(issuer_, guardian))),
             cardFactory_
         );
         assertEq(script.cardFactoryAddress(), cardFactory_);
-        assertEq(script.bridgeIssuerAddress(address(bridgeFactory), SPENDER_ID), issuer_);
+        assertEq(script.bridgeProviderAddress(address(bridgeFactory), SPENDER_ID), issuer_);
         assertEq(script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID, guardian), program_);
         assertEq(program_.code.length, 0);
 
         IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
         DeployBridgeProgram.Output memory first = script.deploy(factory, SPENDER_ID, guardian, TEMPO_PK);
         assertEq(address(first.cardFactory), cardFactory_, "factory at its release address");
-        assertEq(address(first.issuer), issuer_, "issuer at its release address");
+        assertEq(address(first.provider), issuer_, "provider at its release address");
         assertEq(address(first.program), program_, "program where the factory predicts it");
         assertTrue(first.created);
         assertEq(first.clone, spender);
-        assertEq(address(first.issuer.FACTORY()), address(bridgeFactory));
-        assertEq(first.issuer.SPENDER_ID(), SPENDER_ID);
+        assertEq(address(first.provider.FACTORY()), address(bridgeFactory));
+        assertEq(first.provider.SPENDER_ID(), SPENDER_ID);
         assertEq(first.program.GUARDIAN(), guardian);
         assertEq(first.program.PAYOUT_TARGET(), spender);
-        assertTrue(first.cardFactory.isProgram(program_));
+        assertTrue(first.cardFactory.isSpender(program_));
 
         uint64 nonce = vm.getNonce(vm.addr(BRIDGE_PK));
         DeployBridgeProgram.Output memory again =
@@ -127,7 +127,7 @@ contract DeterministicDeployTest is ZoneEnv {
         script.write(first, path);
         string memory json = vm.readFile(path);
         assertEq(vm.parseJsonAddress(json, ".program"), program_);
-        assertEq(vm.parseJsonAddress(json, ".issuer"), issuer_);
+        assertEq(vm.parseJsonAddress(json, ".provider"), issuer_);
         assertEq(vm.parseJsonAddress(json, ".cardFactory"), cardFactory_);
         assertEq(vm.parseJsonAddress(json, ".guardian"), guardian);
         assertEq(vm.parseJsonAddress(json, ".clone"), spender);
@@ -135,7 +135,7 @@ contract DeterministicDeployTest is ZoneEnv {
     }
 
     /// @notice Each program and each guardian has its own program, at its own address, over one factory,
-    ///         and one issuer per Bridge program.
+    ///         and one provider per Bridge program.
     function test_programAddressFollowsTheProgramAndGuardian() public {
         bytes32 otherId = keccak256("bridge.card-program.other");
         address[] memory destinations = new address[](1);
@@ -149,10 +149,10 @@ contract DeterministicDeployTest is ZoneEnv {
         DeployBridgeProgram.Output memory b = script.deploy(factory, otherId, address(0), TEMPO_PK);
         DeployBridgeProgram.Output memory c = script.deploy(factory, SPENDER_ID, makeAddr("guardian"), TEMPO_PK);
         assertEq(address(a.cardFactory), address(b.cardFactory), "one release factory");
-        assertTrue(address(a.issuer) != address(b.issuer), "an issuer per Bridge program");
-        assertEq(address(a.issuer), address(c.issuer), "the guardian is the program's, not the issuer's");
+        assertTrue(address(a.provider) != address(b.provider), "an provider per Bridge program");
+        assertEq(address(a.provider), address(c.provider), "the guardian is the program's, not the provider's");
         assertTrue(address(a.program) != address(b.program) && address(a.program) != address(c.program));
-        assertEq(b.issuer.SPENDER_ID(), otherId);
+        assertEq(b.provider.SPENDER_ID(), otherId);
         assertEq(address(b.program), script.bridgeProgramAddress(address(bridgeFactory), otherId, address(0)));
         assertEq(c.program.GUARDIAN(), makeAddr("guardian"));
     }
@@ -223,7 +223,7 @@ contract DeterministicDeployTest is ZoneEnv {
         vm.setEnv("DEPLOYER_PK", vm.toString(uint256(keccak256("tempo.deployer"))));
         vm.setEnv("OUT", "reports/test-run.json");
         DeployBridgeProgram script = _newDeployBridgeProgram();
-        CardProgram deployed = script.run();
+        CardSpender deployed = script.run();
         assertEq(address(deployed), script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID, address(0)));
         assertEq(deployed.GUARDIAN(), address(0), "no guardian by default");
     }

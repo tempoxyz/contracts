@@ -4,8 +4,8 @@ pragma solidity ^0.8.36;
 import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 import { OverQuotingEarnVault } from "../harness/Mocks.sol";
@@ -117,11 +117,11 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
             spend.ref, address(program), settlement, address(usd), AMOUNT, 0, AMOUNT, burned
         );
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.CardSpent(
+        emit CardSpender.CardSpent(
             spend.ref, address(zoneRouter), settlement, address(usd), AMOUNT, AMOUNT, burned, true
         );
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.SpendSettled(spend.ref, address(earnShare), burned, maxShares - burned);
+        emit CardSpender.SpendSettled(spend.ref, address(earnShare), burned, maxShares - burned);
         // The Zone deposit hash is the portal's; the rest is checked.
         vm.expectEmit(true, true, false, false, address(zoneRouter));
         emit ZoneRouter.Spent(address(program), address(earnShare), burned, input - burned, bytes32(0));

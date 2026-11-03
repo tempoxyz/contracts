@@ -26,9 +26,9 @@ import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice Read-only check of one card program before private spend goes live: the "TS" handler,
 ///         the program and its destination, the Zone's portal and token, the program's Spend-mode
-///         router and the `CardProgram` it lists as its settler, and the Zone roles of the router, the
+///         router and the `CardSpender` it lists as its settler, and the Zone roles of the router, the
 ///         refund recipient and the program wallet that deposits refunds. Nothing is sent: the script
-///         deploys copies of the handler, the program's `BridgeIssuer` and its `CardProgram` only in its
+///         deploys copies of the handler, the program's `BridgeProvider` and its `CardSpender` only in its
 ///         own simulation, to compare their code. `run` reads
 ///         FACTORY, SPENDER_ID, SETTLEMENT, TOKEN, ZONE_ID, ROUTER_FACTORY and ROUTER (optional),
 ///         REFUND_RECIPIENT (optional), PROGRAM_WALLET (optional) and VAULTS (comma separated,
@@ -92,12 +92,12 @@ contract Preflight is Script {
         bool gatewayOpen;
         /// @dev ROUTER_FACTORY deployed ROUTER, so its mode is fixed and public.
         bool routerFromFactory;
-        /// @dev ROUTER takes Spend callbacks from this Zone and lists a `CardProgram` for this program.
+        /// @dev ROUTER takes Spend callbacks from this Zone and lists a `CardSpender` for this program.
         bool routerMatches;
-        /// @dev The `CardProgram` ROUTER lists whose issuer is a `BridgeIssuer` for this factory and program;
+        /// @dev The `CardSpender` ROUTER lists whose provider is a `BridgeProvider` for this factory and program;
         ///      zero when it lists none.
         address program;
-        /// @dev The program and its issuer run this repo's code, ignoring solc's metadata, so they have
+        /// @dev The program and its provider run this repo's code, ignoring solc's metadata, so they have
         ///      every check this version makes.
         bool programCurrent;
         /// @dev The program's guardian has paused it (the factory's pause is `paused`).
@@ -309,15 +309,15 @@ contract Preflight is Script {
         );
         _line(
             r.routerMatches,
-            "router takes this Zone's spends through this program's CardProgram",
+            "router takes this Zone's spends through this program's CardSpender",
             "deployer: DeployZoneRouter for this program and Zone"
         );
         _line(
             r.programCurrent,
-            "CardProgram and BridgeIssuer are this repo's build",
+            "CardSpender and BridgeProvider are this repo's build",
             "deployer: DeployZoneRouter, then grant the new router its Zone role and use it"
         );
-        _line(!r.programPaused, "CardProgram not paused by its guardian", "guardian: setPaused(false)");
+        _line(!r.programPaused, "CardSpender not paused by its guardian", "guardian: setPaused(false)");
         _line(
             r.routerAdmitted,
             "router has its Zone role",
@@ -332,8 +332,8 @@ contract Preflight is Script {
         );
         _line(
             r.programAllowedByPolicy,
-            "token policy lets the CardProgram receive and send",
-            "policy admin: authorize the CardProgram under the token's (and vault asset's) TIP-403 policy"
+            "token policy lets the CardSpender receive and send",
+            "policy admin: authorize the CardSpender under the token's (and vault asset's) TIP-403 policy"
         );
         _line(
             r.refundRecipientAdmitted,
@@ -403,7 +403,7 @@ contract Preflight is Script {
         }
     }
 
-    /// @dev Finds the `CardProgram` ROUTER lists for this program: one whose issuer is a `BridgeIssuer`
+    /// @dev Finds the `CardSpender` ROUTER lists for this program: one whose provider is a `BridgeProvider`
     ///      for this factory and spender ID. Only a router ROUTER_FACTORY deployed is read, so an
     ///      arbitrary address cannot make the report look complete.
     function _checkRouter(
@@ -423,10 +423,12 @@ contract Preflight is Script {
         if (zoneRouter.allowedZoneId() != zoneId || zoneRouter.enabledOps() & zoneRouter.OP_SPEND() == 0) return;
         address[] memory settlers = zoneRouter.settlers();
         for (uint256 i; i < settlers.length; ++i) {
-            (bool issuerOk, address issuer) = ProgramChecks.readAddress(settlers[i], bytes4(keccak256("ISSUER()")));
-            if (!issuerOk) continue;
-            (bool factoryOk, address issuerFactory) = ProgramChecks.readAddress(issuer, bytes4(keccak256("FACTORY()")));
-            (bool ok, bytes memory id) = issuer.staticcall(abi.encodeWithSignature("SPENDER_ID()"));
+            (bool providerOk, address provider) =
+                ProgramChecks.readAddress(settlers[i], bytes4(keccak256("PROVIDER()")));
+            if (!providerOk) continue;
+            (bool factoryOk, address issuerFactory) =
+                ProgramChecks.readAddress(provider, bytes4(keccak256("FACTORY()")));
+            (bool ok, bytes memory id) = provider.staticcall(abi.encodeWithSignature("SPENDER_ID()"));
             if (!factoryOk || issuerFactory != factory || !ok || id.length != 32) continue;
             if (abi.decode(id, (bytes32)) != spenderId) continue;
             r.routerMatches = true;
@@ -436,10 +438,10 @@ contract Preflight is Script {
             r.programPaused = pausedOk && paused.length == 32 && abi.decode(paused, (bool));
             // Copies from the artifacts, so this script does not carry their creation code.
             r.programCurrent = ProgramChecks.sameLogic(
-                issuer, vm.deployCode("BridgeIssuer.sol:BridgeIssuer", abi.encode(factory, spenderId))
+                provider, vm.deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(factory, spenderId))
             )
             && ProgramChecks.sameLogic(
-                settlers[i], vm.deployCode("CardProgram.sol:CardProgram", abi.encode(issuer, guardian))
+                settlers[i], vm.deployCode("CardSpender.sol:CardSpender", abi.encode(provider, guardian))
             );
             return;
         }

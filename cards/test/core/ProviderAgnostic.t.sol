@@ -3,9 +3,9 @@ pragma solidity ^0.8.36;
 
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
-import { CardProgram } from "../../src/core/CardProgram.sol";
 import { CardSpend } from "../../src/core/CardSpend.sol";
-import { ICardIssuer } from "../../src/core/interfaces/ICardIssuer.sol";
+import { CardSpender } from "../../src/core/CardSpender.sol";
+import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
 import { CoreEnv } from "./harness/CoreEnv.sol";
 
 /// @notice A provider whose program pays a settlement-wallet allowlist directly, with a pause, read from the
@@ -24,7 +24,7 @@ contract SettlementWalletRegistry {
 }
 
 /// @dev A settlement wallet is shared by every cardholder, so it serves public and private spends alike.
-contract SettlementWalletIssuer is ICardIssuer {
+contract SettlementWalletProvider is ICardProvider {
     SettlementWalletRegistry public immutable REGISTRY;
     bytes32 public immutable PROGRAM_ID;
     address public immutable TOKEN;
@@ -52,15 +52,15 @@ contract SettlementWalletIssuer is ICardIssuer {
     }
 
     function supportsInterface(bytes4 id) external pure returns (bool) {
-        return id == type(ICardIssuer).interfaceId || id == type(IERC165).interfaceId;
+        return id == type(ICardProvider).interfaceId || id == type(IERC165).interfaceId;
     }
 }
 
-/// @notice A second provider runs on the same `CardProgram` with only its own issuer, and one program's spend
+/// @notice A second provider runs on the same `CardSpender` with only its own provider, and one program's spend
 ///         never pays through another's.
 contract ProviderAgnosticTest is CoreEnv {
     SettlementWalletRegistry internal registry;
-    CardProgram internal walletProgram;
+    CardSpender internal walletProgram;
     address internal settlementWallet = makeAddr("provider.settlement");
 
     function setUp() public {
@@ -68,8 +68,8 @@ contract ProviderAgnosticTest is CoreEnv {
         _deployMockProgram(false);
         registry = new SettlementWalletRegistry();
         registry.set("program", settlementWallet, true);
-        walletProgram = CardProgram(
-            factory.deploy("wallet", new SettlementWalletIssuer(registry, "program", address(usd)), address(0))
+        walletProgram = CardSpender(
+            factory.deploy("wallet", new SettlementWalletProvider(registry, "program", address(usd)), address(0))
         );
         usd.mint(alice, 100e6);
         usd.mint(router, 100e6);
@@ -94,7 +94,7 @@ contract ProviderAgnosticTest is CoreEnv {
         CardSpend memory s = _walletSpend(10e6);
         vm.startPrank(alice);
         usd.approve(address(walletProgram), 10e6);
-        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         walletProgram.spend(s);
         vm.stopPrank();
     }
@@ -104,10 +104,10 @@ contract ProviderAgnosticTest is CoreEnv {
         vm.prank(router);
         usd.transfer(address(program), 1e6);
         vm.prank(router);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongProgram.selector, s.program));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, s.program));
         program.settle(address(usd), 1e6, abi.encode(s));
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongProgram.selector, s.program));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, s.program));
         program.spend(s);
     }
 }

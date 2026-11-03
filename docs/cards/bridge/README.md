@@ -15,22 +15,22 @@ existing card contracts. It is one provider of the [card spend project](../../..
   vendored with only import paths changed ([`vendor/VENDORED.md`](../../../cards/vendor/VENDORED.md)). They are
   the baseline.
 - **Tempo's contracts for the issuer's system.** `SpenderTempoSpend` ("TS"), a spender handler the
-  issuer registers like any other, and [`BridgeIssuer`](../../../cards/src/providers/bridge/BridgeIssuer.sol),
-  the `ICardIssuer` of the program's [`CardProgram`](../../../cards/src/core/CardProgram.sol): the
+  issuer registers like any other, and [`BridgeProvider`](../../../cards/src/providers/bridge/BridgeProvider.sol),
+  the `ICardProvider` of the program's [`CardSpender`](../../../cards/src/core/CardSpender.sol): the
   stable address cardholders' access keys and the Zone router point at, which pays through the
   program's clone and "TS". The core is provider-agnostic ([card design](../design.md)). See
   [`docs/cards/bridge/design.md`](design.md).
 - **A card E2E harness** that runs every card scenario against any contract setup,
   so the issuer today and the Tempo handler are tested side by side. See
   [`docs/cards/bridge/harness.md`](harness.md).
-- **The issuer's deploy scripts**: the handler, a program (`CardFactory`, `BridgeIssuer` and its
-  `CardProgram`) and its Spend-mode router, the role-gated factory calls, and a preflight.
+- **The issuer's deploy scripts**: the handler, a program (`CardFactory`, `BridgeProvider` and its
+  `CardSpender`) and its Spend-mode router, the role-gated factory calls, and a preflight.
 
 ## How it works
 
 - The issuer spends from the cardholder's account with a Tempo access key the cardholder authorized,
   publicly and in a Zone. Public and private spend are the same `CardSpend`, paid by the same
-  `CardProgram` through the same handler code in the program's clone.
+  `CardSpender` through the same handler code in the program's clone.
 - Public: one transaction from the cardholder's account approves the exact amount to the program,
   calls `program.spend` and clears the approval.
 - Private: the issuer's Zone key withdraws to the Zone's `ZoneRouter`, which transfers the
@@ -156,9 +156,9 @@ pnpm --filter e2e bridge:moderato   # --deploy re-records the program, --admit g
 ```text
 cards/src/providers/bridge/
   SpenderTempoSpend.sol     "TS" handler: public and private spend, stablecoin and Earn
-  BridgeIssuer.sol          The ICardIssuer a program's CardProgram pays through the clone and "TS" by
+  BridgeProvider.sol          The ICardProvider a program's CardSpender pays through the clone and "TS" by
   interfaces/               Spender factory and clone, Earn vault, Zone outbox, the Spend struct
-cards/src/core/             CardProgram, CardFactory and ICardIssuer, shared with every provider
+cards/src/core/             CardSpender, CardFactory and ICardProvider, shared with every provider
 cards/vendor/bridge/        Bridge's spender factory, clone and handlers (VENDORED.md)
 cards/test/bridge/
   harness/                  Tempo, Earn, card issuer and Zone world, access keys, card program model
@@ -171,7 +171,7 @@ cards/script/bridge/        Deploy scripts, release, real-node smoke test, Zone 
 e2e/cards/bridge/           The Zone E2E against a local or hosted target
 ```
 
-The router and the `ISpendSettler` interface `CardProgram` implements come from `zone-router/src/`;
+The router and the `ISpendSettler` interface `CardSpender` implements come from `zone-router/src/`;
 Earn comes from `earn/src/`.
 
 ## Documents
@@ -182,8 +182,8 @@ Earn comes from `earn/src/`.
 - [`docs/cards/bridge/deploy.md`](deploy.md): deploying into the spender factory, and the calls
   each role submits. The handler lands at a deterministic address, so the issuer running the deploy
   scripts and Tempo's Bridge Release workflow ([`bridge-release.yml`](../../../.github/workflows/bridge-release.yml))
-  deploy the same contracts: the handler and each program's `CardFactory`, `BridgeIssuer` and
-  `CardProgram`.
+  deploy the same contracts: the handler and each program's `CardFactory`, `BridgeProvider` and
+  `CardSpender`.
 - [`docs/cards/bridge/bridge-integration.md`](bridge-integration.md): how the issuer's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
 - [`docs/cards/bridge/harness.md`](harness.md): what is real and what is modeled, and how to extend it.
 - [`docs/cards/bridge/scenarios.md`](scenarios.md): every card scenario and what it asserts.

@@ -29,16 +29,16 @@ import {
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
 import { CardFactory } from "../../../src/core/CardFactory.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { Spend, SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderClone } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 
 /// @notice Deploys the on-chain world a Tempo card program runs on: TIP-20 stablecoins (real
 ///         precompiles), a Tempo Earn stack over an ERC-4626 venue, Bridge's SpenderFactory with
-///         every handler registered against one card program, and that program's `CardProgram`
-///         (through a `CardFactory`, over its `BridgeIssuer`), which pays through the clone's "TS" handler.
+///         every handler registered against one card program, and that program's `CardSpender`
+///         (through a `CardFactory`, over its `BridgeProvider`), which pays through the clone's "TS" handler.
 abstract contract TempoEnv is Test {
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
     bytes32 internal constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
@@ -68,10 +68,10 @@ abstract contract TempoEnv is Test {
     // Bridge card program.
     SpenderFactory internal bridgeFactory;
     address internal spender; // the program's spender clone
-    /// @dev The program's CardProgram: the public spend entry point and the Zone router's settler.
+    /// @dev The program's CardSpender: the public spend entry point and the Zone router's settler.
     CardFactory internal cardFactory;
-    BridgeIssuer internal issuer;
-    CardProgram internal program;
+    BridgeProvider internal provider;
+    CardSpender internal program;
     address internal programGuardian = makeAddr("bridge.program-guardian");
     address internal bridgeAdmin = makeAddr("bridge.admin");
     address internal bridgeGovernor = makeAddr("bridge.governor");
@@ -183,18 +183,19 @@ abstract contract TempoEnv is Test {
         // Both vault-aware handlers keep their own allowlist in the clone's storage.
         _bridgeManagerCall(abi.encodePacked(PREFIX_TEWF, bytes2("UV"), uint8(1), address(earnVault)));
         _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(earnVault)));
-        _deployCardProgram();
+        _deployCardSpender();
     }
 
     /// @dev From their artifacts: inlining the factory, which nests the program, would bloat every suite.
-    function _deployCardProgram() private {
+    function _deployCardSpender() private {
         cardFactory = CardFactory(deployCode("CardFactory.sol:CardFactory"));
-        issuer =
-            BridgeIssuer(deployCode("BridgeIssuer.sol:BridgeIssuer", abi.encode(address(bridgeFactory), SPENDER_ID)));
-        program = CardProgram(cardFactory.deploy(SPENDER_ID, issuer, programGuardian));
+        provider = BridgeProvider(
+            deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(address(bridgeFactory), SPENDER_ID))
+        );
+        program = CardSpender(cardFactory.deploy(SPENDER_ID, provider, programGuardian));
         vm.label(address(cardFactory), "CardFactory");
-        vm.label(address(issuer), "BridgeIssuer");
-        vm.label(address(program), "CardProgram");
+        vm.label(address(provider), "BridgeProvider");
+        vm.label(address(program), "CardSpender");
     }
 
     /// @dev Permit2 pins solc 0.8.17, so its creation code is built once with its own toolchain and
@@ -247,7 +248,7 @@ abstract contract TempoEnv is Test {
         return abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("PS"), abi.encode(spend));
     }
 
-    /// @dev The "TS" `Spend` the program's issuer builds for `spend` (`BridgeIssuer.payoutData`).
+    /// @dev The "TS" `Spend` the program's provider builds for `spend` (`BridgeProvider.payoutData`).
     function _psCall(CardSpend memory spend) internal pure returns (bytes memory) {
         return _psCall(
             Spend({

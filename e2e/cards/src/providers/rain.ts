@@ -1,5 +1,5 @@
 // Rain as a card provider: Rain's own collateral contracts (cards/vendor/rain, deployed from
-// cards/test/rain/fixtures/rain.json), a RainIssuer on a CardProgram, and Rain's back office after a spend lands:
+// cards/test/rain/fixtures/rain.json), a RainProvider on a CardSpender, and Rain's back office after a spend lands:
 // a cardholder-signed refund withdrawal and the daily payment to Rain's treasury, both authorized by
 // Rain's controller admin's EIP-712 signature, as on Rain's live contracts.
 import { execFileSync } from 'node:child_process'
@@ -60,7 +60,7 @@ type RainDeployment = {
   programCollateral: Address
   programCollateralIndex: number
   cardFactory: Address
-  issuer: Address
+  provider: Address
   program: Address
   routerFactory: Address
   router: Address
@@ -122,7 +122,7 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
       deployment = d
       const deployed: Deployed = {
         program: d.program,
-        issuer: d.issuer,
+        provider: d.provider,
         router: d.router,
         routerFactory: d.routerFactory,
         zoneToken: d.zoneToken,

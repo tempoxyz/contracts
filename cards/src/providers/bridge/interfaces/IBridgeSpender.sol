@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @notice One card spend through Bridge's "TS" handler, `SpenderTempoSpend`. The program's `CardProgram`
-///         pays every spend, public and private, with this struct, which `BridgeIssuer.payoutData` builds
-///         from the `CardSpend`. This is its only definition: the handler and the issuer import it from
+/// @notice One card spend through Bridge's "TS" handler, `SpenderTempoSpend`. The program's `CardSpender`
+///         pays every spend, public and private, with this struct, which `BridgeProvider.payoutData` builds
+///         from the `CardSpend`. This is its only definition: the handler and the provider import it from
 ///         here, so both encode `abi.encode(Spend)` identically.
 struct Spend {
     bytes32 spenderId;

@@ -8,30 +8,30 @@ import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
 import { ISpendSettler } from "zone-router/interfaces/ISpendSettler.sol";
 
 import { CardSpend } from "./CardSpend.sol";
-import { ICardIssuer, ICardIssuerPayout } from "./interfaces/ICardIssuer.sol";
+import { ICardProvider, ICardProviderPayout } from "./interfaces/ICardProvider.sol";
 import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 
-/// @title CardProgram
+/// @title CardSpender
 /// @notice One card program on Tempo, for any provider: the stable address cardholders' access keys and a
 ///         Zone's router point at. It pays a spend from stablecoin, Tempo Earn shares, or both, to a
-///         destination its issuer authorizes, publicly (`spend`) or from a Zone withdrawal (`settle`, as the
+///         destination its provider authorizes, publicly (`spend`) or from a Zone withdrawal (`settle`, as the
 ///         router's settler). Specified in docs/cards/design.md.
-/// @dev Deployed by `CardFactory` with a fixed issuer and guardian, and never changed: a provider replaces a
-///      program by deploying another. It holds nothing between spends. Two ways to pay, fixed by the issuer:
+/// @dev Deployed by `CardFactory` with a fixed provider and guardian, and never changed: a provider replaces a
+///      program by deploying another. It holds nothing between spends. Two ways to pay, fixed by the provider:
 ///      - direct: the program moves the funds itself (Rain);
-///      - payout: the issuer supports `ICardIssuerPayout`, and the program pays through its target as the
+///      - payout: the provider supports `ICardProviderPayout`, and the program pays through its target as the
 ///        payer (Bridge, through its spender clone and "TS" handler, so Bridge's factory governs the spend).
 ///      Either way it checks the destination got exactly the amount, and a payout can use at most the
 ///      spend's input: what the payer approved (public) or the withdrawal's `maxInput` (private).
-contract CardProgram is ISpendSettler {
+contract CardSpender is ISpendSettler {
     /// @dev Solady's `TransferFailed()` and `ApproveFailed()`.
     bytes4 private constant TRANSFER_FAILED = 0x90b8ec18;
     bytes4 private constant APPROVE_FAILED = 0x3e3f8f73;
 
-    ICardIssuer public immutable ISSUER;
+    ICardProvider public immutable PROVIDER;
     /// @notice The only account that can pause this program; zero for none.
     address public immutable GUARDIAN;
-    /// @notice The issuer's payout target, or zero when the program pays directly.
+    /// @notice The provider's payout target, or zero when the program pays directly.
     address public immutable PAYOUT_TARGET;
 
     /// @notice Whether the guardian has stopped every spend.
@@ -45,7 +45,7 @@ contract CardProgram is ISpendSettler {
     error InsufficientInput();
     error InvalidAmount();
     error NotGuardian();
-    error NotIssuer();
+    error NotProvider();
     error NothingSettled();
     error ProgramPaused();
     error Reentrancy();
@@ -81,13 +81,15 @@ contract CardProgram is ISpendSettler {
 
     /// @param guardian_ The account that can pause this program, or zero for none.
     // forge-lint: disable-next-line(missing-zero-check)
-    constructor(ICardIssuer issuer_, address guardian_) {
-        if (address(issuer_) == address(0)) revert ZeroAddress();
-        if (!ERC165Checker.supportsInterface(address(issuer_), type(ICardIssuer).interfaceId)) revert NotIssuer();
-        ISSUER = issuer_;
+    constructor(ICardProvider provider_, address guardian_) {
+        if (address(provider_) == address(0)) revert ZeroAddress();
+        if (!ERC165Checker.supportsInterface(address(provider_), type(ICardProvider).interfaceId)) {
+            revert NotProvider();
+        }
+        PROVIDER = provider_;
         GUARDIAN = guardian_;
-        if (ERC165Checker.supportsInterface(address(issuer_), type(ICardIssuerPayout).interfaceId)) {
-            address target = ICardIssuerPayout(address(issuer_)).payoutTarget();
+        if (ERC165Checker.supportsInterface(address(provider_), type(ICardProviderPayout).interfaceId)) {
+            address target = ICardProviderPayout(address(provider_)).payoutTarget();
             if (target == address(0)) revert ZeroAddress();
             PAYOUT_TARGET = target;
         }
@@ -114,7 +116,7 @@ contract CardProgram is ISpendSettler {
     /// @notice A private spend, as a Zone router's settler: pays `abi.decode(data, (CardSpend))` from the
     ///         `maxInput` of `token` the caller transferred first, and returns the rest in the same call.
     /// @dev Permissionless: the router authenticates the Zone withdrawal and caps the input; anyone else can
-    ///      only pay a destination the issuer allows for a private spend, from their own funds. One
+    ///      only pay a destination the provider allows for a private spend, from their own funds. One
     ///      withdrawal carries one token: the stablecoin, or the shares of the vault that funds all of it.
     function settle(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
         CardSpend memory s = abi.decode(data, (CardSpend));
@@ -163,7 +165,7 @@ contract CardProgram is ISpendSettler {
 
     /// @notice Whether spends are stopped, by the guardian or by the provider's own contracts.
     function paused() public view returns (bool) {
-        return guardianPaused || ISSUER.paused();
+        return guardianPaused || PROVIDER.paused();
     }
 
     /// @notice Stops (`true`) or resumes (`false`) every spend. Only `GUARDIAN`; nothing else changes.
@@ -180,11 +182,11 @@ contract CardProgram is ISpendSettler {
         if (PAYOUT_TARGET != address(0)) _approve(token, PAYOUT_TARGET, type(uint256).max);
     }
 
-    /// @notice `from`'s balance of `token`, plus the value of its shares in `vault` when the issuer allows
+    /// @notice `from`'s balance of `token`, plus the value of its shares in `vault` when the provider allows
     ///         it and it holds `token`. Pass `vault` zero for the stablecoin alone.
     function availableBalance(address from, address token, address vault) external view returns (uint256 total) {
         total = IERC20Like(token).balanceOf(from);
-        if (vault == address(0) || !ISSUER.isAllowedVault(vault)) return total;
+        if (vault == address(0) || !PROVIDER.isAllowedVault(vault)) return total;
         (bool ok, uint256 word) = _readWord(vault, abi.encodeCall(ITempoEarnVault.asset, ()));
         if (!ok || word != uint256(uint160(token))) return total;
         (ok, word) = _readWord(vault, abi.encodeCall(ITempoEarnVault.earnShare, ()));
@@ -206,11 +208,11 @@ contract CardProgram is ISpendSettler {
         if (s.program != address(this)) revert WrongProgram(s.program);
         if (paused()) revert ProgramPaused();
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
-        if (!ISSUER.isAuthorizedDestination(payer, s.destination, s.token, s.destinationHint, isPrivate)) {
+        if (!PROVIDER.isAuthorizedDestination(payer, s.destination, s.token, s.destinationHint, isPrivate)) {
             revert DestinationNotAuthorized(s.destination);
         }
         if (s.fromVault != 0) {
-            if (!ISSUER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
+            if (!PROVIDER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
             if (ITempoEarnVault(s.vault).asset() != s.token) revert IncorrectAssetForVault();
         }
     }
@@ -245,7 +247,7 @@ contract CardProgram is ISpendSettler {
     }
 
     /// @dev Burns at most `required` of the program's shares for exactly `assets` to `receiver`. The approval
-    ///      to the vault is a standing maximum (TIP-1000); the issuer decides on every spend which vaults may
+    ///      to the vault is a standing maximum (TIP-1000); the provider decides on every spend which vaults may
     ///      be used, and the program holds no shares between spends.
     function _redeem(ITempoEarnVault v, address share, uint256 assets, address receiver, uint256 required)
         private
@@ -257,7 +259,7 @@ contract CardProgram is ISpendSettler {
         burned = v.withdrawExact(assets, receiver, required);
     }
 
-    /// @dev A public spend through the issuer's payout target: pulls the stablecoin part and the share quote
+    /// @dev A public spend through the provider's payout target: pulls the stablecoin part and the share quote
     ///      from the payer, pays through the target, and returns whatever the target did not use.
     function _payThroughPublic(CardSpend calldata s) private returns (uint256 sharesUsed) {
         uint256 fromStable = s.amount - s.fromVault;
@@ -289,12 +291,12 @@ contract CardProgram is ISpendSettler {
     }
 
     /// @dev Approves the payout target for the input tokens (standing maxima, TIP-1000) and calls it with the
-    ///      issuer's payout data, bubbling up its revert.
+    ///      provider's payout data, bubbling up its revert.
     function _payout(CardSpend memory s, address tokenA, address tokenB) private {
         address target = PAYOUT_TARGET;
         if (tokenA != address(0)) _approve(tokenA, target, type(uint128).max);
         if (tokenB != address(0)) _approve(tokenB, target, type(uint128).max);
-        bytes memory data = ICardIssuerPayout(address(ISSUER)).payoutData(s);
+        bytes memory data = ICardProviderPayout(address(PROVIDER)).payoutData(s);
         // forge-lint: disable-next-line(reentrancy-no-eth)
         (bool ok, bytes memory ret) = target.call(data);
         if (!ok) {

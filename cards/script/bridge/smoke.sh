@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the card stack against a real Tempo dev node: deploys and broadcasts public pulls with forge
 # and checks their balances with cast, then exercises Bridge's access key with cast (keychain
-# authorize, atomic batch spend through the program's CardProgram, and the calls a leaked key must not
+# authorize, atomic batch spend through the program's CardSpender, and the calls a leaked key must not
 # be able to make), releases a program with release.sh, and deploys the private path's Spend-mode
 # Zone router listing it.
 #
@@ -156,8 +156,8 @@ echo "deployment scripts: replacement handler registered, still gated, program a
 expect_revert "SpendingLimitExceeded" spend 30000000 "$SETTLEMENT"
 echo "access key stops at its 50 USD limit"
 
-# The private path's contracts on a real node: the program's CardProgram, released with release.sh
-# (the release CardFactory and BridgeIssuer through the node's CREATE2 deployer, then
+# The private path's contracts on a real node: the program's CardSpender, released with release.sh
+# (the release CardFactory and BridgeProvider through the node's CREATE2 deployer, then
 # CardFactory.deploy), and its Spend-mode ZoneRouter, deployed through a ZoneRouterFactory as
 # script/bridge/deploy/DeployZoneRouter.s.sol does. The node runs no Zone, so this checks deployment,
 # the router's fixed mode and its messenger gate; e2e/cards/bridge runs a private spend through them.
@@ -171,19 +171,19 @@ release
 expect "dry run: the program would be created" "$(rjson '.contracts | map(.existed) | join(",")')" "false,false,false"
 release --broadcast
 RELEASED=$(rjson .address)
-expect "release created the program" "$(rjson '.contracts | map(.name) | join(",")')" "CardFactory,BridgeIssuer,CardProgram"
+expect "release created the program" "$(rjson '.contracts | map(.name) | join(",")')" "CardFactory,BridgeProvider,CardSpender"
 CARD_FACTORY=$(rjson '.contracts[0].address')
-ISSUER=$(rjson '.contracts[1].address')
+PROVIDER=$(rjson '.contracts[1].address')
 expect "release output names the program" "$(rjson '.output.program')" "$RELEASED"
 release --broadcast
 expect "a second release reuses all three" "$(rjson '.contracts | map(.existed) | join(",")')" "true,true,true"
 rm -rf foundry-pp
 lower() { tr '[:upper:]' '[:lower:]' <<<"$1"; }
-expect "card factory deployed the program" "$(cast call "$CARD_FACTORY" "isProgram(address)(bool)" "$RELEASED" --rpc-url "$RPC")" true
-expect "program's issuer" "$(lower "$(cast call "$RELEASED" "ISSUER()(address)" --rpc-url "$RPC")")" "$(lower "$ISSUER")"
+expect "card factory deployed the program" "$(cast call "$CARD_FACTORY" "isSpender(address)(bool)" "$RELEASED" --rpc-url "$RPC")" true
+expect "program's provider" "$(lower "$(cast call "$RELEASED" "PROVIDER()(address)" --rpc-url "$RPC")")" "$(lower "$PROVIDER")"
 expect "program pays through the clone" "$(lower "$(cast call "$RELEASED" "PAYOUT_TARGET()(address)" --rpc-url "$RPC")")" "$(lower "$CLONE")"
-expect "issuer's program" "$(cast call "$ISSUER" "SPENDER_ID()(bytes32)" --rpc-url "$RPC")" "$SPENDER_ID"
-expect "issuer's factory" "$(lower "$(cast call "$ISSUER" "FACTORY()(address)" --rpc-url "$RPC")")" "$(lower "$FACTORY")"
+expect "provider's program" "$(cast call "$PROVIDER" "SPENDER_ID()(bytes32)" --rpc-url "$RPC")" "$SPENDER_ID"
+expect "provider's factory" "$(lower "$(cast call "$PROVIDER" "FACTORY()(address)" --rpc-url "$RPC")")" "$(lower "$FACTORY")"
 expect "no guardian" "$(cast call "$RELEASED" "GUARDIAN()(address)" --rpc-url "$RPC")" 0x0000000000000000000000000000000000000000
 
 create() {

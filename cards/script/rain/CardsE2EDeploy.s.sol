@@ -21,9 +21,9 @@ import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { CardFactory } from "../../src/core/CardFactory.sol";
-import { ICardIssuer } from "../../src/core/interfaces/ICardIssuer.sol";
+import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
 import { IRainCollateralFactory } from "../../src/providers/rain/IRain.sol";
-import { RainIssuer } from "../../src/providers/rain/RainIssuer.sol";
+import { RainProvider } from "../../src/providers/rain/RainProvider.sol";
 import { RainStack } from "./RainStack.sol";
 
 /// @notice A card program's router mode: Spend only on `zoneId`, through `settler` (the program) alone.
@@ -39,8 +39,8 @@ library CardSpendMode {
 /// @notice Deploys a Rain card program for the card E2E (`e2e/cards`) on a disposable L1: Rain's own
 ///         collateral contracts from the vendored sources, with the deployer as Rain (factory owner) and
 ///         RAIN_ADMIN as its controller admin; the cardholder's own collateral contract and the program's
-///         pooled one; with EARN=true, a Tempo Earn vault over pathUSD; a `RainIssuer` accepting pathUSD
-///         (and that vault); a `CardFactory` and the program's `CardProgram` over that issuer, with
+///         pooled one; with EARN=true, a Tempo Earn vault over pathUSD; a `RainProvider` accepting pathUSD
+///         (and that vault); a `CardFactory` and the program's `CardSpender` over that provider, with
 ///         RAIN_GUARDIAN as its guardian; the Spend-mode `ZoneRouter` for ZONE_ID listing the program as
 ///         its settler; and a TIP-20 to launch the Zone with. Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY,
 ///         RAIN_GUARDIAN, CARDHOLDER, PARTNER, ZONE_ID, EARN and OUT.
@@ -66,10 +66,10 @@ contract CardsE2EDeploy is Script, RainStack {
         if (earn) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
-        RainIssuer issuer = new RainIssuer(address(rain.factory), tokens, vaults, pooled);
+        RainProvider provider = new RainProvider(address(rain.factory), tokens, vaults, pooled);
         CardFactory cardFactory = new CardFactory();
         address program =
-            cardFactory.deploy("cards-e2e.rain", ICardIssuer(address(issuer)), vm.envAddress("RAIN_GUARDIAN"));
+            cardFactory.deploy("cards-e2e.rain", ICardProvider(address(provider)), vm.envAddress("RAIN_GUARDIAN"));
         ZoneRouterFactory routerFactory = new ZoneRouterFactory();
         address router = routerFactory.deploy(CardSpendMode.forSettler(uint32(zoneIdValue), program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
@@ -96,7 +96,7 @@ contract CardsE2EDeploy is Script, RainStack {
         vm.serializeAddress(key, "programCollateral", programCollateral);
         vm.serializeUint(key, "programCollateralIndex", 1);
         vm.serializeAddress(key, "cardFactory", address(cardFactory));
-        vm.serializeAddress(key, "issuer", address(issuer));
+        vm.serializeAddress(key, "provider", address(provider));
         vm.serializeAddress(key, "program", program);
         vm.serializeAddress(key, "routerFactory", address(routerFactory));
         vm.serializeAddress(key, "router", router);

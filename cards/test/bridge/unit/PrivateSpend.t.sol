@@ -8,13 +8,13 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { ChangeKeepingSpendHandler, DivertingSpendHandler, ReturningSettler } from "../harness/Mocks.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 
-/// @notice Private spend through the program's Spend-mode ZoneRouter and its CardProgram, on a
+/// @notice Private spend through the program's Spend-mode ZoneRouter and its CardSpender, on a
 ///         closed-loop Zone with portal and outbox fees switched on.
 contract PrivateSpendTest is PrivateSpendFixture {
     function setUp() public {
@@ -35,7 +35,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         uint256 spent = zoneBefore - _zoneBalance(address(usd), alice);
         assertEq(spent, 40e6 + withdrawalFee + portal.calculateDepositFee(), "amount plus fees");
         assertTrue(_lastSettlementLogged(ZoneRouter.Spent.selector), "router logged");
-        assertTrue(_lastSettlementLogged(CardProgram.SpendSettled.selector), "program logged");
+        assertTrue(_lastSettlementLogged(CardSpender.SpendSettled.selector), "program logged");
         _assertNothingHeld(address(usd));
     }
 
@@ -92,9 +92,9 @@ contract PrivateSpendTest is PrivateSpendFixture {
             spend.ref, address(program), settlement, address(usd), 40e6, 40e6, 0, 0
         );
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.CardSpent(spend.ref, address(zoneRouter), settlement, address(usd), 40e6, 0, 0, true);
+        emit CardSpender.CardSpent(spend.ref, address(zoneRouter), settlement, address(usd), 40e6, 0, 0, true);
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.SpendSettled(spend.ref, address(usd), 40e6, 0);
+        emit CardSpender.SpendSettled(spend.ref, address(usd), 40e6, 0);
         // The Zone deposit hash is the portal's; the rest is checked.
         vm.expectEmit(true, true, false, false, address(zoneRouter));
         emit ZoneRouter.Spent(address(program), address(usd), 40e6, change, bytes32(0));
@@ -132,7 +132,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         _assertBouncesWith(
             10e6 + _change(),
             _callbackAsIs(spend),
-            abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(usd))
+            abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(usd))
         );
     }
 
@@ -141,7 +141,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         CardSpend memory spend = _spend(10e6, settlement);
         spend.program = makeAddr("another.program");
         _assertBouncesWith(
-            10e6 + _change(), _callback(spend), abi.encodeWithSelector(CardProgram.WrongProgram.selector, spend.program)
+            10e6 + _change(), _callback(spend), abi.encodeWithSelector(CardSpender.WrongProgram.selector, spend.program)
         );
     }
 
@@ -179,9 +179,9 @@ contract PrivateSpendTest is PrivateSpendFixture {
     }
 
     /// @notice A settler the router was not deployed with cannot be named, even a program over the same
-    ///         issuer, here one with another guardian.
+    ///         provider, here one with another guardian.
     function test_unlistedSettlerBounces() public {
-        address other = cardFactory.deploy(SPENDER_ID, issuer, makeAddr("another.guardian"));
+        address other = cardFactory.deploy(SPENDER_ID, provider, makeAddr("another.guardian"));
         assertTrue(other != address(program));
         CardSpend memory spend = _spend(10e6, settlement);
         spend.token = address(usd);
@@ -260,7 +260,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         assertEq(lastCallbackErrors[0], err, "callback error");
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertFalse(_lastSettlementLogged(ZoneRouter.Spent.selector));
-        assertFalse(_lastSettlementLogged(CardProgram.SpendSettled.selector));
+        assertFalse(_lastSettlementLogged(CardSpender.SpendSettled.selector));
         assertEq(
             zoneBefore - _zoneBalance(address(usd), alice),
             zoneOutbox.calculateWithdrawalFee(callbackGas),
@@ -292,7 +292,7 @@ contract PrivateSpendTest is PrivateSpendFixture {
         uint256 before = usd.balanceOf(settlement);
         _zoneSettle();
         assertFalse(lastCallbackResults[0], "callback rejected");
-        assertEq(lastCallbackErrors[0], abi.encodeWithSelector(CardProgram.DestinationNotCredited.selector));
+        assertEq(lastCallbackErrors[0], abi.encodeWithSelector(CardSpender.DestinationNotCredited.selector));
         assertEq(usd.balanceOf(thief), 0, "nothing diverted");
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertFalse(_lastSettlementLogged(ZoneRouter.Spent.selector));

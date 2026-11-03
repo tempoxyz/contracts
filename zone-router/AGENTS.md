@@ -13,7 +13,7 @@ interface, and the settlers in `src/settlers/`. [README.md](README.md) maps the 
   Never copy Earn code here.
 - Generic settlers live in `src/settlers/`, each adapting one payee system. A settler that belongs to
   another project lives there and implements `ISpendSettler` from here, as the card project's
-  `CardProgram` (`cards/src/core/`) does. This project never imports from `cards/`.
+  `CardSpender` (`cards/src/core/`) does. This project never imports from `cards/`.
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical
   Messenger, Zone and Portal authentication, conversion only at exact par with measured 1:1 output,
   no balance left after a callback and no approval except a spend's standing one to its own Zone's

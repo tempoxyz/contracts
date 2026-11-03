@@ -21,7 +21,7 @@ In scope:
 - Tempo Earn: the contracts in [`earn/src/`](earn/src/), except `earn/src/demo/`;
 - the Zone router: the contracts in [`zone-router/src/`](zone-router/src/), including its settlers;
 - card spend: [`cards/src/`](cards/src/), the provider-agnostic core and our code for each provider
-  (Bridge's "TS" handler and `BridgeIssuer`, Rain's `RainIssuer`); and
+  (Bridge's "TS" handler and `BridgeProvider`, Rain's `RainProvider`); and
 - the deployment tooling: [`deployments/`](deployments/), each project's `script/`, and the
   [profile lifecycle](docs/deployment/deployment.md) they implement.
 
@@ -47,5 +47,5 @@ These contracts have no bug bounty.
 
 Earn's completed audits, their scope, and the contracts changed or added since are listed on its
 [audits page](docs/earn/audit/README.md). The card integration's
-[design](docs/cards/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeIssuer`,
-`CardProgram`, `CardFactory`, `ZoneRouter` and `ZoneRouterFactory`.
+[design](docs/cards/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeProvider`,
+`CardSpender`, `CardFactory`, `ZoneRouter` and `ZoneRouterFactory`.

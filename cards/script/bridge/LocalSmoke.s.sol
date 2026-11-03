@@ -26,15 +26,15 @@ import {
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
 import { CardFactory } from "../../src/core/CardFactory.sol";
-import { CardProgram } from "../../src/core/CardProgram.sol";
 import { CardSpend } from "../../src/core/CardSpend.sol";
-import { ICardIssuer } from "../../src/core/interfaces/ICardIssuer.sol";
-import { BridgeIssuer } from "../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../src/core/CardSpender.sol";
+import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
+import { BridgeProvider } from "../../src/providers/bridge/BridgeProvider.sol";
 import { SpenderTempoSpend } from "../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 
 /// @notice Deploys the stack to a real Tempo node and broadcasts public card pulls end to end: Bridge's
-///         EA pull, and spends through the program's `CardProgram`, which pays through the clone's "TS"
+///         EA pull, and spends through the program's `CardSpender`, which pays through the clone's "TS"
 ///         handler.
 /// @dev script/bridge/smoke.sh runs it against a dev node and checks the resulting balances with cast,
 ///      since forge evaluates a script's own reads in its simulation, not on the node. "TS" is
@@ -59,8 +59,8 @@ contract LocalSmoke is Script {
     ITIP20Token internal earnShare;
     SpenderFactory internal factory;
     address internal clone;
-    BridgeIssuer internal issuer;
-    CardProgram internal program;
+    BridgeProvider internal provider;
+    CardSpender internal program;
 
     function run() external {
         deployerPk = vm.deriveKey(MNEMONIC, 0);
@@ -130,11 +130,11 @@ contract LocalSmoke is Script {
         clone = factory.createSpender(SPENDER_ID, destinations);
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
         factory.governorCall(SPENDER_ID, abi.encodePacked(bytes2("TS"), bytes2("UV"), uint8(1), address(earnVault)));
-        issuer = new BridgeIssuer(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
-        program = CardProgram(new CardFactory().deploy(SPENDER_ID, ICardIssuer(address(issuer)), address(0)));
+        provider = new BridgeProvider(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
+        program = CardSpender(new CardFactory().deploy(SPENDER_ID, ICardProvider(address(provider)), address(0)));
         vm.stopBroadcast();
         console.log("deployed factory", address(factory), "clone", clone);
-        console.log("deployed program", address(program), "issuer", address(issuer));
+        console.log("deployed program", address(program), "provider", address(provider));
     }
 
     /// @dev Read by script/bridge/smoke.sh for the access-key steps it runs with cast.
@@ -142,7 +142,7 @@ contract LocalSmoke is Script {
         string memory key = "smoke";
         vm.serializeAddress(key, "usd", address(usd));
         vm.serializeAddress(key, "clone", clone);
-        vm.serializeAddress(key, "issuer", address(issuer));
+        vm.serializeAddress(key, "provider", address(provider));
         vm.serializeAddress(key, "program", address(program));
         vm.serializeAddress(key, "settlement", settlement);
         vm.serializeAddress(key, "earnVault", address(earnVault));

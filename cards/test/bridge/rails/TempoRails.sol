@@ -10,8 +10,8 @@ import { DepositPayload } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IZoneOutbox } from "../../../src/providers/bridge/interfaces/IZoneOutbox.sol";
 
@@ -19,7 +19,7 @@ import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.so
 import { TxCall } from "../harness/lib/TempoTx.sol";
 import { RailDefaults } from "./RailDefaults.sol";
 
-/// @notice Shared by every rail on the "TS" handler, which the program's `CardProgram` pays through.
+/// @notice Shared by every rail on the "TS" handler, which the program's `CardSpender` pays through.
 abstract contract TempoRailBase is RailDefaults {
     address internal elsewhere = makeAddr("cardholder.elsewhere");
 
@@ -49,8 +49,8 @@ abstract contract TempoRailBase is RailDefaults {
     /// @dev What both "TS" rails fail with once a spend reaches the program, the handler or the keychain.
     function _tempoDeclineError(Decline reason) internal pure returns (bytes4) {
         if (reason == Decline.Revoked) return IAccountKeychain.KeyAlreadyRevoked.selector;
-        // The program reads Bridge's factory pause through its issuer before the clone does.
-        if (reason == Decline.Paused) return CardProgram.ProgramPaused.selector;
+        // The program reads Bridge's factory pause through its provider before the clone does.
+        if (reason == Decline.Paused) return CardSpender.ProgramPaused.selector;
         if (reason == Decline.SpendLimit) return IAccountKeychain.SpendingLimitExceeded.selector;
         if (reason == Decline.ShareCost) return SpenderTempoSpend.ShareCostExceeded.selector;
         if (reason == Decline.Illiquid) return bytes4(keccak256("Error(string)"));
@@ -58,7 +58,7 @@ abstract contract TempoRailBase is RailDefaults {
     }
 }
 
-/// @notice Public spend through the program's `CardProgram`, signed by Bridge's access key as the
+/// @notice Public spend through the program's `CardSpender`, signed by Bridge's access key as the
 ///         cardholder. Each pull approves the program for the exact amount, calls `spend`, which pays
 ///         through the clone's "TS" handler, and clears the approval in one transaction. The protocol
 ///         enforces the periodic limit.
@@ -92,7 +92,7 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
         IAccountKeychain.CallScope[] memory scopes = new IAccountKeychain.CallScope[](3);
         scopes[0] = _scope(address(usd), ITIP20.approve.selector, address(program));
         scopes[1] = _scope(address(earnShare), ITIP20.approve.selector, address(program));
-        scopes[2] = _scope(address(program), CardProgram.spend.selector, address(0));
+        scopes[2] = _scope(address(program), CardSpender.spend.selector, address(0));
         _authorizeBridgeKey(user, tokens, limits, scopes);
     }
 
@@ -108,7 +108,7 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
         returns (PullOutcome)
     {
         address to = address(program);
-        bytes memory call_ = abi.encodeCall(CardProgram.spend, (spend));
+        bytes memory call_ = abi.encodeCall(CardSpender.spend, (spend));
         TxCall[] memory calls = new TxCall[](5);
         uint256 n;
         if (stableApproval != 0) {
@@ -182,7 +182,7 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
 }
 
 /// @notice Private spend: balances sit in a Zone. Bridge's Zone access key requests a withdrawal to
-///         the program's Spend-mode `ZoneRouter`, which lets the program's `CardProgram` settle
+///         the program's Spend-mode `ZoneRouter`, which lets the program's `CardSpender` settle
 ///         the spend through the clone from at most `maxInput` and returns the rest to the Zone
 ///         encrypted, so the cardholder never appears on Tempo. Refunds are the program wallet's
 ///         own encrypted deposits into the Zone.

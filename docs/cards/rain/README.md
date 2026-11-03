@@ -1,7 +1,7 @@
 # Rain
 
 Card spend on Tempo with Rain as the provider, against Rain's own collateral contracts, unchanged.
-A Rain program is a `CardProgram` over a `RainIssuer`, as [design.md](../design.md) describes, paying directly into Rain collateral. Rain does not run on Tempo yet; this is
+A Rain program is a `CardSpender` over a `RainProvider`, as [design.md](../design.md) describes, paying directly into Rain collateral. Rain does not run on Tempo yet; this is
 what it would deploy and call.
 
 ## Rain's contracts
@@ -20,7 +20,7 @@ card's spending power. That is where a Tempo spend lands.
 
 ## Destinations
 
-[`RainIssuer`](../../../cards/src/providers/rain/RainIssuer.sol) authorizes a destination when
+[`RainProvider`](../../../cards/src/providers/rain/RainProvider.sol) authorizes a destination when
 it is a collateral contract Rain's factory created and either:
 
 - **the spend is public and the payer owns it and is one of its admins** (Rain-managed): the
@@ -29,14 +29,14 @@ it is a collateral contract Rain's factory created and either:
   the admins as they were); or
 - **it is one of the program's pooled collateral contracts** (partner-managed, and the only
   destination of a private spend): fixed at deployment. Rain or the partner credits each cardholder off
-  chain. The program tells the issuer a spend is private (`isPrivate`), so a private spend never funds a
+  chain. The program tells the provider a spend is private (`isPrivate`), so a private spend never funds a
   cardholder's own collateral, even one handed to the program, and never names the cardholder.
 
 Rain's factory records each collateral contract in its public `collateralProxies` array but keeps no
 address lookup, so the spend's `destinationHint` is the collateral's index in that array, and the
-issuer requires `collateralProxies(hint)` to be the destination. One read of Rain's factory proves
+provider requires `collateralProxies(hint)` to be the destination. One read of Rain's factory proves
 provenance without trusting the destination's code. Rain's backend knows each index from the order of
-the factory's `NewRainCollateral` events. The issuer also fixes the accepted tokens, Earn vaults and pooled
+the factory's `NewRainCollateral` events. The provider also fixes the accepted tokens, Earn vaults and pooled
 collateral; it has no owner and reports no pause of its own. Rain pauses a program as its guardian: Rain's
 pause key, set when the program is deployed, can stop every spend of the program and resume them, and
 change nothing else.
@@ -47,7 +47,7 @@ change nothing else.
 sequenceDiagram
     participant R as Rain backend
     participant A as Cardholder account or Zone
-    participant Sp as CardProgram
+    participant Sp as CardSpender
     participant C as Rain collateral
     participant K as RainCollateralController
     participant T as Rain treasury
@@ -76,7 +76,7 @@ committed collateral stays Rain's to settle; that is the guarantee its card prog
 ## Accepted risks
 
 - Rain's factory owner can upgrade the factory and the collateral implementation, and its controller
-  admin can liquidate any collateral. The issuer trusts Rain's factory for provenance, as Bridge's
+  admin can liquidate any collateral. The provider trusts Rain's factory for provenance, as Bridge's
   integration trusts its spender factory.
 - A public spend into a cardholder's own collateral names the cardholder on the L1, as any public
   spend does.

@@ -1,6 +1,6 @@
 // Every ZoneRouter flow on the local L1 and Zone, through one router with every op: Earn deposit and
 // redeem of a private stablecoin that converts to the vault asset at par through a DirectPropAMM pool,
-// card spends through the CardProgram as the router's settler, sends through a SendSettler, refunds
+// card spends through the CardSpender as the router's settler, sends through a SendSettler, refunds
 // into the Zone, and the guards that bounce a withdrawal back into the Zone. Each flow is a real Zone
 // withdrawal the sequencer batches to the L1, where the portal calls the router; the checks read the
 // L1 settlement and the cardholder's Zone balance once any return lands.
@@ -150,7 +150,7 @@ export async function routerFlows(
       functionName: 'calculateBouncebackFee',
     }),
   ])
-  // A spend or send returns what its settler (the CardProgram or the SendSettler) did not use as an
+  // A spend or send returns what its settler (the CardSpender or the SendSettler) did not use as an
   // encrypted deposit, which the portal rejects below its fees, so each carries change that covers
   // them.
   const change = depositFee + bouncebackFee + 1n
@@ -482,7 +482,7 @@ export async function routerFlows(
     )
   }
 
-  // Card spends through the same router: the CardProgram, as its settler, pays through Bridge's clone.
+  // Card spends through the same router: the CardSpender, as its settler, pays through Bridge's clone.
   const spend = 20_000_000n
   {
     const paidBefore = await l1Balance(r.privateAsset, program.settlement)
@@ -499,12 +499,12 @@ export async function routerFlows(
       isAddressEqual(spent.settler as Address, program.program) &&
         spent.used === spend &&
         spent.change === change,
-      'stablecoin card spend: the CardProgram used the spend, the router returned the change',
+      'stablecoin card spend: the CardSpender used the spend, the router returned the change',
     )
     const carded = cardSpent(s.logs, program.program, ref('card.stablecoin'))
     assert(
       carded.isPrivate && isAddressEqual(carded.payer, r.router),
-      'stablecoin card spend: the CardProgram recorded a private spend paid by the router',
+      'stablecoin card spend: the CardSpender recorded a private spend paid by the router',
     )
     assert(
       (await l1Balance(r.privateAsset, program.settlement)) - paidBefore === spend,
@@ -537,7 +537,7 @@ export async function routerFlows(
     const carded = cardSpent(s.logs, program.program, ref('card.earn'))
     assert(
       carded.isPrivate && isAddressEqual(carded.payer, r.router) && carded.sharesUsed === used,
-      'Earn card spend: the CardProgram recorded a private spend of the shares the router used',
+      'Earn card spend: the CardSpender recorded a private spend of the shares the router used',
     )
     assert(
       (await l1Balance(earn.asset, program.settlement)) - paidBefore === spend,

@@ -1,5 +1,5 @@
 // The card provider seam of the card E2E. The run (run.ts) is the same for every provider: it starts a
-// Tempo L1 and Zone, spends publicly through the provider's CardProgram and privately through a
+// Tempo L1 and Zone, spends publicly through the provider's CardSpender and privately through a
 // Spend-mode ZoneRouter that lists that program as its settler, and checks what Tempo guarantees. A provider supplies only
 // what is its own: its contracts and program (deploy), where its spends pay (destinations), and its own
 // back office for the money once it lands (settle).
@@ -12,10 +12,10 @@ import type { PublicClient, WalletClient } from './clients.js'
 export type Destination = { address: Address; hint: bigint; label: string }
 
 export type Deployed = {
-  /** The program's CardProgram: the public spend entry point and the router's settler. */
+  /** The program's CardSpender: the public spend entry point and the router's settler. */
   program: Address
-  /** The provider's ICardIssuer. */
-  issuer: Address
+  /** The provider's ICardProvider. */
+  provider: Address
   router: Address
   routerFactory: Address
   /** A TIP-20 with a transfer policy, to launch the Zone with. */
@@ -43,7 +43,7 @@ export interface CardProvider {
   name: string
   /** L1 accounts the provider needs funded with gas before `deploy`. */
   accounts: PrivateKeyAccount[]
-  /** Deploys the provider's own contracts, its issuer and a CardProgram over it. */
+  /** Deploys the provider's own contracts, its provider and a CardSpender over it. */
   deploy(input: {
     rpcUrl: string
     deployerPk: Hex

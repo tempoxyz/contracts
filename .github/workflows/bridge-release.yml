@@ -1,8 +1,8 @@
 name: Bridge Release
 
 # Deploys the card integration's ownerless contracts for a SpenderFactory from main: the "TS" handler
-# (SpenderTempoSpend), or a Bridge card program's CardProgram, with the release CardFactory and the
-# program's BridgeIssuer it needs. The handler, factory and issuer land at their deterministic release
+# (SpenderTempoSpend), or a Bridge card program's CardSpender, with the release CardFactory and the
+# program's BridgeProvider it needs. The handler, factory and issuer land at their deterministic release
 # addresses (the CREATE2 deployer with Earn's release salt) and the factory creates the program at the
 # address its spender ID, issuer and guardian fix: the same addresses the issuer reaches running the
 # deploy scripts itself. Any already there is reused. After a broadcast each is source verified on
@@ -18,7 +18,7 @@ on:
         type: choice
         options: [moderato, mainnet]
       contract:
-        description: tempoSpend is the "TS" handler; bridgeProgram is a card program's CardProgram
+        description: tempoSpend is the "TS" handler; bridgeProgram is a card program's CardSpender
         required: true
         type: choice
         options: [tempoSpend, bridgeProgram]
@@ -74,7 +74,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # CardProgram imports the settler interface from zone-router/src/ and Earn's from earn/src/, which need
+      # CardSpender imports the settler interface from zone-router/src/ and Earn's from earn/src/, which need
       # no dependency of their own.
       - name: Install the card integration's Solidity dependencies
         working-directory: .

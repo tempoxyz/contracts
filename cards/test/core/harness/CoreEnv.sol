@@ -19,14 +19,14 @@ import {
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
 import { CardFactory } from "../../../src/core/CardFactory.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { ICardIssuer } from "../../../src/core/interfaces/ICardIssuer.sol";
-import { MockIssuer, MockPayoutIssuer, MockPayoutTarget } from "./Mocks.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { ICardProvider } from "../../../src/core/interfaces/ICardProvider.sol";
+import { MockPayoutProvider, MockPayoutTarget, MockProvider } from "./Mocks.sol";
 
 /// @notice The world the provider-agnostic contracts run on, with no provider: TIP-20 stablecoins (real
-///         precompiles), Tempo Earn over an ERC-4626 venue, a `CardFactory`, and a `CardProgram` over a mock
-///         issuer that pays directly or through a mock payout target. Provider harnesses extend it and point
+///         precompiles), Tempo Earn over an ERC-4626 venue, a `CardFactory`, and a `CardSpender` over a mock
+///         provider that pays directly or through a mock payout target. Provider harnesses extend it and point
 ///         `program` at their own.
 abstract contract CoreEnv is Test {
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
@@ -43,10 +43,10 @@ abstract contract CoreEnv is Test {
     ITIP20Token internal earnShare;
 
     CardFactory internal factory;
-    /// @dev The program the helpers use: the mock issuer's here, a provider's in its harness.
-    CardProgram internal program;
+    /// @dev The program the helpers use: the mock provider's here, a provider's in its harness.
+    CardSpender internal program;
 
-    MockIssuer internal mock;
+    MockProvider internal mock;
     MockPayoutTarget internal target;
     address internal guardian = makeAddr("guardian");
     address internal publicWallet = makeAddr("mock.public-destination");
@@ -65,23 +65,23 @@ abstract contract CoreEnv is Test {
         vm.label(address(factory), "CardFactory");
     }
 
-    /// @dev The core world with the mock issuer: public spends may pay `publicWallet` and `pooledWallet`,
+    /// @dev The core world with the mock provider: public spends may pay `publicWallet` and `pooledWallet`,
     ///      private spends `pooledWallet` alone. With `payout`, the program pays through `target`.
     function _deployMockProgram(bool payout) internal {
         if (payout) {
             target = new MockPayoutTarget();
-            mock = new MockPayoutIssuer(address(target));
+            mock = new MockPayoutProvider(address(target));
             vm.label(address(target), "MockPayoutTarget");
         } else {
-            mock = new MockIssuer();
+            mock = new MockProvider();
         }
         mock.setToken(address(usd), true);
         mock.setVault(address(earnVault), true);
         mock.setDestination(publicWallet, true, false);
         mock.setDestination(pooledWallet, true, true);
-        program = CardProgram(factory.deploy("mock", ICardIssuer(address(mock)), guardian));
-        vm.label(address(mock), "MockIssuer");
-        vm.label(address(program), "CardProgram");
+        program = CardSpender(factory.deploy("mock", ICardProvider(address(mock)), guardian));
+        vm.label(address(mock), "MockProvider");
+        vm.label(address(program), "CardSpender");
     }
 
     function _createToken(string memory name, string memory symbol) internal returns (ITIP20Token token) {

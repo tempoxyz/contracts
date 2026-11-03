@@ -11,7 +11,7 @@ import { SendSettler } from "zone-router/settlers/SendSettler.sol";
 
 /// @notice Deploys, for the Zone E2E (`e2e/cards/bridge`), a `SendSettler` converting through the Earn stack's par pool and a
 ///         `ZoneRouter` with every op: Earn deposit and redeem of the private asset through that pool, and Spend
-///         through the card program's `CardProgram` and the `SendSettler`. The pool owner must still admit
+///         through the card program's `CardSpender` and the `SendSettler`. The pool owner must still admit
 ///         both as taker and recipient.
 ///         Reads DEPLOYER_PK, ROUTER_FACTORY, BRIDGE_PROGRAM, ZONE_ID, EARN_VAULT, PRIVATE_ASSET, POOL,
 ///         CUSTOMER_ID, SEND_CUSTOMER_ID and OUT from the env.

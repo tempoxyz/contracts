@@ -3,11 +3,11 @@ pragma solidity ^0.8.36;
 
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
-import { ICardIssuer } from "../../core/interfaces/ICardIssuer.sol";
+import { ICardProvider } from "../../core/interfaces/ICardProvider.sol";
 import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 
-/// @title RainIssuer
-/// @notice The `ICardIssuer` for Rain card programs: a spend pays into a Rain collateral contract, which
+/// @title RainProvider
+/// @notice The `ICardProvider` for Rain card programs: a spend pays into a Rain collateral contract, which
 ///         backs the card's spending as Rain's real-time funding commits it at authorization. Rain's
 ///         contracts are used as they are (vendor/rain); nothing here asks them to change. The program pays
 ///         directly. Specified in docs/cards/rain/README.md.
@@ -20,8 +20,8 @@ import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 ///      but keeps no address lookup, so the spend names the collateral's index in that array (`hint`): one
 ///      read proves the factory created it, without trusting the destination's code. Tokens, vaults and
 ///      pooled collateral are fixed at deployment: there is no owner. Rain pauses a program with the
-///      program's guardian, so this issuer reports no pause of its own.
-contract RainIssuer is ICardIssuer {
+///      program's guardian, so this provider reports no pause of its own.
+contract RainProvider is ICardProvider {
     /// @notice Rain's `RainCollateralFactory` (its proxy, where it is behind one).
     address public immutable FACTORY;
 
@@ -60,7 +60,7 @@ contract RainIssuer is ICardIssuer {
         _programCollaterals = programCollaterals_;
     }
 
-    /// @inheritdoc ICardIssuer
+    /// @inheritdoc ICardProvider
     /// @dev `hint` is `destination`'s index in the factory's `collateralProxies`.
     function isAuthorizedDestination(address payer, address destination, address token, uint256 hint, bool isPrivate)
         external
@@ -77,13 +77,13 @@ contract RainIssuer is ICardIssuer {
         return _owner(destination) == payer && _isAdmin(destination, payer);
     }
 
-    /// @inheritdoc ICardIssuer
+    /// @inheritdoc ICardProvider
     function paused() external pure returns (bool) {
         return false;
     }
 
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return interfaceId == type(ICardIssuer).interfaceId || interfaceId == type(IERC165).interfaceId;
+        return interfaceId == type(ICardProvider).interfaceId || interfaceId == type(IERC165).interfaceId;
     }
 
     /// @notice Whether `collateral` is the collateral contract Rain's factory recorded at `index` of its

@@ -4,10 +4,10 @@ pragma solidity ^0.8.36;
 import { Test } from "forge-std/Test.sol";
 import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { ICardIssuer, ICardIssuerPayout } from "../../../src/core/interfaces/ICardIssuer.sol";
-import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { ICardProvider, ICardProviderPayout } from "../../../src/core/interfaces/ICardProvider.sol";
+import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { Spend } from "../../../src/providers/bridge/interfaces/IBridgeSpender.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 
@@ -137,11 +137,11 @@ contract MockVault {
     }
 }
 
-/// @notice `BridgeIssuer` and the `CardProgram` it pays through, against a mock factory and clone: the
-///         issuer answers from the factory and the clone, and the program pays through the clone with the
+/// @notice `BridgeProvider` and the `CardSpender` it pays through, against a mock factory and clone: the
+///         provider answers from the factory and the clone, and the program pays through the clone with the
 ///         `Spend` the "TS" handler settles, keeping its own checks whatever the clone does. test/bridge runs
 ///         both against Bridge's real factory and the "TS" handler (`BridgeProgram.t.sol`).
-contract BridgeIssuerMockTest is Test {
+contract BridgeProviderMockTest is Test {
     bytes32 internal constant SPENDER_ID = keccak256("program");
     uint256 internal constant AMOUNT = 25e6;
 
@@ -150,8 +150,8 @@ contract BridgeIssuerMockTest is Test {
     MockVault internal vault;
     MockClone internal clone;
     MockFactory internal factory;
-    BridgeIssuer internal issuer;
-    CardProgram internal program;
+    BridgeProvider internal provider;
+    CardSpender internal program;
     address internal router = makeAddr("router");
     address internal destination = makeAddr("destination");
 
@@ -164,69 +164,69 @@ contract BridgeIssuerMockTest is Test {
         factory = new MockFactory();
         factory.setClone(SPENDER_ID, address(clone));
         factory.setDestination(SPENDER_ID, destination, true);
-        issuer = new BridgeIssuer(factory, SPENDER_ID);
-        program = new CardProgram(issuer, address(0));
+        provider = new BridgeProvider(factory, SPENDER_ID);
+        program = new CardSpender(provider, address(0));
         usd.mint(address(clone), 1000e6);
     }
 
     // ------------------------------------------------------------------
-    // The issuer
+    // The provider
     // ------------------------------------------------------------------
 
     function testConstructorRefusesZeroFactory() public {
-        vm.expectRevert(BridgeIssuer.ZeroAddress.selector);
-        new BridgeIssuer(IBridgeSpenderFactory(address(0)), SPENDER_ID);
+        vm.expectRevert(BridgeProvider.ZeroAddress.selector);
+        new BridgeProvider(IBridgeSpenderFactory(address(0)), SPENDER_ID);
     }
 
-    /// @notice An issuer is bound to the program's clone when it is created, so one must exist.
+    /// @notice A provider is bound to the program's clone when it is created, so one must exist.
     function testConstructorRefusesAProgramWithoutAClone() public {
         bytes32 empty = keccak256("no code");
         factory.setClone(empty, makeAddr("no code"));
-        vm.expectRevert(BridgeIssuer.NoClone.selector);
-        new BridgeIssuer(factory, empty);
+        vm.expectRevert(BridgeProvider.NoClone.selector);
+        new BridgeProvider(factory, empty);
         vm.expectRevert("unknown spender");
-        new BridgeIssuer(factory, keccak256("unknown"));
+        new BridgeProvider(factory, keccak256("unknown"));
     }
 
     function testIdentity() public view {
-        assertEq(address(issuer.FACTORY()), address(factory));
-        assertEq(issuer.SPENDER_ID(), SPENDER_ID);
-        assertEq(issuer.CLONE(), address(clone));
-        assertEq(issuer.payoutTarget(), address(clone));
+        assertEq(address(provider.FACTORY()), address(factory));
+        assertEq(provider.SPENDER_ID(), SPENDER_ID);
+        assertEq(provider.CLONE(), address(clone));
+        assertEq(provider.payoutTarget(), address(clone));
         assertEq(program.PAYOUT_TARGET(), address(clone), "the program pays through the clone");
-        assertTrue(issuer.supportsInterface(type(ICardIssuer).interfaceId));
-        assertTrue(issuer.supportsInterface(type(ICardIssuerPayout).interfaceId));
-        assertTrue(issuer.supportsInterface(type(IERC165).interfaceId));
-        assertFalse(issuer.supportsInterface(0xffffffff));
+        assertTrue(provider.supportsInterface(type(ICardProvider).interfaceId));
+        assertTrue(provider.supportsInterface(type(ICardProviderPayout).interfaceId));
+        assertTrue(provider.supportsInterface(type(IERC165).interfaceId));
+        assertFalse(provider.supportsInterface(0xffffffff));
     }
 
     /// @notice Destinations and the pause are the factory's, for public and private spends alike, and
     ///         whoever pays.
     function testDestinationsAndPauseAreTheFactorys() public {
         address other = makeAddr("other");
-        assertTrue(issuer.isAuthorizedDestination(address(0), destination, address(usd), 0, false));
-        assertTrue(issuer.isAuthorizedDestination(router, destination, address(share), 7, true));
-        assertFalse(issuer.isAuthorizedDestination(router, other, address(usd), 0, false));
+        assertTrue(provider.isAuthorizedDestination(address(0), destination, address(usd), 0, false));
+        assertTrue(provider.isAuthorizedDestination(router, destination, address(share), 7, true));
+        assertFalse(provider.isAuthorizedDestination(router, other, address(usd), 0, false));
         factory.setDestination(SPENDER_ID, other, true);
-        assertTrue(issuer.isAuthorizedDestination(router, other, address(usd), 0, true));
+        assertTrue(provider.isAuthorizedDestination(router, other, address(usd), 0, true));
 
-        assertFalse(issuer.paused());
+        assertFalse(provider.paused());
         factory.setPaused(true);
-        assertTrue(issuer.paused());
+        assertTrue(provider.paused());
         assertTrue(program.paused(), "the program stops with the factory");
     }
 
     /// @notice The vault allowlist is the clone's "GV", and anything but a well-formed `true` is no vault.
     function testVaultAllowlistIsTheClones() public {
-        assertTrue(issuer.isAllowedVault(address(vault)));
+        assertTrue(provider.isAllowedVault(address(vault)));
         clone.setVaultAnswer(abi.encode(abi.encode(false)), false);
-        assertFalse(issuer.isAllowedVault(address(vault)));
+        assertFalse(provider.isAllowedVault(address(vault)));
         clone.setVaultAnswer(abi.encode(abi.encode(true)), true);
-        assertFalse(issuer.isAllowedVault(address(vault)), "reverting clone");
+        assertFalse(provider.isAllowedVault(address(vault)), "reverting clone");
         clone.setVaultAnswer(hex"01", false);
-        assertFalse(issuer.isAllowedVault(address(vault)), "short answer");
+        assertFalse(provider.isAllowedVault(address(vault)), "short answer");
         clone.setVaultAnswer(abi.encode(bytes("")), false);
-        assertFalse(issuer.isAllowedVault(address(vault)), "empty inner answer");
+        assertFalse(provider.isAllowedVault(address(vault)), "empty inner answer");
     }
 
     /// @notice The payout is the clone's `publicCall "TS" "PS"` with the program's spender ID.
@@ -239,7 +239,7 @@ contract BridgeIssuerMockTest is Test {
         bytes memory expected = abi.encodeWithSignature(
             "publicCall(bytes)", abi.encodePacked(bytes2("TS"), bytes2("PS"), abi.encode(_tsSpend(s)))
         );
-        assertEq(issuer.payoutData(s), expected);
+        assertEq(provider.payoutData(s), expected);
     }
 
     // ------------------------------------------------------------------
@@ -267,7 +267,7 @@ contract BridgeIssuerMockTest is Test {
 
         usd.mint(address(program), maxInput);
         vm.expectEmit(address(program));
-        emit CardProgram.SpendSettled(spend.ref, address(usd), AMOUNT, 7e6);
+        emit CardSpender.SpendSettled(spend.ref, address(usd), AMOUNT, 7e6);
         vm.prank(router);
         program.settle(address(usd), maxInput, abi.encode(spend));
 
@@ -323,7 +323,7 @@ contract BridgeIssuerMockTest is Test {
         CardSpend memory spend = _spend(address(usd));
         spend.program = makeAddr("other program");
         _expectSettleRevert(
-            address(usd), AMOUNT, spend, abi.encodeWithSelector(CardProgram.WrongProgram.selector, spend.program)
+            address(usd), AMOUNT, spend, abi.encodeWithSelector(CardSpender.WrongProgram.selector, spend.program)
         );
     }
 
@@ -334,7 +334,7 @@ contract BridgeIssuerMockTest is Test {
             address(usd),
             AMOUNT,
             spend,
-            abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, spend.destination)
+            abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, spend.destination)
         );
     }
 
@@ -344,7 +344,7 @@ contract BridgeIssuerMockTest is Test {
         spend.vault = address(vault);
         spend.fromVault = AMOUNT;
         _expectSettleRevert(
-            address(share), AMOUNT, spend, abi.encodeWithSelector(CardProgram.VaultNotAllowed.selector, address(vault))
+            address(share), AMOUNT, spend, abi.encodeWithSelector(CardSpender.VaultNotAllowed.selector, address(vault))
         );
     }
 
@@ -354,7 +354,7 @@ contract BridgeIssuerMockTest is Test {
             address(share),
             AMOUNT,
             _spend(address(usd)),
-            abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(share))
+            abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(share))
         );
 
         // An Earn spend must be funded in its vault's EarnShare.
@@ -362,25 +362,25 @@ contract BridgeIssuerMockTest is Test {
         spend.vault = address(vault);
         spend.fromVault = AMOUNT;
         _expectSettleRevert(
-            address(usd), AMOUNT, spend, abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(usd))
+            address(usd), AMOUNT, spend, abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(usd))
         );
 
         // A spend split between stablecoin and shares cannot come from one withdrawal.
         spend.fromVault = AMOUNT / 2;
         _expectSettleRevert(
-            address(share), AMOUNT, spend, abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(share))
+            address(share), AMOUNT, spend, abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(share))
         );
     }
 
     function testRefusesAnInvalidAmount() public {
         _expectSettleRevert(
-            address(usd), 0, _spend(address(usd)), abi.encodeWithSelector(CardProgram.InvalidAmount.selector)
+            address(usd), 0, _spend(address(usd)), abi.encodeWithSelector(CardSpender.InvalidAmount.selector)
         );
         _expectSettleRevert(
             address(usd),
             uint256(type(uint128).max) + 1,
             _spend(address(usd)),
-            abi.encodeWithSelector(CardProgram.InvalidAmount.selector)
+            abi.encodeWithSelector(CardSpender.InvalidAmount.selector)
         );
     }
 
@@ -388,7 +388,7 @@ contract BridgeIssuerMockTest is Test {
         clone.configure(AMOUNT, AMOUNT);
         usd.mint(address(program), AMOUNT - 1);
         vm.prank(router);
-        vm.expectRevert(CardProgram.InsufficientInput.selector);
+        vm.expectRevert(CardSpender.InsufficientInput.selector);
         program.settle(address(usd), AMOUNT, abi.encode(_spend(address(usd))));
     }
 
@@ -398,14 +398,14 @@ contract BridgeIssuerMockTest is Test {
             address(usd),
             AMOUNT,
             _spend(address(usd)),
-            abi.encodeWithSelector(CardProgram.DestinationNotCredited.selector)
+            abi.encodeWithSelector(CardSpender.DestinationNotCredited.selector)
         );
     }
 
     function testRefusesASpendThatConsumedNothing() public {
         clone.configure(0, AMOUNT);
         _expectSettleRevert(
-            address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(CardProgram.NothingSettled.selector)
+            address(usd), AMOUNT, _spend(address(usd)), abi.encodeWithSelector(CardSpender.NothingSettled.selector)
         );
     }
 
@@ -417,7 +417,7 @@ contract BridgeIssuerMockTest is Test {
             address(usd),
             AMOUNT + 1,
             _spend(address(usd)),
-            abi.encodeWithSelector(CardProgram.ResidualBalance.selector, address(usd))
+            abi.encodeWithSelector(CardSpender.ResidualBalance.selector, address(usd))
         );
     }
 

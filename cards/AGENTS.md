@@ -3,11 +3,11 @@
 Card spend on Tempo for every card provider, in one Foundry project. Three kinds of code, kept apart
 so each is easy to find and review:
 
-| Path                        | What it is                                                                                     |
-| --------------------------- | ---------------------------------------------------------------------------------------------- |
-| `src/core/`                 | Ours, provider-agnostic: `CardProgram`, `CardFactory`, `CardSpend`, `ICardIssuer`              |
-| `src/providers/<provider>/` | Ours, for one provider: its `ICardIssuer` (`BridgeIssuer` with the "TS" handler; `RainIssuer`) |
-| `vendor/<provider>/`        | The provider's own contracts, vendored unmodified (`vendor/bridge/`, `vendor/rain/`)           |
+| Path                        | What it is                                                                                           |
+| --------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/core/`                 | Ours, provider-agnostic: `CardSpender`, `CardFactory`, `CardSpend`, `ICardProvider`                  |
+| `src/providers/<provider>/` | Ours, for one provider: its `ICardProvider` (`BridgeProvider` with the "TS" handler; `RainProvider`) |
+| `vendor/<provider>/`        | The provider's own contracts, vendored unmodified (`vendor/bridge/`, `vendor/rain/`)                 |
 
 Tests and scripts follow the same split (`test/core/`, `test/<provider>/`, `script/<provider>/`). Core
 tests run on [`test/core/harness/CoreEnv.sol`](test/core/harness/CoreEnv.sol) and a mock program, with no
@@ -33,9 +33,9 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   `test/rain/fixtures/rain.json`, rebuilt by `script/rain/build-fixture.sh` (`--check` compares it
   without the path-dependent metadata hashes; commit it with any vendor change), and
   `test/bridge/harness/fixtures/Permit2.json`.
-- Programs are immutable: no upgrade, migration or setter beyond the guardian's pause. A change of issuer
+- Programs are immutable: no upgrade, migration or setter beyond the guardian's pause. A change of provider
   or settings is a new program.
-- Bridge's "TS" handler, the `CardFactory` and a program's `BridgeIssuer` deploy at deterministic
+- Bridge's "TS" handler, the `CardFactory` and a program's `BridgeProvider` deploy at deterministic
   addresses that follow their build
   ([docs/cards/bridge/deploy.md](../docs/cards/bridge/deploy.md)): a change to their source, this
   project's remappings or its compiler settings moves them.
@@ -43,7 +43,7 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   path; providers match private spends by the Portal's own events.
 
 Validate with `forge fmt --check src test script`, `forge build`,
-`forge lint --deny warnings src/core src/providers/rain src/providers/bridge/BridgeIssuer.sol`,
+`forge lint --deny warnings src/core src/providers/rain src/providers/bridge/BridgeProvider.sol`,
 `forge build --sizes src`, `FOUNDRY_PROFILE=ci forge test` and `script/rain/build-fixture.sh --check`,
 plus `python3 script/bridge/matrix.py --out reports/matrix.md` and a diff against
 `../docs/cards/bridge/matrix.md` when Bridge card scenarios or setups change. The E2E runs need Docker:

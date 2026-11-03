@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { CardProgram } from "../../src/core/CardProgram.sol";
 import { CardSpend } from "../../src/core/CardSpend.sol";
-import { ICardIssuer } from "../../src/core/interfaces/ICardIssuer.sol";
+import { CardSpender } from "../../src/core/CardSpender.sol";
+import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
 import { CoreEnv } from "./harness/CoreEnv.sol";
-import { MockPayoutTarget, NotAnIssuer } from "./harness/Mocks.sol";
+import { MockPayoutTarget, NotAProvider } from "./harness/Mocks.sol";
 
-/// @notice `CardProgram` behavior every provider gets, run once with a program that pays directly and once
-///         with one that pays through its issuer's payout target: public and private spends from stablecoin,
+/// @notice `CardSpender` behavior every provider gets, run once with a program that pays directly and once
+///         with one that pays through its provider's payout target: public and private spends from stablecoin,
 ///         Earn or both, every check, the pause, and the program holding nothing afterwards.
 abstract contract CardProgramBehavior is CoreEnv {
     function _payout() internal pure virtual returns (bool);
@@ -32,7 +32,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(alice);
         usd.approve(address(program), 42e6);
         vm.expectEmit(address(program));
-        emit CardProgram.CardSpent("auth.1", alice, publicWallet, address(usd), 42e6, 0, 0, false);
+        emit CardSpender.CardSpent("auth.1", alice, publicWallet, address(usd), 42e6, 0, 0, false);
         vm.prank(alice);
         program.spend(s);
         assertEq(usd.balanceOf(publicWallet), 42e6);
@@ -81,7 +81,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(alice);
         earnShare.approve(address(program), type(uint256).max);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.ShareCostExceeded.selector, required, required - 1));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.ShareCostExceeded.selector, required, required - 1));
         program.spend(s);
     }
 
@@ -108,7 +108,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(router);
         usd.transfer(address(program), 20e6 + 7);
         vm.expectEmit(address(program));
-        emit CardProgram.SpendSettled("private.1", address(usd), 20e6, 7);
+        emit CardSpender.SpendSettled("private.1", address(usd), 20e6, 7);
         vm.prank(router);
         program.settle(address(usd), 20e6 + 7, abi.encode(s));
         assertEq(usd.balanceOf(pooledWallet), 20e6);
@@ -135,7 +135,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         _assertEmpty();
     }
 
-    /// @dev The program tells the issuer the path: a destination open only to private spends refuses a
+    /// @dev The program tells the provider the path: a destination open only to private spends refuses a
     ///      public one, and the reverse.
     function test_issuerSeesWhichPathASpendTakes() public {
         address privateOnly = makeAddr("private-only");
@@ -144,7 +144,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(alice);
         usd.approve(address(program), 1e6);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, privateOnly));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, privateOnly));
         program.spend(s);
         _routerSettle(address(usd), 1e6, s);
         assertEq(usd.balanceOf(privateOnly), 1e6, "a private spend reaches it");
@@ -153,28 +153,28 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(router);
         usd.transfer(address(program), 1e6);
         vm.prank(router);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, publicWallet));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, publicWallet));
         program.settle(address(usd), 1e6, abi.encode(p));
     }
 
     function test_revert_settle_wrongInputToken() public {
         CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "input");
         vm.prank(router);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(earnShare)));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(earnShare)));
         program.settle(address(earnShare), 1e6, abi.encode(s));
     }
 
     function test_revert_settle_insufficientInput() public {
         CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "short");
-        vm.expectRevert(CardProgram.InsufficientInput.selector);
+        vm.expectRevert(CardSpender.InsufficientInput.selector);
         program.settle(address(usd), 1e6, abi.encode(s));
     }
 
     function test_revert_settle_zeroOrHugeMaxInput() public {
         CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "max");
-        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        vm.expectRevert(CardSpender.InvalidAmount.selector);
         program.settle(address(usd), 0, abi.encode(s));
-        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        vm.expectRevert(CardSpender.InvalidAmount.selector);
         program.settle(address(usd), uint256(type(uint128).max) + 1, abi.encode(s));
     }
 
@@ -198,7 +198,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(alice);
         usd.approve(address(program), 1e6);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, stranger));
         program.spend(s);
     }
 
@@ -209,7 +209,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(alice);
         otherUsd.approve(address(program), 1e6);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, publicWallet));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, publicWallet));
         program.spend(s);
     }
 
@@ -217,24 +217,24 @@ abstract contract CardProgramBehavior is CoreEnv {
         CardSpend memory s = _stableSpend(publicWallet, 0, 1e6, "program");
         s.program = address(0xBEEF);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongProgram.selector, address(0xBEEF)));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, address(0xBEEF)));
         program.spend(s);
         vm.prank(router);
         usd.transfer(address(program), 1e6);
         vm.prank(router);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongProgram.selector, address(0xBEEF)));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, address(0xBEEF)));
         program.settle(address(usd), 1e6, abi.encode(s));
     }
 
     function test_revert_invalidAmounts() public {
         CardSpend memory s = _stableSpend(publicWallet, 0, 0, "zero");
         vm.prank(alice);
-        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        vm.expectRevert(CardSpender.InvalidAmount.selector);
         program.spend(s);
         s.amount = 1e6;
         s.fromVault = 2e6;
         vm.prank(alice);
-        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        vm.expectRevert(CardSpender.InvalidAmount.selector);
         program.spend(s);
     }
 
@@ -245,7 +245,7 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(alice);
         earnShare.approve(address(program), type(uint256).max);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.VaultNotAllowed.selector, address(earnVault)));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.VaultNotAllowed.selector, address(earnVault)));
         program.spend(s);
     }
 
@@ -261,7 +261,7 @@ abstract contract CardProgramBehavior is CoreEnv {
     function test_guardianPause_stopsPublicAndPrivate() public {
         vm.prank(guardian);
         vm.expectEmit(address(program));
-        emit CardProgram.GuardianPausedSet(true);
+        emit CardSpender.GuardianPausedSet(true);
         program.setPaused(true);
         assertTrue(program.paused());
         _expectPaused();
@@ -279,14 +279,14 @@ abstract contract CardProgramBehavior is CoreEnv {
 
     function test_revert_onlyTheGuardianPauses() public {
         vm.prank(alice);
-        vm.expectRevert(CardProgram.NotGuardian.selector);
+        vm.expectRevert(CardSpender.NotGuardian.selector);
         program.setPaused(true);
     }
 
     function test_revert_noGuardianMeansNoGuardianPause() public {
-        CardProgram unguarded = CardProgram(factory.deploy("unguarded", ICardIssuer(address(mock)), address(0)));
+        CardSpender unguarded = CardSpender(factory.deploy("unguarded", ICardProvider(address(mock)), address(0)));
         vm.prank(address(0));
-        vm.expectRevert(CardProgram.NotGuardian.selector);
+        vm.expectRevert(CardSpender.NotGuardian.selector);
         unguarded.setPaused(true);
     }
 
@@ -305,12 +305,12 @@ abstract contract CardProgramBehavior is CoreEnv {
         vm.prank(alice);
         usd.approve(address(program), 1e6);
         vm.prank(alice);
-        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         program.spend(s);
         vm.prank(router);
         usd.transfer(address(program), 1e6);
         vm.prank(router);
-        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         program.settle(address(usd), 1e6, abi.encode(s));
         vm.prank(address(program));
         usd.transfer(router, 1e6);
@@ -345,7 +345,7 @@ contract CardProgramPayoutTest is CardProgramBehavior {
         vm.prank(alice);
         usd.approve(address(program), 1e6);
         vm.prank(alice);
-        vm.expectRevert(CardProgram.DestinationNotCredited.selector);
+        vm.expectRevert(CardSpender.DestinationNotCredited.selector);
         program.spend(s);
     }
 
@@ -354,7 +354,7 @@ contract CardProgramPayoutTest is CardProgramBehavior {
         vm.prank(router);
         usd.transfer(address(program), 2e6);
         vm.prank(router);
-        vm.expectRevert(CardProgram.DestinationNotCredited.selector);
+        vm.expectRevert(CardSpender.DestinationNotCredited.selector);
         program.settle(address(usd), 2e6, abi.encode(_stableSpend(pooledWallet, 0, 2e6, "short")));
     }
 
@@ -384,26 +384,26 @@ contract CardFactoryTest is CoreEnv {
     }
 
     function test_deploy_atPredictedAddress_andIdempotent() public {
-        address predicted = factory.predict("p", ICardIssuer(address(mock)), guardian);
-        address deployed = factory.deploy("p", ICardIssuer(address(mock)), guardian);
+        address predicted = factory.predict("p", ICardProvider(address(mock)), guardian);
+        address deployed = factory.deploy("p", ICardProvider(address(mock)), guardian);
         assertEq(deployed, predicted);
-        assertTrue(factory.isProgram(deployed));
-        assertEq(factory.deploy("p", ICardIssuer(address(mock)), guardian), deployed, "deploying again returns it");
-        assertEq(address(CardProgram(deployed).ISSUER()), address(mock));
-        assertEq(CardProgram(deployed).GUARDIAN(), guardian);
+        assertTrue(factory.isSpender(deployed));
+        assertEq(factory.deploy("p", ICardProvider(address(mock)), guardian), deployed, "deploying again returns it");
+        assertEq(address(CardSpender(deployed).PROVIDER()), address(mock));
+        assertEq(CardSpender(deployed).GUARDIAN(), guardian);
     }
 
-    /// @dev The address commits to the issuer and guardian, so nobody can take it with other settings.
+    /// @dev The address commits to the provider and guardian, so nobody can take it with other settings.
     function test_addressCommitsToIssuerAndGuardian() public view {
-        address a = factory.predict("p", ICardIssuer(address(mock)), guardian);
-        assertTrue(a != factory.predict("p", ICardIssuer(address(mock)), address(0)));
-        assertTrue(a != factory.predict("p", ICardIssuer(address(0xBEEF)), guardian));
-        assertTrue(a != factory.predict("q", ICardIssuer(address(mock)), guardian));
+        address a = factory.predict("p", ICardProvider(address(mock)), guardian);
+        assertTrue(a != factory.predict("p", ICardProvider(address(mock)), address(0)));
+        assertTrue(a != factory.predict("p", ICardProvider(address(0xBEEF)), guardian));
+        assertTrue(a != factory.predict("q", ICardProvider(address(mock)), guardian));
     }
 
     function test_revert_notAnIssuer() public {
-        NotAnIssuer bad = new NotAnIssuer();
+        NotAProvider bad = new NotAProvider();
         vm.expectRevert();
-        factory.deploy("bad", ICardIssuer(address(bad)), guardian);
+        factory.deploy("bad", ICardProvider(address(bad)), guardian);
     }
 }

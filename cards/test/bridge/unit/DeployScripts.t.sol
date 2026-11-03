@@ -12,12 +12,12 @@ import { DeployTempoSpend } from "../../../script/bridge/deploy/DeployTempoSpend
 import { DeployZoneRouter } from "../../../script/bridge/deploy/DeployZoneRouter.s.sol";
 import { Preflight } from "../../../script/bridge/deploy/Preflight.s.sol";
 import { ProgramCalls } from "../../../script/bridge/deploy/ProgramCalls.s.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
-import { NoopSpendHandler, OlderCardProgram } from "../harness/Mocks.sol";
+import { NoopSpendHandler, OlderCardSpender } from "../harness/Mocks.sol";
 import { ZoneEnv } from "../harness/ZoneEnv.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol";
@@ -34,7 +34,7 @@ import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 /// @notice The deployment scripts against an existing Bridge factory: deploy, submit the calls
-///         they write with the role each one needs, then spend through the program's `CardProgram`.
+///         they write with the role each one needs, then spend through the program's `CardSpender`.
 contract DeployScriptsTest is ZoneEnv {
     uint256 internal constant DEPLOYER_PK = uint256(keccak256("tempo.deployer"));
 
@@ -133,12 +133,12 @@ contract DeployScriptsTest is ZoneEnv {
             ZoneRouterFactory(address(0)),
             DEPLOYER_PK
         );
-        assertEq(address(o.issuer.FACTORY()), address(bridgeFactory));
-        assertEq(o.issuer.SPENDER_ID(), SPENDER_ID);
-        assertEq(address(o.program.ISSUER()), address(o.issuer));
+        assertEq(address(o.provider.FACTORY()), address(bridgeFactory));
+        assertEq(o.provider.SPENDER_ID(), SPENDER_ID);
+        assertEq(address(o.program.PROVIDER()), address(o.provider));
         assertEq(o.program.PAYOUT_TARGET(), spender, "the program pays through the clone");
         assertEq(o.program.GUARDIAN(), address(0), "no guardian");
-        assertTrue(o.cardFactory.isProgram(address(o.program)), "deployed by the card factory");
+        assertTrue(o.cardFactory.isSpender(address(o.program)), "deployed by the card factory");
         assertTrue(o.routerFactory.isRouter(address(o.router)), "deployed by the factory");
         assertEq(o.router.allowedZoneId(), ZONE_ID);
         assertEq(o.router.enabledOps(), o.router.OP_SPEND(), "Spend only");
@@ -152,7 +152,7 @@ contract DeployScriptsTest is ZoneEnv {
         string memory json = vm.readFile(path);
         assertEq(vm.parseJsonAddress(json, ".router"), address(o.router));
         assertEq(vm.parseJsonAddress(json, ".program"), address(o.program));
-        assertEq(vm.parseJsonAddress(json, ".issuer"), address(o.issuer));
+        assertEq(vm.parseJsonAddress(json, ".provider"), address(o.provider));
         assertEq(vm.parseJsonAddress(json, ".cardFactory"), address(o.cardFactory));
         assertEq(vm.parseJsonAddress(json, ".routerFactory"), address(o.routerFactory));
         assertEq(vm.parseJsonAddress(json, ".clone"), spender);
@@ -196,8 +196,8 @@ contract DeployScriptsTest is ZoneEnv {
         assertTrue(r.handlerCurrent, "handler is this repo's build");
         assertTrue(r.routerFromFactory, "router deployed by the factory");
         assertTrue(r.routerMatches, "router matches");
-        assertTrue(r.program != address(0), "program's CardProgram found");
-        assertTrue(r.programCurrent, "program and issuer are this repo's build");
+        assertTrue(r.program != address(0), "program's CardSpender found");
+        assertTrue(r.programCurrent, "program and provider are this repo's build");
         assertFalse(r.programPaused, "no guardian pause");
         assertTrue(r.messengerAllowedByPolicy, "messenger allowed by policy");
         assertTrue(r.portalAllowedByPolicy, "portal allowed by policy");
@@ -230,7 +230,7 @@ contract DeployScriptsTest is ZoneEnv {
     }
 
     /// @notice A router the given factory did not deploy, one for another Zone, and one whose only
-    ///         settler is another program's `CardProgram` are each reported, and none is read as the program's.
+    ///         settler is another program's `CardSpender` are each reported, and none is read as the program's.
     function test_preflightReportsARouterThatIsNotTheProgramsOwn() public {
         _deployZone(false);
         Preflight preflight = new Preflight();
@@ -250,14 +250,14 @@ contract DeployScriptsTest is ZoneEnv {
         assertTrue(r.routerFromFactory);
         assertFalse(r.routerMatches, "another Zone");
 
-        // Another Bridge program's CardProgram.
+        // Another Bridge program's CardSpender.
         bytes32 otherId = keccak256("other");
         address[] memory destinations = new address[](1);
         destinations[0] = settlement;
         vm.prank(bridgeManager);
         bridgeFactory.createSpender(otherId, destinations);
-        BridgeIssuer otherIssuer = new BridgeIssuer(IBridgeSpenderFactory(address(bridgeFactory)), otherId);
-        address other = cardFactory.deploy(otherId, otherIssuer, address(0));
+        BridgeProvider otherProvider = new BridgeProvider(IBridgeSpenderFactory(address(bridgeFactory)), otherId);
+        address other = cardFactory.deploy(otherId, otherProvider, address(0));
         address otherRouter = routerFactory.deploy(_spendMode(ZONE_ID, other));
         r = _preflight(preflight, otherRouter, address(0), new address[](0));
         assertTrue(r.routerFromFactory);
@@ -265,10 +265,10 @@ contract DeployScriptsTest is ZoneEnv {
         assertEq(r.program, address(0));
         assertFalse(r.programAllowedByPolicy, "no program to check");
 
-        // A settler that is not a CardProgram at all.
+        // A settler that is not a CardSpender at all.
         address notAProgram = routerFactory.deploy(_spendMode(ZONE_ID, address(new SilentFallback())));
         r = _preflight(preflight, notAProgram, address(0), new address[](0));
-        assertFalse(r.routerMatches, "not a CardProgram");
+        assertFalse(r.routerMatches, "not a CardSpender");
     }
 
     function test_preflightReportsAnUnknownProgramAndAPause() public {
@@ -714,7 +714,7 @@ contract DeployScriptsTest is ZoneEnv {
         ISpenderHandler other = ISpenderHandler(address(new NoopSpendHandler(IFactory(address(bridgeFactory)))));
         vm.prank(bridgeAdmin);
         bridgeFactory.setSpenderHandler(PREFIX_TEMPO_SPEND, other);
-        address older = address(new OlderCardProgram(address(issuer), programGuardian));
+        address older = address(new OlderCardSpender(address(provider), programGuardian));
         routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
         address router = routerFactory.deploy(_spendMode(ZONE_ID, older));
 
@@ -798,7 +798,7 @@ contract DeployScriptsTest is ZoneEnv {
         preflight.run();
     }
 
-    /// @dev Deploys the program's CardProgram and Spend-mode router for ZONE_ID with the deploy script,
+    /// @dev Deploys the program's CardSpender and Spend-mode router for ZONE_ID with the deploy script,
     ///      remembering its router factory for `_preflight`.
     function _deployRouter() internal returns (address) {
         DeployZoneRouter.Output memory o = _newDeployZoneRouter()

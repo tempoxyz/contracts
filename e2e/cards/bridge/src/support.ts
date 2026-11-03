@@ -43,7 +43,7 @@ export const cardSpendType = parseAbiParameters([
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
 ])
 /**
- * The CardProgram's public spend and its events: `CardSpent` for every spend, and `SpendSettled`
+ * The CardSpender's public spend and its events: `CardSpent` for every spend, and `SpendSettled`
  * for a private one, with the input accounting the router sees.
  */
 export const programAbi = parseAbi([
@@ -169,7 +169,7 @@ export function withdrawalRequested(receipt: { logs: Log[]; transactionHash: Hex
 }
 
 /**
- * The CardProgram's `CardSpent` for `ref` in `logs` and the clone's `TempoSpendExecuted` for it,
+ * The CardSpender's `CardSpent` for `ref` in `logs` and the clone's `TempoSpendExecuted` for it,
  * exactly one each: the program pays through the clone, so the handler's `from` is the program.
  */
 export function cardSpent(logs: readonly Log[], program: Address, ref: Hex) {
@@ -179,7 +179,7 @@ export function cardSpent(logs: readonly Log[], program: Address, ref: Hex) {
     args: { ref },
     logs: logs.filter((log) => isAddressEqual(log.address, program)),
   })
-  assert(spent.length === 1, `one CardProgram CardSpent event for ref ${ref}`)
+  assert(spent.length === 1, `one CardSpender CardSpent event for ref ${ref}`)
   const executed = parseEventLogs({
     abi: tempoSpendAbi,
     eventName: 'TempoSpendExecuted',
@@ -189,7 +189,7 @@ export function cardSpent(logs: readonly Log[], program: Address, ref: Hex) {
   assert(executed.length === 1, `one TempoSpendExecuted event for ref ${ref}`)
   assert(
     isAddressEqual(executed[0]!.args.from, program),
-    `the "TS" handler paid as the CardProgram (from ${executed[0]!.args.from})`,
+    `the "TS" handler paid as the CardSpender (from ${executed[0]!.args.from})`,
   )
   return { ...spent[0]!.args, sharesBurned: executed[0]!.args.sharesBurned }
 }

@@ -7,11 +7,11 @@ import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandl
 import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
 import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 
-/// @notice Bridge's factory roles as the "TS" handler and the program's `CardProgram` rely on them: each
+/// @notice Bridge's factory roles as the "TS" handler and the program's `CardSpender` rely on them: each
 ///         role's calls refuse every other role holder and an outsider, a pause stops spend until governance
 ///         unpauses, and a `Disabled` handler stops spend until governance enables it again, on both the
 ///         public and the private path.
@@ -132,10 +132,10 @@ contract RolesTest is PrivateSpendFixture {
     function test_pauseStopsPublicSpendUntilGovernanceUnpauses() public {
         vm.prank(bridgePauser);
         bridgeFactory.pause();
-        // The program reads the factory's pause through its issuer, before the clone would.
+        // The program reads the factory's pause through its provider, before the clone would.
         assertTrue(program.paused(), "program paused with the factory");
         vm.prank(alice);
-        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         program.spend(_publicSpend(10e6));
         // The clone refuses on its own as well.
         vm.prank(alice);

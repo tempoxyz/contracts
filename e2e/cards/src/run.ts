@@ -4,7 +4,7 @@
 //   pnpm e2e:cards -- --earn               Rain, plus spends from Tempo Earn shares, public and private
 //   pnpm e2e:cards -- --provider rain      the provider to run (rain is the only one so far)
 //
-// 1. Starts the L1, has the provider deploy its own contracts, its issuer and a CardProgram over it,
+// 1. Starts the L1, has the provider deploy its own contracts, its provider and a CardSpender over it,
 //    with a Spend-mode ZoneRouter listing the program as its settler,
 //    then starts the Zone and registers the router as its gateway.
 // 2. Public: the cardholder authorizes the provider's access key, scoped to approving the program and
@@ -165,7 +165,7 @@ async function main() {
     })
     step(
       2,
-      `${provider.name} CardProgram ${deployed.program} over issuer ${deployed.issuer} and Spend ZoneRouter ${deployed.router}`,
+      `${provider.name} CardSpender ${deployed.program} over provider ${deployed.provider} and Spend ZoneRouter ${deployed.router}`,
     )
     zone = await Network.startZone({
       l1,
@@ -276,7 +276,7 @@ async function main() {
     } as never)
     step(
       4,
-      `Cardholder authorized ${provider.name}'s L1 access key: approve the CardProgram and call spend, nothing else`,
+      `Cardholder authorized ${provider.name}'s L1 access key: approve the CardSpender and call spend, nothing else`,
     )
     const providerL1 = l1Wallet(
       Account.fromSecp256k1(keyPk, { access: cardholder.address }) as never,
@@ -403,7 +403,7 @@ async function main() {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Private spend: a Zone withdrawal to the router, settled on the L1 through the CardProgram
+    // Private spend: a Zone withdrawal to the router, settled on the L1 through the CardSpender
     // ---------------------------------------------------------------------------------------------
     const zoneClient = zoneClients(l1.chainId, zone)
     const userZone = await zoneClient(cardholder)

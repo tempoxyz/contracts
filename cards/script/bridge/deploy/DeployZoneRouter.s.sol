@@ -9,8 +9,8 @@ import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { CardFactory } from "../../../src/core/CardFactory.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
-import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeProgramRelease } from "./BridgeRelease.sol";
 import { checkProgram, requireProgram } from "./DeployBridgeProgram.s.sol";
@@ -27,10 +27,10 @@ library SpendMode {
     }
 }
 
-/// @notice Deploys one Bridge card program's `CardProgram` (as `DeployBridgeProgram` does) and the
+/// @notice Deploys one Bridge card program's `CardSpender` (as `DeployBridgeProgram` does) and the
 ///         Spend-mode `ZoneRouter` that lists it as its only settler on one Zone, through a
 ///         `ZoneRouterFactory`, after checking the program's clone was created for its ID and the Zone has
-///         a registered portal. The release `CardFactory`, the program's `BridgeIssuer` and its program
+///         a registered portal. The release `CardFactory`, the program's `BridgeProvider` and its program
 ///         land at their deterministic addresses (`BridgeProgramRelease`), and one already there is reused;
 ///         so is a router the factory already deployed for this mode. None of them has an owner, so nothing
 ///         else is configured here. A Zone with a closed callback gateway must still grant the router the
@@ -48,8 +48,8 @@ contract DeployZoneRouter is BridgeProgramRelease {
         uint32 zoneId;
         address portal;
         CardFactory cardFactory;
-        BridgeIssuer issuer;
-        CardProgram program;
+        BridgeProvider provider;
+        CardSpender program;
         ZoneRouterFactory routerFactory;
         ZoneRouter router;
     }
@@ -104,7 +104,7 @@ contract DeployZoneRouter is BridgeProgramRelease {
         o.zoneId = zoneId;
         o.portal = zone.portal;
         o.cardFactory = c.cardFactory;
-        o.issuer = c.issuer;
+        o.provider = c.provider;
         o.program = c.program;
         o.routerFactory = routerFactory;
     }
@@ -117,7 +117,7 @@ contract DeployZoneRouter is BridgeProgramRelease {
         vm.serializeUint(key, "zoneId", o.zoneId);
         vm.serializeAddress(key, "portal", o.portal);
         vm.serializeAddress(key, "cardFactory", address(o.cardFactory));
-        vm.serializeAddress(key, "issuer", address(o.issuer));
+        vm.serializeAddress(key, "provider", address(o.provider));
         vm.serializeAddress(key, "program", address(o.program));
         vm.serializeAddress(key, "routerFactory", address(o.routerFactory));
         vm.writeJson(vm.serializeAddress(key, "router", address(o.router)), path);

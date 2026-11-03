@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { IBridgeSpenderFactory as ISettlerFactory } from "./IBridgeSpender.sol";
 
-/// @notice The subset of Bridge's `SpenderFactory` that the "TS" handler, `BridgeIssuer` and the deploy
+/// @notice The subset of Bridge's `SpenderFactory` that the "TS" handler, `BridgeProvider` and the deploy
 ///         scripts read to stay inside a card program's governance: pause state, allowed settlement
 ///         destinations, and the program's spender clone (`getSpenderAddress`, from the interface it
 ///         extends).

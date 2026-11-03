@@ -5,9 +5,9 @@ import { ISpenderHandler } from "bridge-spender/src/ISpenderHandler.sol";
 import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { AccessKeys } from "../harness/AccessKeys.sol";
@@ -24,13 +24,13 @@ import { isStandingOrNone } from "../harness/StandingApproval.sol";
 /// @notice Hands input to a program as the Zone router does: transfers exactly `maxInput` and calls
 ///         `settle` in one call, so a revert returns the input.
 contract SettleCaller {
-    function settle(CardProgram program, address token, uint256 maxInput, bytes calldata data) external {
+    function settle(CardSpender program, address token, uint256 maxInput, bytes calldata data) external {
         SafeTransferLib.safeTransfer(token, address(program), maxInput);
         program.settle(token, maxInput, data);
     }
 }
 
-/// @notice A Bridge program's `CardProgram` on Bridge's real factory and the "TS" handler. As the Zone
+/// @notice A Bridge program's `CardSpender` on Bridge's real factory and the "TS" handler. As the Zone
 ///         router's settler it pays a spend from the input the router transfers it, returns the unused
 ///         input in the same call and keeps nothing; as the public entry point it pays from the
 ///         cardholder's approval to it and returns what the clone did not use. Either way the clone sees
@@ -52,38 +52,38 @@ contract BridgeProgramTest is AccessKeys {
     }
 
     // ------------------------------------------------------------------
-    // The issuer on Bridge's factory
+    // The provider on Bridge's factory
     // ------------------------------------------------------------------
 
     function test_requiresAFactoryAndAClone() public {
-        vm.expectRevert(BridgeIssuer.ZeroAddress.selector);
-        new BridgeIssuer(IBridgeSpenderFactory(address(0)), SPENDER_ID);
+        vm.expectRevert(BridgeProvider.ZeroAddress.selector);
+        new BridgeProvider(IBridgeSpenderFactory(address(0)), SPENDER_ID);
         // Bridge's factory predicts a clone for every ID; one it never created has no code.
-        vm.expectRevert(BridgeIssuer.NoClone.selector);
-        new BridgeIssuer(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("no such program"));
+        vm.expectRevert(BridgeProvider.NoClone.selector);
+        new BridgeProvider(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("no such program"));
     }
 
     /// @notice The program is bound to its clone, and the issuer reads Bridge's own state as it changes.
     function test_issuerFollowsBridgesGovernance() public {
-        assertEq(issuer.CLONE(), spender);
+        assertEq(provider.CLONE(), spender);
         assertEq(program.PAYOUT_TARGET(), spender);
-        assertEq(address(program.ISSUER()), address(issuer));
-        assertTrue(cardFactory.isProgram(address(program)));
+        assertEq(address(program.PROVIDER()), address(provider));
+        assertTrue(cardFactory.isSpender(address(program)));
 
         address next = makeAddr("bridge.settlement.next");
-        assertFalse(issuer.isAuthorizedDestination(alice, next, address(usd), 0, false));
+        assertFalse(provider.isAuthorizedDestination(alice, next, address(usd), 0, false));
         vm.prank(bridgeGovernor);
         bridgeFactory.updateSpenderDestination(SPENDER_ID, next, true);
-        assertTrue(issuer.isAuthorizedDestination(alice, next, address(usd), 0, false));
-        assertTrue(issuer.isAuthorizedDestination(router, next, address(usd), 0, true));
+        assertTrue(provider.isAuthorizedDestination(alice, next, address(usd), 0, false));
+        assertTrue(provider.isAuthorizedDestination(router, next, address(usd), 0, true));
 
-        assertTrue(issuer.isAllowedVault(address(earnVault)));
+        assertTrue(provider.isAllowedVault(address(earnVault)));
         _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(0), address(earnVault)));
-        assertFalse(issuer.isAllowedVault(address(earnVault)));
+        assertFalse(provider.isAllowedVault(address(earnVault)));
 
         vm.prank(bridgePauser);
         bridgeFactory.pause();
-        assertTrue(issuer.paused());
+        assertTrue(provider.paused());
         assertTrue(program.paused());
     }
 
@@ -94,11 +94,11 @@ contract BridgeProgramTest is AccessKeys {
         assertFalse(bridgeFactory.paused());
         _mintUsd(router, AMOUNT);
         bytes memory data = abi.encode(_stableSpend(AMOUNT));
-        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         caller.settle(program, address(usd), AMOUNT, data);
 
         vm.prank(bridgePauser);
-        vm.expectRevert(CardProgram.NotGuardian.selector);
+        vm.expectRevert(CardSpender.NotGuardian.selector);
         program.setPaused(false);
         vm.prank(programGuardian);
         program.setPaused(false);
@@ -122,9 +122,9 @@ contract BridgeProgramTest is AccessKeys {
             spend.ref, address(program), settlement, address(usd), AMOUNT, AMOUNT, 0, 0
         );
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.CardSpent(spend.ref, router, settlement, address(usd), AMOUNT, 0, 0, true);
+        emit CardSpender.CardSpent(spend.ref, router, settlement, address(usd), AMOUNT, 0, 0, true);
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.SpendSettled(spend.ref, address(usd), AMOUNT, 7e6);
+        emit CardSpender.SpendSettled(spend.ref, address(usd), AMOUNT, 7e6);
         _settle(address(usd), maxInput, spend);
 
         assertEq(usd.balanceOf(settlement) - before, AMOUNT, "destination paid");
@@ -155,9 +155,9 @@ contract BridgeProgramTest is AccessKeys {
         spend.ref = keccak256("card.auth.earn");
 
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.CardSpent(spend.ref, router, settlement, address(usd), AMOUNT, AMOUNT, burned, true);
+        emit CardSpender.CardSpent(spend.ref, router, settlement, address(usd), AMOUNT, AMOUNT, burned, true);
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.SpendSettled(spend.ref, address(earnShare), burned, maxInput - burned);
+        emit CardSpender.SpendSettled(spend.ref, address(earnShare), burned, maxInput - burned);
         _settle(address(earnShare), maxInput, spend);
 
         assertEq(usd.balanceOf(settlement) - before, AMOUNT, "destination paid");
@@ -198,7 +198,7 @@ contract BridgeProgramTest is AccessKeys {
         _mintUsd(address(program), AMOUNT - 1);
         bytes memory data = abi.encode(_stableSpend(AMOUNT));
         vm.prank(router);
-        vm.expectRevert(CardProgram.InsufficientInput.selector);
+        vm.expectRevert(CardSpender.InsufficientInput.selector);
         program.settle(address(usd), AMOUNT, data);
         assertEq(usd.balanceOf(router), 100e6, "nothing taken");
     }
@@ -214,7 +214,7 @@ contract BridgeProgramTest is AccessKeys {
         elsewhere.destination = stranger;
         bytes memory data = abi.encode(elsewhere);
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, stranger));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, stranger));
         program.settle(address(usd), AMOUNT + 5e6, data);
 
         uint256 before = usd.balanceOf(settlement);
@@ -231,7 +231,7 @@ contract BridgeProgramTest is AccessKeys {
         spend.program = makeAddr("another.program");
         _mintUsd(router, AMOUNT);
         bytes memory data = abi.encode(spend);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongProgram.selector, spend.program));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, spend.program));
         caller.settle(program, address(usd), AMOUNT, data);
     }
 
@@ -244,9 +244,9 @@ contract BridgeProgramTest is AccessKeys {
         destinations[0] = makeAddr("alias.destination");
         vm.prank(bridgeManager);
         bridgeFactory.createSpenderWithExistingContract(aliasId, destinations, spender);
-        BridgeIssuer aliasIssuer = new BridgeIssuer(IBridgeSpenderFactory(address(bridgeFactory)), aliasId);
-        assertEq(aliasIssuer.CLONE(), spender, "the same clone");
-        CardProgram aliasProgram = CardProgram(cardFactory.deploy(aliasId, aliasIssuer, address(0)));
+        BridgeProvider aliasProvider = new BridgeProvider(IBridgeSpenderFactory(address(bridgeFactory)), aliasId);
+        assertEq(aliasProvider.CLONE(), spender, "the same clone");
+        CardSpender aliasProgram = CardSpender(cardFactory.deploy(aliasId, aliasProvider, address(0)));
 
         CardSpend memory spend = _stableSpend(AMOUNT);
         spend.program = address(aliasProgram);
@@ -260,21 +260,21 @@ contract BridgeProgramTest is AccessKeys {
 
     function test_rejectsZeroInput() public {
         vm.prank(router);
-        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        vm.expectRevert(CardSpender.InvalidAmount.selector);
         program.settle(address(usd), 0, abi.encode(_stableSpend(AMOUNT)));
     }
 
     function test_rejectsInputAboveUint128() public {
         bytes memory data = abi.encode(_stableSpend(AMOUNT));
         vm.prank(router);
-        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        vm.expectRevert(CardSpender.InvalidAmount.selector);
         program.settle(address(usd), uint256(type(uint128).max) + 1, data);
     }
 
     /// @notice A handler under "TS" that moves nothing cannot make a spend look settled.
     function test_rejectsAHandlerThatSettlesNothing() public {
         _replaceHandler(ISpenderHandler(address(new NoopSpendHandler(IFactory(address(bridgeFactory))))));
-        _expectSettleRevert(AMOUNT, abi.encodeWithSelector(CardProgram.NothingSettled.selector));
+        _expectSettleRevert(AMOUNT, abi.encodeWithSelector(CardSpender.NothingSettled.selector));
     }
 
     /// @notice A handler that hands back more input than it was given cannot look settled, even
@@ -282,7 +282,7 @@ contract BridgeProgramTest is AccessKeys {
     function test_rejectsAHandlerThatReturnsMoreThanItWasGiven() public {
         _replaceHandler(ISpenderHandler(address(new OverReturningSpendHandler(IFactory(address(bridgeFactory))))));
         _mintUsd(spender, AMOUNT + 1);
-        _expectSettleRevert(AMOUNT, abi.encodeWithSelector(CardProgram.NothingSettled.selector));
+        _expectSettleRevert(AMOUNT, abi.encodeWithSelector(CardSpender.NothingSettled.selector));
     }
 
     /// @notice The input must be the spend's own token: its stablecoin, or the shares of the vault that
@@ -291,18 +291,18 @@ contract BridgeProgramTest is AccessKeys {
         _mintUsd(router, 100e6);
         uint256 shares = _depositEarn(router, 100e6);
         bytes memory data = abi.encode(_stableSpend(AMOUNT));
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(earnShare)));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(earnShare)));
         caller.settle(program, address(earnShare), shares, data);
 
         CardSpend memory split = _earnSpend(AMOUNT, shares);
         split.fromVault = AMOUNT / 2;
         data = abi.encode(split);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(earnShare)));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(earnShare)));
         caller.settle(program, address(earnShare), shares, data);
 
         _mintUsd(router, 50e6);
         data = abi.encode(_earnSpend(AMOUNT, shares));
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.WrongInputToken.selector, address(usd)));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongInputToken.selector, address(usd)));
         caller.settle(program, address(usd), 50e6, data);
         assertEq(earnShare.balanceOf(router), shares, "nothing taken");
     }
@@ -310,7 +310,7 @@ contract BridgeProgramTest is AccessKeys {
     /// @notice A handler that takes the input but pays the destination short cannot look settled.
     function test_rejectsAHandlerThatPaysShort() public {
         _replaceHandler(ISpenderHandler(address(new ShortPayingSpendHandler(IFactory(address(bridgeFactory))))));
-        _expectSettleRevert(AMOUNT, abi.encodeWithSelector(CardProgram.DestinationNotCredited.selector));
+        _expectSettleRevert(AMOUNT, abi.encodeWithSelector(CardSpender.DestinationNotCredited.selector));
     }
 
     /// @notice A token that calls back into the program while the clone pulls the input hits the
@@ -318,14 +318,14 @@ contract BridgeProgramTest is AccessKeys {
     function test_rejectsReentrancy() public {
         ReentrantToken token = new ReentrantToken();
         token.mint(router, AMOUNT);
-        token.arm(address(program), abi.encodeCall(CardProgram.settle, (address(token), 1, "")));
+        token.arm(address(program), abi.encodeCall(CardSpender.settle, (address(token), 1, "")));
         CardSpend memory spend = _stableSpend(AMOUNT);
         spend.token = address(token);
 
         _settle(address(token), AMOUNT, spend);
 
         assertTrue(token.reentered(), "token re-entered");
-        assertEq(bytes4(token.reentryError()), CardProgram.Reentrancy.selector);
+        assertEq(bytes4(token.reentryError()), CardSpender.Reentrancy.selector);
         assertEq(token.balanceOf(settlement), AMOUNT, "destination paid");
         assertEq(token.balanceOf(address(program)), 0);
     }
@@ -358,7 +358,7 @@ contract BridgeProgramTest is AccessKeys {
             spend.ref, address(program), settlement, address(usd), AMOUNT, AMOUNT, 0, 0
         );
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.CardSpent(spend.ref, alice, settlement, address(usd), AMOUNT, 0, 0, false);
+        emit CardSpender.CardSpent(spend.ref, alice, settlement, address(usd), AMOUNT, 0, 0, false);
         vm.prank(alice);
         program.spend(spend);
 
@@ -381,7 +381,7 @@ contract BridgeProgramTest is AccessKeys {
         uint256 before = usd.balanceOf(settlement);
 
         vm.expectEmit(true, true, true, true, address(program));
-        emit CardProgram.CardSpent(spend.ref, alice, settlement, address(usd), AMOUNT, AMOUNT, burned, false);
+        emit CardSpender.CardSpent(spend.ref, alice, settlement, address(usd), AMOUNT, AMOUNT, burned, false);
         vm.prank(alice);
         program.spend(spend);
 
@@ -400,7 +400,7 @@ contract BridgeProgramTest is AccessKeys {
         vm.prank(alice);
         usd.approve(address(program), AMOUNT);
         vm.prank(alice);
-        vm.expectRevert(CardProgram.DestinationNotCredited.selector);
+        vm.expectRevert(CardSpender.DestinationNotCredited.selector);
         program.spend(_stableSpend(AMOUNT));
         assertEq(usd.balanceOf(thief), 0, "nothing diverted");
         assertEq(usd.balanceOf(alice), 100e6, "nothing taken");

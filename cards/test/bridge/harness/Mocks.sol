@@ -191,15 +191,15 @@ contract OverReturningSpendHandler is SpenderBase {
     }
 }
 
-/// @notice Answers a `CardProgram`'s identity getters with other code, as an older build would, and
+/// @notice Answers a `CardSpender`'s identity getters with other code, as an older build would, and
 ///         settles nothing.
-contract OlderCardProgram {
-    address public immutable ISSUER;
+contract OlderCardSpender {
+    address public immutable PROVIDER;
     address public immutable GUARDIAN;
     bool public guardianPaused;
 
     constructor(address issuer_, address guardian_) {
-        ISSUER = issuer_;
+        PROVIDER = issuer_;
         GUARDIAN = guardian_;
     }
 

@@ -33,8 +33,8 @@ library SpenderTempoSpendStorageLib {
 /// @notice Bridge spender handler (prefix "TS") that settles Tempo card spend from stablecoin,
 ///         Tempo Earn shares, or both, publicly or from a Zone.
 /// @dev Runs by delegatecall inside a Bridge spender clone, so the factory's destinations and
-///      pause govern every spend. The payer is the program's `CardProgram`, which submits a `Spend`
-///      through `publicCall "PS"` (built by its `BridgeIssuer`) from the input of a public spend or of a
+///      pause govern every spend. The payer is the program's `CardSpender`, which submits a `Spend`
+///      through `publicCall "PS"` (built by its `BridgeProvider`) from the input of a public spend or of a
 ///      Zone withdrawal its router sent it.
 ///      Bridge's pull pipeline (`transferToDestination`) is not used: it needs a standing
 ///      allowance and cannot reach Zone balances.

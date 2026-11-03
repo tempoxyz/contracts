@@ -7,8 +7,8 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { IBridgeSpenderClone } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { AccessKeys } from "../harness/AccessKeys.sol";
 import { TxCall } from "../harness/lib/TempoTx.sol";
@@ -39,7 +39,7 @@ contract AccessKeySecurityTest is AccessKeys {
         limits[0] = limit;
         IAccountKeychain.CallScope[] memory scopes = new IAccountKeychain.CallScope[](2);
         scopes[0] = _scope(address(usd), ITIP20.approve.selector, address(program));
-        scopes[1] = _scope(address(program), CardProgram.spend.selector, address(0));
+        scopes[1] = _scope(address(program), CardSpender.spend.selector, address(0));
         _authorizeBridgeKey(account, tokens, limits, scopes);
     }
 
@@ -72,7 +72,7 @@ contract AccessKeySecurityTest is AccessKeys {
         CardSpend memory s = _spend(10e6);
         s.destination = attacker;
         _assertRejected(
-            _approveAndSpend(10e6, s), abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, attacker)
+            _approveAndSpend(10e6, s), abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, attacker)
         );
         assertEq(usd.balanceOf(attacker), 0);
     }
@@ -104,7 +104,7 @@ contract AccessKeySecurityTest is AccessKeys {
         _scopePublicKey(1000e6);
         CardSpend memory s = _spend(10e6);
         s.program = attacker;
-        _assertRejected(_approveAndSpend(10e6, s), abi.encodeWithSelector(CardProgram.WrongProgram.selector, attacker));
+        _assertRejected(_approveAndSpend(10e6, s), abi.encodeWithSelector(CardSpender.WrongProgram.selector, attacker));
     }
 
     /// @notice Gating "TS" without allowlisting the program closes the program's path.
@@ -144,7 +144,7 @@ contract AccessKeySecurityTest is AccessKeys {
 
         _assertRejected(
             _approveAndSpend(10e6, _spend(10e6)),
-            abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, settlement)
+            abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, settlement)
         );
         CardSpend memory s = _spend(10e6);
         s.destination = next;
@@ -181,7 +181,7 @@ contract AccessKeySecurityTest is AccessKeys {
         vm.stopPrank();
         uint256 bobBefore = usd.balanceOf(bob);
 
-        TxCall[] memory spendOnly = _call(address(program), abi.encodeCall(CardProgram.spend, (_spend(10e6))));
+        TxCall[] memory spendOnly = _call(address(program), abi.encodeCall(CardSpender.spend, (_spend(10e6))));
         _assertRejected(spendOnly, abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector));
         _assertRejected(
             _call(address(usd), abi.encodeCall(ITIP20.transferFrom, (bob, settlement, uint256(10e6)))),
@@ -254,7 +254,7 @@ contract AccessKeySecurityTest is AccessKeys {
     function _approveAndSpend(uint256 approval, CardSpend memory s) internal view returns (TxCall[] memory calls) {
         calls = new TxCall[](3);
         calls[0] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (address(program), approval)));
-        calls[1] = TxCall(address(program), 0, abi.encodeCall(CardProgram.spend, (s)));
+        calls[1] = TxCall(address(program), 0, abi.encodeCall(CardSpender.spend, (s)));
         calls[2] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (address(program), 0)));
     }
 

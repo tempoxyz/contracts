@@ -3,14 +3,14 @@ pragma solidity ^0.8.36;
 
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { ICardIssuer } from "../../../src/core/interfaces/ICardIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { ICardProvider } from "../../../src/core/interfaces/ICardProvider.sol";
 import { RainEnv } from "../harness/RainEnv.sol";
 
-/// @notice `RainIssuer` on a `CardProgram`: which Rain collateral a public and a private spend may
+/// @notice `RainProvider` on a `CardSpender`: which Rain collateral a public and a private spend may
 ///         fund, from stablecoin or Earn, and Rain's pause key.
-contract RainIssuerTest is RainEnv {
+contract RainProviderTest is RainEnv {
     function setUp() public {
         _deployWorld();
         usd.mint(alice, 1000e6);
@@ -53,8 +53,8 @@ contract RainIssuerTest is RainEnv {
         vm.prank(bob);
         (ok,) = aliceCollateral.call(abi.encodeWithSignature("addAdmin(address)", bob));
         assertTrue(ok);
-        assertTrue(issuer.isAuthorizedDestination(bob, aliceCollateral, address(usd), aliceIndex, false));
-        assertFalse(issuer.isAuthorizedDestination(alice, aliceCollateral, address(usd), aliceIndex, false));
+        assertTrue(provider.isAuthorizedDestination(bob, aliceCollateral, address(usd), aliceIndex, false));
+        assertFalse(provider.isAuthorizedDestination(alice, aliceCollateral, address(usd), aliceIndex, false));
     }
 
     function test_revert_wrongIndex() public {
@@ -62,8 +62,8 @@ contract RainIssuerTest is RainEnv {
     }
 
     function test_revert_indexPastTheEnd() public view {
-        assertFalse(issuer.isAuthorizedDestination(alice, aliceCollateral, address(usd), 3, false));
-        assertFalse(issuer.isAuthorizedDestination(alice, aliceCollateral, address(usd), type(uint256).max, false));
+        assertFalse(provider.isAuthorizedDestination(alice, aliceCollateral, address(usd), 3, false));
+        assertFalse(provider.isAuthorizedDestination(alice, aliceCollateral, address(usd), type(uint256).max, false));
     }
 
     /// @dev A proxy on Rain's own beacon, owned by Alice, that Rain's factory did not create.
@@ -73,18 +73,18 @@ contract RainIssuerTest is RainEnv {
             new BeaconProxy(rain.factory.getBeacon(), abi.encodeWithSignature("initialize(string,address)", "x", alice))
         );
         for (uint256 i; i < 6; ++i) {
-            assertFalse(issuer.isAuthorizedDestination(alice, fake, address(usd), i, false));
+            assertFalse(provider.isAuthorizedDestination(alice, fake, address(usd), i, false));
         }
     }
 
     function test_revert_beaconIsNotADestination() public view {
         for (uint256 i; i < 4; ++i) {
-            assertFalse(issuer.isAuthorizedDestination(alice, rain.factory.getBeacon(), address(usd), i, false));
+            assertFalse(provider.isAuthorizedDestination(alice, rain.factory.getBeacon(), address(usd), i, false));
         }
     }
 
     function test_revert_tokenNotAccepted() public view {
-        assertFalse(issuer.isAuthorizedDestination(alice, aliceCollateral, address(otherUsd), aliceIndex, false));
+        assertFalse(provider.isAuthorizedDestination(alice, aliceCollateral, address(otherUsd), aliceIndex, false));
     }
 
     // ------------------------------------------------------------------
@@ -124,21 +124,21 @@ contract RainIssuerTest is RainEnv {
     function test_pause_stopsEverySpendUntilResumed() public {
         vm.prank(rainPauser);
         vm.expectEmit(address(program));
-        emit CardProgram.GuardianPausedSet(true);
+        emit CardSpender.GuardianPausedSet(true);
         program.setPaused(true);
 
         CardSpend memory s = _stableSpend(aliceCollateral, aliceIndex, 1e6, "paused");
         vm.prank(alice);
         usd.approve(address(program), 1e6);
         vm.prank(alice);
-        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         program.spend(s);
 
         CardSpend memory p = _stableSpend(programCollateral, programCollateralIndex, 1e6, "paused.private");
         vm.prank(router);
         usd.transfer(address(program), 1e6);
         vm.prank(router);
-        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
         program.settle(address(usd), 1e6, abi.encode(p));
 
         vm.prank(rainPauser);
@@ -150,14 +150,15 @@ contract RainIssuerTest is RainEnv {
 
     function test_revert_onlyThePauserPauses() public {
         vm.prank(alice);
-        vm.expectRevert(CardProgram.NotGuardian.selector);
+        vm.expectRevert(CardSpender.NotGuardian.selector);
         program.setPaused(true);
     }
 
     function test_revert_noPauserMeansNoPause() public {
-        CardProgram unpausable = CardProgram(factory.deploy("rain.unguarded", ICardIssuer(address(issuer)), address(0)));
+        CardSpender unpausable =
+            CardSpender(factory.deploy("rain.unguarded", ICardProvider(address(provider)), address(0)));
         vm.prank(address(0));
-        vm.expectRevert(CardProgram.NotGuardian.selector);
+        vm.expectRevert(CardSpender.NotGuardian.selector);
         unpausable.setPaused(true);
         assertFalse(unpausable.paused());
     }
@@ -169,7 +170,7 @@ contract RainIssuerTest is RainEnv {
         vm.prank(payer);
         usd.approve(address(program), 1e6);
         vm.prank(payer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, destination));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, destination));
         program.spend(s);
     }
 
@@ -178,7 +179,7 @@ contract RainIssuerTest is RainEnv {
         vm.prank(router);
         usd.transfer(address(program), 1e6);
         vm.prank(router);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, destination));
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, destination));
         program.settle(address(usd), 1e6, abi.encode(s));
         // Not settled: take the input back for the next attempt.
         vm.prank(address(program));

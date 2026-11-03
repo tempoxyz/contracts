@@ -14,7 +14,7 @@ The card is approved once the pull is `Submitted`, and a failure after that is a
 the issuer absorbs.
 
 Card spend on Tempo keeps the first three stages and replaces the transfer with the program's
-`CardProgram`, which pays through the program clone's new `TS` handler. The transaction is signed by
+`CardSpender`, which pays through the program clone's new `TS` handler. The transaction is signed by
 an issuer-held **access key on the cardholder's account**, not by the debitor, and it calls the
 program's `spend`, which calls the clone's `publicCall`, not `transferToDestination`, which `TS`
 reverts.
@@ -139,7 +139,7 @@ approves those tokens. Unsponsored, the cardholder approves `input + withdrawalF
   program is [prepared](deploy.md#6-prepare-the-program-for-low-callback-gas) and its own vault
   measured; a prepared program needs far less (see [`design.md`](design.md#callback-gas)).
 - `callbackData` is `abi.encode(SpendData)`: `op = 2` (Spend), `settler` (the
-  program's `CardProgram` address), `maxInput`, `settlerData = abi.encode(CardSpend)` and `zoneReturn`. That
+  program's `CardSpender` address), `maxInput`, `settlerData = abi.encode(CardSpend)` and `zoneReturn`. That
   `SpendReturn` is the encrypted deposit (`keyIndex`, `encrypted`) that sends unused input back to
   the cardholder, a public `refundRecipient` for when the Zone rejects
   it, and `maxDepositFee`, the most the portal may keep, which is the fee the change covers. Build a

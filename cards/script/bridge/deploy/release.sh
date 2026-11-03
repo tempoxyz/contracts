@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Deploys the card integration's ownerless contracts for a SpenderFactory at their deterministic
 # addresses, or reuses those already there: the "TS" handler (tempoSpend), at its release address
-# (script/bridge/deploy/BridgeRelease.sol), or a Bridge card program's CardProgram (bridgeProgram):
-# the release CardFactory and the program's BridgeIssuer, each at its release address, and the
-# program, which that CardFactory creates at the address its program ID (the spender ID), issuer and
+# (script/bridge/deploy/BridgeRelease.sol), or a Bridge card program's CardSpender (bridgeProgram):
+# the release CardFactory and the program's BridgeProvider, each at its release address, and the
+# program, which that CardFactory creates at the address its program ID (the spender ID), provider and
 # guardian fix. It checks that the run created exactly the missing contracts, each at the address
 # predicted here from the locally compiled creation code, and, after a broadcast to a hosted
 # network, that Tempo's verifier has the source of every one. Bridge running the deploy scripts
@@ -157,9 +157,9 @@ if [[ "$contract" == tempoSpend ]]; then
     "$(cast abi-encode "f(address)" "$FACTORY")" deployer
 else
   add CardFactory src/core/CardFactory.sol:CardFactory cardFactory 0x deployer
-  add BridgeIssuer src/providers/bridge/BridgeIssuer.sol:BridgeIssuer issuer \
+  add BridgeProvider src/providers/bridge/BridgeProvider.sol:BridgeProvider provider \
     "$(cast abi-encode "f(address,bytes32)" "$FACTORY" "$SPENDER_ID")" deployer
-  add CardProgram src/core/CardProgram.sol:CardProgram program '' cardFactory
+  add CardSpender src/core/CardSpender.sol:CardSpender program '' cardFactory
 fi
 
 # Each address, from this checkout's compiled creation code.
@@ -167,8 +167,8 @@ create2() { cast to-check-sum-address "0x$(cast keccak "0xff${1#0x}${2#0x}${3#0x
 for i in "${!names[@]}"; do
   creation=$(env -u DEPLOYER_PRIVATE_KEY forge inspect "${sources[$i]}" bytecode)
   [[ "$creation" =~ ^0x[0-9a-fA-F]+$ ]] || die "forge returned no creation code for ${sources[$i]}"
-  if [[ "${names[$i]}" == CardProgram ]]; then
-    # CardFactory.deploy: salt keccak256(abi.encode(programId, issuer, guardian)), under the factory.
+  if [[ "${names[$i]}" == CardSpender ]]; then
+    # CardFactory.deploy: salt keccak256(abi.encode(programId, provider, guardian)), under the factory.
     args[i]=$(cast abi-encode "f(address,address)" "${addresses[1]}" "$guardian")
     inits[i]=$(tr '[:upper:]' '[:lower:]' <<<"${creation}${args[$i]#0x}")
     salt=$(cast keccak "$(cast abi-encode "f(bytes32,address,address)" "$SPENDER_ID" "${addresses[1]}" "$guardian")")

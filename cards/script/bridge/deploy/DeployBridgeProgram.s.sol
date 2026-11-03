@@ -5,15 +5,15 @@ import { VmSafe } from "forge-std/Vm.sol";
 import { console } from "forge-std/console.sol";
 
 import { CardFactory } from "../../../src/core/CardFactory.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
-import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeProgramRelease } from "./BridgeRelease.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
-/// @notice Deploys one Bridge card program's `CardProgram`, after checking the program's clone was created
-///         for its ID: the release `CardFactory` and the program's `BridgeIssuer` at their deterministic
-///         addresses (`BridgeProgramRelease`), then `CardFactory.deploy(spenderId, issuer, guardian)`. Each
+/// @notice Deploys one Bridge card program's `CardSpender`, after checking the program's clone was created
+///         for its ID: the release `CardFactory` and the program's `BridgeProvider` at their deterministic
+///         addresses (`BridgeProgramRelease`), then `CardFactory.deploy(spenderId, provider, guardian)`. Each
 ///         one already there is reused. The program is the cardholders' public spend entry point and the
 ///         settler a Spend-mode Zone router lists, which is a Zone router release (`DeployZoneRouter`).
 ///         `run` reads FACTORY (the spender factory), SPENDER_ID, GUARDIAN (optional: zero, the default,
@@ -26,13 +26,13 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         address clone;
         address guardian;
         CardFactory cardFactory;
-        BridgeIssuer issuer;
-        CardProgram program;
+        BridgeProvider provider;
+        CardSpender program;
         /// @dev False when the program already existed at its address, so nothing was sent for it.
         bool created;
     }
 
-    function run() external returns (CardProgram) {
+    function run() external returns (CardSpender) {
         Output memory o = deploy(
             IBridgeSpenderFactory(vm.envAddress("FACTORY")),
             vm.envBytes32("SPENDER_ID"),
@@ -63,7 +63,7 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         o.spenderId = spenderId;
         o.guardian = guardian;
         o.cardFactory = c.cardFactory;
-        o.issuer = c.issuer;
+        o.provider = c.provider;
         o.program = c.program;
         o.created = c.programCreated;
     }
@@ -75,7 +75,7 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         vm.serializeAddress(key, "clone", o.clone);
         vm.serializeAddress(key, "guardian", o.guardian);
         vm.serializeAddress(key, "cardFactory", address(o.cardFactory));
-        vm.serializeAddress(key, "issuer", address(o.issuer));
+        vm.serializeAddress(key, "provider", address(o.provider));
         vm.serializeBool(key, "created", o.created);
         vm.writeJson(vm.serializeAddress(key, "program", address(o.program)), path);
     }
@@ -96,11 +96,11 @@ function checkProgram(IBridgeSpenderFactory factory, bytes32 spenderId) view ret
 }
 
 /// @dev The program pays through `factory`'s clone for `spenderId` and `guardian` alone can pause it.
-function requireProgram(CardProgram program, IBridgeSpenderFactory factory, bytes32 spenderId, address guardian) view {
-    BridgeIssuer issuer = BridgeIssuer(address(program.ISSUER()));
+function requireProgram(CardSpender program, IBridgeSpenderFactory factory, bytes32 spenderId, address guardian) view {
+    BridgeProvider provider = BridgeProvider(address(program.PROVIDER()));
     require(
-        address(issuer.FACTORY()) == address(factory) && issuer.SPENDER_ID() == spenderId
-            && program.PAYOUT_TARGET() == issuer.CLONE() && program.GUARDIAN() == guardian,
+        address(provider.FACTORY()) == address(factory) && provider.SPENDER_ID() == spenderId
+            && program.PAYOUT_TARGET() == provider.CLONE() && program.GUARDIAN() == guardian,
         "program is bound to another Bridge program"
     );
 }

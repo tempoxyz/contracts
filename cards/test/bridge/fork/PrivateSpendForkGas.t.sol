@@ -16,9 +16,9 @@ import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { CardFactory } from "../../../src/core/CardFactory.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { ICardIssuer } from "../../../src/core/interfaces/ICardIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { ICardProvider } from "../../../src/core/interfaces/ICardProvider.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 
@@ -91,8 +91,8 @@ contract CallbackDriver {
     }
 }
 
-/// @notice Private-spend callback gas through a Spend-mode ZoneRouter, the program's CardProgram (over its
-///         BridgeIssuer) and Bridge's clone with the TS handler, on a Tempo mainnet fork against the production OUSD EarnVault
+/// @notice Private-spend callback gas through a Spend-mode ZoneRouter, the program's CardSpender (over its
+///         BridgeProvider) and Bridge's clone with the TS handler, on a Tempo mainnet fork against the production OUSD EarnVault
 ///         and Zone 2's real portal and messenger.
 /// @dev Inert unless forked to Tempo mainnet: pass --fork-url, or set FORK_URL. Needs mainnet's active
 ///      hardfork (tempo_forkSchedule: T12 at block 46.08M); under this project's tempo:T8 the fork's
@@ -118,7 +118,7 @@ contract PrivateSpendForkGasTest is Test {
     address internal programRefundRecipient = makeAddr("bridge.zone-refund-recipient");
     address internal zoneUser = makeAddr("zone.cardholder");
 
-    CardProgram internal program;
+    CardSpender internal program;
     ZoneRouterFactory internal routerFactory;
     ZoneRouter internal router;
     CallbackDriver internal driver;
@@ -147,9 +147,11 @@ contract PrivateSpendForkGasTest is Test {
 
         _deployBridge();
         // From their artifacts, as the harness does.
-        address issuer = deployCode("BridgeIssuer.sol:BridgeIssuer", abi.encode(address(bridgeFactory), SPENDER_ID));
-        program = CardProgram(
-            CardFactory(deployCode("CardFactory.sol:CardFactory")).deploy(SPENDER_ID, ICardIssuer(issuer), address(0))
+        address provider =
+            deployCode("BridgeProvider.sol:BridgeProvider", abi.encode(address(bridgeFactory), SPENDER_ID));
+        program = CardSpender(
+            CardFactory(deployCode("CardFactory.sol:CardFactory"))
+                .deploy(SPENDER_ID, ICardProvider(provider), address(0))
         );
         routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
         ZoneRouter.Mode memory mode;
@@ -181,7 +183,7 @@ contract PrivateSpendForkGasTest is Test {
         vm.stopPrank();
 
         vm.label(address(router), "ZoneRouter");
-        vm.label(address(program), "CardProgram");
+        vm.label(address(program), "CardSpender");
         vm.label(clone, "Bridge.SpenderClone");
         vm.label(Mainnet.PORTAL, "Zone2Portal");
         vm.label(Mainnet.EARN_VAULT, "EarnVault.OUSD");

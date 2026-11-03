@@ -11,7 +11,7 @@ a small set of hooks, so a new design gets the whole suite by writing one adapte
 | Access-key transactions                      | Signed Tempo transactions via `vm.executeTransaction`                                          | Real                           |
 | Tempo Earn                                   | `EarnFactory`, `EarnVault`, native EarnShare, `ERC4626Engine` over a demo venue                | Real contracts, demo venue     |
 | The issuer                                   | `SpenderFactory`, EA, P2 (with Uniswap Permit2), TF and the unmerged EV handler                | Real contracts                 |
-| The Tempo program                            | `CardFactory`, `CardProgram` and `BridgeIssuer` over the factory's clone and "TS"              | Real contracts                 |
+| The Tempo program                            | `CardFactory`, `CardSpender` and `BridgeProvider` over the factory's clone and "TS"            | Real contracts                 |
 | Zone, Tempo side                             | `ZonePortal`, `ZoneMessenger`, `Verifier` at canonical addresses, with the Zone factory mocked | Real contracts, mocked factory |
 | Zone, Zone side                              | `ZoneEnv`: shadow TIP-20 balances, outbox, sequencer, encrypted deposits                       | Modeled                        |
 | The card processor and issuer's card backend | `CardProgramModel`                                                                             | Modeled                        |
@@ -29,7 +29,7 @@ real keychain enforces Zone key limits and scopes. `ZoneEnv` plays sequencer:
 Deposit payloads are XOR-encrypted with a per-deposit nonce, so Tempo data never carries the
 recipient.
 
-**The card program model.** `CardProgramModel` (not the `CardProgram` contract) follows the issuer's noncustodial just-in-time cards:
+**The card program model.** `CardProgramModel` (not the `CardSpender` contract) follows the issuer's noncustodial just-in-time cards:
 
 - An authorization pulls its hold first: the amount, a 20% buffer for restaurants, bars, fast
   food, taxis and car rentals, a $100 hold for a $1 fuel-pump preauthorization, plus any estimated

@@ -4,26 +4,26 @@ pragma solidity ^0.8.36;
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import { CardSpend } from "../../core/CardSpend.sol";
-import { ICardIssuer, ICardIssuerPayout } from "../../core/interfaces/ICardIssuer.sol";
+import { ICardProvider, ICardProviderPayout } from "../../core/interfaces/ICardProvider.sol";
 import { Spend } from "./interfaces/IBridgeSpender.sol";
 import { IBridgeSpenderClone, IBridgeSpenderFactory } from "./interfaces/IBridgeSpenderFactory.sol";
 
-/// @title BridgeIssuer
-/// @notice The `ICardIssuer` for one Bridge card program (`SPENDER_ID` in Bridge's `SpenderFactory`). Its
+/// @title BridgeProvider
+/// @notice The `ICardProvider` for one Bridge card program (`SPENDER_ID` in Bridge's `SpenderFactory`). Its
 ///         program pays through the program's spender clone as the payer, with the "TS" handler
 ///         (`SpenderTempoSpend`) settling a `Spend`, so Bridge's factory governs every spend: destinations,
 ///         pause, handler routing and the Earn vault allowlist. Specified in docs/cards/bridge/design.md.
 /// @dev Reads Bridge's factory and clone and holds nothing. Its answers mirror what the clone itself
 ///      enforces, so a spend Bridge would refuse is refused before any funds move; the clone stays the
 ///      authority. A Bridge settlement wallet is shared by every cardholder, so it serves private spends too.
-contract BridgeIssuer is ICardIssuer, ICardIssuerPayout {
+contract BridgeProvider is ICardProvider, ICardProviderPayout {
     bytes2 private constant HANDLER = "TS";
     bytes2 private constant PUBLIC_SPEND = "PS";
     bytes2 private constant GET_VAULT = "GV";
 
     IBridgeSpenderFactory public immutable FACTORY;
     bytes32 public immutable SPENDER_ID;
-    /// @notice The program's spender clone, which its `CardProgram` pays through.
+    /// @notice The program's spender clone, which its `CardSpender` pays through.
     address public immutable CLONE;
 
     error NoClone();
@@ -38,7 +38,7 @@ contract BridgeIssuer is ICardIssuer, ICardIssuerPayout {
         CLONE = clone;
     }
 
-    /// @inheritdoc ICardIssuer
+    /// @inheritdoc ICardProvider
     function isAuthorizedDestination(address, address destination, address, uint256, bool)
         external
         view
@@ -47,7 +47,7 @@ contract BridgeIssuer is ICardIssuer, ICardIssuerPayout {
         return FACTORY.isAuthorizedDestination(SPENDER_ID, destination);
     }
 
-    /// @inheritdoc ICardIssuer
+    /// @inheritdoc ICardProvider
     /// @dev The vault allowlist the "TS" handler keeps in the clone (`publicGetCall "GV"`). A clone without
     ///      the handler reads as no vault.
     function isAllowedVault(address vault) external view returns (bool) {
@@ -59,17 +59,17 @@ contract BridgeIssuer is ICardIssuer, ICardIssuerPayout {
         return inner.length >= 32 && abi.decode(inner, (bool));
     }
 
-    /// @inheritdoc ICardIssuer
+    /// @inheritdoc ICardProvider
     function paused() external view returns (bool) {
         return FACTORY.paused();
     }
 
-    /// @inheritdoc ICardIssuerPayout
+    /// @inheritdoc ICardProviderPayout
     function payoutTarget() external view returns (address) {
         return CLONE;
     }
 
-    /// @inheritdoc ICardIssuerPayout
+    /// @inheritdoc ICardProviderPayout
     /// @dev `publicCall "TS" "PS"` with the `Spend` the handler settles, paid by the caller (the program).
     function payoutData(CardSpend calldata s) external view returns (bytes memory) {
         Spend memory spend = Spend({
@@ -87,7 +87,7 @@ contract BridgeIssuer is ICardIssuer, ICardIssuerPayout {
     }
 
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return interfaceId == type(ICardIssuer).interfaceId || interfaceId == type(ICardIssuerPayout).interfaceId
+        return interfaceId == type(ICardProvider).interfaceId || interfaceId == type(ICardProviderPayout).interfaceId
             || interfaceId == type(IERC165).interfaceId;
     }
 }

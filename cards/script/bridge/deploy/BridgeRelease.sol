@@ -5,9 +5,9 @@ import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { DeterministicRelease } from "tempo-earn/../script/deploy/DeterministicRelease.sol";
 
 import { CardFactory } from "../../../src/core/CardFactory.sol";
-import { CardProgram } from "../../../src/core/CardProgram.sol";
-import { ICardIssuer } from "../../../src/core/interfaces/ICardIssuer.sol";
-import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
+import { CardSpender } from "../../../src/core/CardSpender.sol";
+import { ICardProvider } from "../../../src/core/interfaces/ICardProvider.sol";
+import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 
@@ -46,27 +46,28 @@ abstract contract BridgeRelease is ReleaseAt {
 }
 
 /// @notice A Bridge card program's release (`DeployBridgeProgram`, `DeployZoneRouter`): the shared
-///         `CardFactory` and the program's `BridgeIssuer` at their release addresses, and the program's
-///         `CardProgram`, which that factory creates at the address its program ID (the Bridge spender ID),
-///         issuer and guardian fix.
+///         `CardFactory` and the program's `BridgeProvider` at their release addresses, and the program's
+///         `CardSpender`, which that factory creates at the address its program ID (the Bridge spender ID),
+///         provider and guardian fix.
 abstract contract BridgeProgramRelease is ReleaseAt {
     /// @notice The address the release `CardFactory` is created at, shared by every program.
     function cardFactoryAddress() public pure returns (address) {
         return _releaseAddress(type(CardFactory).creationCode);
     }
 
-    /// @notice The address the `BridgeIssuer` for `factory`'s program `spenderId` is created at.
-    function bridgeIssuerAddress(address factory, bytes32 spenderId) public pure returns (address) {
-        return _releaseAddress(abi.encodePacked(type(BridgeIssuer).creationCode, abi.encode(factory, spenderId)));
+    /// @notice The address the `BridgeProvider` for `factory`'s program `spenderId` is created at.
+    function bridgeProviderAddress(address factory, bytes32 spenderId) public pure returns (address) {
+        return _releaseAddress(abi.encodePacked(type(BridgeProvider).creationCode, abi.encode(factory, spenderId)));
     }
 
-    /// @notice The address the release `CardFactory` creates the program's `CardProgram` at, with
+    /// @notice The address the release `CardFactory` creates the program's `CardSpender` at, with
     ///         `guardian` (zero for none) able to pause it.
     function bridgeProgramAddress(address factory, bytes32 spenderId, address guardian) public pure returns (address) {
-        address issuer = bridgeIssuerAddress(factory, spenderId);
-        bytes32 initCodeHash = keccak256(abi.encodePacked(type(CardProgram).creationCode, abi.encode(issuer, guardian)));
+        address provider = bridgeProviderAddress(factory, spenderId);
+        bytes32 initCodeHash =
+            keccak256(abi.encodePacked(type(CardSpender).creationCode, abi.encode(provider, guardian)));
         return vm.computeCreate2Address(
-            keccak256(abi.encode(spenderId, issuer, guardian)), initCodeHash, cardFactoryAddress()
+            keccak256(abi.encode(spenderId, provider, guardian)), initCodeHash, cardFactoryAddress()
         );
     }
 
@@ -78,15 +79,15 @@ abstract contract BridgeProgramRelease is ReleaseAt {
         _requireAt(address(cardFactory), predicted);
     }
 
-    /// @dev Creates the program's `BridgeIssuer` at its deterministic address, or returns the one there.
-    function _bridgeIssuer(IBridgeSpenderFactory factory, bytes32 spenderId)
+    /// @dev Creates the program's `BridgeProvider` at its deterministic address, or returns the one there.
+    function _bridgeProvider(IBridgeSpenderFactory factory, bytes32 spenderId)
         internal
-        returns (BridgeIssuer issuer, bool created)
+        returns (BridgeProvider provider, bool created)
     {
-        address predicted = bridgeIssuerAddress(address(factory), spenderId);
+        address predicted = bridgeProviderAddress(address(factory), spenderId);
         created = predicted.code.length == 0;
-        issuer = created ? new BridgeIssuer{ salt: RELEASE_SALT }(factory, spenderId) : BridgeIssuer(predicted);
-        _requireAt(address(issuer), predicted);
+        provider = created ? new BridgeProvider{ salt: RELEASE_SALT }(factory, spenderId) : BridgeProvider(predicted);
+        _requireAt(address(provider), predicted);
     }
 
     /// @dev Creates the factory, the issuer and the program, each only when missing. The program is the
@@ -96,20 +97,20 @@ abstract contract BridgeProgramRelease is ReleaseAt {
         returns (Created memory c)
     {
         (c.cardFactory, c.cardFactoryCreated) = _cardFactory();
-        (c.issuer, c.issuerCreated) = _bridgeIssuer(factory, spenderId);
+        (c.provider, c.providerCreated) = _bridgeProvider(factory, spenderId);
         address predicted = bridgeProgramAddress(address(factory), spenderId, guardian);
         c.programCreated = predicted.code.length == 0;
-        if (c.programCreated) c.cardFactory.deploy(spenderId, ICardIssuer(address(c.issuer)), guardian);
-        c.program = CardProgram(predicted);
-        _requireAt(predicted, c.cardFactory.predict(spenderId, ICardIssuer(address(c.issuer)), guardian));
+        if (c.programCreated) c.cardFactory.deploy(spenderId, ICardProvider(address(c.provider)), guardian);
+        c.program = CardSpender(predicted);
+        _requireAt(predicted, c.cardFactory.predict(spenderId, ICardProvider(address(c.provider)), guardian));
     }
 
     struct Created {
         CardFactory cardFactory;
-        BridgeIssuer issuer;
-        CardProgram program;
+        BridgeProvider provider;
+        CardSpender program;
         bool cardFactoryCreated;
-        bool issuerCreated;
+        bool providerCreated;
         bool programCreated;
     }
 }

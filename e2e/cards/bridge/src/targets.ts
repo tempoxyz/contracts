@@ -5,7 +5,7 @@
 //   as the Zone's admin, enables pathUSD, registers the program's ZoneRouter as a gateway and admits
 //   its accounts, then runs the deployment preflight against it.
 // - moderato: Tempo's testnet L1 and its hosted Zone 3, reached through Tempo API. The program is
-//   deployed once (`--deploy`) and recorded in targets/moderato.json; a record without a CardProgram
+//   deployed once (`--deploy`) and recorded in targets/moderato.json; a record without a CardSpender
 //   and router gets them from script/bridge/deploy/DeployZoneRouter.s.sol. A run changes the Zone's Portal
 //   only with `--admit`: otherwise, when the router, cardholder, program wallet or refund recipient
 //   lacks the role the Portal requires, the private steps report BLOCKED with the call the Zone administrator must make.
@@ -66,12 +66,12 @@ export type Program = {
   factory: Address
   clone: Address
   /**
-   * The card program's CardProgram: takes public spends (`spend`) and, as the router's settler,
+   * The card program's CardSpender: takes public spends (`spend`) and, as the router's settler,
    * private ones (`settle`), and pays both through the clone's "TS" handler.
    */
   program: Address
-  /** The program's BridgeIssuer: the CardProgram's issuer over the clone. */
-  issuer: Address
+  /** The program's BridgeProvider: the CardSpender's provider over the clone. */
+  provider: Address
   /** The CardFactory that deployed `program` at its CREATE2 address for `spenderId`. */
   cardFactory: Address
   /** The factory-deployed ZoneRouter in Spend mode that lists `program`: the Zone's gateway. */
@@ -119,7 +119,7 @@ export type EarnTarget = {
 
 /**
  * A ZoneRouter with Earn deposit and redeem of a private stablecoin that converts to the vault asset at
- * par through a DirectPropAMM pool, and Spend through the program's CardProgram and a SendSettler,
+ * par through a DirectPropAMM pool, and Spend through the program's CardSpender and a SendSettler,
  * with the keys that administer its pool and Zone.
  */
 export type RouterFlowsTarget = {
@@ -252,16 +252,16 @@ function deployProgram(
 }
 
 /**
- * The CardProgram (with its BridgeIssuer and CardFactory) and Spend router
+ * The CardSpender (with its BridgeProvider and CardFactory) and Spend router
  * script/bridge/deploy/DeployZoneRouter.s.sol deploys for a program.
  */
 type RouterDeployment = Pick<
   Program,
-  'program' | 'issuer' | 'cardFactory' | 'router' | 'routerFactory'
+  'program' | 'provider' | 'cardFactory' | 'router' | 'routerFactory'
 >
 
 /**
- * Deploys a program's CardProgram, through the CardFactory with a BridgeIssuer over its clone and no
+ * Deploys a program's CardSpender, through the CardFactory with a BridgeProvider over its clone and no
  * guardian, and its Spend-mode ZoneRouter through the router factory.
  */
 async function deployRouter(
@@ -298,10 +298,10 @@ async function deployRouter(
       }),
     },
   )
-  const { program, issuer, cardFactory, router, routerFactory } = JSON.parse(
+  const { program, provider, cardFactory, router, routerFactory } = JSON.parse(
     readFileSync(resolve(root, out), 'utf8'),
   ) as RouterDeployment
-  return { program, issuer, cardFactory, router, routerFactory }
+  return { program, provider, cardFactory, router, routerFactory }
 }
 
 /** The L1's active hardfork as forge names it, which forge needs to run the Zone factory. */
@@ -416,7 +416,7 @@ export async function local(step: Step, options: { earn?: boolean } = {}): Promi
     const program = { ...deployed, settlement, programWallet }
     step(
       2,
-      `Bridge program (clone ${program.clone}), CardProgram (${program.program}) and Spend ZoneRouter (${program.router}) deployed on L1`,
+      `Bridge program (clone ${program.clone}), CardSpender (${program.program}) and Spend ZoneRouter (${program.router}) deployed on L1`,
     )
 
     zone = await Network.startZone({
@@ -865,12 +865,12 @@ export async function hosted(
       receiver?: Address
       settler?: Address
     }
-  // A record from before the CardProgram has no program or router, or a BridgeSettler's router:
-  // deploy the CardProgram and its router for the record's spender and record them, dropping the
+  // A record from before the CardSpender has no program or router, or a BridgeSettler's router:
+  // deploy the CardSpender and its router for the record's spender and record them, dropping the
   // retired receiver and settler.
   if (
     !record.program ||
-    !record.issuer ||
+    !record.provider ||
     !record.cardFactory ||
     !record.router ||
     !record.routerFactory
@@ -891,14 +891,14 @@ export async function hosted(
     Object.assign(record, routed)
     delete record.settler
     console.log(
-      `    deployed: CardProgram ${routed.program} (issuer ${routed.issuer}) and Spend ZoneRouter ${routed.router}`,
+      `    deployed: CardSpender ${routed.program} (provider ${routed.provider}) and Spend ZoneRouter ${routed.router}`,
     )
   }
   const { refundRecipient, receiver: _receiver, settler: _settler, ...recorded } = record
   const program: Program = { ...recorded, ...(record as RouterDeployment) }
   step(
     2,
-    `Bridge program (clone ${program.clone}), CardProgram (${program.program}) and Spend ZoneRouter (${program.router}) on Moderato`,
+    `Bridge program (clone ${program.clone}), CardSpender (${program.program}) and Spend ZoneRouter (${program.router}) on Moderato`,
   )
 
   const zoneInfo = await l1Public.readContract({

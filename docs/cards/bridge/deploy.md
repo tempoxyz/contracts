@@ -1,9 +1,9 @@
 # Deploying
 
 The card integration deploys into the issuer's existing `SpenderFactory`: the "TS" handler, and for
-each program its `CardProgram` with its `BridgeIssuer`, deployed by a shared `CardFactory`, and the
+each program its `CardSpender` with its `BridgeProvider`, deployed by a shared `CardFactory`, and the
 program's Zone router. None has an owner; a program's optional guardian can only pause it. The
-handler, the `CardFactory` and each `BridgeIssuer` land at deterministic release addresses, and a
+handler, the `CardFactory` and each `BridgeProvider` land at deterministic release addresses, and a
 program at the `CardFactory`'s CREATE2 address for its `spenderId`, issuer and guardian, so the issuer
 can deploy them with the scripts below or Tempo with the [Bridge Release workflow](#deploying-from-ci),
 and either lands on the same contracts. Every factory change is a role-gated call, so the scripts
@@ -67,10 +67,10 @@ FACTORY=0x... SPENDER_ID=0x... GUARDIAN=0x... OUT=reports/bridge-program.json \
 ```
 
 The script checks that the program's clone was created for its ID. It creates `CardFactory` and the
-program's `BridgeIssuer(factory, spenderId)` through the CREATE2 deployer with the release salt, as
+program's `BridgeProvider(factory, spenderId)` through the CREATE2 deployer with the release salt, as
 the handler, reusing either one already there, then calls `cardFactory.deploy(spenderId, issuer,
 guardian)`, which returns the program if it exists. `GUARDIAN` is optional: left out or zero, nobody
-can pause the program but the factory's own pause. A program's issuer and guardian never change, so
+can pause the program but the factory's own pause. A program's provider and guardian never change, so
 a new guardian means a new program. `OUT` holds `factory`, `spenderId`, `clone`, `guardian`,
 `cardFactory`, `issuer`, `program` and whether this run `created` the program, and is written only
 with `--broadcast`. The program needs no factory call: the cardholders' access keys and the Zone's
@@ -121,7 +121,7 @@ either adopts a router this script already deployed for that mode
 ([Zone router deployment](../../zone-router/zone-router.md#deployment)).
 
 The router has no owner and needs no configuration. The Zone admin checks the router with the
-factory's `isRouter(router)`, and the program with `CardFactory.isProgram(program)`, then grants
+factory's `isRouter(router)`, and the program with `CardFactory.isSpender(program)`, then grants
 roles:
 
 - if the callback gateway is closed, `setGateway(router, true)`;
@@ -148,7 +148,7 @@ prints `ok` or `todo` for each item, with who submits the fix:
 
 - the program's clone was created for `SPENDER_ID`, which `TS` requires;
 - `TS` is registered, has code, was built for this factory, and is usable by the program;
-- the `TS` handler, the program and its issuer are this repository's build: their code matches
+- the `TS` handler, the program and its provider are this repository's build: their code matches
   copies the script deploys in its own simulation, so one deployed from older code reads `todo`.
   Solc's metadata hash is left out, so a build from source that differs only in comments still
   matches;
@@ -162,7 +162,7 @@ prints `ok` or `todo` for each item, with who submits the fix:
 - the Zone has a registered portal, with `TOKEN` enabled and its deposits not paused, and its
   messenger is the canonical one;
 - `ROUTER_FACTORY` deployed `ROUTER`, and `ROUTER` takes Spend callbacks from `ZONE_ID` through a
-  `CardProgram` whose issuer is a `BridgeIssuer` for `FACTORY` and `SPENDER_ID`. Only a router the
+  `CardSpender` whose provider is a `BridgeProvider` for `FACTORY` and `SPENDER_ID`. Only a router the
   factory deployed is read, so an arbitrary address cannot pass;
 - `ROUTER` has its Zone role. That is the callback gateway role when the gateway is closed, or the
   account role when it is open and access is enforced;
@@ -226,7 +226,7 @@ whether to broadcast; without broadcast Forge only simulates. It runs
   `tempo_forkSchedule`;
 - predicts each address from the locally compiled creation code, and checks that the run created
   exactly that contract there from that code, or nothing when it already existed. For a program,
-  `CardFactory` and `BridgeIssuer` come from the CREATE2 deployer and the program from
+  `CardFactory` and `BridgeProvider` come from the CREATE2 deployer and the program from
   `CardFactory.deploy`;
 - after a broadcast, source-verifies each one on Tempo's verifier (`https://contracts.tempo.xyz`),
   including a contract that already existed, and fails if the verifier has no source match. A
@@ -253,6 +253,6 @@ FACTORY=0x... DEPLOYER_PRIVATE_KEY=0x... TEMPO_RPC_URL=http://127.0.0.1:8545 \
 
 `test/unit/DeployScripts.t.sol` runs each script against the harness's factory, submits the calls
 it writes with the matching role, and settles a spend through the new handler.
-`test/unit/DeterministicDeploy.t.sol` checks that the handler, `CardFactory`, `BridgeIssuer` and
+`test/unit/DeterministicDeploy.t.sol` checks that the handler, `CardFactory`, `BridgeProvider` and
 program land at their predicted addresses for any deployer, and that deploying again reuses them
 without sending anything.

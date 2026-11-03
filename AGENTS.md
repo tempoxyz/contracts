@@ -7,8 +7,8 @@ Foundry project with its own build settings, dependencies, and guide:
 - [zone-router/](zone-router/AGENTS.md): the Zone router, Zone withdrawal callbacks for Earn and
   spends, and the generic settlers a spend pays through (`SendSettler`).
 - [cards/](cards/AGENTS.md): card spend on Tempo: our provider-agnostic contracts (`src/core/`), our
-  code for each card provider (`src/providers/<provider>/`: Bridge's `BridgeIssuer` and "TS" handler,
-  Rain's `RainIssuer`), and each provider's own contracts vendored as they are (`vendor/<provider>/`).
+  code for each card provider (`src/providers/<provider>/`: Bridge's `BridgeProvider` and "TS" handler,
+  Rain's `RainProvider`), and each provider's own contracts vendored as they are (`vendor/<provider>/`).
 
 Shared at the root: the pnpm workspace, the deployment lifecycle (`deployments/`, with module
 folders for Earn and the Zone router) and its `profiles/`, the disposable Tempo L1 and Zone
@@ -39,7 +39,7 @@ must explicitly discover descendant guides rather than assume they were loaded.
   Solidity belongs in the project that owns it until a second owner needs it.
 - Imports flow one way: `earn/` imports neither other project, `zone-router/` imports only Earn's
   interfaces, and `cards/` imports both. Generic settlers live in `zone-router/src/settlers/`; a card
-  program's settler is its `CardProgram` (`cards/src/core/`), which implements the Zone router's
+  program's settler is its `CardSpender` (`cards/src/core/`), which implements the Zone router's
   `ISpendSettler`.
 - Provider-specific code (each provider's vendored contracts and our code for it) stays under its
   provider in `cards/`; `earn/` and `cards/src/core/` stay provider-agnostic.

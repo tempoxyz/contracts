@@ -5,12 +5,12 @@ import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { ICardIssuer, ICardIssuerPayout } from "../../../src/core/interfaces/ICardIssuer.sol";
+import { ICardProvider, ICardProviderPayout } from "../../../src/core/interfaces/ICardProvider.sol";
 import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 
-/// @notice A provider-neutral `ICardIssuer`: destinations, tokens and vaults set by the test, public and
+/// @notice A provider-neutral `ICardProvider`: destinations, tokens and vaults set by the test, public and
 ///         private destinations kept apart, and a provider pause. Its program pays directly.
-contract MockIssuer is ICardIssuer {
+contract MockProvider is ICardProvider {
     mapping(address => bool) public isAcceptedToken;
     mapping(address => bool) public isPublicDestination;
     mapping(address => bool) public isPrivateDestination;
@@ -44,7 +44,7 @@ contract MockIssuer is ICardIssuer {
     }
 
     function supportsInterface(bytes4 id) public view virtual returns (bool) {
-        return id == type(ICardIssuer).interfaceId || id == type(IERC165).interfaceId;
+        return id == type(ICardProvider).interfaceId || id == type(IERC165).interfaceId;
     }
 }
 
@@ -82,8 +82,8 @@ contract MockPayoutTarget {
     }
 }
 
-/// @notice A `MockIssuer` whose program pays through a `MockPayoutTarget`.
-contract MockPayoutIssuer is MockIssuer, ICardIssuerPayout {
+/// @notice A `MockProvider` whose program pays through a `MockPayoutTarget`.
+contract MockPayoutProvider is MockProvider, ICardProviderPayout {
     address public immutable TARGET;
 
     constructor(address target) {
@@ -99,12 +99,12 @@ contract MockPayoutIssuer is MockIssuer, ICardIssuerPayout {
     }
 
     function supportsInterface(bytes4 id) public view override returns (bool) {
-        return id == type(ICardIssuerPayout).interfaceId || super.supportsInterface(id);
+        return id == type(ICardProviderPayout).interfaceId || super.supportsInterface(id);
     }
 }
 
-/// @notice A contract that does not declare `ICardIssuer`.
-contract NotAnIssuer {
+/// @notice A contract that does not declare `ICardProvider`.
+contract NotAProvider {
     function supportsInterface(bytes4) external pure returns (bool) {
         return false;
     }
