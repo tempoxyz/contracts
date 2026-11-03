@@ -2,9 +2,12 @@
 
 How cards pay from funds a cardholder keeps on Tempo, and the contracts that do it: what each one
 does, who controls it, what it checks and what can go wrong. This page is the single design and audit
-reference for the card integration. The card issuer runs card programs in the card spender contracts
-and holds the cardholders' access keys; the card processor asks it to authorize each payment. The
-issuer's side of the integration is in [bridge-integration.md](bridge-integration.md).
+reference for the Bridge card integration. The card issuer runs card programs in the card spender
+contracts and holds the cardholders' access keys; the card processor asks it to authorize each
+payment. Bridge is one provider of the provider-agnostic [card design](../design.md): each Bridge
+program is a `CardProgram` whose issuer, `BridgeIssuer`, pays through the program's spender clone and
+the "TS" handler, so Bridge's factory still governs every spend. The issuer's side of the integration
+is in [bridge-integration.md](bridge-integration.md).
 
 ## Purpose
 
@@ -27,22 +30,24 @@ The design follows these requirements:
 The contracts keep the three principles of the issuer's existing card contract, for public and private
 spends:
 
-- **Customer funds are never mixed.** Public funds stay in the cardholder account until the spend.
-  Private funds pass through the router and the settler in one transaction, and the change goes back
-  to the Zone.
-- **One program cannot use the approval of another program.** Each clone, settler and access key
-  belongs to exactly one program.
+- **Customer funds are never mixed.** Public funds stay in the cardholder account until the spend,
+  and pass through the program in the spend's own transaction. Private funds pass through the router
+  and the program in one transaction, and the change goes back to the Zone.
+- **One program cannot use the approval of another program.** Each `CardProgram`, issuer, clone and
+  access key belongs to exactly one program.
 - **Funds go only to an authorized destination.** The destination must be on the program's allowlist
   for each spend. The one exception is a leaked Zone key ([accepted risks](#accepted-risks)).
 
 ## Components
 
-| Contract                                                                                | Where it runs                                   | Admin                                             | Function                                                                                                       |
-| --------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| [`SpenderTempoSpend`](../../../cards/src/providers/bridge/SpenderTempoSpend.sol) ("TS") | Tempo L1, by delegatecall in each program clone | spender factory governance (Earn vault list only) | Pays a spend to a program destination from stablecoin, Earn shares, or both.                                   |
-| [`ZoneRouter`](../../../zone-router/src/ZoneRouter.sol) (Spend op)                      | Tempo L1, one for each Zone and mode            | None. The mode is fixed at deployment.            | Receives a Zone withdrawal callback, sends `maxInput` to a listed settler, and returns the change to the Zone. |
-| [`BridgeSettler`](../../../cards/src/providers/bridge/BridgeSettler.sol)                | Tempo L1, one for each program                  | None                                              | Pays the spend through the program clone, checks the destination, and returns unused input to the router.      |
-| [`ZoneRouterFactory`](../../../zone-router/src/ZoneRouterFactory.sol)                   | Tempo L1                                        | None                                              | Deploys each router at a CREATE2 address from its mode.                                                        |
+| Contract                                                                                | Where it runs                                   | Admin                                             | Function                                                                                                                                                         |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`SpenderTempoSpend`](../../../cards/src/providers/bridge/SpenderTempoSpend.sol) ("TS") | Tempo L1, by delegatecall in each program clone | spender factory governance (Earn vault list only) | Pays a spend to a program destination from stablecoin, Earn shares, or both.                                                                                     |
+| [`CardProgram`](../../../cards/src/core/CardProgram.sol)                                | Tempo L1, one for each program                  | Guardian (pause only), optional                   | The program's stable address: public `spend` and the router's settler. Pays through the clone as the payer, checks the destination and returns unused input.     |
+| [`BridgeIssuer`](../../../cards/src/providers/bridge/BridgeIssuer.sol)                  | Tempo L1, one for each program                  | None                                              | The program's `ICardIssuer`: reads destinations, pause and allowed vaults from the factory and clone, and names the clone and the "TS" call the program pays by. |
+| [`CardFactory`](../../../cards/src/core/CardFactory.sol)                                | Tempo L1                                        | None                                              | Deploys each program at a CREATE2 address fixed by its program ID (the `spenderId`), issuer and guardian.                                                        |
+| [`ZoneRouter`](../../../zone-router/src/ZoneRouter.sol) (Spend op)                      | Tempo L1, one for each Zone and mode            | None. The mode is fixed at deployment.            | Receives a Zone withdrawal callback, sends `maxInput` to a listed settler (the program), and returns the change to the Zone.                                     |
+| [`ZoneRouterFactory`](../../../zone-router/src/ZoneRouterFactory.sol)                   | Tempo L1                                        | None                                              | Deploys each router at a CREATE2 address from its mode.                                                                                                          |
 
 No contract runs inside a Zone. `ZoneRouter` also has Earn Deposit and Redeem ops
 ([Zone router](../../zone-router/zone-router.md)); they use the same callback checks, and this page
@@ -59,7 +64,8 @@ The contracts convert nothing: a spend settles in the stablecoin that funds it.
 | Spender factory governance and managers | Add destinations, pause programs, enable handlers and allow Earn vaults.                         |
 | Zone operator and sequencer             | Order Zone transactions and post withdrawal batches to the L1. Can move or freeze Zone balances. |
 | Any Zone user                           | Can send a withdrawal to the router with any callback data.                                      |
-| Any L1 account                          | Can call `publicCall` on a clone and `settle` on a settler.                                      |
+| Any L1 account                          | Can call `publicCall` on a clone, and `spend` or `settle` on a program, with its own funds.      |
+| Program guardian (optional)             | Can pause and resume the program's spends. Nothing else.                                         |
 
 ## Setup
 
@@ -70,21 +76,24 @@ The contracts convert nothing: a spend settles in the stablecoin that funds it.
 2. **Governance.** Calls `governorCall("UV", vault, allowed)` for each Earn vault the program can
    spend from. This also sets the clone's standing EarnShare approval to the vault. Disallowing
    clears it.
-3. **Tempo.** Deploys the program's `BridgeSettler` (`factory`, `spenderId`) with
+3. **Tempo.** Deploys `CardFactory` and the program's `BridgeIssuer` (`factory`, `spenderId`) at
+   their release addresses, then `CardFactory.deploy(spenderId, issuer, guardian)`, with
    [Bridge Release](../../deployment/deployment.md#bridge-releases).
-4. **Tempo.** Deploys the Zone's `ZoneRouter` with a fixed settler list through `ZoneRouterFactory`.
+4. **Tempo.** Deploys the Zone's `ZoneRouter` through `ZoneRouterFactory`, with the program as its
+   only settler.
 5. **Zone admin.** Gives the router its gateway role. Admits the program's `refundRecipient` and
    program wallet.
-6. **Anyone (once for each token).** Calls `router.warm(token)` and `settler.warm(token)`, sends 1
+6. **Anyone (once for each token).** Calls `router.warm(token)` and `program.warm(token)`, sends 1
    EarnShare unit to the clone and 1 unit of each token to the settlement wallet
-   ([deploy](deploy.md#5-prepare-the-program-for-low-callback-gas)).
+   ([deploy](deploy.md#6-prepare-the-program-for-low-callback-gas)).
 
 ### Card enrollment
 
 The cardholder authorizes a Tempo access key that the issuer holds. Tempo enforces the scope, spend limit
 and expiry of the key in the protocol. The cardholder can revoke the key at any time.
 
-- **Tempo account.** Scope: `token.approve(recipient = clone)` and `clone.publicCall`.
+- **Tempo account.** Scope: `token.approve(recipient = program)`, `earnShare.approve(recipient =
+  program)` for Earn, and `program.spend`.
 - **Zone account.** Scope: `zoneToken.approve(recipient = outbox)` and `outbox.requestWithdrawal`.
 - **Limits.** Each key has a periodic limit for each token and an expiry. The issuer uses one key for
   each program. Limits count gross debits.
@@ -93,11 +102,13 @@ and expiry of the key in the protocol. The cardholder can revoke the key at any 
 
 1. The card processor asks the issuer to authorize a card payment.
 2. The issuer sends one L1 transaction from the cardholder account, signed with the issuer access key.
-   The transaction approves the clone for the exact amount, calls `publicCall "PS"`, and sets the
-   approval back to zero.
-3. The TS handler checks the program and the destination, then pays the destination from
-   stablecoin, from Earn shares, or from both.
-4. The handler checks that the destination balance increased by exactly the amount.
+   The transaction approves the program for the exact amount (and, for Earn, the share quote), calls
+   `program.spend(CardSpend)`, and sets the approvals back to zero.
+3. The program checks the spend against its issuer, pulls the input from the cardholder, and calls
+   the clone's `publicCall "TS" "PS"` as the payer. The TS handler checks the program and the
+   destination again, then pays the destination from stablecoin, from Earn shares, or from both.
+4. The program checks that the destination balance increased by exactly the amount, and returns any
+   input the handler did not use to the cardholder.
 5. The issuer approves the authorization when it gets the L1 receipt.
 
 ```mermaid
@@ -105,18 +116,20 @@ sequenceDiagram
     participant S as Card processor
     participant B as Card issuer
     participant A as Cardholder account
+    participant G as CardProgram
     participant C as Program clone (TS)
     participant D as Destination
     S->>B: Authorize card payment
     B->>A: L1 transaction, issuer access key
-    A->>C: approve(exact), publicCall PS, approve(0)
+    A->>G: approve(exact), spend, approve(0)
+    G->>C: publicCall TS PS
     C->>D: Pay amount
     B-->>S: Approved
 ```
 
-Before it sends a public spend, the issuer reads `factory.paused()`, the TS handler permissions for the
-clone, `isAuthorizedDestination`, `availableBalance` and the remaining key limit. For Earn, the issuer
-sets `maxShares = previewWithdraw(fromVault) × 1.005`.
+Before it sends a public spend, the issuer reads `program.paused()`, the TS handler permissions for
+the clone, `isAuthorizedDestination`, `availableBalance` and the remaining key limit. For Earn, the
+issuer sets `maxShares = previewWithdraw(fromVault) × 1.005`.
 
 ## Private spend
 
@@ -128,7 +141,8 @@ a callback to the router. The program clone has no fallback, so it cannot take t
 
 1. The issuer sends a Zone transaction from the cardholder's Zone account, signed with the issuer Zone
    key. The transaction approves the Zone outbox and requests a withdrawal to the router.
-2. The callback data holds the settler, `maxInput`, the `Spend` and the instructions for the change.
+2. The callback data names the program as settler, with `maxInput`, the `CardSpend` and the
+   instructions for the change.
 3. The issuer approves the authorization when it gets the Zone receipt. The issuer does not wait for the L1.
 
 ```mermaid
@@ -145,10 +159,11 @@ sequenceDiagram
 ### Settlement (on the L1)
 
 1. The Zone posts its batch to the L1. The Zone messenger calls `onWithdrawalReceived` on the router.
-2. The router checks the caller, the Zone and the portal. It transfers `maxInput` to the listed
-   settler and calls `settle`.
-3. The settler calls `publicCall "PS"` on the clone as the payer. The handler pays the destination.
-4. The settler checks that the destination got exactly the amount, then returns the unused input to
+2. The router checks the caller, the Zone and the portal. It transfers `maxInput` to the program,
+   its listed settler, and calls `settle`.
+3. The program checks the spend against its issuer and calls `publicCall "TS" "PS"` on the clone as
+   the payer. The handler pays the destination.
+4. The program checks that the destination got exactly the amount, then returns the unused input to
    the router.
 5. The router sends the change back to the cardholder's Zone account as an encrypted deposit.
 
@@ -156,13 +171,13 @@ sequenceDiagram
 sequenceDiagram
     participant M as Zone messenger
     participant R as ZoneRouter
-    participant S as BridgeSettler
+    participant S as CardProgram
     participant C as Program clone (TS)
     participant D as Destination
     participant P as Zone portal
     M->>R: onWithdrawalReceived
     R->>S: transfer maxInput, settle
-    S->>C: publicCall PS
+    S->>C: publicCall TS PS
     C->>D: Pay amount
     S->>R: Return unused input
     R->>P: depositEncrypted(change)
@@ -191,15 +206,15 @@ independently.
 
 ### Settlement outcomes
 
-- **Settled.** `WithdrawalProcessed(callbackSuccess = true)`, `Spent` and `SpendSettled` occur in
-  the same transaction. The issuer matches the spend by the `senderTag` from its Zone receipt.
+- **Settled.** `WithdrawalProcessed(callbackSuccess = true)`, the router's `Spent` and the
+  program's `CardSpent` and `SpendSettled` occur in the same transaction. The issuer matches the spend by the `senderTag` from its Zone receipt.
 - **Bounced.** `WithdrawalProcessed(callbackSuccess = false)` and no `Spent`. The full input goes back
   to the fallback recipient in the Zone; the withdrawal fee does not. The issuer uses its reserve and
   records the cardholder debt.
 - **Pending.** No `WithdrawalProcessed` before the timeout, for example because the portal is paused
   or batches stop. The issuer holds the exposure and tells the Zone operator.
 
-A spend bounces when the factory is paused, TS is disabled, the destination is removed, the vault is
+A spend bounces when the factory or the program's guardian has paused it, TS is disabled, the destination is removed, the vault is
 disallowed, deposits are paused, a deposit or bounce-back fee is more than the change or
 `maxDepositFee`, the router role is removed, TIP-403 blocks a party, `maxShares` is exceeded, or a
 venue is illiquid.
@@ -211,14 +226,30 @@ examples):
 
 - **Zone.** The cardholder sends 50.05 to the outbox. The issuer's fee payer pays the withdrawal
   fee.
-- **Tempo.** The portal sends 50.05 to the router. The router sends 50.00 to the settler. The settler
-  pays 50.00 through the clone to the destination.
+- **Tempo.** The portal sends 50.05 to the router. The router sends 50.00 to the program. The
+  program pays 50.00 through the clone to the destination.
 - **Back to the Zone.** The router deposits 0.05, encrypted. The portal keeps the deposit fee. The
   cardholder's Zone balance increases by 0.05 minus the deposit fee.
 
 ## Data structures
 
+`CardSpend` is the [core](../design.md) spend, which the program takes publicly and in the callback.
+`BridgeIssuer` turns it into the handler's `Spend`, with the program's `spenderId`; `destinationHint`
+is unused for Bridge.
+
 ```solidity
+struct CardSpend {
+    address program;
+    address token;
+    uint256 amount;
+    address destination;
+    uint256 destinationHint;
+    address vault;
+    uint256 fromVault;
+    uint256 maxShares;
+    bytes32 ref;
+}
+
 struct Spend {
     bytes32 spenderId;
     address token;
@@ -232,9 +263,9 @@ struct Spend {
 
 struct SpendData {
     Op op; // 2 = Spend
-    address settler;
+    address settler; // the CardProgram
     uint128 maxInput;
-    bytes settlerData; // abi.encode(Spend)
+    bytes settlerData; // abi.encode(CardSpend)
     SpendReturn zoneReturn;
 }
 
@@ -257,7 +288,8 @@ struct SpendReturn {
   another factory cannot use TS.
 - `destination` must be authorized for `spenderId` in the spender factory. The clone checks the pause.
 - `amount` must be more than zero. `fromVault` must not be more than `amount`.
-- `amount - fromVault` comes from the caller in `token`. `fromVault` comes from an allowed Earn vault
+- The caller pays: the cardholder's `CardProgram` on both paths. `amount - fromVault` comes from the
+  caller in `token`. `fromVault` comes from an allowed Earn vault
   whose asset is `token`. The vault burns at most `maxShares` (zero means no limit). Unused shares go
   back to the caller.
 - The destination balance of `token` must increase by exactly `amount`. Fee-on-transfer and rebasing
@@ -285,22 +317,45 @@ struct SpendReturn {
 - At the end, the router's input balance must equal its balance before the withdrawal
   (`ResidualBalance`). A transient lock stops reentry (`ReentrantCall`).
 
-### BridgeSettler
+### CardProgram and BridgeIssuer
 
-- The `Spend` must be for the settler's program (`WrongProgram`), and `maxInput` must be more than
-  zero and at most `type(uint128).max` (`InvalidAmount`).
-- The input must be the spend token when `fromVault` is zero, or the vault's EarnShare when
-  `fromVault` equals `amount` (`WrongInputToken`).
-- The settler must hold at least `maxInput` (`InsufficientInput`). It uses its balance minus
-  `maxInput` as its baseline.
-- After the clone call, the handler must have used some input and no more than it was given
-  (`NothingSettled`), and the destination must get exactly `amount` (`DestinationNotPaid`).
-- The settler returns the unused input to the caller and must end at its baseline
-  (`ResidualBalance`).
-- `settle` is permissionless. A transient lock stops reentry (`Reentrancy`).
-- `warm(token)` sets the settler's standing maximum approval to the clone before the first spend.
-- It emits `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`, with no cardholder address
-  or `senderTag`.
+The program's checks are the [core design's](../design.md#what-the-program-checks); for Bridge they
+are:
+
+- The `CardSpend` must name this program (`WrongProgram`). The program must not be paused: `paused()`
+  is the guardian's pause or `factory.paused()`, through the issuer (`ProgramPaused`). `amount` must be
+  more than zero and `fromVault` at most `amount` (`InvalidAmount`).
+- The destination must be authorized for `spenderId` in the factory (`DestinationNotAuthorized`), on
+  both paths. A Bridge settlement wallet is shared by every cardholder, so it serves private spends
+  too.
+- An Earn spend's vault must be allowed in the clone, read through `publicGetCall "TS" "GV"`
+  (`VaultNotAllowed`), and hold `token` (`IncorrectAssetForVault`). These checks mirror the handler's,
+  so a spend Bridge would refuse is refused before funds move; the clone stays the authority.
+- The program pays through the clone (`BridgeIssuer.CLONE`, read once in the program's constructor)
+  with `publicCall "TS" "PS" abi.encode(Spend)` as the payer, so the clone's routing, pause and
+  handler permissions apply, and the handler enforces `maxShares`.
+- `spend`: the program pulls `amount - fromVault` of `token` and, for Earn, `maxShares` (or the live
+  `previewWithdraw` when zero) of the EarnShare from the caller, and returns what the clone did not
+  use. The clone can take at most what the caller put in.
+- `settle`: the input must be the spend token when `fromVault` is zero, or the vault's EarnShare when
+  `fromVault` equals `amount` (`WrongInputToken`), and `maxInput` more than zero and at most
+  `type(uint128).max` (`InvalidAmount`). The program must hold at least `maxInput`
+  (`InsufficientInput`) and uses its balance minus `maxInput` as its baseline. The clone must use some
+  input and no more than `maxInput` (`NothingSettled`). The program returns the unused input to the
+  caller and must end at its baseline (`ResidualBalance`).
+- On both paths the destination must get exactly `amount` (`DestinationNotCredited`).
+- `spend` and `settle` are permissionless. A transient lock stops reentry (`Reentrancy`).
+- `warm(token)` sets the program's standing maximum approval to the clone before the first spend.
+- It emits `CardSpent(ref, payer, destination, token, amount, fromVault, sharesUsed, isPrivate)` and,
+  on `settle`, `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`. A private spend's payer
+  is the router, so neither names a cardholder or the `senderTag`.
+
+### CardFactory
+
+- The factory deploys a program at a CREATE2 address from `keccak256(programId, issuer, guardian)`,
+  so one program has one address whoever deploys it, and deploying it again returns it.
+  `isProgram(program)` and `ProgramDeployed` prove a program's provenance. For Bridge, the program ID
+  is the `spenderId`.
 
 ### ZoneRouterFactory
 
@@ -315,9 +370,10 @@ struct SpendReturn {
 - Only the Zone messenger can call the router. The router accepts only its one Zone and the canonical
   portal of that Zone.
 - Any Zone user can send a withdrawal to the router with any callback data. That user can only pay a
-  program destination through a listed settler, from their own funds, up to their `maxInput`.
-- The router and the settler have no owner, no setters and no sweep. They must keep no balance after
-  a callback.
+  program destination through the listed program, from their own funds, up to their `maxInput`.
+- The router, the program, its issuer and the `CardFactory` have no owner, no setters and no sweep.
+  The program's guardian can only pause it. The router and the program must keep no balance after a
+  spend.
 
 The contracts assume this behavior from code outside the [audit scope](#audit-scope):
 
@@ -326,8 +382,8 @@ The contracts assume this behavior from code outside the [audit scope](#audit-sc
 - `EarnVault.withdrawExact` burns at most `maxEarnShares` and sends exactly `assets`.
 - The spender factory authorizes destinations per program, pauses every clone, and routes `publicCall`
   to a handler by its 2-byte prefix.
-- TIP-20 tokens revert on failure and need no return-value handling beyond what the handler's
-  `SafeTransferLib` and the settler's own call check handle.
+- TIP-20 tokens revert on failure and need no return-value handling beyond what the handler's and
+  the program's `SafeTransferLib` and the program's own call check handle.
 
 ## Invariants
 
@@ -335,16 +391,18 @@ The contracts assume this behavior from code outside the [audit scope](#audit-sc
 2. The destination gets exactly `amount`.
 3. A spend from Earn burns no more than `maxShares` when it is set. Unused shares go back to the
    payer.
-4. The router and the settler hold no input token after a callback.
-5. The settler can use at most `maxInput`, which the cardholder's Zone transaction sets. A replaced
-   handler can take at most the spend, never the change.
+4. The router and the program hold no input token after a spend.
+5. A private spend uses at most `maxInput`, which the cardholder's Zone transaction sets, and a public
+   one at most what the cardholder approved. A replaced handler can take at most the spend, never the
+   change.
 6. A callback that moves nothing, or returns more than it got, does not settle.
 7. The portal keeps no more deposit fee than `maxDepositFee`.
 8. No event from these contracts contains a cardholder address or the Zone `senderTag`. The change
    goes back as an encrypted deposit.
 9. The handler storage cannot collide with the clone storage.
 10. The issuer's pull pipeline is off for TS.
-11. A settler serves only one program and accepts only the spend token or its vault's EarnShare.
+11. A program serves only its own spends, pays only through its own clone, and settles only the
+    spend token or its vault's EarnShare.
 
 ## Accepted risks
 
@@ -352,16 +410,18 @@ The contracts assume this behavior from code outside the [audit scope](#audit-sc
   address in an open Zone or any admitted account in a closed-loop Zone. The issuer uses one key for
   each program, so one leak affects all cardholders of that program. The withdrawer also chooses
   where the change goes.
-- A leaked public access key can call the public actions of all handlers that the program can use,
-  because its scope names `publicCall`, not a prefix. None of these actions move funds; gating a
-  handler closes it.
+- A leaked public access key can spend a cardholder's funds, up to the key limit, only to the
+  program's destinations: its scope names the program's `spend`, which reaches the clone only through
+  "TS" "PS".
 - There is no on-chain idempotency. The issuer removes duplicate spends off chain by its pull ID.
 - The issuer approves a private spend on the Zone receipt. If L1 settlement fails after approval,
   the issuer's reserve pays.
 - Spend events are not proof of payment. Anyone can emit one with any `ref`. The issuer reconciles with
   its own transactions and the portal's `WithdrawalProcessed` event.
-- Tokens sent to the router outside a callback cannot be recovered. Tokens sent to the settler
-  outside a callback can be spent by the next `settle` caller, but only to a program destination.
+- Tokens sent to the router outside a callback cannot be recovered. Tokens sent to the program
+  outside a spend can be spent by the next `settle` caller, but only to a program destination.
+- Programs are immutable. A new issuer, clone or guardian means a new program, a router that lists
+  it and new cardholder keys ([core accepted risks](../design.md#accepted-risks)).
 - A vault that cannot report its asset, shares or redemption value makes `availableBalance` report
   the stablecoin alone. The deploy scripts refuse a vault without exact withdrawals or redeem
   previews.
@@ -391,8 +451,10 @@ Tests and other pages cite these by number.
    through the portal's own `depositEncrypted`.
 5. A spend settles in the stablecoin it is funded from. The issuer accepts any stablecoin, so there is no
    conversion pool.
-6. One `BridgeSettler` per program, with no owner. A Zone's router lists the settlers of the programs
-   it serves; changing that list means deploying a new router through the factory.
+6. One `CardProgram` per program, deployed by `CardFactory` with the program's `BridgeIssuer` and an
+   optional guardian, with no owner. Cardholders' keys and the Zone's router name the program, and
+   it pays through the clone, so the factory keeps governing. A Zone's router lists the programs it
+   serves; changing that list means deploying a new router through the factory.
 7. The Zone key is scoped to the outbox, which cannot pin a withdrawal's recipient, and its
    leaked-key risk is accepted.
 8. Private spend settles on the L1, not inside the Zone, because funds leave a Zone only by
@@ -411,7 +473,7 @@ Tests and other pages cite these by number.
 15. A private spend uses Earn shares if they cover it, otherwise stablecoin, otherwise both as two
     withdrawals in the same Zone transaction, otherwise the issuer declines. The two settle
     independently: if one bounces after approval, the reserve covers its part.
-16. The settler checks the destination was paid, and the router caps the settler at `maxInput` and
+16. The program checks the destination was paid, and the router caps the program at `maxInput` and
     caps the portal's deposit fee, so neither a replaced handler nor a raised Zone fee can take a
     spend's value or its change while it looks settled.
 17. No contract emits the Zone's `senderTag`. The issuer matches a private spend by the portal's
@@ -441,23 +503,23 @@ p50) is the wait for Zone 2 to post its batch.
 ### Callback gas
 
 The outbox charges a withdrawal fee of `(50,000 + callbackGas)` times the Zone's gas rate, on the gas
-requested, up to the outbox's 10M. The Spend callback data is 864 of the outbox's 1,024 bytes.
+requested, up to the outbox's 10M. The Spend callback data is 896 of the outbox's 1,024 bytes.
 Measured on a mainnet fork against the production OUSD Earn vault and Zone 2's portal, with change
 returned to the Zone ([`PrivateSpendForkGas.t.sol`](../../../cards/test/bridge/fork/PrivateSpendForkGas.t.sol)):
 
 | Spend      | Program     | First spend (empty settlement wallet) | Later spend |
 | ---------- | ----------- | ------------------------------------- | ----------- |
-| Earn       | As deployed | 1.98M                                 | 1.22M       |
-| Stablecoin | As deployed | 1.19M                                 | 0.44M       |
-| Earn       | Prepared    | 1.23M                                 | 0.98M       |
-| Stablecoin | Prepared    | 0.69M                                 | 0.44M       |
+| Earn       | As deployed | 2.01M                                 | 1.25M       |
+| Stablecoin | As deployed | 1.21M                                 | 0.45M       |
+| Earn       | Prepared    | 1.25M                                 | 1.00M       |
+| Stablecoin | Prepared    | 0.70M                                 | 0.45M       |
 
 Most of the cost is Tempo's charge for each storage slot that goes from zero to nonzero (TIP-1000).
-So the router hands the settler its input by transfer, not approval; the settler's approval to the
+So the router hands the program its input by transfer, not approval; the program's approval to the
 clone, the router's to the portal and the clone's to an allowed vault are standing maximum approvals;
-and the reentrancy locks are transient. The settler's own balance slot is created and cleared on
+and the reentrancy locks are transient. The program's own balance slot is created and cleared on
 every spend (about 250k); seeding it would not help, because `settle` is permissionless and counts
-what the settler holds as the caller's input.
+what the program holds as the caller's input.
 
 The Zone sequencer packs withdrawals into a 10M gas batch, reserving 0.5M per transaction and 1.75M
 plus the requested callback gas per spend:
@@ -473,12 +535,19 @@ for a stablecoin spend (4 per batch) and 1.4M for an Earn spend (3 per batch). T
 covers the vault approval the TF handler may have cleared. A settlement wallet with no balance
 needs about 250k more.
 
+A public spend from stablecoin, approving the program, spending and clearing the approval in one
+transaction, used 135,854 gas on a local L1 signed by the cardholder's own key and 155,117 signed by an
+access key (`e2e/cards/bridge`), about 34k more than the same batch calling the clone directly,
+since the program pulls the stablecoin before the clone pays it out.
+
 ## Audit scope
 
 ### In scope
 
 - [`cards/src/providers/bridge/SpenderTempoSpend.sol`](../../../cards/src/providers/bridge/SpenderTempoSpend.sol)
-- [`cards/src/providers/bridge/BridgeSettler.sol`](../../../cards/src/providers/bridge/BridgeSettler.sol)
+- [`cards/src/providers/bridge/BridgeIssuer.sol`](../../../cards/src/providers/bridge/BridgeIssuer.sol)
+- [`cards/src/core/CardProgram.sol`](../../../cards/src/core/CardProgram.sol)
+- [`cards/src/core/CardFactory.sol`](../../../cards/src/core/CardFactory.sol)
 - [`zone-router/src/ZoneRouter.sol`](../../../zone-router/src/ZoneRouter.sol), focused on the Spend op
 - [`zone-router/src/ZoneRouterFactory.sol`](../../../zone-router/src/ZoneRouterFactory.sol)
 
@@ -503,21 +572,26 @@ as the [security policy](../../../SECURITY.md) describes.
 - **Change and portal fees.** A deposit back to the Zone must be at least the portal's deposit and
   bounce-back fees, or the spend bounces after approval. The issuer adds this margin; the contracts do
   not enforce it.
-- **Reentrancy** through tokens or the vault during `onWithdrawalReceived` and `settle`.
-- **Standing approvals.** The settler approves the clone, the router approves the portal, and the
+- **Reentrancy** through tokens, the clone or the vault during `onWithdrawalReceived`, `spend` and
+  `settle`.
+- **The program's balance as input.** `settle` counts the program's balance above its baseline as
+  the caller's input, and `spend` returns to the cardholder whatever the clone left. Neither may let
+  one spend use another's funds.
+- **Standing approvals.** The program approves the clone, the router approves the portal, and the
   clone approves each allowed vault, all at the maximum. Nothing they can reach may stay in these
   contracts between spends, and `maxInput` must still bound a spend.
 
 ### Test evidence
 
-| Suite                                                                                                | What it covers                                                                                                                                   |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `cards/test/bridge/unit/`: `SpenderTempoSpend`, `BridgeSettler`, `PrivateSpend`, `PrivateEarnChange` | Handler, settler and router Spend behavior, every revert, events, approvals, hostile callback data, Earn change under portal fees, fuzzed spends |
-| `zone-router/test/ZoneRouter.t.sol`                                                                  | Router modes and the Spend op: callback authentication, settler list, `maxInput` cap, deposit fee cap, reentry                                   |
-| `cards/test/bridge/unit/BridgeSettlerMock.t.sol`                                                     | The settler's own checks against a mock factory and clone                                                                                        |
-| `cards/test/bridge/unit/`: `Roles`, `AccessKeySecurity`, `DeployScripts`                             | Factory roles, what a leaked key can do, and the deploy scripts                                                                                  |
-| `cards/test/bridge/e2e/Matrix.t.sol`                                                                 | 35 card scenarios against 11 setups ([matrix](matrix.md))                                                                                        |
-| `e2e/cards/bridge`                                                                                   | A real L1 and Zone, locally and on testnet, including an Earn spend                                                                              |
+| Suite                                                                                                | What it covers                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cards/test/core/`                                                                                   | Every `CardProgram` behavior, paying directly and through a payout target, with mock issuers, and `CardFactory`                                                             |
+| `cards/test/bridge/unit/`: `SpenderTempoSpend`, `BridgeProgram`, `PrivateSpend`, `PrivateEarnChange` | Handler, program and router Spend behavior on Bridge's factory and TS, every revert, events, approvals, hostile callback data, Earn change under portal fees, fuzzed spends |
+| `zone-router/test/ZoneRouter.t.sol`                                                                  | Router modes and the Spend op: callback authentication, settler list, `maxInput` cap, deposit fee cap, reentry                                                              |
+| `cards/test/bridge/unit/BridgeIssuerMock.t.sol`                                                      | `BridgeIssuer` and its program against a mock factory and clone                                                                                                             |
+| `cards/test/bridge/unit/`: `Roles`, `AccessKeySecurity`, `DeployScripts`                             | Factory roles, what a leaked key can do, and the deploy scripts                                                                                                             |
+| `cards/test/bridge/e2e/Matrix.t.sol`                                                                 | 35 card scenarios against 11 setups ([matrix](matrix.md))                                                                                                                   |
+| `e2e/cards/bridge`                                                                                   | A real L1 and Zone, locally and on testnet, including an Earn spend                                                                                                         |
 
 Build and test: run `pnpm deps` at the repository root, then `forge build` and
 `FOUNDRY_PROFILE=ci forge test` in `cards/` and `zone-router/`.

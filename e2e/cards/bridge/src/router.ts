@@ -1,7 +1,7 @@
 // Every ZoneRouter flow on the local L1 and Zone, through one router with every op: Earn deposit and
 // redeem of a private stablecoin that converts to the vault asset at par through a DirectPropAMM pool,
-// card spends through the program's BridgeSettler, sends through a SendSettler, refunds into the
-// Zone, and the guards that bounce a withdrawal back into the Zone. Each flow is a real Zone
+// card spends through the CardProgram as the router's settler, sends through a SendSettler, refunds
+// into the Zone, and the guards that bounce a withdrawal back into the Zone. Each flow is a real Zone
 // withdrawal the sequencer batches to the L1, where the portal calls the router; the checks read the
 // L1 settlement and the cardholder's Zone balance once any return lands.
 import { writeFileSync } from 'node:fs'
@@ -31,6 +31,8 @@ import {
   artifact,
   assert,
   CALLBACK_GAS,
+  cardSpendType,
+  cardSpent,
   findCall,
   names,
   OP_SPEND,
@@ -40,7 +42,6 @@ import {
   portalEventsAbi,
   revertData,
   spendDataType,
-  spendType,
   step,
   waitFor,
   withdrawalRequested,
@@ -149,8 +150,9 @@ export async function routerFlows(
       functionName: 'calculateBouncebackFee',
     }),
   ])
-  // A spend or send returns what its settler did not use as an encrypted deposit, which the portal
-  // rejects below its fees, so each carries change that covers them.
+  // A spend or send returns what its settler (the CardProgram or the SendSettler) did not use as an
+  // encrypted deposit, which the portal rejects below its fees, so each carries change that covers
+  // them.
   const change = depositFee + bouncebackFee + 1n
 
   /** An encrypted deposit of amount token from account into the cardholder's Zone balance. */
@@ -228,14 +230,15 @@ export async function routerFlows(
     label: string,
   ) =>
     spendData(
-      program.settler,
+      program.program,
       vault === zeroAddress ? amount : maxShares,
-      encodeAbiParameters(spendType, [
+      encodeAbiParameters(cardSpendType, [
         {
-          spenderId: program.spenderId,
+          program: program.program,
           token,
           amount,
           destination: program.settlement,
+          destinationHint: 0n,
           vault,
           fromVault: vault === zeroAddress ? 0n : amount,
           maxShares,
@@ -479,7 +482,7 @@ export async function routerFlows(
     )
   }
 
-  // Card spends through the same router: the program's BridgeSettler pays through Bridge's clone.
+  // Card spends through the same router: the CardProgram, as its settler, pays through Bridge's clone.
   const spend = 20_000_000n
   {
     const paidBefore = await l1Balance(r.privateAsset, program.settlement)
@@ -493,8 +496,15 @@ export async function routerFlows(
     assert(s.ok, 'stablecoin card spend: the router callback succeeded')
     const spent = routerEvent(s, 'Spent')
     assert(
-      spent.used === spend && spent.change === change,
-      'stablecoin card spend: used the spend, returned the change',
+      isAddressEqual(spent.settler as Address, program.program) &&
+        spent.used === spend &&
+        spent.change === change,
+      'stablecoin card spend: the CardProgram used the spend, the router returned the change',
+    )
+    const carded = cardSpent(s.logs, program.program, ref('card.stablecoin'))
+    assert(
+      carded.isPrivate && isAddressEqual(carded.payer, r.router),
+      'stablecoin card spend: the CardProgram recorded a private spend paid by the router',
     )
     assert(
       (await l1Balance(r.privateAsset, program.settlement)) - paidBefore === spend,
@@ -524,6 +534,11 @@ export async function routerFlows(
     const spent = routerEvent(s, 'Spent')
     const used = spent.used as bigint
     assert(used <= quote, "Earn card spend: burned no more shares than Bridge's quote")
+    const carded = cardSpent(s.logs, program.program, ref('card.earn'))
+    assert(
+      carded.isPrivate && isAddressEqual(carded.payer, r.router) && carded.sharesUsed === used,
+      'Earn card spend: the CardProgram recorded a private spend of the shares the router used',
+    )
     assert(
       (await l1Balance(earn.asset, program.settlement)) - paidBefore === spend,
       'Earn card spend: settlement wallet paid in the vault asset',

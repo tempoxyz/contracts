@@ -3,12 +3,12 @@ pragma solidity ^0.8.36;
 
 import { SpenderStatus } from "bridge-spender/src/ISpenderHandler.sol";
 import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
-import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
-import { Spend, SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { IBridgeSpenderClone } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { AccessKeys } from "../harness/AccessKeys.sol";
 import { TxCall } from "../harness/lib/TempoTx.sol";
@@ -25,7 +25,7 @@ contract AccessKeySecurityTest is AccessKeys {
     }
 
     // ------------------------------------------------------------------
-    // Public key: scoped to approve(clone) and the clone's publicCall
+    // Public key: scoped to approve(program) and the program's spend
     // ------------------------------------------------------------------
 
     function _scopePublicKey(uint256 limit) internal {
@@ -38,8 +38,8 @@ contract AccessKeySecurityTest is AccessKeys {
         tokens[0] = address(usd);
         limits[0] = limit;
         IAccountKeychain.CallScope[] memory scopes = new IAccountKeychain.CallScope[](2);
-        scopes[0] = _scope(address(usd), ITIP20.approve.selector, spender);
-        scopes[1] = _scope(spender, IBridgeSpenderClone.publicCall.selector, address(0));
+        scopes[0] = _scope(address(usd), ITIP20.approve.selector, address(program));
+        scopes[1] = _scope(address(program), CardProgram.spend.selector, address(0));
         _authorizeBridgeKey(account, tokens, limits, scopes);
     }
 
@@ -52,10 +52,15 @@ contract AccessKeySecurityTest is AccessKeys {
         assertEq(usd.balanceOf(attacker), 0);
     }
 
-    function test_publicKey_cannotApproveAnyoneButTheClone() public {
+    function test_publicKey_cannotApproveAnyoneButTheProgram() public {
         _scopePublicKey(1000e6);
         _assertRejected(
             _call(address(usd), abi.encodeCall(ITIP20.approve, (attacker, 1e6))),
+            abi.encodeWithSelector(IAccountKeychain.CallNotAllowed.selector)
+        );
+        // Not even the program's own clone, which the program pays through.
+        _assertRejected(
+            _call(address(usd), abi.encodeCall(ITIP20.approve, (spender, 1e6))),
             abi.encodeWithSelector(IAccountKeychain.CallNotAllowed.selector)
         );
         assertEq(usd.allowance(alice, attacker), 0);
@@ -64,17 +69,18 @@ contract AccessKeySecurityTest is AccessKeys {
     /// @notice Spend only reaches program destinations.
     function test_publicKey_cannotPayOutsideProgram() public {
         _scopePublicKey(1000e6);
-        Spend memory s = _spend(10e6);
+        CardSpend memory s = _spend(10e6);
         s.destination = attacker;
         _assertRejected(
-            _approveAndSpend(10e6, s),
-            abi.encodeWithSelector(SpenderTempoSpend.DestinationNotAuthorized.selector, attacker)
+            _approveAndSpend(10e6, s), abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, attacker)
         );
         assertEq(usd.balanceOf(attacker), 0);
     }
 
-    /// @notice "PS" is the only "TS" action behind the clone's `publicCall`.
-    function test_publicKey_reachesNoOtherTempoSpendAction() public {
+    /// @notice The key reaches the program, never the clone: no "TS" action besides the spend the program
+    ///         makes, and no other handler's public actions (such as the cardholder's "TF" vault preference),
+    ///         which a key scoped to the clone's `publicCall` could reach.
+    function test_publicKey_cannotCallTheClone() public {
         _scopePublicKey(1000e6);
         TxCall[] memory calls = _call(
             spender,
@@ -83,29 +89,36 @@ contract AccessKeySecurityTest is AccessKeys {
                 (abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("RF"), attacker, uint256(10e6)))
             )
         );
-        _assertRejected(calls, abi.encodeWithSelector(SpenderBase.PrefixUnknown.selector, bytes2("RF")));
+        _assertRejected(calls, abi.encodeWithSelector(IAccountKeychain.CallNotAllowed.selector));
+        _assertRejected(
+            _setTewfPreference(address(earnVault)), abi.encodeWithSelector(IAccountKeychain.CallNotAllowed.selector)
+        );
+        _assertRejected(
+            _call(spender, abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(_spend(10e6))))),
+            abi.encodeWithSelector(IAccountKeychain.CallNotAllowed.selector)
+        );
     }
 
-    /// @notice The scope names the clone's `publicCall`, not a prefix, so the key also reaches the
-    ///         public actions of every other handler the program can use. Here it sets the
-    ///         cardholder's "TF" vault preference.
-    function test_publicKey_reachesOtherHandlersPublicActions() public {
+    /// @notice The key's program pays only its own spends: a spend naming another program is refused.
+    function test_publicKey_cannotSpendForAnotherProgram() public {
         _scopePublicKey(1000e6);
-        assertTrue(_exec(_setTewfPreference(address(earnVault))), "TF accepted the key");
-        bytes memory preference =
-            IBridgeSpenderClone(spender).publicGetCall(abi.encodePacked(PREFIX_TEWF, bytes2("GP"), alice));
-        assertEq(abi.decode(preference, (address)), address(earnVault));
+        CardSpend memory s = _spend(10e6);
+        s.program = attacker;
+        _assertRejected(_approveAndSpend(10e6, s), abi.encodeWithSelector(CardProgram.WrongProgram.selector, attacker));
     }
 
-    /// @notice Gating a handler without allowlisting the program closes that path.
+    /// @notice Gating "TS" without allowlisting the program closes the program's path.
     function test_publicKey_cannotReachAGatedHandler() public {
         vm.prank(bridgeGovernor);
-        bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEWF, SpenderStatus.Gated);
+        bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Gated);
         _scopePublicKey(1000e6);
         _assertRejected(
-            _setTewfPreference(address(earnVault)),
+            _approveAndSpend(10e6, _spend(10e6)),
             abi.encodeWithSelector(SpenderFactoryErrorsAndEvents.SpenderHandlerNotAllowed.selector)
         );
+        vm.prank(bridgeGovernor);
+        bridgeFactory.updateSpenderHandlerAllowlist(PREFIX_TEMPO_SPEND, SPENDER_ID, true);
+        assertTrue(_exec(_approveAndSpend(10e6, _spend(10e6))), "allowlisted program");
     }
 
     function test_publicKey_boundedByPeriodicLimit() public {
@@ -119,7 +132,7 @@ contract AccessKeySecurityTest is AccessKeys {
         assertTrue(_exec(_approveAndSpend(30e6, _spend(30e6))), "next period");
     }
 
-    /// @notice The key names the clone, not a destination, so governance can move the program to a
+    /// @notice The key names the program, not a destination, so governance can move the program to a
     ///         new destination without the cardholder authorizing anything again.
     function test_publicKey_followsDestinationChange() public {
         _scopePublicKey(1000e6);
@@ -131,9 +144,9 @@ contract AccessKeySecurityTest is AccessKeys {
 
         _assertRejected(
             _approveAndSpend(10e6, _spend(10e6)),
-            abi.encodeWithSelector(SpenderTempoSpend.DestinationNotAuthorized.selector, settlement)
+            abi.encodeWithSelector(CardProgram.DestinationNotAuthorized.selector, settlement)
         );
-        Spend memory s = _spend(10e6);
+        CardSpend memory s = _spend(10e6);
         s.destination = next;
         assertTrue(_exec(_approveAndSpend(10e6, s)), "same key, new destination");
         assertEq(usd.balanceOf(next), 10e6);
@@ -150,7 +163,7 @@ contract AccessKeySecurityTest is AccessKeys {
 
     /// @notice Decision 9: one Bridge key serves every cardholder of a program, and a transaction
     ///         it signs for one cardholder only ever pays from that cardholder, even while another
-    ///         cardholder has an approval standing to the clone.
+    ///         cardholder has an approval standing to the program.
     function test_sharedKey_paysEachCardholderOnlyFromTheirOwnFunds() public {
         address bob = makeAddr("bob");
         _mintUsd(bob, 1000e6);
@@ -162,21 +175,20 @@ contract AccessKeySecurityTest is AccessKeys {
         assertEq(usd.balanceOf(settlement) - before, 20e6);
 
         vm.prank(bob);
-        usd.approve(spender, 50e6);
+        usd.approve(address(program), 50e6);
         vm.startPrank(alice);
         usd.transfer(makeAddr("alice.elsewhere"), usd.balanceOf(alice));
         vm.stopPrank();
         uint256 bobBefore = usd.balanceOf(bob);
 
-        TxCall[] memory spendOnly =
-            _call(spender, abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(_spend(10e6)))));
+        TxCall[] memory spendOnly = _call(address(program), abi.encodeCall(CardProgram.spend, (_spend(10e6))));
         _assertRejected(spendOnly, abi.encodeWithSelector(SafeTransferLib.TransferFromFailed.selector));
         _assertRejected(
             _call(address(usd), abi.encodeCall(ITIP20.transferFrom, (bob, settlement, uint256(10e6)))),
             abi.encodeWithSelector(IAccountKeychain.CallNotAllowed.selector)
         );
         assertEq(usd.balanceOf(bob), bobBefore, "bob's funds untouched");
-        assertEq(usd.allowance(bob, spender), 50e6, "bob's approval untouched");
+        assertEq(usd.allowance(bob, address(program)), 50e6, "bob's approval untouched");
     }
 
     // ------------------------------------------------------------------
@@ -225,12 +237,13 @@ contract AccessKeySecurityTest is AccessKeys {
         _authorizeBridgeKey(alice, tokens, limits, scopes);
     }
 
-    function _spend(uint256 amount) internal view returns (Spend memory) {
-        return Spend({
-            spenderId: SPENDER_ID,
+    function _spend(uint256 amount) internal view returns (CardSpend memory) {
+        return CardSpend({
+            program: address(program),
             token: address(usd),
             amount: amount,
             destination: settlement,
+            destinationHint: 0,
             vault: address(0),
             fromVault: 0,
             maxShares: 0,
@@ -238,11 +251,11 @@ contract AccessKeySecurityTest is AccessKeys {
         });
     }
 
-    function _approveAndSpend(uint256 approval, Spend memory s) internal view returns (TxCall[] memory calls) {
+    function _approveAndSpend(uint256 approval, CardSpend memory s) internal view returns (TxCall[] memory calls) {
         calls = new TxCall[](3);
-        calls[0] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (spender, approval)));
-        calls[1] = TxCall(spender, 0, abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(s))));
-        calls[2] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (spender, 0)));
+        calls[0] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (address(program), approval)));
+        calls[1] = TxCall(address(program), 0, abi.encodeCall(CardProgram.spend, (s)));
+        calls[2] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (address(program), 0)));
     }
 
     function _setTewfPreference(address vault) internal view returns (TxCall[] memory) {

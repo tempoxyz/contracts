@@ -33,7 +33,7 @@ const routerReleaseScript = 'script/deploy/DeployRouterRelease.s.sol:DeployRoute
  * The router project's ownerless contracts, released by the shared factory release engine
  * (`deployRelease`) from their own CLI and workflow, and named by no registry entry: the
  * ZoneRouterFactory, a SendSettler, and a ZoneRouter its factory creates. A card program's
- * BridgeSettler releases with the card integration (cards/script/bridge/deploy/release.sh).
+ * settler, its CardProgram, releases with the card integration (cards/script/bridge/deploy/release.sh).
  */
 export const routerReleaseKinds = ['zoneRouterFactory', 'sendSettler', 'zoneRouter'] as const
 
@@ -253,7 +253,7 @@ export function planRouterRelease(
 const unknownRouterRelease = (kind: string) =>
   new Error(
     kind === 'bridgeSettler'
-      ? "Unknown router release bridgeSettler; a card program's BridgeSettler releases with the card integration (cards/script/bridge/deploy/release.sh <network> bridgeSettler)"
+      ? "Unknown router release bridgeSettler; a card program's settler is its CardProgram, which releases with the card integration (cards/script/bridge/deploy/release.sh <network> bridgeProgram)"
       : `Unknown router release ${kind}; expected one of ${routerReleaseKinds.join(', ')} (Earn's factory releases run with pnpm factory-release)`,
   )
 

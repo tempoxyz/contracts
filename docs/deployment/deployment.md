@@ -383,7 +383,7 @@ pnpm zone-router-release moderato zoneRouter \
 points, with the same chain, profile, and deployer checks as `DeployFactoryRelease`. The factory and
 each settler are created through the CREATE2 deployer with Earn's release salt
 (`DeterministicRelease`), and a router by its factory at `predict(mode)`, salted by the mode's hash.
-So a `ZoneRouterFactory`, `SendSettler` or `BridgeSettler` of the same build and settings, and a
+So a `ZoneRouterFactory` or `SendSettler` of the same build and settings, and a
 `ZoneRouter` of the same factory and mode, lands at the same address whoever deploys it, on every network, and an entry
 point reuses one that exists (a router only if `factory.isRouter` says its factory made it). Forge
 records the router as a contract its factory call created; the command matches it by address and
@@ -395,8 +395,8 @@ or router, and the Zone's Portal administrator a router
 ### Bridge releases
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
-deploys the card integration's "TS" handler (`SpenderTempoSpend`) or a card program's `BridgeSettler`
-for an issuer's `SpenderFactory` from `main`, at its deterministic address, with [`cards/`](../../cards/README.md)' own build.
+deploys the card integration's "TS" handler (`SpenderTempoSpend`), or a Bridge card program (its
+`BridgeIssuer` and `CardProgram`, through the `CardFactory`) for an issuer's `SpenderFactory` from `main`, at its deterministic address, with [`cards/`](../../cards/README.md)' own build.
 It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue,
 one network per dispatch, and lists in its summary the calls the issuer's admin and governance submit to
 register and gate the handler; it never submits them. [Deploying from CI](../cards/bridge/deploy.md#deploying-from-ci) owns the

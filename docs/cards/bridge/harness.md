@@ -11,9 +11,10 @@ a small set of hooks, so a new design gets the whole suite by writing one adapte
 | Access-key transactions                      | Signed Tempo transactions via `vm.executeTransaction`                                          | Real                           |
 | Tempo Earn                                   | `EarnFactory`, `EarnVault`, native EarnShare, `ERC4626Engine` over a demo venue                | Real contracts, demo venue     |
 | The issuer                                   | `SpenderFactory`, EA, P2 (with Uniswap Permit2), TF and the unmerged EV handler                | Real contracts                 |
+| The Tempo program                            | `CardFactory`, `CardProgram` and `BridgeIssuer` over the factory's clone and "TS"              | Real contracts                 |
 | Zone, Tempo side                             | `ZonePortal`, `ZoneMessenger`, `Verifier` at canonical addresses, with the Zone factory mocked | Real contracts, mocked factory |
 | Zone, Zone side                              | `ZoneEnv`: shadow TIP-20 balances, outbox, sequencer, encrypted deposits                       | Modeled                        |
-| The card processor and issuer's card backend | `CardProgram`                                                                                  | Modeled                        |
+| The card processor and issuer's card backend | `CardProgramModel`                                                                             | Modeled                        |
 
 [`e2e/cards/bridge`](../../../e2e/cards/bridge/) runs the private path on a real L1 and Zone, so it covers what the model cannot, such
 as the Zone's ban on contract creation.
@@ -28,7 +29,7 @@ real keychain enforces Zone key limits and scopes. `ZoneEnv` plays sequencer:
 Deposit payloads are XOR-encrypted with a per-deposit nonce, so Tempo data never carries the
 recipient.
 
-**The card program model.** `CardProgram` follows the issuer's noncustodial just-in-time cards:
+**The card program model.** `CardProgramModel` (not the `CardProgram` contract) follows the issuer's noncustodial just-in-time cards:
 
 - An authorization pulls its hold first: the amount, a 20% buffer for restaurants, bars, fast
   food, taxis and car rentals, a $100 hold for a $1 fuel-pump preauthorization, plus any estimated
@@ -46,7 +47,7 @@ TempoEnv        tokens, Earn, spender factory with EA/P2/TF/EV/TS
   ZoneEnv       real portal and messenger, modeled Zone sequencer
     AccessKeys  keychain authorization and access-key transactions
       SpendRail       the hooks a setup implements
-        CardProgram   card processor and issuer model, drives the hooks
+        CardProgramModel  card processor and issuer model, drives the hooks
           CardScenarios  every scenario
           RailDefaults   default hook bodies
             BridgeErc20Rail, BridgePermit2Rail, BridgeTewfRail, BridgeErc4626Rail
@@ -77,7 +78,7 @@ TempoEnv        tokens, Earn, spender factory with EA/P2/TF/EV/TS
 - **A setup:** write `abstract contract MyRail is RailDefaults` in `test/rails/`, add one contract
   per funding source to `test/bridge/e2e/Matrix.t.sol` and to `SETUPS` in `script/bridge/matrix.py`, then run
   `forge test --match-contract MySetup -vv` and `python3 script/bridge/matrix.py`.
-- **A scenario:** add a `test_` function to `CardScenarios` that drives `CardProgram` and asserts
+- **A scenario:** add a `test_` function to `CardScenarios` that drives `CardProgramModel` and asserts
   through `_railValue`, `_assertSpent`, `_assertSettled` and `_assertLedger`. If a setup lacks a
   capability, branch on `_railCaps()`, pin what the setup does, and call `_gap("reason")` so the
   matrix lists it. Use `vm.skip` only when the scenario cannot apply.
@@ -88,8 +89,8 @@ TempoEnv        tokens, Earn, spender factory with EA/P2/TF/EV/TS
   Compute quotes and view results before the prank.
 - With `via_ir`, `block.timestamp` read before `vm.warp` can be re-read after it. Use
   `vm.getBlockTimestamp()`.
-- Test contracts are large. The private rail deploys `BridgeSettler` and the `ZoneRouterFactory` from
-  their artifacts with `deployCode` rather than `new`: inlining their creation code bloats every
+- Test contracts are large. The Tempo rails deploy the program's contracts and the
+  `ZoneRouterFactory` from their artifacts with `deployCode` rather than `new`: inlining their creation code bloats every
   matrix suite, and put the private ones at a size where solc 0.8.36's via-IR assembler fails with
   `Tag too large for reserved space`.
 - Tempo prices new storage far above Ethereum. Simulated transactions use a 29M gas limit, so

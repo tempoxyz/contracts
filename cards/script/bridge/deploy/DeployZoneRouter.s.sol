@@ -8,9 +8,12 @@ import { IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneInfo } from "tempo-zones/interf
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
-import { BridgeSettler } from "../../../src/providers/bridge/BridgeSettler.sol";
+import { CardFactory } from "../../../src/core/CardFactory.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
-import { BridgeRelease } from "./BridgeRelease.sol";
+import { BridgeProgramRelease } from "./BridgeRelease.sol";
+import { checkProgram, requireProgram } from "./DeployBridgeProgram.s.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice A card program's router mode: Spend only on `zoneId`, through `settler` alone, with no Earn
@@ -24,26 +27,29 @@ library SpendMode {
     }
 }
 
-/// @notice Deploys one card program's `BridgeSettler` and the Spend-mode `ZoneRouter` that may use
-///         it on one Zone, through a `ZoneRouterFactory`, after checking the program's clone was
-///         created for its ID and the Zone has a registered portal. The settler lands at its
-///         deterministic address (`BridgeRelease`), and one already there is reused; so is a router
-///         the factory already deployed for this mode. Neither contract has an owner, so nothing else is configured here. A Zone with a closed
-///         callback gateway must still grant the router the gateway role, and one that enforces
-///         access must admit the program's refund recipient and the program wallet that deposits
-///         refunds.
-///         `run` reads FACTORY (the Bridge spender factory), SPENDER_ID, ZONE_ID, OUT,
-///         ROUTER_FACTORY (optional: a new ZoneRouterFactory is deployed without it) and
-///         DEPLOYER_PK unless the signer comes from `--account` or `--ledger`. OUT is written only
-///         with `--broadcast`.
-contract DeployZoneRouter is BridgeRelease {
+/// @notice Deploys one Bridge card program's `CardProgram` (as `DeployBridgeProgram` does) and the
+///         Spend-mode `ZoneRouter` that lists it as its only settler on one Zone, through a
+///         `ZoneRouterFactory`, after checking the program's clone was created for its ID and the Zone has
+///         a registered portal. The release `CardFactory`, the program's `BridgeIssuer` and its program
+///         land at their deterministic addresses (`BridgeProgramRelease`), and one already there is reused;
+///         so is a router the factory already deployed for this mode. None of them has an owner, so nothing
+///         else is configured here. A Zone with a closed callback gateway must still grant the router the
+///         gateway role, and one that enforces access must admit the program's refund recipient and the
+///         program wallet that deposits refunds.
+///         `run` reads FACTORY (the Bridge spender factory), SPENDER_ID, GUARDIAN (optional: zero for no
+///         guardian pause), ZONE_ID, OUT, ROUTER_FACTORY (optional: a new ZoneRouterFactory is deployed
+///         without it) and DEPLOYER_PK unless the signer comes from `--account` or `--ledger`. OUT is
+///         written only with `--broadcast`.
+contract DeployZoneRouter is BridgeProgramRelease {
     struct Output {
         address factory;
         bytes32 spenderId;
         address clone;
         uint32 zoneId;
         address portal;
-        BridgeSettler settler;
+        CardFactory cardFactory;
+        BridgeIssuer issuer;
+        CardProgram program;
         ZoneRouterFactory routerFactory;
         ZoneRouter router;
     }
@@ -52,6 +58,7 @@ contract DeployZoneRouter is BridgeRelease {
         Output memory o = deploy(
             IBridgeSpenderFactory(vm.envAddress("FACTORY")),
             vm.envBytes32("SPENDER_ID"),
+            vm.envOr("GUARDIAN", address(0)),
             ProgramChecks.zoneId(vm.envUint("ZONE_ID")),
             ZoneRouterFactory(vm.envOr("ROUTER_FACTORY", address(0))),
             vm.envOr("DEPLOYER_PK", uint256(0))
@@ -64,20 +71,18 @@ contract DeployZoneRouter is BridgeRelease {
         return o.router;
     }
 
+    /// @param guardian The only account that can pause the program, or zero for none.
     /// @param routerFactory The ZoneRouterFactory to deploy through, or zero to deploy one.
     /// @param deployerPk The deployer's key, or zero to sign with forge's `--account` or `--ledger`.
     function deploy(
         IBridgeSpenderFactory factory,
         bytes32 spenderId,
+        address guardian,
         uint32 zoneId,
         ZoneRouterFactory routerFactory,
         uint256 deployerPk
     ) public returns (Output memory o) {
-        o.clone = factory.getSpenderAddress(spenderId);
-        require(
-            ProgramChecks.isCanonical(address(factory), spenderId, o.clone),
-            "SPENDER_ID was added to an existing clone, which TS rejects"
-        );
+        o.clone = checkProgram(factory, spenderId);
         ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(zoneId);
         require(
             zone.portal != address(0) && IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal),
@@ -90,13 +95,17 @@ contract DeployZoneRouter is BridgeRelease {
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
         if (address(routerFactory) == address(0)) routerFactory = new ZoneRouterFactory();
-        (o.settler,) = _bridgeSettler(factory, spenderId);
-        o.router = ZoneRouter(routerFactory.deploy(SpendMode.forSettler(zoneId, address(o.settler))));
+        Created memory c = _bridgeProgram(factory, spenderId, guardian);
+        o.router = ZoneRouter(routerFactory.deploy(SpendMode.forSettler(zoneId, address(c.program))));
         vm.stopBroadcast();
+        requireProgram(c.program, factory, spenderId, guardian);
         o.factory = address(factory);
         o.spenderId = spenderId;
         o.zoneId = zoneId;
         o.portal = zone.portal;
+        o.cardFactory = c.cardFactory;
+        o.issuer = c.issuer;
+        o.program = c.program;
         o.routerFactory = routerFactory;
     }
 
@@ -107,7 +116,9 @@ contract DeployZoneRouter is BridgeRelease {
         vm.serializeAddress(key, "clone", o.clone);
         vm.serializeUint(key, "zoneId", o.zoneId);
         vm.serializeAddress(key, "portal", o.portal);
-        vm.serializeAddress(key, "settler", address(o.settler));
+        vm.serializeAddress(key, "cardFactory", address(o.cardFactory));
+        vm.serializeAddress(key, "issuer", address(o.issuer));
+        vm.serializeAddress(key, "program", address(o.program));
         vm.serializeAddress(key, "routerFactory", address(o.routerFactory));
         vm.writeJson(vm.serializeAddress(key, "router", address(o.router)), path);
     }

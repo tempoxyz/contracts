@@ -25,10 +25,17 @@ import {
     EngineMigrationMode
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
-import { Spend, SpenderTempoSpend } from "../../src/providers/bridge/SpenderTempoSpend.sol";
-import { IBridgeSpenderClone } from "../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
+import { CardFactory } from "../../src/core/CardFactory.sol";
+import { CardProgram } from "../../src/core/CardProgram.sol";
+import { CardSpend } from "../../src/core/CardSpend.sol";
+import { ICardIssuer } from "../../src/core/interfaces/ICardIssuer.sol";
+import { BridgeIssuer } from "../../src/providers/bridge/BridgeIssuer.sol";
+import { SpenderTempoSpend } from "../../src/providers/bridge/SpenderTempoSpend.sol";
+import { IBridgeSpenderFactory } from "../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 
-/// @notice Deploys the stack to a real Tempo node and broadcasts public card pulls end to end.
+/// @notice Deploys the stack to a real Tempo node and broadcasts public card pulls end to end: Bridge's
+///         EA pull, and spends through the program's `CardProgram`, which pays through the clone's "TS"
+///         handler.
 /// @dev script/bridge/smoke.sh runs it against a dev node and checks the resulting balances with cast,
 ///      since forge evaluates a script's own reads in its simulation, not on the node. "TS" is
 ///      registered gated with the program allowlisted, as Bridge's deployment does it.
@@ -52,6 +59,8 @@ contract LocalSmoke is Script {
     ITIP20Token internal earnShare;
     SpenderFactory internal factory;
     address internal clone;
+    BridgeIssuer internal issuer;
+    CardProgram internal program;
 
     function run() external {
         deployerPk = vm.deriveKey(MNEMONIC, 0);
@@ -121,8 +130,11 @@ contract LocalSmoke is Script {
         clone = factory.createSpender(SPENDER_ID, destinations);
         factory.updateSpenderHandlerAllowlist("TS", SPENDER_ID, true);
         factory.governorCall(SPENDER_ID, abi.encodePacked(bytes2("TS"), bytes2("UV"), uint8(1), address(earnVault)));
+        issuer = new BridgeIssuer(IBridgeSpenderFactory(address(factory)), SPENDER_ID);
+        program = CardProgram(new CardFactory().deploy(SPENDER_ID, ICardIssuer(address(issuer)), address(0)));
         vm.stopBroadcast();
         console.log("deployed factory", address(factory), "clone", clone);
+        console.log("deployed program", address(program), "issuer", address(issuer));
     }
 
     /// @dev Read by script/bridge/smoke.sh for the access-key steps it runs with cast.
@@ -130,6 +142,8 @@ contract LocalSmoke is Script {
         string memory key = "smoke";
         vm.serializeAddress(key, "usd", address(usd));
         vm.serializeAddress(key, "clone", clone);
+        vm.serializeAddress(key, "issuer", address(issuer));
+        vm.serializeAddress(key, "program", address(program));
         vm.serializeAddress(key, "settlement", settlement);
         vm.serializeAddress(key, "earnVault", address(earnVault));
         vm.serializeAddress(key, "earnShare", address(earnShare));
@@ -153,7 +167,7 @@ contract LocalSmoke is Script {
         );
     }
 
-    /// TS handler: the cardholder's account spends from Earn shares with a share cap.
+    /// The program, through "TS": the cardholder's account spends from Earn shares with a share cap.
     function _tempoSpendFromEarn() internal {
         vm.startBroadcast(alicePk);
         usd.approve(address(earnVault), 200e6);
@@ -163,7 +177,7 @@ contract LocalSmoke is Script {
         _spendAsAlice(_spend(25e6, 25e6, cap, keccak256("smoke.auth.1")), 0, cap);
     }
 
-    /// TS handler: one spend from stablecoin and Earn.
+    /// The program, through "TS": one spend from stablecoin and Earn.
     function _tempoSplitSpend() internal {
         uint256 cap = earnVault.previewWithdraw(15e6) * 2;
         _spendAsAlice(_spend(20e6, 15e6, cap, keccak256("smoke.auth.2")), 5e6, cap);
@@ -172,13 +186,14 @@ contract LocalSmoke is Script {
     function _spend(uint256 amount, uint256 fromVault, uint256 maxShares, bytes32 ref)
         internal
         view
-        returns (Spend memory)
+        returns (CardSpend memory)
     {
-        return Spend({
-            spenderId: SPENDER_ID,
+        return CardSpend({
+            program: address(program),
             token: address(usd),
             amount: amount,
             destination: settlement,
+            destinationHint: 0,
             vault: address(earnVault),
             fromVault: fromVault,
             maxShares: maxShares,
@@ -186,14 +201,14 @@ contract LocalSmoke is Script {
         });
     }
 
-    /// @dev Approve exactly, spend, clear the approvals: what Bridge's access key signs.
-    function _spendAsAlice(Spend memory s, uint256 stableApproval, uint256 shareApproval) internal {
+    /// @dev Approve the program exactly, spend, clear the approvals: what Bridge's access key signs.
+    function _spendAsAlice(CardSpend memory s, uint256 stableApproval, uint256 shareApproval) internal {
         vm.startBroadcast(alicePk);
-        if (stableApproval != 0) usd.approve(clone, stableApproval);
-        earnShare.approve(clone, shareApproval);
-        IBridgeSpenderClone(clone).publicCall(abi.encodePacked(bytes2("TS"), bytes2("PS"), abi.encode(s)));
-        if (stableApproval != 0) usd.approve(clone, 0);
-        earnShare.approve(clone, 0);
+        if (stableApproval != 0) usd.approve(address(program), stableApproval);
+        earnShare.approve(address(program), shareApproval);
+        program.spend(s);
+        if (stableApproval != 0) usd.approve(address(program), 0);
+        earnShare.approve(address(program), 0);
         vm.stopBroadcast();
     }
 }

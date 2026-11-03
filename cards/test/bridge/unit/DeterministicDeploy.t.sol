@@ -5,10 +5,10 @@ import { SpenderFactory } from "bridge-spender/src/SpenderFactory.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
 import { BridgeRelease } from "../../../script/bridge/deploy/BridgeRelease.sol";
-import { DeployBridgeSettler } from "../../../script/bridge/deploy/DeployBridgeSettler.s.sol";
+import { DeployBridgeProgram } from "../../../script/bridge/deploy/DeployBridgeProgram.s.sol";
 import { DeployTempoSpend } from "../../../script/bridge/deploy/DeployTempoSpend.s.sol";
 import { DeployZoneRouter } from "../../../script/bridge/deploy/DeployZoneRouter.s.sol";
-import { BridgeSettler } from "../../../src/providers/bridge/BridgeSettler.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { ZoneEnv } from "../harness/ZoneEnv.sol";
@@ -21,21 +21,10 @@ contract UnbroadcastRelease is BridgeRelease {
     }
 }
 
-/// @dev Creates a program's settler in a broadcast, as `DeployZoneRouter` does before its router.
-contract SettlerRelease is BridgeRelease {
-    function deploy(IBridgeSpenderFactory factory, bytes32 spenderId, uint256 deployerPk)
-        external
-        returns (BridgeSettler settler, bool created)
-    {
-        vm.startBroadcast(deployerPk);
-        (settler, created) = _bridgeSettler(factory, spenderId);
-        vm.stopBroadcast();
-    }
-}
-
-/// @notice The "TS" handler and a program's BridgeSettler land at their deterministic release
-///         addresses, the CREATE2 deployer with Earn's release salt, whoever deploys them, and a
-///         second deploy reuses them without sending anything.
+/// @notice The "TS" handler, the release `CardFactory` and a program's `BridgeIssuer` land at their
+///         deterministic release addresses, the CREATE2 deployer with Earn's release salt, whoever deploys
+///         them, the factory creates the program's `CardProgram` at the address its ID, issuer and guardian
+///         fix, and a second deploy reuses them all without sending anything.
 contract DeterministicDeployTest is ZoneEnv {
     /// @dev Earn's release salt (earn/script/deploy/DeterministicRelease.sol), which
     ///      deployments/core/factory-release.ts and the Bridge Release workflow also predict with.
@@ -87,63 +76,106 @@ contract DeterministicDeployTest is ZoneEnv {
         assertEq(address(script.deploy(other, TEMPO_PK).handler), script.tempoSpendAddress(other));
     }
 
-    function test_settlerLandsAtItsReleaseAddressAndIsReused() public {
-        address predicted = vm.computeCreate2Address(
+    /// @notice The release addresses, predicted here from the CREATE2 rules alone, are where the script
+    ///         lands, and a second run by another deployer reuses all three without a transaction.
+    function test_programLandsAtItsReleaseAddressesAndIsReused() public {
+        address guardian = makeAddr("bridge.guardian");
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+        address cardFactory_ = vm.computeCreate2Address(
+            EARN_RELEASE_SALT, keccak256(vm.getCode("CardFactory.sol:CardFactory")), CREATE2_FACTORY
+        );
+        address issuer_ = vm.computeCreate2Address(
             EARN_RELEASE_SALT,
             keccak256(
-                abi.encodePacked(type(BridgeSettler).creationCode, abi.encode(address(bridgeFactory), SPENDER_ID))
+                abi.encodePacked(
+                    vm.getCode("BridgeIssuer.sol:BridgeIssuer"), abi.encode(address(bridgeFactory), SPENDER_ID)
+                )
             ),
             CREATE2_FACTORY
         );
-        SettlerRelease tempo = new SettlerRelease();
-        assertEq(tempo.bridgeSettlerAddress(address(bridgeFactory), SPENDER_ID), predicted);
+        address program_ = vm.computeCreate2Address(
+            keccak256(abi.encode(SPENDER_ID, issuer_, guardian)),
+            keccak256(abi.encodePacked(vm.getCode("CardProgram.sol:CardProgram"), abi.encode(issuer_, guardian))),
+            cardFactory_
+        );
+        assertEq(script.cardFactoryAddress(), cardFactory_);
+        assertEq(script.bridgeIssuerAddress(address(bridgeFactory), SPENDER_ID), issuer_);
+        assertEq(script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID, guardian), program_);
+        assertEq(program_.code.length, 0);
 
-        (BridgeSettler first, bool created) =
-            tempo.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, TEMPO_PK);
-        assertEq(address(first), predicted, "created at the release address");
-        assertTrue(created);
-        assertEq(address(first.FACTORY()), address(bridgeFactory));
-        assertEq(first.SPENDER_ID(), SPENDER_ID);
+        IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
+        DeployBridgeProgram.Output memory first = script.deploy(factory, SPENDER_ID, guardian, TEMPO_PK);
+        assertEq(address(first.cardFactory), cardFactory_, "factory at its release address");
+        assertEq(address(first.issuer), issuer_, "issuer at its release address");
+        assertEq(address(first.program), program_, "program where the factory predicts it");
+        assertTrue(first.created);
+        assertEq(first.clone, spender);
+        assertEq(address(first.issuer.FACTORY()), address(bridgeFactory));
+        assertEq(first.issuer.SPENDER_ID(), SPENDER_ID);
+        assertEq(first.program.GUARDIAN(), guardian);
+        assertEq(first.program.PAYOUT_TARGET(), spender);
+        assertTrue(first.cardFactory.isProgram(program_));
 
         uint64 nonce = vm.getNonce(vm.addr(BRIDGE_PK));
-        (BridgeSettler again, bool createdAgain) =
-            new SettlerRelease().deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, BRIDGE_PK);
-        assertEq(address(again), predicted, "same address for another deployer");
-        assertFalse(createdAgain);
+        DeployBridgeProgram.Output memory again =
+            _newDeployBridgeProgram().deploy(factory, SPENDER_ID, guardian, BRIDGE_PK);
+        assertEq(address(again.program), program_, "same address for another deployer");
+        assertFalse(again.created);
         assertEq(vm.getNonce(vm.addr(BRIDGE_PK)), nonce, "no transaction");
+
+        string memory path = "reports/test-deploy-bridge-program.json";
+        script.write(first, path);
+        string memory json = vm.readFile(path);
+        assertEq(vm.parseJsonAddress(json, ".program"), program_);
+        assertEq(vm.parseJsonAddress(json, ".issuer"), issuer_);
+        assertEq(vm.parseJsonAddress(json, ".cardFactory"), cardFactory_);
+        assertEq(vm.parseJsonAddress(json, ".guardian"), guardian);
+        assertEq(vm.parseJsonAddress(json, ".clone"), spender);
+        assertTrue(vm.parseJsonBool(json, ".created"));
     }
 
-    /// @notice DeployZoneRouter deploys the program's settler at its release address, reusing one
-    ///         already there, and running it again reuses the router.
-    function test_routerDeployUsesTheReleaseSettler() public {
+    /// @notice Each program and each guardian has its own program, at its own address, over one factory,
+    ///         and one issuer per Bridge program.
+    function test_programAddressFollowsTheProgramAndGuardian() public {
+        bytes32 otherId = keccak256("bridge.card-program.other");
+        address[] memory destinations = new address[](1);
+        destinations[0] = settlement;
+        vm.prank(bridgeManager);
+        bridgeFactory.createSpender(otherId, destinations);
+        IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+
+        DeployBridgeProgram.Output memory a = script.deploy(factory, SPENDER_ID, address(0), TEMPO_PK);
+        DeployBridgeProgram.Output memory b = script.deploy(factory, otherId, address(0), TEMPO_PK);
+        DeployBridgeProgram.Output memory c = script.deploy(factory, SPENDER_ID, makeAddr("guardian"), TEMPO_PK);
+        assertEq(address(a.cardFactory), address(b.cardFactory), "one release factory");
+        assertTrue(address(a.issuer) != address(b.issuer), "an issuer per Bridge program");
+        assertEq(address(a.issuer), address(c.issuer), "the guardian is the program's, not the issuer's");
+        assertTrue(address(a.program) != address(b.program) && address(a.program) != address(c.program));
+        assertEq(b.issuer.SPENDER_ID(), otherId);
+        assertEq(address(b.program), script.bridgeProgramAddress(address(bridgeFactory), otherId, address(0)));
+        assertEq(c.program.GUARDIAN(), makeAddr("guardian"));
+    }
+
+    /// @notice DeployZoneRouter deploys the program at its release address, reusing one already there,
+    ///         and running it again reuses the router.
+    function test_routerDeployUsesTheReleaseProgram() public {
         _deployZone(true);
-        (BridgeSettler settler,) =
-            new SettlerRelease().deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, TEMPO_PK);
+        IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
+        DeployBridgeProgram.Output memory released =
+            _newDeployBridgeProgram().deploy(factory, SPENDER_ID, address(0), TEMPO_PK);
         DeployZoneRouter script = DeployZoneRouter(deployCode("DeployZoneRouter.s.sol:DeployZoneRouter"));
-        DeployZoneRouter.Output memory o = script.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, ZoneRouterFactory(address(0)), BRIDGE_PK
-        );
-        assertEq(address(o.settler), address(settler), "the release settler");
-        assertEq(o.router.settlers()[0], address(settler));
+        DeployZoneRouter.Output memory o =
+            script.deploy(factory, SPENDER_ID, address(0), ZONE_ID, ZoneRouterFactory(address(0)), BRIDGE_PK);
+        assertEq(address(o.program), address(released.program), "the release program");
+        assertEq(o.router.settlers()[0], address(released.program));
 
         uint64 nonce = vm.getNonce(vm.addr(BRIDGE_PK));
-        DeployZoneRouter.Output memory again = script.deploy(
-            IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, ZONE_ID, o.routerFactory, BRIDGE_PK
-        );
-        assertEq(address(again.settler), address(o.settler));
+        DeployZoneRouter.Output memory again =
+            script.deploy(factory, SPENDER_ID, address(0), ZONE_ID, o.routerFactory, BRIDGE_PK);
+        assertEq(address(again.program), address(o.program));
         assertEq(address(again.router), address(o.router), "the factory's router for this mode");
         assertEq(vm.getNonce(vm.addr(BRIDGE_PK)), nonce + 1, "only the factory's deploy call, which returns it");
-    }
-
-    /// @notice Each program has its own settler, at its own address.
-    function test_settlerAddressFollowsTheProgram() public {
-        bytes32 otherId = keccak256("bridge.card-program.other");
-        SettlerRelease script = new SettlerRelease();
-        (BridgeSettler a,) = script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID, TEMPO_PK);
-        (BridgeSettler b,) = script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), otherId, TEMPO_PK);
-        assertTrue(address(a) != address(b));
-        assertEq(b.SPENDER_ID(), otherId);
-        assertEq(address(b), script.bridgeSettlerAddress(address(bridgeFactory), otherId));
     }
 
     /// @notice Outside a broadcast the contract would be created by the script itself, elsewhere, so
@@ -154,37 +186,54 @@ contract DeterministicDeployTest is ZoneEnv {
         release.tempoSpend(address(bridgeFactory));
     }
 
+    function test_programReleaseScriptRefusesAFactoryWithoutCode() public {
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+        vm.expectRevert(bytes("FACTORY has no code"));
+        script.deploy(IBridgeSpenderFactory(makeAddr("missing")), SPENDER_ID, address(0), TEMPO_PK);
+    }
+
+    function test_programReleaseScriptRefusesAProgramWithoutAClone() public {
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+        vm.expectRevert(bytes("SPENDER_ID has no clone"));
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("no such program"), address(0), TEMPO_PK);
+        vm.expectRevert(bytes("SPENDER_ID is zero"));
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), bytes32(0), address(0), TEMPO_PK);
+    }
+
+    /// @notice An ID a manager added to an existing clone cannot spend through "TS", so no program is
+    ///         deployed for it.
+    function test_programReleaseScriptRefusesAnIdAddedToAnExistingClone() public {
+        bytes32 aliasId = keccak256("alias");
+        address[] memory destinations = new address[](1);
+        destinations[0] = settlement;
+        vm.prank(bridgeManager);
+        bridgeFactory.createSpenderWithExistingContract(aliasId, destinations, spender);
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+        vm.expectRevert(bytes("SPENDER_ID was added to an existing clone, which TS rejects"));
+        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), aliasId, address(0), TEMPO_PK);
+    }
+
+    /// @notice `run` reads FACTORY and SPENDER_ID, defaults GUARDIAN to none, and writes OUT only with a
+    ///         broadcast.
+    /// @dev The environment is the process's, shared with DeployScripts.t.sol's suite running alongside, so
+    ///      this sets the same values that one does and leaves GUARDIAN unset.
+    function test_programReleaseRunReadsTheEnvironment() public {
+        vm.setEnv("FACTORY", vm.toString(address(bridgeFactory)));
+        vm.setEnv("SPENDER_ID", vm.toString(SPENDER_ID));
+        vm.setEnv("DEPLOYER_PK", vm.toString(uint256(keccak256("tempo.deployer"))));
+        vm.setEnv("OUT", "reports/test-run.json");
+        DeployBridgeProgram script = _newDeployBridgeProgram();
+        CardProgram deployed = script.run();
+        assertEq(address(deployed), script.bridgeProgramAddress(address(bridgeFactory), SPENDER_ID, address(0)));
+        assertEq(deployed.GUARDIAN(), address(0), "no guardian by default");
+    }
+
     function _newBridgeFactory() internal returns (SpenderFactory factory) {
         factory = new SpenderFactory();
     }
 
-    function test_settlerReleaseScriptDeploysOnceAndReuses() public {
-        DeployBridgeSettler script = new DeployBridgeSettler();
-        IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(bridgeFactory));
-        address predicted = script.bridgeSettlerAddress(address(bridgeFactory), SPENDER_ID);
-        assertEq(predicted.code.length, 0);
-
-        DeployBridgeSettler.Output memory first = script.deploy(factory, SPENDER_ID, TEMPO_PK);
-        assertEq(address(first.settler), predicted);
-        assertTrue(first.created);
-        assertEq(first.clone, factory.getSpenderAddress(SPENDER_ID));
-        assertEq(address(first.settler.FACTORY()), address(bridgeFactory));
-        assertEq(first.settler.SPENDER_ID(), SPENDER_ID);
-
-        DeployBridgeSettler.Output memory again = new DeployBridgeSettler().deploy(factory, SPENDER_ID, BRIDGE_PK);
-        assertEq(address(again.settler), predicted);
-        assertFalse(again.created);
-    }
-
-    function test_settlerReleaseScriptRefusesAFactoryWithoutCode() public {
-        DeployBridgeSettler script = new DeployBridgeSettler();
-        vm.expectRevert(bytes("FACTORY has no code"));
-        script.deploy(IBridgeSpenderFactory(makeAddr("missing")), SPENDER_ID, TEMPO_PK);
-    }
-
-    function test_settlerReleaseScriptRefusesAProgramWithoutAClone() public {
-        DeployBridgeSettler script = new DeployBridgeSettler();
-        vm.expectRevert();
-        script.deploy(IBridgeSpenderFactory(address(bridgeFactory)), keccak256("no such program"), TEMPO_PK);
+    /// @dev From its artifact: its creation code carries the factory's, which nests the program's.
+    function _newDeployBridgeProgram() internal returns (DeployBridgeProgram) {
+        return DeployBridgeProgram(deployCode("DeployBridgeProgram.s.sol:DeployBridgeProgram"));
     }
 }

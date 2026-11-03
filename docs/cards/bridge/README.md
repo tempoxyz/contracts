@@ -14,36 +14,38 @@ existing card contracts. It is one provider of the [card spend project](../../..
   EA (ERC-20), P2 (Permit2) and TF handlers, plus the EV handler from the issuer's unmerged PR #14,
   vendored with only import paths changed ([`vendor/VENDORED.md`](../../../cards/vendor/VENDORED.md)). They are
   the baseline.
-- **Two Tempo contracts for the issuer's system.** `SpenderTempoSpend` ("TS"), a spender handler
-  the issuer registers like any other, and [`BridgeSettler`](../../../cards/src/providers/bridge/BridgeSettler.sol), the Zone
-  router settler through which private spends reach it. See
+- **Tempo's contracts for the issuer's system.** `SpenderTempoSpend` ("TS"), a spender handler the
+  issuer registers like any other, and [`BridgeIssuer`](../../../cards/src/providers/bridge/BridgeIssuer.sol),
+  the `ICardIssuer` of the program's [`CardProgram`](../../../cards/src/core/CardProgram.sol): the
+  stable address cardholders' access keys and the Zone router point at, which pays through the
+  program's clone and "TS". The core is provider-agnostic ([card design](../design.md)). See
   [`docs/cards/bridge/design.md`](design.md).
 - **A card E2E harness** that runs every card scenario against any contract setup,
   so the issuer today and the Tempo handler are tested side by side. See
   [`docs/cards/bridge/harness.md`](harness.md).
-- **The issuer's deploy scripts**: the handler, a program's settler and Spend-mode router for E2E and
-  local use, the role-gated factory calls, and a preflight.
+- **The issuer's deploy scripts**: the handler, a program (`CardFactory`, `BridgeIssuer` and its
+  `CardProgram`) and its Spend-mode router, the role-gated factory calls, and a preflight.
 
 ## How it works
 
 - The issuer spends from the cardholder's account with a Tempo access key the cardholder authorized,
-  publicly and in a Zone. Public and private spend are the same `Spend`, settled by the same
-  handler code in the program's clone.
-- Public: one transaction from the cardholder's account approves the exact amount to the clone,
-  calls `publicCall "PS"` and clears the approval.
+  publicly and in a Zone. Public and private spend are the same `CardSpend`, paid by the same
+  `CardProgram` through the same handler code in the program's clone.
+- Public: one transaction from the cardholder's account approves the exact amount to the program,
+  calls `program.spend` and clears the approval.
 - Private: the issuer's Zone key withdraws to the Zone's `ZoneRouter`, which transfers the
-  cardholder's `maxInput` to the program's `BridgeSettler`. The settler settles the spend through
+  cardholder's `maxInput` to the program, its settler. The program settles the spend through
   the clone and hands back what it did not use, and the router returns the change to the Zone, so
   the settlement names no cardholder. The issuer approves the card on the Zone receipt, and the platform
   reserve covers a settlement that fails after approval.
 - A spend pays from stablecoin, Earn shares, or both, and settles in the stablecoin the funds
   are held in. The issuer accepts any stablecoin, so nothing is converted.
-- The spender factory governs everything: settlement destinations, pause and the vault allowlist.
-  There are no new admin keys.
+- The spender factory governs everything: settlement destinations, pause, handler routing and the
+  vault allowlist. The only new key is the program's optional guardian, which can only pause it.
 
 ## Results
 
-505 tests pass. The card matrix runs 35 scenarios against 11 setups, with no failures: 5 issuer setups and 6 Tempo
+604 tests pass. The card matrix runs 35 scenarios against 11 setups, with no failures: 5 issuer setups and 6 Tempo
 setups. The full table is in [`docs/cards/bridge/matrix.md`](matrix.md).
 
 |                                                                    | The issuer (EA, P2, TF, and EV from PR #14) | TS, public | TS, private |
@@ -86,7 +88,7 @@ runs real transactions:
 - the calls a leaked access key must fail, each with its exact error: paying outside the program,
   transferring out, spending after governance takes the program off the gated handler's allowlist,
   exceeding its limit;
-- the private path's `BridgeSettler` and Spend-mode router deployed through a `ZoneRouterFactory`,
+- the private path's program and Spend-mode router deployed through a `ZoneRouterFactory`,
   with the router taking callbacks only from the Zone messenger.
 
 Every balance it reports is read back from the node after the transactions land.
@@ -138,7 +140,7 @@ Moderato uses the test program recorded in `e2e/cards/bridge/targets/moderato.js
 `TEMPO_API_KEY` and an admitted `CARDHOLDER_PRIVATE_KEY` from `e2e/cards/bridge/.env.moderato` (see
 `.env.example`). `--deploy` also needs `DEPLOYER_PRIVATE_KEY`, a test-only key that deploys a new
 test program and records it in `targets/moderato.json`. A run also needs it when the record has no
-settler and router, which it then deploys and records, and to allow the Earn vault for the program.
+program and router, which it then deploys and records, and to allow the Earn vault for the program.
 Zone 3 enforces account admission and a closed callback gateway. A plain run never changes its
 Portal: if the router, cardholder, program wallet or refund recipient lacks a role, the private
 steps report `BLOCKED` with the call to make and the run exits with code 3 after the public steps.
@@ -154,21 +156,22 @@ pnpm --filter e2e bridge:moderato   # --deploy re-records the program, --admit g
 ```text
 cards/src/providers/bridge/
   SpenderTempoSpend.sol     "TS" handler: public and private spend, stablecoin and Earn
-  BridgeSettler.sol         The Zone router settler for one program's private spends
+  BridgeIssuer.sol          The ICardIssuer a program's CardProgram pays through the clone and "TS" by
   interfaces/               Spender factory and clone, Earn vault, Zone outbox, the Spend struct
+cards/src/core/             CardProgram, CardFactory and ICardIssuer, shared with every provider
 cards/vendor/bridge/        Bridge's spender factory, clone and handlers (VENDORED.md)
 cards/test/bridge/
   harness/                  Tempo, Earn, card issuer and Zone world, access keys, card program model
   rails/                    One adapter per contract setup
   e2e/                      Card scenarios and the setup matrix
-  unit/                     Contract and security tests, including BridgeSettler against the spender factory
+  unit/                     Contract and security tests, including the program on the spender factory
   fork/                     Private-spend callback gas on a Tempo mainnet fork (inert without one)
   smoke/                    A check that the harness world deploys
 cards/script/bridge/        Deploy scripts, release, real-node smoke test, Zone E2E deploys, matrix generator
 e2e/cards/bridge/           The Zone E2E against a local or hosted target
 ```
 
-The router and the `ISpendSettler` interface `BridgeSettler` implements come from `zone-router/src/`;
+The router and the `ISpendSettler` interface `CardProgram` implements come from `zone-router/src/`;
 Earn comes from `earn/src/`.
 
 ## Documents
@@ -179,7 +182,8 @@ Earn comes from `earn/src/`.
 - [`docs/cards/bridge/deploy.md`](deploy.md): deploying into the spender factory, and the calls
   each role submits. The handler lands at a deterministic address, so the issuer running the deploy
   scripts and Tempo's Bridge Release workflow ([`bridge-release.yml`](../../../.github/workflows/bridge-release.yml))
-  deploy the same contracts: the handler and each program's `BridgeSettler`.
+  deploy the same contracts: the handler and each program's `CardFactory`, `BridgeIssuer` and
+  `CardProgram`.
 - [`docs/cards/bridge/bridge-integration.md`](bridge-integration.md): how the issuer's card backend uses the contracts: enrollment, authorization, settlement tracking, refunds and retries.
 - [`docs/cards/bridge/harness.md`](harness.md): what is real and what is modeled, and how to extend it.
 - [`docs/cards/bridge/scenarios.md`](scenarios.md): every card scenario and what it asserts.

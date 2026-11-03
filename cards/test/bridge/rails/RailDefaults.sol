@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { CardProgram } from "../harness/CardProgram.sol";
+import { CardProgramModel } from "../harness/CardProgramModel.sol";
 import { Decline, PullOutcome } from "../harness/SpendRail.sol";
 
 /// @notice Default hook implementations shared by every rail. Kept on the rail side of the
 ///         inheritance graph so scenario contracts and rails never both implement a hook.
-abstract contract RailDefaults is CardProgram {
+abstract contract RailDefaults is CardProgramModel {
     function _railSetUp() internal virtual override { }
 
     function _giveStablecoin(address user, uint256 amount) internal virtual override {

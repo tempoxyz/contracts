@@ -33,10 +33,9 @@ library SpenderTempoSpendStorageLib {
 /// @notice Bridge spender handler (prefix "TS") that settles Tempo card spend from stablecoin,
 ///         Tempo Earn shares, or both, publicly or from a Zone.
 /// @dev Runs by delegatecall inside a Bridge spender clone, so the factory's destinations and
-///      pause govern every spend. The payer submits a `Spend` through `publicCall "PS"`:
-///      - public spend: the cardholder's account, in a transaction signed by Bridge's access key
-///        that approves the exact amount, spends and clears the approval;
-///      - private spend: the program's `BridgeSettler`, from the input a Zone withdrawal's router sends it.
+///      pause govern every spend. The payer is the program's `CardProgram`, which submits a `Spend`
+///      through `publicCall "PS"` (built by its `BridgeIssuer`) from the input of a public spend or of a
+///      Zone withdrawal its router sent it.
 ///      Bridge's pull pipeline (`transferToDestination`) is not used: it needs a standing
 ///      allowance and cannot reach Zone balances.
 ///      A spend settles in the stablecoin the funds are held in. Earn shares redeem into the

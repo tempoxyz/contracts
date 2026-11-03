@@ -20,17 +20,16 @@ import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
-import { BridgeSettler } from "../../../src/providers/bridge/BridgeSettler.sol";
 import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
 
 /// @notice Read-only check of one card program before private spend goes live: the "TS" handler,
 ///         the program and its destination, the Zone's portal and token, the program's Spend-mode
-///         router and its settler, and the Zone roles of the router, the refund recipient and the
-///         program wallet that deposits refunds. Nothing is sent: the script deploys copies of the
-///         handler and settler only in its own simulation, to compare their code. `run` reads
+///         router and the `CardProgram` it lists as its settler, and the Zone roles of the router, the
+///         refund recipient and the program wallet that deposits refunds. Nothing is sent: the script
+///         deploys copies of the handler, the program's `BridgeIssuer` and its `CardProgram` only in its
+///         own simulation, to compare their code. `run` reads
 ///         FACTORY, SPENDER_ID, SETTLEMENT, TOKEN, ZONE_ID, ROUTER_FACTORY and ROUTER (optional),
 ///         REFUND_RECIPIENT (optional), PROGRAM_WALLET (optional) and VAULTS (comma separated,
 ///         optional), and prints each missing step with who submits it. For an Earn spend, TOKEN is the EarnShare of one of
@@ -60,8 +59,9 @@ contract Preflight is Script {
         bool settlementAllowedByPolicy;
         /// @dev The policy lets the router receive the withdrawal and send it on and back.
         bool routerAllowedByPolicy;
-        /// @dev The policy lets the settler receive the input it uses and send it on and back.
-        bool settlerAllowedByPolicy;
+        /// @dev The policy lets the program receive the input it uses and send it on and back, and so
+        ///      does the stablecoin's, which a public spend moves through it.
+        bool programAllowedByPolicy;
         /// @dev The policy lets the refund recipient receive a rejected Zone return.
         bool refundRecipientAllowedByPolicy;
         /// @dev The stablecoin's policy lets the program wallet send, which its refund deposits into
@@ -92,13 +92,16 @@ contract Preflight is Script {
         bool gatewayOpen;
         /// @dev ROUTER_FACTORY deployed ROUTER, so its mode is fixed and public.
         bool routerFromFactory;
-        /// @dev ROUTER takes Spend callbacks from this Zone and lists a settler for this program.
+        /// @dev ROUTER takes Spend callbacks from this Zone and lists a `CardProgram` for this program.
         bool routerMatches;
-        /// @dev The settler ROUTER lists for this factory and program; zero when it lists none.
-        address settler;
-        /// @dev The settler runs this repo's code, ignoring solc's metadata, so it has every check
-        ///      this version makes.
-        bool settlerCurrent;
+        /// @dev The `CardProgram` ROUTER lists whose issuer is a `BridgeIssuer` for this factory and program;
+        ///      zero when it lists none.
+        address program;
+        /// @dev The program and its issuer run this repo's code, ignoring solc's metadata, so they have
+        ///      every check this version makes.
+        bool programCurrent;
+        /// @dev The program's guardian has paused it (the factory's pause is `paused`).
+        bool programPaused;
         /// @dev The router has the Zone role its callbacks need: callback gateway when the
         ///      gateway is closed, the account role when it is open and access is enforced.
         bool routerAdmitted;
@@ -208,7 +211,7 @@ contract Preflight is Script {
         }
 
         _checkRouter(r, address(factory), spenderId, zoneId, routerFactory, router);
-        r.settlerAllowedByPolicy = tokenOk && _sendsAndReceives(tokenPolicy, r.settler);
+        r.programAllowedByPolicy = _movesThrough(token, r.program) && _movesThrough(stablecoin, r.program);
 
         ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(zoneId);
         if (zone.portal == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal)) {
@@ -306,14 +309,15 @@ contract Preflight is Script {
         );
         _line(
             r.routerMatches,
-            "router takes this Zone's spends through this program's settler",
+            "router takes this Zone's spends through this program's CardProgram",
             "deployer: DeployZoneRouter for this program and Zone"
         );
         _line(
-            r.settlerCurrent,
-            "settler is this repo's build",
+            r.programCurrent,
+            "CardProgram and BridgeIssuer are this repo's build",
             "deployer: DeployZoneRouter, then grant the new router its Zone role and use it"
         );
+        _line(!r.programPaused, "CardProgram not paused by its guardian", "guardian: setPaused(false)");
         _line(
             r.routerAdmitted,
             "router has its Zone role",
@@ -327,9 +331,9 @@ contract Preflight is Script {
             "policy admin: authorize the router under the token's TIP-403 policy"
         );
         _line(
-            r.settlerAllowedByPolicy,
-            "token policy lets the settler receive and send",
-            "policy admin: authorize the settler under the token's TIP-403 policy"
+            r.programAllowedByPolicy,
+            "token policy lets the CardProgram receive and send",
+            "policy admin: authorize the CardProgram under the token's (and vault asset's) TIP-403 policy"
         );
         _line(
             r.refundRecipientAdmitted,
@@ -399,8 +403,9 @@ contract Preflight is Script {
         }
     }
 
-    /// @dev Finds the settler ROUTER lists for this program. Only a router ROUTER_FACTORY deployed
-    ///      is read, so an arbitrary address cannot make the report look complete.
+    /// @dev Finds the `CardProgram` ROUTER lists for this program: one whose issuer is a `BridgeIssuer`
+    ///      for this factory and spender ID. Only a router ROUTER_FACTORY deployed is read, so an
+    ///      arbitrary address cannot make the report look complete.
     function _checkRouter(
         Report memory r,
         address factory,
@@ -418,15 +423,23 @@ contract Preflight is Script {
         if (zoneRouter.allowedZoneId() != zoneId || zoneRouter.enabledOps() & zoneRouter.OP_SPEND() == 0) return;
         address[] memory settlers = zoneRouter.settlers();
         for (uint256 i; i < settlers.length; ++i) {
-            (bool factoryOk, address settlerFactory) =
-                ProgramChecks.readAddress(settlers[i], bytes4(keccak256("FACTORY()")));
-            (bool ok, bytes memory id) = settlers[i].staticcall(abi.encodeWithSignature("SPENDER_ID()"));
-            if (!factoryOk || settlerFactory != factory || !ok || id.length != 32) continue;
+            (bool issuerOk, address issuer) = ProgramChecks.readAddress(settlers[i], bytes4(keccak256("ISSUER()")));
+            if (!issuerOk) continue;
+            (bool factoryOk, address issuerFactory) = ProgramChecks.readAddress(issuer, bytes4(keccak256("FACTORY()")));
+            (bool ok, bytes memory id) = issuer.staticcall(abi.encodeWithSignature("SPENDER_ID()"));
+            if (!factoryOk || issuerFactory != factory || !ok || id.length != 32) continue;
             if (abi.decode(id, (bytes32)) != spenderId) continue;
             r.routerMatches = true;
-            r.settler = settlers[i];
-            r.settlerCurrent = ProgramChecks.sameLogic(
-                settlers[i], address(new BridgeSettler(IBridgeSpenderFactory(factory), spenderId))
+            r.program = settlers[i];
+            (, address guardian) = ProgramChecks.readAddress(settlers[i], bytes4(keccak256("GUARDIAN()")));
+            (bool pausedOk, bytes memory paused) = settlers[i].staticcall(abi.encodeWithSignature("guardianPaused()"));
+            r.programPaused = pausedOk && paused.length == 32 && abi.decode(paused, (bool));
+            // Copies from the artifacts, so this script does not carry their creation code.
+            r.programCurrent = ProgramChecks.sameLogic(
+                issuer, vm.deployCode("BridgeIssuer.sol:BridgeIssuer", abi.encode(factory, spenderId))
+            )
+            && ProgramChecks.sameLogic(
+                settlers[i], vm.deployCode("CardProgram.sol:CardProgram", abi.encode(issuer, guardian))
             );
             return;
         }
@@ -451,6 +464,12 @@ contract Preflight is Script {
             && (refundRecipient == address(0)
                 || StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, refundRecipient));
         r.assetDepositsActive = portal.isTokenEnabled(asset) && portal.areDepositsActive(asset);
+    }
+
+    /// @dev `token` is a TIP-20 whose policy lets `account` receive and send it.
+    function _movesThrough(address token, address account) private view returns (bool) {
+        (bool ok, uint64 policy) = _policy(token);
+        return ok && _sendsAndReceives(policy, account);
     }
 
     function _sendsAndReceives(uint64 policy, address account) private view returns (bool) {

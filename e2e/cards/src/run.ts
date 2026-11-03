@@ -4,15 +4,15 @@
 //   pnpm e2e:cards -- --earn               Rain, plus spends from Tempo Earn shares, public and private
 //   pnpm e2e:cards -- --provider rain      the provider to run (rain is the only one so far)
 //
-// 1. Starts the L1, has the provider deploy its own contracts and a card program on the
-//    provider-agnostic CardSpender and CardSettler with a Spend-mode ZoneRouter listing the settler,
+// 1. Starts the L1, has the provider deploy its own contracts, its issuer and a CardProgram over it,
+//    with a Spend-mode ZoneRouter listing the program as its settler,
 //    then starts the Zone and registers the router as its gateway.
-// 2. Public: the cardholder authorizes the provider's access key, scoped to approving the spender and
+// 2. Public: the cardholder authorizes the provider's access key, scoped to approving the program and
 //    calling `spend`; the provider sends single L1 transactions (approve exact, spend, clear) that pay
 //    the provider's public destination. With --earn, one more spend redeems Earn shares for it.
 // 3. Private: the cardholder deposits into the Zone and authorizes the provider's Zone key, scoped to the
 //    outbox; the provider requests withdrawals to the router whose callback pays the provider's private
-//    destination through the settler. Checks: the destination is paid exactly, no L1 log of the
+//    destination through the program. Checks: the destination is paid exactly, no L1 log of the
 //    settlement names the cardholder, the Zone balance ends exactly the spend and fees lower, and a spend
 //    to a destination the program refuses for private spend bounces back into the Zone in full. With
 //    --earn, a private spend from Earn shares returns the unused shares to the Zone.
@@ -76,12 +76,12 @@ export const cardSpendType = parseAbiParameters([
   'CardSpend spend',
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
 ])
-const spenderAbi = parseAbi([
+const cardProgramAbi = parseAbi([
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
   'function spend(CardSpend s)',
   'event CardSpent(bytes32 indexed ref, address indexed payer, address indexed destination, address token, uint256 amount, uint256 fromStable, uint256 fromVault, uint256 sharesBurned)',
 ])
-const settlerAbi = parseAbi([
+const settledAbi = parseAbi([
   'event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',
 ])
 const routerAbi = parseAbi([
@@ -165,7 +165,7 @@ async function main() {
     })
     step(
       2,
-      `${provider.name} program ${deployed.program} on CardSpender ${deployed.spender}, CardSettler ${deployed.settler} and Spend ZoneRouter ${deployed.router}`,
+      `${provider.name} CardProgram ${deployed.program} over issuer ${deployed.issuer} and Spend ZoneRouter ${deployed.router}`,
     )
     zone = await Network.startZone({
       l1,
@@ -250,14 +250,14 @@ async function main() {
     const key = privateKeyToAccount(keyPk).address
     const limit = BigInt(PUBLIC_SPENDS + 2) * SPEND
     const scopes = [
-      { address: pathUsd, selector: 'approve(address,uint256)', recipients: [deployed.spender] },
-      { address: deployed.spender, selector: SPEND_SELECTOR },
+      { address: pathUsd, selector: 'approve(address,uint256)', recipients: [deployed.program] },
+      { address: deployed.program, selector: SPEND_SELECTOR },
       ...(deployed.earn
         ? [
             {
               address: deployed.earn.earnShare,
               selector: 'approve(address,uint256)',
-              recipients: [deployed.spender],
+              recipients: [deployed.program],
             },
           ]
         : []),
@@ -276,7 +276,7 @@ async function main() {
     } as never)
     step(
       4,
-      `Cardholder authorized ${provider.name}'s L1 access key: approve the CardSpender and call spend, nothing else`,
+      `Cardholder authorized ${provider.name}'s L1 access key: approve the CardProgram and call spend, nothing else`,
     )
     const providerL1 = l1Wallet(
       Account.fromSecp256k1(keyPk, { access: cardholder.address }) as never,
@@ -286,12 +286,12 @@ async function main() {
       data: encodeFunctionData({
         abi: erc20Abi,
         functionName: 'approve',
-        args: [deployed.spender, amount],
+        args: [deployed.program, amount],
       }),
     })
     const spendCall = (s: CardSpendArgs) => ({
-      to: deployed.spender,
-      data: encodeFunctionData({ abi: spenderAbi, functionName: 'spend', args: [s] }),
+      to: deployed.program,
+      data: encodeFunctionData({ abi: cardProgramAbi, functionName: 'spend', args: [s] }),
     })
     const publicMs: number[] = []
     const destination = deployed.publicDestination
@@ -315,16 +315,16 @@ async function main() {
         address: pathUsd,
         abi: erc20Abi,
         functionName: 'allowance',
-        args: [cardholder.address, deployed.spender],
+        args: [cardholder.address, deployed.program],
       })) === 0n,
-      'no standing allowance to the spender',
+      'no standing allowance to the program',
     )
     step(
       5,
       `Public spend: ${PUBLIC_SPENDS} single L1 transactions paid ${destination.label}, submit to receipt ${publicMs.join(', ')} ms (median ${median(publicMs)})`,
     )
 
-    // A key scoped to the spender cannot move funds anywhere else.
+    // A key scoped to the program cannot move funds anywhere else.
     const stranger = privateKeyToAccount(generatePrivateKey()).address
     const leakedTransfer = await providerL1
       .sendTransactionSync({
@@ -351,8 +351,8 @@ async function main() {
     const leakedSpend = await l1Public
       .simulateContract({
         account: cardholder,
-        address: deployed.spender,
-        abi: spenderAbi,
+        address: deployed.program,
+        abi: cardProgramAbi,
         functionName: 'spend',
         args: [
           cardSpend(
@@ -403,7 +403,7 @@ async function main() {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Private spend: a Zone withdrawal to the router, settled on the L1 through the CardSettler
+    // Private spend: a Zone withdrawal to the router, settled on the L1 through the CardProgram
     // ---------------------------------------------------------------------------------------------
     const zoneClient = zoneClients(l1.chainId, zone)
     const userZone = await zoneClient(cardholder)
@@ -513,7 +513,7 @@ async function main() {
       return encodeAbiParameters(spendDataType, [
         {
           op: OP_SPEND,
-          settler: deployed.settler,
+          settler: deployed.program,
           maxInput,
           settlerData: encodeAbiParameters(cardSpendType, [spend]),
           zoneReturn: {
@@ -564,8 +564,8 @@ async function main() {
       } as never)
     const settled = (spendRef: Hex, fromBlock: bigint) =>
       l1Public.getContractEvents({
-        address: deployed.settler,
-        abi: settlerAbi,
+        address: deployed.program,
+        abi: settledAbi,
         eventName: 'SpendSettled',
         args: { ref: spendRef },
         fromBlock,
@@ -725,7 +725,7 @@ async function main() {
         'no L1 log of the Earn settlement names the cardholder',
       )
       const consumed = (earnEvent!.args as { inputConsumed: bigint }).inputConsumed
-      assert(consumed === live, 'the settler burned exactly the live share cost')
+      assert(consumed === live, 'the program burned exactly the live share cost')
       const after = await waitFor(
         'EarnShare change back in the Zone',
         () => zoneBalance(earnShare),

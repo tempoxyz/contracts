@@ -71,7 +71,7 @@ jobs:
 
       # Bridge's "TS" handler keeps the lint scope it had before it moved here.
       - name: Lint
-        run: forge lint --deny warnings src/core src/providers/rain src/providers/bridge/BridgeSettler.sol
+        run: forge lint --deny warnings src/core src/providers/rain src/providers/bridge/BridgeIssuer.sol
 
       - name: Contract sizes
         run: forge build --sizes src

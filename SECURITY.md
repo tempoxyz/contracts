@@ -20,7 +20,8 @@ In scope:
 
 - Tempo Earn: the contracts in [`earn/src/`](earn/src/), except `earn/src/demo/`;
 - the Zone router: the contracts in [`zone-router/src/`](zone-router/src/), including its settlers;
-- the card integration: Tempo's "TS" handler, [`cards/src/providers/bridge/`](cards/src/providers/bridge/); and
+- card spend: [`cards/src/`](cards/src/), the provider-agnostic core and our code for each provider
+  (Bridge's "TS" handler and `BridgeIssuer`, Rain's `RainIssuer`); and
 - the deployment tooling: [`deployments/`](deployments/), each project's `script/`, and the
   [profile lifecycle](docs/deployment/deployment.md) they implement.
 
@@ -34,8 +35,8 @@ Out of scope:
 
 Each project documents its trust assumptions, privileged roles, and privacy boundary: Earn's
 [security and privacy model](docs/earn/architecture/security-and-privacy.md), the
-[Zone router](docs/zone-router/zone-router.md), and the card integration's
-[design](docs/cards/bridge/design.md). Behavior documented there as trusted or visible is not a
+[Zone router](docs/zone-router/zone-router.md), and card spend's
+[design](docs/cards/design.md). Behavior documented there as trusted or visible is not a
 vulnerability by itself.
 
 ## Bug bounty
@@ -46,5 +47,5 @@ These contracts have no bug bounty.
 
 Earn's completed audits, their scope, and the contracts changed or added since are listed on its
 [audits page](docs/earn/audit/README.md). The card integration's
-[design](docs/cards/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeSettler`,
-`ZoneRouter` and `ZoneRouterFactory`.
+[design](docs/cards/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeIssuer`,
+`CardProgram`, `CardFactory`, `ZoneRouter` and `ZoneRouterFactory`.

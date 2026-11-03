@@ -191,15 +191,16 @@ contract OverReturningSpendHandler is SpenderBase {
     }
 }
 
-/// @notice Answers a settler's identity getters with other code, as an older build would, and
+/// @notice Answers a `CardProgram`'s identity getters with other code, as an older build would, and
 ///         settles nothing.
-contract OlderBridgeSettler {
-    address public immutable FACTORY;
-    bytes32 public immutable SPENDER_ID;
+contract OlderCardProgram {
+    address public immutable ISSUER;
+    address public immutable GUARDIAN;
+    bool public guardianPaused;
 
-    constructor(address factory_, bytes32 spenderId_) {
-        FACTORY = factory_;
-        SPENDER_ID = spenderId_;
+    constructor(address issuer_, address guardian_) {
+        ISSUER = issuer_;
+        GUARDIAN = guardian_;
     }
 
     function settle(address, uint256, bytes calldata) external { }

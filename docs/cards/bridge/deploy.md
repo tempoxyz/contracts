@@ -1,12 +1,13 @@
 # Deploying
 
-The card integration deploys into the issuer's existing `SpenderFactory`: the "TS" handler, each
-program's `BridgeSettler` and the program's Zone router. None has an owner, so nothing changes after
-deployment. The handler and each program's `BridgeSettler` land at deterministic addresses, so the
-issuer can deploy them with the scripts below or Tempo with the
-[Bridge Release workflow](#deploying-from-ci), and either lands on the same contract. Every factory change is a role-gated call,
-so the scripts write those calls as calldata for the multisig that holds each role, instead of
-sending them.
+The card integration deploys into the issuer's existing `SpenderFactory`: the "TS" handler, and for
+each program its `CardProgram` with its `BridgeIssuer`, deployed by a shared `CardFactory`, and the
+program's Zone router. None has an owner; a program's optional guardian can only pause it. The
+handler, the `CardFactory` and each `BridgeIssuer` land at deterministic release addresses, and a
+program at the `CardFactory`'s CREATE2 address for its `spenderId`, issuer and guardian, so the issuer
+can deploy them with the scripts below or Tempo with the [Bridge Release workflow](#deploying-from-ci),
+and either lands on the same contracts. Every factory change is a role-gated call, so the scripts
+write those calls as calldata for the multisig that holds each role, instead of sending them.
 
 Against a live chain, set the chain's current hardfork (`tempo_forkSchedule`) in
 `FOUNDRY_HARDFORK`, for example `FOUNDRY_HARDFORK=tempo:T12`. The repo's tests pin `tempo:T8`, and forge cannot run the Zone factory
@@ -55,11 +56,29 @@ the existing handler, and once that one is registered the admin call changes not
   registered;
 - if `status` is `Disabled`, a replacement stays off until governance changes it.
 
-## 2. Turn it on for a program
+## 2. Deploy the program (once per program)
 
-The program exists already: the issuer's manager created it with `createSpender(spenderId,
-destinations)`, with the settlement wallet as a destination. `TS` must be
-registered, that is the admin's `setSpenderHandler` has executed.
+The program's clone exists already: the issuer's manager created it with `createSpender(spenderId,
+destinations)`, with the settlement wallet as a destination.
+
+```bash
+FACTORY=0x... SPENDER_ID=0x... GUARDIAN=0x... OUT=reports/bridge-program.json \
+  forge script script/deploy/DeployBridgeProgram.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
+```
+
+The script checks that the program's clone was created for its ID. It creates `CardFactory` and the
+program's `BridgeIssuer(factory, spenderId)` through the CREATE2 deployer with the release salt, as
+the handler, reusing either one already there, then calls `cardFactory.deploy(spenderId, issuer,
+guardian)`, which returns the program if it exists. `GUARDIAN` is optional: left out or zero, nobody
+can pause the program but the factory's own pause. A program's issuer and guardian never change, so
+a new guardian means a new program. `OUT` holds `factory`, `spenderId`, `clone`, `guardian`,
+`cardFactory`, `issuer`, `program` and whether this run `created` the program, and is written only
+with `--broadcast`. The program needs no factory call: the cardholders' access keys and the Zone's
+router name it.
+
+## 3. Turn it on for a program
+
+`TS` must be registered, that is the admin's `setSpenderHandler` has executed.
 
 ```bash
 FACTORY=0x... SPENDER_ID=0x... VAULTS=0xVault1,0xVault2 OUT=reports/program.json \
@@ -78,33 +97,32 @@ previews, which `availableBalance` uses. Submit the calls in this order:
 The allowlist call goes first: while the handler is gated, the factory refuses the program's vault
 calls until it is allowlisted. Leave `VAULTS` unset for a stablecoin-only program.
 
-## 3. Deploy the settler and router for each Zone
+## 4. Deploy the router for each Zone
 
 ```bash
-FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... ZONE_ID=7 ROUTER_FACTORY=0x... \
+FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... GUARDIAN=0x... ZONE_ID=7 ROUTER_FACTORY=0x... \
   OUT=reports/zone-router-7.json \
   forge script script/deploy/DeployZoneRouter.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
 ```
 
 The script checks that the program's clone was created for its ID, that `ZONE_ID` is a valid Zone
-ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program's
-`BridgeSettler` through the CREATE2 deployer with the release salt, as the handler, or reuses the
-one there, then, through the `ZoneRouterFactory`, a [`ZoneRouter`](../../zone-router/zone-router.md)
-whose mode allows only Spend, only from `ZONE_ID`, through that settler alone. Leave
-`ROUTER_FACTORY` unset to deploy a new factory. `OUT` holds `factory`, `spenderId`, `clone`,
-`zoneId`, `portal`, `settler`, `routerFactory` and `router`, and is written only with
-`--broadcast`.
+ID with a registered portal, and that `ROUTER_FACTORY` has code. It deploys the program as in
+[step 2](#2-deploy-the-program-once-per-program), or reuses it, then, through the
+`ZoneRouterFactory`, a [`ZoneRouter`](../../zone-router/zone-router.md) whose mode allows only Spend,
+only from `ZONE_ID`, with the program as its only settler. Leave `ROUTER_FACTORY` unset to deploy a
+new factory. `OUT` holds `factory`, `spenderId`, `clone`, `zoneId`, `portal`, `cardFactory`, `issuer`,
+`program`, `routerFactory` and `router`, and is written only with `--broadcast`.
 
-For a hosted program, release the settler alone with the Bridge Release workflow's `bridgeSettler`
-([Deploying from CI](#deploying-from-ci)) or `script/deploy/DeployBridgeSettler.s.sol` (`FACTORY`,
-`SPENDER_ID`, `OUT`), which checks that the program's clone was created for its ID. The router can then come from an Earn deployment profile's
-`zoneRouter`, which lists the settler and deploys, verifies and records the router with
-`pnpm earn deploy`, or from Zone Router Release's `zoneRouter`. Through the same factory, either
-adopts a router this script already deployed for that mode
+For a hosted program, release the program with the Bridge Release workflow's `bridgeProgram`
+([Deploying from CI](#deploying-from-ci)) or step 2's script. The router can then come from an Earn
+deployment profile's `zoneRouter`, which lists the program and deploys, verifies and records the
+router with `pnpm earn deploy`, or from Zone Router Release's `zoneRouter`. Through the same factory,
+either adopts a router this script already deployed for that mode
 ([Zone router deployment](../../zone-router/zone-router.md#deployment)).
 
-Neither contract has an owner or needs configuration. The Zone admin checks the router with the
-factory's `isRouter(router)`, then grants roles:
+The router has no owner and needs no configuration. The Zone admin checks the router with the
+factory's `isRouter(router)`, and the program with `CardFactory.isProgram(program)`, then grants
+roles:
 
 - if the callback gateway is closed, `setGateway(router, true)`;
 - if the gateway is open and access is enforced, `setAllowedAccount(router, true)`;
@@ -115,7 +133,7 @@ factory's `isRouter(router)`, then grants roles:
 An address holds one Zone role at a time. To move the router from the account role to the gateway
 role, `setAllowedAccount(router, false)` first.
 
-## 4. Check the program before it goes live
+## 5. Check the program before it goes live
 
 ```bash
 FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... SETTLEMENT=0x... TOKEN=0x... ZONE_ID=2 \
@@ -130,11 +148,13 @@ prints `ok` or `todo` for each item, with who submits the fix:
 
 - the program's clone was created for `SPENDER_ID`, which `TS` requires;
 - `TS` is registered, has code, was built for this factory, and is usable by the program;
-- the `TS` handler and the router's settler are this repository's build: their code matches copies
-  the script deploys in its own simulation, so one deployed from older code reads `todo`. Solc's
-  metadata hash is left out, so a build from source that differs only in comments still matches;
-- the settlement destination is authorized, and the factory is not paused;
-- the token's TIP-403 policy lets the settlement wallet receive, the router and settler receive and
+- the `TS` handler, the program and its issuer are this repository's build: their code matches
+  copies the script deploys in its own simulation, so one deployed from older code reads `todo`.
+  Solc's metadata hash is left out, so a build from source that differs only in comments still
+  matches;
+- the settlement destination is authorized, and neither the factory nor the program's guardian has
+  paused the program;
+- the token's TIP-403 policy lets the settlement wallet receive, the router and program receive and
   send, the refund recipient receive, the program wallet send, the portal and its messenger send
   and receive, and the Zone admin, which the portal pays its deposit fee, receive. Under a
   blacklist this passes unless an address is listed. Under a whitelist the policy admin adds each
@@ -142,8 +162,8 @@ prints `ok` or `todo` for each item, with who submits the fix:
 - the Zone has a registered portal, with `TOKEN` enabled and its deposits not paused, and its
   messenger is the canonical one;
 - `ROUTER_FACTORY` deployed `ROUTER`, and `ROUTER` takes Spend callbacks from `ZONE_ID` through a
-  settler for this factory and program. Only a router the factory deployed is read, so an
-  arbitrary address cannot pass;
+  `CardProgram` whose issuer is a `BridgeIssuer` for `FACTORY` and `SPENDER_ID`. Only a router the
+  factory deployed is read, so an arbitrary address cannot pass;
 - `ROUTER` has its Zone role. That is the callback gateway role when the gateway is closed, or the
   account role when it is open and access is enforced;
 - `REFUND_RECIPIENT` is admitted, and `PROGRAM_WALLET` can deposit refunds into the Zone, which
@@ -155,16 +175,16 @@ For Earn, run it again with `TOKEN` set to the vault's EarnShare and the vault i
 checks the settlement and program wallets against the vault asset's policy, and that a private
 refund in the asset can reach the Zone: the portal receives and sends, the Zone admin and refund
 recipient receive, and the portal takes deposits of the asset. Against the share's policy it checks
-the router, settler, refund recipient, portal, messenger and Zone admin as for a stablecoin, and
+the router, program, refund recipient, portal, messenger and Zone admin as for a stablecoin, and
 that the clone receives and sends and the vault receives. EarnShare policies are whitelists, so
-the policy admin adds whichever of the clone, vault, router, settler, refund recipient, portal,
+the policy admin adds whichever of the clone, vault, router, program, refund recipient, portal,
 messenger and Zone admin are missing.
 
-## 5. Prepare the program for low callback gas
+## 6. Prepare the program for low callback gas
 
 Optional. Anyone can do it, once per token the program spends from a Zone (its stablecoin, and the
-EarnShare for Earn): `router.warm(token)` and `settler.warm(token)` set the router's standing approval to its
-Zone's portal and the settler's to the program's clone. Without them the program's first spend sets
+EarnShare for Earn): `router.warm(token)` and `program.warm(token)` set the router's standing approval to its
+Zone's portal and the program's to its clone. Without them the program's first spend sets
 them, which costs that spend about 250k more gas each. The clone's approval to each allowed vault is
 set when governance allows it with `UV`.
 
@@ -172,7 +192,7 @@ For Earn, also send 1 unit of the EarnShare to the program's clone. The clone ho
 Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
 the unit stays and no spend creates that balance slot again (about 245k). It cannot be recovered.
 Under a whitelist policy the clone must already be admitted, as preflight checks. Do not seed the
-settler: `settle` is permissionless and counts whatever it holds as the caller's input, so anyone could
+program: `settle` is permissionless and counts whatever it holds as the caller's input, so anyone could
 spend a seed there.
 
 The settlement wallet must also hold a balance of each token it receives (the stablecoin, and the
@@ -187,37 +207,42 @@ Then request callback gas per spend type rather than one figure, sized for the w
 prepared program: about 0.6M for a stablecoin spend (measured 0.44M) and 1.4M for an Earn spend
 (measured 0.98M, plus about 250k when TF cleared the vault approval). That is what fits 4 and 3 spends
 into a default withdrawal batch ([design](design.md#callback-gas)). The figures hold only once all of
-step 5 is done, the settlement wallet's balance included: a callback that runs out of gas bounces
+step 6 is done, the settlement wallet's balance included: a callback that runs out of gas bounces
 after the issuer approved the card. Until then, and for a vault costlier than the OUSD vault, keep 3M or
 measure the program's own vault first.
 
 ## Deploying from CI
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../../.github/workflows/bridge-release.yml))
-deploys the handler (`tempoSpend`) or a program's settler (`bridgeSettler`) from `main`, with the same
-scripts and so at the same deterministic addresses as a deploy by the issuer. Choose the network
-(Moderato or mainnet), the contract, the issuer's factory, the program's `spenderId` for a settler,
-and whether to broadcast; without broadcast Forge only simulates. It runs
-[`script/deploy/release.sh`](../../../cards/script/bridge/deploy/release.sh), which:
+deploys the handler (`tempoSpend`) or a program (`bridgeProgram`) from `main`, with the same scripts
+and so at the same deterministic addresses as a deploy by the issuer. Choose the network (Moderato or
+mainnet), the contract, the issuer's factory, for a program its `spenderId` and optional guardian, and
+whether to broadcast; without broadcast Forge only simulates. It runs
+[`script/deploy/release.sh`](../../../cards/script/bridge/deploy/release.sh)
+(`release.sh <moderato|mainnet|local> <tempoSpend|bridgeProgram> [--broadcast]`; `bridgeProgram` reads
+`FACTORY`, `SPENDER_ID` and optional `GUARDIAN`), which:
 
 - refuses an RPC serving another chain, and runs Forge at the chain's hardfork from
   `tempo_forkSchedule`;
-- predicts the address from the locally compiled creation code, and checks that the run created
-  exactly that contract there from that code, or nothing when it already existed;
-- after a broadcast, source-verifies it on Tempo's verifier (`https://contracts.tempo.xyz`),
-  including a contract that already existed, and fails if the verifier has no source match.
+- predicts each address from the locally compiled creation code, and checks that the run created
+  exactly that contract there from that code, or nothing when it already existed. For a program,
+  `CardFactory` and `BridgeIssuer` come from the CREATE2 deployer and the program from
+  `CardFactory.deploy`;
+- after a broadcast, source-verifies each one on Tempo's verifier (`https://contracts.tempo.xyz`),
+  including a contract that already existed, and fails if the verifier has no source match. A
+  program's release verifies all three.
 
 The job summary lists the address, the transaction and the source match, and the admin and
 governance calls above for the issuer to submit; the `bridge-release-<network>-<contract>-<attempt>`
 artifact holds the result and Forge's broadcast files. The workflow never submits those calls:
-registering and gating stay with the issuer's roles. A settler needs no factory call; list it in the
-program's Spend-mode router.
+registering and gating stay with the issuer's roles. A program needs no factory call; list it in the
+Zone's Spend-mode router.
 
 Dispatching it from `main` is the approval: the job runs in the `factory-release-<network>`
 environment, which has no required reviewer and accepts only `main`, with the deployer key
 and RPC credentials of the [factory releases](../../deployment/deployment.md#releasing-from-ci), and
-shares their `hosted-contracts-<network>` queue. The handler is ownerless, so the key only pays
-fees. The script also runs locally, for example against a dev node:
+shares their `hosted-contracts-<network>` queue. The handler, `CardFactory`, issuer and program are
+ownerless, so the key only pays fees. The script also runs locally, for example against a dev node:
 
 ```bash
 FACTORY=0x... DEPLOYER_PRIVATE_KEY=0x... TEMPO_RPC_URL=http://127.0.0.1:8545 \
@@ -228,6 +253,6 @@ FACTORY=0x... DEPLOYER_PRIVATE_KEY=0x... TEMPO_RPC_URL=http://127.0.0.1:8545 \
 
 `test/unit/DeployScripts.t.sol` runs each script against the harness's factory, submits the calls
 it writes with the matching role, and settles a spend through the new handler.
-`test/unit/DeterministicDeploy.t.sol` checks that the handler and the scripts' settler land at their
-predicted release addresses for any deployer, and that deploying again reuses them without sending
-anything. The Zone router's `test/DeployRouterRelease.t.sol` does the same for the released settler.
+`test/unit/DeterministicDeploy.t.sol` checks that the handler, `CardFactory`, `BridgeIssuer` and
+program land at their predicted addresses for any deployer, and that deploying again reuses them
+without sending anything.

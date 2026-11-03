@@ -1,5 +1,5 @@
 // Rain as a card provider: Rain's own collateral contracts (cards/vendor/rain, deployed from
-// cards/test/rain/fixtures/rain.json), a RainCardProgram adapter, and Rain's back office after a spend lands:
+// cards/test/rain/fixtures/rain.json), a RainIssuer on a CardProgram, and Rain's back office after a spend lands:
 // a cardholder-signed refund withdrawal and the daily payment to Rain's treasury, both authorized by
 // Rain's controller admin's EIP-712 signature, as on Rain's live contracts.
 import { execFileSync } from 'node:child_process'
@@ -32,7 +32,7 @@ const programAbi = parseAbi([
   'function setPaused(bool paused)',
   'function paused() view returns (bool)',
 ])
-const spenderAbi = parseAbi([
+const cardProgramAbi = parseAbi([
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
   'function spend(CardSpend s)',
   'error ProgramPaused()',
@@ -59,9 +59,9 @@ type RainDeployment = {
   cardholderCollateralIndex: number
   programCollateral: Address
   programCollateralIndex: number
+  cardFactory: Address
+  issuer: Address
   program: Address
-  spender: Address
-  settler: Address
   routerFactory: Address
   router: Address
   zoneToken: Address
@@ -104,7 +104,7 @@ export function rain(): CardProvider {
               DEPLOYER_PK: input.deployerPk,
               RAIN_ADMIN: admin.address,
               RAIN_TREASURY: treasury,
-              RAIN_PAUSER: backend.address,
+              RAIN_GUARDIAN: backend.address,
               CARDHOLDER: input.cardholder,
               PARTNER: partner,
               ZONE_ID: String(input.zoneId),
@@ -122,8 +122,7 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
       deployment = d
       const deployed: Deployed = {
         program: d.program,
-        spender: d.spender,
-        settler: d.settler,
+        issuer: d.issuer,
         router: d.router,
         routerFactory: d.routerFactory,
         zoneToken: d.zoneToken,
@@ -137,7 +136,7 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
           hint: BigInt(d.programCollateralIndex),
           label: "the program's pooled Rain collateral",
         },
-        // The cardholder's own collateral names them, and the settler (the payer) does not own it.
+        // The cardholder's own collateral names them, so a private spend may not fund it.
         refusedPrivateDestination: {
           address: d.cardholderCollateral,
           hint: BigInt(d.cardholderCollateralIndex),
@@ -197,8 +196,8 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
         l1Public
           .simulateContract({
             account: cardholder,
-            address: deployed.spender,
-            abi: spenderAbi,
+            address: deployed.program,
+            abi: cardProgramAbi,
             functionName: 'spend',
             args: [
               {

@@ -20,13 +20,13 @@ import {
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
-import { CardSettler } from "../../src/core/CardSettler.sol";
-import { CardSpender } from "../../src/core/CardSpender.sol";
+import { CardFactory } from "../../src/core/CardFactory.sol";
+import { ICardIssuer } from "../../src/core/interfaces/ICardIssuer.sol";
 import { IRainCollateralFactory } from "../../src/providers/rain/IRain.sol";
-import { RainCardProgram } from "../../src/providers/rain/RainCardProgram.sol";
+import { RainIssuer } from "../../src/providers/rain/RainIssuer.sol";
 import { RainStack } from "./RainStack.sol";
 
-/// @notice A card program's router mode: Spend only on `zoneId`, through `settler` alone.
+/// @notice A card program's router mode: Spend only on `zoneId`, through `settler` (the program) alone.
 library CardSpendMode {
     function forSettler(uint32 zoneId, address settler) internal pure returns (ZoneRouter.Mode memory mode) {
         mode.zoneId = zoneId;
@@ -39,11 +39,11 @@ library CardSpendMode {
 /// @notice Deploys a Rain card program for the card E2E (`e2e/cards`) on a disposable L1: Rain's own
 ///         collateral contracts from the vendored sources, with the deployer as Rain (factory owner) and
 ///         RAIN_ADMIN as its controller admin; the cardholder's own collateral contract and the program's
-///         pooled one; with EARN=true, a Tempo Earn vault over pathUSD; the `RainCardProgram` adapter
-///         accepting pathUSD (and that vault); the provider-agnostic `CardSpender` and `CardSettler`; the
-///         Spend-mode `ZoneRouter` for ZONE_ID listing the settler; and a TIP-20 to launch the Zone with.
-///         Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY, RAIN_PAUSER, CARDHOLDER, PARTNER, ZONE_ID, EARN and
-///         OUT.
+///         pooled one; with EARN=true, a Tempo Earn vault over pathUSD; a `RainIssuer` accepting pathUSD
+///         (and that vault); a `CardFactory` and the program's `CardProgram` over that issuer, with
+///         RAIN_GUARDIAN as its guardian; the Spend-mode `ZoneRouter` for ZONE_ID listing the program as
+///         its settler; and a TIP-20 to launch the Zone with. Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY,
+///         RAIN_GUARDIAN, CARDHOLDER, PARTNER, ZONE_ID, EARN and OUT.
 contract CardsE2EDeploy is Script, RainStack {
     uint64 internal constant ALWAYS_ALLOW_POLICY_ID = 1;
 
@@ -66,12 +66,12 @@ contract CardsE2EDeploy is Script, RainStack {
         if (earn) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
-        RainCardProgram program =
-            new RainCardProgram(address(rain.factory), tokens, vaults, pooled, vm.envAddress("RAIN_PAUSER"));
-        CardSpender spender = new CardSpender(program);
-        CardSettler settler = CardSettler(spender.SETTLER());
+        RainIssuer issuer = new RainIssuer(address(rain.factory), tokens, vaults, pooled);
+        CardFactory cardFactory = new CardFactory();
+        address program =
+            cardFactory.deploy("cards-e2e.rain", ICardIssuer(address(issuer)), vm.envAddress("RAIN_GUARDIAN"));
         ZoneRouterFactory routerFactory = new ZoneRouterFactory();
-        address router = routerFactory.deploy(CardSpendMode.forSettler(uint32(zoneIdValue), address(settler)));
+        address router = routerFactory.deploy(CardSpendMode.forSettler(uint32(zoneIdValue), program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
         address zoneToken = StdPrecompiles.TIP20_FACTORY
             .createToken(
@@ -95,9 +95,9 @@ contract CardsE2EDeploy is Script, RainStack {
         vm.serializeUint(key, "cardholderCollateralIndex", 0);
         vm.serializeAddress(key, "programCollateral", programCollateral);
         vm.serializeUint(key, "programCollateralIndex", 1);
-        vm.serializeAddress(key, "program", address(program));
-        vm.serializeAddress(key, "spender", address(spender));
-        vm.serializeAddress(key, "settler", address(settler));
+        vm.serializeAddress(key, "cardFactory", address(cardFactory));
+        vm.serializeAddress(key, "issuer", address(issuer));
+        vm.serializeAddress(key, "program", program);
         vm.serializeAddress(key, "routerFactory", address(routerFactory));
         vm.serializeAddress(key, "router", router);
         if (earn) {

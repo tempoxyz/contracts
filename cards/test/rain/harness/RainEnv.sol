@@ -1,29 +1,29 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { CardSettler } from "../../../src/core/CardSettler.sol";
-import { CardSpender } from "../../../src/core/CardSpender.sol";
-import { RainCardProgram } from "../../../src/providers/rain/RainCardProgram.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { ICardIssuer } from "../../../src/core/interfaces/ICardIssuer.sol";
+import { RainIssuer } from "../../../src/providers/rain/RainIssuer.sol";
 
 import { IRainController, IRainFactoryAdmin, RainStack } from "../../../script/rain/RainStack.sol";
 import { CoreEnv } from "../../core/harness/CoreEnv.sol";
 
 /// @notice The core world (`CoreEnv`) with Rain as the provider: Rain's own collateral contracts from the
-///         vendored sources, cardholders' and the program's collateral, and a `RainCardProgram` on the
-///         provider-agnostic `CardSpender` and the `CardSettler` it deploys.
+///         vendored sources, cardholders' and the program's collateral, and a `CardProgram` over a
+///         `RainIssuer`, with Rain's pause key as its guardian.
 abstract contract RainEnv is CoreEnv, RainStack {
     Rain internal rain;
     uint256 internal rainAdminPk = uint256(keccak256("rain.controller-admin"));
     address internal rainAdmin = vm.addr(uint256(keccak256("rain.controller-admin")));
     address internal rainTreasury = makeAddr("rain.treasury");
-    /// @dev Rain's key that can pause this program's spends.
+    /// @dev Rain's key that can pause the program: its guardian.
     address internal rainPauser = makeAddr("rain.pauser");
     /// @dev The partner's account that owns the program's pooled collateral (partner-managed, private spend).
     address internal partner = makeAddr("rain.partner");
     address internal programCollateral;
     uint256 internal programCollateralIndex;
 
-    RainCardProgram internal program;
+    RainIssuer internal issuer;
 
     // Cardholders, each with their own Rain collateral contract (Rain-managed, public spend).
     address internal aliceCollateral;
@@ -42,22 +42,20 @@ abstract contract RainEnv is CoreEnv, RainStack {
         (aliceCollateral, aliceIndex) = _createCollateral("alice", alice);
         (bobCollateral, bobIndex) = _createCollateral("bob", bob);
         (programCollateral, programCollateralIndex) = _createCollateral("program", partner);
-        program = _deployProgram(address(earnVault), rainPauser);
-        spender = new CardSpender(program);
-        settler = CardSettler(spender.SETTLER());
-        vm.label(address(program), "RainCardProgram");
-        vm.label(address(spender), "CardSpender");
-        vm.label(address(settler), "CardSettler");
+        issuer = _deployIssuer(address(earnVault));
+        program = CardProgram(factory.deploy("rain", ICardIssuer(address(issuer)), rainPauser));
+        vm.label(address(issuer), "RainIssuer");
+        vm.label(address(program), "CardProgram");
     }
 
-    function _deployProgram(address vault, address pauser) internal returns (RainCardProgram) {
+    function _deployIssuer(address vault) internal returns (RainIssuer) {
         address[] memory tokens = new address[](1);
         tokens[0] = address(usd);
         address[] memory vaults = new address[](vault == address(0) ? 0 : 1);
         if (vault != address(0)) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
-        return new RainCardProgram(address(rain.factory), tokens, vaults, pooled, pauser);
+        return new RainIssuer(address(rain.factory), tokens, vaults, pooled);
     }
 
     /// @dev Rain's factory owner (this contract) creates `user`'s collateral contract.

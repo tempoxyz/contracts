@@ -11,14 +11,15 @@
 //                                               ZONE_ADMIN_PRIVATE_KEY
 //
 // 1. Prepares the target: its L1, its Zone, and a Bridge card program with the "TS" handler, its
-//    BridgeSettler, and a factory-deployed ZoneRouter in Spend mode listing that settler
+//    CardProgram (a BridgeIssuer over the clone, deployed by the CardFactory), and a
+//    factory-deployed ZoneRouter in Spend mode listing that program as its settler
 //    (script/bridge/ZoneE2EDeploy.s.sol). The local target then requires script/bridge/deploy/Preflight.s.sol to
 //    report no todo.
 // 2. The cardholder moves pathUSD into the Zone with an encrypted deposit and authorizes Bridge's
 //    access key, scoped to an approval of the outbox and the outbox's requestWithdrawal.
 // 3. Bridge requests the withdrawal to the router with its Zone access key and Spend callback data.
 //    The Zone batches it to the L1, where the portal calls the router, which transfers maxInput
-//    to the BridgeSettler. The settler pays through Bridge's spender clone and the router
+//    to the CardProgram. The program pays through Bridge's spender clone and the router
 //    returns the change to the Zone.
 // 4. Checks: a Zone token transfer reverts, the settlement wallet is paid on the L1, no L1 log of
 //    the settlement names the cardholder, the cardholder's private balance ends exactly the spend
@@ -32,7 +33,8 @@
 //    Bridge's quote, the unused shares come back to the Zone, and no L1 log names the cardholder.
 // 6. Times the card-approval path: Zone request to Zone receipt (what Bridge waits for before it
 //    approves), Zone receipt to L1 settlement (after approval), and a public spend's one L1
-//    transaction, signed with Bridge's L1 access key. Writes them to
+//    transaction through the CardProgram's spend, signed with Bridge's L1 access key. Writes them,
+//    with the gas of the router callback and of each public spend, to
 //    reports/zone-e2e-latency-<target>.json.
 // 7. Local with --earn only (router.ts): every ZoneRouter flow through one router with every op,
 //    over the local Earn stack, whose private stablecoin converts to the vault asset at par through
@@ -44,7 +46,6 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  concat,
   encodeAbiParameters,
   encodeFunctionData,
   erc20Abi,
@@ -68,9 +69,11 @@ import { routerFlows } from './router.js'
 import {
   CALLBACK_GAS,
   OP_SPEND,
+  PROGRAM_SPEND_SELECTOR,
   artifact,
   assert,
-  cloneAbi,
+  cardSpendType,
+  cardSpent,
   findCall,
   median,
   names,
@@ -78,10 +81,10 @@ import {
   outboxAbi,
   pathUsd,
   portalEventsAbi,
+  programAbi,
   revertData,
   since,
   spendDataType,
-  spendType,
   step,
   waitFor,
   withdrawalRequested,
@@ -106,11 +109,13 @@ const PUBLIC_SPENDS = 5
 /** Exit code when the private steps could not run because the Zone lacks a role grant. */
 const EXIT_BLOCKED = 3
 
+/** `CardSpend`, as a public spend passes it and a private one's settler data encodes it. */
 type SpendArgs = {
-  spenderId: Hex
+  program: Address
   token: Address
   amount: bigint
   destination: Address
+  destinationHint: bigint
   vault: Address
   fromVault: bigint
   maxShares: bigint
@@ -118,8 +123,9 @@ type SpendArgs = {
 }
 
 /**
- * The router's Spend callback data: the settler may use at most `maxInput` of the withdrawal, paying
- * `spend`, and the router returns the rest to `recipient` in the Zone.
+ * The router's Spend callback data: the CardProgram, as the router's settler, may use at most
+ * `maxInput` of the withdrawal, paying `spend`, and the router returns the rest to `recipient` in
+ * the Zone.
  */
 function spendCallback(
   program: Prepared['program'],
@@ -135,9 +141,9 @@ function spendCallback(
   return encodeAbiParameters(spendDataType, [
     {
       op: OP_SPEND,
-      settler: program.settler,
+      settler: program.program,
       maxInput,
-      settlerData: encodeAbiParameters(spendType, [spend]),
+      settlerData: encodeAbiParameters(cardSpendType, [spend]),
       zoneReturn: {
         keyIndex: recipient.keyIndex,
         encrypted: {
@@ -181,7 +187,7 @@ function paid(logs: readonly Log[], destination: Address, token: Address = pathU
 
 /** Steps 5 to 12: a private spend, a bounce, and (on a disposable Zone) the leaked-key withdrawal. */
 async function privateSpend(t: Prepared, run: string) {
-  const settlerArtifact = artifact('BridgeSettler')
+  const programArtifact = artifact('CardProgram')
   const { cardholder, program, refundRecipient } = t
   const l1Public = t.l1Public
   const bridgeKeyPk = generatePrivateKey()
@@ -279,7 +285,7 @@ async function privateSpend(t: Prepared, run: string) {
     functionName: 'calculateWithdrawalFee',
     args: [CALLBACK_GAS],
   })
-  // The router returns what the settler did not use as an encrypted deposit, which the Portal
+  // The router returns what the program did not use as an encrypted deposit, which the Portal
   // rejects below its fees, so the withdrawal carries the spend plus change that covers them.
   const change = depositFee + bouncebackFee + 1n
 
@@ -291,10 +297,11 @@ async function privateSpend(t: Prepared, run: string) {
       zoneId: t.zone.id,
     })
     const spend = {
-      spenderId: program.spenderId,
+      program: program.program,
       token: pathUsd,
       amount: SPEND,
       destination,
+      destinationHint: 0n,
       vault: zeroAddress,
       fromVault: 0n,
       maxShares: 0n,
@@ -357,8 +364,8 @@ async function privateSpend(t: Prepared, run: string) {
   // wallet's balance, so overlapping runs against one program do not trip each other.
   const settledEvents = (spendRef: Hex, fromBlock: bigint) =>
     l1Public.getContractEvents({
-      address: program.settler,
-      abi: settlerArtifact.abi,
+      address: program.program,
+      abi: programArtifact.abi,
       eventName: 'SpendSettled',
       args: { ref: spendRef },
       fromBlock,
@@ -384,7 +391,7 @@ async function privateSpend(t: Prepared, run: string) {
     100,
   )
   const l1SettlementMs = since(zoneAccepted)
-  assert(events.length === 1, 'one settler SpendSettled event for the spend')
+  assert(events.length === 1, 'one CardProgram SpendSettled event for the spend')
   const settlementReceipt = await l1Public.getTransactionReceipt({
     hash: events[0]!.transactionHash,
   })
@@ -393,8 +400,13 @@ async function privateSpend(t: Prepared, run: string) {
     'the settlement transaction paid the settlement wallet',
   )
   const routed = routerSpent(settlementReceipt.logs, program.router)
+  const carded = cardSpent(settlementReceipt.logs, program.program, spendRef)
   assert(
-    isAddressEqual(routed.settler, program.settler) &&
+    carded.isPrivate && isAddressEqual(carded.payer, program.router) && carded.amount === SPEND,
+    'the CardProgram recorded a private spend paid by the router, not the cardholder',
+  )
+  assert(
+    isAddressEqual(routed.settler, program.program) &&
       routed.used === SPEND &&
       routed.change === change,
     `the router used exactly the spend and returned the change (used ${routed.used}, change ${routed.change})`,
@@ -419,6 +431,7 @@ async function privateSpend(t: Prepared, run: string) {
     `No L1 log in the settlement transaction (${settlementReceipt.logs.length} logs) names the cardholder`,
   )
 
+  let callbackGas: bigint | undefined
   if (t.l1.tracesCalls) {
     const trace = (await l1Public.request({
       method: 'debug_traceTransaction',
@@ -429,8 +442,9 @@ async function privateSpend(t: Prepared, run: string) {
     )
     const callbackFrame = findCall(trace, program.router, onWithdrawal)
     assert(callbackFrame?.gasUsed !== undefined, 'settlement trace contains the router callback')
+    callbackGas = BigInt(callbackFrame.gasUsed)
     console.log(
-      `    router callback used ${BigInt(callbackFrame.gasUsed)} gas (limit ${CALLBACK_GAS}, settlement tx ${settlementReceipt.gasUsed})`,
+      `    router callback used ${callbackGas} gas (limit ${CALLBACK_GAS}, settlement tx ${settlementReceipt.gasUsed})`,
     )
   }
 
@@ -529,7 +543,7 @@ async function privateSpend(t: Prepared, run: string) {
     )
   }
 
-  return { zoneReceiptMs, l1SettlementMs }
+  return { zoneReceiptMs, l1SettlementMs, callbackGas }
 }
 
 const earnVaultAbi = parseAbi([
@@ -546,7 +560,7 @@ const SHARE_TOLERANCE_BPS = 50n
  * settlement wallet.
  */
 async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
-  const settlerArtifact = artifact('BridgeSettler')
+  const programArtifact = artifact('CardProgram')
   const { cardholder, program, refundRecipient } = t
   const l1Public = t.l1Public
   const userL1 = t.l1Wallet(cardholder)
@@ -682,10 +696,11 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   const callbackData = spendCallback(
     program,
     {
-      spenderId: program.spenderId,
+      program: program.program,
       token: earn.asset,
       amount: SPEND,
       destination: program.settlement,
+      destinationHint: 0n,
       vault: earn.vault,
       fromVault: SPEND,
       maxShares,
@@ -742,8 +757,8 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
     'Earn settlement on L1',
     () =>
       l1Public.getContractEvents({
-        address: program.settler,
-        abi: settlerArtifact.abi,
+        address: program.program,
+        abi: programArtifact.abi,
         eventName: 'SpendSettled',
         args: { ref: spendRef },
         fromBlock,
@@ -751,6 +766,7 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
     (found) => found.length > 0,
     250,
   )
+  assert(events.length === 1, 'one CardProgram SpendSettled event for the Earn spend')
   const settlement = await l1Public.getTransactionReceipt({ hash: events[0]!.transactionHash })
   assert(
     paid(settlement.logs, program.settlement, earn.asset),
@@ -767,9 +783,38 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   )
   const routed = routerSpent(settlement.logs, program.router)
   assert(
-    routed.used === settled.inputConsumed && routed.change === input - settled.inputConsumed,
-    'the router used what the settler consumed and returned the rest of the withdrawal',
+    isAddressEqual(routed.settler, program.program) &&
+      routed.used === settled.inputConsumed &&
+      routed.change === input - settled.inputConsumed,
+    'the router used what the CardProgram consumed and returned the rest of the withdrawal',
   )
+  const carded = cardSpent(settlement.logs, program.program, spendRef)
+  assert(
+    carded.isPrivate &&
+      isAddressEqual(carded.payer, program.router) &&
+      carded.sharesUsed === settled.inputConsumed,
+    'the CardProgram recorded a private Earn spend paid by the router, with the shares it consumed',
+  )
+  let callbackGas: bigint | undefined
+  if (t.l1.tracesCalls) {
+    const trace = (await l1Public.request({
+      method: 'debug_traceTransaction',
+      params: [settlement.transactionHash, { tracer: 'callTracer' }],
+    } as never)) as CallFrame
+    const callbackFrame = findCall(
+      trace,
+      program.router,
+      toFunctionSelector('onWithdrawalReceived(uint32,address,bytes32,address,uint128,bytes)'),
+    )
+    assert(
+      callbackFrame?.gasUsed !== undefined,
+      'Earn settlement trace contains the router callback',
+    )
+    callbackGas = BigInt(callbackFrame.gasUsed)
+    console.log(
+      `    router callback used ${callbackGas} gas for the Earn spend (limit ${CALLBACK_GAS}, settlement tx ${settlement.gasUsed})`,
+    )
+  }
   const after = await waitFor(
     'EarnShare change back in the Zone',
     shares,
@@ -784,6 +829,7 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
     16,
     `Settlement wallet paid ${formatUnits(SPEND, 6)} in the vault asset, ${formatUnits(spent, 6)} EarnShare spent including fees, the rest back in the Zone, no L1 log names the cardholder`,
   )
+  return { callbackGas }
 }
 
 /** Room in the public key's pathUSD limit for the fees its spends pay in pathUSD. */
@@ -791,8 +837,8 @@ const PUBLIC_FEE_BUDGET = 10_000_000n
 
 /**
  * Step 17: public spends, each one L1 transaction from the cardholder's account that approves the
- * exact amount to the clone, spends, and clears the approval, signed with a Bridge access key the
- * cardholder scoped to those two calls.
+ * exact amount to the CardProgram, calls its `spend`, and clears the approval, signed with a Bridge
+ * access key the cardholder scoped to those two calls. The program pays through the clone.
  */
 async function publicSpend(t: Prepared, run: string) {
   const { cardholder, program } = t
@@ -806,8 +852,8 @@ async function publicSpend(t: Prepared, run: string) {
     expiry: Math.floor(Date.now() / 1000) + 86_400,
     limits: [{ token: pathUsd, limit, period: 30 * 86_400 }],
     scopes: [
-      { address: pathUsd, selector: 'approve(address,uint256)', recipients: [program.clone] },
-      { address: program.clone, selector: 'publicCall(bytes)' },
+      { address: pathUsd, selector: 'approve(address,uint256)', recipients: [program.program] },
+      { address: program.program, selector: PROGRAM_SPEND_SELECTOR },
     ],
     feeToken: pathUsd,
   })
@@ -818,38 +864,39 @@ async function publicSpend(t: Prepared, run: string) {
   assert(authorization.status === 'success', 'the cardholder authorized the public spend key')
   const bridgeL1 = t.l1Wallet(Account.fromSecp256k1(bridgeKeyPk, { access: cardholder.address }))
   const publicMs: number[] = []
+  const publicGas: bigint[] = []
   let recovered = 0
   for (let i = 0; i < PUBLIC_SPENDS; i++) {
     const spend = {
-      spenderId: program.spenderId,
+      program: program.program,
       token: pathUsd,
       amount: SPEND,
       destination: program.settlement,
+      destinationHint: 0n,
       vault: zeroAddress,
       fromVault: 0n,
       maxShares: 0n,
       ref: keccak256(toHex(`zone-e2e.${run}.public.${i}`)),
     }
-    const payload = concat(['0x54535053', encodeAbiParameters(spendType, [spend])])
     const sent = await sendL1Sync(bridgeL1, l1Public, [
       {
         to: pathUsd,
         data: encodeFunctionData({
           abi: erc20Abi,
           functionName: 'approve',
-          args: [program.clone, SPEND],
+          args: [program.program, SPEND],
         }),
       },
       {
-        to: program.clone,
-        data: encodeFunctionData({ abi: cloneAbi, functionName: 'publicCall', args: [payload] }),
+        to: program.program,
+        data: encodeFunctionData({ abi: programAbi, functionName: 'spend', args: [spend] }),
       },
       {
         to: pathUsd,
         data: encodeFunctionData({
           abi: erc20Abi,
           functionName: 'approve',
-          args: [program.clone, 0n],
+          args: [program.program, 0n],
         }),
       },
     ])
@@ -858,7 +905,16 @@ async function publicSpend(t: Prepared, run: string) {
     if (sent.recovered) recovered++
     assert(receipt.status === 'success', 'public spend settled in one L1 transaction')
     assert(paid(receipt.logs, program.settlement), 'public spend paid the settlement wallet')
+    const carded = cardSpent(receipt.logs, program.program, spend.ref)
+    assert(
+      !carded.isPrivate && isAddressEqual(carded.payer, cardholder.address),
+      'the CardProgram recorded a public spend paid by the cardholder',
+    )
+    publicGas.push(receipt.gasUsed)
   }
+  console.log(
+    `    public spend used ${publicGas.join(', ')} gas (median ${median(publicGas.map(Number))})`,
+  )
   const { remaining } = await l1Public.accessKey.getRemainingLimit({
     account: cardholder.address,
     accessKey: bridgeKey,
@@ -873,7 +929,7 @@ async function publicSpend(t: Prepared, run: string) {
     `Public spend with a Bridge access key: ${PUBLIC_SPENDS} single L1 transactions settled, submit to receipt ${publicMs.join(', ')} ms (median ${median(publicMs)})` +
       (recovered ? `; ${recovered} cut off by the RPC proxy at 1 s and read back by hash` : ''),
   )
-  return publicMs
+  return { publicMs, publicGas }
 }
 
 async function main() {
@@ -892,9 +948,10 @@ async function main() {
     const privateResult = t.blocked.length === 0 ? await privateSpend(t, run) : undefined
     if (!privateResult)
       for (const reason of t.blocked) console.log(`BLOCKED private steps 5-16: ${reason}`)
-    else if (t.earn) await earnSpend(t, run, t.earn)
-    else console.log('    no Earn vault on this target: Earn steps 13-16 skipped')
-    const publicMs = await publicSpend(t, run)
+    const earnResult = privateResult && t.earn ? await earnSpend(t, run, t.earn) : undefined
+    if (privateResult && !t.earn)
+      console.log('    no Earn vault on this target: Earn steps 13-16 skipped')
+    const { publicMs, publicGas } = await publicSpend(t, run)
     if (privateResult && t.earn && t.routerFlows) await routerFlows(t, run, t.routerFlows, t.earn)
     else console.log('    no every-op router on this target: router flow steps 18-28 skipped')
 
@@ -906,6 +963,9 @@ async function main() {
       zoneRequestToZoneReceiptMs: privateResult?.zoneReceiptMs ?? null,
       zoneReceiptToL1SettlementMs: privateResult?.l1SettlementMs ?? null,
       publicSubmitToReceiptMs: publicMs,
+      privateCallbackGas: privateResult?.callbackGas?.toString() ?? null,
+      earnCallbackGas: earnResult?.callbackGas?.toString() ?? null,
+      publicSpendGas: publicGas.map(String),
       ...(t.l1.blockTime ? { l1BlockTime: t.l1.blockTime } : {}),
       ...(t.zone.batchIntervalBlocks
         ? { zoneBatchIntervalBlocks: t.zone.batchIntervalBlocks }

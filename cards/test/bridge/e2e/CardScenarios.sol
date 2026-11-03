@@ -5,14 +5,14 @@ import { console } from "forge-std/console.sol";
 import { IAllowanceTransfer } from "permit2/interfaces/IAllowanceTransfer.sol";
 import { Simple4626Vault } from "tempo-earn/demo/Simple4626Vault.sol";
 
-import { CardProgram } from "../harness/CardProgram.sol";
+import { CardProgramModel } from "../harness/CardProgramModel.sol";
 import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.sol";
 
 /// @notice Every card product scenario the card processor and issuer must handle, written once against the
 ///         rail hooks so it runs unchanged on every contract setup.
 /// @dev Where a setup lacks a capability, the scenario pins what the setup actually does (marked
 ///      "Gap") instead of failing, so the suite stays green while documenting the difference.
-abstract contract CardScenarios is CardProgram {
+abstract contract CardScenarios is CardProgramModel {
     uint256 internal constant START = 1000e6;
 
     address internal alice = makeAddr("alice");
@@ -322,6 +322,8 @@ abstract contract CardScenarios is CardProgram {
         if (_railCaps().noStandingAllowance) {
             assertEq(usd.allowance(alice, address(spender)), 0, "nothing approved to Bridge");
             assertEq(earnShare.allowance(alice, address(spender)), 0, "no share approval");
+            assertEq(usd.allowance(alice, address(program)), 0, "nothing approved to the program");
+            assertEq(earnShare.allowance(alice, address(program)), 0, "no share approval to the program");
         } else {
             // Gap: the card program can pull up to the remaining allowance at any time.
             _gap("the card program can pull up to the remaining allowance at any time");

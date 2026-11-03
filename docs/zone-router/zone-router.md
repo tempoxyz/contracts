@@ -4,10 +4,10 @@
 deposits and redemptions, and spends through settlers fixed at deployment.
 [`ZoneRouterFactory`](../../zone-router/src/ZoneRouterFactory.sol) deploys it, and the
 [settlers](#settlers) pay a spend: `SendSettler`, in [`src/settlers/`](../../zone-router/src/settlers/),
-to a public address, and a card program's `BridgeSettler`, in [`cards/`](../../cards/README.md), through
-its clone. The router, its factory and `SendSettler` live in the
+to a public address, and a card program's `CardProgram`, in [`cards/`](../../cards/README.md), through
+its provider's issuer. The router, its factory and `SendSettler` live in the
 [`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
-interfaces. Card spend through it is in the [card integration's design](../cards/bridge/design.md).
+interfaces. Card spend through it is in the [card spend design](../cards/design.md).
 
 `SingleZoneEarnRouter` ([Earn's zone router](../earn/modules/zone-router.md)) is the router Earn runs in
 production today. `ZoneRouter`'s Earn ops accept its callback data byte for byte and report the same
@@ -29,13 +29,13 @@ router.
 The constructor rejects inconsistent combinations. A profile states its mode as `ops`, `earn` and
 `settlers`; the common modes are:
 
-| Mode                       | Ops                    | Settlers        | Vault |
-| -------------------------- | ---------------------- | --------------- | ----- |
-| Earn                       | Deposit, Redeem        | —               | Yes   |
-| Card, closed loop          | Spend                  | `BridgeSettler` | —     |
-| Card and Earn, closed loop | Deposit, Redeem, Spend | `BridgeSettler` | Yes   |
+| Mode                       | Ops                    | Settlers      | Vault |
+| -------------------------- | ---------------------- | ------------- | ----- |
+| Earn                       | Deposit, Redeem        | —             | Yes   |
+| Card, closed loop          | Spend                  | `CardProgram` | —     |
+| Card and Earn, closed loop | Deposit, Redeem, Spend | `CardProgram` | Yes   |
 
-One router per Zone can serve several programs by listing each one's settler.
+One router per Zone can serve several programs by listing each one's `CardProgram`.
 
 ## Factory
 
@@ -83,10 +83,10 @@ The module also lists the router and its Zone's Portal, Messenger, Outbox and se
 [required members](../earn/modules/access.md#required-members) of EarnShare's access policy.
 `pnpm earn verify` rechecks the factory provenance and mode and reports gateway, account,
 token and conversion readiness. A profile deploys no settler: it lists deployed ones in
-`settlers`, such as a release's `SendSettler` or a card program's `BridgeSettler`.
+`settlers`, such as a release's `SendSettler` or a card program's `CardProgram`.
 
 Outside a profile, the **Zone Router Release** workflow deploys and source-verifies a
-`ZoneRouterFactory`, a `SendSettler`, a card program's `BridgeSettler`, or a mode's router from
+`ZoneRouterFactory`, a `SendSettler`, or a mode's router from
 `main` ([Zone router releases](../deployment/deployment.md#zone-router-releases)). Each lands at an address its
 build and settings fix: the factory and settlers through the CREATE2 deployer with Earn's release
 salt, and a router at its factory's `predict(mode)`, so whoever deploys the same one, Tempo or an
@@ -146,14 +146,14 @@ with that integration and imports the interface from here. Each has no owner and
 callback's input. A mode lists the settlers it allows, and only those can be named in a
 callback.
 
-| Settler         | Pays                                                           | `settlerData`       | Binding fixed at deployment              |
-| --------------- | -------------------------------------------------------------- | ------------------- | ---------------------------------------- |
-| `SendSettler`   | A public address, in the withdrawn token or redeemed from Earn | `abi.encode(Send)`  | Optional vault, par pool and customer ID |
-| `BridgeSettler` | A card program's destination, through its clone                | `abi.encode(Spend)` | The spender factory and the program's ID |
+| Settler       | Pays                                                                              | `settlerData`           | Binding fixed at deployment              |
+| ------------- | --------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------- |
+| `SendSettler` | A public address, in the withdrawn token or redeemed from Earn                    | `abi.encode(Send)`      | Optional vault, par pool and customer ID |
+| `CardProgram` | A destination its issuer authorizes (Rain collateral, a Bridge settlement wallet) | `abi.encode(CardSpend)` | The issuer and guardian                  |
 
 `SendSettler` is released by [Zone Router Release](../deployment/deployment.md#zone-router-releases) and
-`BridgeSettler` by [Bridge Release](../deployment/deployment.md#bridge-releases), each at a deterministic
-address, and listed in a profile's `zoneRouter.settlers`.
+a Bridge program's `CardProgram` by [Bridge Release](../deployment/deployment.md#bridge-releases), each at a
+deterministic address, and listed in a profile's `zoneRouter.settlers`.
 
 ### `ISpendSettler`
 
@@ -196,12 +196,12 @@ It emits `SendSettled(ref, to, inputToken, outputToken, amount, inputConsumed, i
 no Zone account or `senderTag`. Deploy one with the [Zone Router Release `sendSettler`](../deployment/deployment.md#zone-router-releases) and list it in a
 profile's `zoneRouter.settlers`.
 
-### `BridgeSettler`
+### `CardProgram`
 
-[`BridgeSettler`](../../cards/src/providers/bridge/BridgeSettler.sol) settles a card spend through one card program's
-clone and its "TS" handler. It lives in [`cards/src/providers/bridge/`](../../cards/src/providers/bridge/) with the handler and the
-`Spend` struct both settle; its checks are in the
-[card integration's design](../cards/bridge/design.md#bridgesettler).
+[`CardProgram`](../../cards/src/core/CardProgram.sol) is a card program's settler: `settle` pays the
+`CardSpend` in `settlerData` to a destination its issuer authorizes for a private spend, directly or through
+the issuer's payout target (a Bridge program's spender clone and "TS" handler), and returns the unused
+input. Its checks are in the [card spend design](../cards/design.md#what-the-program-checks).
 
 ## Invariants
 

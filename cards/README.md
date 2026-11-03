@@ -15,19 +15,19 @@ router from [`zone-router/src/`](../zone-router/src/) rather than copies.
 ```text
 src/
   core/                     Ours, provider-agnostic
+    CardProgram.sol           One program: public spends, and the Zone router's settler for private ones
+    CardFactory.sol           Deploys programs at addresses fixed by their ID, issuer and guardian
     CardSpend.sol             The one struct public and private spends settle
-    CardSpender.sol           Pays a spend from stablecoin, Earn, or both, to a program-authorized destination
-    CardSettler.sol           The Zone router settler for private spend
-    interfaces/               ICardProgram (the provider seam), the Earn vault subset
+    interfaces/               ICardIssuer and ICardIssuerPayout (the provider engine), the Earn vault subset
   providers/                Ours, one directory per card provider
-    bridge/                   "TS" handler (SpenderTempoSpend), BridgeSettler, Bridge interfaces
-    rain/                     RainCardProgram (ICardProgram adapter), Rain interfaces
+    bridge/                   BridgeIssuer, the "TS" handler (SpenderTempoSpend), Bridge interfaces
+    rain/                     RainIssuer, Rain interfaces
 vendor/                     Providers' own contracts, unmodified (VENDORED.md)
   bridge/                   Bridge's spender factory, clone and handlers
   rain/                     Rain's collateral, factory and controller (verified Polygon sources)
   tempo-zones/              The Zones runtime the Bridge harness runs
 test/
-  core/                     The agnostic contracts on a mock program, and a second, Bridge-shaped provider
+  core/                     CardProgram paying directly and through a payout target, CardFactory, mock issuers
   bridge/                   Bridge harness, rails, card scenario matrix, unit, fork and smoke tests
   rain/                     Rain harness, unit and lifecycle tests, Rain bytecode fixture
 script/
@@ -37,13 +37,14 @@ script/
 
 ## How it works
 
-- **Core.** `CardSpender` pays a `CardSpend` to a destination the program's `ICardProgram` adapter
-  authorizes; the cardholder's account calls it for a public spend. `CardSettler` is the Zone router
-  settler private spends reach it through. [docs/cards/design.md](../docs/cards/design.md).
-- **Bridge.** Bridge's program runs inside its own spender factory, so its code is a spender handler
-  ("TS") the factory routes to, with its own settler. [docs/cards/bridge/](../docs/cards/bridge/README.md).
-- **Rain.** Rain has no spender system, so it uses the core contracts through `RainCardProgram`, which
-  authorizes Rain collateral contracts. [docs/cards/rain/](../docs/cards/rain/README.md).
+- **Core.** Every program is a `CardProgram` over one provider engine, its `ICardIssuer`, deployed by
+  `CardFactory`, as an Earn vault sits over an engine. The program is the address cardholders' access keys
+  and the Zone's router point at: `spend` for a public spend, `settle` for a private one. It never changes;
+  a provider replaces it with a new one. [docs/cards/design.md](../docs/cards/design.md).
+- **Bridge.** `BridgeIssuer` has the program pay through its Bridge spender clone and the "TS" handler, so
+  Bridge's factory governs every spend. [docs/cards/bridge/](../docs/cards/bridge/README.md).
+- **Rain.** `RainIssuer` authorizes Rain collateral contracts, and the program pays into them directly.
+  [docs/cards/rain/](../docs/cards/rain/README.md).
 
 ## Running it
 
@@ -57,7 +58,7 @@ The E2E runs need Docker, Node 22 and pnpm. From the repository root:
 
 ```bash
 pnpm e2e:cards -- --earn         # Rain, on the core contracts
-pnpm e2e:bridge -- --earn        # Bridge, through its clone and handler
+pnpm e2e:bridge -- --earn        # Bridge, on a CardProgram through its clone and handler
 ```
 
 `script/bridge/smoke.sh` runs Bridge's stack against a Tempo dev node, and

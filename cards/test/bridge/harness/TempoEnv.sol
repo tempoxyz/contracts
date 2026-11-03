@@ -28,12 +28,17 @@ import {
     EngineMigrationMode
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
+import { CardFactory } from "../../../src/core/CardFactory.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { BridgeIssuer } from "../../../src/providers/bridge/BridgeIssuer.sol";
 import { Spend, SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderClone } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 
 /// @notice Deploys the on-chain world a Tempo card program runs on: TIP-20 stablecoins (real
-///         precompiles), a Tempo Earn stack over an ERC-4626 venue, and Bridge's SpenderFactory with
-///         every handler registered against one card program.
+///         precompiles), a Tempo Earn stack over an ERC-4626 venue, Bridge's SpenderFactory with
+///         every handler registered against one card program, and that program's `CardProgram`
+///         (through a `CardFactory`, over its `BridgeIssuer`), which pays through the clone's "TS" handler.
 abstract contract TempoEnv is Test {
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
     bytes32 internal constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
@@ -63,6 +68,11 @@ abstract contract TempoEnv is Test {
     // Bridge card program.
     SpenderFactory internal bridgeFactory;
     address internal spender; // the program's spender clone
+    /// @dev The program's CardProgram: the public spend entry point and the Zone router's settler.
+    CardFactory internal cardFactory;
+    BridgeIssuer internal issuer;
+    CardProgram internal program;
+    address internal programGuardian = makeAddr("bridge.program-guardian");
     address internal bridgeAdmin = makeAddr("bridge.admin");
     address internal bridgeGovernor = makeAddr("bridge.governor");
     address internal bridgeManager = makeAddr("bridge.manager");
@@ -173,6 +183,18 @@ abstract contract TempoEnv is Test {
         // Both vault-aware handlers keep their own allowlist in the clone's storage.
         _bridgeManagerCall(abi.encodePacked(PREFIX_TEWF, bytes2("UV"), uint8(1), address(earnVault)));
         _bridgeGovernorCall(abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(earnVault)));
+        _deployCardProgram();
+    }
+
+    /// @dev From their artifacts: inlining the factory, which nests the program, would bloat every suite.
+    function _deployCardProgram() private {
+        cardFactory = CardFactory(deployCode("CardFactory.sol:CardFactory"));
+        issuer =
+            BridgeIssuer(deployCode("BridgeIssuer.sol:BridgeIssuer", abi.encode(address(bridgeFactory), SPENDER_ID)));
+        program = CardProgram(cardFactory.deploy(SPENDER_ID, issuer, programGuardian));
+        vm.label(address(cardFactory), "CardFactory");
+        vm.label(address(issuer), "BridgeIssuer");
+        vm.label(address(program), "CardProgram");
     }
 
     /// @dev Permit2 pins solc 0.8.17, so its creation code is built once with its own toolchain and
@@ -223,6 +245,22 @@ abstract contract TempoEnv is Test {
 
     function _psCall(Spend memory spend) internal pure returns (bytes memory) {
         return abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("PS"), abi.encode(spend));
+    }
+
+    /// @dev The "TS" `Spend` the program's issuer builds for `spend` (`BridgeIssuer.payoutData`).
+    function _psCall(CardSpend memory spend) internal pure returns (bytes memory) {
+        return _psCall(
+            Spend({
+                spenderId: SPENDER_ID,
+                token: spend.token,
+                amount: spend.amount,
+                destination: spend.destination,
+                vault: spend.vault,
+                fromVault: spend.fromVault,
+                maxShares: spend.maxShares,
+                ref: spend.ref
+            })
+        );
     }
 
     // ------------------------------------------------------------------

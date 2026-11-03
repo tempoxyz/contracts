@@ -37,11 +37,28 @@ export const zoneTokenAbi = parseAbi([
   'function transfer(address to, uint256 amount) returns (bool)',
   'error Unauthorized()',
 ])
-export const spendType = parseAbiParameters([
-  'Spend spend',
-  'struct Spend { bytes32 spenderId; address token; uint256 amount; address destination; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
+/** `CardSpend`: one card spend, the same for a public spend and a private one's settler data. */
+export const cardSpendType = parseAbiParameters([
+  'CardSpend spend',
+  'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
 ])
-export const cloneAbi = parseAbi(['function publicCall(bytes data)'])
+/**
+ * The CardProgram's public spend and its events: `CardSpent` for every spend, and `SpendSettled`
+ * for a private one, with the input accounting the router sees.
+ */
+export const programAbi = parseAbi([
+  'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
+  'function spend(CardSpend s)',
+  'event CardSpent(bytes32 indexed ref, address indexed payer, address indexed destination, address token, uint256 amount, uint256 fromVault, uint256 sharesUsed, bool isPrivate)',
+  'event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',
+])
+/** The selector a public spend's access key is scoped to on the program. */
+export const PROGRAM_SPEND_SELECTOR =
+  'spend((address,address,uint256,address,uint256,address,uint256,uint256,bytes32))'
+/** The "TS" handler's event, which the clone emits with the paying account (the program) as `from`. */
+export const tempoSpendAbi = parseAbi([
+  'event TempoSpendExecuted(bytes32 indexed ref, address indexed from, address indexed destination, address token, uint256 amount, uint256 fromStable, uint256 fromVault, uint256 sharesBurned)',
+])
 /** `ZoneRouter.SpendData`, the callback data of the router's Spend op. */
 export const spendDataType = parseAbiParameters([
   'SpendData data',
@@ -149,4 +166,30 @@ export function withdrawalRequested(receipt: { logs: Log[]; transactionHash: Hex
     ),
   )
   return { ...event.args, senderTag }
+}
+
+/**
+ * The CardProgram's `CardSpent` for `ref` in `logs` and the clone's `TempoSpendExecuted` for it,
+ * exactly one each: the program pays through the clone, so the handler's `from` is the program.
+ */
+export function cardSpent(logs: readonly Log[], program: Address, ref: Hex) {
+  const spent = parseEventLogs({
+    abi: programAbi,
+    eventName: 'CardSpent',
+    args: { ref },
+    logs: logs.filter((log) => isAddressEqual(log.address, program)),
+  })
+  assert(spent.length === 1, `one CardProgram CardSpent event for ref ${ref}`)
+  const executed = parseEventLogs({
+    abi: tempoSpendAbi,
+    eventName: 'TempoSpendExecuted',
+    args: { ref },
+    logs: [...logs],
+  })
+  assert(executed.length === 1, `one TempoSpendExecuted event for ref ${ref}`)
+  assert(
+    isAddressEqual(executed[0]!.args.from, program),
+    `the "TS" handler paid as the CardProgram (from ${executed[0]!.args.from})`,
+  )
+  return { ...spent[0]!.args, sharesBurned: executed[0]!.args.sharesBurned }
 }

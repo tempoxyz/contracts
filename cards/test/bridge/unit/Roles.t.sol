@@ -7,12 +7,14 @@ import { ISpenderHandler, SpenderStatus } from "bridge-spender/src/ISpenderHandl
 import { SpenderFactoryErrorsAndEvents } from "bridge-spender/src/SpenderFactoryErrorsAndEvents.sol";
 import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 
-import { Spend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
 
-/// @notice Bridge's factory roles as the "TS" handler relies on them: each role's calls refuse every
-///         other role holder and an outsider, a pause stops spend until governance unpauses, and a `Disabled` handler
-///         stops spend until governance enables it again, on both the public and the private path.
+/// @notice Bridge's factory roles as the "TS" handler and the program's `CardProgram` rely on them: each
+///         role's calls refuse every other role holder and an outsider, a pause stops spend until governance
+///         unpauses, and a `Disabled` handler stops spend until governance enables it again, on both the
+///         public and the private path.
 contract RolesTest is PrivateSpendFixture {
     address internal outsider = makeAddr("outsider");
 
@@ -20,7 +22,7 @@ contract RolesTest is PrivateSpendFixture {
         _setUpPrivateSpend();
         _mintUsd(alice, 100e6);
         vm.prank(alice);
-        usd.approve(spender, type(uint256).max);
+        usd.approve(address(program), type(uint256).max);
     }
 
     // ------------------------------------------------------------------
@@ -130,6 +132,12 @@ contract RolesTest is PrivateSpendFixture {
     function test_pauseStopsPublicSpendUntilGovernanceUnpauses() public {
         vm.prank(bridgePauser);
         bridgeFactory.pause();
+        // The program reads the factory's pause through its issuer, before the clone would.
+        assertTrue(program.paused(), "program paused with the factory");
+        vm.prank(alice);
+        vm.expectRevert(CardProgram.ProgramPaused.selector);
+        program.spend(_publicSpend(10e6));
+        // The clone refuses on its own as well.
         vm.prank(alice);
         vm.expectRevert(SpenderBase.FactoryPaused.selector);
         _cloneCall(_psCall(_publicSpend(10e6)));
@@ -138,7 +146,7 @@ contract RolesTest is PrivateSpendFixture {
         bridgeFactory.unpause();
         uint256 before = usd.balanceOf(settlement);
         vm.prank(alice);
-        _cloneCall(_psCall(_publicSpend(10e6)));
+        program.spend(_publicSpend(10e6));
         assertEq(usd.balanceOf(settlement) - before, 10e6, "spend after unpause");
     }
 
@@ -162,7 +170,7 @@ contract RolesTest is PrivateSpendFixture {
 
         vm.prank(alice);
         vm.expectRevert(SpenderFactoryErrorsAndEvents.SpenderHandlerDisabled.selector);
-        _cloneCall(_psCall(_publicSpend(10e6)));
+        program.spend(_publicSpend(10e6));
         vm.prank(bridgeGovernor);
         vm.expectRevert(SpenderFactoryErrorsAndEvents.SpenderHandlerDisabled.selector);
         bridgeFactory.governorCall(
@@ -173,7 +181,7 @@ contract RolesTest is PrivateSpendFixture {
         bridgeFactory.updateSpenderHandlerStatus(PREFIX_TEMPO_SPEND, SpenderStatus.Enabled);
         uint256 before = usd.balanceOf(settlement);
         vm.prank(alice);
-        _cloneCall(_psCall(_publicSpend(10e6)));
+        program.spend(_publicSpend(10e6));
         assertEq(usd.balanceOf(settlement) - before, 10e6, "spend after enabling");
     }
 
@@ -206,7 +214,7 @@ contract RolesTest is PrivateSpendFixture {
         return abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, account, role);
     }
 
-    function _publicSpend(uint256 amount) internal view returns (Spend memory s) {
+    function _publicSpend(uint256 amount) internal view returns (CardSpend memory s) {
         s = _spend(amount, settlement);
         s.token = address(usd);
     }

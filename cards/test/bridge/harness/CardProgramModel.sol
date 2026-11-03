@@ -10,7 +10,7 @@ import { PullOutcome, SpendRail } from "./SpendRail.sol";
 ///      returns the unused hold; refunds and won disputes are credited back. When a pull fails
 ///      after the card was approved, the platform reserve settles with the network and the
 ///      cardholder carries a negative balance.
-abstract contract CardProgram is SpendRail {
+abstract contract CardProgramModel is SpendRail {
     // Merchant category codes the program treats specially.
     uint16 internal constant MCC_GROCERY = 5411;
     uint16 internal constant MCC_RESTAURANT = 5812;

@@ -15,9 +15,11 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
-import { BridgeSettler } from "../../../src/providers/bridge/BridgeSettler.sol";
-import { Spend, SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
+import { CardFactory } from "../../../src/core/CardFactory.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { ICardIssuer } from "../../../src/core/interfaces/ICardIssuer.sol";
+import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 
 /// @dev Tempo mainnet (chain 4217) production addresses this measurement runs against.
@@ -89,8 +91,8 @@ contract CallbackDriver {
     }
 }
 
-/// @notice Private-spend callback gas through a Spend-mode ZoneRouter, BridgeSettler and Bridge's
-///         clone with the TS handler, on a Tempo mainnet fork against the production OUSD EarnVault
+/// @notice Private-spend callback gas through a Spend-mode ZoneRouter, the program's CardProgram (over its
+///         BridgeIssuer) and Bridge's clone with the TS handler, on a Tempo mainnet fork against the production OUSD EarnVault
 ///         and Zone 2's real portal and messenger.
 /// @dev Inert unless forked to Tempo mainnet: pass --fork-url, or set FORK_URL. Needs mainnet's active
 ///      hardfork (tempo_forkSchedule: T12 at block 46.08M); under this project's tempo:T8 the fork's
@@ -116,7 +118,7 @@ contract PrivateSpendForkGasTest is Test {
     address internal programRefundRecipient = makeAddr("bridge.zone-refund-recipient");
     address internal zoneUser = makeAddr("zone.cardholder");
 
-    BridgeSettler internal settler;
+    CardProgram internal program;
     ZoneRouterFactory internal routerFactory;
     ZoneRouter internal router;
     CallbackDriver internal driver;
@@ -144,13 +146,17 @@ contract PrivateSpendForkGasTest is Test {
         forked = true;
 
         _deployBridge();
-        settler = new BridgeSettler(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID);
+        // From their artifacts, as the harness does.
+        address issuer = deployCode("BridgeIssuer.sol:BridgeIssuer", abi.encode(address(bridgeFactory), SPENDER_ID));
+        program = CardProgram(
+            CardFactory(deployCode("CardFactory.sol:CardFactory")).deploy(SPENDER_ID, ICardIssuer(issuer), address(0))
+        );
         routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
         ZoneRouter.Mode memory mode;
         mode.zoneId = Mainnet.ZONE_ID;
         mode.enabledOps = uint8(1 << 2);
         mode.settlers = new address[](1);
-        mode.settlers[0] = address(settler);
+        mode.settlers[0] = address(program);
         router = ZoneRouter(routerFactory.deploy(mode));
         driver = new CallbackDriver();
 
@@ -163,19 +169,19 @@ contract PrivateSpendForkGasTest is Test {
         vm.stopPrank();
 
         // The EarnShare's transfer policy is a whitelist: its admin must admit the program's router,
-        // settler and clone, which hold shares within a spend, and its Zone refund recipient, which
+        // program and clone, which hold shares within a spend, and its Zone refund recipient, which
         // the portal checks on every returned deposit.
         uint64 sharePolicy = ITIP20(Mainnet.EARN_SHARE).transferPolicyId();
         (, address policyAdmin) = StdPrecompiles.TIP403_REGISTRY.policyData(sharePolicy);
         vm.startPrank(policyAdmin);
         StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(sharePolicy, address(router), true);
-        StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(sharePolicy, address(settler), true);
+        StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(sharePolicy, address(program), true);
         StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(sharePolicy, clone, true);
         StdPrecompiles.TIP403_REGISTRY.modifyPolicyWhitelist(sharePolicy, programRefundRecipient, true);
         vm.stopPrank();
 
         vm.label(address(router), "ZoneRouter");
-        vm.label(address(settler), "BridgeSettler");
+        vm.label(address(program), "CardProgram");
         vm.label(clone, "Bridge.SpenderClone");
         vm.label(Mainnet.PORTAL, "Zone2Portal");
         vm.label(Mainnet.EARN_VAULT, "EarnVault.OUSD");
@@ -247,11 +253,12 @@ contract PrivateSpendForkGasTest is Test {
         view
         returns (address token, uint128 input, bytes memory data)
     {
-        Spend memory spend = Spend({
-            spenderId: SPENDER_ID,
+        CardSpend memory spend = CardSpend({
+            program: address(program),
             token: earn ? Mainnet.OUSD : Mainnet.ZONE_STABLECOIN,
             amount: amount,
             destination: destination,
+            destinationHint: 0,
             vault: earn ? Mainnet.EARN_VAULT : address(0),
             fromVault: earn ? amount : 0,
             maxShares: 0,
@@ -269,7 +276,7 @@ contract PrivateSpendForkGasTest is Test {
         data = abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: address(settler),
+                settler: address(program),
                 maxInput: uint128(maxInput),
                 settlerData: abi.encode(spend),
                 zoneReturn: ZoneRouter.SpendReturn({
@@ -311,18 +318,18 @@ contract PrivateSpendForkGasTest is Test {
 
     function _assertNothingHeld(address token) internal view {
         assertEq(ITIP20(token).balanceOf(address(router)), 0, "router");
-        assertEq(ITIP20(token).balanceOf(address(settler)), 0, "settler");
+        assertEq(ITIP20(token).balanceOf(address(program)), 0, "program");
         assertLe(ITIP20(token).balanceOf(clone), 1, "clone");
     }
 
-    /// @dev A program set up ahead of its first spend: the router's and settler's standing approvals
+    /// @dev A program set up ahead of its first spend: the router's and program's standing approvals
     ///      warmed (the clone's to the vault is set when governance allows it), and 1 EarnShare unit
     ///      in the clone, which holds the shares an Earn spend redeems, so that balance slot stays set.
     function _prepare() internal {
         address[2] memory tokens = [Mainnet.ZONE_STABLECOIN, Mainnet.EARN_SHARE];
         for (uint256 i; i < tokens.length; ++i) {
             router.warm(tokens[i]);
-            settler.warm(tokens[i]);
+            program.warm(tokens[i]);
         }
         vm.prank(Mainnet.PORTAL);
         ITIP20(Mainnet.EARN_SHARE).transfer(clone, 1);

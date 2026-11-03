@@ -13,25 +13,28 @@ issuer's authorization hold, its crypto pull, and an EVM transfer in which the i
 The card is approved once the pull is `Submitted`, and a failure after that is a double spend
 the issuer absorbs.
 
-Card spend on Tempo keeps the first three stages and replaces the transfer with a new mechanism, `TS`. The transaction is
-signed by an issuer-held **access key on the cardholder's account**, not by the debitor, and it
-calls the program clone's `publicCall`, not `transferToDestination`, which `TS` reverts.
+Card spend on Tempo keeps the first three stages and replaces the transfer with the program's
+`CardProgram`, which pays through the program clone's new `TS` handler. The transaction is signed by
+an issuer-held **access key on the cardholder's account**, not by the debitor, and it calls the
+program's `spend`, which calls the clone's `publicCall`, not `transferToDestination`, which `TS`
+reverts.
 
-|                         | Today (`EA`, `P2`, `TF`)              | `TS`, public                                 | `TS`, private                                  |
-| ----------------------- | ------------------------------------- | -------------------------------------------- | ---------------------------------------------- |
-| Signer                  | Card-controllers hot wallet (debitor) | The issuer access key, as the cardholder     | The issuer Zone access key, as the cardholder  |
-| Sent to                 | Tempo L1                              | Tempo L1                                     | The Zone RPC                                   |
-| Call                    | `transferToDestination`               | `approve` + `publicCall "PS"` + `approve(0)` | `approve(outbox)` + `requestWithdrawal`        |
-| The issuer approves on  | Submission                            | The L1 receipt                               | The Zone receipt                               |
-| Can fail after approval | Yes (double spend)                    | No: the receipt is the settlement            | Yes: the callback can revert, the reserve pays |
+|                         | Today (`EA`, `P2`, `TF`)              | `TS`, public                               | `TS`, private                                  |
+| ----------------------- | ------------------------------------- | ------------------------------------------ | ---------------------------------------------- |
+| Signer                  | Card-controllers hot wallet (debitor) | The issuer access key, as the cardholder   | The issuer Zone access key, as the cardholder  |
+| Sent to                 | Tempo L1                              | Tempo L1                                   | The Zone RPC                                   |
+| Call                    | `transferToDestination`               | `approve` + `program.spend` + `approve(0)` | `approve(outbox)` + `requestWithdrawal`        |
+| The issuer approves on  | Submission                            | The L1 receipt                             | The Zone receipt                               |
+| Can fail after approval | Yes (double spend)                    | No: the receipt is the settlement          | Yes: the callback can revert, the reserve pays |
 
 ## Enrollment
 
 The cardholder authorizes the issuer's key once per account, in the wallet that holds the key's root.
 The authorization is a keychain `authorizeKey` with:
 
-- **Public:** a limit on each token the card spends, `approve` scoped to the clone as recipient,
-  and the clone's `publicCall`. See `TempoAccessKeyRail._railEnroll` in `test/rails/TempoRails.sol`.
+- **Public:** a limit on each token the card spends, `approve` scoped to the program as recipient
+  (on the stablecoin, and the EarnShare for Earn), and the program's `spend` (selector of
+  `spend((address,address,uint256,address,uint256,address,uint256,uint256,bytes32))`). See `TempoAccessKeyRail._railEnroll` in `test/rails/TempoRails.sol`.
 - **Private:** a limit on the Zone token, `approve` scoped to the Zone outbox, and the outbox's
   `requestWithdrawal`. See `e2e/cards/bridge/src/run.ts` step 6.
 - An expiry. A key is good until it expires or the cardholder revokes it.
@@ -53,13 +56,14 @@ limit, which tight limits and short expiries bound.
 
 Before signing, decline if any of these fail. Each is a read:
 
-- **Program pause:** `SpenderFactory.paused()` on the L1. A private spend reverts on the L1 after
-  approval if the program is paused, so check it first.
+- **Program pause:** `program.paused()` on the L1, which is the guardian's pause or
+  `SpenderFactory.paused()`. A private spend reverts on the L1 after approval if the program is
+  paused, so check it first.
 - **Handler:** `getSpenderHandlerWithCheckedPermissions("TS", clone)` does not revert, so the
   handler is enabled, or gated with the program allowed.
 - **Destination:** `isAuthorizedDestination(spenderId, destination)`.
 - **Balance:** The cardholder's token balance, plus share value for Earn. On the L1 that is
-  `availableBalance` on the clone. In a Zone it is `balanceOf` through an authenticated Zone RPC,
+  `availableBalance(from, token, vault)` on the program, or on the clone. In a Zone it is `balanceOf` through an authenticated Zone RPC,
   for the one token the spend withdraws.
 - **Key headroom:** The spend fits the key's remaining periodic limit.
 - **Zone health, private only**, read on the L1:
@@ -76,19 +80,26 @@ One Tempo transaction from the cardholder's account, signed by the issuer's acce
 fee payer:
 
 ```text
-token.approve(clone, fromStable)
-earnShare.approve(clone, maxShares)       only when spending from Earn
-clone.publicCall("TS" "PS" abi.encode(Spend))
-token.approve(clone, 0)
-earnShare.approve(clone, 0)               only when spending from Earn
+token.approve(program, fromStable)
+earnShare.approve(program, maxShares)     only when spending from Earn
+program.spend(CardSpend)
+token.approve(program, 0)
+earnShare.approve(program, 0)             only when spending from Earn
 ```
 
-`Spend` is `spenderId, token, amount, destination, vault, fromVault, maxShares, ref`:
+`CardSpend` is `program, token, amount, destination, destinationHint, vault, fromVault, maxShares, ref`:
 
+- `program` is the program's address; any other reverts `WrongProgram`. `destinationHint` is unused
+  for Bridge: send zero.
 - `ref` is the issuer's own reference. Use the crypto pull's ID.
 - `fromVault` is how much of `amount` comes from Earn.
 - `maxShares` is the live `previewWithdraw(fromVault)` plus a tolerance. The harness uses 0.5%.
-  Always set it: it sizes the share approval, and zero would approve no shares.
+  Always set it: the program pulls exactly `maxShares` of EarnShare (the live quote when zero), so it
+  sizes the share approval, and the handler burns no more.
+
+The program pulls the input, pays through the clone's `publicCall "TS" "PS"` as the payer and
+returns what the handler did not use, so the cardholder ends with no allowance and no leftover in
+the program.
 
 Approve the card on the receipt. A revert means nothing moved: decline.
 
@@ -111,12 +122,12 @@ approves those tokens. Unsponsored, the cardholder approves `input + withdrawalF
 - `inputToken` is the stablecoin, or EarnShare for an Earn spend. A withdrawal carries one token,
   so one withdrawal is all stablecoin (`fromVault = 0`) or all Earn (`fromVault = amount`), never
   split as a public spend can be. Use Earn shares if they cover the spend, otherwise the
-  stablecoin, otherwise both as two withdrawals in the same Zone transaction, each a `Spend` for its
+  stablecoin, otherwise both as two withdrawals in the same Zone transaction, each a `CardSpend` for its
   part, otherwise decline ([decision 15](design.md#decisions)). The two settle independently: if
   one bounces after approval, the reserve covers its part.
 - An Earn spend settles in the vault's asset.
 - `input` is `maxInput` plus change. `maxInput` is the amount, or `maxShares` for Earn: the
-  settler uses no more, and the router returns the rest to the cardholder. A callback that deposits anything
+  program uses no more, and the router returns the rest to the cardholder. A callback that deposits anything
   back must deposit at least the portal's fees, or the portal rejects it and the spend bounces. So
   add at least `calculateDepositFee() + calculateBouncebackFee() + 1` whenever something comes back:
   on an access-enforced portal, which requires a return, and on every Earn spend, which returns its
@@ -125,10 +136,10 @@ approves those tokens. Unsponsored, the cardholder approves `input + withdrawalF
 - `withdrawalFee` is the outbox's `calculateWithdrawalFee(callbackGas)`, `(50,000 + callbackGas)` times
   the Zone's gas rate, so it is paid on the gas requested, not used. The requested gas also sets how
   many spends fit in a Zone withdrawal batch ([design](design.md#callback-gas)). Use 3M callback gas until the
-  program is [prepared](deploy.md#5-prepare-the-program-for-low-callback-gas) and its own vault
+  program is [prepared](deploy.md#6-prepare-the-program-for-low-callback-gas) and its own vault
   measured; a prepared program needs far less (see [`design.md`](design.md#callback-gas)).
-- `callbackData` is `abi.encode(SpendData)`: `op = 2` (Spend), `settler` (the program's
-  `BridgeSettler`), `maxInput`, `settlerData = abi.encode(Spend)` and `zoneReturn`. That
+- `callbackData` is `abi.encode(SpendData)`: `op = 2` (Spend), `settler` (the
+  program's `CardProgram` address), `maxInput`, `settlerData = abi.encode(CardSpend)` and `zoneReturn`. That
   `SpendReturn` is the encrypted deposit (`keyIndex`, `encrypted`) that sends unused input back to
   the cardholder, a public `refundRecipient` for when the Zone rejects
   it, and `maxDepositFee`, the most the portal may keep, which is the fee the change covers. Build a
@@ -143,26 +154,26 @@ Approve the card on the Zone receipt. Settlement on the L1 follows once the Zone
 
 A private spend ends in one of three ways:
 
-| Outcome | What the issuer sees                                                                                                                                                                                                                                                                                                                 | The issuer records                                                                                   |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Settled | The portal's `WithdrawalProcessed(to = router, senderTag, token, amount, callbackSuccess = true)`, and in the same transaction the router's `Spent(settler, token, used, change, zoneDepositHash)` and the settler's `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`. The settler has checked the destination was paid | Pull `Completed`                                                                                     |
-| Bounced | The portal's `WithdrawalProcessed` for the router and `senderTag` with `callbackSuccess = false`, and no `Spent` or `SpendSettled`                                                                                                                                                                                                   | Failed after approval: draw the reserve, record cardholder debt, as the double-spend path does today |
-| Pending | Neither, past the issuer's timeout: the portal is paused, the Zone stopped posting batches, or the Zone dropped the receipt                                                                                                                                                                                                          | Unresolved: hold the authorization's exposure and escalate to the Zone operator                      |
+| Outcome | What the issuer sees                                                                                                                                                                                                                                                                                                                                 | The issuer records                                                                                   |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Settled | The portal's `WithdrawalProcessed(to = router, senderTag, token, amount, callbackSuccess = true)`, and in the same transaction the router's `Spent(settler, token, used, change, zoneDepositHash)` and the program's `CardSpent` and `SpendSettled(ref, inputToken, inputConsumed, inputReturned)`. The program has checked the destination was paid | Pull `Completed`                                                                                     |
+| Bounced | The portal's `WithdrawalProcessed` for the router and `senderTag` with `callbackSuccess = false`, and no `Spent`, `CardSpent` or `SpendSettled`                                                                                                                                                                                                      | Failed after approval: draw the reserve, record cardholder debt, as the double-spend path does today |
+| Pending | Neither, past the issuer's timeout: the portal is paused, the Zone stopped posting batches, or the Zone dropped the receipt                                                                                                                                                                                                                          | Unresolved: hold the authorization's exposure and escalate to the Zone operator                      |
 
 - Match both outcomes by the `senderTag` in the portal's `WithdrawalProcessed`:
   `keccak256(abi.encodePacked(sender, txHash, fallbackNonce))`, where `fallbackNonce` is in the
-  outbox's withdrawal event in the issuer's own Zone receipt. Neither the router nor the settler emits
+  outbox's withdrawal event in the issuer's own Zone receipt. Neither the router nor the program emits
   it, so read `Spent` and `SpendSettled` from the same transaction. Trust only events emitted by the
-  program's portal, router and settler. `ref` and the `Spend`
+  program's portal, router and program. `ref` and the `CardSpend`
   fields come from callback data anyone can write, so never match on `ref` alone.
 - A spend can bounce after approval for:
-  - **The program:** a paused factory, a disabled or un-allowlisted `TS` handler, a destination
+  - **The program:** a paused factory or guardian pause, a disabled or un-allowlisted `TS` handler, a destination
     removed while the spend was in flight (add the new one before removing the old), or a vault
     governance disallowed.
   - **The Zone admin:** paused deposits of the token, a deposit or bounce-back fee raised above the
     change or `maxDepositFee`, the router's gateway role removed, the refund recipient
     de-admitted, or an encryption key expired during a stall.
-  - **Token and vault admins:** a TIP-403 policy change that blocks the router, settler, clone, vault,
+  - **Token and vault admins:** a TIP-403 policy change that blocks the router, program, clone, vault,
     portal, messenger, Zone admin (which receives the deposit fee), settlement wallet or refund
     recipient, or an Earn engine or venue that stops withdrawals.
   - **Earn spends:** a price move past `maxShares`, or an illiquid venue.
@@ -211,12 +222,15 @@ Refunds are stablecoin, as today's crypto-return trips are:
 
 Events the issuer reads:
 
+- `CardSpent(ref, payer, destination, token, amount, fromVault, sharesUsed, isPrivate)` from the
+  program, on every spend. `payer` is the cardholder for a public spend and the router for a private
+  one.
 - `TempoSpendExecuted(ref, from, destination, token, amount, fromStable, fromVault, sharesBurned)`
-  from the clone, on every spend. `from` is the cardholder for a public spend and the settler for a
-  private one. Anyone can call `publicCall "PS"` with any token, so reconcile public spends by the
-  transaction hash the issuer sent, never by this event alone.
+  from the clone, on every spend. `from` is the program on both paths. Anyone can call the program's
+  `spend` or the clone's `publicCall "PS"` with their own funds and any `ref`, so reconcile public
+  spends by the transaction hash the issuer sent, never by these events alone.
 - `Spent(settler, token, used, change, zoneDepositHash)` from the router and
-  `SpendSettled(ref, inputToken, inputConsumed, inputReturned)` from the settler, on every settled
+  `SpendSettled(ref, inputToken, inputConsumed, inputReturned)` from the program, on every settled
   private spend. Neither carries the `senderTag` or a cardholder address.
 - `SpendVaultUpdated(vault, allowed)` from the clone, on governance's `"UV"` call.
 - From the program's portal: `WithdrawalProcessed(to, senderTag, token, amount, callbackSuccess)`
@@ -228,6 +242,9 @@ only bounces, so they show up when the issuer simulates the callback or traces t
 
 - **The factory and clone:** `FactoryPaused`, `SpenderHandlerDisabled`, `SpenderHandlerNotAllowed`
   and `PrefixUnknown`.
+- **The program:** `WrongProgram`, `ProgramPaused`, `InvalidAmount`, `DestinationNotAuthorized`,
+  `VaultNotAllowed`, `IncorrectAssetForVault`, `DestinationNotCredited` and `Reentrancy`; on
+  `settle` also `WrongInputToken`, `InsufficientInput`, `NothingSettled` and `ResidualBalance`.
 - **The handler:** `WrongProgram`, `DestinationNotAuthorized`, `DestinationNotCredited`,
   `InvalidAmount`, `VaultNotAllowed`, `IncorrectAssetForVault`, `ShareCostExceeded`, and
   `PipelineDisabled` on the pull path.
@@ -235,8 +252,6 @@ only bounces, so they show up when the issuer simulates the callback or traces t
   `OpDisabled`, `UnknownSettler`, `InvalidMaxInput`, `InvalidSettlement`, `InvalidReturnToken`,
   `DepositFeeTooHigh`, `TokenCallFailed` (a token transfer that reverts, such as one a policy
   blocks), `ResidualBalance`, `ReentrantCall` and `ZeroAddress` (no refund recipient).
-- **The settler:** `WrongProgram`, `WrongInputToken`, `InvalidAmount`, `InsufficientInput`,
-  `NothingSettled`, `DestinationNotPaid`, `ResidualBalance` and `Reentrancy`.
 - **The portal, on the return deposit:** `DepositTooSmall` when change does not cover its fees,
   and on an access-enforced portal `CallbackDidNotReturnToZone` when nothing comes back.
 - **The keychain, on a public spend:** `SpendingLimitExceeded` and `CallNotAllowed`.
@@ -245,14 +260,16 @@ only bounces, so they show up when the issuer simulates the callback or traces t
 
 Reads:
 
-- `availableBalance("TS" from token [vault])`: `from`'s balance of `token`, plus the value of its
-  shares in `vault` when the vault is allowed and holds `token`. Otherwise the vault is ignored.
+- `program.availableBalance(from, token, vault)`, or the clone's `availableBalance("TS" from token [vault])`:
+  `from`'s balance of `token`, plus the value of its shares in `vault` when the vault is allowed and
+  holds `token`. Otherwise the vault is ignored.
+- `program.paused()`: whether the guardian or the factory has stopped spends.
 - `publicGetCall("TS" "GV" vault)`: whether the program allows `vault`.
 
 ## Accepted behavior
 
 - Tokens sent to the router outside a callback stay there: it moves only the current call's input.
-  Tokens sent to the settler outside a `settle` call are not rescued either, but any later `settle`
+  Tokens sent to the program outside a spend are not rescued either, but any later `settle`
   call can spend them, only to pay a destination the program authorizes, and gets back what that
   spend did not use. Neither has an owner.
 - The withdrawer writes the `SpendReturn`, so whoever sends a withdrawal to the router chooses

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { EncryptedDepositPayload } from "tempo-earn/interfaces/external/tempo/IZone.sol";
@@ -11,16 +10,16 @@ import { DepositPayload } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
-import { BridgeSettler } from "../../../src/providers/bridge/BridgeSettler.sol";
-import { Spend, SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { IBridgeSpenderClone } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IZoneOutbox } from "../../../src/providers/bridge/interfaces/IZoneOutbox.sol";
 
 import { Decline, Funding, PullOutcome, RailCaps } from "../harness/SpendRail.sol";
 import { TxCall } from "../harness/lib/TempoTx.sol";
 import { RailDefaults } from "./RailDefaults.sol";
 
-/// @notice Shared by every rail on the "TS" handler.
+/// @notice Shared by every rail on the "TS" handler, which the program's `CardProgram` pays through.
 abstract contract TempoRailBase is RailDefaults {
     address internal elsewhere = makeAddr("cardholder.elsewhere");
 
@@ -32,13 +31,14 @@ abstract contract TempoRailBase is RailDefaults {
     function _spend(uint256 amount, bytes32 ref, uint256 fromVault, uint256 maxShares)
         internal
         view
-        returns (Spend memory)
+        returns (CardSpend memory)
     {
-        return Spend({
-            spenderId: SPENDER_ID,
+        return CardSpend({
+            program: address(program),
             token: address(usd),
             amount: amount,
             destination: settlement,
+            destinationHint: 0,
             vault: fromVault == 0 ? address(0) : address(earnVault),
             fromVault: fromVault,
             maxShares: maxShares,
@@ -46,10 +46,11 @@ abstract contract TempoRailBase is RailDefaults {
         });
     }
 
-    /// @dev What both "TS" rails fail with once a spend reaches the handler or the keychain.
+    /// @dev What both "TS" rails fail with once a spend reaches the program, the handler or the keychain.
     function _tempoDeclineError(Decline reason) internal pure returns (bytes4) {
         if (reason == Decline.Revoked) return IAccountKeychain.KeyAlreadyRevoked.selector;
-        if (reason == Decline.Paused) return SpenderBase.FactoryPaused.selector;
+        // The program reads Bridge's factory pause through its issuer before the clone does.
+        if (reason == Decline.Paused) return CardProgram.ProgramPaused.selector;
         if (reason == Decline.SpendLimit) return IAccountKeychain.SpendingLimitExceeded.selector;
         if (reason == Decline.ShareCost) return SpenderTempoSpend.ShareCostExceeded.selector;
         if (reason == Decline.Illiquid) return bytes4(keccak256("Error(string)"));
@@ -57,9 +58,10 @@ abstract contract TempoRailBase is RailDefaults {
     }
 }
 
-/// @notice Public spend through the program's Bridge clone, signed by Bridge's access key as the
-///         cardholder. Each pull approves the exact amount, submits Bridge's signed intent and
-///         clears the approval in one transaction. The protocol enforces the periodic limit.
+/// @notice Public spend through the program's `CardProgram`, signed by Bridge's access key as the
+///         cardholder. Each pull approves the program for the exact amount, calls `spend`, which pays
+///         through the clone's "TS" handler, and clears the approval in one transaction. The protocol
+///         enforces the periodic limit.
 abstract contract TempoAccessKeyRail is TempoRailBase {
     function _railName() internal pure override returns (string memory) {
         return "tempo.ts-public (access key)";
@@ -88,38 +90,39 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
         tokens[1] = address(earnShare);
         limits[1] = earnVault.previewWithdraw(CARD_BUDGET);
         IAccountKeychain.CallScope[] memory scopes = new IAccountKeychain.CallScope[](3);
-        scopes[0] = _scope(address(usd), ITIP20.approve.selector, spender);
-        scopes[1] = _scope(address(earnShare), ITIP20.approve.selector, spender);
-        scopes[2] = _scope(spender, IBridgeSpenderClone.publicCall.selector, address(0));
+        scopes[0] = _scope(address(usd), ITIP20.approve.selector, address(program));
+        scopes[1] = _scope(address(earnShare), ITIP20.approve.selector, address(program));
+        scopes[2] = _scope(address(program), CardProgram.spend.selector, address(0));
         _authorizeBridgeKey(user, tokens, limits, scopes);
     }
 
     function _railPull(address user, uint256 amount, bytes32 actionId) internal override returns (PullOutcome) {
         bool earn = _funding() == Funding.Earn;
         uint256 maxShares = earn ? _quoteShares(amount) : 0;
-        Spend memory spend = _spend(amount, actionId, earn ? amount : 0, maxShares);
+        CardSpend memory spend = _spend(amount, actionId, earn ? amount : 0, maxShares);
         return _executeSpend(user, spend, earn ? 0 : amount, maxShares);
     }
 
-    function _executeSpend(address user, Spend memory spend, uint256 stableApproval, uint256 shareApproval)
+    function _executeSpend(address user, CardSpend memory spend, uint256 stableApproval, uint256 shareApproval)
         internal
         returns (PullOutcome)
     {
-        bytes memory call_ = abi.encodeCall(IBridgeSpenderClone.publicCall, (_psCall(spend)));
+        address to = address(program);
+        bytes memory call_ = abi.encodeCall(CardProgram.spend, (spend));
         TxCall[] memory calls = new TxCall[](5);
         uint256 n;
         if (stableApproval != 0) {
-            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (spender, stableApproval)));
+            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (to, stableApproval)));
         }
         if (shareApproval != 0) {
-            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (spender, shareApproval)));
+            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (to, shareApproval)));
         }
-        calls[n++] = TxCall(spender, 0, call_);
+        calls[n++] = TxCall(to, 0, call_);
         if (stableApproval != 0) {
-            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (spender, 0)));
+            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (to, 0)));
         }
         if (shareApproval != 0) {
-            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (spender, 0)));
+            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (to, 0)));
         }
         assembly {
             mstore(calls, n)
@@ -173,13 +176,13 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
     {
         uint256 fromVault = amount - fromStable;
         uint256 maxShares = _quoteShares(fromVault);
-        Spend memory spend = _spend(amount, actionId, fromVault, maxShares);
+        CardSpend memory spend = _spend(amount, actionId, fromVault, maxShares);
         return _executeSpend(user, spend, fromStable, maxShares);
     }
 }
 
 /// @notice Private spend: balances sit in a Zone. Bridge's Zone access key requests a withdrawal to
-///         the program's Spend-mode `ZoneRouter`, which lets the program's `BridgeSettler` settle
+///         the program's Spend-mode `ZoneRouter`, which lets the program's `CardProgram` settle
 ///         the spend through the clone from at most `maxInput` and returns the rest to the Zone
 ///         encrypted, so the cardholder never appears on Tempo. Refunds are the program wallet's
 ///         own encrypted deposits into the Zone.
@@ -188,7 +191,6 @@ abstract contract TempoPrivateRail is TempoRailBase {
     uint64 internal constant CALLBACK_GAS = 3_000_000;
 
     ZoneRouter internal zoneRouter;
-    BridgeSettler internal settler;
 
     function _closedLoop() internal pure virtual returns (bool);
 
@@ -206,18 +208,14 @@ abstract contract TempoPrivateRail is TempoRailBase {
 
     function _railSetUp() internal override {
         _deployZone(_closedLoop());
-        // The settler and the router factory come from their artifacts: inlining their creation code would
-        // bloat every matrix suite, and puts the private ones at a size solc's via-IR assembler fails on.
-        settler = BridgeSettler(
-            deployCode("BridgeSettler.sol:BridgeSettler", abi.encode(address(bridgeFactory), SPENDER_ID))
-        );
+        // The router factory comes from its artifact: inlining its creation code would bloat every matrix
+        // suite, and puts the private ones at a size solc's via-IR assembler fails on.
         ZoneRouter.Mode memory mode;
         mode.zoneId = ZONE_ID;
         mode.enabledOps = uint8(1 << 2);
         mode.settlers = new address[](1);
-        mode.settlers[0] = address(settler);
+        mode.settlers[0] = address(program);
         zoneRouter = ZoneRouter(ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory")).deploy(mode));
-        vm.label(address(settler), "BridgeSettler");
         vm.label(address(zoneRouter), "ZoneRouter");
         _zoneRegisterGateway(address(zoneRouter));
         _zoneAllowAccount(programRefundRecipient);
@@ -257,11 +255,11 @@ abstract contract TempoPrivateRail is TempoRailBase {
         bool earn = _funding() == Funding.Earn;
         uint256 maxShares = earn ? _quoteShares(amount) : 0;
         uint256 input = (earn ? maxShares : amount) + change;
-        Spend memory spend = _spend(amount, actionId, earn ? amount : 0, maxShares);
+        CardSpend memory spend = _spend(amount, actionId, earn ? amount : 0, maxShares);
         bytes memory callbackData = abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
-                settler: address(settler),
+                settler: address(program),
                 maxInput: uint128(earn ? maxShares : amount),
                 settlerData: abi.encode(spend),
                 zoneReturn: _zoneReturnTo(user)

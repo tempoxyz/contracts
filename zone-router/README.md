@@ -6,7 +6,7 @@ settler are in [docs/zone-router/zone-router.md](../docs/zone-router/zone-router
 
 This is a separate Foundry project beside [Earn](../earn/README.md) and the
 [card integration](../docs/cards/bridge/README.md), compiled with solc. It imports Earn's interfaces from
-[`earn/src/`](../earn/src/) rather than a copy. `cards/`' settlers (`BridgeSettler`, `CardSettler`) implement
+[`earn/src/`](../earn/src/) rather than a copy. `cards/`' `CardProgram` implements
 `ISpendSettler` from here; this project never imports from `cards/`.
 
 ## What is here
@@ -21,7 +21,7 @@ This is a separate Foundry project beside [Earn](../earn/README.md) and the
   - [`SendSettler`](src/settlers/SendSettler.sol) pays a public address in the withdrawn token, in
     the vault asset redeemed from EarnShare, or, for the one vault it is bound to at deployment, in
     the stablecoin that vault's asset converts into at par.
-  - A card program's `BridgeSettler` implements the same interface in [`cards/src/providers/bridge/`](../cards/src/providers/bridge/).
+  - A card program's `CardProgram` implements the same interface in [`cards/src/core/`](../cards/src/core/).
 - [`ISpendSettler`](src/interfaces/ISpendSettler.sol): what a settler implements.
 - [`script/deploy/`](script/deploy/): the steps `pnpm earn deploy` runs here for a profile's
   [`zoneRouter`](../profiles/README.md#zone-routers), and `DeployRouterRelease.s.sol`, which the

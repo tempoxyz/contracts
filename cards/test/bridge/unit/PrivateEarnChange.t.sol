@@ -4,8 +4,9 @@ pragma solidity ^0.8.36;
 import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 
-import { BridgeSettler } from "../../../src/providers/bridge/BridgeSettler.sol";
-import { Spend, SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
+import { CardProgram } from "../../../src/core/CardProgram.sol";
+import { CardSpend } from "../../../src/core/CardSpend.sol";
+import { SpenderTempoSpend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
 import { ITempoEarnVault } from "../../../src/providers/bridge/interfaces/ITempoEarnVault.sol";
 import { OverQuotingEarnVault } from "../harness/Mocks.sol";
 import { PrivateSpendFixture } from "../harness/PrivateSpendFixture.sol";
@@ -70,7 +71,7 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         _assertNothingHeld(address(earnShare));
     }
 
-    /// @notice A vault that burns fewer shares than it quoted leaves the rest with the settler,
+    /// @notice A vault that burns fewer shares than it quoted leaves the rest with the program,
     ///         which hands them back to the router to return to the cardholder with the change.
     function test_earnSharesTheVaultDidNotBurnReturnToTheZone() public {
         OverQuotingEarnVault vault = new OverQuotingEarnVault(ITempoEarnVault(address(earnVault)));
@@ -80,7 +81,7 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         uint256 quoted = vault.previewWithdraw(AMOUNT);
         uint256 burned = earnVault.previewWithdraw(AMOUNT);
         assertGt(quoted, burned, "quote above the burn");
-        Spend memory spend = _earnSpend(AMOUNT, settlement, quoted);
+        CardSpend memory spend = _earnSpend(AMOUNT, settlement, quoted);
         spend.vault = address(vault);
         uint256 before = usd.balanceOf(settlement);
         uint256 zoneBefore = _zoneBalance(address(earnShare), alice);
@@ -100,26 +101,30 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         _assertNothingHeld(address(earnShare));
     }
 
-    /// @notice The clone reports the settler as the payer and the shares it burned, the settler the
+    /// @notice The clone reports the program as the payer and the shares it burned, the program the
     ///         shares consumed and handed back, and the router the shares returned to the Zone.
     function test_earnSpendEmitsEvents() public {
         uint256 burned = earnVault.previewWithdraw(AMOUNT);
         uint256 maxShares = _quote(AMOUNT);
         uint256 input = maxShares + _change();
-        Spend memory spend = _earnSpend(AMOUNT, settlement, maxShares);
+        CardSpend memory spend = _earnSpend(AMOUNT, settlement, maxShares);
         spend.ref = keccak256("card.auth");
         _fundRouter(address(earnShare), input);
 
         bytes memory data = _callback(spend);
         vm.expectEmit(true, true, true, true, spender);
         emit SpenderTempoSpend.TempoSpendExecuted(
-            spend.ref, address(settler), settlement, address(usd), AMOUNT, 0, AMOUNT, burned
+            spend.ref, address(program), settlement, address(usd), AMOUNT, 0, AMOUNT, burned
         );
-        vm.expectEmit(true, true, true, true, address(settler));
-        emit BridgeSettler.SpendSettled(spend.ref, address(earnShare), burned, maxShares - burned);
+        vm.expectEmit(true, true, true, true, address(program));
+        emit CardProgram.CardSpent(
+            spend.ref, address(zoneRouter), settlement, address(usd), AMOUNT, AMOUNT, burned, true
+        );
+        vm.expectEmit(true, true, true, true, address(program));
+        emit CardProgram.SpendSettled(spend.ref, address(earnShare), burned, maxShares - burned);
         // The Zone deposit hash is the portal's; the rest is checked.
         vm.expectEmit(true, true, false, false, address(zoneRouter));
-        emit ZoneRouter.Spent(address(settler), address(earnShare), burned, input - burned, bytes32(0));
+        emit ZoneRouter.Spent(address(program), address(earnShare), burned, input - burned, bytes32(0));
         vm.prank(ZONE_MESSENGER_ADDRESS);
         zoneRouter.onWithdrawalReceived(
             ZONE_ID, address(portal), keccak256("zone.sender-tag"), address(earnShare), uint128(input), data

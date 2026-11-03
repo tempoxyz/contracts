@@ -7,15 +7,13 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
-import { BridgeSettler } from "../../../src/providers/bridge/BridgeSettler.sol";
-import { Spend } from "../../../src/providers/bridge/SpenderTempoSpend.sol";
-import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
+import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { IZoneOutbox } from "../../../src/providers/bridge/interfaces/IZoneOutbox.sol";
 import { AccessKeys } from "./AccessKeys.sol";
 import { isStandingOrNone } from "./StandingApproval.sol";
 import { TxCall } from "./lib/TempoTx.sol";
 
-/// @notice A Zone with portal and outbox fees switched on, the program's BridgeSettler behind a
+/// @notice A Zone with portal and outbox fees switched on, the program's CardProgram behind a
 ///         factory-deployed Spend-mode ZoneRouter registered as the Zone's callback gateway, and
 ///         cardholders enrolled with Bridge's Zone key, for private spend tests.
 abstract contract PrivateSpendFixture is AccessKeys {
@@ -26,7 +24,6 @@ abstract contract PrivateSpendFixture is AccessKeys {
 
     ZoneRouterFactory internal routerFactory;
     ZoneRouter internal zoneRouter;
-    BridgeSettler internal settler;
     address internal alice = makeAddr("alice");
     address internal mallory = makeAddr("mallory");
     /// @dev Bridge-controlled Tempo account, one per program and admitted on the Zone, that
@@ -41,10 +38,9 @@ abstract contract PrivateSpendFixture is AccessKeys {
     function _setUpPrivateSpend(bool closedLoop) internal {
         _deployTempo();
         _deployZone(closedLoop);
-        settler = new BridgeSettler(IBridgeSpenderFactory(address(bridgeFactory)), SPENDER_ID);
         // From its artifact: inlining the factory, which nests the router, would bloat every test.
         routerFactory = ZoneRouterFactory(deployCode("ZoneRouterFactory.sol:ZoneRouterFactory"));
-        zoneRouter = _deployRouter(_settlers(address(settler)));
+        zoneRouter = _deployRouter(_settlers(address(program)));
 
         vm.fee(BASE_FEE);
         vm.startPrank(zoneAdmin);
@@ -100,12 +96,13 @@ abstract contract PrivateSpendFixture is AccessKeys {
         return uint256(portal.calculateDepositFee()) + portal.calculateBouncebackFee() + 1;
     }
 
-    function _spend(uint256 amount, address destination) internal pure returns (Spend memory) {
-        return Spend({
-            spenderId: SPENDER_ID,
+    function _spend(uint256 amount, address destination) internal view returns (CardSpend memory) {
+        return CardSpend({
+            program: address(program),
             token: address(0),
             amount: amount,
             destination: destination,
+            destinationHint: 0,
             vault: address(0),
             fromVault: 0,
             maxShares: 0,
@@ -114,30 +111,34 @@ abstract contract PrivateSpendFixture is AccessKeys {
     }
 
     /// @notice A spend of `amount` paid entirely from the Earn vault, burning at most `maxShares`.
-    function _earnSpend(uint256 amount, address destination, uint256 maxShares) internal view returns (Spend memory s) {
+    function _earnSpend(uint256 amount, address destination, uint256 maxShares)
+        internal
+        view
+        returns (CardSpend memory s)
+    {
         s = _spend(amount, destination);
         s.vault = address(earnVault);
         s.fromVault = amount;
         s.maxShares = maxShares;
     }
 
-    /// @notice Callback data for `spend` in the stablecoin, through the program's settler.
-    function _callback(Spend memory spend) internal returns (bytes memory) {
+    /// @notice Callback data for `spend` in the stablecoin, through the program as the router's settler.
+    function _callback(CardSpend memory spend) internal returns (bytes memory) {
         spend.token = address(usd);
         return _callbackAsIs(spend);
     }
 
-    /// @notice Callback data carrying `spend` unchanged through the program's settler, with
+    /// @notice Callback data carrying `spend` unchanged through the program, with
     ///         `maxInput` the spend's amount, or its `maxShares` for an Earn spend, and unused input
     ///         returned to alice.
-    function _callbackAsIs(Spend memory spend) internal returns (bytes memory) {
+    function _callbackAsIs(CardSpend memory spend) internal returns (bytes memory) {
         uint256 maxInput = spend.fromVault == 0 ? spend.amount : spend.maxShares;
-        return _spendData(address(settler), maxInput, spend);
+        return _spendData(address(program), maxInput, spend);
     }
 
     /// @notice Spend-op callback data: `settler_` may use at most `maxInput` to settle `spend`, and
     ///         the router returns the rest of the withdrawal to alice in the Zone.
-    function _spendData(address settler_, uint256 maxInput, Spend memory spend) internal returns (bytes memory) {
+    function _spendData(address settler_, uint256 maxInput, CardSpend memory spend) internal returns (bytes memory) {
         return abi.encode(
             ZoneRouter.SpendData({
                 op: ZoneRouter.Op.Spend,
@@ -167,16 +168,16 @@ abstract contract PrivateSpendFixture is AccessKeys {
         ITIP20(token).transfer(address(zoneRouter), input);
     }
 
-    /// @notice The router, settler and clone hold none of `token`, the approvals a spend makes are
-    ///         none or standing (router to portal, settler to clone, clone to vault), and the router,
-    ///         which transfers the settler its input, never approves it.
+    /// @notice The router, program and clone hold none of `token`, the approvals a spend makes are
+    ///         none or standing (router to portal, program to clone, clone to vault), and the router,
+    ///         which transfers the program its input, never approves it.
     function _assertNothingHeld(address token) internal view {
         assertEq(ITIP20(token).balanceOf(address(zoneRouter)), 0, "nothing left in the router");
-        assertEq(ITIP20(token).balanceOf(address(settler)), 0, "nothing left in the settler");
+        assertEq(ITIP20(token).balanceOf(address(program)), 0, "nothing left in the program");
         assertEq(ITIP20(token).balanceOf(spender), 0, "nothing left in the clone");
-        assertEq(ITIP20(token).allowance(address(zoneRouter), address(settler)), 0, "router -> settler");
+        assertEq(ITIP20(token).allowance(address(zoneRouter), address(program)), 0, "router -> program");
         assertTrue(isStandingOrNone(ITIP20(token).allowance(address(zoneRouter), address(portal))), "router -> portal");
-        assertTrue(isStandingOrNone(ITIP20(token).allowance(address(settler), spender)), "settler -> clone");
+        assertTrue(isStandingOrNone(ITIP20(token).allowance(address(program), spender)), "program -> clone");
         assertTrue(isStandingOrNone(earnShare.allowance(spender, address(earnVault))), "clone -> vault");
     }
 
