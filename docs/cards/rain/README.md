@@ -41,6 +41,15 @@ collateral; it has no owner and reports no pause of its own. Rain pauses a progr
 pause key, set when the program is deployed, can stop every spend of the program and resume them, and
 change nothing else.
 
+## Token policies
+
+Under a TIP-403 whitelist policy on the EarnShare (as Earn's protected deployments use) or on the
+stablecoin, the program must be a member: it receives shares from the payer (public) or the router
+(private) and hands them to the vault, and it moves the stablecoin. The router and Portal, and every
+collateral contract a spend pays, must be able to send or receive what they handle. Earn's
+[required members](../../earn/modules/access.md#required-members) list the vault's own. The Rain E2E
+runs with the always-allow policy.
+
 ## Card lifecycle
 
 ```mermaid

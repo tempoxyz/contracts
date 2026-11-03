@@ -81,7 +81,10 @@ sequenceDiagram
 
 The withdrawal parameters, fees, change and callback gas follow the Bridge design's
 [private spend](bridge/design.md#withdrawal-parameters); the `CardSpend` callback is 896 bytes of the
-outbox's 1,024.
+outbox's 1,024. Bridge's callback gas figures were measured on its payout path. `warm` does nothing
+for a program that pays directly (Rain): its first Earn spend through a vault creates its standing
+approval to that vault inside the spend (a new allowance slot, TIP-1000), so budget a direct program's
+first private Earn spend for that or make its first Earn spend public. The Rain E2E requests 3,000,000.
 
 ## What the program checks
 
@@ -145,7 +148,10 @@ reserve pays if settlement fails; spend events are not proof of payment. In addi
   provider's own pause, through the provider contract) stops spends meanwhile; a private spend while paused bounces
   back into the Zone in full.
 - `settle` is permissionless: anyone can call it with their own funds, but only
-  to pay a destination the provider allows for a private spend.
+  to pay a destination the provider allows for a private spend. It counts `maxInput` as the caller's
+  input without verifying it, so tokens sent to a program outside a spend can be spent by any `settle`
+  caller, only to such a destination, with the rest returned to that caller as change. A program is
+  meant to hold nothing between spends.
 
 ## Adding a provider
 

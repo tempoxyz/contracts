@@ -10,8 +10,9 @@ so each is easy to find and review:
 | `vendor/<provider>/`        | The provider's own contracts, vendored unmodified (`vendor/bridge/`, `vendor/rain/`)                 |
 
 Tests and scripts follow the same split (`test/core/`, `test/<provider>/`, `script/<provider>/`). Core
-tests run on [`test/core/harness/CoreEnv.sol`](test/core/harness/CoreEnv.sol) and a mock program, with no
-provider; a provider's harness extends `CoreEnv`.
+tests run a real `CardSpender` over mock providers on
+[`test/core/harness/CoreEnv.sol`](test/core/harness/CoreEnv.sol); Rain's harness extends `CoreEnv`,
+and Bridge's runs on its own `TempoEnv`.
 [README.md](README.md) maps the project; [docs/cards/design.md](../docs/cards/design.md) owns the
 agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
 [docs/cards/rain/](../docs/cards/rain/README.md) each provider's.

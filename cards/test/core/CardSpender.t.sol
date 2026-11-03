@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+
 import { CardSpend } from "../../src/core/CardSpend.sol";
 import { CardSpender } from "../../src/core/CardSpender.sol";
 import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
 import { CoreEnv } from "./harness/CoreEnv.sol";
-import { MockPayoutTarget, NotAProvider } from "./harness/Mocks.sol";
+import { MockPayoutTarget, NotAProvider, ReentrantToken } from "./harness/Mocks.sol";
 
 /// @notice `CardSpender` behavior every provider gets, run once with a program that pays directly and once
 ///         with one that pays through its provider's payout target: public and private spends from stablecoin,
@@ -249,6 +251,71 @@ abstract contract CardSpenderBehavior is CoreEnv {
         program.spend(s);
     }
 
+    function test_revert_incorrectAssetForVault() public {
+        // The vault holds `usd`; the spend asks it for `otherUsd`, which the provider accepts.
+        mock.setToken(address(otherUsd), true);
+        _depositEarn(alice, 100e6);
+        CardSpend memory s = _earnSpend(publicWallet, 0, 10e6, 10e6, "asset");
+        s.token = address(otherUsd);
+        vm.prank(alice);
+        earnShare.approve(address(program), type(uint256).max);
+        vm.prank(alice);
+        vm.expectRevert(CardSpender.IncorrectAssetForVault.selector);
+        program.spend(s);
+
+        uint256 shares = _depositEarn(router, 100e6);
+        s.destination = pooledWallet;
+        vm.prank(router);
+        earnShare.transfer(address(program), shares);
+        vm.prank(router);
+        vm.expectRevert(CardSpender.IncorrectAssetForVault.selector);
+        program.settle(address(earnShare), shares, abi.encode(s));
+    }
+
+    /// @dev A withdrawal whose shares fall short of the live cost pays nothing: the direct path refuses it, and
+    ///      a payout target cannot pull more shares than the program holds.
+    function test_revert_settle_earnInputBelowLiveCost() public {
+        _depositEarn(router, 100e6);
+        CardSpend memory s = _earnSpend(pooledWallet, 0, 10e6, 10e6, "short.earn");
+        uint256 cost = earnVault.previewWithdraw(10e6);
+        vm.prank(router);
+        earnShare.transfer(address(program), cost - 1);
+        vm.prank(router);
+        if (_payout()) vm.expectRevert(SafeTransferLib.TransferFromFailed.selector);
+        else vm.expectRevert(CardSpender.InsufficientInput.selector);
+        program.settle(address(earnShare), cost - 1, abi.encode(s));
+    }
+
+    /// @dev A token that calls back into the program while it moves the spend hits the lock, on either entry
+    ///      point, and the spend still pays.
+    function test_revert_reentrancy() public {
+        ReentrantToken token = new ReentrantToken();
+        mock.setToken(address(token), true);
+        token.mint(alice, 10e6);
+        token.mint(router, 10e6);
+        CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "reenter");
+        s.token = address(token);
+
+        token.arm(address(program), abi.encodeCall(CardSpender.spend, (s)));
+        vm.prank(alice);
+        token.approve(address(program), 1e6);
+        vm.prank(alice);
+        program.spend(s);
+        assertTrue(token.reentered(), "public spend re-entered");
+        assertEq(bytes4(token.reentryError()), CardSpender.Reentrancy.selector);
+
+        vm.prank(router);
+        token.transfer(address(program), 1e6);
+        token.arm(address(program), abi.encodeCall(CardSpender.settle, (address(token), 1, "")));
+        vm.prank(router);
+        program.settle(address(token), 1e6, abi.encode(s));
+        assertTrue(token.reentered(), "private spend re-entered");
+        assertEq(bytes4(token.reentryError()), CardSpender.Reentrancy.selector);
+
+        assertEq(token.balanceOf(pooledWallet), 2e6, "both spends paid");
+        assertEq(token.balanceOf(address(program)), 0);
+    }
+
     function test_revert_noApproval() public {
         CardSpend memory s = _stableSpend(publicWallet, 0, 1e6, "approval");
         vm.prank(alice);
@@ -324,6 +391,20 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
 
     function test_paysDirectly() public view {
         assertEq(program.PAYOUT_TARGET(), address(0));
+    }
+
+    /// @dev The program checks `maxShares` itself only when it pays directly; a payout target enforces it on the
+    ///      private path (Bridge's handler does, with its own `ShareCostExceeded`).
+    function test_revert_settle_earnShareCostAboveMaxShares() public {
+        uint256 shares = _depositEarn(router, 100e6);
+        CardSpend memory s = _earnSpend(pooledWallet, 0, 10e6, 10e6, "cap.private");
+        uint256 cost = earnVault.previewWithdraw(10e6);
+        s.maxShares = cost - 1;
+        vm.prank(router);
+        earnShare.transfer(address(program), shares);
+        vm.prank(router);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.ShareCostExceeded.selector, cost, cost - 1));
+        program.settle(address(earnShare), shares, abi.encode(s));
     }
 }
 

@@ -79,7 +79,6 @@ export const cardSpendType = parseAbiParameters([
 const cardProgramAbi = parseAbi([
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
   'function spend(CardSpend s)',
-  'event CardSpent(bytes32 indexed ref, address indexed payer, address indexed destination, address token, uint256 amount, uint256 fromStable, uint256 fromVault, uint256 sharesBurned)',
 ])
 const settledAbi = parseAbi([
   'event SpendSettled(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',

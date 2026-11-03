@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
@@ -107,5 +108,36 @@ contract MockPayoutProvider is MockProvider, ICardProviderPayout {
 contract NotAProvider {
     function supportsInterface(bytes4) external pure returns (bool) {
         return false;
+    }
+}
+
+/// @notice An ERC-20 anyone can mint that, once armed, makes one call from inside its next transfer and keeps
+///         what that call reverted with.
+contract ReentrantToken is ERC20 {
+    address public target;
+    bytes public reentry;
+    bytes public reentryError;
+    bool public reentered;
+
+    constructor() ERC20("Reentrant USD", "RUSD") { }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function arm(address target_, bytes calldata reentry_) external {
+        target = target_;
+        reentry = reentry_;
+        reentered = false;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (target != address(0) && !reentered && from != address(0) && to != address(0)) {
+            reentered = true;
+            (bool ok, bytes memory err) = target.call(reentry);
+            require(!ok, "reentry succeeded");
+            reentryError = err;
+        }
+        super._update(from, to, value);
     }
 }

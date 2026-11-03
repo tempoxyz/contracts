@@ -130,8 +130,8 @@ contract CardSpender is ISpendSettler {
         if (input == address(0) || input != token) revert WrongInputToken(token);
         _check(s, msg.sender, true);
 
-        // The caller sent maxInput before this call; whatever else the program holds is the baseline, and
-        // nothing beyond it may stay behind.
+        // maxInput is the caller's claim of what it sent, not verified: whatever else the program holds is
+        // the baseline, and nothing beyond it may stay behind.
         uint256 balance = IERC20Like(token).balanceOf(address(this));
         if (balance < maxInput) revert InsufficientInput();
         uint256 baseline = balance - maxInput;

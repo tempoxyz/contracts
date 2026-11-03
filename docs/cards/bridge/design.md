@@ -334,14 +334,15 @@ are:
 - The program pays through the clone (`BridgeProvider.CLONE`, read once in the program's constructor)
   with `publicCall "TS" "PS" abi.encode(Spend)` as the payer, so the clone's routing, pause and
   handler permissions apply, and the handler enforces `maxShares`.
-- `spend`: the program pulls `amount - fromVault` of `token` and, for Earn, `maxShares` (or the live
-  `previewWithdraw` when zero) of the EarnShare from the caller, and returns what the clone did not
-  use. The clone can take at most what the caller put in.
+- `spend`: the program pulls `amount - fromVault` of `token` and, for Earn, the live
+  `previewWithdraw(fromVault)` of the EarnShare from the caller (`ShareCostExceeded` when a nonzero
+  `maxShares` is below it), and returns what the clone did not use. The clone can take at most what the
+  caller put in.
 - `settle`: the input must be the spend token when `fromVault` is zero, or the vault's EarnShare when
   `fromVault` equals `amount` (`WrongInputToken`), and `maxInput` more than zero and at most
   `type(uint128).max` (`InvalidAmount`). The program must hold at least `maxInput`
   (`InsufficientInput`) and uses its balance minus `maxInput` as its baseline. The clone must use some
-  input and no more than `maxInput` (`NothingSettled`). The program returns the unused input to the
+  input (`NothingSettled`) and no more than `maxInput` (the balance check reverts). The program returns the unused input to the
   caller and must end at its baseline (`ResidualBalance`).
 - On both paths the destination must get exactly `amount` (`DestinationNotCredited`).
 - `spend` and `settle` are permissionless. A transient lock stops reentry (`Reentrancy`).

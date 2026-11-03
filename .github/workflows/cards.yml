@@ -11,6 +11,11 @@ on:
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/cards/**'
+      - 'e2e/harness/**'
+      - 'e2e/package.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/actions/setup/**'
       - '.github/workflows/cards.yml'
   push:
     branches: [main]
@@ -22,6 +27,11 @@ on:
       - 'scripts/solidity-deps.sh'
       - 'localnet/**'
       - 'e2e/cards/**'
+      - 'e2e/harness/**'
+      - 'e2e/package.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/actions/setup/**'
       - '.github/workflows/cards.yml'
 
 permissions: {}

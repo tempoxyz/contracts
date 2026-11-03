@@ -62,5 +62,5 @@ pnpm e2e:bridge -- --earn        # Bridge, on a CardSpender through its clone an
 ```
 
 `script/bridge/smoke.sh` runs Bridge's stack against a Tempo dev node, and
-`script/rain/build-fixture.sh --verify` checks Rain's fixture against the bytecode Rain deployed on
-Polygon.
+`script/rain/build-fixture.sh --verify --check` checks a fresh build of Rain's contracts against the
+bytecode Rain deployed on Polygon, and the committed fixture against that build, without rewriting it.
