@@ -23,22 +23,22 @@ card's spending power. That is where a Tempo spend lands.
 [`RainCardProgram`](../../../cards/src/providers/rain/RainCardProgram.sol) authorizes a destination when
 it is a collateral contract Rain's factory created and either:
 
-- **the payer owns it and is one of its admins** (Rain-managed, public spend): the cardholder's account
-  funds its own collateral. Another cardholder's collateral is refused, including one whose ownership
-  was handed to the payer without admin rights (Rain's `transferOwnership` leaves the admins as they
-  were), and so is any collateral when the payer is
-  one of the program's settlers (it reports the adapter as its `PROGRAM`), even one a cardholder has
-  made the settler own; or
-- **it is one of the program's pooled collateral contracts** (partner-managed, and every private
-  spend): fixed at deployment. Rain or the partner credits each cardholder off chain. The settler owns
-  no collateral, so a private spend can reach only a pooled one and never names the cardholder.
+- **the spend is public and the payer owns it and is one of its admins** (Rain-managed): the
+  cardholder's account funds its own collateral. Another cardholder's collateral is refused, including
+  one whose ownership was handed to the payer without admin rights (Rain's `transferOwnership` leaves
+  the admins as they were); or
+- **it is one of the program's pooled collateral contracts** (partner-managed, and the only
+  destination of a private spend): fixed at deployment. Rain or the partner credits each cardholder off
+  chain. The core tells the adapter a spend is private (`isPrivate`), so a private spend never funds a
+  cardholder's own collateral, even one handed to the settler, and never names the cardholder.
 
 Rain's factory records each collateral contract in its public `collateralProxies` array but keeps no
 address lookup, so the spend's `destinationHint` is the collateral's index in that array, and the
 adapter requires `collateralProxies(hint)` to be the destination. One read of Rain's factory proves
 provenance without trusting the destination's code. Rain's backend knows each index from the order of
 the factory's `NewRainCollateral` events. The adapter also fixes the accepted tokens and Earn vaults; it
-has no owner.
+has no owner. Its one mutable setting is the pause: Rain's pause key (`PAUSER`, set at deployment, or
+none) can stop every spend of the program and resume them, and change nothing else.
 
 ## Card lifecycle
 
@@ -82,14 +82,17 @@ committed collateral stays Rain's to settle; that is the guarantee its card prog
 
 ## Evidence
 
-- [`cards/test/unit/`](../../../cards/test/rain/unit/): public spends into a cardholder's collateral from
-  stablecoin, Earn and both; refusals for another cardholder's collateral, a collateral the factory did
-  not create, the beacon, a wrong or out-of-range index, an unaccepted token and a disallowed vault; private settlement
-  into the pooled collateral and refusal of a cardholder's own; Rain's payment, refund, replay, expiry
-  and liquidation against its real controller.
+- [`cards/test/rain/unit/`](../../../cards/test/rain/unit/): public spends into a cardholder's collateral
+  from stablecoin and Earn; refusals for another cardholder's collateral, one handed over without admin
+  rights, a collateral the factory did not create, the beacon, a wrong or out-of-range index and an
+  unaccepted token; private settlement into the pooled collateral and refusal of a cardholder's own,
+  even one handed to the settler; Rain's pause key; Rain's payment, refund, replay, expiry and
+  liquidation against its real controller. The core's own checks run without Rain in
+  [`cards/test/core/`](../../../cards/test/core/).
 - [`e2e/cards`](../../../e2e/cards/) (`pnpm e2e:cards -- --earn`), on a disposable Tempo L1 and Zone:
   public spends with an access key, from stablecoin and Earn (one L1 transaction, about 490 ms to the
   receipt on a 500 ms local chain); private spends into the pooled collateral, from stablecoin and Earn,
   settled on the L1 about a second after the Zone receipt, with no L1 log naming the cardholder; a
-  private spend into the cardholder's own collateral bouncing back into the Zone in full; then Rain's
-  signed refund and its daily payment of both collaterals to its treasury.
+  private spend into the cardholder's own collateral bouncing back into the Zone in full; Rain's pause
+  key stopping and resuming spends; then Rain's signed refund and its daily payment of both collaterals
+  to its treasury.

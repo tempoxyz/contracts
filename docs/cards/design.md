@@ -17,14 +17,18 @@ spender factory; [Bridge on this design](#bridge-on-this-design) maps it onto th
 
 One `CardSpender` and one `CardSettler` serve one program: the spender names its adapter
 (`PROGRAM`) and every `CardSpend` must name the same one, so one program's approval never pays
-through another's. A Zone's Spend-mode router lists the settlers of the programs it serves, as for
+through another's. The spender deploys its settler in its own constructor (`SETTLER`) and accepts
+private spends (`spendPrivate`) from that settler alone; everyone else calls `spend`, a public spend. A Zone's Spend-mode router lists the settlers of the programs it serves, as for
 Bridge ([Zone router](../zone-router/zone-router.md)).
 
-The provider seam is small on purpose. `ICardProgram` answers two questions:
+The provider seam is small on purpose. `ICardProgram` answers three questions:
 
-- `isAuthorizedDestination(payer, destination, token, hint)`: may this payer's spend of this token pay
-  this destination? `hint` is the provider's evidence about the destination, carried in
-  `CardSpend.destinationHint`.
+- `isAuthorizedDestination(payer, destination, token, hint, isPrivate)`: may this payer's spend of this
+  token pay this destination? `hint` is the provider's evidence about the destination, carried in
+  `CardSpend.destinationHint`. `isPrivate` comes from the core, true only for its settler's spends, so an
+  adapter applies "a private spend must not name the cardholder" without inferring the path.
+- `paused()`: has the provider stopped this program? An adapter without a pause returns false; Rain's
+  lets only Rain's pause key set it, and it stops every spend and nothing else.
 - `isAllowedVault(vault)`: may spends redeem this Earn vault's shares? A vault's `withdrawExact`
   decides where redeemed value goes, so allowing one is as strong as adding a destination.
 
@@ -74,9 +78,10 @@ outbox's 1,024.
 
 ### CardSpender
 
-- `CardSpend.program` is the spender's own adapter (`WrongProgram`); `amount` is above zero and
-  `fromVault` at most `amount` (`InvalidAmount`).
-- The adapter authorizes the destination for this payer and token (`DestinationNotAuthorized`).
+- `CardSpend.program` is the spender's own adapter (`WrongProgram`), and it is not paused
+  (`ProgramPaused`); `amount` is above zero and `fromVault` at most `amount` (`InvalidAmount`).
+- `spendPrivate` only from `SETTLER` (`NotSettler`).
+- The adapter authorizes the destination for this payer, token and path (`DestinationNotAuthorized`).
 - `amount - fromVault` comes from the payer in `token`. `fromVault` comes from an adapter-allowed vault
   whose asset is `token` (`VaultNotAllowed`, `IncorrectAssetForVault`); it burns at most `maxShares`
   (`ShareCostExceeded`; zero accepts the live price) and returns unused shares to the payer.
@@ -88,8 +93,9 @@ outbox's 1,024.
 
 ### CardSettler
 
-The checks of [`BridgeSettler`](bridge/design.md#bridgesettler), with the program's `CardSpender`
-in place of a Bridge clone: the spend names the settler's program, one input token per withdrawal
+The checks of [`BridgeSettler`](bridge/design.md#bridgesettler), with its `CardSpender`'s private entry
+point (`spendPrivate`) in place of a Bridge clone. Only a `CardSpender` constructor can deploy one
+(`NotSpender`): the spend names the settler's program, one input token per withdrawal
 (the stablecoin, or the vault's EarnShare when Earn funds all of it), the input is at least
 `maxInput`, the spend consumes some input and pays the destination exactly, and the settler returns the
 unused input and ends at its baseline. It emits `SpendSettled(ref, inputToken, inputConsumed,
@@ -97,7 +103,8 @@ inputReturned)`, with no cardholder address or `senderTag`.
 
 ## Invariants
 
-1. A spend pays only a destination its program's adapter authorizes for that payer and token.
+1. A spend pays only a destination its program's adapter authorizes for that payer, token and path,
+   and none while the program is paused.
 2. The destination gets exactly `amount`.
 3. A spend from Earn burns no more than `maxShares` when set; unused shares go back to the payer.
 4. The spender, the settler and the router hold no input after a spend.
@@ -115,8 +122,8 @@ and [`e2e/cards`](../../e2e/cards/) on a real L1 and Zone.
 destination is one the program shares across cardholders, and the change returns as an encrypted
 deposit. The Zone's sequencer sees the cardholder's withdrawal, and the L1 shows each spend's amount,
 token, destination and time. A provider whose adapter authorizes a cardholder-specific destination for
-the settler would break this, so adapters authorize only pooled destinations for a settler payer
-(Rain's: [rain.md](rain/README.md#destinations)).
+a private spend would break this, so adapters authorize only pooled destinations when `isPrivate`
+is true (Rain's: [rain.md](rain/README.md#destinations)).
 
 ## Accepted risks
 
@@ -128,7 +135,8 @@ reserve pays if settlement fails; spend events are not proof of payment. In addi
 - An adapter is as strong as what it reads. It decides every destination, so a provider whose own
   contracts can be upgraded (Rain's factory, Bridge's spender factory) is trusted for that.
 - Adapters fix tokens and vaults at deployment. Changing them means deploying a new adapter, spender and
-  settler, and a router that lists the new settler.
+  settler, and a router that lists the new settler. A provider stops spends in the meantime with its
+  pause, when its adapter has one; a private spend while paused bounces back into the Zone in full.
 
 ## Bridge on this design
 
@@ -150,6 +158,7 @@ adapter shaped like Bridge's (a settlement-wallet allowlist and a pause).
 1. Vendor the provider's contracts unmodified under `cards/vendor/<provider>/` and record their
    provenance in [VENDORED.md](../../cards/vendor/VENDORED.md).
 2. Write its `ICardProgram` adapter in `cards/src/providers/<provider>/`, reading the provider's
-   contracts as they are. Authorize only pooled destinations for a settler payer.
+   contracts as they are. Authorize only pooled destinations when `isPrivate` is true, and give the
+   provider a pause unless its own contracts already have one.
 3. Add a provider to [`e2e/cards/src/providers/`](../../e2e/cards/src/providers/) implementing
    [`CardProvider`](../../e2e/cards/src/provider.ts): deploy, the three destinations, and its own settlement.

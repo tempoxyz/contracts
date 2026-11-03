@@ -27,7 +27,7 @@ vendor/                     Providers' own contracts, unmodified (VENDORED.md)
   rain/                     Rain's collateral, factory and controller (verified Polygon sources)
   tempo-zones/              The Zones runtime the Bridge harness runs
 test/
-  core/                     The agnostic contracts with a second, Bridge-shaped provider
+  core/                     The agnostic contracts on a mock program, and a second, Bridge-shaped provider
   bridge/                   Bridge harness, rails, card scenario matrix, unit, fork and smoke tests
   rain/                     Rain harness, unit and lifecycle tests, Rain bytecode fixture
 script/

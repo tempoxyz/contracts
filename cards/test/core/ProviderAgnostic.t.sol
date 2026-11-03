@@ -5,7 +5,7 @@ import { CardSettler } from "../../src/core/CardSettler.sol";
 import { CardSpend } from "../../src/core/CardSpend.sol";
 import { CardSpender } from "../../src/core/CardSpender.sol";
 import { ICardProgram } from "../../src/core/interfaces/ICardProgram.sol";
-import { CardsEnv } from "../rain/harness/CardsEnv.sol";
+import { CoreEnv } from "./harness/CoreEnv.sol";
 
 /// @notice A provider modeled on Bridge's: a program with a settlement-wallet allowlist and a pause,
 ///         read from the provider's own registry (here a stand-in for Bridge's spender factory).
@@ -22,6 +22,7 @@ contract SettlementWalletRegistry {
     }
 }
 
+/// @dev A settlement wallet is shared by every cardholder, so it serves public and private spends alike.
 contract SettlementWalletProgram is ICardProgram {
     SettlementWalletRegistry public immutable REGISTRY;
     bytes32 public immutable PROGRAM_ID;
@@ -33,76 +34,67 @@ contract SettlementWalletProgram is ICardProgram {
         TOKEN = token;
     }
 
-    function isAuthorizedDestination(address, address destination, address token, uint256)
+    function isAuthorizedDestination(address, address destination, address token, uint256, bool)
         external
         view
         returns (bool)
     {
-        return token == TOKEN && !REGISTRY.paused() && REGISTRY.isAuthorizedDestination(PROGRAM_ID, destination);
+        return token == TOKEN && REGISTRY.isAuthorizedDestination(PROGRAM_ID, destination);
     }
 
     function isAllowedVault(address) external pure returns (bool) {
         return false;
     }
+
+    function paused() external view returns (bool) {
+        return REGISTRY.paused();
+    }
 }
 
 /// @notice The same `CardSpender` and `CardSettler` run a second provider whose destinations work like
 ///         Bridge's settlement wallets, with no change: only the `ICardProgram` adapter differs.
-contract ProviderAgnosticTest is CardsEnv {
+contract ProviderAgnosticTest is CoreEnv {
     SettlementWalletRegistry internal registry;
-    CardSpender internal walletSpender;
-    CardSettler internal walletSettler;
     address internal settlementWallet = makeAddr("provider.settlement");
-    address internal router = makeAddr("zone-router");
 
     function setUp() public {
-        _deployWorld();
+        _deployCore();
+        _deployMockProgram();
         registry = new SettlementWalletRegistry();
         registry.set("program", settlementWallet, true);
-        walletSpender = new CardSpender(new SettlementWalletProgram(registry, "program", address(usd)));
-        walletSettler = new CardSettler(walletSpender);
+        spender = new CardSpender(new SettlementWalletProgram(registry, "program", address(usd)));
+        settler = CardSettler(spender.SETTLER());
         usd.mint(alice, 100e6);
         usd.mint(router, 100e6);
     }
 
-    function _spend(uint256 amount) internal view returns (CardSpend memory s) {
-        s.program = address(walletSpender.PROGRAM());
-        s.token = address(usd);
-        s.amount = amount;
-        s.destination = settlementWallet;
-    }
-
     function test_publicAndPrivate_withASecondProvider() public {
-        vm.startPrank(alice);
-        usd.approve(address(walletSpender), 10e6);
-        walletSpender.spend(_spend(10e6));
-        vm.stopPrank();
-        vm.prank(router);
-        usd.transfer(address(walletSettler), 12e6);
-        vm.prank(router);
-        walletSettler.settle(address(usd), 12e6, abi.encode(_spend(12e6)));
+        _publicSpend(alice, _stableSpend(settlementWallet, 0, 10e6, "public"));
+        _routerSettle(address(usd), 12e6, _stableSpend(settlementWallet, 0, 12e6, "private"));
         assertEq(usd.balanceOf(settlementWallet), 22e6);
     }
 
     function test_revert_pausedProvider() public {
         registry.setPaused(true);
-        CardSpend memory s = _spend(10e6);
+        CardSpend memory s = _stableSpend(settlementWallet, 0, 10e6, "paused");
         vm.startPrank(alice);
-        usd.approve(address(walletSpender), 10e6);
-        vm.expectRevert(abi.encodeWithSelector(CardSpender.DestinationNotAuthorized.selector, settlementWallet));
-        walletSpender.spend(s);
+        usd.approve(address(spender), 10e6);
+        vm.expectRevert(CardSpender.ProgramPaused.selector);
+        spender.spend(s);
         vm.stopPrank();
     }
 
     /// @dev One program's spend never pays through another program's spender or settler.
     function test_revert_crossProgram() public {
-        CardSpend memory s = _spend(1e6);
+        CardSpender mockSpender = new CardSpender(mock);
+        CardSettler mockSettler = CardSettler(mockSpender.SETTLER());
+        CardSpend memory s = _stableSpend(settlementWallet, 0, 1e6, "cross");
         vm.prank(router);
-        usd.transfer(address(settler), 1e6);
+        usd.transfer(address(mockSettler), 1e6);
         vm.expectRevert(abi.encodeWithSelector(CardSettler.WrongProgram.selector, s.program));
-        settler.settle(address(usd), 1e6, abi.encode(s));
+        mockSettler.settle(address(usd), 1e6, abi.encode(s));
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.WrongProgram.selector, s.program));
-        spender.spend(s);
+        mockSpender.spend(s);
     }
 }

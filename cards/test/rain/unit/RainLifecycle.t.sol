@@ -2,13 +2,13 @@
 pragma solidity ^0.8.36;
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
-import { CardsEnv } from "../harness/CardsEnv.sol";
+import { RainEnv } from "../harness/RainEnv.sol";
 
 /// @notice What happens to card money after a Tempo spend lands in Rain's collateral, with Rain's own
 ///         contracts unchanged: Rain's daily payment moves it to Rain's treasury with its controller
 ///         admin's signature, a refund or reversal goes back through a Rain-signed withdrawal, and nothing
 ///         leaves a collateral contract without Rain's signature.
-contract RainLifecycleTest is CardsEnv {
+contract RainLifecycleTest is RainEnv {
     address internal rainBackend = makeAddr("rain.backend");
 
     function setUp() public {
@@ -28,10 +28,9 @@ contract RainLifecycleTest is CardsEnv {
     }
 
     function test_pooledCollateral_settlesPrivateSpendsTogether() public {
-        address router = makeAddr("zone-router");
         usd.mint(router, 100e6);
-        _routerSettle(router, address(usd), 10e6, _stableSpend(programCollateral, programCollateralIndex, 10e6, "p.1"));
-        _routerSettle(router, address(usd), 15e6, _stableSpend(programCollateral, programCollateralIndex, 15e6, "p.2"));
+        _routerSettle(address(usd), 10e6, _stableSpend(programCollateral, programCollateralIndex, 10e6, "p.1"));
+        _routerSettle(address(usd), 15e6, _stableSpend(programCollateral, programCollateralIndex, 15e6, "p.2"));
         uint256 expiresAt = block.timestamp + 1 hours;
         bytes memory sig = _signPay(rainBackend, programCollateral, address(usd), 25e6, expiresAt, "pay.pool");
         vm.prank(rainBackend);

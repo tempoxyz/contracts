@@ -5,6 +5,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
 
+import { CardSettler, ICardSpenderPrivate } from "./CardSettler.sol";
 import { CardSpend } from "./CardSpend.sol";
 import { ICardProgram } from "./interfaces/ICardProgram.sol";
 import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
@@ -14,13 +15,17 @@ import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 ///         shares, or both, for any card provider. Specified in docs/cards/design.md.
 /// @dev One deployment serves one program (`PROGRAM`), so one program's approval can never pay through
 ///      another's. It has no owner and holds nothing between spends. The payer is `msg.sender`:
-///      - public spend: the cardholder's account, in one transaction signed by the provider's access key
-///        that approves the exact amount, calls `spend` and clears the approval;
-///      - private spend: the program's `CardSettler`, from the input a Zone withdrawal's router sends it.
+///      - public spend (`spend`): the cardholder's account, in one transaction signed by the provider's
+///        access key that approves the exact amount, calls `spend` and clears the approval;
+///      - private spend (`spendPrivate`): only the `CardSettler` this spender deploys for itself
+///        (`SETTLER`), from the input a Zone withdrawal's router sends it.
+///      The spender tells the program which of the two each spend is, and checks its pause on every one.
 ///      A spend settles in the stablecoin the funds are held in. Earn shares redeem into the vault's own
 ///      asset, so a spend from Earn names that asset as `token`.
 contract CardSpender {
     ICardProgram public immutable PROGRAM;
+    /// @notice The only payer whose spends are private: the program's settler, deployed by this constructor.
+    address public immutable SETTLER;
 
     bool private transient _locked;
 
@@ -28,6 +33,8 @@ contract CardSpender {
     error DestinationNotCredited();
     error IncorrectAssetForVault();
     error InvalidAmount();
+    error NotSettler();
+    error ProgramPaused();
     error Reentrancy();
     error ShareCostExceeded(uint256 required, uint256 maxShares);
     error VaultNotAllowed(address vault);
@@ -42,7 +49,8 @@ contract CardSpender {
         uint256 amount,
         uint256 fromStable,
         uint256 fromVault,
-        uint256 sharesBurned
+        uint256 sharesBurned,
+        bool isPrivate
     );
 
     modifier nonReentrant() {
@@ -55,14 +63,26 @@ contract CardSpender {
     constructor(ICardProgram program_) {
         if (address(program_) == address(0)) revert ZeroAddress();
         PROGRAM = program_;
+        SETTLER = address(new CardSettler(ICardSpenderPrivate(address(this)), address(program_)));
     }
 
-    /// @notice Pays `s.amount` of `s.token` to `s.destination`: `s.amount - s.fromVault` from the
-    ///         caller's `s.token`, and `s.fromVault` redeemed from the caller's shares in `s.vault`.
+    /// @notice A public spend: pays `s.amount` of `s.token` to `s.destination`, `s.amount - s.fromVault`
+    ///         from the caller's `s.token` and `s.fromVault` redeemed from the caller's shares in `s.vault`.
     function spend(CardSpend calldata s) external nonReentrant {
+        _spend(s, false);
+    }
+
+    /// @notice A private spend, as `spend` but paid by the program's settler from a Zone withdrawal.
+    function spendPrivate(CardSpend calldata s) external nonReentrant {
+        if (msg.sender != SETTLER) revert NotSettler();
+        _spend(s, true);
+    }
+
+    function _spend(CardSpend calldata s, bool isPrivate) private {
         if (s.program != address(PROGRAM)) revert WrongProgram(s.program);
+        if (PROGRAM.paused()) revert ProgramPaused();
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
-        if (!PROGRAM.isAuthorizedDestination(msg.sender, s.destination, s.token, s.destinationHint)) {
+        if (!PROGRAM.isAuthorizedDestination(msg.sender, s.destination, s.token, s.destinationHint, isPrivate)) {
             revert DestinationNotAuthorized(s.destination);
         }
 
@@ -77,7 +97,9 @@ contract CardSpender {
         }
         if (IERC20Like(s.token).balanceOf(s.destination) != before + s.amount) revert DestinationNotCredited();
 
-        emit CardSpent(s.ref, msg.sender, s.destination, s.token, s.amount, fromStable, s.fromVault, sharesBurned);
+        emit CardSpent(
+            s.ref, msg.sender, s.destination, s.token, s.amount, fromStable, s.fromVault, sharesBurned, isPrivate
+        );
     }
 
     /// @notice `from`'s balance of `token`, plus the value of its shares in `vault` when the program
@@ -112,7 +134,8 @@ contract CardSpender {
         if (maxShares != 0 && required > maxShares) revert ShareCostExceeded(required, maxShares);
         address share = v.earnShare();
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
-        // `spend` holds the transient lock for this whole call, so neither call below can reenter it.
+        // `spend` and `spendPrivate` hold the transient lock for this whole call, so neither call below can
+        // reenter them.
         if (IERC20Allowance(share).allowance(address(this), vault) < required) {
             // forge-lint: disable-next-line(reentrancy-no-eth)
             SafeTransferLib.safeApprove(share, vault, type(uint256).max);

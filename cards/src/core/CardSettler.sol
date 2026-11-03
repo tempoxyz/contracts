@@ -7,7 +7,11 @@ import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
 import { ISpendSettler } from "zone-router/interfaces/ISpendSettler.sol";
 
 import { CardSpend } from "./CardSpend.sol";
-import { CardSpender } from "./CardSpender.sol";
+
+/// @notice The subset of `CardSpender` its settler calls.
+interface ICardSpenderPrivate {
+    function spendPrivate(CardSpend calldata s) external;
+}
 
 /// @title CardSettler
 /// @notice Settles a Zone router's Spend op through one program's `CardSpender`, with the same
@@ -24,7 +28,8 @@ contract CardSettler is ISpendSettler {
     bytes4 private constant TRANSFER_FAILED = 0x90b8ec18;
     bytes4 private constant APPROVE_FAILED = 0x3e3f8f73;
 
-    CardSpender public immutable SPENDER;
+    /// @notice The `CardSpender` that deployed this settler, the only one whose private spends it pays.
+    ICardSpenderPrivate public immutable SPENDER;
     address public immutable PROGRAM;
 
     bool private transient _locked;
@@ -32,6 +37,7 @@ contract CardSettler is ISpendSettler {
     error DestinationNotPaid();
     error InsufficientInput();
     error InvalidAmount();
+    error NotSpender();
     error NothingSettled();
     error Reentrancy();
     error ResidualBalance(address token);
@@ -49,10 +55,12 @@ contract CardSettler is ISpendSettler {
         _locked = false;
     }
 
-    constructor(CardSpender spender_) {
-        if (address(spender_) == address(0)) revert ZeroAddress();
+    /// @dev Deployed by its `CardSpender`'s constructor, which alone accepts this settler's private spends.
+    constructor(ICardSpenderPrivate spender_, address program_) {
+        if (address(spender_) == address(0) || program_ == address(0)) revert ZeroAddress();
+        if (msg.sender != address(spender_)) revert NotSpender();
         SPENDER = spender_;
-        PROGRAM = address(spender_.PROGRAM());
+        PROGRAM = program_;
     }
 
     /// @inheritdoc ISpendSettler
@@ -79,7 +87,7 @@ contract CardSettler is ISpendSettler {
 
         _approveSpender(token, maxInput);
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        SPENDER.spend(spend);
+        SPENDER.spendPrivate(spend);
 
         uint256 unused = IERC20Like(token).balanceOf(address(this)) - baseline;
         if (unused >= maxInput) revert NothingSettled();

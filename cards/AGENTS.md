@@ -9,7 +9,9 @@ so each is easy to find and review:
 | `src/providers/<provider>/` | Ours, for one provider: Bridge's "TS" handler and `BridgeSettler`; Rain's `RainCardProgram` |
 | `vendor/<provider>/`        | The provider's own contracts, vendored unmodified (`vendor/bridge/`, `vendor/rain/`)        |
 
-Tests and scripts follow the same split (`test/core/`, `test/<provider>/`, `script/<provider>/`).
+Tests and scripts follow the same split (`test/core/`, `test/<provider>/`, `script/<provider>/`). Core
+tests run on [`test/core/harness/CoreEnv.sol`](test/core/harness/CoreEnv.sol) and a mock program, with no
+provider; a provider's harness extends `CoreEnv`.
 [README.md](README.md) maps the project; [docs/cards/design.md](../docs/cards/design.md) owns the
 agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
 [docs/cards/rain/](../docs/cards/rain/README.md) each provider's.
@@ -22,7 +24,8 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   `earn/` or `zone-router/` imports from here. A change to their interfaces that breaks this project is
   fixed in the same pull request.
 - `src/core/` names no provider: no provider address, rule or import. A provider that needs evidence
-  about a destination reads it from `CardSpend.destinationHint`. One provider's code never imports
+  about a destination reads it from `CardSpend.destinationHint`, and learns whether a spend is private
+  from the core's `isPrivate`, never by inspecting the payer. One provider's code never imports
   another's.
 - `vendor/` holds providers' (and the Zones runtime's) sources unmodified, at the provenance in
   [vendor/VENDORED.md](vendor/VENDORED.md), except for the changes it lists; refresh them only by

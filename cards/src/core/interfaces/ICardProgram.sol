@@ -10,7 +10,10 @@ interface ICardProgram {
     /// @notice Whether a spend of `token` from `payer` may pay `destination`.
     /// @param payer Who funds the spend: the cardholder's account (public) or the program's settler (private).
     /// @param hint Provider-specific evidence that `destination` belongs to the program.
-    function isAuthorizedDestination(address payer, address destination, address token, uint256 hint)
+    /// @param isPrivate True for a private spend, which `CardSpender` accepts only from its own settler. A
+    ///        private spend must not name the cardholder, so an adapter authorizes only destinations the
+    ///        program shares across cardholders for it.
+    function isAuthorizedDestination(address payer, address destination, address token, uint256 hint, bool isPrivate)
         external
         view
         returns (bool);
@@ -18,4 +21,8 @@ interface ICardProgram {
     /// @notice Whether spends may redeem Tempo Earn shares from `vault`. A vault's `withdrawExact`
     ///         decides where redeemed value goes, so allowing one is as strong as adding a destination.
     function isAllowedVault(address vault) external view returns (bool);
+
+    /// @notice Whether the provider has stopped every spend of this program. An adapter with no pause
+    ///         returns false; one with a pause lets only the provider's pause key set it.
+    function paused() external view returns (bool);
 }

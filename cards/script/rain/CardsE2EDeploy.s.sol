@@ -42,7 +42,8 @@ library CardSpendMode {
 ///         pooled one; with EARN=true, a Tempo Earn vault over pathUSD; the `RainCardProgram` adapter
 ///         accepting pathUSD (and that vault); the provider-agnostic `CardSpender` and `CardSettler`; the
 ///         Spend-mode `ZoneRouter` for ZONE_ID listing the settler; and a TIP-20 to launch the Zone with.
-///         Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY, CARDHOLDER, PARTNER, ZONE_ID, EARN and OUT.
+///         Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY, RAIN_PAUSER, CARDHOLDER, PARTNER, ZONE_ID, EARN and
+///         OUT.
 contract CardsE2EDeploy is Script, RainStack {
     uint64 internal constant ALWAYS_ALLOW_POLICY_ID = 1;
 
@@ -65,9 +66,10 @@ contract CardsE2EDeploy is Script, RainStack {
         if (earn) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
-        RainCardProgram program = new RainCardProgram(address(rain.factory), tokens, vaults, pooled);
+        RainCardProgram program =
+            new RainCardProgram(address(rain.factory), tokens, vaults, pooled, vm.envAddress("RAIN_PAUSER"));
         CardSpender spender = new CardSpender(program);
-        CardSettler settler = new CardSettler(spender);
+        CardSettler settler = CardSettler(spender.SETTLER());
         ZoneRouterFactory routerFactory = new ZoneRouterFactory();
         address router = routerFactory.deploy(CardSpendMode.forSettler(uint32(zoneIdValue), address(settler)));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.

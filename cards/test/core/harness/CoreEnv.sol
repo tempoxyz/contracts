@@ -22,14 +22,48 @@ import { CardSettler } from "../../../src/core/CardSettler.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
 import { ICardProgram } from "../../../src/core/interfaces/ICardProgram.sol";
-import { RainCardProgram } from "../../../src/providers/rain/RainCardProgram.sol";
 
-import { IRainController, IRainFactoryAdmin, RainStack } from "../../../script/rain/RainStack.sol";
+/// @notice A provider-neutral `ICardProgram`: destinations, tokens and vaults set by the test, with
+///         public and private destinations kept apart, and a pause.
+contract MockCardProgram is ICardProgram {
+    mapping(address => bool) public isAcceptedToken;
+    mapping(address => bool) public isPublicDestination;
+    mapping(address => bool) public isPrivateDestination;
+    mapping(address => bool) public isAllowedVault;
+    bool public paused;
 
-/// @notice The world a Tempo card program runs on: TIP-20 stablecoins (real precompiles), Tempo Earn over
-///         an ERC-4626 venue, Rain's own collateral contracts from the vendored sources, and a Rain card
-///         program on the provider-agnostic `CardSpender` and `CardSettler`.
-abstract contract CardsEnv is Test, RainStack {
+    function setToken(address token, bool accepted) external {
+        isAcceptedToken[token] = accepted;
+    }
+
+    function setDestination(address destination, bool publicSpend, bool privateSpend) external {
+        isPublicDestination[destination] = publicSpend;
+        isPrivateDestination[destination] = privateSpend;
+    }
+
+    function setVault(address vault, bool allowed) external {
+        isAllowedVault[vault] = allowed;
+    }
+
+    function setPaused(bool paused_) external {
+        paused = paused_;
+    }
+
+    function isAuthorizedDestination(address, address destination, address token, uint256, bool isPrivate)
+        external
+        view
+        returns (bool)
+    {
+        if (!isAcceptedToken[token]) return false;
+        return isPrivate ? isPrivateDestination[destination] : isPublicDestination[destination];
+    }
+}
+
+/// @notice The world the provider-agnostic contracts run on, with no provider: TIP-20 stablecoins (real
+///         precompiles), Tempo Earn over an ERC-4626 venue, and a `CardSpender` (with the `CardSettler` it
+///         deploys) over a `MockCardProgram`. Provider harnesses extend it and point `spender` and `settler`
+///         at their own program.
+abstract contract CoreEnv is Test {
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
     bytes32 internal constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
 
@@ -43,66 +77,38 @@ abstract contract CardsEnv is Test, RainStack {
     EarnVault internal earnVault;
     ITIP20Token internal earnShare;
 
-    // Rain.
-    Rain internal rain;
-    uint256 internal rainAdminPk = uint256(keccak256("rain.controller-admin"));
-    address internal rainAdmin = vm.addr(uint256(keccak256("rain.controller-admin")));
-    address internal rainTreasury = makeAddr("rain.treasury");
-    /// @dev The partner's account that owns the program's pooled collateral (partner-managed, private spend).
-    address internal partner = makeAddr("rain.partner");
-    address internal programCollateral;
-    uint256 internal programCollateralIndex;
-
-    // The card program on the provider-agnostic contracts.
-    RainCardProgram internal program;
+    /// @dev The spender and settler the helpers use: the mock program's here, a provider's in its harness.
     CardSpender internal spender;
     CardSettler internal settler;
 
-    // Cardholders, each with their own Rain collateral contract (Rain-managed, public spend).
+    MockCardProgram internal mock;
+    address internal publicWallet = makeAddr("mock.public-destination");
+    address internal pooledWallet = makeAddr("mock.pooled-destination");
+
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
-    address internal aliceCollateral;
-    uint256 internal aliceIndex;
-    address internal bobCollateral;
-    uint256 internal bobIndex;
+    address internal router = makeAddr("zone-router");
 
-    /// @dev The index the factory's next collateral contract gets in `collateralProxies`.
-    uint256 private _nextIndex;
-
-    function _deployWorld() internal {
+    function _deployCore() internal {
         vm.warp(1_790_000_000);
         usd = _createToken("Open USD", "OUSD");
         otherUsd = _createToken("Other USD", "XUSD");
         _deployEarn();
-        rain = _deployRain(rainAdmin, rainTreasury);
-        vm.label(address(rain.factory), "Rain.Factory");
-        vm.label(address(rain.controller), "Rain.Controller");
-        (aliceCollateral, aliceIndex) = _createCollateral("alice", alice);
-        (bobCollateral, bobIndex) = _createCollateral("bob", bob);
-        (programCollateral, programCollateralIndex) = _createCollateral("program", partner);
-        program = _deployProgram(address(earnVault));
-        spender = new CardSpender(program);
-        settler = new CardSettler(spender);
-        vm.label(address(program), "RainCardProgram");
+    }
+
+    /// @dev The core world with the mock program: public spends may pay `publicWallet` and `pooledWallet`,
+    ///      private spends `pooledWallet` alone.
+    function _deployMockProgram() internal {
+        mock = new MockCardProgram();
+        mock.setToken(address(usd), true);
+        mock.setVault(address(earnVault), true);
+        mock.setDestination(publicWallet, true, false);
+        mock.setDestination(pooledWallet, true, true);
+        spender = new CardSpender(mock);
+        settler = CardSettler(spender.SETTLER());
+        vm.label(address(mock), "MockCardProgram");
         vm.label(address(spender), "CardSpender");
         vm.label(address(settler), "CardSettler");
-    }
-
-    function _deployProgram(address vault) internal returns (RainCardProgram) {
-        address[] memory tokens = new address[](1);
-        tokens[0] = address(usd);
-        address[] memory vaults = new address[](vault == address(0) ? 0 : 1);
-        if (vault != address(0)) vaults[0] = vault;
-        address[] memory pooled = new address[](1);
-        pooled[0] = programCollateral;
-        return new RainCardProgram(address(rain.factory), tokens, vaults, pooled);
-    }
-
-    /// @dev Rain's factory owner (this contract) creates `user`'s collateral contract.
-    function _createCollateral(string memory name, address user) internal returns (address collateral, uint256 n) {
-        n = _nextIndex++;
-        collateral = rain.factory.createCollateralContract(name, user);
-        vm.label(collateral, string.concat("Rain.Collateral.", name));
     }
 
     function _createToken(string memory name, string memory symbol) internal returns (ITIP20Token token) {
@@ -158,7 +164,7 @@ abstract contract CardsEnv is Test, RainStack {
         view
         returns (CardSpend memory s)
     {
-        s.program = address(program);
+        s.program = address(spender.PROGRAM());
         s.token = address(usd);
         s.amount = amount;
         s.destination = destination;
@@ -191,7 +197,7 @@ abstract contract CardsEnv is Test, RainStack {
 
     /// @dev What a ZoneRouter does for a Spend op: transfer `maxInput` of `token` to the settler, call
     ///      `settle` and take back what the settler returns.
-    function _routerSettle(address router, address token, uint256 maxInput, CardSpend memory s) internal {
+    function _routerSettle(address token, uint256 maxInput, CardSpend memory s) internal {
         vm.prank(router);
         ITIP20Token(token).transfer(address(settler), maxInput);
         vm.prank(router);
@@ -203,83 +209,5 @@ abstract contract CardsEnv is Test, RainStack {
         usd.approve(address(earnVault), assets);
         shares = earnVault.deposit(assets, user, 1);
         vm.stopPrank();
-    }
-
-    // ------------------------------------------------------------------
-    // Rain's own settlement: EIP-712 signatures from Rain's controller admin
-    // ------------------------------------------------------------------
-
-    function _rainDomain(bytes32 salt) internal view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                rain.controller.EIP712_DOMAIN_TYPE_HASH(),
-                keccak256("Rain Collateral"),
-                keccak256("1"),
-                block.chainid,
-                address(rain.controller),
-                salt
-            )
-        );
-    }
-
-    function _signPay(
-        address caller,
-        address collateral,
-        address asset,
-        uint256 amount,
-        uint256 expiresAt,
-        bytes32 salt
-    ) internal view returns (bytes memory) {
-        address[] memory assets = new address[](1);
-        assets[0] = asset;
-        uint256[] memory amounts = new uint256[](1);
-        amounts[0] = amount;
-        bytes32 structHash = keccak256(
-            bytes.concat(
-                abi.encode(
-                    rain.controller.PAY_TYPE_HASH(),
-                    caller,
-                    collateral,
-                    keccak256(abi.encodePacked(assets)),
-                    keccak256(abi.encodePacked(amounts))
-                ),
-                abi.encode(rain.controller.nonce(collateral), expiresAt)
-            )
-        );
-        return _sign(salt, structHash);
-    }
-
-    function _signWithdraw(
-        address caller,
-        address collateral,
-        address asset,
-        uint256 amount,
-        address recipient,
-        uint256 expiresAt,
-        bytes32 salt
-    ) internal view returns (bytes memory) {
-        bytes32 structHash = keccak256(
-            bytes.concat(
-                abi.encode(rain.controller.WITHDRAW_TYPE_HASH(), caller, collateral, asset, amount),
-                abi.encode(recipient, rain.controller.nonce(collateral), expiresAt)
-            )
-        );
-        return _sign(salt, structHash);
-    }
-
-    function _sign(bytes32 salt, bytes32 structHash) private view returns (bytes memory) {
-        (uint8 v, bytes32 r, bytes32 s) =
-            vm.sign(rainAdminPk, keccak256(abi.encodePacked("\x19\x01", _rainDomain(salt), structHash)));
-        return abi.encodePacked(r, s, v);
-    }
-
-    function _one(address a) internal pure returns (address[] memory arr) {
-        arr = new address[](1);
-        arr[0] = a;
-    }
-
-    function _one(uint256 a) internal pure returns (uint256[] memory arr) {
-        arr = new uint256[](1);
-        arr[0] = a;
     }
 }
