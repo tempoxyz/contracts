@@ -37,6 +37,9 @@ export const tempoVerifierUrl = 'https://contracts.tempo.xyz'
 const implementationSlot =
   '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc' as const
 const transientVerifierErrors = new Set(['internal_error', 'compilation_failed'])
+/** forge output when the verifier was unreachable, rate-limited or failing (429 or 5xx) on submission. */
+const verifierUnavailableOutput =
+  /status code:? (429|5\d\d)|too many requests|service unavailable|bad gateway|gateway time-?out|internal server error|error sending request|connection (refused|reset|closed)|timed out|dns error|failed to lookup address/i
 
 type VerifiedContract = {
   match: 'exact_match' | 'match' | null
@@ -295,6 +298,7 @@ async function verifySource(
     context.compilerArguments.set(root, compilerArguments)
   }
   let lastError = 'verification did not complete'
+  let lastTransient = false
   const maximumAttempts = 6
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
     const result = context.runtime.spawn(
@@ -329,29 +333,39 @@ async function verifySource(
       },
     )
     if (result.error) throw result.error
-    if (result.status !== 0) {
-      throw new Error(`Could not submit ${target.name} source verification: ${result.stderr}`)
-    }
     const verifierOutput = `${result.stdout}\n${result.stderr}`
-    const jobId = verifierOutput.match(/Verification Job ID: `([^`]+)`/)?.[1]
-    if (!jobId) throw new Error(`Tempo verifier did not return a job ID for ${target.name}`)
+    const jobId =
+      result.status === 0 ? verifierOutput.match(/Verification Job ID: `([^`]+)`/)?.[1] : undefined
+    if (!jobId) {
+      // A submission the verifier rate-limited, failed or never answered is retried; a compile or argument error is definitive.
+      lastError =
+        result.status === 0
+          ? 'verifier did not return a job ID'
+          : `could not submit: ${result.stderr.trim()}`
+      lastTransient = result.status === 0 || verifierUnavailableOutput.test(verifierOutput)
+      if (!lastTransient || attempt === maximumAttempts) break
+      await context.runtime.pause(Math.min(5_000 * 2 ** (attempt - 1), 30_000))
+      continue
+    }
     const outcome = await pollVerification(context, jobId)
-    if (outcome.contract) {
+    // A failed job still carries a contract object, with no match.
+    if (outcome.contract?.match) {
       const verified = await lookupContract(context, target.address)
+      // The lookup can lag a job that just completed; rerunning finds the source.
       if (!verified) {
-        throw new Error(`${target.name} ${target.address} completed verification without a source`)
+        throw new VerifierUnavailableError(
+          `${target.name} ${target.address} verified, but the verifier does not list its source yet`,
+        )
       }
       return sourceMatch(context, verified, target)
     }
     lastError = `${outcome.error?.customCode ?? 'unknown'}: ${outcome.error?.message ?? 'unknown error'}`
-    if (
-      !transientVerifierErrors.has(outcome.error?.customCode ?? '') ||
-      attempt === maximumAttempts
-    )
-      break
+    lastTransient = transientVerifierErrors.has(outcome.error?.customCode ?? '')
+    if (!lastTransient || attempt === maximumAttempts) break
     await context.runtime.pause(Math.min(5_000 * 2 ** (attempt - 1), 30_000))
   }
-  throw new Error(`Source verification failed for ${target.name} ${target.address}: ${lastError}`)
+  const message = `Source verification failed for ${target.name} ${target.address}: ${lastError}`
+  throw lastTransient ? new VerifierUnavailableError(message) : new Error(message)
 }
 
 async function lookupContract(context: VerificationContext, address: Address) {
@@ -361,34 +375,67 @@ async function lookupContract(context: VerificationContext, address: Address) {
       const response = await context.runtime.fetch(url)
       if (response.status === 404) return undefined
       if (response.ok) return (await response.json()) as VerifiedContract
-      if (response.status !== 429 && response.status < 500) {
-        throw new Error(`Tempo verifier lookup failed for ${address}: HTTP ${response.status}`)
+      if (!transientStatus(response.status)) {
+        throw new VerifierRefusedError(
+          `Tempo verifier lookup failed for ${address}: HTTP ${response.status}`,
+        )
       }
       if (attempt === 5) {
-        throw new Error(`Tempo verifier lookup failed for ${address}: HTTP ${response.status}`)
+        throw new VerifierUnavailableError(
+          `Tempo verifier lookup failed for ${address}: HTTP ${response.status}`,
+        )
       }
     } catch (error) {
-      if (attempt === 5) throw error
+      // A refusal (a 4xx other than 408, 425 or 429) is definitive; anything else is the verifier being unreachable.
+      if (error instanceof VerifierRefusedError) throw error
+      if (attempt === 5) {
+        throw error instanceof VerifierUnavailableError
+          ? error
+          : new VerifierUnavailableError(
+              `Tempo verifier lookup failed for ${address}: ${String(error)}`,
+            )
+      }
     }
     await context.runtime.pause(attempt * 500)
   }
   return undefined
 }
 
+/** Whether an HTTP error status means the verifier may answer later: a timeout, too early, rate limit or 5xx. */
+function transientStatus(status: number) {
+  return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
 async function pollVerification(context: VerificationContext, jobId: string) {
   for (let poll = 0; poll < 30; poll++) {
-    const response = await context.runtime.fetch(`${context.verifierUrl}/v2/verify/${jobId}`)
-    if (!response.ok)
-      throw new Error(`Tempo verifier job ${jobId} returned HTTP ${response.status}`)
-    const outcome = (await response.json()) as {
-      isJobCompleted: boolean
+    const response = await context.runtime
+      .fetch(`${context.verifierUrl}/v2/verify/${jobId}`)
+      .catch((error: unknown) => {
+        throw new VerifierUnavailableError(
+          `Tempo verifier job ${jobId} is unreachable: ${String(error)}`,
+        )
+      })
+    if (!response.ok) {
+      const message = `Tempo verifier job ${jobId} returned HTTP ${response.status}`
+      throw transientStatus(response.status)
+        ? new VerifierUnavailableError(message)
+        : new Error(message)
+    }
+    type Outcome = {
       contract: VerifiedContract | null
       error: { customCode: string; message: string } | null
+      isJobCompleted: boolean
     }
+    // The connection can drop while the body streams after a 200.
+    const outcome = (await response.json().catch((error: unknown) => {
+      throw new VerifierUnavailableError(
+        `Tempo verifier job ${jobId} reply was cut off: ${String(error)}`,
+      )
+    })) as Outcome
     if (outcome.isJobCompleted) return outcome
     await context.runtime.pause(1_000)
   }
-  throw new Error(`Tempo verifier job ${jobId} did not complete`)
+  throw new VerifierUnavailableError(`Tempo verifier job ${jobId} did not complete`)
 }
 
 function sourceMatch(
@@ -456,7 +503,9 @@ function requireCanonicalSources(
   // Earn's sources (`../earn/src/...`); every one must resolve inside this checkout.
   const project = resolve(projectRoot)
   const root = resolve(context.root, '..')
-  const entries = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right))
+  // A fixed collation: the default follows the operator's locale (Czech and Slovak sort 'ch' after
+  // 'h'), which would change the recorded hash. 'en' matches what existing records were hashed with.
+  const entries = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right, 'en'))
   for (const [relativePath, source] of entries) {
     if (typeof source.content !== 'string')
       throw new Error(`Verifier did not return source content for ${relativePath}`)
@@ -517,4 +566,14 @@ type VerificationContext = {
   submitMissing: boolean
   /** Each project's compiler arguments, resolved on its first submission. */
   compilerArguments: Map<string, string[]>
+}
+
+/** The verifier could not be reached or kept failing transiently: retrying later can succeed. */
+export class VerifierUnavailableError extends Error {
+  override name = 'VerifierUnavailableError'
+}
+
+/** The verifier refused a request (a 4xx other than 429), which retrying does not change. */
+class VerifierRefusedError extends Error {
+  override name = 'VerifierRefusedError'
 }
