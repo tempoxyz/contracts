@@ -318,6 +318,61 @@ describe('deployment source verification', () => {
     expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
   })
 
+  test('retries a submission the verifier failed, and fails a compile error at once', async () => {
+    const erc4626Profile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'source-submission-failure-test',
+        chainId: 42431,
+        owner: address('9'),
+        engine: { kind: 'erc4626', venue: address('d') },
+      },
+      { deployer: address('1'), factories: { earn: coreFactory, erc4626Engine: address('c') } },
+    )
+    const submitting = (stderr: string) => {
+      const runtime = dependencies()
+      runtime.fetch = vi.fn(async (input) =>
+        String(input).toLowerCase().includes(engine.toLowerCase())
+          ? new Response('{}', { status: 404 })
+          : dependencies().fetch(input),
+      ) as unknown as typeof fetch
+      runtime.spawn = vi.fn(() => ({
+        status: 1,
+        stdout: '',
+        stderr,
+      })) as unknown as typeof runtime.spawn
+      return runtime
+    }
+    const options = run({
+      profile: erc4626Profile,
+      record: {
+        actions: {
+          ...actions,
+          'deploy-engine': {
+            completedAt: '2026-01-01T00:00:00.000Z',
+            verification: 'broadcast',
+            transactions: [transaction],
+          },
+        },
+        addresses,
+      },
+    })
+
+    const rateLimited = submitting('Error: request failed with status code 429 Too Many Requests')
+    await expect(verifyDeploymentSources(options, rateLimited)).rejects.toBeInstanceOf(
+      VerifierUnavailableError,
+    )
+    expect(rateLimited.spawn).toHaveBeenCalledTimes(6)
+
+    const compileError = submitting('Error: Compiler run failed')
+    const error = await verifyDeploymentSources(options, compileError).catch(
+      (caught: unknown) => caught,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(VerifierUnavailableError)
+    expect(compileError.spawn).toHaveBeenCalledTimes(1)
+  })
+
   test('submits with the solar build the deploy profile compiles with', async () => {
     const erc4626Profile = parseEarnDeploymentProfile(
       {

@@ -37,6 +37,9 @@ export const tempoVerifierUrl = 'https://contracts.tempo.xyz'
 const implementationSlot =
   '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc' as const
 const transientVerifierErrors = new Set(['internal_error', 'compilation_failed'])
+/** forge output when the verifier was unreachable, rate-limited or failing (429 or 5xx) on submission. */
+const verifierUnavailableOutput =
+  /status code:? (429|5\d\d)|too many requests|service unavailable|bad gateway|gateway time-?out|internal server error|error sending request|connection (refused|reset|closed)|timed out|dns error|failed to lookup address/i
 
 type VerifiedContract = {
   match: 'exact_match' | 'match' | null
@@ -330,12 +333,20 @@ async function verifySource(
       },
     )
     if (result.error) throw result.error
-    if (result.status !== 0) {
-      throw new Error(`Could not submit ${target.name} source verification: ${result.stderr}`)
-    }
     const verifierOutput = `${result.stdout}\n${result.stderr}`
-    const jobId = verifierOutput.match(/Verification Job ID: `([^`]+)`/)?.[1]
-    if (!jobId) throw new Error(`Tempo verifier did not return a job ID for ${target.name}`)
+    const jobId =
+      result.status === 0 ? verifierOutput.match(/Verification Job ID: `([^`]+)`/)?.[1] : undefined
+    if (!jobId) {
+      // A submission the verifier rate-limited, failed or never answered is retried; a compile or argument error is definitive.
+      lastError =
+        result.status === 0
+          ? 'verifier did not return a job ID'
+          : `could not submit: ${result.stderr.trim()}`
+      lastTransient = result.status === 0 || verifierUnavailableOutput.test(verifierOutput)
+      if (!lastTransient || attempt === maximumAttempts) break
+      await context.runtime.pause(Math.min(5_000 * 2 ** (attempt - 1), 30_000))
+      continue
+    }
     const outcome = await pollVerification(context, jobId)
     if (outcome.contract) {
       const verified = await lookupContract(context, target.address)

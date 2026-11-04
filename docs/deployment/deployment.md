@@ -166,7 +166,7 @@ a stale or edited record is rejected before it can drive an authority transactio
 
 For hosted deployments the command submits missing source to `https://contracts.tempo.xyz`, waits
 for a bytecode and source match, and records the result. A verifier outage (unreachable, 429 or 5xx,
-a job that does not complete, or only transient compiler errors) leaves the record `pending` and
+on lookup or on forge's submission, a job that does not complete, or only transient compiler errors) leaves the record `pending` and
 the state `verification-pending`: rerunning resumes at verification after rechecking deployed
 state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
 a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
