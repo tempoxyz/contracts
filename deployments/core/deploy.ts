@@ -226,10 +226,8 @@ export async function deployEarnProfile(options: LifecycleOptions): Promise<Earn
       if (!activationHandoff) throw error
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(
-        `${message} Activation also waits on ${activationHandoff.action}; re-run for its handoff.`,
-        {
-          cause: error,
-        },
+        `${message} Activation also waits on ${activationHandoff.action.id}: ${activationHandoff.instructions}`,
+        { cause: error },
       )
     }
     verificationInstructions = `Source verification is pending: ${error instanceof Error ? error.message : String(error)} Re-run the same deploy command later; deployed contracts and activation will not be repeated.`

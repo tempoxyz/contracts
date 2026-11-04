@@ -348,10 +348,14 @@ async function verifySource(
       continue
     }
     const outcome = await pollVerification(context, jobId)
-    if (outcome.contract) {
+    // A failed job still carries a contract object, with no match.
+    if (outcome.contract?.match) {
       const verified = await lookupContract(context, target.address)
+      // The lookup can lag a job that just completed; rerunning finds the source.
       if (!verified) {
-        throw new Error(`${target.name} ${target.address} completed verification without a source`)
+        throw new VerifierUnavailableError(
+          `${target.name} ${target.address} verified, but the verifier does not list its source yet`,
+        )
       }
       return sourceMatch(context, verified, target)
     }
@@ -371,7 +375,7 @@ async function lookupContract(context: VerificationContext, address: Address) {
       const response = await context.runtime.fetch(url)
       if (response.status === 404) return undefined
       if (response.ok) return (await response.json()) as VerifiedContract
-      if (response.status !== 429 && response.status < 500) {
+      if (!transientStatus(response.status)) {
         throw new VerifierRefusedError(
           `Tempo verifier lookup failed for ${address}: HTTP ${response.status}`,
         )
@@ -382,7 +386,7 @@ async function lookupContract(context: VerificationContext, address: Address) {
         )
       }
     } catch (error) {
-      // A refusal (a 4xx other than 429) is definitive; anything else is the verifier being unreachable.
+      // A refusal (a 4xx other than 408, 425 or 429) is definitive; anything else is the verifier being unreachable.
       if (error instanceof VerifierRefusedError) throw error
       if (attempt === 5) {
         throw error instanceof VerifierUnavailableError
@@ -397,6 +401,11 @@ async function lookupContract(context: VerificationContext, address: Address) {
   return undefined
 }
 
+/** Whether an HTTP error status means the verifier may answer later: a timeout, too early, rate limit or 5xx. */
+function transientStatus(status: number) {
+  return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
 async function pollVerification(context: VerificationContext, jobId: string) {
   for (let poll = 0; poll < 30; poll++) {
     const response = await context.runtime
@@ -408,15 +417,21 @@ async function pollVerification(context: VerificationContext, jobId: string) {
       })
     if (!response.ok) {
       const message = `Tempo verifier job ${jobId} returned HTTP ${response.status}`
-      throw response.status === 429 || response.status >= 500
+      throw transientStatus(response.status)
         ? new VerifierUnavailableError(message)
         : new Error(message)
     }
-    const outcome = (await response.json()) as {
-      isJobCompleted: boolean
+    type Outcome = {
       contract: VerifiedContract | null
       error: { customCode: string; message: string } | null
+      isJobCompleted: boolean
     }
+    // The connection can drop while the body streams after a 200.
+    const outcome = (await response.json().catch((error: unknown) => {
+      throw new VerifierUnavailableError(
+        `Tempo verifier job ${jobId} reply was cut off: ${String(error)}`,
+      )
+    })) as Outcome
     if (outcome.isJobCompleted) return outcome
     await context.runtime.pause(1_000)
   }

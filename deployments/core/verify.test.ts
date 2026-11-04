@@ -364,6 +364,33 @@ describe('deployment source verification', () => {
     )
     expect(rateLimited.spawn).toHaveBeenCalledTimes(6)
 
+    const failedJob = submitting('')
+    failedJob.spawn = vi.fn(() => ({
+      status: 0,
+      stdout: '',
+      stderr: 'Verification Job ID: `job`',
+    })) as unknown as typeof failedJob.spawn
+    const lookup = failedJob.fetch
+    failedJob.fetch = vi.fn(async (input) =>
+      String(input).endsWith('/v2/verify/job')
+        ? Response.json({
+            isJobCompleted: true,
+            contract: { address: engine, chainId: '42431', match: null },
+            error: { customCode: 'internal_error', message: 'try again' },
+          })
+        : lookup(input),
+    ) as unknown as typeof fetch
+    await expect(verifyDeploymentSources(options, failedJob)).rejects.toBeInstanceOf(
+      VerifierUnavailableError,
+    )
+    expect(failedJob.spawn).toHaveBeenCalledTimes(6)
+
+    const timedOut = submitting('')
+    timedOut.fetch = vi.fn(async () => new Response('', { status: 408 })) as unknown as typeof fetch
+    await expect(verifyDeploymentSources(options, timedOut)).rejects.toBeInstanceOf(
+      VerifierUnavailableError,
+    )
+
     const compileError = submitting('Error: Compiler run failed')
     const error = await verifyDeploymentSources(options, compileError).catch(
       (caught: unknown) => caught,
@@ -495,7 +522,11 @@ describe('deployment source verification', () => {
       runtime.fetch = vi.fn(async (input) => {
         const url = String(input)
         if (url.endsWith('/v2/verify/job')) {
-          return Response.json({ isJobCompleted: true, contract: { address: router }, error: null })
+          return Response.json({
+            isJobCompleted: true,
+            contract: { address: router, match: 'exact_match' },
+            error: null,
+          })
         }
         if (url.toLowerCase().includes(router.toLowerCase())) {
           return ++routerLookups === 1
