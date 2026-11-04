@@ -89,16 +89,7 @@ committed collateral stays Rain's to settle; that is the guarantee its card prog
 
 ## Accepted risks
 
-- Rain's factory owner can upgrade the factory and the collateral implementation, and its controller
-  admin can liquidate any collateral. The provider trusts Rain's factory for provenance, as Bridge's
-  integration trusts its spender factory.
-- A public spend into a cardholder's own collateral names the cardholder on the L1, as any public
-  spend does.
-- Pooled collateral accepts public spends from anyone when `POOLED_ACCEPTS_PUBLIC` is set (the Rain
-  E2E's setting): anyone may fund it, which costs them and credits nobody until Rain or the partner
-  attributes it off chain. A program whose pooled collateral serves only private spends deploys its
-  provider with it false.
-- Rain has no on-chain pause: stopping a program means revoking its access keys and Zone keys.
+The [card spend threat model](../../threat-models/card-spend.md#accepted-risks) owns the accepted risks, Rain's included.
 
 ## Evidence
 
