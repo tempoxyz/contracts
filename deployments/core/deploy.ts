@@ -59,7 +59,11 @@ import {
   runtimeCodeHashes,
   verifyDeploymentProvenance,
 } from './provenance.js'
-import { verifyDeploymentSources, verifyRecordedDeploymentSources } from './verify.js'
+import {
+  VerifierUnavailableError,
+  verifyDeploymentSources,
+  verifyRecordedDeploymentSources,
+} from './verify.js'
 import {
   loadEarnProfileBundle,
   loadEarnProfileForEnvironment,
@@ -217,6 +221,17 @@ export async function deployEarnProfile(options: LifecycleOptions): Promise<Earn
   try {
     record = await completeDeploymentSourceVerification(client, { ...options, profile, record })
   } catch (error) {
+    // Only an unreachable verifier is pending; a mismatch or non-canonical source fails the command.
+    if (!(error instanceof VerifierUnavailableError)) {
+      if (!activationHandoff) throw error
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `${message} Activation also waits on ${activationHandoff.action}; re-run for its handoff.`,
+        {
+          cause: error,
+        },
+      )
+    }
     verificationInstructions = `Source verification is pending: ${error instanceof Error ? error.message : String(error)} Re-run the same deploy command later; deployed contracts and activation will not be repeated.`
   }
 

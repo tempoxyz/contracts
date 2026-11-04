@@ -165,8 +165,14 @@ a stale or edited record is rejected before it can drive an authority transactio
 ### Source verification
 
 For hosted deployments the command submits missing source to `https://contracts.tempo.xyz`, waits
-for a bytecode and source match, and records the result. A verifier outage never causes a
-rebroadcast or loses the record: rerunning resumes at verification after rechecking deployed state.
+for a bytecode and source match, and records the result. A verifier outage (unreachable, 429 or 5xx,
+a job that does not complete, or only transient compiler errors) leaves the record `pending` and
+the state `verification-pending`: rerunning resumes at verification after rechecking deployed
+state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
+a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
+nonzero exit; the record stays `pending`, and rerunning after the fix resumes the same way.
+Source inputs are hashed in a fixed (`en`) collation, so the recorded hash does not depend on the
+operator's locale.
 Hosted completion cannot opt out of source verification. A contract from a sibling project, such
 as `zone-router/`'s solc-built `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
 its own compiler settings; its sources may include Earn's through `../earn/`, and each must resolve

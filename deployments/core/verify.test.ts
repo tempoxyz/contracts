@@ -4,6 +4,7 @@ import { keccak256 } from 'viem'
 import { parseEarnDeploymentProfile } from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
 import {
+  VerifierUnavailableError,
   verifyDeploymentSources,
   verifyRecordedDeploymentSources,
   type VerificationDependencies,
@@ -122,6 +123,78 @@ function run(
 }
 
 describe('deployment source verification', () => {
+  test('hashes source inputs in the same order under any operator locale', async () => {
+    const runtime = dependencies()
+    const engineSources = {
+      'lib/forge-std/src/check.sol': { content: 'canonical:lib/forge-std/src/check.sol' },
+      'lib/forge-std/src/hash.sol': { content: 'canonical:lib/forge-std/src/hash.sol' },
+      'src/engines/veda/VedaEngine.sol': { content: 'canonical:src/engines/veda/VedaEngine.sol' },
+    }
+    runtime.fetch = vi.fn(async (input) => {
+      const url = String(input)
+      if (url.toLowerCase().includes(engine.toLowerCase())) {
+        return Response.json({ ...verifiedContract(engine, 'VedaEngine'), sources: engineSources })
+      }
+      return dependencies().fetch(input)
+    }) as unknown as typeof fetch
+    const hash = async () =>
+      (await verifyDeploymentSources(run(), runtime)).contracts.engine as {
+        sourceInputsHash: string
+      }
+    const expected = (await hash()).sourceInputsHash
+    // Czech collation sorts 'ch' after 'h', so check.sol would follow hash.sol under the default.
+    const compare = String.prototype.localeCompare
+    const czech = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+      this: string,
+      that: string,
+      locales?: Intl.LocalesArgument,
+      options?: Intl.CollatorOptions,
+    ) {
+      return compare.call(this, that, locales ?? 'cs', options)
+    })
+    try {
+      expect((await hash()).sourceInputsHash).toBe(expected)
+    } finally {
+      czech.mockRestore()
+    }
+  })
+
+  test('reports an unreachable verifier as unavailable, and a refusal as definitive', async () => {
+    const unreachable = dependencies()
+    unreachable.fetch = vi.fn(
+      async () => new Response('', { status: 503 }),
+    ) as unknown as typeof fetch
+    await expect(verifyDeploymentSources(run(), unreachable)).rejects.toBeInstanceOf(
+      VerifierUnavailableError,
+    )
+
+    const offline = dependencies()
+    offline.fetch = vi.fn(async () => {
+      throw new TypeError('fetch failed')
+    }) as unknown as typeof fetch
+    await expect(verifyDeploymentSources(run(), offline)).rejects.toBeInstanceOf(
+      VerifierUnavailableError,
+    )
+
+    const refused = dependencies()
+    refused.fetch = vi.fn(async () => new Response('', { status: 403 })) as unknown as typeof fetch
+    const error = await verifyDeploymentSources(run(), refused).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(VerifierUnavailableError)
+    expect(refused.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  test('treats a non-canonical source as definitive, not unavailable', async () => {
+    const runtime = dependencies()
+    runtime.readSource = vi.fn(() => 'something else')
+    const error = await verifyDeploymentSources(
+      run({ submitMissing: true } as never),
+      runtime,
+    ).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(VerifierUnavailableError)
+  })
+
   test('requires canonical existing PropAMM source and records its verification', async () => {
     const verification = await verifyDeploymentSources(
       run({ profile: { ...profile, engine: { kind: 'propamm', address: engine } } }),

@@ -295,6 +295,7 @@ async function verifySource(
     context.compilerArguments.set(root, compilerArguments)
   }
   let lastError = 'verification did not complete'
+  let lastTransient = false
   const maximumAttempts = 6
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
     const result = context.runtime.spawn(
@@ -344,14 +345,12 @@ async function verifySource(
       return sourceMatch(context, verified, target)
     }
     lastError = `${outcome.error?.customCode ?? 'unknown'}: ${outcome.error?.message ?? 'unknown error'}`
-    if (
-      !transientVerifierErrors.has(outcome.error?.customCode ?? '') ||
-      attempt === maximumAttempts
-    )
-      break
+    lastTransient = transientVerifierErrors.has(outcome.error?.customCode ?? '')
+    if (!lastTransient || attempt === maximumAttempts) break
     await context.runtime.pause(Math.min(5_000 * 2 ** (attempt - 1), 30_000))
   }
-  throw new Error(`Source verification failed for ${target.name} ${target.address}: ${lastError}`)
+  const message = `Source verification failed for ${target.name} ${target.address}: ${lastError}`
+  throw lastTransient ? new VerifierUnavailableError(message) : new Error(message)
 }
 
 async function lookupContract(context: VerificationContext, address: Address) {
@@ -362,13 +361,25 @@ async function lookupContract(context: VerificationContext, address: Address) {
       if (response.status === 404) return undefined
       if (response.ok) return (await response.json()) as VerifiedContract
       if (response.status !== 429 && response.status < 500) {
-        throw new Error(`Tempo verifier lookup failed for ${address}: HTTP ${response.status}`)
+        throw new VerifierRefusedError(
+          `Tempo verifier lookup failed for ${address}: HTTP ${response.status}`,
+        )
       }
       if (attempt === 5) {
-        throw new Error(`Tempo verifier lookup failed for ${address}: HTTP ${response.status}`)
+        throw new VerifierUnavailableError(
+          `Tempo verifier lookup failed for ${address}: HTTP ${response.status}`,
+        )
       }
     } catch (error) {
-      if (attempt === 5) throw error
+      // A refusal (a 4xx other than 429) is definitive; anything else is the verifier being unreachable.
+      if (error instanceof VerifierRefusedError) throw error
+      if (attempt === 5) {
+        throw error instanceof VerifierUnavailableError
+          ? error
+          : new VerifierUnavailableError(
+              `Tempo verifier lookup failed for ${address}: ${String(error)}`,
+            )
+      }
     }
     await context.runtime.pause(attempt * 500)
   }
@@ -377,9 +388,19 @@ async function lookupContract(context: VerificationContext, address: Address) {
 
 async function pollVerification(context: VerificationContext, jobId: string) {
   for (let poll = 0; poll < 30; poll++) {
-    const response = await context.runtime.fetch(`${context.verifierUrl}/v2/verify/${jobId}`)
-    if (!response.ok)
-      throw new Error(`Tempo verifier job ${jobId} returned HTTP ${response.status}`)
+    const response = await context.runtime
+      .fetch(`${context.verifierUrl}/v2/verify/${jobId}`)
+      .catch((error: unknown) => {
+        throw new VerifierUnavailableError(
+          `Tempo verifier job ${jobId} is unreachable: ${String(error)}`,
+        )
+      })
+    if (!response.ok) {
+      const message = `Tempo verifier job ${jobId} returned HTTP ${response.status}`
+      throw response.status === 429 || response.status >= 500
+        ? new VerifierUnavailableError(message)
+        : new Error(message)
+    }
     const outcome = (await response.json()) as {
       isJobCompleted: boolean
       contract: VerifiedContract | null
@@ -388,7 +409,7 @@ async function pollVerification(context: VerificationContext, jobId: string) {
     if (outcome.isJobCompleted) return outcome
     await context.runtime.pause(1_000)
   }
-  throw new Error(`Tempo verifier job ${jobId} did not complete`)
+  throw new VerifierUnavailableError(`Tempo verifier job ${jobId} did not complete`)
 }
 
 function sourceMatch(
@@ -456,7 +477,9 @@ function requireCanonicalSources(
   // Earn's sources (`../earn/src/...`); every one must resolve inside this checkout.
   const project = resolve(projectRoot)
   const root = resolve(context.root, '..')
-  const entries = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right))
+  // A fixed collation: the default follows the operator's locale (Czech and Slovak sort 'ch' after
+  // 'h'), which would change the recorded hash. 'en' matches what existing records were hashed with.
+  const entries = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right, 'en'))
   for (const [relativePath, source] of entries) {
     if (typeof source.content !== 'string')
       throw new Error(`Verifier did not return source content for ${relativePath}`)
@@ -517,4 +540,14 @@ type VerificationContext = {
   submitMissing: boolean
   /** Each project's compiler arguments, resolved on its first submission. */
   compilerArguments: Map<string, string[]>
+}
+
+/** The verifier could not be reached or kept failing transiently: retrying later can succeed. */
+export class VerifierUnavailableError extends Error {
+  override name = 'VerifierUnavailableError'
+}
+
+/** The verifier refused a request (a 4xx other than 429), which retrying does not change. */
+class VerifierRefusedError extends Error {
+  override name = 'VerifierRefusedError'
 }
