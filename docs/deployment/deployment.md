@@ -23,14 +23,14 @@ pnpm earn status profiles/e2e-moderato/profile.json
 pnpm earn verify profiles/e2e-moderato/profile.json
 ```
 
-| Command   | What it does                                                                                                                                                             | Flags                                                                                    |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `plan`    | Prints the planned actions. With an RPC, it labels a privileged action `authority` only after read-only calls prove the configured signer holds it; otherwise `handoff`. | `--rpc-url`, `--json`                                                                    |
-| `deploy`  | Reconciles the profile until it completes or reaches an external authority ([lifecycle](#lifecycle)).                                                                    | `--rpc-url`, `--json`, `--watch` (rechecks every 15 seconds until the handoff completes) |
-| `status`  | Reads the record or pending state without chain reads: `not-started`, `in-progress`, `deployed`, `verification-pending`, or `complete`.                                  | `--json`                                                                                 |
-| `verify`  | Rechecks a completed record against the live chain without a signer or any write ([rechecking](#rechecking-deployed-profiles)).                                          | `--rpc-url`, `--json`, `--skip-zone`                                                     |
-| `deposit` | Quotes, and with `--broadcast` submits, a user deposit into the deployed stack.                                                                                          | see below                                                                                |
-| `access`  | Reads or changes one member of a protected profile's TIP-403 whitelist ([access](../earn/modules/access.md#deployment-and-operations)).                                  | `--earn-file <profile.json> <status\|add\|remove> <address>`                             |
+| Command   | What it does                                                                                                                                                             | Flags                                                                                                               |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `plan`    | Prints the planned actions. With an RPC, it labels a privileged action `authority` only after read-only calls prove the configured signer holds it; otherwise `handoff`. | `--rpc-url`, `--json`                                                                                               |
+| `deploy`  | Reconciles the profile until it completes or reaches an external authority ([lifecycle](#lifecycle)).                                                                    | `--rpc-url`, `--json`, `--watch` (rechecks every 15 seconds until the handoff completes), `--resubmit-verification` |
+| `status`  | Reads the record or pending state without chain reads: `not-started`, `in-progress`, `deployed`, `verification-pending`, or `complete`.                                  | `--json`                                                                                                            |
+| `verify`  | Rechecks a completed record against the live chain without a signer; read-only unless verifier repair is requested ([rechecking](#rechecking-deployed-profiles)).        | `--rpc-url`, `--json`, `--skip-zone`, `--resubmit-verification`                                                     |
+| `deposit` | Quotes, and with `--broadcast` submits, a user deposit into the deployed stack.                                                                                          | see below                                                                                                           |
+| `access`  | Reads or changes one member of a protected profile's TIP-403 whitelist ([access](../earn/modules/access.md#deployment-and-operations)).                                  | `--earn-file <profile.json> <status\|add\|remove> <address>`                                                        |
 
 `plan`, `deploy`, `status`, `verify`, and `deposit` also accept `--trusted-identity <path>`
 for an independently reviewed historical deployment identity
@@ -209,6 +209,30 @@ the state `verification-pending`: rerunning resumes at verification after rechec
 state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
 a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
 nonzero exit; the record stays `pending`, and rerunning after the fix resumes the same way.
+For an invalid existing verifier entry, explicitly request canonical re-verification:
+
+```sh
+# A pending record must finish through deploy; this resumes the existing deployment.
+pnpm earn deploy profiles/<profile-id>/profile.json --resubmit-verification
+# A completed record can repair verifier evidence without rewriting its recorded source identity.
+pnpm earn verify profiles/<profile-id>/profile.json --resubmit-verification
+```
+
+Repair leaves valid entries unchanged. For contracts created by the profile, it resubmits invalid
+entries with the recorded creation transaction and the selected checkout's complete source set and
+compiler settings. It still requires the expected address,
+contract, full source set, and creation hash after the job completes. A completed record also keeps
+its original source-input hash: use the corresponding checkout, not changed sources. Existing
+engines selected by address rather than deployed by this profile must already have matching source;
+the lifecycle does not own their creation inputs.
+`verify` without the flag never submits jobs; the flag authorizes verifier writes, not onchain writes.
+Only `deploy` upgrades a pending record to verified, so use it to finish an incomplete deployment.
+
+The [verifier rejects replacement of an exact match](https://github.com/tempoxyz/tempo-apps/blob/ba6189409e3ca1a7c0619cd36ad22e6f3483187f/apps/contract-verification/src/route.verify.ts#L236-L275) with `409 already_verified`, even when its creation hash is absent. That response needs verifier-side repair; neither this flag nor
+repeated runs bypasses it. Partial entries can be resubmitted, but the verifier does not replace a
+conflicting non-null creation hash; that also requires verifier-side repair. Until the returned
+evidence passes, a pending record stays pending and funding stays blocked. Never edit the record to remove the creation transaction.
+
 Source inputs are hashed in a fixed (`en`) collation, so the recorded hash does not depend on the
 operator's locale.
 Hosted completion cannot opt out of source verification. A contract from a sibling project, such
@@ -379,8 +403,8 @@ releases from `main` in one run. Choose the networks (`both` runs Moderato, then
 Moderato succeeds), the releases (`all` is the core release and every engine factory the registry
 names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
 that one), and whether to broadcast. Each network's job runs
-`pnpm factory-release <network> <release|all> [--broadcast]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
-which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
+`pnpm factory-release <network> <release|all> [--broadcast] [--resubmit-verification]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
+which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. For invalid verifier entries, `--resubmit-verification` requires `--broadcast` and follows the same [repair limits](#source-verification); it does not force redeployment. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
 addresses, transactions, and source matches; a run that stops keeps the releases before it. The
 Zone router and Bridge releases share these environments and the hosted-contracts queue, and release
 separately ([Zone router releases](#zone-router-releases), [Bridge releases](#bridge-releases)); the
@@ -429,7 +453,8 @@ and `pnpm zone-router-release <network> <release> [--parameters <json>] [--broad
 releases. It runs the same release engine as factory releases, from
 [`zone-router/`](../../zone-router/README.md) with its own solc build and `deploy` profile: the same address,
 creation-code, and receipt checks, reconciling a release that already exists, and source
-verification after a broadcast. None has a registry entry, so there is no `all` and nothing is
+verification after a broadcast. Its CLI also accepts `--resubmit-verification` with `--broadcast`,
+with the same [repair limits](#source-verification). None has a registry entry, so there is no `all` and nothing is
 recorded afterwards. Pass a release's parameters as one JSON object (`--parameters`, or the
 workflow's `parameters` input, which reaches the command only through the environment); the command
 validates them before Forge runs, refuses parameters for the factory, and records them in the result

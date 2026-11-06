@@ -539,6 +539,8 @@ const defaultDependencies: FactoryReleaseDependencies = {
 
 /** Where and how one release runs; the release itself comes from its CLI's plan. */
 export type ReleaseOptions = {
+  /** Request canonical re-verification of invalid verifier entries after deployment. */
+  resubmit?: boolean
   network: string
   broadcast: boolean
   /** Earn's Foundry project; a plan in another project runs from its sibling (`zone-router/`). */
@@ -575,6 +577,8 @@ export async function deployRelease<Kind extends string>(
   },
   dependencies: Partial<FactoryReleaseDependencies> = {},
 ): Promise<ReleaseResult<Kind>> {
+  if (options.resubmit && !options.broadcast)
+    throw new Error('--resubmit-verification requires --broadcast')
   const runtime = { ...defaultDependencies, ...dependencies }
   const network = hostedEnvironments[options.network as HostedEnvironmentId]
   if (!network) {
@@ -675,6 +679,7 @@ export async function deployRelease<Kind extends string>(
         address: contract.address,
         contract: contract.contract,
         constructorArgs: contract.constructorArgs,
+        resubmit: options.resubmit,
         ...(contract.transaction ? { creationTransactionHash: contract.transaction } : {}),
       })
       contracts.push({ ...contract, match: verification.match })
@@ -1013,7 +1018,7 @@ export function registryPullRequestBody(
 }
 
 const usage =
-  'Usage: pnpm factory-release <network> <release|all> [--broadcast] [--output <file>]\n' +
+  'Usage: pnpm factory-release <network> <release|all> [--broadcast] [--resubmit-verification] [--output <file>]\n' +
   '       pnpm factory-release registry <result.json>... [--body <file>]\n' +
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
   `  release: all (${registryReleaseKinds.join(', ')}) | ${factoryReleaseKinds.join(' | ')}\n` +
@@ -1045,6 +1050,7 @@ export async function main(
     allowPositionals: true,
     options: {
       broadcast: { type: 'boolean', default: false },
+      'resubmit-verification': { type: 'boolean', default: false },
       output: { type: 'string' },
       body: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -1055,6 +1061,8 @@ export async function main(
     return
   }
   if (positionals[0] === 'registry') {
+    if (values['resubmit-verification'])
+      throw new Error('--resubmit-verification is not supported by registry')
     registryMain(positionals.slice(1), values.body)
     return
   }
@@ -1070,6 +1078,7 @@ export async function main(
         network,
         kind,
         broadcast: values.broadcast,
+        resubmit: values['resubmit-verification'],
         root,
         environment: process.env,
       }),

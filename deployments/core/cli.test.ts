@@ -24,6 +24,18 @@ describe('earn CLI', () => {
     ).rejects.toThrow('--earn-file requires a value')
   })
 
+  test.each(['deploy', 'verify'])('accepts explicit verifier repair on %s', async (command) => {
+    await expect(
+      main([command, 'missing-profile.json', '--resubmit-verification']),
+    ).rejects.toThrow('ENOENT')
+  })
+
+  test.each(['plan', 'status', 'deposit'])('refuses verifier repair on %s', async (command) => {
+    await expect(
+      main([command, 'missing-profile.json', '--resubmit-verification']),
+    ).rejects.toThrow('--resubmit-verification is supported only by deploy or verify')
+  })
+
   test('accepts --skip-zone only on verify', async () => {
     await expect(main(['deploy', 'profile.json', '--skip-zone'], console, '/')).rejects.toThrow(
       '--skip-zone is supported only by verify',

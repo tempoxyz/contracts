@@ -345,7 +345,7 @@ export function deployRouterRelease(
 }
 
 const usage =
-  'Usage: pnpm zone-router-release <network> <release> [--parameters <json>] [--broadcast] [--output <file>]\n' +
+  'Usage: pnpm zone-router-release <network> <release> [--parameters <json>] [--broadcast] [--resubmit-verification] [--output <file>]\n' +
   `  network: ${Object.keys(hostedEnvironments).join(' | ')}\n` +
   `  release: ${routerReleaseKinds.join(' | ')}\n` +
   '  parameters (JSON object; only these kinds take any):\n' +
@@ -366,6 +366,7 @@ export async function main(
     allowPositionals: true,
     options: {
       broadcast: { type: 'boolean', default: false },
+      'resubmit-verification': { type: 'boolean', default: false },
       parameters: { type: 'string', default: '{}' },
       output: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -394,6 +395,7 @@ export async function main(
         kind: release,
         parameters,
         broadcast: values.broadcast,
+        resubmit: values['resubmit-verification'],
         root,
         environment: process.env,
       }),

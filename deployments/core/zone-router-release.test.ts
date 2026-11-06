@@ -591,3 +591,9 @@ function releaseClient(chainId: number, binding?: Address) {
     }),
   })
 }
+
+test('router release CLI routes verifier repair to its broadcast guard', async () => {
+  await expect(
+    main(['moderato', 'zoneRouterFactory', '--resubmit-verification'], '/nonexistent/earn'),
+  ).rejects.toThrow('--resubmit-verification requires --broadcast')
+})

@@ -794,3 +794,125 @@ describe('source verifier admission', () => {
     expect(runtime.spawn).toHaveBeenCalledOnce()
   })
 })
+
+describe('verifier recovery', () => {
+  function repairRuntime(
+    transactionHash: string | null | undefined,
+    repaired: Record<string, unknown> = {},
+    match: 'match' | 'exact_match' = 'match',
+  ) {
+    const runtime = dependencies()
+    const original = runtime.fetch
+    let submitted = false
+    runtime.fetch = vi.fn(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/v2/verify/repair'))
+        return Response.json({
+          isJobCompleted: true,
+          contract: { match: 'exact_match' },
+          error: null,
+        })
+      if (!url.toLowerCase().includes(earnVault.toLowerCase())) return original(input)
+      return Response.json({
+        ...verifiedContract(earnVault, 'ERC1967Proxy'),
+        ...(submitted ? repaired : { match, transactionHash }),
+      })
+    }) as typeof fetch
+    runtime.spawn = vi.fn(() => {
+      submitted = true
+      return { status: 0, stdout: 'Verification Job ID: `repair`', stderr: '' }
+    }) as never
+    return runtime
+  }
+
+  test.each([undefined, null])(
+    'repairs creation evidence %s only on opt-in and sends the recorded hash',
+    async (transactionHash) => {
+      const runtime = repairRuntime(transactionHash)
+      await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+        '--resubmit-verification',
+      )
+      expect(runtime.spawn).not.toHaveBeenCalled()
+      await expect(
+        verifyDeploymentSources(run({ resubmit: true }), runtime),
+      ).resolves.toMatchObject({ contractVerification: 'verified' })
+      expect(runtime.spawn).toHaveBeenCalledOnce()
+      expect(runtime.spawn).toHaveBeenCalledWith(
+        'forge',
+        expect.arrayContaining(['--creation-transaction-hash', transaction]),
+        expect.anything(),
+      )
+    },
+  )
+
+  test.each([
+    { transactionHash: null },
+    { transactionHash: `0x${'2'.repeat(64)}` },
+    { name: 'Wrong' },
+    { fullyQualifiedName: 'src/Lookalike.sol:ERC1967Proxy' },
+    { address: address('f') },
+    { sources: { [contracts.ERC1967Proxy.split(':')[0]!]: { content: 'wrong source' } } },
+  ])('never accepts invalid evidence after a successful job: %j', async (repaired) => {
+    const runtime = repairRuntime(null, repaired)
+    await expect(verifyDeploymentSources(run({ resubmit: true }), runtime)).rejects.toThrow()
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test('leaves valid exact matches untouched during an explicit repair', async () => {
+    const runtime = dependencies()
+    await expect(verifyDeploymentSources(run({ resubmit: true }), runtime)).resolves.toMatchObject({
+      contractVerification: 'verified',
+    })
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('rechecks a record read-only by default and repairs it only on explicit opt-in', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const runtime = repairRuntime(null)
+    const record = run({ source }).record
+    const before = structuredClone(record)
+    await expect(verifyRecordedDeploymentSources(run({ record }), runtime)).rejects.toThrow(
+      'does not match the recorded deployment transaction',
+    )
+    expect(runtime.spawn).not.toHaveBeenCalled()
+    await expect(
+      verifyRecordedDeploymentSources(run({ record, resubmit: true }), runtime),
+    ).resolves.toBeUndefined()
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+    expect(record).toEqual(before)
+  })
+
+  test('a repair cannot rewrite the historical source hash to match a different checkout', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const path = contracts.ERC1967Proxy.split(':')[0]!
+    const runtime = repairRuntime(null, {
+      sources: { [path]: { content: 'new canonical source' } },
+    })
+    const original = runtime.readSource
+    runtime.readSource = vi.fn((file) =>
+      file === `/repo/${path}` ? 'new canonical source' : original(file),
+    )
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).rejects.toThrow('does not match current provenance')
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test('reports a terminal exact-match refusal without retrying or accepting the old entry', async () => {
+    const runtime = repairRuntime(null, {}, 'exact_match')
+    runtime.spawn = vi.fn(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'HTTP 409 already_verified: Contract is already verified',
+    })) as never
+    const error = await verifyDeploymentSources(run({ resubmit: true }), runtime).catch(
+      (caught: unknown) => caught,
+    )
+    expect(error).not.toBeInstanceOf(VerifierUnavailableError)
+    expect(error).toMatchObject({
+      message: expect.stringContaining('Verifier-side repair is required'),
+    })
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+    expect(runtime.pause).not.toHaveBeenCalled()
+  })
+})

@@ -70,7 +70,7 @@ type SourceVerificationOptions<Record = Pick<EarnDeploymentRecord, 'actions' | '
   record: Record
   root: string
   rpcUrl: string
-  /** Explicitly replace an existing verifier entry by submitting canonical compiler inputs. */
+  /** Request canonical re-verification of invalid entries; matching entries are left unchanged. */
   resubmit?: boolean
 }
 
@@ -82,7 +82,7 @@ export async function verifyDeploymentSources(
   return inspectDeploymentSources(options, true, dependencies)
 }
 
-/** Rechecks recorded verifier results and proxy provenance without submitting verifier jobs. */
+/** Rechecks recorded evidence; explicit resubmission repairs verifier entries, never the recorded source identity. */
 export async function verifyRecordedDeploymentSources(
   options: SourceVerificationOptions<EarnDeploymentRecord>,
   dependencies: Partial<VerificationDependencies> = {},
@@ -103,7 +103,7 @@ export async function verifyRecordedDeploymentSources(
       `Recorded deployment verifier ${options.record.source.verifierUrl} does not match trusted verifier ${verifierUrl}`,
     )
   }
-  const observed = await inspectDeploymentSources(options, false, dependencies)
+  const observed = await inspectDeploymentSources(options, options.resubmit === true, dependencies)
   const compatible = Object.fromEntries(
     Object.entries(observed.contracts).map(([key, value]) => {
       const previous =
@@ -341,8 +341,18 @@ async function verifySource(
 ): Promise<Extract<ContractSourceVerification, { kind: 'source' }>> {
   const root = target.root ?? context.root
   const existing = await lookupContract(context, target.address)
-  if (existing?.match && !context.resubmit) {
-    return sourceMatch(context, existing, target)
+  if (existing?.match) {
+    try {
+      // Even an explicit repair must leave good entries alone: exact matches cannot be replaced.
+      return sourceMatch(context, existing, target)
+    } catch (error) {
+      if (!context.submitMissing || !context.resubmit) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Retry with --resubmit-verification to request canonical re-verification; the verifier may require operator repair.`,
+          { cause: error },
+        )
+      }
+    }
   }
   if (!context.submitMissing) {
     throw new Error(`${target.name} ${target.address} does not have a source match`)
@@ -395,6 +405,11 @@ async function verifySource(
     const jobId =
       result.status === 0 ? verifierOutput.match(/Verification Job ID: `([^`]+)`/)?.[1] : undefined
     if (!jobId) {
+      // Tempo's verifier refuses replacement of exact matches, including entries missing creation metadata.
+      if (existing?.match && /already[_ ]verified/i.test(verifierOutput))
+        throw new Error(
+          `Source verification failed for ${target.name} ${target.address}: the verifier refused replacement of its existing entry. Verifier-side repair is required; creation and source identity checks remain enforced.`,
+        )
       // A submission the verifier rate-limited, failed or never answered is retried; a compile or argument error is definitive.
       lastError =
         result.status === 0

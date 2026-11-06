@@ -3,7 +3,7 @@ import { encodeFunctionData, parseEventLogs, type Address, type Hex } from 'viem
 import { simulateCalls } from 'viem/actions'
 import { earnVaultAbi, morphoFeeWrapperAbi, simple4626VaultAbi } from '@tempoxyz/contracts/abis'
 import { e2eEngines } from '../../engines/index.js'
-import { requireE2eZone, type E2eContext } from '../../harness/context.js'
+import { requireE2eZone, type E2eContext, type E2eZoneContext } from '../../harness/context.js'
 import { E2ePrerequisiteError, TIMEOUT_MS, assert } from '../../harness/support/utils.js'
 import {
   approve,
@@ -129,14 +129,9 @@ export async function migrateMorphoFeeWrapperToPrivateEarn(context: E2eContext) 
   const privateEntry = await privatizeEarnShares(context, migration.earnShares, migration.calls)
   const after = await morphoFeeWrapperMigrationState(context, migration.morphoFeeWrapper)
   const result = assertMorphoFeeWrapperMigrationSucceeded(before, after, migration, privateEntry)
-  // A fee-bearing Portal cannot accept one-unit dust; keep it explicitly accounted for publicly.
+  // Dust must cover both Portal fees; otherwise keep it explicitly accounted for publicly.
   let privateEarnShares = privateEntry.netAmount
-  const depositFee = await context.l1Public.readContract({
-    address: context.deployment.network.zone.portal,
-    abi: Abis.zonePortal,
-    functionName: 'calculateDepositFee',
-  })
-  if (result.publicDust > depositFee) {
+  if (await canPrivatizeMigrationDust(context, result.publicDust)) {
     const publicBefore = await tokenBalance(
       context,
       context.contracts.earnShare,
@@ -454,4 +449,25 @@ export function assertPrivateMigrationCredit(options: {
     options.publicDust >= 0n && options.publicDust <= 1n,
     'Migration public rounding dust is outside its bound',
   )
+}
+
+/** Keeps migration dust public unless it exceeds the Portal's minimum deposit. */
+export async function canPrivatizeMigrationDust(context: E2eZoneContext, amount: bigint) {
+  if (amount <= 0n) return false
+  const blockNumber = await context.l1Public.getBlockNumber({ cacheTime: 0 })
+  const [depositFee, bouncebackFee] = await Promise.all([
+    context.l1Public.readContract({
+      address: context.deployment.network.zone.portal,
+      abi: Abis.zonePortal,
+      functionName: 'calculateDepositFee',
+      blockNumber,
+    }),
+    context.l1Public.readContract({
+      address: context.deployment.network.zone.portal,
+      abi: Abis.zonePortal,
+      functionName: 'calculateBouncebackFee',
+      blockNumber,
+    }),
+  ])
+  return amount > depositFee + bouncebackFee
 }

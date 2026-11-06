@@ -142,7 +142,8 @@ Every operation must still prove its own matching outcome and refund.
 
 Deposit outcomes match the exact queue hash, including supported legacy encrypted event names.
 Continuation uses the certified net private credit, not the gross mint; actual Portal fees and any
-single-unit public share dust remain separately accounted. Unknown deltas never count as fees, and
+single-unit public share dust remain separately accounted. Migration dust stays public unless it
+exceeds the deposit fee plus bounce-back reserve, quoted at one block. Unknown deltas never count as fees, and
 ambiguous bounce evidence blocks rather than proving a refund from balance changes alone. Router
 balances donated before a case are allowed but must be preserved exactly; all temporary allowances
 must be zero. A concurrent donation changes that baseline and fails the check.

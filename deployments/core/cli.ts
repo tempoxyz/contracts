@@ -40,7 +40,8 @@ const skipLiveFlags = capabilityModules.flatMap((module) =>
 
 const usage =
   'Usage: pnpm earn <plan|deploy|status|verify|deposit> <profile.json> [--trusted-identity <path>] [--rpc-url <url>] [--watch] [--json]\n' +
-  `       pnpm earn verify <profile.json> ${skipLiveFlags.map((flag) => `[--skip-${flag}]`).join(' ')} [--rpc-url <url>] [--json]\n` +
+  '       pnpm earn deploy <profile.json> [--resubmit-verification] [--rpc-url <url>] [--json]\n' +
+  `       pnpm earn verify <profile.json> ${skipLiveFlags.map((flag) => `[--skip-${flag}]`).join(' ')} [--resubmit-verification] [--rpc-url <url>] [--json]\n` +
   '       pnpm earn deposit <profile.json> --assets <amount> [--account <address>] [--receiver <address>] [--slippage-bps <bps>] [--broadcast] [--rpc-url <url>] [--json]\n' +
   capabilityCommands.map((command) => `       ${command.usage.replace('Usage: ', '')}`).join('\n')
 
@@ -170,6 +171,7 @@ export async function main(
       root: repositoryRoot,
       rpcUrl,
       trustedIdentity,
+      resubmit: options.resubmit,
       skipLive: options.skipLive,
     })
     print(
@@ -212,6 +214,7 @@ export async function main(
       root: repositoryRoot,
       rpcUrl,
       trustedIdentity,
+      resubmit: options.resubmit,
     })
     if (result.state === 'complete' || result.state === 'verification-pending') {
       print(
@@ -263,6 +266,7 @@ function parseArguments(command: Command, args: string[]) {
       'rpc-url': { type: 'string' },
       'trusted-identity': { type: 'string' },
       watch: { type: 'boolean', default: false },
+      'resubmit-verification': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       account: { type: 'string' },
       assets: { type: 'string' },
@@ -285,6 +289,8 @@ function parseArguments(command: Command, args: string[]) {
     (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps >= 10_000)
   )
     throw new Error('--slippage-bps must be an integer from 0 through 9999')
+  if (command !== 'deploy' && command !== 'verify' && values['resubmit-verification'])
+    throw new Error('--resubmit-verification is supported only by deploy or verify')
   if (command !== 'deploy' && watch) throw new Error('--watch is supported only by deploy')
   if (
     command !== 'deposit' &&
@@ -303,6 +309,7 @@ function parseArguments(command: Command, args: string[]) {
     assets,
     broadcast,
     receiver,
+    resubmit: values['resubmit-verification'],
     rpcUrl,
     skipLive,
     slippageBps,

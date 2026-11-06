@@ -116,6 +116,8 @@ export type EarnDeploymentResult =
     })
 
 type LifecycleOptions = {
+  /** Request canonical verifier repairs without changing recorded creation or source identity. */
+  resubmit?: boolean
   environment: NodeJS.ProcessEnv
   profilePath: string
   root: string
@@ -435,7 +437,7 @@ async function completeDeploymentSourceVerification(
 }
 
 /**
- * Verifies a completed adjacent record and current capability identities without changing state.
+ * Verifies a completed record without rewriting it; explicit resubmission may repair verifier entries.
  * Each `skipLive` flag names a module's `liveCheck`, whose external chain is then reported in
  * `unverified` instead of checked.
  */

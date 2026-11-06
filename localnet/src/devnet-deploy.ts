@@ -51,15 +51,19 @@ const outputs: Record<
   'earn-vault': state.earnVault,
   'earn-router': state.earnRouter,
 }
-// Chain writes cannot be undone: preserve recovery addresses even when the final input check fails.
-for (const [name, value] of Object.entries(outputs)) {
-  if (!value) continue
-  writeFileSync(resolve(directory, name), value)
-  console.log(`${name}: ${value}`)
-}
-if (!state.earnRouter) throw new Error('The devnet stack deployed no Earn router')
 try {
-  assertBuildProvenanceUnchanged(Config.root, provenance)
+  try {
+    // Check before our own address files can dirty an unignored output directory in the checkout.
+    assertBuildProvenanceUnchanged(Config.root, provenance)
+  } finally {
+    // Chain writes cannot be undone: preserve recovery addresses even when the final input check fails.
+    for (const [name, value] of Object.entries(outputs)) {
+      if (!value) continue
+      writeFileSync(resolve(directory, name), value)
+      console.log(`${name}: ${value}`)
+    }
+  }
+  if (!state.earnRouter) throw new Error('The devnet stack deployed no Earn router')
   writeFileSync(
     resolve(directory, 'earn-build-provenance.json'),
     `${JSON.stringify(provenance, null, 2)}\n`,

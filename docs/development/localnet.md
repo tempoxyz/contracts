@@ -143,9 +143,10 @@ replacement fails.
 Devnet bootstrap rebuilds an unreceipted or changed compiler before resolving credentials, then
 requires the matching receipt. In the directory selected by `--out`, `earn-source-revision` identifies
 the repository revision and pinned Solidity sources; `earn-build-provenance.json` also records the
-requested solar source revision and receipt-matched executable SHA-256. Before writing these two
-certification files, the command rechecks the sources, receipt, and compiler bytes after deployment.
-If that check fails, the command exits unsuccessfully but preserves the deployed address files for
+requested solar source revision and receipt-matched executable SHA-256. The command rechecks the
+sources, receipt, and compiler bytes after deployment, before writing any address or certification
+files. This keeps its own outputs from failing the check when `--out` is unignored inside the checkout.
+If that check fails, the command exits unsuccessfully but still writes the deployed address files for
 recovery. It withholds both certification files and removes any from an earlier run in the same
 output directory. Address files alone do not certify a successful run.
 

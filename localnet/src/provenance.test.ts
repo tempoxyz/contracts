@@ -294,6 +294,67 @@ describe('devnet deployment provenance boundary', () => {
     expect(cli.deploy).toHaveBeenCalledOnce()
   })
 
+  it('certifies an unignored output directory inside the source checkout', async () => {
+    const { root, git } = checkout()
+    const provenance = captureBuildProvenance(root)
+    const directory = join(root, 'outputs')
+    await runCli(root, undefined, directory)
+    expect(cli.deploy).toHaveBeenCalledOnce()
+    expect(JSON.parse(readFileSync(join(directory, 'earn-build-provenance.json'), 'utf8'))).toEqual(
+      provenance,
+    )
+    expect(readFileSync(join(directory, 'earn-source-revision'), 'utf8')).toBe(
+      provenance.sourceRevision,
+    )
+    expect(git(root, 'status', '--porcelain', '--untracked-files=all')).toContain(
+      '?? outputs/earn-router',
+    )
+    for (const name of [
+      'earn-input-token',
+      'earn-funding-helper',
+      'earn-token',
+      'earn-vault',
+      'earn-router',
+    ])
+      expect(readFileSync(join(directory, name), 'utf8')).toBe(
+        '0x1111111111111111111111111111111111111111',
+      )
+  })
+
+  it.each(['source', 'dependency', 'compiler'] as const)(
+    'preserves unignored recovery addresses without certifying changed %s inputs',
+    async (input) => {
+      const { root, compiler, dependency } = checkout()
+      const directory = join(root, 'outputs')
+      const path = {
+        source: join(root, 'fixture.sol'),
+        dependency: join(dependency('zone-router'), 'library.sol'),
+        compiler,
+      }[input]!
+      const message = {
+        source: 'clean source checkout',
+        dependency: 'dependency sources must be clean and pinned',
+        compiler: 'run pnpm deps',
+      }[input]!
+      await expect(runCli(root, () => writeFileSync(path, 'changed'), directory)).rejects.toThrow(
+        message,
+      )
+      expect(cli.deploy).toHaveBeenCalledOnce()
+      for (const name of ['earn-build-provenance.json', 'earn-source-revision'])
+        expect(existsSync(join(directory, name))).toBe(false)
+      for (const name of [
+        'earn-input-token',
+        'earn-funding-helper',
+        'earn-token',
+        'earn-vault',
+        'earn-router',
+      ])
+        expect(readFileSync(join(directory, name), 'utf8')).toBe(
+          '0x1111111111111111111111111111111111111111',
+        )
+    },
+  )
+
   it.each([false, true])(
     'preserves recovery addresses but no certification after compiler changes (reused directory: %s)',
     async (reused) => {
@@ -444,7 +505,11 @@ if (!valid) {
   return { root, dependency, git, compiler, solarRevision, binary, freshBinary, receipt }
 }
 
-async function runCli(root: string, duringDeploy?: () => void) {
+async function runCli(
+  root: string,
+  duringDeploy?: () => void,
+  directory = join(root, '.solar/outputs'),
+) {
   cli.root = root
   cli.configuration.mockReset().mockImplementation(() => {
     // Missing installation or capture after key resolution would fail this boundary assertion.
@@ -463,7 +528,6 @@ async function runCli(root: string, duringDeploy?: () => void) {
       earnRouter: address,
     }
   })
-  const directory = join(root, '.solar/outputs')
   const argv = process.argv
   const log = vi.spyOn(console, 'log').mockImplementation(() => {})
   process.argv = [

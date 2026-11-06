@@ -289,6 +289,25 @@ describe('deployFactoryRelease', () => {
     expect(result.contracts.map((contract) => contract.transaction)).toEqual([null, null, null])
   })
 
+  test('passes explicit verifier repair through without redeploying existing contracts', async () => {
+    const dependencies = runtime(predicted.map((contract) => contract.address))
+    await deployFactoryRelease(options({ resubmit: true }), dependencies)
+    expect(dependencies.forge).not.toHaveBeenCalled()
+    expect(dependencies.verify).toHaveBeenCalledTimes(3)
+    for (const [parameters] of dependencies.verify.mock.calls)
+      expect(parameters).toMatchObject({ resubmit: true })
+  })
+
+  test('refuses verifier repair in a dry run before RPC or Forge', async () => {
+    const dependencies = runtime()
+    await expect(
+      deployFactoryRelease(options({ broadcast: false, resubmit: true }), dependencies),
+    ).rejects.toThrow('--resubmit-verification requires --broadcast')
+    expect(dependencies.client).not.toHaveBeenCalled()
+    expect(dependencies.forge).not.toHaveBeenCalled()
+    expect(dependencies.verify).not.toHaveBeenCalled()
+  })
+
   test('creates only what a partly deployed release is missing', async () => {
     const dependencies = runtime([predicted[0]!.address])
     const result = await deployFactoryRelease(options(), dependencies)
@@ -658,3 +677,12 @@ function releaseClient(chainId: number, binding?: Address) {
     }),
   })
 }
+
+test('factory release CLI routes verifier repair to its broadcast guard', async () => {
+  await expect(
+    main(['moderato', 'core', '--resubmit-verification'], '/nonexistent/earn'),
+  ).rejects.toThrow('--resubmit-verification requires --broadcast')
+  await expect(main(['registry', '--resubmit-verification'], '/nonexistent/earn')).rejects.toThrow(
+    '--resubmit-verification is not supported by registry',
+  )
+})
