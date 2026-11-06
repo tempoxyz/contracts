@@ -7,7 +7,7 @@ import {
   type Transport,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { Addresses, createClient } from 'viem/tempo'
+import { createClient } from 'viem/tempo'
 import {
   configuredTempoNetworkChain,
   deploymentEnvironmentId,
@@ -124,14 +124,16 @@ export function privateKeyMatches(
 }
 
 /** Captures caller intent and checks the final prepared envelope immediately before local signing. */
-export async function guardedTransactionRequest<const chain extends Chain>(
+export async function guardedTransactionRequest<
+  const chain extends Chain & { feeToken?: Address | undefined },
+>(
   client: {
     account: ReturnType<typeof privateKeyToAccount>
     chain: chain
     getTransactionCount: PublicClient['getTransactionCount']
   },
   calls: readonly { to: Address; data: Hex; value?: bigint | undefined }[],
-  feeToken: Address = Addresses.pathUsd,
+  feeToken: Address | undefined = client.chain.feeToken,
 ) {
   const nonce = await client.getTransactionCount({
     address: client.account.address,
@@ -151,7 +153,7 @@ export async function guardedTransactionRequest<const chain extends Chain>(
     calls,
     chain: client.chain,
     chainId: intent.chainId,
-    feeToken,
+    ...(feeToken === undefined ? {} : { feeToken }),
     forceAtomic: true as const,
     nonce,
     nonceKey: 0n,
@@ -166,7 +168,7 @@ export function assertSigningIntent(
   intent: {
     calls: readonly { to: Address; data: Hex; value?: bigint | undefined }[]
     chainId: number
-    feeToken: Address
+    feeToken?: Address | undefined
     nonce: number
     validBefore?: number | undefined
   },
@@ -179,9 +181,11 @@ export function assertSigningIntent(
     transaction.nonceKey !== 0n
   )
     throw new Error('Prepared transaction changed the signing chain or protocol nonce')
+  // Unspecified tokens retain the account/protocol fee preference; explicit selections stay pinned.
   if (
-    typeof transaction.feeToken !== 'string' ||
-    !isAddressEqual(transaction.feeToken as Address, intent.feeToken)
+    intent.feeToken !== undefined &&
+    (typeof transaction.feeToken !== 'string' ||
+      !isAddressEqual(transaction.feeToken as Address, intent.feeToken))
   )
     throw new Error('Prepared transaction changed the fee token')
   for (const field of [

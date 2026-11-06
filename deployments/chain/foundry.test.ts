@@ -153,18 +153,27 @@ test('accepts the solc_version alias used by the reviewed Zone router', () => {
   }
 })
 
-test('real Forge resolves the environment-only RPC URL without credential arguments', () => {
+test('real Forge resolves the environment-only RPC URL without credential arguments', ({
+  skip,
+}) => {
   const root = mkdtempSync(join(tmpdir(), 'foundry-rpc-config-'))
   try {
     writeFileSync(join(root, 'foundry.toml'), '[profile.default]\n')
     const rpcUrl = 'http://synthetic-user:synthetic-password@127.0.0.1:1'
-    const config = JSON.parse(
-      execFileSync('forge', ['config', '--json'], {
+    let output: string
+    try {
+      output = execFileSync('forge', ['config', '--json'], {
         cwd: root,
         encoding: 'utf8',
         env: foundryRpcEnvironment(foundryVerificationEnvironment(process.env), rpcUrl),
-      }),
-    ) as { eth_rpc_url: string | null }
+      })
+    } catch (error) {
+      // TypeScript-only CI has no Forge; an installed but broken Forge must still fail this probe.
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+        skip('Forge is not installed; the environment helper is covered by the unit test above')
+      throw error
+    }
+    const config = JSON.parse(output) as { eth_rpc_url: string | null }
     expect(config.eth_rpc_url).toBe(rpcUrl)
   } finally {
     rmSync(root, { recursive: true, force: true })

@@ -9,7 +9,7 @@ import { configuredRpcTransport, envPrivateKey } from '../chain/runtime.js'
 import { earnVaultAbi } from '../abis/index.js'
 import { quoteEarnDeposit } from '../modules/earn/engines/index.js'
 import { requiredOutput } from '../../deployments/modules/module.js'
-import type { EarnDeploymentProfile } from './profile.js'
+import { engineAddress, type EarnDeploymentProfile } from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
 import { inspectStackBinding, readCurrentEngine } from './stack.js'
 
@@ -63,9 +63,10 @@ export async function depositEarnProfile(
       'Source verification must be complete before funding; run deploy to complete verification',
     )
   const recorded = record.addresses as Record<string, Address>
+  const creationEngine = getAddress(engineAddress(profile, recorded))
   const contracts = {
     asset: requiredOutput(recorded, 'asset'),
-    engine: requiredOutput(recorded, 'engine'),
+    engine: creationEngine,
     earnShare: requiredOutput(recorded, 'earnShare'),
     earnVault: requiredOutput(recorded, 'earnVault'),
     earnFees: requiredOutput(recorded, 'earnFees'),
@@ -112,14 +113,22 @@ export async function depositEarnProfile(
     throw new Error('RPC genesis hash does not match the generated deployment record')
   }
   const { engine, engineKind, venue } = await readCurrentEngine(publicClient, {
-    creationEngine: contracts.engine,
+    creationEngine,
     engineKind: profile.engine.kind,
     asset: contracts.asset,
     earnVault: contracts.earnVault,
   })
+  if (engine !== creationEngine && profile.core.migrationMode !== 'OperatorEnabled')
+    throw new Error('Profile does not allow operator engine migration')
   contracts.engine = engine
   await requireCode(publicClient, { ...contracts, venue })
-  await inspectStackBinding(publicClient, { ...contracts, engineKind, venue })
+  await inspectStackBinding(publicClient, {
+    ...contracts,
+    engineKind,
+    // The authored venue binds the creation engine, not an operator-authorized replacement.
+    venue:
+      engine === creationEngine && 'venue' in profile.engine ? profile.engine.venue : undefined,
+  })
 
   const [
     assetSymbol,

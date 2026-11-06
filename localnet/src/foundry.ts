@@ -409,7 +409,7 @@ async function reportFailure(
   }
 }
 
-/** Build subprocesses receive tool locations and platform settings, never deployment credentials. */
+/** Build subprocesses receive tool locations, network trust, and platform settings, never deployment credentials. */
 export function dependencyEnvironment(environment: NodeJS.ProcessEnv) {
   const allowed = [
     'PATH',
@@ -425,8 +425,23 @@ export function dependencyEnvironment(environment: NodeJS.ProcessEnv) {
     'TERM',
     'NO_COLOR',
     'CI',
+    // Git and Cargo fetch pinned sources through the caller's proxy and trusted CA roots.
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
+    'GIT_SSL_CAINFO',
+    'GIT_SSL_CAPATH',
+    'GIT_PROXY_SSL_CAINFO',
+    'CARGO_HTTP_PROXY',
+    'CARGO_HTTP_CAINFO',
+    'CARGO_HTTP_PROXY_CAINFO',
     'CARGO_HOME',
     'RUSTUP_HOME',
   ]

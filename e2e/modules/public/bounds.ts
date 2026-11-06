@@ -6,6 +6,7 @@ import {
   propAMMEngineAbi,
   vedaEngineAbi,
 } from '@tempoxyz/contracts/abis'
+import type { E2eBoundError } from '../../engines/index.js'
 import type { E2eContext } from '../../harness/context.js'
 import { assert } from '../../harness/support/utils.js'
 
@@ -27,7 +28,7 @@ type CallResult = { status: string; error?: unknown }
 export function assertBoundResults(
   rejected: readonly CallResult[],
   relaxed: readonly CallResult[],
-  expectedErrors: readonly string[],
+  expectedErrors: readonly E2eBoundError[],
 ) {
   assert(
     rejected.length > 0 && rejected.slice(0, -1).every((result) => result.status === 'success'),
@@ -41,8 +42,22 @@ export function assertBoundResults(
   const cause = failure.error.walk((error) => error instanceof ContractFunctionRevertedError)
   assert(
     cause instanceof ContractFunctionRevertedError &&
-      expectedErrors.includes(cause.data?.errorName ?? ''),
-    `bound call did not decode ${expectedErrors.join(' or ')}`,
+      expectedErrors.some((expected) =>
+        typeof expected === 'string'
+          ? expected !== 'Error' && expected !== 'Panic' && cause.data?.errorName === expected
+          : cause.data?.errorName === 'Error' &&
+            cause.data.args?.length === 1 &&
+            cause.data.args[0] === expected.reason,
+      ),
+    `bound call did not decode ${expectedErrors
+      .map((expected) =>
+        typeof expected === 'string' ? expected : `Error(${JSON.stringify(expected.reason)})`,
+      )
+      .join(' or ')}: ${
+      cause instanceof ContractFunctionRevertedError
+        ? `${cause.data?.errorName ?? 'unknown error'} (${cause.raw ?? 'no revert data'})`
+        : 'no contract revert cause'
+    }`,
   )
   assert(
     relaxed.length === rejected.length && relaxed.every((result) => result.status === 'success'),
@@ -56,7 +71,8 @@ export async function simulateBound(
   options: {
     calls: readonly BoundCall[]
     relaxedCalls: readonly BoundCall[]
-    errors: readonly string[]
+    errors: readonly E2eBoundError[]
+    errorAbi?: Abi
   },
 ) {
   const blockNumber = await context.l1Public.getBlockNumber({ cacheTime: 0 })
@@ -66,7 +82,11 @@ export async function simulateBound(
       blockNumber,
       calls: calls.map((call) => ({
         ...call,
-        abi: [...call.abi, ...boundErrors],
+        abi: [
+          ...call.abi,
+          ...boundErrors,
+          ...(options.errorAbi ?? []).filter((item) => item.type === 'error'),
+        ],
       })),
       validation: false,
     })

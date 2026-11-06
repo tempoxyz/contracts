@@ -23,6 +23,15 @@ export function childEnvironment(inputs: Record<string, string> = {}, source = p
     'LC_ALL',
     'TERM',
     'NO_COLOR',
+    // Forge's RPC requests and compiler downloads need the caller's proxy, including bypasses.
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
   ]

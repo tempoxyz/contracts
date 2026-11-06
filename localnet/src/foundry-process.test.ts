@@ -19,6 +19,36 @@ const runRoot = resolve(Config.root, 'run')
 const broadcastDirectory = resolve(runRoot, 'broadcast')
 const captured = resolve(Config.root, 'invocation.json')
 const installed = resolve(Config.root, 'dependencies-called')
+const networkEnvironment = {
+  HTTP_PROXY: 'http://upper-http.example:8080',
+  HTTPS_PROXY: 'http://upper-https.example:8080',
+  ALL_PROXY: 'socks5://upper-all.example:1080',
+  NO_PROXY: 'localhost,127.0.0.1,.internal.example',
+  http_proxy: 'http://lower-http.example:8081',
+  https_proxy: 'http://lower-https.example:8081',
+  all_proxy: 'socks5://lower-all.example:1081',
+  no_proxy: '',
+  SSL_CERT_FILE: '/trust/root.pem',
+  SSL_CERT_DIR: '/trust/roots',
+  GIT_SSL_CAINFO: '/trust/git.pem',
+  GIT_SSL_CAPATH: '/trust/git',
+  GIT_PROXY_SSL_CAINFO: '/trust/git-proxy.pem',
+  CARGO_HTTP_PROXY: 'http://cargo.example:8080',
+  CARGO_HTTP_CAINFO: '/trust/cargo.pem',
+  CARGO_HTTP_PROXY_CAINFO: '/trust/cargo-proxy.pem',
+}
+const excludedEnvironment = {
+  DEPLOYER_PRIVATE_KEY: 'synthetic-deployer',
+  ZONE_ADMIN_PRIVATE_KEY: 'synthetic-authority',
+  ENGINE_OWNER_PRIVATE_KEY: 'synthetic-owner',
+  TEMPO_RPC_URL: 'https://user:synthetic-password@rpc.example',
+  CARGO_REGISTRIES_PRIVATE_TOKEN: 'synthetic-token',
+  FOUNDRY_PROFILE: 'unreviewed',
+  FOUNDRY_SOLC: '/unreviewed',
+  RUSTFLAGS: '--cfg unreviewed',
+  GIT_SSL_NO_VERIFY: 'true',
+  CARGO_HTTP_SSL_VERIFY: 'false',
+}
 
 beforeAll(() => {
   for (const name of ['earn', 'zone-router', 'run/broadcast', 'bin', 'scripts'])
@@ -41,7 +71,19 @@ writeFileSync(${JSON.stringify(captured)}, JSON.stringify({
   )
   chmodSync(forge, 0o700)
   const dependencies = resolve(Config.root, 'scripts/solidity-deps.sh')
-  writeFileSync(dependencies, '#!/bin/sh\nprintf installed > dependencies-called\n')
+  writeFileSync(
+    dependencies,
+    `#!/bin/sh
+node --input-type=module <<'PROBE'
+import { writeFileSync } from 'node:fs';
+// Capture only synthetic test values, never the real host environment.
+const inputs = ${JSON.stringify({ ...networkEnvironment, ...excludedEnvironment })};
+writeFileSync(${JSON.stringify(installed)}, JSON.stringify(Object.fromEntries(
+  Object.entries(inputs).filter(([name, value]) => process.env[name] === value),
+)));
+PROBE
+`,
+  )
   chmodSync(dependencies, 0o700)
 })
 
@@ -82,6 +124,23 @@ it('refuses release inspection dotenv before dependencies or compilation', () =>
   expect(() => releaseAddresses([])).toThrow(`Remove ${resolve(Config.earnRoot, '.env')}`)
   expect(existsSync(captured)).toBe(false)
   expect(existsSync(installed)).toBe(false)
+})
+
+it('passes proxy and CA settings to the actual dependency child without authority or build overrides', () => {
+  vi.stubEnv('PATH', `${resolve(Config.root, 'bin')}:${process.env.PATH}`)
+  for (const [name, value] of Object.entries({ ...networkEnvironment, ...excludedEnvironment }))
+    vi.stubEnv(name, value)
+  runLifecycleStep(
+    {
+      action: { id: 'deploy-router' },
+      root: resolve(runRoot, '..', 'zone-router'),
+      arguments: ['script', 'DeployFixture'],
+      environment: { PATH: process.env.PATH! },
+      rawGasEstimate: false,
+    },
+    broadcastDirectory,
+  )
+  expect(JSON.parse(readFileSync(installed, 'utf8'))).toEqual(networkEnvironment)
 })
 
 it('carries a credential-bearing fixture RPC only through the actual child environment', async () => {

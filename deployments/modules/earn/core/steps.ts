@@ -53,6 +53,7 @@ export const deployCore = defineFoundryStep({
   summary: 'Deploy EarnShare, EarnVault, and EarnFees.',
   phase: 'deployment',
   intent: ['core'],
+  creates: ['core'],
   script: 'script/deploy/DeployEarnCore.s.sol:DeployEarnCoreScript',
   rawGasEstimate: true,
   enabled: () => true,

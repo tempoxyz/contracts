@@ -305,7 +305,7 @@ describe('waitForDepositDelivery', () => {
     const decoded = parseEventLogs({ abi: zoneDepositAbi, logs: [...logs], strict: true })
     return {
       pollingInterval: 60_000,
-      actors: { user: { zone: { client: { getLogs: async () => decoded } } } },
+      zoneProofClient: { getLogs: async () => decoded },
     } as never
   }
   it('requires this exact processing hash even if unrelated credit exists', async () => {

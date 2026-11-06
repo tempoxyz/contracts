@@ -37,7 +37,7 @@ export async function waitForRecipientRefund(
 ): Promise<bigint> {
   assert(options.l1FromBlock > 0n, 'Refund correlation needs a preceding L1 block')
   const portal = context.deployment.network.zone.portal
-  const zone = context.actors.user.zone.client
+  const zone = context.zoneProofClient
   const batch = await waitFor(
     `Zone failure and withdrawal batch for ${options.depositHash}`,
     async () => {

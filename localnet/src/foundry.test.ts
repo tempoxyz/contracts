@@ -31,6 +31,20 @@ it('dependency builds never inherit signer, RPC, or process injection credential
     BASH_ENV: '/injected',
     LD_PRELOAD: '/injected',
     CARGO_REGISTRIES_PRIVATE_TOKEN: 'registry-secret',
+    AWS_SESSION_TOKEN: 'cloud-secret',
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.extraHeader',
+    GIT_CONFIG_VALUE_0: 'Authorization: secret',
+    GIT_SSL_NO_VERIFY: 'true',
+    CARGO_HTTP_SSL_VERIFY: 'false',
+    FOUNDRY_PROFILE: 'unreviewed',
+    FOUNDRY_SOLC: '/unreviewed',
+    SOLC_PATH: '/unreviewed',
+    RUSTC: '/unreviewed',
+    RUSTC_WRAPPER: '/unreviewed',
+    RUSTFLAGS: '--cfg unreviewed',
+    CARGO_BUILD_RUSTFLAGS: '--cfg unreviewed',
+    NODE_EXTRA_CA_CERTS: '/unrelated-node-ca.pem',
   }
   expect(dependencyEnvironment(environment)).toEqual({
     PATH: '/tools',
@@ -38,4 +52,30 @@ it('dependency builds never inherit signer, RPC, or process injection credential
     CARGO_HOME: '/cargo',
     RUSTUP_HOME: '/rustup',
   })
+})
+
+it('preserves only defined proxy and CA settings without normalizing case or empty values', () => {
+  const environment = {
+    HTTP_PROXY: 'http://upper-http.example:8080',
+    HTTPS_PROXY: 'http://upper-https.example:8080',
+    ALL_PROXY: 'socks5://upper-all.example:1080',
+    NO_PROXY: 'localhost,127.0.0.1,.internal.example',
+    http_proxy: 'http://lower-http.example:8081',
+    https_proxy: 'http://lower-https.example:8081',
+    all_proxy: 'socks5://lower-all.example:1081',
+    no_proxy: '',
+    SSL_CERT_FILE: '/trust/root.pem',
+    SSL_CERT_DIR: '/trust/roots',
+    GIT_SSL_CAINFO: '/trust/git.pem',
+    GIT_SSL_CAPATH: '/trust/git',
+    GIT_PROXY_SSL_CAINFO: '/trust/git-proxy.pem',
+    CARGO_HTTP_PROXY: 'http://cargo.example:8080',
+    CARGO_HTTP_CAINFO: '/trust/cargo.pem',
+    CARGO_HTTP_PROXY_CAINFO: '/trust/cargo-proxy.pem',
+  }
+  expect(dependencyEnvironment(environment)).toEqual(environment)
+  expect(dependencyEnvironment({ HTTPS_PROXY: undefined, https_proxy: '' })).toEqual({
+    https_proxy: '',
+  })
+  expect(dependencyEnvironment({})).toEqual({})
 })

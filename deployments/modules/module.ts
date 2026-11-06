@@ -224,6 +224,8 @@ type BaseStep<Id extends string, Authority extends StepAuthority> = {
 /** A step a Foundry script executes with the deployer key. */
 export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deployerAuthority> & {
   execution: 'foundry'
+  /** Components whose creation transaction this step records, excluding later configuration. */
+  creates?: readonly IntentComponent[]
   /**
    * The Foundry project beside `earn/` that compiles and runs the script and the contract it
    * creates, such as `zone-router`, which builds with solc; Earn's own project when omitted.

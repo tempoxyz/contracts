@@ -131,12 +131,14 @@ changes Portal admission or enforcement.
 
 Private-flow proof reads also require the configured endpoint to expose canonical Inbox/Outbox
 logs, receipts, and system calldata. Before private funding, withdrawals, or migration, the harness
-queries both system addresses at the current block through the configured user read client. An
-empty result is valid; rejection of that query blocks the flow before a write. Native caller-token
-RPC redaction excludes these system logs, so it reports `BLOCKED`, never a balance-only `PASS`.
-An explicitly authorized API-key or unredacted read endpoint may provide the evidence; the harness
-never widens authentication or falls back to another endpoint. Actor balance reads retain their
-existing authorization, and every operation must still prove its own matching outcome and refund.
+queries both system addresses at the current block through a read-only proof client, after checking
+its chain ID and genesis against the configured Zone and actor endpoint. An empty result is valid;
+rejection of that query blocks the flow before a write. Disposable local runs explicitly use their
+own Zone's operator endpoint for proofs, while actor balances and privacy checks retain their
+caller-token clients. Hosted and devnet proofs retain the configured user endpoint and authority;
+there is no fallback to a submission or operator endpoint. Native caller-token RPC redaction
+excludes these system logs, so those endpoints report `BLOCKED`, never a balance-only `PASS`.
+Every operation must still prove its own matching outcome and refund.
 
 Deposit outcomes match the exact queue hash, including supported legacy encrypted event names.
 Continuation uses the certified net private credit, not the gross mint; actual Portal fees and any

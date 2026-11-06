@@ -1,4 +1,4 @@
-import { createClient, custom } from 'viem'
+import { createClient, custom, type Address } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { createClient as createTempoClient, Addresses } from 'viem/tempo'
 import { describe, expect, test, vi } from 'vitest'
@@ -88,6 +88,58 @@ describe('final signing intent', () => {
       }),
     ).resolves.toMatch(/^0x/)
   })
+  test.each([4217, 42431])('retains protocol fee selection on chain %s', async (chainId) => {
+    const feeToken = `0x20c000000000000000000000${'2'.repeat(16)}` as const
+    const client = signingClient({ feeToken }, { chainId })
+    const request = await guardedTransactionRequest(client, calls)
+    expect(request).not.toHaveProperty('feeToken')
+    const prepared = await client.prepareTransactionRequest(request)
+    expect(prepared.feeToken).toBe(feeToken)
+    await expect(
+      request.account.signTransaction(prepared as never, {
+        serializer: client.chain.serializers.transaction,
+      }),
+    ).resolves.toMatch(/^0x/)
+    expect(() =>
+      request.account.signTransaction({ ...prepared, gas: 10n ** 18n } as never, {
+        serializer: client.chain.serializers.transaction,
+      }),
+    ).toThrow('fee limit')
+  })
+  test('pins a chain-configured fee token through preparation and signing', async () => {
+    const feeToken = `0x20c000000000000000000000${'2'.repeat(16)}` as const
+    const client = signingClient({}, { chainId: 4217, feeToken })
+    const request = await guardedTransactionRequest(client, calls)
+    expect(request.feeToken).toBe(feeToken)
+    const prepared = await client.prepareTransactionRequest(request)
+    await expect(
+      request.account.signTransaction(prepared as never, {
+        serializer: client.chain.serializers.transaction,
+      }),
+    ).resolves.toMatch(/^0x/)
+    expect(() =>
+      request.account.signTransaction({ ...prepared, feeToken: Addresses.pathUsd } as never, {
+        serializer: client.chain.serializers.transaction,
+      }),
+    ).toThrow('fee token')
+  })
+  test('pins an explicit deposit fee token over the chain default', async () => {
+    const chainFeeToken = `0x20c000000000000000000000${'2'.repeat(16)}` as const
+    const client = signingClient({}, { chainId: 4217, feeToken: chainFeeToken })
+    const request = await guardedTransactionRequest(client, calls, Addresses.pathUsd)
+    expect(request.feeToken).toBe(Addresses.pathUsd)
+    const prepared = await client.prepareTransactionRequest(request)
+    await expect(
+      request.account.signTransaction(prepared as never, {
+        serializer: client.chain.serializers.transaction,
+      }),
+    ).resolves.toMatch(/^0x/)
+    expect(() =>
+      request.account.signTransaction({ ...prepared, feeToken: chainFeeToken } as never, {
+        serializer: client.chain.serializers.transaction,
+      }),
+    ).toThrow('fee token')
+  })
   test('rejects RPC-filled validity immediately before signing through the real SDK', async () => {
     const client = signingClient({ validBefore: '0x7fffffff' })
     const request = await guardedTransactionRequest(client, calls)
@@ -173,12 +225,15 @@ describe('final signing intent', () => {
   })
 })
 
-function signingClient(fill?: Record<string, unknown>) {
+function signingClient(
+  fill?: Record<string, unknown>,
+  network: { chainId: number; feeToken?: Address | undefined } = { chainId: 42431 },
+) {
   return createTempoClient({
     account: privateKeyToAccount(`0x${'1'.repeat(64)}`),
     chain: configuredTempoNetworkChain({
       id: 'signing-test',
-      chainId: 42431,
+      ...network,
       rpcUrl: 'https://rpc.invalid',
     }),
     transport: custom({
@@ -189,7 +244,7 @@ function signingClient(fill?: Record<string, unknown>) {
             tx: {
               ...params[0],
               type: '0x76',
-              chainId: '0xa5bf',
+              chainId: `0x${network.chainId.toString(16)}`,
               nonce: '0x7',
               nonceKey: '0x0',
               gas: '0x186a0',
@@ -199,7 +254,7 @@ function signingClient(fill?: Record<string, unknown>) {
             },
           }
         if (method === 'eth_getTransactionCount') return '0x7'
-        if (method === 'eth_chainId') return '0xa5bf'
+        if (method === 'eth_chainId') return `0x${network.chainId.toString(16)}`
         throw new Error(`Unexpected RPC method: ${method}`)
       },
     }),

@@ -74,6 +74,8 @@ export async function runOnStack<Result>(
       accessAdministrator: accounts.accessAdministrator.privateKey,
     },
     zoneSubmissionRpcUrl: environment.zone.publicRpcUrl,
+    localZoneProofRpcUrl:
+      definition.provider === 'local' ? environment.zone.publicRpcUrl : undefined,
     engineFixtures: environment.deployment.engineFixtures,
   })
   const deploymentPath = resolve(

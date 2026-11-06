@@ -101,7 +101,7 @@ describe('access removal safety', () => {
     const requestId = `0x${'ab'.repeat(32)}` as const
     const client = {
       getBlockNumber: vi.fn().mockResolvedValue(BigInt(deployment.metadata.deployedAtBlock!)),
-      getLogs: vi.fn().mockResolvedValue([{ args: { requestId } }]),
+      getLogs: vi.fn().mockResolvedValue([claimEvent('RedeemRequested', requestId)]),
       readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
         if (functionName === 'currentFeeConfigId') return 1n
         if (functionName === 'feeConfig') {
@@ -158,11 +158,20 @@ describe('access removal policy identities', () => {
     expect(client.registry).not.toHaveBeenCalled()
   })
 
-  it('fails closed if an open receiver alias has no registered master', async () => {
+  it('does not let an unregistered claim receiver block unrelated removals', async () => {
     const client = removalClient({ receiver: alias, registryMaster: zeroAddress })
-    await expect(assertAccessRemovalSafe(client, protectedDeployment(), master)).rejects.toThrow(
+    await expect(
+      assertAccessRemovalSafe(client, protectedDeployment(), master),
+    ).resolves.toBeUndefined()
+    expect(client.registry).toHaveBeenCalled()
+  })
+
+  it('still refuses an unregistered removal target before querying claims', async () => {
+    const client = removalClient({ registryMaster: zeroAddress })
+    await expect(assertAccessRemovalSafe(client, protectedDeployment(), alias)).rejects.toThrow(
       'has no registered master',
     )
+    expect(client.getLogs).not.toHaveBeenCalled()
   })
 
   it('propagates registry and claim-history failures', async () => {
@@ -252,6 +261,126 @@ describe('access removal claim scan anchor', () => {
   })
 })
 
+describe('access removal outstanding claim scan', () => {
+  it('excludes finalized and cancelled history before reading pending state', async () => {
+    const deployment = protectedDeployment()
+    deployment.metadata.deployedAtBlock = '0'
+    const client = removalClient({ head: 1000n, open: false })
+    const logs = Array.from({ length: 500 }, (_, index) => {
+      const id = claimId(index)
+      return [
+        claimEvent('RedeemRequested', id, BigInt(index * 2)),
+        claimEvent(index % 2 ? 'RedeemFinalized' : 'RedeemCancelled', id, BigInt(index * 2 + 1)),
+      ]
+    }).flat()
+    client.getLogs.mockResolvedValue(logs)
+    await expect(assertAccessRemovalSafe(client, deployment, master)).resolves.toBeUndefined()
+    expect(client.pendingRedeem).not.toHaveBeenCalled()
+    const query = client.getLogs.mock.calls[0]![0]
+    expect(query).toMatchObject({
+      address: protectedDeployment().contracts.earnVault,
+      strict: true,
+      events: [
+        expect.objectContaining({ name: 'RedeemRequested' }),
+        expect.objectContaining({ name: 'RedeemFinalized' }),
+        expect.objectContaining({ name: 'RedeemCancelled' }),
+      ],
+    })
+    expect(query).not.toHaveProperty('args')
+  })
+
+  it('applies closure events across scan ranges before reading any pending state', async () => {
+    const deployment = protectedDeployment()
+    deployment.metadata.deployedAtBlock = '0'
+    const client = removalClient({ head: 100_001n, open: false })
+    client.getLogs
+      .mockResolvedValueOnce([claimEvent('RedeemRequested', requestId, 99_999n)])
+      .mockResolvedValueOnce([claimEvent('RedeemFinalized', requestId, 100_000n)])
+    await expect(assertAccessRemovalSafe(client, deployment, master)).resolves.toBeUndefined()
+    expect(client.pendingRedeem).not.toHaveBeenCalled()
+  })
+
+  it.each(['RedeemCancelled', 'RedeemFinalized'] as const)(
+    'retains an ID requested again after %s, including within the same block',
+    async (closed) => {
+      const client = removalClient({ receiver: alias })
+      // Deliberately unordered: lifecycle order comes from block number and log index.
+      client.getLogs.mockResolvedValue([
+        claimEvent('RedeemRequested', requestId, 2n, 3),
+        claimEvent(closed, requestId, 2n, 2),
+        claimEvent('RedeemRequested', requestId, 1n, 1),
+      ])
+      await expect(assertAccessRemovalSafe(client, protectedDeployment(), master)).rejects.toThrow(
+        `open async claim ${requestId}`,
+      )
+      expect(client.pendingRedeem).toHaveBeenCalledExactlyOnceWith(requestId)
+    },
+  )
+
+  it('deduplicates request IDs before checking current state', async () => {
+    const client = removalClient({ receiver: address(0xcafe) })
+    client.getLogs.mockResolvedValue([
+      claimEvent('RedeemRequested', requestId),
+      claimEvent('RedeemRequested', requestId),
+    ])
+    await assertAccessRemovalSafe(client, protectedDeployment(), master)
+    expect(client.pendingRedeem).toHaveBeenCalledExactlyOnceWith(requestId)
+  })
+
+  it('reads outstanding claims in bounded parallel batches, not serially or all at once', async () => {
+    const client = removalClient()
+    const ids = Array.from({ length: 40 }, (_, index) => claimId(index))
+    client.getLogs.mockResolvedValue(ids.map((id) => claimEvent('RedeemRequested', id)))
+    let active = 0
+    let peak = 0
+    client.pendingRedeem.mockImplementation(async () => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      active--
+      return { open: true, receiver: address(0xcafe) }
+    })
+    await assertAccessRemovalSafe(client, protectedDeployment(), master)
+    expect(client.pendingRedeem).toHaveBeenCalledTimes(ids.length)
+    expect(peak).toBeGreaterThan(1)
+    expect(peak).toBeLessThanOrEqual(16)
+  })
+
+  it('checks receivers beyond the first read batch', async () => {
+    const client = removalClient()
+    const ids = Array.from({ length: 40 }, (_, index) => claimId(index))
+    client.getLogs.mockResolvedValue(ids.map((id) => claimEvent('RedeemRequested', id)))
+    client.pendingRedeem.mockImplementation(async (id) => ({
+      open: true,
+      receiver: id === ids.at(-1) ? alias : address(0xcafe),
+    }))
+    await expect(assertAccessRemovalSafe(client, protectedDeployment(), master)).rejects.toThrow(
+      `open async claim ${ids.at(-1)}`,
+    )
+  })
+
+  it('propagates pending-state errors instead of treating unavailable claims as closed', async () => {
+    const client = removalClient({ receiver: master })
+    client.pendingRedeem.mockRejectedValue(new Error('pending state unavailable'))
+    await expect(assertAccessRemovalSafe(client, protectedDeployment(), master)).rejects.toThrow(
+      'pending state unavailable',
+    )
+  })
+})
+
+function claimId(value: number): Hex {
+  return `0x${value.toString(16).padStart(64, '0')}`
+}
+
+function claimEvent(
+  eventName: 'RedeemRequested' | 'RedeemCancelled' | 'RedeemFinalized',
+  requestId: Hex,
+  blockNumber = 1n,
+  logIndex = 0,
+) {
+  return { eventName, args: { requestId }, blockNumber, logIndex }
+}
+
 function removalClient(
   options: {
     feeRecipient?: Address
@@ -276,30 +405,39 @@ function removalClient(
       })
     },
   )
+  const pendingRedeem = vi.fn(async (_requestId: Hex) => ({
+    open: options.open ?? true,
+    receiver: options.receiver ?? master,
+  }))
   return {
+    pendingRedeem,
     ...createPublicClient({ transport: custom({ request: registry }, { retryCount: 0 }) }),
     registry,
     getBlockNumber: vi
       .fn()
       .mockResolvedValue(options.head ?? BigInt(protectedDeployment().metadata.deployedAtBlock)),
     getLogs: vi.fn(async (_range: { fromBlock: bigint; toBlock: bigint }) =>
-      options.receiver ? [{ args: { requestId } }] : [],
+      options.receiver ? [claimEvent('RedeemRequested', requestId)] : [],
     ),
-    readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
-      if (functionName === 'currentFeeConfigId') return 1n
-      if (functionName === 'feeConfig') {
-        return {
-          fixedFeeCount: options.feeRecipient ? 1 : 0,
-          fixedFees: options.feeRecipient ? [{ account: options.feeRecipient, rateBps: 100 }] : [],
-          excess: { enabled: false },
+    readContract: vi.fn(
+      async ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
+        if (functionName === 'currentFeeConfigId') return 1n
+        if (functionName === 'feeConfig') {
+          return {
+            fixedFeeCount: options.feeRecipient ? 1 : 0,
+            fixedFees: options.feeRecipient
+              ? [{ account: options.feeRecipient, rateBps: 100 }]
+              : [],
+            excess: { enabled: false },
+          }
         }
-      }
-      if (functionName === 'pendingRedeem')
-        return { open: options.open ?? true, receiver: options.receiver }
-      throw new Error(`Unexpected read ${functionName}`)
-    }),
+        if (functionName === 'pendingRedeem') return pendingRedeem(args![0] as Hex)
+        throw new Error(`Unexpected read ${functionName}`)
+      },
+    ),
   } as unknown as Client & {
     registry: typeof registry
+    pendingRedeem: typeof pendingRedeem
     getLogs: ReturnType<
       typeof vi.fn<(range: { fromBlock: bigint; toBlock: bigint }) => Promise<unknown[]>>
     >

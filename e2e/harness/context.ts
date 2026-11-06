@@ -74,6 +74,8 @@ export function createE2eContext(options: createE2eContext.Options) {
   const zone = deployment.network.zone
   const zoneChain = zone ? configuredZoneChain(deployment) : undefined
   const zoneHeaders = options.rpcHeaders?.zone
+  if (options.localZoneProofRpcUrl && (environment.provider !== 'local' || !zone))
+    throw new Error('A separate Zone proof endpoint is only allowed for a disposable local Zone')
   // Each Zone actor reads through the configured Zone RPC and submits through the public RPC when the
   // environment separates them; both share the actor's authorization store.
   const zoneClients = (account: Account) => {
@@ -119,6 +121,33 @@ export function createE2eContext(options: createE2eContext.Options) {
     E2eActor,
     ReturnType<typeof actor>
   >
+  // Only the disposable loader supplies its own operator endpoint. Hosted proofs retain user authority.
+  const zoneProofClient = (() => {
+    if (!zone || !zoneChain) return undefined
+    const client = createClient({
+      account: actors.user.account,
+      chain: zoneChain,
+      transport: options.localZoneProofRpcUrl
+        ? http(options.localZoneProofRpcUrl, { timeout: 10_000 })
+        : createZoneTransport(zone.rpcUrl, {
+            fetchOptions: { headers: zoneHeaders },
+            timeout: 10_000,
+            store: actors.user.zone!.store,
+          }),
+      ...localPolling,
+    })
+    // Expose only canonical evidence reads, never signing or transaction submission.
+    return {
+      getBlock: client.getBlock,
+      getBlockNumber: client.getBlockNumber,
+      getChainId: client.getChainId,
+      getLogs: client.getLogs,
+      getTransaction: client.getTransaction,
+      getTransactionReceipt: client.getTransactionReceipt,
+      readContract: client.readContract,
+      waitForTransactionReceipt: client.waitForTransactionReceipt,
+    }
+  })()
   // Mirrored TIP-403 policies use the public, zero-address state view, not an actor's private view.
   // Keep the user's authentication store without changing that view or the configured endpoint.
   const policyZoneClient =
@@ -157,6 +186,7 @@ export function createE2eContext(options: createE2eContext.Options) {
       headers: options.rpcHeaders?.tempo,
     }),
     policyZoneClient,
+    zoneProofClient,
     pollingInterval,
     progress: createE2eProgress(),
     /** Phase timings the shared actions record, reported per case and per benchmark sample. */
@@ -194,6 +224,7 @@ export type E2eZoneContext = E2eContext & {
   contracts: E2eContext['contracts'] & { earnRouter: `0x${string}` }
   actors: Record<E2eActor, E2eContext['actors'][E2eActor] & { zone: ZoneActorClients }>
   policyZoneClient: NonNullable<E2eContext['policyZoneClient']>
+  zoneProofClient: NonNullable<E2eContext['zoneProofClient']>
 }
 
 /** Narrows a generic E2E context to one with an attached Zone target, its router, and clients. */
@@ -216,6 +247,8 @@ export declare namespace createE2eContext {
       zone?: Record<string, string> | undefined
     }
     zoneSubmissionRpcUrl?: string
+    /** Proof-only operator RPC supplied by the harness-owned disposable Zone, never hosted or devnet. */
+    localZoneProofRpcUrl?: string | undefined
     /** Engine-specific test fixtures by name; see `engineFixtures`. */
     engineFixtures?: Readonly<Record<string, Address>> | undefined
   }

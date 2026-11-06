@@ -76,7 +76,7 @@ export async function verifyDeploymentProvenance(
   const hasCoreCreation = deploymentSteps.some(
     (step) =>
       step.execution === 'foundry' &&
-      step.intent.includes('core') &&
+      step.creates?.includes('core') &&
       (record.actions[step.id]?.transactions.length ?? 0) > 0,
   )
   if (!hasCoreCreation) {

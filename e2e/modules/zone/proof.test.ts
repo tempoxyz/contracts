@@ -74,6 +74,12 @@ function fixture(redacted: boolean) {
     throw new Error(`Unexpected ${label} before proof preflight`)
   }
   const client = {
+    async getChainId() {
+      return 421700001
+    },
+    async getBlock() {
+      return { hash: `0x${'ab'.repeat(32)}` }
+    },
     async getBlockNumber(options: unknown) {
       reads.push(options)
       return 7n
@@ -109,12 +115,13 @@ function fixture(redacted: boolean) {
   )
   const context = {
     actors,
+    zoneProofClient: client,
     assets: { base: address, alternate: address },
     contracts: { earnRouter: address, earnShare: address },
     deployment: {
       contracts: { earnVault: address, engine: address, earnShare: address, venue: address },
       capabilities: { inKindDeposit: true },
-      network: { zone: { id: 1, portal: address } },
+      network: { zone: { id: 1, chainId: 421700001, portal: address } },
     },
     l1Public: { readContract: forbidden('L1 read') },
   } as unknown as E2eZoneContext
@@ -132,17 +139,13 @@ describe('submitZoneWithdrawal', () => {
     } as const
     const calls: unknown[] = []
     const context = {
-      actors: {
-        user: {
-          zone: {
-            client: {
-              async waitForTransactionReceipt(options: unknown) {
-                calls.push(['proof', options])
-                return receipt
-              },
-            },
-          },
+      zoneProofClient: {
+        async waitForTransactionReceipt(options: unknown) {
+          calls.push(['proof', options])
+          return receipt
         },
+      },
+      actors: {
         operator: {
           zone: {
             submission: {
@@ -170,6 +173,11 @@ describe('submitZoneWithdrawal', () => {
   it('does not resubmit when the proof receipt is unavailable', async () => {
     let submits = 0
     const context = {
+      zoneProofClient: {
+        async waitForTransactionReceipt() {
+          throw new Error('Proof receipt unavailable')
+        },
+      },
       actors: {
         user: {
           zone: {
@@ -179,11 +187,6 @@ describe('submitZoneWithdrawal', () => {
                   submits++
                   return `0x${'ab'.repeat(32)}`
                 },
-              },
-            },
-            client: {
-              async waitForTransactionReceipt() {
-                throw new Error('Proof receipt unavailable')
               },
             },
           },

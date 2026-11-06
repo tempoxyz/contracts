@@ -20,7 +20,8 @@ export function rpcTransport(url: string | undefined, config: HttpTransportConfi
     retryCount: 6,
     retryDelay: 250,
     ...config,
-    fetchOptions: { ...config.fetchOptions, headers },
+    // viem merges headers by object spread, so a Headers instance would silently lose every entry.
+    fetchOptions: { ...config.fetchOptions, headers: Object.fromEntries(headers) },
   })
 }
 

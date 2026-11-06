@@ -138,7 +138,7 @@ export async function waitForDepositDelivery(
     fromBlock: bigint
   },
 ) {
-  const client = context.actors.user.zone.client
+  const client = context.zoneProofClient
   const events = [
     getAbiItem({ abi: zoneDepositAbi, name: 'DepositProcessed' }),
     getAbiItem({ abi: zoneDepositAbi, name: 'DepositFailed' }),
@@ -292,7 +292,7 @@ export async function waitForCallbackBounce(
     fromBlock: bigint
   },
 ) {
-  const client = context.actors.user.zone.client
+  const client = context.zoneProofClient
   await waitFor(
     'the failed callback input to return privately',
     async () => {

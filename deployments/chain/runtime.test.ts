@@ -1,6 +1,13 @@
+import { createServer, type IncomingHttpHeaders } from 'node:http'
+import { createPublicClient, type HttpTransportConfig } from 'viem'
 import { describe, expect, test } from 'vitest'
 
-import { rpcConfiguration, rpcTransport, sanitizedDiagnostic } from './runtime.js'
+import {
+  configuredRpcTransport,
+  rpcConfiguration,
+  rpcTransport,
+  sanitizedDiagnostic,
+} from './runtime.js'
 
 describe('deployment runtime', () => {
   test('separates display and authenticated RPC URLs', () => {
@@ -60,5 +67,74 @@ describe('RPC credential boundaries', () => {
     expect(sanitizedDiagnostic(new Error('Authorization: Basic dXNlcjpzZWNyZXQ='))).not.toContain(
       'dXNlcjpzZWNyZXQ=',
     )
+  })
+})
+
+describe('RPC headers on the wire', () => {
+  test.each(['record', 'tuples', 'headers', 'configured'] as const)(
+    'sends URL-derived Basic auth and caller headers through %s configuration',
+    async (kind) => {
+      let received: IncomingHttpHeaders | undefined
+      const server = createServer((request, response) => {
+        received = request.headers
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x1079' }))
+      })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      try {
+        const address = server.address()
+        if (!address || typeof address === 'string') throw new Error('Missing local RPC address')
+        const url = `http://user:password@127.0.0.1:${address.port}`
+        const entries: [string, string][] = [['X-Request-Tag', 'caller-header']]
+        const headers: NonNullable<HttpTransportConfig['fetchOptions']>['headers'] =
+          kind === 'headers'
+            ? new Headers(entries)
+            : kind === 'tuples'
+              ? entries
+              : Object.fromEntries(entries)
+        const client = createPublicClient({
+          transport:
+            kind === 'configured'
+              ? configuredRpcTransport({ url, headers: Object.fromEntries(entries) })
+              : rpcTransport(url, { fetchOptions: { headers }, retryCount: 0 }),
+        })
+        await expect(client.getChainId()).resolves.toBe(4217)
+        expect(received?.authorization).toBe('Basic dXNlcjpwYXNzd29yZA==')
+        expect(received?.['x-request-tag']).toBe('caller-header')
+        expect(received?.['content-type']).toBe('application/json')
+      } finally {
+        server.closeAllConnections()
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        )
+      }
+    },
+  )
+
+  test('explicit mixed-case authorization overrides URL credentials on the wire', async () => {
+    let authorization: string | undefined
+    const server = createServer((request, response) => {
+      authorization = request.headers.authorization
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x1079' }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('Missing local RPC address')
+      const client = createPublicClient({
+        transport: rpcTransport(`http://user:password@127.0.0.1:${address.port}`, {
+          fetchOptions: { headers: { aUtHoRiZaTiOn: 'Bearer caller-token' } },
+          retryCount: 0,
+        }),
+      })
+      await expect(client.getChainId()).resolves.toBe(4217)
+      expect(authorization).toBe('Bearer caller-token')
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      )
+    }
   })
 })

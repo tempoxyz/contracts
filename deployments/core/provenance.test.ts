@@ -75,6 +75,33 @@ const record: EarnDeploymentRecord = {
 }
 
 describe('deployment provenance', () => {
+  test('a core creation receipt needs no archive reads even with later access configuration', async () => {
+    const accessTransaction = `0x${'a'.repeat(64)}` as const
+    const client = {
+      getCode: async ({ blockNumber }: { blockNumber?: bigint }) => {
+        if (blockNumber !== undefined) throw new Error('archive state unavailable')
+        return runtime
+      },
+      getTransactionReceipt: async ({ hash }: { hash: string }) => ({
+        blockNumber: hash === transaction ? 10n : 11n,
+        status: 'success',
+        transactionHash: hash,
+      }),
+    }
+    await expect(
+      verifyDeploymentProvenance(client as never, {
+        ...record,
+        actions: {
+          ...record.actions,
+          'validate-access': {
+            ...record.actions['deploy-core']!,
+            transactions: [accessTransaction],
+          },
+        },
+      }),
+    ).resolves.toBeUndefined()
+  })
+
   test('accepts matching provenance but rejects runtime drift and reverted receipts', async () => {
     const receipt = (status: string) =>
       vi.fn().mockResolvedValue({ blockNumber: 10n, status, transactionHash: transaction })
@@ -134,51 +161,61 @@ describe('receipt-free historical provenance', () => {
 })
 
 describe('adopted core with other receipts', () => {
-  test('a successful later binding receipt cannot move the claim scan past vault creation', async () => {
-    const actions: EarnDeploymentRecord['actions'] = {
-      'deploy-core': { ...record.actions['deploy-core']!, verification: 'chain', transactions: [] },
-      'bind-core': { ...record.actions['bind-core']!, transactions: [transaction] },
-    }
-    const client = (receiptBlock: bigint) => ({
-      getCode: async ({ blockNumber }: { blockNumber?: bigint }) =>
-        blockNumber !== undefined && blockNumber < 10n ? '0x' : runtime,
-      getTransactionReceipt: async () => ({
-        blockNumber: receiptBlock,
-        status: 'success',
-        transactionHash: transaction,
-      }),
-    })
-    const adopted = { ...record, actions, deploymentBlock: '11' }
-    await expect(verifyDeploymentProvenance(client(11n) as never, adopted)).rejects.toThrow(
-      'claim scan starts before EarnVault creation',
-    )
-    // A receipt before core creation is a conservative, independently proven scan boundary.
-    await expect(
-      verifyDeploymentProvenance(client(5n) as never, { ...adopted, deploymentBlock: '5' }),
-    ).resolves.toBeUndefined()
-    await expect(
-      verifyDeploymentProvenance(client(10n) as never, { ...adopted, deploymentBlock: '10' }),
-    ).resolves.toBeUndefined()
-  })
+  test.each(['bind-core', 'validate-access'] as const)(
+    'a successful later %s receipt cannot move the claim scan past vault creation',
+    async (step) => {
+      const actions: EarnDeploymentRecord['actions'] = {
+        'deploy-core': {
+          ...record.actions['deploy-core']!,
+          verification: 'chain',
+          transactions: [],
+        },
+        [step]: { ...record.actions['deploy-core']!, transactions: [transaction] },
+      }
+      const client = (receiptBlock: bigint) => ({
+        getCode: async ({ blockNumber }: { blockNumber?: bigint }) =>
+          blockNumber !== undefined && blockNumber < 10n ? '0x' : runtime,
+        getTransactionReceipt: async () => ({
+          blockNumber: receiptBlock,
+          status: 'success',
+          transactionHash: transaction,
+        }),
+      })
+      const adopted = { ...record, actions, deploymentBlock: '11' }
+      await expect(verifyDeploymentProvenance(client(11n) as never, adopted)).rejects.toThrow(
+        'claim scan starts before EarnVault creation',
+      )
+      // A receipt before core creation is a conservative, independently proven scan boundary.
+      await expect(
+        verifyDeploymentProvenance(client(5n) as never, { ...adopted, deploymentBlock: '5' }),
+      ).resolves.toBeUndefined()
+      await expect(
+        verifyDeploymentProvenance(client(10n) as never, { ...adopted, deploymentBlock: '10' }),
+      ).resolves.toBeUndefined()
+    },
+  )
 
-  test('requires archive evidence when only non-core receipts remain', async () => {
-    const adopted = {
-      ...record,
-      actions: { 'bind-core': { ...record.actions['bind-core']!, transactions: [transaction] } },
-    }
-    const client = {
-      getCode: async ({ blockNumber }: { blockNumber?: bigint }) => {
-        if (blockNumber !== undefined) throw new Error('archive state unavailable')
-        return runtime
-      },
-      getTransactionReceipt: async () => ({
-        blockNumber: 10n,
-        status: 'success',
-        transactionHash: transaction,
-      }),
-    }
-    await expect(verifyDeploymentProvenance(client as never, adopted)).rejects.toThrow(
-      'archive state unavailable',
-    )
-  })
+  test.each(['bind-core', 'validate-access'] as const)(
+    'requires archive evidence when only a %s receipt remains',
+    async (step) => {
+      const adopted = {
+        ...record,
+        actions: { [step]: { ...record.actions['deploy-core']!, transactions: [transaction] } },
+      }
+      const client = {
+        getCode: async ({ blockNumber }: { blockNumber?: bigint }) => {
+          if (blockNumber !== undefined) throw new Error('archive state unavailable')
+          return runtime
+        },
+        getTransactionReceipt: async () => ({
+          blockNumber: 10n,
+          status: 'success',
+          transactionHash: transaction,
+        }),
+      }
+      await expect(verifyDeploymentProvenance(client as never, adopted)).rejects.toThrow(
+        'archive state unavailable',
+      )
+    },
+  )
 })

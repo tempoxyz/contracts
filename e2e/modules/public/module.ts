@@ -214,6 +214,7 @@ export const cases: readonly E2eCase[] = [
       const { boundedRedeem, exactWithdraw } = context.deployment.capabilities
       const position = await deposit(context, { assets: DEPOSIT, receiver: context.user.address })
       if (boundedRedeem) {
+        const venueErrors = e2eEngines[context.engineKind].redeemBoundErrors?.(context)
         // Engine previews may conservatively omit route rounding credit, so use an impossible
         // minimum rather than assuming the preview is an exact execution quote.
         const request = {
@@ -230,8 +231,14 @@ export const cases: readonly E2eCase[] = [
             assetAmountMin: 1n,
             shareToken: context.contracts.earnShare,
           }),
-          // Engines enforce the bound before EarnVault; the relaxed control also rejects zero-output failures.
-          errors: ['MinimumAssetsNotMet', 'InsufficientAssetsReceived', 'InsufficientBacking'],
+          errorAbi: venueErrors?.abi,
+          // Engines and venues enforce the same bound before EarnVault; string reverts match exactly.
+          errors: [
+            'MinimumAssetsNotMet',
+            'InsufficientAssetsReceived',
+            'InsufficientBacking',
+            ...(venueErrors?.errors ?? []),
+          ],
         })
       }
       if (exactWithdraw) {

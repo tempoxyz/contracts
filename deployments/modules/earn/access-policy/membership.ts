@@ -6,6 +6,7 @@ import {
   type Address,
   type Chain,
   type Client,
+  type Hex,
   type PublicClient,
   type Transport,
 } from 'viem'
@@ -21,7 +22,11 @@ import { transferPolicyId } from './profile.js'
 type ReadClient = Pick<PublicClient, 'readContract'>
 type LogClient = Client & ReadClient & Pick<PublicClient, 'getBlockNumber' | 'getLogs'>
 
-const redeemRequested = getAbiItem({ abi: earnVaultAbi, name: 'RedeemRequested' })
+const redeemEvents = [
+  getAbiItem({ abi: earnVaultAbi, name: 'RedeemRequested' }),
+  getAbiItem({ abi: earnVaultAbi, name: 'RedeemFinalized' }),
+  getAbiItem({ abi: earnVaultAbi, name: 'RedeemCancelled' }),
+] as const
 
 /**
  * Required policy membership, derived from deployment principals: every fee recipient, the EarnVault
@@ -166,32 +171,51 @@ export async function assertAccessRemovalSafe(
   if (firstBlock > head) {
     throw new Error('Access removal claim scan anchor is beyond the current chain head')
   }
+  const outstanding = new Set<Hex>()
   const maxBlockRange = 100_000n
   for (let fromBlock = firstBlock; fromBlock <= head; fromBlock += maxBlockRange) {
     const toBlock = fromBlock + maxBlockRange - 1n < head ? fromBlock + maxBlockRange - 1n : head
     // A receiver-topic filter would miss aliases whose effective policy identity is the target.
     const logs = await client.getLogs({
       address: deployment.contracts.earnVault,
-      event: redeemRequested,
+      events: redeemEvents,
       fromBlock,
       toBlock,
       strict: true,
     })
+    // Apply terminal events in order: a later request may reuse a closed engine request ID.
+    logs.sort((a, b) =>
+      a.blockNumber === b.blockNumber
+        ? a.logIndex - b.logIndex
+        : a.blockNumber < b.blockNumber
+          ? -1
+          : 1,
+    )
     for (const log of logs) {
-      const requestId = log.args.requestId
-      const pending = await client.readContract({
-        address: deployment.contracts.earnVault,
-        abi: earnVaultAbi,
-        functionName: 'pendingRedeem',
-        args: [requestId],
-      })
-      if (
-        pending.open &&
-        (await resolveAccessAddress(client, pending.receiver)) === resolvedTarget
-      ) {
-        throw new Error(`Address ${target} has open async claim ${requestId}; removal is unsafe`)
-      }
+      if (log.eventName === 'RedeemRequested') outstanding.add(log.args.requestId)
+      else outstanding.delete(log.args.requestId)
     }
+  }
+  // Closed history needs no eth_call; cap concurrency for the claims that remain outstanding.
+  const requestIds = [...outstanding]
+  const readBatchSize = 16
+  for (let offset = 0; offset < requestIds.length; offset += readBatchSize) {
+    await Promise.all(
+      requestIds.slice(offset, offset + readBatchSize).map(async (requestId) => {
+        const pending = await client.readContract({
+          address: deployment.contracts.earnVault,
+          abi: earnVaultAbi,
+          functionName: 'pendingRedeem',
+          args: [requestId],
+        })
+        if (!pending.open) return
+        // An unregistered alias has no policy identity to remove. RPC errors still fail closed.
+        const receiver = await Actions.virtualAddress.resolve(client, { address: pending.receiver })
+        if (receiver && getAddress(receiver) === resolvedTarget) {
+          throw new Error(`Address ${target} has open async claim ${requestId}; removal is unsafe`)
+        }
+      }),
+    )
   }
 }
 

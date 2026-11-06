@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,10 +25,69 @@ describe('childEnvironment', () => {
           NODE_OPTIONS: '--require untrusted',
           FOUNDRY_PROFILE: 'untrusted',
           FOUNDRY_FFI: 'true',
+          FOUNDRY_SOLC: '/unreviewed',
+          SOLC_PATH: '/unreviewed',
+          LD_PRELOAD: '/untrusted',
+          BASH_ENV: '/untrusted',
+          GIT_SSL_CAINFO: '/unused-git-ca.pem',
+          CARGO_HTTP_CAINFO: '/unused-cargo-ca.pem',
+          CARGO_REGISTRIES_PRIVATE_TOKEN: 'registry-secret',
           OUT: 'shared',
         },
       ),
     ).toEqual({ PATH: '/bin', HOME: '/home/test', DEPLOYER_PK: 'explicit' })
+  })
+
+  it('preserves both proxy cases and CA roots through an actual child without ambient secrets', () => {
+    const network = {
+      HTTP_PROXY: 'http://upper-http.example:8080',
+      HTTPS_PROXY: 'http://upper-https.example:8080',
+      ALL_PROXY: 'socks5://upper-all.example:1080',
+      NO_PROXY: 'localhost,127.0.0.1,.internal.example',
+      http_proxy: 'http://lower-http.example:8081',
+      https_proxy: 'http://lower-https.example:8081',
+      all_proxy: 'socks5://lower-all.example:1081',
+      no_proxy: '',
+      SSL_CERT_FILE: '/trust/root.pem',
+      SSL_CERT_DIR: '/trust/roots',
+    }
+    const environment = Safety.childEnvironment(
+      { DEPLOYER_PK: 'explicit-synthetic-key', FOUNDRY_PROFILE: 'default' },
+      {
+        ...network,
+        DEPLOYER_PK: 'ambient-synthetic-key',
+        ZONE_ADMIN_PRIVATE_KEY: 'synthetic-authority',
+        EARN_ACCESS_ADMIN_PRIVATE_KEY: 'synthetic-owner',
+        AWS_SESSION_TOKEN: 'synthetic-cloud-token',
+        FOUNDRY_PROFILE: 'unreviewed',
+        FOUNDRY_SOLC: '/unreviewed',
+        NODE_OPTIONS: '--require /untrusted',
+      },
+    )
+    const expected = {
+      ...network,
+      DEPLOYER_PK: 'explicit-synthetic-key',
+      FOUNDRY_PROFILE: 'default',
+    }
+    expect(environment).toEqual(expected)
+    // The source is entirely synthetic; no host credentials can enter this process probe.
+    const output = execFileSync(
+      process.execPath,
+      ['-e', 'console.log(JSON.stringify(process.env))'],
+      {
+        encoding: 'utf8',
+        env: environment,
+      },
+    )
+    expect(JSON.parse(output)).toEqual(expected)
+  })
+
+  it('omits unset network settings and allows explicit inputs to override plumbing', () => {
+    expect(Safety.childEnvironment({}, { HTTPS_PROXY: undefined, https_proxy: '' })).toEqual({
+      https_proxy: '',
+    })
+    expect(Safety.childEnvironment({ NO_PROXY: '' }, { NO_PROXY: '*' })).toEqual({ NO_PROXY: '' })
+    expect(Safety.childEnvironment({}, {})).toEqual({})
   })
 })
 

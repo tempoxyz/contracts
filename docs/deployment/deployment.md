@@ -68,7 +68,9 @@ mints elsewhere. The minimum output defaults to 50 bps below the quote (`--slipp
 is refused. It refuses an RPC whose chain or genesis differs from the record. Nothing is sent
 without `--broadcast`, and approval and deposit are one Tempo transaction. A hosted record with
 pending source verification may be quoted but cannot be funded until verification completes; local
-records whose verification is not applicable remain usable.
+records whose verification is not applicable remain usable. The creation engine must match the
+profile’s authored venue. An operator-migrated engine uses its current venue only when both the
+profile and vault permit operator migration.
 
 ## Lifecycle
 
@@ -277,8 +279,10 @@ Deployment scripts receive only `DEPLOYER_PRIVATE_KEY`; Forge never receives ano
 key. Read-only version, build, provenance, source-verification, and formatting subprocesses receive
 no signing keys. A Foundry project's `.env` is refused, and its effective compiler configuration
 must match its tracked `foundry.toml`; keep credentials in the profile-specific environment file.
-Operational authority and deposit sends pin the final signed calls, chain, fee token, pending
-nonce in protocol nonce key `0`, and a locally set 300-second expiry. Altered RPC-provided signing
+Operational authority and deposit sends pin the final signed calls, chain, pending nonce in
+protocol nonce key `0`, and a locally set 300-second expiry. Explicit fee tokens and chain-configured
+fee tokens stay pinned; otherwise authority sends retain the account or protocol fee preference.
+Deposits explicitly pay fees in the vault asset. Altered RPC-provided signing
 fields or a gas fee liability above $1 abort before signing. Each typed
 authority step first proves with read-only calls that its signer holds the exact authority (the
 Zone administrator key may also be the sole owner of a threshold-1 Safe that administers the
