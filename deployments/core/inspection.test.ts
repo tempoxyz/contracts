@@ -71,7 +71,10 @@ function client(overrides: Overrides = {}) {
     ...overrides,
   }
   return {
-    getBlock: async () => ({ timestamp: (overrides.now as bigint | undefined) ?? 1_800_000_100n }),
+    getBlock: async () => ({
+      number: 7n,
+      timestamp: (overrides.now as bigint | undefined) ?? 1_800_000_100n,
+    }),
     getCode: async () => '0x01' as const,
     readContract: async ({
       address: target,

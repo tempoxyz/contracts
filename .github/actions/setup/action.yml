@@ -21,12 +21,12 @@ runs:
   using: composite
   steps:
     # Earn compiles with the solar revision earn/solar.lock pins; building it takes minutes, so the
-    # binary is cached by that revision.
+    # binary and its installation receipt are cached by revision and receipt format.
     - if: inputs.forge-cache != ''
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: .solar
-        key: solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/solar.lock') }}
+        key: solar-receipt-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/solar.lock') }}
 
     - name: Install Earn's Solidity dependencies and solar
       if: inputs.forge-cache != ''

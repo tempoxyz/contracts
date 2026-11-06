@@ -3,7 +3,24 @@ import { createServer } from 'node:http'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { createPublicClient, http, pad, type Hex } from 'viem'
+import {
+  BaseError,
+  ExecutionRevertedError,
+  HttpRequestError,
+  InsufficientFundsError,
+  InternalRpcError,
+  InvalidInputRpcError,
+  LimitExceededRpcError,
+  NonceTooHighError,
+  NonceTooLowError,
+  RpcRequestError,
+  TimeoutError,
+  createPublicClient,
+  http,
+  pad,
+  type Hex,
+} from 'viem'
+import { getNodeError } from 'viem/utils'
 import { describe, expect, it } from 'vitest'
 import * as Safety from './targets-safety.js'
 
@@ -287,41 +304,111 @@ describe('routerTransition', () => {
 })
 
 describe('sendFailure', () => {
-  it.each([502, 504, 200])(
-    'recognizes real viem JSON-RPC error wrapping at HTTP %s',
-    async (status) => {
-      const server = createServer(async (request, response) => {
-        let body = ''
-        for await (const chunk of request) body += chunk
-        response.writeHead(status, { 'content-type': 'application/json' })
-        response.end(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id: JSON.parse(body).id,
-            error: { code: -32000, message: 'gateway failure' },
-          }),
-        )
-      })
-      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-      try {
-        const address = server.address()
-        if (!address || typeof address === 'string') throw new Error('no listener')
-        const client = createPublicClient({
-          transport: http(`http://127.0.0.1:${address.port}`, { retryCount: 0 }),
-        })
-        const error = await client.getBlockNumber().catch((error: unknown) => error)
-        expect(Safety.sendFailure(error)).toEqual({
-          transient: status !== 200,
+  describe.each([
+    { code: -1, wrapper: RpcRequestError },
+    { code: -32000, wrapper: InvalidInputRpcError },
+    { code: -32603, wrapper: InternalRpcError },
+    { code: -32005, wrapper: LimitExceededRpcError },
+  ])('JSON-RPC $code', ({ code, wrapper }) => {
+    it.each([502, 504, 200])(
+      'preserves gateway status through real viem wrapping at HTTP %s',
+      async (status) => {
+        const error = await rpcFailure(status, { code, message: 'gateway failure' })
+        expect(error).toBeInstanceOf(wrapper)
+        const requestError = error.walk((cause) => cause instanceof RpcRequestError)
+        expect(requestError).toBeInstanceOf(RpcRequestError)
+        expect(requestError).toMatchObject({ code, status: status === 200 ? undefined : status })
+        const expected = {
+          transient: status !== 200 || code !== -32000,
           cutShort: status !== 200,
-        })
-      } finally {
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
+        }
+        expect(Safety.sendFailure(error)).toEqual(expected)
+        expect(Safety.sendFailure(new BaseError('Transaction failed', { cause: error }))).toEqual(
+          expected,
         )
-      }
+      },
+    )
+  })
+
+  it.each([
+    { code: 3, message: 'execution reverted: rejected', type: ExecutionRevertedError },
+    { code: -32000, message: 'execution reverted: rejected', type: ExecutionRevertedError },
+    { code: -32003, message: 'execution reverted: rejected', type: ExecutionRevertedError },
+    { code: -32000, message: 'nonce too low', type: NonceTooLowError },
+    { code: -32000, message: 'nonce too high', type: NonceTooHighError },
+    { code: -32000, message: 'insufficient funds', type: InsufficientFundsError },
+  ])(
+    'does not retry or lose classification for $code: $message',
+    async ({ code, message, type }) => {
+      const error = await rpcFailure(200, { code, message })
+      const cause = error.cause
+      const nodeError = getNodeError(error, {})
+      expect(nodeError).toBeInstanceOf(type)
+      expect(Safety.sendFailure(error)).toEqual({ transient: false, cutShort: false })
+      expect(Safety.sendFailure(nodeError)).toEqual({ transient: false, cutShort: false })
+      expect(error.cause).toBe(cause)
+      expect(error.walk((cause) => cause instanceof RpcRequestError)).toMatchObject({
+        code,
+        details: message,
+      })
+      expect(getNodeError(error, {})).toBeInstanceOf(type)
+    },
+  )
+
+  it.each([502, 504, 500, undefined])(
+    'preserves HTTP transport failures with status %s',
+    (status) => {
+      const error = new HttpRequestError({ status, url: 'https://rpc.invalid' })
+      expect(Safety.sendFailure(new BaseError('Transaction failed', { cause: error }))).toEqual({
+        transient: true,
+        cutShort: status === 502 || status === 504,
+      })
+    },
+  )
+
+  it('keeps timeouts transient without claiming a gateway cutoff', () => {
+    const error = new TimeoutError({ body: {}, url: 'https://rpc.invalid' })
+    expect(Safety.sendFailure(error)).toEqual({ transient: true, cutShort: false })
+  })
+
+  it.each([new Error('execution reverted'), { code: -32603 }, undefined])(
+    'does not infer transport failures from non-viem errors',
+    (error) => {
+      expect(Safety.sendFailure(error)).toEqual({ transient: false, cutShort: false })
     },
   )
 })
+
+async function rpcFailure(status: number, error: { code: number; message: string }) {
+  const requests: unknown[] = []
+  const server = createServer(async (request, response) => {
+    let body = ''
+    for await (const chunk of request) body += chunk
+    const parsed = JSON.parse(body)
+    requests.push({ method: parsed.method, params: parsed.params })
+    response.writeHead(status, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, error }))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('no listener')
+    const client = createPublicClient({
+      transport: http(`http://127.0.0.1:${address.port}`, { retryCount: 0 }),
+    })
+    const request = { method: 'eth_sendRawTransactionSync', params: ['0x1234'] }
+    const failure = await client
+      .request(request as never, { retryCount: 0 })
+      .catch((error: unknown) => error)
+    expect(requests).toEqual([request])
+    if (!(failure instanceof BaseError)) throw new Error('Expected a viem request failure')
+    return failure
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
+}
 
 describe('target provenance', () => {
   it('rejects a registered foreign clone even when the factory registry agrees with the record', async () => {
@@ -479,7 +566,7 @@ function provenanceFixture() {
   return { program, client, codes, reads, artifacts }
 }
 
-import { RpcRequestError, keccak256 } from 'viem'
+import { keccak256 } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { tempoModerato } from 'viem/tempo/chains'
 import { Account } from 'viem/tempo'

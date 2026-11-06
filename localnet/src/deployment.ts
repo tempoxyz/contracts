@@ -57,7 +57,7 @@ import type {
   State,
 } from './deployment/types.js'
 import { earnEngineBindingAbi, earnRouterAbi, zonePortalAbi } from '@tempoxyz/contracts/abis'
-import { missingZoneTokens, zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
+import { missingZoneTokens, portalRoleCalls, zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
 
 /** Pure profile helpers, so consumers can derive what a variant deploys without a chain. */
 export {
@@ -107,7 +107,10 @@ export async function createBase(options: createBase.Options): Promise<Base> {
   const large = { rawGasEstimate: true }
   // Release contracts are created deterministically, and an entry point reuses one that exists
   // without a transaction (a persistent devnet deployed before), so take it from its address.
-  const predicted = Foundry.releaseAddresses(engineFactories.map((factory) => factory.releaseKey))
+  const predicted = Foundry.releaseAddresses(
+    engineFactories.map((factory) => factory.releaseKey),
+    options.broadcastDirectory,
+  )
   const released = async (name: string, step: Foundry.Step) => {
     const address = predicted[name]
     if (!address) throw new Error(`No deterministic address for ${name}`)
@@ -534,52 +537,54 @@ function tempoClient(options: Pick<create.Options, 'chainId' | 'rpcUrl'>, privat
   })
 }
 
-/**
- * Enables the fixture stablecoins the profile lifecycle does not and registers every router as a
- * callback gateway, as hosted Zone administrators do, in one Zone administrator call. The local
- * Zone starts with access and gateway enforcement off; registration keeps routers working when a
- * consumer enables them.
- */
+/** Enables fixture tokens and admits routers under the Portal's current access and gateway modes. */
 export async function administerZonePortal(
   zoneAdministrator: ReturnType<typeof tempoClient>,
   portal: Address,
   options: { tokens: Address[]; gateways: Address[] },
 ) {
-  const [missing, registered] = await Promise.all([
+  const [missing, accessEnforced, gatewayOpen] = await Promise.all([
     missingZoneTokens(
       zoneAdministrator,
       portal,
       options.tokens.map((token) => [token, token] as const),
     ),
-    Promise.all(
-      options.gateways.map((gateway) =>
-        zoneAdministrator.readContract({
-          address: portal,
-          abi: zonePortalAbi,
-          functionName: 'hasRole',
-          args: [gateway, zonePortalRole.callbackGateway],
-        }),
-      ),
-    ),
+    zoneAdministrator.readContract({
+      address: portal,
+      abi: zonePortalAbi,
+      functionName: 'isAccessEnforced',
+    }),
+    zoneAdministrator.readContract({
+      address: portal,
+      abi: zonePortalAbi,
+      functionName: 'isGatewayOpen',
+    }),
   ])
+  // Open gateways confer no deposit access; retain the lifecycle's Account role in this mode.
+  const role = accessEnforced && gatewayOpen ? 'account' : 'callbackGateway'
+  const gateways = unique(options.gateways)
+  const registrations = await Promise.all(
+    gateways.map(async (gateway) => {
+      const registered = await zoneAdministrator.readContract({
+        address: portal,
+        abi: zonePortalAbi,
+        functionName: 'hasRole',
+        args: [gateway, zonePortalRole[role]],
+      })
+      return registered ? [] : portalRoleCalls(zoneAdministrator, portal, gateway, role)
+    }),
+  )
   const calls = [
-    ...missing.map((token) =>
-      encodeFunctionData({
+    ...missing.map((token) => ({
+      to: portal,
+      data: encodeFunctionData({
         abi: zonePortalAbi,
         functionName: 'enableToken',
         args: [getAddress(token)],
       }),
-    ),
-    ...options.gateways
-      .filter((_, index) => !registered[index])
-      .map((gateway) =>
-        encodeFunctionData({
-          abi: zonePortalAbi,
-          functionName: 'setGateway',
-          args: [gateway, true],
-        }),
-      ),
-  ].map((data) => ({ to: portal, data }))
+    })),
+    ...registrations.flat(),
+  ]
   if (calls.length === 0) return undefined
   const receipt = await zoneAdministrator.sendTransactionSync({
     ...(await guardedTransactionRequest(zoneAdministrator, calls, Config.address.pathUsd)),
@@ -593,14 +598,15 @@ export async function administerZonePortal(
     options.tokens.map((token) => [token, token] as const),
   )
   if (stillMissing.length > 0) throw new Error('Zone fixture tokens were not enabled')
-  for (const gateway of options.gateways) {
+  for (const gateway of gateways) {
     const registered = await zoneAdministrator.readContract({
       address: portal,
       abi: zonePortalAbi,
       functionName: 'hasRole',
-      args: [gateway, zonePortalRole.callbackGateway],
+      args: [gateway, zonePortalRole[role]],
     })
-    if (!registered) throw new Error('Zone fixture gateway was not registered')
+    if (!registered)
+      throw new Error('Zone fixture gateway was not registered for the current Portal mode')
   }
   return receipt
 }

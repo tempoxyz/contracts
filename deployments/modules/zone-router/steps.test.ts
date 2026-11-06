@@ -688,7 +688,7 @@ describe('Zone router inspection', () => {
       latestPrice: [1n, 100n],
     })
     // The oracle report is 10 seconds old, within the pool's 60-second maximum.
-    const client = { ...reads, getBlock: async () => ({ timestamp: 110n }) }
+    const client = { ...reads, getBlock: async () => ({ number: 7n, timestamp: 110n }) }
     const report = await zoneRouterModeModule.inspect!(client, cardAndEarn, outputs)
     expect(report?.zoneRouter).toMatchObject({
       status: 'blocked',
@@ -717,7 +717,7 @@ describe('Zone router inspection', () => {
       ROUTER_FACTORY: outputs.zoneRouterFactory,
       isAuthorized: false,
     })
-    const client = { ...reads, getBlock: async () => ({ timestamp: 110n }) }
+    const client = { ...reads, getBlock: async () => ({ number: 7n, timestamp: 110n }) }
     const report = await zoneRouterModeModule.inspect!(client, protectedEarn, outputs)
     expect(report?.zoneRouterSpenders).toEqual({
       label: 'Zone router spenders',

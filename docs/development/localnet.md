@@ -124,30 +124,41 @@ before acceptance; stale fixture addresses do not prohibit rotation or authorize
 
 ### Devnet source evidence
 
-`pnpm devnet:deploy` deploys an Earn stack on an existing devnet. It requires a clean repository
-and installed Solidity dependencies (`pnpm deps`).
-Before any chain write, it checks both Earn's and the Zone router's libraries against their
-respective `foundry.lock` revisions, rejecting missing or symlinked checkouts, modified sources, unpublished
-files (including ignored files), and unpinned libraries. It rechecks them before writing outputs.
-Disposable `Environment.run` consumers still install dependencies on first use.
+`pnpm devnet:deploy` deploys an Earn stack on an existing devnet. It requires a clean repository.
+Before resolving credentials, it validates existing Earn and Zone-router libraries against their
+respective `foundry.lock` revisions, then installs missing dependencies through the pinned installer.
+Symlinked checkouts, modified sources, unpublished files (including ignored files), and unpinned
+installed libraries fail before the installer can replace them. The completed installation is
+checked before any chain write and again before certifying the deployment. Disposable
+`Environment.run` consumers still install dependencies on first use.
 
 `pnpm deps` runs the [dependency installer](../../scripts/solidity-deps.sh), which builds solar,
-Earn's Solidity compiler invoked by Forge, in a temporary directory. It writes `install-receipt.json` with the
-requested source revision and executable SHA-256 only after Cargo succeeds. It reuses an existing
-compiler only when that receipt matches its pin and bytes. Missing or mismatched receipts trigger
-a fresh pinned rebuild, never adoption of existing bytes; a failed build preserves the previous
-installation. The completed directory replaces it with rollback if promotion fails.
+Earn's Solidity compiler invoked by Forge, in a temporary directory. It writes `install-receipt.json`
+with the requested source revision and executable SHA-256 only after Cargo succeeds. It reuses an
+existing compiler only when that receipt matches its pin and executable bytes. Missing or mismatched
+receipts trigger a fresh pinned rebuild; a failed build preserves the previous installation.
+The temporary build replaces the previous installation only after success, with rollback if that
+replacement fails.
 
-Before resolving credentials, devnet deployment requires that matching receipt; it rechecks the
-sources, receipt, and compiler bytes before writing outputs. Run `pnpm deps` to rebuild an
-unreceipted or changed compiler. The existing `earn-source-revision` output identifies the
-repository and pinned Solidity sources. The additional `earn-build-provenance.json` records that
-revision, the requested solar source revision, and the receipt-matched executable SHA-256.
+Devnet bootstrap rebuilds an unreceipted or changed compiler before resolving credentials, then
+requires the matching receipt. In the directory selected by `--out`, `earn-source-revision` identifies
+the repository revision and pinned Solidity sources; `earn-build-provenance.json` also records the
+requested solar source revision and receipt-matched executable SHA-256. Before writing these two
+certification files, the command rechecks the sources, receipt, and compiler bytes after deployment.
+If that check fails, the command exits unsuccessfully but preserves the deployed address files for
+recovery. It withholds both certification files and removes any from an earlier run in the same
+output directory. Address files alone do not certify a successful run.
 
-The build-provenance record sets `solar.authenticated` to `false`: the receipt trusts the local installer, Cargo, and filesystem,
-not a remote signature or independent rebuild. It detects binary replacement without a matching
-receipt, not a malicious host changing both. It does not attest other tools, cached artifacts, or
-equivalence between deployed runtime and independently rebuilt source.
+Every devnet and disposable localnet run uses fresh Forge output and cache directories, separated
+by project under its temporary run directory. Release-address inspection and deployment scripts
+share only that run's compiled artifacts, never the checkout's ignored caches or caller overrides.
+Cleanup removes the run's build state without touching another run or the checkout's caches.
+
+`earn-build-provenance.json` sets `solar.authenticated` to `false`: the receipt trusts the local
+installer, Cargo, and filesystem, not a remote signature or independent rebuild. It detects binary
+replacement without a matching receipt, not a malicious host changing both. Fresh build directories
+prevent reuse of older cached artifacts, but the record does not attest other tools or equivalence
+between deployed runtime and independently rebuilt source.
 
 ## Foundry and containers
 
@@ -170,7 +181,7 @@ equivalence between deployed runtime and independently rebuilt source.
   have one definition. `DeployLocalEarn.s.sol` deploys the `earn/src/demo/` par oracle and recipient
   registry.
 - Each `Environment.run` gets a temporary run directory `localnet/.local/run-*` holding its
-  `FOUNDRY_BROADCAST` directory (`broadcast/`) and lifecycle resume state (each profile's
+  `FOUNDRY_BROADCAST` directory (`broadcast/`), isolated Forge build state (`build/<project>/`), and lifecycle resume state (each profile's
   `deployment.pending.json` beside a nominal `profiles/<id>/profile.json`; no record is written),
   and removes it during cleanup. Local app and E2E processes use the same dev chain ID and must never
   share `*-latest.json` broadcasts.
@@ -230,13 +241,13 @@ equivalence between deployed runtime and independently rebuilt source.
   newly deployed EarnShare. The Portal rejects enabling a token whose name, symbol, or currency
   exceeds 31 bytes (`TokenMetadataTooLong`), so local venue names leave room for the factory's
   ` (Earn)` suffix.
-- The local Zone starts with access and gateway enforcement off. The Zone administrator registers
-  every deployed router as a callback gateway (`setGateway`), as hosted administrators do, so
-  routers keep working when a consumer enforces gateway mode, or both modes as hosted Zones do,
-  through `environment.accounts.zoneAdministrator`. A Portal account holds one role, so with access
-  enforced and gateway mode off a registered router is not an admitted depositor. Do not infer
-  hosted Portal admission or gateway policy from the disposable fixture; inspect those controls
-  independently in hosted runs.
+- The local Zone starts with access and gateway enforcement off. Fixture administration registers
+  routers as callback gateways by default. If an existing devnet enforces access but leaves
+  gateways open, routers instead need the Account role for return deposits. A Portal account holds
+  one role, so mode changes revoke the old role and grant the new one in one atomic batch; an
+  already-correct role is left alone. Consumers changing modes through
+  `environment.accounts.zoneAdministrator` must reconcile router admission for the new mode.
+  Inspect hosted Portal admission and gateway policy independently, not from disposable defaults.
 - The router's `onWithdrawalReceived` callback takes six arguments
   `(zoneId, sourcePortal, senderTag, token, amount, data)`, part of the locked protocol ABI.
 - Setup and E2E progress print as numbered trees. Successful Forge output is buffered into receipt

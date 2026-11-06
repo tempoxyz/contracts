@@ -181,7 +181,7 @@ function routerFixture(options: { sameAsset?: boolean } = {}) {
     redeem: 2_000_000n,
   }
   const client = {
-    getBlock: async () => ({ timestamp: 1000n }),
+    getBlock: async () => ({ number: 7n, timestamp: 1000n }),
     readContract: async (call: {
       address: Address
       functionName: string

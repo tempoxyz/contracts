@@ -166,9 +166,17 @@ export function sendFailure(error: unknown) {
     cause instanceof TimeoutError ||
     (cause instanceof RpcRequestError && (cause.status === 502 || cause.status === 504)) ||
     hasTransientCode(cause)
-  const status =
-    cause instanceof HttpRequestError || cause instanceof RpcRequestError ? cause.status : undefined
-  return { transient, cutShort: status === 502 || status === 504 }
+  // Transient RPC wrappers have no status; find the gateway response independently of retry classification.
+  const cutShort =
+    error instanceof BaseError &&
+    Boolean(
+      error.walk(
+        (item) =>
+          (item instanceof HttpRequestError || item instanceof RpcRequestError) &&
+          (item.status === 502 || item.status === 504),
+      ),
+    )
+  return { transient, cutShort }
 }
 
 /** Router role transitions are operator decisions; never silently revoke existing Portal roles. */

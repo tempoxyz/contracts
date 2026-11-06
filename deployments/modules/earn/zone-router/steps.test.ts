@@ -185,17 +185,74 @@ describe('oracleFreshness', () => {
   test.each([
     [101n, 'future'],
     [0n, 'stale'],
+    [39n, 'stale'],
+    [40n, undefined],
     [99n, undefined],
     [100n, undefined],
   ] as const)('reports timestamp %s honestly', async (updatedAt, reason) => {
     const client = {
-      getBlock: async () => ({ timestamp: 100n }),
+      getBlock: async () => ({ number: 7n, timestamp: 100n }),
       readContract: async ({ functionName }: { functionName: string }) =>
         ({ oracle: address('4'), maxOracleAge: 60n, latestPrice: [1n, updatedAt] })[functionName],
     }
     const result = await oracleFreshness(client as never, address('5'))
     if (reason) expect(result).toContain(reason)
     else expect(result).toBeUndefined()
+  })
+
+  test('pins pool configuration and the report to the timestamp block when the head advances', async () => {
+    const pool = address('5')
+    const oracle = address('4')
+    const readContract = vi.fn(
+      async ({ functionName, blockNumber }: { functionName: string; blockNumber?: bigint }) => {
+        // Latest has advanced to block 8, including a changed pool configuration and current report.
+        const snapshot = blockNumber === 7n
+        return {
+          oracle: snapshot ? oracle : address('6'),
+          maxOracleAge: snapshot ? 60n : 0n,
+          latestPrice: [1n, snapshot ? 100n : 101n],
+        }[functionName]
+      },
+    )
+    const client = { getBlock: async () => ({ number: 7n, timestamp: 100n }), readContract }
+    await expect(oracleFreshness(client as never, pool)).resolves.toBeUndefined()
+    expect(readContract.mock.calls.map(([call]) => call.blockNumber)).toEqual([7n, 7n, 7n])
+    expect(readContract).toHaveBeenLastCalledWith(
+      expect.objectContaining({ address: oracle, functionName: 'latestPrice', blockNumber: 7n }),
+    )
+  })
+
+  test('refuses a block without a number rather than silently falling back to latest', async () => {
+    const readContract = vi.fn(
+      async ({ functionName }: { functionName: string }) =>
+        ({
+          oracle: address('4'),
+          maxOracleAge: 60n,
+          latestPrice: [1n, 100n],
+        })[functionName],
+    )
+    await expect(
+      oracleFreshness(
+        { getBlock: async () => ({ timestamp: 100n }), readContract } as never,
+        address('5'),
+      ),
+    ).resolves.toBe('oracle freshness is unavailable')
+    expect(readContract).not.toHaveBeenCalled()
+  })
+
+  test('does not retry unavailable snapshot state against a newer head', async () => {
+    const readContract = vi.fn(async () => {
+      throw new Error('historical state unavailable')
+    })
+    await expect(
+      oracleFreshness(
+        { getBlock: async () => ({ number: 7n, timestamp: 100n }), readContract } as never,
+        address('5'),
+      ),
+    ).resolves.toBe('oracle freshness is unavailable')
+    expect(readContract).toHaveBeenCalledTimes(2)
+    for (const [call] of readContract.mock.calls as unknown as [{ blockNumber?: bigint }][])
+      expect(call.blockNumber).toBe(7n)
   })
 })
 

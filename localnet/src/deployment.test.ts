@@ -1,4 +1,5 @@
-import { getAddress } from 'viem'
+import { decodeFunctionData, getAddress, type Hex } from 'viem'
+import { zonePortalAbi } from '@tempoxyz/contracts/abis'
 import { describe, expect, it, vi } from 'vitest'
 
 import { administerZonePortal, create, deploymentStartBlock } from './deployment.js'
@@ -10,7 +11,11 @@ const address = (n: number) => getAddress(`0x${n.toString(16).padStart(40, '0')}
 describe('administerZonePortal', () => {
   function administrator(status = 'success', readback = true) {
     let mined = false
-    const readContract = vi.fn(async () => mined && readback)
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
+      functionName === 'isAccessEnforced' || functionName === 'isGatewayOpen'
+        ? false
+        : mined && readback,
+    )
     const sendTransactionSync = vi.fn(async (_request: Record<string, unknown>) => {
       mined = true
       return { status, transactionHash: `0x${'ab'.repeat(32)}` }
@@ -21,6 +26,64 @@ describe('administerZonePortal', () => {
       account: { address: address(1) },
       chain: { id: 1337 },
       getTransactionCount: async () => 0,
+    }
+  }
+  for (const accessEnforced of [false, true]) {
+    for (const gatewayOpen of [false, true]) {
+      for (const initialRole of [0, 2, 3]) {
+        it(`admits routers with access=${accessEnforced}, open=${gatewayOpen}, role=${initialRole}`, async () => {
+          let role = initialRole
+          const calls: string[] = []
+          const client = {
+            account: { address: address(1) },
+            chain: { id: 1337 },
+            getTransactionCount: async () => 0,
+            readContract: async ({
+              functionName,
+              args,
+            }: {
+              functionName: string
+              args?: unknown[]
+            }) => {
+              if (functionName === 'isAccessEnforced') return accessEnforced
+              if (functionName === 'isGatewayOpen') return gatewayOpen
+              if (functionName === 'hasRole') return role === args?.[1]
+              throw new Error(`Unexpected read ${functionName}`)
+            },
+            sendTransactionSync: vi.fn(async ({ calls: batch }: { calls: { data: Hex }[] }) => {
+              for (const call of batch) {
+                const decoded = decodeFunctionData({ abi: zonePortalAbi, data: call.data })
+                if (
+                  decoded.functionName !== 'setGateway' &&
+                  decoded.functionName !== 'setAllowedAccount'
+                )
+                  throw new Error('Unexpected Portal call')
+                const next = decoded.functionName === 'setGateway' ? 3 : 2
+                const allowed = decoded.args[1]
+                calls.push(`${decoded.functionName}:${allowed}`)
+                if (allowed && role !== 0) throw new Error('Portal already assigns another role')
+                if (!allowed && role !== next)
+                  throw new Error('Portal revocation names the wrong role')
+                role = allowed ? next : 0
+              }
+              return { status: 'success', transactionHash: `0x${'ab'.repeat(32)}` }
+            }),
+          }
+          const expected = accessEnforced && gatewayOpen ? 2 : 3
+          const options = { tokens: [], gateways: [address(4)] }
+          await administerZonePortal(client as never, address(2), options)
+          expect(role).toBe(expected)
+          expect(calls).toHaveLength(initialRole === expected ? 0 : initialRole === 0 ? 1 : 2)
+          if (initialRole !== expected) {
+            expect(client.sendTransactionSync).toHaveBeenCalledWith(
+              expect.objectContaining({ forceAtomic: true }),
+            )
+          }
+          const sent = client.sendTransactionSync.mock.calls.length
+          expect(await administerZonePortal(client as never, address(2), options)).toBeUndefined()
+          expect(client.sendTransactionSync).toHaveBeenCalledTimes(sent)
+        })
+      }
     }
   }
   it('rejects a reverted atomic batch and requests receipt-revert enforcement', async () => {
@@ -44,7 +107,12 @@ describe('administerZonePortal', () => {
         gateways: [address(4)],
       }),
     ).resolves.toHaveProperty('status', 'success')
-    expect(client.readContract).toHaveBeenCalledTimes(4)
+    expect(client.readContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: 'isTokenEnabled' }),
+    )
+    expect(client.readContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: 'hasRole' }),
+    )
   })
   it('refuses a successful receipt whose token state did not change', async () => {
     await expect(

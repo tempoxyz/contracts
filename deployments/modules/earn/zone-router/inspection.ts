@@ -127,21 +127,36 @@ export async function inspectRouterReadiness(
   }
 }
 
-/** Returns why the pool would reject its oracle's latest report as stale, if it would. */
+/** Returns why the pool would reject its oracle report at the latest numbered block, if it would. */
 export async function oracleFreshness(
   client: Pick<PublicClient, 'readContract'> & LatestBlockClient,
   pool: Address,
 ): Promise<string | undefined> {
   try {
-    const [oracle, maxAge, block] = await Promise.all([
-      client.readContract({ address: pool, abi: propAMMPoolAbi, functionName: 'oracle' }),
-      client.readContract({ address: pool, abi: propAMMPoolAbi, functionName: 'maxOracleAge' }),
-      client.getBlock(),
+    const block = await client.getBlock()
+    if (!('number' in block) || typeof block.number !== 'bigint')
+      return 'oracle freshness is unavailable'
+    // The head can advance before the oracle read; compare configuration, report and time at one block.
+    const blockNumber = block.number
+    const [oracle, maxAge] = await Promise.all([
+      client.readContract({
+        address: pool,
+        abi: propAMMPoolAbi,
+        functionName: 'oracle',
+        blockNumber,
+      }),
+      client.readContract({
+        address: pool,
+        abi: propAMMPoolAbi,
+        functionName: 'maxOracleAge',
+        blockNumber,
+      }),
     ])
     const [, updatedAt] = await client.readContract({
       address: oracle,
       abi: priceOracleAbi,
       functionName: 'latestPrice',
+      blockNumber,
     })
     if (updatedAt > block.timestamp)
       return `oracle report is in the future (${updatedAt - block.timestamp}s ahead)`

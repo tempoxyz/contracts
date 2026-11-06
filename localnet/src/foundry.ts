@@ -83,10 +83,17 @@ export const release = script(
  * creation code this checkout compiles with the deploy profile: the core release and each engine
  * factory, which the release entry points create there or reuse when they already exist.
  */
-export function releaseAddresses(releaseKeys: readonly string[]): Record<string, Address> {
+export function releaseAddresses(
+  releaseKeys: readonly string[],
+  broadcastDirectory: string,
+): Record<string, Address> {
   assertFoundryProjectEnvironment(Config.earnRoot)
   ensureDependencies('earn')
-  const environment = foundryProcessEnvironment(process.env)
+  const environment = buildEnvironment(
+    foundryProcessEnvironment(process.env),
+    broadcastDirectory,
+    Config.earnRoot,
+  )
   delete environment.DEPLOYER_PRIVATE_KEY
   const creationBytecode = (contract: string) =>
     execFileSync('forge', ['inspect', contract, 'bytecode'], {
@@ -270,12 +277,28 @@ function spawnForge(
       cwd: root,
       encoding: 'utf8',
       env: {
-        ...environment,
+        ...buildEnvironment(environment, broadcastDirectory, root),
         FOUNDRY_BROADCAST: environment.FOUNDRY_BROADCAST ?? broadcastDirectory,
       },
       maxBuffer: 32 * 1024 * 1024,
     },
   )
+}
+
+/** Build state belongs to the fresh run directory, never the checkout or a caller's override. */
+function buildEnvironment(
+  environment: NodeJS.ProcessEnv,
+  broadcastDirectory: string,
+  root: string,
+): NodeJS.ProcessEnv {
+  // Both devnet and disposable runs allocate this parent with mkdtemp and remove it in finally.
+  // Inspection and every script share one cache per project, including lifecycle sibling steps.
+  const directory = resolve(broadcastDirectory, '..', 'build', basename(root))
+  return {
+    ...environment,
+    FOUNDRY_CACHE_PATH: resolve(directory, 'cache'),
+    FOUNDRY_OUT: resolve(directory, 'out'),
+  }
 }
 
 function readLatest(directory: string, chainId: number, step: Step) {

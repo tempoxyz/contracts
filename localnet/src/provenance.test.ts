@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -32,6 +33,7 @@ vi.mock('./devnet.js', () => ({ deploy: cli.deploy, configuration: cli.configura
 
 const roots: string[] = []
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -205,15 +207,65 @@ describe('devnet deployment provenance boundary', () => {
     await expect(runCli(root)).rejects.toThrow('dependency')
     expect(cli.configuration).not.toHaveBeenCalled()
     expect(cli.deploy).not.toHaveBeenCalled()
+    expect(existsSync(join(root, '.solar/install.json'))).toBe(false)
+    expect(readFileSync(join(dependency('earn'), 'library.sol'), 'utf8')).toBe('modified\n')
   })
 
   it.each(['substituted', 'unreceipted'])(
-    'refuses a %s compiler before credentials or deployment',
+    'rebuilds a %s compiler before capturing or resolving credentials',
     async (kind) => {
-      const { root, compiler, receipt } = checkout()
+      const { root, compiler, receipt, freshBinary } = checkout()
       if (kind === 'substituted') writeFileSync(compiler, 'substituted before capture')
       else rmSync(receipt)
-      await expect(runCli(root)).rejects.toThrow('run pnpm deps')
+      const directory = await runCli(root)
+      expect(readFileSync(compiler, 'utf8')).toBe(freshBinary)
+      expect(
+        JSON.parse(readFileSync(join(directory, 'earn-build-provenance.json'), 'utf8')),
+      ).toEqual(captureBuildProvenance(root))
+      expect(cli.configuration).toHaveBeenCalledOnce()
+      expect(cli.deploy).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('installs missing Earn, Zone and compiler inputs through a credential-free child before configuration', async () => {
+    const { root, compiler, receipt } = checkout()
+    rmSync(join(root, 'earn/lib'), { recursive: true })
+    rmSync(join(root, 'zone-router/lib'), { recursive: true })
+    rmSync(compiler)
+    rmSync(receipt)
+    vi.stubEnv('DEPLOYER_PRIVATE_KEY', 'synthetic-deployer')
+    vi.stubEnv('ZONE_ADMIN_PRIVATE_KEY', 'synthetic-authority')
+    vi.stubEnv('TEMPO_RPC_URL', 'https://synthetic-rpc-secret.example')
+    vi.stubEnv('FOUNDRY_SOLC', '/unreviewed-compiler')
+    await runCli(root)
+    expect(JSON.parse(readFileSync(join(root, '.solar/install.json'), 'utf8'))).toEqual({
+      projects: ['earn', 'zone-router'],
+      leaked: {},
+    })
+    expect(() => captureBuildProvenance(root)).not.toThrow()
+    expect(cli.configuration).toHaveBeenCalledOnce()
+  })
+
+  it('refuses unpinned installed libraries before the installer can replace them', async () => {
+    const { root, dependency, git } = checkout()
+    const directory = dependency('zone-router')
+    writeFileSync(join(directory, 'library.sol'), 'unreviewed revision\n')
+    git(directory, 'add', '.')
+    git(directory, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'unreviewed')
+    await expect(runCli(root)).rejects.toThrow('dependency')
+    expect(existsSync(join(root, '.solar/install.json'))).toBe(false)
+    expect(readFileSync(join(directory, 'library.sol'), 'utf8')).toBe('unreviewed revision\n')
+    expect(cli.configuration).not.toHaveBeenCalled()
+    expect(cli.deploy).not.toHaveBeenCalled()
+  })
+
+  it.each(['fail-install', 'skip-install'])(
+    'refuses %s before configuration or deployment',
+    async (failure) => {
+      const { root, dependency } = checkout()
+      rmSync(dependency('earn'), { recursive: true })
+      writeFileSync(join(root, '.solar', failure), 'true')
+      await expect(runCli(root)).rejects.toThrow()
       expect(cli.configuration).not.toHaveBeenCalled()
       expect(cli.deploy).not.toHaveBeenCalled()
     },
@@ -242,14 +294,44 @@ describe('devnet deployment provenance boundary', () => {
     expect(cli.deploy).toHaveBeenCalledOnce()
   })
 
-  it('refuses all success outputs if the compiler changes during deployment', async () => {
-    const { root, compiler } = checkout()
-    const directory = join(root, '.solar/outputs')
-    await expect(runCli(root, () => writeFileSync(compiler, 'changed'))).rejects.toThrow(
-      'run pnpm deps',
-    )
-    expect(cli.deploy).toHaveBeenCalledOnce()
-    for (const name of ['earn-build-provenance.json', 'earn-source-revision', 'earn-token'])
+  it.each([false, true])(
+    'preserves recovery addresses but no certification after compiler changes (reused directory: %s)',
+    async (reused) => {
+      const { root, compiler } = checkout()
+      const directory = join(root, '.solar/outputs')
+      if (reused) {
+        await runCli(root)
+        writeFileSync(join(directory, 'earn-token'), 'previous deployment')
+        expect(existsSync(join(directory, 'earn-build-provenance.json'))).toBe(true)
+      }
+      await expect(runCli(root, () => writeFileSync(compiler, 'changed'))).rejects.toThrow(
+        'run pnpm deps',
+      )
+      expect(cli.deploy).toHaveBeenCalledOnce()
+      for (const name of ['earn-build-provenance.json', 'earn-source-revision'])
+        expect(existsSync(join(directory, name))).toBe(false)
+      for (const name of [
+        'earn-input-token',
+        'earn-funding-helper',
+        'earn-token',
+        'earn-vault',
+        'earn-router',
+      ])
+        expect(readFileSync(join(directory, name), 'utf8')).toBe(
+          '0x1111111111111111111111111111111111111111',
+        )
+    },
+  )
+
+  it('clears old certification before calling a deployment that fails', async () => {
+    const { root } = checkout()
+    const directory = await runCli(root)
+    await expect(
+      runCli(root, () => {
+        throw new Error('deployment failed')
+      }),
+    ).rejects.toThrow('deployment failed')
+    for (const name of ['earn-build-provenance.json', 'earn-source-revision'])
       expect(existsSync(join(directory, name))).toBe(false)
   })
 })
@@ -318,16 +400,58 @@ function checkout() {
       sha256: createHash('sha256').update(binary).digest('hex'),
     }),
   )
+  // This subprocess substitutes only fetching/building inputs; strict provenance still uses real Git and files.
+  for (const project of ['earn', 'zone-router'])
+    cpSync(dependency(project), join(root, '.solar/seed', project), { recursive: true })
+  const freshBinary = '#!/bin/sh\necho freshly-built-fixture-compiler\n'
+  mkdirSync(join(root, 'scripts'))
+  writeFileSync(
+    join(root, 'scripts/solidity-deps.sh'),
+    `#!/usr/bin/env node
+const { createHash } = require('node:crypto');
+const { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+const root = process.cwd();
+const projects = process.argv.slice(2);
+const names = ['DEPLOYER_PRIVATE_KEY', 'ZONE_ADMIN_PRIVATE_KEY', 'TEMPO_RPC_URL', 'FOUNDRY_SOLC'];
+writeFileSync(resolve(root, '.solar/install.json'), JSON.stringify({
+  projects, leaked: Object.fromEntries(names.flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])),
+}));
+if (existsSync(resolve(root, '.solar/fail-install'))) process.exit(33);
+if (existsSync(resolve(root, '.solar/skip-install'))) process.exit(0);
+for (const project of projects) {
+  const target = resolve(root, project, 'lib/fixture');
+  if (!existsSync(target)) cpSync(resolve(root, '.solar/seed', project), target, { recursive: true });
+}
+const compiler = ${JSON.stringify(compiler)};
+const receipt = ${JSON.stringify(receipt)};
+const revision = ${JSON.stringify(solarRevision)};
+let valid = false;
+try {
+  const installed = JSON.parse(readFileSync(receipt, 'utf8'));
+  valid = installed.sourceRevision === revision && installed.sha256 === createHash('sha256').update(readFileSync(compiler)).digest('hex');
+} catch {}
+if (!valid) {
+  const binary = ${JSON.stringify(freshBinary)};
+  writeFileSync(compiler, binary, { mode: 0o700 });
+  writeFileSync(receipt, JSON.stringify({ schemaVersion: 1, sourceRevision: revision, sha256: createHash('sha256').update(binary).digest('hex') }));
+}
+`,
+    { mode: 0o700 },
+  )
   git(root, 'add', '.')
   git(root, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture')
-  return { root, dependency, git, compiler, solarRevision, binary, receipt }
+  return { root, dependency, git, compiler, solarRevision, binary, freshBinary, receipt }
 }
 
 async function runCli(root: string, duringDeploy?: () => void) {
   cli.root = root
-  cli.configuration
-    .mockReset()
-    .mockReturnValue({ privateKeys: { deployer: `0x${'11'.repeat(32)}` } })
+  cli.configuration.mockReset().mockImplementation(() => {
+    // Missing installation or capture after key resolution would fail this boundary assertion.
+    expect(existsSync(join(root, '.solar/install.json'))).toBe(true)
+    captureBuildProvenance(root)
+    return { privateKeys: { deployer: `0x${'11'.repeat(32)}` } }
+  })
   cli.deploy.mockReset().mockImplementation(async () => {
     duringDeploy?.()
     const address = '0x1111111111111111111111111111111111111111'
