@@ -882,7 +882,7 @@ describe('verifier recovery', () => {
     expect(record).toEqual(before)
   })
 
-  test('a repair cannot rewrite the historical source hash to match a different checkout', async () => {
+  test('refuses incompatible repair sources before submitting anything', async () => {
     const source = await verifyDeploymentSources(run(), dependencies())
     const path = contracts.ERC1967Proxy.split(':')[0]!
     const runtime = repairRuntime(null, {
@@ -894,8 +894,137 @@ describe('verifier recovery', () => {
     )
     await expect(
       verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).rejects.toThrow('Use the recorded source revision')
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test.each(['match', 'exact_match'] as const)(
+    'leaves historical %s entries untouched from a newer checkout during repair',
+    async (match) => {
+      const runtime = dependencies()
+      const original = runtime.fetch
+      runtime.fetch = async (input) => {
+        const response = await original(input)
+        return Response.json({ ...(await response.json()), match })
+      }
+      const source = await verifyDeploymentSources(run(), runtime)
+      runtime.readSource.mockImplementation(() => 'new checkout sources')
+      runtime.readSource.mockClear()
+      runtime.sourcePaths.mockClear()
+      await expect(
+        verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+      ).resolves.toBeUndefined()
+      expect(runtime.spawn).not.toHaveBeenCalled()
+      expect(runtime.readSource).not.toHaveBeenCalled()
+      expect(runtime.sourcePaths).not.toHaveBeenCalled()
+    },
+  )
+
+  test('repairs owned evidence without comparing an existing engine to the checkout', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const runtime = repairRuntime(null)
+    const readSource = runtime.readSource
+    runtime.readSource = vi.fn((file) =>
+      file.endsWith('/VedaEngine.sol') ? 'new unrelated engine source' : readSource(file),
+    )
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).resolves.toBeUndefined()
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test.each(['content', 'manifest', 'missing'] as const)(
+    'preflights the complete recorded source set before repair: %s',
+    async (change) => {
+      const source = await verifyDeploymentSources(run(), dependencies())
+      const runtime = repairRuntime(null)
+      const sourcePaths = runtime.sourcePaths
+      const readSource = runtime.readSource
+      runtime.sourcePaths = vi.fn((root, contract) => [
+        ...sourcePaths(root, contract),
+        ...(change === 'manifest' ? ['src/Added.sol'] : []),
+      ])
+      runtime.readSource = vi.fn((file) => {
+        if (change === 'missing') throw new Error('ENOENT')
+        return change === 'content' ? 'changed source' : readSource(file)
+      })
+      await expect(
+        verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+      ).rejects.toThrow('Use the recorded source revision')
+      expect(runtime.spawn).not.toHaveBeenCalled()
+    },
+  )
+
+  test('preflights every needed repair before submitting the first', async () => {
+    const deployedEngine = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'recorded-engine-repair',
+        chainId: 42431,
+        owner: address('9'),
+        engine: { kind: 'erc4626', venue: address('d') },
+      },
+      { deployer: address('1'), factories: { earn: coreFactory, erc4626Engine: address('c') } },
+    )
+    const runtime = dependencies('ERC4626Engine')
+    const original = runtime.fetch
+    let invalid = false
+    runtime.fetch = vi.fn(async (input) => {
+      const response = await original(input)
+      return Response.json({
+        ...(await response.json()),
+        transactionHash: invalid ? null : transaction,
+      })
+    }) as typeof fetch
+    const options = run({
+      profile: deployedEngine,
+      record: { addresses, actions: { ...actions, 'deploy-engine': actions['deploy-core'] } },
+    })
+    const source = await verifyDeploymentSources(options, runtime)
+    invalid = true
+    const readSource = runtime.readSource
+    runtime.readSource = vi.fn((file) =>
+      file.endsWith('/ERC1967Proxy.sol') ? 'changed proxy source' : readSource(file),
+    )
+    await expect(
+      verifyRecordedDeploymentSources(
+        {
+          ...options,
+          resubmit: true,
+          record: { ...options.record, source } as EarnDeploymentRecord,
+        },
+        runtime,
+      ),
+    ).rejects.toThrow('Use the recorded source revision')
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('checks repaired results against historical evidence, not newer source returned by the verifier', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const path = contracts.ERC1967Proxy.split(':')[0]!
+    const runtime = repairRuntime(null, { sources: { [path]: { content: 'unrecorded source' } } })
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
     ).rejects.toThrow('does not match current provenance')
     expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test('refuses changed sources after a transient failure before retrying submission', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const runtime = repairRuntime(null)
+    runtime.spawn = vi.fn(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'HTTP status code 503 Service Unavailable',
+    })) as never
+    runtime.pause = vi.fn(async () => {
+      runtime.readSource.mockImplementation(() => 'changed during retry backoff')
+    })
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).rejects.toThrow('Use the recorded source revision')
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+    expect(runtime.pause).toHaveBeenCalledOnce()
   })
 
   test('reports a terminal exact-match refusal without retrying or accepting the old entry', async () => {

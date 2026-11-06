@@ -202,8 +202,8 @@ claimed block. Present-day code verification alone does not establish the creati
 
 ### Source verification
 
-For hosted deployments the command submits missing source to `https://contracts.tempo.xyz`, waits
-for a bytecode and source match, and records the result. A verifier outage (unreachable, 429 or 5xx,
+For hosted deployments, `pnpm earn deploy` submits missing source to `https://contracts.tempo.xyz`,
+waits for a bytecode and source match, and saves the result in `deployment.json`. A verifier outage (unreachable, 429 or 5xx,
 on lookup or on forge's submission, a job that does not complete, or only transient compiler errors) leaves the record `pending` and
 the state `verification-pending`: rerunning resumes at verification after rechecking deployed
 state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
@@ -218,13 +218,19 @@ pnpm earn deploy profiles/<profile-id>/profile.json --resubmit-verification
 pnpm earn verify profiles/<profile-id>/profile.json --resubmit-verification
 ```
 
-Repair leaves valid entries unchanged. For contracts created by the profile, it resubmits invalid
-entries with the recorded creation transaction and the selected checkout's complete source set and
-compiler settings. It still requires the expected address,
-contract, full source set, and creation hash after the job completes. A completed record also keeps
-its original source-input hash: use the corresponding checkout, not changed sources. Existing
-engines selected by address rather than deployed by this profile must already have matching source;
-the lifecycle does not own their creation inputs.
+Repair leaves valid entries unchanged. Completed records are checked against the hashes of source
+paths and contents saved at deployment, even when the selected checkout has changed. Before
+submitting any required repair, the command checks that each affected contract's complete compiler
+source list and local file contents reproduce its recorded hash. It repeats this check before every
+submission attempt. Incompatible inputs fail before submission: use the recorded source revision
+and its pinned dependencies.
+
+For contracts created by the profile, repair submits the recorded creation transaction with those
+sources and the selected compiler settings. The returned address, contract, full source set, match
+strength, and creation hash must still satisfy the recorded evidence. Existing engines selected by
+address rather than deployed by this profile must already have matching source; the lifecycle does
+not own their creation inputs. Pending records have no completed source identity yet, so their
+sources must match the selected checkout.
 `verify` without the flag never submits jobs; the flag authorizes verifier writes, not onchain writes.
 Only `deploy` upgrades a pending record to verified, so use it to finish an incomplete deployment.
 
