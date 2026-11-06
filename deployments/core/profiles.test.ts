@@ -124,3 +124,59 @@ test.each(['flag', 'environment'])(
     }
   },
 )
+
+test.each(['flag', 'environment'])(
+  'profiles cannot replace a registry baseline through %s',
+  { timeout: 30_000 },
+  (source) => {
+    const root = mkdtempSync(join(tmpdir(), 'profiles-canonical-cli-'))
+    try {
+      const original = fileURLToPath(new URL('../../profiles/veda-moderato/', import.meta.url))
+      const folder = join(root, 'profiles', 'veda-moderato')
+      cpSync(original, folder, { recursive: true })
+      const path = join(folder, 'profile.json')
+      const known = loadEarnProfileBundle(join(original, 'profile.json'))
+      const trusted = {
+        deployer: `0x${'9'.repeat(40)}` as const,
+        factories: known.profile.factories,
+      }
+      const profile = loadEarnProfile(path, trusted)
+      writeFileSync(join(root, 'reviewed-identity.json'), JSON.stringify(trusted))
+      writeFileSync(
+        join(folder, 'deployment.json'),
+        JSON.stringify({
+          ...known.record,
+          deployer: profile.deployer,
+          owner: profile.owner,
+          deploymentIntentHash: deploymentIntentHash(profile),
+          componentDeploymentIntentHashes: componentDeploymentIntentHashes(profile),
+          source: {
+            ...known.record.source,
+            factoryDeploymentId: profileFactoryDeploymentId(profile),
+          },
+        }),
+      )
+      const args = [
+        'exec',
+        'tsx',
+        fileURLToPath(new URL('./profiles.ts', import.meta.url)),
+        '--profiles',
+        'profiles',
+        '--matrix',
+      ]
+      const env = {
+        ...process.env,
+        INIT_CWD: root,
+        GITHUB_OUTPUT: '',
+        EARN_TRUSTED_DEPLOYMENT_IDENTITY: '',
+      }
+      if (source === 'flag') args.push('--trusted-identity', 'reviewed-identity.json')
+      else env.EARN_TRUSTED_DEPLOYMENT_IDENTITY = 'reviewed-identity.json'
+      expect(() => execFileSync('pnpm', args, { encoding: 'utf8', stdio: 'pipe', env })).toThrow(
+        'independently reviewed identity',
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)

@@ -330,8 +330,9 @@ export function assertReviewedDeploymentIdentity(
   trusted?: ReviewedDeploymentIdentity,
 ) {
   if (!hostedEnvironment(record.chainId)) return
+  // Explicit trust enrolls unknown identities; it cannot override a registered historical baseline.
   const expected =
-    trusted ?? reviewedDeploymentIdentities[`${record.chainId}:${record.deploymentId}`]
+    reviewedDeploymentIdentities[`${record.chainId}:${record.deploymentId}`] ?? trusted
   if (!expected)
     throw new Error(
       `Deployment ${record.deploymentId} needs an independently reviewed deployer and historical factory identity; a deployment record cannot approve itself`,

@@ -186,7 +186,9 @@ every actor's fees with the operator's PATHUSD where there is no faucet.
 Bootstrapping, deploying, and running a disposable hosted stack is in
 [deployment profiles](../../profiles/README.md#acceptance-and-test-fixtures). Hosted cases read a
 Veda fixture's `engineFixtures` exactly as local cases do
-([Veda test stacks](../earn/modules/veda.md#test-stacks)).
+([Veda test stacks](../earn/modules/veda.md#test-stacks)). Runtime validation binds the live venue to
+`fixture.json`'s recorded `stablecoinFixture.venue` or `engineFixtures.vault`, not another value
+read from the engine. Missing or conflicting venue records fail validation.
 
 Hosted fixture bootstrap, validation, and funding require a testnet, even for Veda fixtures over a
 canonical asset. Retired mainnet fixtures must not be reused or funded. Production scripts never

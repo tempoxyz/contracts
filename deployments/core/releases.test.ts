@@ -22,6 +22,11 @@ describe('assertReviewedDeploymentIdentity', () => {
           factories: resolveEarnFactoryRelease(identity.chainId),
         }),
       ).toThrow('independently reviewed identity')
+      const altered = { deployer: address, factories: resolveEarnFactoryRelease(identity.chainId) }
+      expect(() => assertReviewedDeploymentIdentity({ ...identity, ...altered }, altered)).toThrow(
+        'independently reviewed identity',
+      )
+      expect(() => assertReviewedDeploymentIdentity(identity, altered)).not.toThrow()
     },
   )
 

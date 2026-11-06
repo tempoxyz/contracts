@@ -122,6 +122,33 @@ Veda fixture checks bind the current engine, cached Teller, Queue, Accountant, r
 After an authorized periphery rotation, refresh fixture metadata to the new verified bindings
 before acceptance; stale fixture addresses do not prohibit rotation or authorize the new setup.
 
+### Devnet source evidence
+
+`pnpm devnet:deploy` deploys an Earn stack on an existing devnet. It requires a clean repository
+and installed Solidity dependencies (`pnpm deps`).
+Before any chain write, it checks both Earn's and the Zone router's libraries against their
+respective `foundry.lock` revisions, rejecting missing or symlinked checkouts, modified sources, unpublished
+files (including ignored files), and unpinned libraries. It rechecks them before writing outputs.
+Disposable `Environment.run` consumers still install dependencies on first use.
+
+`pnpm deps` runs the [dependency installer](../../scripts/solidity-deps.sh), which builds solar,
+Earn's Solidity compiler invoked by Forge, in a temporary directory. It writes `install-receipt.json` with the
+requested source revision and executable SHA-256 only after Cargo succeeds. It reuses an existing
+compiler only when that receipt matches its pin and bytes. Missing or mismatched receipts trigger
+a fresh pinned rebuild, never adoption of existing bytes; a failed build preserves the previous
+installation. The completed directory replaces it with rollback if promotion fails.
+
+Before resolving credentials, devnet deployment requires that matching receipt; it rechecks the
+sources, receipt, and compiler bytes before writing outputs. Run `pnpm deps` to rebuild an
+unreceipted or changed compiler. The existing `earn-source-revision` output identifies the
+repository and pinned Solidity sources. The additional `earn-build-provenance.json` records that
+revision, the requested solar source revision, and the receipt-matched executable SHA-256.
+
+The build-provenance record sets `solar.authenticated` to `false`: the receipt trusts the local installer, Cargo, and filesystem,
+not a remote signature or independent rebuild. It detects binary replacement without a matching
+receipt, not a malicious host changing both. It does not attest other tools, cached artifacts, or
+equivalence between deployed runtime and independently rebuilt source.
+
 ## Foundry and containers
 
 - Each fixture step is its own `forge script --sig <calldata>` call of one entry point:

@@ -6,7 +6,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 import * as Devnet from './devnet.js'
 import * as Config from './config.js'
-import { cleanSourceRevision } from './provenance.js'
+import { assertBuildProvenanceUnchanged, captureBuildProvenance } from './provenance.js'
 
 /**
  * `pnpm devnet:deploy -- --out <dir> --eligible-account <address>`: the supported entry point for
@@ -25,7 +25,7 @@ if (!eligible || !isAddress(eligible)) throw new Error('--eligible-account <addr
 
 // Resolve everything local before any chain write: a failure here must not leave a deployed stack
 // with no record of its addresses, and the deployer key is single-use per L1.
-const revision = cleanSourceRevision(Config.root)
+const provenance = captureBuildProvenance(Config.root)
 const configuration = Devnet.configuration(process.env)
 const user = getAddress(eligible)
 // pnpm runs the script in localnet/, so a relative --out is the caller's.
@@ -46,8 +46,13 @@ const outputs: Record<(typeof Devnet.outputFiles)[number], string> = {
   'earn-token': state.earnShare,
   'earn-vault': state.earnVault,
   'earn-router': state.earnRouter,
-  'earn-source-revision': revision,
+  'earn-source-revision': provenance.sourceRevision,
 }
+assertBuildProvenanceUnchanged(Config.root, provenance)
+writeFileSync(
+  resolve(directory, 'earn-build-provenance.json'),
+  `${JSON.stringify(provenance, null, 2)}\n`,
+)
 for (const [name, value] of Object.entries(outputs)) {
   writeFileSync(resolve(directory, name), value)
   console.log(`${name}: ${value}`)

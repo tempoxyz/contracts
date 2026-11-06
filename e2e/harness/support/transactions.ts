@@ -45,7 +45,7 @@ export async function waitForSuccessfulWrite(context: E2eContext, hash: Hash) {
   return receipt
 }
 
-/** Requires a mined revert or a preflight contract revert, optionally with a decoded error name. */
+/** Requires a mined revert or original preflight revert bytes, optionally with a decoded error name. */
 export async function expectRevertedWrite(
   context: E2eContext,
   submit: () => Promise<Hash>,
@@ -64,7 +64,7 @@ export async function expectRevertedWrite(
   throw new Error(message)
 }
 
-/** Requires a reverted receipt or a typed contract revert, never a pending or transport failure. */
+/** Requires a reverted receipt or original revert bytes, never a pending or transport failure. */
 export async function expectRevertedReceipt(
   action: () => Promise<{ status: string }>,
   message: string,
@@ -101,30 +101,21 @@ type ExpectedRevert = {
 
 function isExpectedContractRevert(error: unknown, options?: ExpectedRevert) {
   if (!(error instanceof BaseError)) return false
-  // Tempo wrappers may synthesize error data from admission messages; inspect original causes only.
+  // Viem also wraps internal RPC failures as contract reverts; a class or message is not evidence.
+  // Tempo wrappers may synthesize selectors, so require original revert bytes or a failed receipt.
   const reverted = error.walk(
     (cause) =>
-      cause instanceof ContractFunctionRevertedError ||
-      cause instanceof ExecutionRevertedError ||
-      (cause instanceof RpcRequestError &&
-        cause.code === ExecutionRevertedError.code &&
+      ((cause instanceof ContractFunctionRevertedError ||
+        (cause instanceof RpcRequestError && cause.code === ExecutionRevertedError.code)) &&
         originalRevertData(cause) !== undefined) ||
       isRevertedReceiptError(cause),
   )
   if (!reverted) return false
   if (isRevertedReceiptError(reverted)) return !options
+  const data = originalRevertData(reverted)
+  if (!data) return false
   if (!options) return true
 
-  // Decode original revert bytes, never a Tempo wrapper's potentially synthesized selector.
-  const source =
-    reverted instanceof BaseError
-      ? reverted.walk(
-          (cause) =>
-            cause instanceof ContractFunctionRevertedError || cause instanceof RpcRequestError,
-        )
-      : null
-  const data = originalRevertData(source)
-  if (!data) return false
   try {
     return decodeErrorResult({ abi: options.abi, data }).errorName === options.errorName
   } catch {
@@ -134,7 +125,16 @@ function isExpectedContractRevert(error: unknown, options?: ExpectedRevert) {
 
 function originalRevertData(error: unknown): Hex | undefined {
   const data = (() => {
-    if (error instanceof ContractFunctionRevertedError) return error.raw
+    if (error instanceof ContractFunctionRevertedError) {
+      // The Zone serializes its inner execution RPC error, including revert bytes, in the outer message.
+      // Require the complete code-3 envelope, not a reason name or an arbitrary hex substring.
+      return (
+        error.raw ??
+        error.reason?.match(
+          /^ErrorObject \{ code: ServerError\(3\), message: "execution reverted(?:: (?:[^"\\]|\\.)*)?", data: Some\(RawValue\("(0x(?:[\da-f]{2})+)"\)\) \}$/i,
+        )?.[1]
+      )
+    }
     if (error instanceof RpcRequestError) {
       if (typeof error.data === 'object' && error.data !== null && 'data' in error.data)
         return error.data.data

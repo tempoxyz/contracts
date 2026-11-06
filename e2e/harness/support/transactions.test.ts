@@ -7,12 +7,14 @@ import {
   TransactionReceiptNotFoundError,
   WaitForTransactionReceiptTimeoutError,
   createClient,
+  createWalletClient,
   custom,
   encodeErrorResult,
   parseAbi,
   type Abi,
   type TransactionReceipt,
 } from 'viem'
+import { mainnet } from 'viem/chains'
 import { Abis, Actions, ExecutionError, TempoExecutionError } from 'viem/tempo'
 import { describe, expect, it } from 'vitest'
 
@@ -31,6 +33,15 @@ const unrelatedErrors = [
   new TransactionReceiptNotFoundError({ hash }),
   new WaitForTransactionReceiptTimeoutError({ hash }),
   new Error('execution reverted: NotOperator'),
+  new ExecutionRevertedError(),
+  new ContractFunctionRevertedError({ abi, functionName: 'deposit' }),
+  new ContractFunctionRevertedError({ abi, functionName: 'deposit', data: '0x' }),
+  new ContractFunctionRevertedError({ abi, functionName: 'deposit', data: '0xabc' }),
+  new ContractFunctionRevertedError({
+    abi,
+    functionName: 'deposit',
+    message: 'execution reverted: NotOperator',
+  }),
   new BaseError('RPC unavailable', { name: 'ContractFunctionRevertedError' }),
   new BaseError('RPC unavailable', { name: 'TransactionReceiptRevertedError' }),
   new BaseError('RPC unavailable', {
@@ -42,7 +53,16 @@ describe('expectContractRevert', () => {
   it.each([
     ['direct', contractRevert()],
     ['wrapped', new BaseError('contract call failed', { cause: contractRevert() })],
-    ['execution', new ExecutionRevertedError()],
+    [
+      'execution',
+      new ExecutionRevertedError({
+        cause: rpcError({
+          code: 3,
+          errorName: 'NotOperator',
+          data: encodeErrorResult({ abi, errorName: 'NotOperator' }),
+        }),
+      }),
+    ],
     ['Tempo policy', policyRevert()],
   ])('accepts a typed %s revert', async (_, error) => {
     await expect(
@@ -395,8 +415,12 @@ const exactAssertions = [
   },
 ]
 
-// Use the real SDK resolver to distinguish message-derived selectors from original RPC bytes.
-describe.each([
+// The pinned native Zone returns this serialized inner RPC error instead of top-level data.
+const zoneDenial =
+  'ErrorObject { code: ServerError(3), message: "execution reverted: Current committee error: Unauthorized(Unauthorized)", data: Some(RawValue("0x82b42900")) }'
+const zoneError = { abi: parseAbi(['error Unauthorized()']), errorName: 'Unauthorized' }
+
+const assertions = [
   ...exactAssertions,
   {
     name: 'expectRevertedReceipt',
@@ -405,7 +429,58 @@ describe.each([
         throw error
       }, message),
   },
-])('$name execution evidence', ({ run }) => {
+]
+
+// Exercise viem's real write path: its revert class alone does not prove EVM execution.
+describe.each(assertions)('$name viem write evidence', ({ run }) => {
+  it.each([
+    { code: -32603, message: 'internal error' },
+    { code: 3, message: 'PolicyForbids(PolicyForbids)' },
+    { code: 3, message: 'execution reverted' },
+    { code: 3, message: 'execution reverted', data: '0x' },
+    { code: 3, message: 'execution reverted', data: '0xabc' },
+  ])('rejects RPC $code / $message without revert bytes ($data)', async (rpc) => {
+    const error = await writeContractError(rpc)
+    expect(error.walk((cause) => cause instanceof ContractFunctionRevertedError)).toBeInstanceOf(
+      ContractFunctionRevertedError,
+    )
+    await expect(run(error)).rejects.toBe(error)
+  })
+
+  it.each([
+    zoneDenial.replace('ServerError(3)', 'ServerError(-32603)'),
+    zoneDenial.replace('0x82b42900', '0x'),
+    zoneDenial.replace('0x82b42900', '0xabc'),
+    zoneDenial.replace('Some(RawValue("0x82b42900"))', 'None'),
+    zoneDenial.replace('execution reverted: ', ''),
+    `RPC unavailable: ${zoneDenial}`,
+    `${zoneDenial} trailing data`,
+    'execution reverted: Unauthorized(Unauthorized) RawValue("0x82b42900")',
+  ])('rejects an incomplete or non-execution Zone envelope: %s', async (message) => {
+    const error = await writeContractError({ code: -32603, message })
+    await expect(run(error)).rejects.toBe(error)
+  })
+
+  it('accepts original bytes inside the native Zone execution envelope', async () => {
+    const error = await writeContractError({ code: -32603, message: zoneDenial })
+    const reverted = error.walk((cause) => cause instanceof ContractFunctionRevertedError)
+    expect(reverted).toMatchObject({ raw: undefined, reason: zoneDenial })
+    await expect(run(error)).resolves.toBeUndefined()
+  })
+
+  it.each([3, -32603])('accepts original policy bytes through RPC %s', async (code) => {
+    const error = await writeContractError({
+      code,
+      message: 'execution reverted',
+      data: encodeErrorResult({ abi: Abis.tip20, errorName: 'PolicyForbids' }),
+    })
+    await expect(run(error)).resolves.toBeUndefined()
+    await expect(run(await resolveTempoError(error))).resolves.toBeUndefined()
+  })
+})
+
+// Use the real SDK resolver to distinguish message-derived selectors from original RPC bytes.
+describe.each(assertions)('$name execution evidence', ({ run }) => {
   it.each(admissionErrors)('rejects $label resolved by the SDK', async (parameters) => {
     const cause = rpcError(parameters)
     const error = await resolveTempoError(cause)
@@ -427,6 +502,15 @@ describe.each([
 })
 
 describe.each(exactAssertions)('$name exact execution evidence', ({ run }) => {
+  it('decodes the native Zone bytes rather than matching the message', async () => {
+    const error = await writeContractError({
+      code: -32603,
+      message: zoneDenial.replaceAll('Unauthorized', 'NotOperator'),
+    })
+    await expect(run(error, zoneError)).resolves.toBeUndefined()
+    await expect(run(error, expected)).rejects.toBe(error)
+  })
+
   it.each(admissionErrors)(
     'rejects $label even when its synthesized name matches',
     async (parameters) => {
@@ -554,4 +638,35 @@ async function resolveTempoError(cause: BaseError) {
     throw error
   }
   throw new Error('SDK action unexpectedly succeeded')
+}
+
+async function writeContractError(error: { code: number; message: string; data?: string }) {
+  const requests: string[] = []
+  const client = createWalletClient({
+    account: address,
+    chain: mainnet,
+    transport: custom(
+      {
+        request: async (body) => {
+          requests.push(body.method)
+          if (body.method === 'eth_chainId') return '0x1'
+          throw new RpcRequestError({ body, error, url: 'https://rpc.example.test' })
+        },
+      },
+      { retryCount: 0 },
+    ),
+  })
+  try {
+    await client.writeContract({
+      address,
+      abi: parseAbi(['function transfer(address to, uint256 amount) returns (bool)']),
+      functionName: 'transfer',
+      args: [address, 1n],
+    })
+  } catch (error) {
+    expect(requests).toEqual(['eth_chainId', 'eth_sendTransaction'])
+    if (error instanceof BaseError) return error
+    throw error
+  }
+  throw new Error('write unexpectedly succeeded')
 }

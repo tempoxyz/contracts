@@ -316,7 +316,8 @@ reviewed identity data or supplied with an independent trusted identity. The CLI
 JSON file must contain exactly `deployer` and `factories`, with the reviewed deployer address and
 factory-release object. A full `deployment.json` is rejected. Review this identity independently;
 copying the untrusted record into a new file does not establish trust. Importing a record never
-enrolls it automatically.
+enrolls it automatically. A registry-known identity always uses its reviewed baseline, even when
+an explicit trusted identity is supplied.
 
 ```sh
 pnpm earn verify ../deployments/profiles/<profile-id>/profile.json \
@@ -325,7 +326,8 @@ pnpm earn verify ../deployments/profiles/<profile-id>/profile.json \
 
 The profile-index command also accepts these files: `pnpm profiles --profiles <dir>
 --trusted-identity <path>`. Repeat `--trusted-identity` for mixed-profile directories. It tries the
-built-in registry first, then the supplied independent identities; without any flags, it takes one
+built-in registry first; supplied independent identities can admit only otherwise unknown profiles.
+Without any flags, it takes one
 file from `EARN_TRUSTED_DEPLOYMENT_IDENTITY`. The same identity checks apply, with no automatic
 enrollment from records.
 

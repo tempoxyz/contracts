@@ -235,8 +235,8 @@ type LifecycleStep = {
 const dependenciesReady = new Set<string>()
 function ensureDependencies(project: string) {
   if (dependenciesReady.has(project)) return
-  // The script is idempotent: it keeps libraries already at their pins and builds the solar revision
-  // earn/solar.lock names only when that binary is missing, so an older checkout picks up a new pin.
+  // The script keeps libraries at their pins and rebuilds solar when its pinned installation
+  // receipt is missing or no longer matches the executable.
   execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), [project], {
     cwd: Config.root,
     env: dependencyEnvironment(process.env),

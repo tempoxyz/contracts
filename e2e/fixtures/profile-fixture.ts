@@ -288,10 +288,21 @@ export async function validateProfileFixtureRuntime(
       }
     }),
   )
+  // The stack venue is read from the engine, so only the fixture record supplies independent intent.
+  const stablecoinVenue = fixture.stablecoinFixture?.venue
+  const engineVenue = fixture.engineFixtures?.vault
+  const venue = stablecoinVenue ?? engineVenue
+  if (!venue) throw new Error(`Profile fixture ${fixture.profileId} has no recorded venue`)
+  if (stablecoinVenue && engineVenue && getAddress(stablecoinVenue) !== getAddress(engineVenue)) {
+    throw new Error(`Profile fixture ${fixture.profileId} venue records disagree`)
+  }
+  if (getAddress(venue) !== getAddress(deployment.venue)) {
+    throw new Error(`Profile fixture ${fixture.profileId} venue does not match the live deployment`)
+  }
   await localEngines[deployment.engineKind].validate?.(client, {
     baseAsset: deployment.asset,
     engine: deployment.engine,
-    vault: deployment.venue,
+    vault: venue,
     engineFixtures: fixture.engineFixtures ?? {},
   })
 }
