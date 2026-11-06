@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import {
   BaseError,
   ContractFunctionRevertedError,
+  RpcRequestError,
   encodePacked,
   isAddressEqual,
   keccak256,
@@ -17,6 +18,7 @@ import {
   type Log,
 } from 'viem'
 
+import * as FeeEvidence from './fee-evidence.js'
 import * as Network from './network.js'
 import { root } from './targets.js'
 
@@ -159,17 +161,35 @@ export function assert(condition: unknown, message: string): asserts condition {
 }
 
 /**
- * The revert data of a failed call: as viem decoded it, or as the Zone RPC quotes it in the message
- * of the internal error it wraps reverts in.
+ * Revert bytes from decoded calls, RPC execution errors, or the legacy Zone revert wrapper.
+ * Arbitrary RPC errors and message-only failures do not prove a contract or protocol refusal.
  */
 export function revertData(error: unknown): Hex | undefined {
   if (!(error instanceof BaseError)) return undefined
+  // Tempo wrappers can synthesize selectors from message text; only original cause bytes prove the refusal.
   const reverted = error.walk((e) => e instanceof ContractFunctionRevertedError)
   if (reverted instanceof ContractFunctionRevertedError) {
     if (reverted.raw) return reverted.raw
     return reverted.reason?.match(/RawValue\("(0x[0-9a-fA-F]*)"\)/)?.[1] as Hex | undefined
   }
+  const rpc = error.walk((cause) => cause instanceof RpcRequestError)
+  if (
+    rpc instanceof RpcRequestError &&
+    rpc.code === 3 &&
+    typeof rpc.data === 'string' &&
+    /^0x[0-9a-fA-F]{8}(?:[0-9a-fA-F]{2})*$/.test(rpc.data)
+  )
+    return rpc.data as Hex
   return undefined
+}
+
+/** Reports the refusal shape without printing request bodies, credentials, addresses or revert arguments. */
+export function revertDiagnostic(error: unknown) {
+  const rpc =
+    error instanceof BaseError ? error.walk((cause) => cause instanceof RpcRequestError) : undefined
+  const name = error instanceof Error ? error.name : 'no error'
+  const code = rpc instanceof RpcRequestError ? rpc.code : 'none'
+  return `${name}; RPC code ${code}; revert selector ${revertData(error)?.slice(0, 10) ?? 'none'}`
 }
 
 /**
@@ -178,8 +198,12 @@ export function revertData(error: unknown): Hex | undefined {
  */
 export function withdrawalRequested(receipt: { logs: Log[]; transactionHash: Hex }) {
   const logs = receipt.logs.filter((log) => isAddressEqual(log.address, outbox))
-  const [event] = parseEventLogs({ abi: outboxAbi, eventName: 'WithdrawalRequested', logs })
-  assert(event, 'the Zone receipt carries the outbox WithdrawalRequested event')
+  const events = parseEventLogs({ abi: outboxAbi, eventName: 'WithdrawalRequested', logs })
+  assert(
+    events.length === 1,
+    'the Zone receipt carries exactly one outbox WithdrawalRequested event',
+  )
+  const event = events[0]!
   const senderTag = keccak256(
     encodePacked(
       ['address', 'bytes32', 'uint64'],
@@ -193,7 +217,7 @@ export function withdrawalRequested(receipt: { logs: Log[]; transactionHash: Hex
  * The CardSpender's `CardSpent` for `ref` in `logs` and the clone's `TempoSpendExecuted` for it,
  * exactly one each: the program pays through the clone, so the handler's `from` is the program.
  */
-export function cardSpent(logs: readonly Log[], program: Address, ref: Hex) {
+export function cardSpent(logs: readonly Log[], program: Address, ref: Hex, clone: Address) {
   const spent = parseEventLogs({
     abi: programAbi,
     eventName: 'CardSpent',
@@ -205,7 +229,7 @@ export function cardSpent(logs: readonly Log[], program: Address, ref: Hex) {
     abi: tempoSpendAbi,
     eventName: 'TempoSpendExecuted',
     args: { ref },
-    logs: [...logs],
+    logs: logs.filter((log) => isAddressEqual(log.address, clone)),
   })
   assert(executed.length === 1, `one TempoSpendExecuted event for ref ${ref}`)
   assert(
@@ -213,4 +237,115 @@ export function cardSpent(logs: readonly Log[], program: Address, ref: Hex) {
     `the "TS" handler paid as the CardSpender (from ${executed[0]!.args.from})`,
   )
   return { ...spent[0]!.args, sharesBurned: executed[0]!.args.sharesBurned }
+}
+
+/** The callback logs ending at the canonical Portal event for exactly this source withdrawal. */
+export function withdrawalLogs(
+  logs: readonly Log[],
+  portal: Address,
+  request: { to: Address; senderTag: Hex; token: Address; amount: bigint },
+  success: boolean,
+) {
+  const processed = parseEventLogs({
+    abi: portalEventsAbi,
+    eventName: 'WithdrawalProcessed',
+    logs: logs.filter((log) => isAddressEqual(log.address, portal)),
+  })
+  const matches = processed.filter((event) => event.args.senderTag === request.senderTag)
+  assert(matches.length === 1, 'one canonical Portal event for the source withdrawal')
+  const event = matches[0]!
+  assert(
+    isAddressEqual(event.args.to, request.to) &&
+      isAddressEqual(event.args.token, request.token) &&
+      event.args.amount === request.amount &&
+      event.args.callbackSuccess === success,
+    'the Portal processed the expected withdrawal and callback outcome',
+  )
+  assert(event.logIndex !== null, 'the Portal event has a mined log index')
+  const previous = processed
+    .filter((other) => other.logIndex !== null && other.logIndex < event.logIndex!)
+    .at(-1)
+  return logs.filter(
+    (log) =>
+      log.logIndex !== null &&
+      log.logIndex > (previous?.logIndex ?? -1) &&
+      log.logIndex < event.logIndex!,
+  )
+}
+
+/** Waits for this Zone receipt's withdrawal, not a reusable application reference, to settle. */
+export async function withdrawalSettlement(
+  client: Pick<import('./targets.js').PublicClient, 'getContractEvents' | 'getTransactionReceipt'>,
+  portal: Address,
+  source: { logs: Log[]; transactionHash: Hex },
+  fromBlock: bigint,
+  success = true,
+) {
+  const request = withdrawalRequested(source)
+  const events = await waitFor(
+    'the Portal processing the source withdrawal',
+    () =>
+      client.getContractEvents({
+        address: portal,
+        abi: portalEventsAbi,
+        eventName: 'WithdrawalProcessed',
+        args: { to: request.to, senderTag: request.senderTag },
+        fromBlock,
+      }),
+    (found) => found.length > 0,
+    100,
+  )
+  assert(events.length === 1, 'one settlement for the source withdrawal')
+  const receipt = await client.getTransactionReceipt({ hash: events[0]!.transactionHash })
+  assert(receipt.status === 'success', 'the settlement transaction succeeded')
+  return { receipt, logs: withdrawalLogs(receipt.logs, portal, request, success) }
+}
+
+/** Independent pathUSD transaction charge from the mined receipt, never a balance residual. */
+export function zoneTransactionFee(
+  receipt: { gasUsed: bigint; effectiveGasPrice: bigint; feeToken?: Address; feePayer?: Address },
+  payer: Address,
+) {
+  assert(
+    receipt.feeToken && isAddressEqual(receipt.feeToken, pathUsd),
+    'the Zone fee token is pathUSD',
+  )
+  assert(
+    receipt.feePayer && isAddressEqual(receipt.feePayer, payer),
+    'the Zone fee payer is the cardholder',
+  )
+  assert(
+    receipt.gasUsed >= 0n && receipt.effectiveGasPrice >= 0n,
+    'the receipt carries nonnegative gas accounting',
+  )
+  // Tempo's calc_gas_balance_spending rounds attodollars up to six-decimal token units.
+  const scale = 1_000_000_000_000n
+  return (receipt.gasUsed * receipt.effectiveGasPrice + scale - 1n) / scale
+}
+
+/** Binds missing receipt fee metadata to its mined signed transaction before calculating the charge. */
+export async function zoneTransactionFeeFromChain(
+  client: Parameters<typeof FeeEvidence.resolve>[0],
+  receipt: Parameters<typeof FeeEvidence.resolve>[1] & {
+    gasUsed: bigint
+    effectiveGasPrice: bigint
+  },
+  payer: Address,
+) {
+  const identity = await FeeEvidence.resolve(client, receipt, payer)
+  return zoneTransactionFee({ ...receipt, ...identity }, payer)
+}
+
+/** Checks the request debit independently of the later return credit. */
+export function assertWithdrawalDebit(
+  before: bigint,
+  after: bigint,
+  amount: bigint,
+  withdrawalFee: bigint,
+  transactionFee: bigint,
+) {
+  assert(
+    before - after === amount + withdrawalFee + transactionFee,
+    'the request debited exactly its amount, withdrawal fee and receipt transaction fee',
+  )
 }

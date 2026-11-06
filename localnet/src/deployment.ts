@@ -8,11 +8,13 @@ import {
   factoryReleaseStep,
   optionalPeriphery,
   planEarnDeployment,
+  resolveAccessAddress,
   serializeWhitelistPolicy,
   type EarnDeploymentProfile,
 } from '@tempoxyz/contracts/deployments/operations'
 import {
   authoredProfile,
+  guardedTransactionRequest,
   discoverOutputs,
   preflightEarnDeployment,
   prepareLifecycleStep,
@@ -38,6 +40,7 @@ import * as Foundry from './foundry.js'
 import * as Network from './network.js'
 import { provisionFixtures, routerPoolInventory, validateFixtures } from './deployment/fixtures.js'
 import {
+  assertLocalProfile,
   isProtected,
   localizeProfile,
   sameAssetProfile,
@@ -65,6 +68,7 @@ export {
 } from './deployment/profile.js'
 
 export {
+  assertFixtureChain,
   provisionFixtures,
   routerPoolInventory,
   validateFixtures,
@@ -168,6 +172,10 @@ export declare namespace createBase {
  */
 export async function create(options: create.Options): Promise<Result> {
   const { base, client } = options
+  if (options.earnProfile) assertLocalProfile(options.earnProfile)
+  const startedAtBlock = await client.getBlockNumber()
+  // Reject malformed fixture bindings before policy creation, immutable binding, or Portal writes.
+  await validateFixtures(client, base.engineKind, base, options.account)
   const zoneId = options.zone.id
   const zoneSequencer = await Network.resolveZoneSequencer({
     client,
@@ -189,14 +197,21 @@ export async function create(options: create.Options): Promise<Result> {
       })
 
   // Disposable stand-in for the profile's TIP-403 policy; the Zone principals join before deploy.
-  const preDeploymentMembers = unique([
-    options.zone.portal,
-    options.zone.messenger,
-    zoneSequencer,
-    Addresses.zoneOutbox,
-    options.account,
-    options.revenueShareRecipient,
-  ])
+  const preDeploymentMembers = isProtected(source)
+    ? unique(
+        await Promise.all(
+          unique([
+            options.zone.portal,
+            options.zone.messenger,
+            zoneSequencer,
+            Addresses.zoneOutbox,
+            options.account,
+            options.revenueShareRecipient,
+            ...(options.earnProfile ? accessMembers(options.earnProfile, {}) : []),
+          ]).map((member) => resolveAccessAddress(client, member)),
+        ),
+      )
+    : []
   const policy = isProtected(source)
     ? await accessClient.policy.createSync({ addresses: preDeploymentMembers, type: 'whitelist' })
     : undefined
@@ -241,7 +256,10 @@ export async function create(options: create.Options): Promise<Result> {
     const members = deployments.flatMap((deployment) =>
       accessMembers(deployment.profile, deployment.outputs),
     )
-    for (const member of unique(members)) {
+    const resolved = await Promise.all(
+      members.map((member) => resolveAccessAddress(client, member)),
+    )
+    for (const member of unique(resolved)) {
       if (preDeploymentMembers.includes(member)) continue
       const update = await accessClient.policy.modifyWhitelistSync({
         policyId: policy.policyId,
@@ -290,7 +308,7 @@ export async function create(options: create.Options): Promise<Result> {
     engineKind: base.engineKind,
     earnProfile: primary,
     chainId: options.chainId,
-    deployedAtBlock: await client.getBlockNumber(),
+    deployedAtBlock: deploymentStartBlock(startedAtBlock, base.receipts),
     transactions: [
       ...base.receipts,
       ...accessReceipts,
@@ -486,12 +504,22 @@ async function bindAsEngineOwner(
   if (!options.engineOwnerPrivateKey || !('address' in profile.engine)) {
     throw new Error(`Local ${profile.id} engine has no local setup owner to bind it`)
   }
-  const receipt = await tempoClient(options, options.engineOwnerPrivateKey).writeContractSync({
-    address: profile.engine.address,
-    abi: earnEngineBindingAbi,
-    functionName: 'initializeEarnVault',
-    args: [required(outputs, 'earnVault'), profile.owner],
-    feeToken: Config.address.pathUsd,
+  const client = tempoClient(options, options.engineOwnerPrivateKey)
+  const receipt = await client.sendTransactionSync({
+    ...(await guardedTransactionRequest(
+      client,
+      [
+        {
+          to: profile.engine.address,
+          data: encodeFunctionData({
+            abi: earnEngineBindingAbi,
+            functionName: 'initializeEarnVault',
+            args: [required(outputs, 'earnVault'), profile.owner],
+          }),
+        },
+      ],
+      Config.address.pathUsd,
+    )),
     throwOnReceiptRevert: true,
     timeout: 180_000,
   })
@@ -512,7 +540,7 @@ function tempoClient(options: Pick<create.Options, 'chainId' | 'rpcUrl'>, privat
  * Zone starts with access and gateway enforcement off; registration keeps routers working when a
  * consumer enables them.
  */
-async function administerZonePortal(
+export async function administerZonePortal(
   zoneAdministrator: ReturnType<typeof tempoClient>,
   portal: Address,
   options: { tokens: Address[]; gateways: Address[] },
@@ -553,14 +581,39 @@ async function administerZonePortal(
       ),
   ].map((data) => ({ to: portal, data }))
   if (calls.length === 0) return undefined
-  return await zoneAdministrator.sendTransactionSync({
-    account: zoneAdministrator.account,
-    calls,
-    chain: zoneAdministrator.chain,
-    forceAtomic: true,
-    throwOnFailure: true,
+  const receipt = await zoneAdministrator.sendTransactionSync({
+    ...(await guardedTransactionRequest(zoneAdministrator, calls, Config.address.pathUsd)),
+    throwOnReceiptRevert: true,
     timeout: 180_000,
   })
+  if (receipt.status !== 'success') throw new Error('Zone fixture administration reverted')
+  const stillMissing = await missingZoneTokens(
+    zoneAdministrator,
+    portal,
+    options.tokens.map((token) => [token, token] as const),
+  )
+  if (stillMissing.length > 0) throw new Error('Zone fixture tokens were not enabled')
+  for (const gateway of options.gateways) {
+    const registered = await zoneAdministrator.readContract({
+      address: portal,
+      abi: zonePortalAbi,
+      functionName: 'hasRole',
+      args: [gateway, zonePortalRole.callbackGateway],
+    })
+    if (!registered) throw new Error('Zone fixture gateway was not registered')
+  }
+  return receipt
+}
+
+/** Conservative scan boundary includes fixture receipts and every later lifecycle transaction. */
+export function deploymentStartBlock(
+  startedAtBlock: bigint,
+  receipts: readonly { blockNumber: bigint }[],
+) {
+  return receipts.reduce(
+    (earliest, receipt) => (receipt.blockNumber < earliest ? receipt.blockNumber : earliest),
+    startedAtBlock,
+  )
 }
 
 function unique(addresses: readonly Address[]) {

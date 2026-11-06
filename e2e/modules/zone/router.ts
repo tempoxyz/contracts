@@ -6,16 +6,17 @@ import { tokenBalance } from '../../harness/support/funding.js'
 import { assert, ZONE_CASE_AMOUNT } from '../../harness/support/utils.js'
 
 /**
- * The router supports exactly the deposit and redeem flows, holds nothing and grants its pool no
- * allowance at rest, and a converting router is ready with inventory for one Zone case each way.
+ * The router supports exactly deposit and redeem, grants no temporary allowances at rest, and has
+ * conversion inventory for one Zone case each way. Per-case snapshots check custody against its baseline.
  */
 export async function validateRouter(client: DeploymentPublicClient, deployment: E2eStack) {
   const { contracts } = deployment
   const router = contracts.earnRouter
   if (!router) return
   const route = { address: router, abi: earnRouterAbi } as const
-  const [pool, ...flows] = await Promise.all([
+  const [pool, privateAsset, ...flows] = await Promise.all([
     client.readContract({ ...route, functionName: 'pool' }),
+    client.readContract({ ...route, functionName: 'privateAsset' }),
     ...[0, 1, 2, 3].map((flow) =>
       client.readContract({ ...route, functionName: 'supportsFlow', args: [flow] }),
     ),
@@ -23,29 +24,8 @@ export async function validateRouter(client: DeploymentPublicClient, deployment:
   assert(flows[0]! && flows[1]!, 'EarnRouter does not support both closed-loop flows')
   assert(!flows[2] && !flows[3], 'EarnRouter advertises an unknown flow')
   const converting = getAddress(pool) !== zeroAddress
-  const privateAsset = deployment.modes.private?.privateAsset
-  const balance = (token: Address, owner: Address) =>
-    client.readContract({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] })
-  const [routerAssets, routerEarnShares, ...allowances] = await Promise.all([
-    balance(contracts.asset, router),
-    balance(contracts.earnShare, router),
-    ...(converting
-      ? [contracts.asset, ...(privateAsset ? [privateAsset] : [])].map((token) =>
-          client.readContract({
-            address: token,
-            abi: erc20Abi,
-            functionName: 'allowance',
-            args: [router, pool],
-          }),
-        )
-      : []),
-  ])
-  assert(routerAssets === 0n, 'EarnRouter retains vault assets at rest')
-  assert(routerEarnShares === 0n, 'EarnRouter retains EarnShare at rest')
-  assert(
-    allowances.every((allowance) => allowance === 0n),
-    'EarnRouter grants its conversion pool an allowance at rest',
-  )
+  // Unsolicited tokens are a preserved baseline, not evidence of operation residue.
+  await routerAllowances(client, deployment, { router, pool, privateAsset })
   if (!converting || !deployment.capabilities.privateRouting) return
   const readiness = await inspectRouterReadiness(client, router, pool)
   assert(
@@ -63,41 +43,75 @@ export async function validateRouter(client: DeploymentPublicClient, deployment:
 }
 
 /**
- * Router custody, pool allowances, and the pool's mutable admission state, which every case must
- * restore. Pool inventory legitimately moves with every conversion, so amounts are not compared.
+ * Exact custody baselines and zero temporary allowances, plus mutable pool admission state.
+ * Pool inventory legitimately moves with conversion, so its amounts are not compared.
  */
 export async function routerIntegrity(context: E2eContext) {
   const router = context.contracts.earnRouter
   if (!router) return undefined
   const route = { address: router, abi: earnRouterAbi } as const
-  const [pool, [paused, admitted, atPar]] = await Promise.all([
+  const [pool, privateAsset, [paused, admitted, atPar]] = await Promise.all([
     context.l1Public.readContract({ ...route, functionName: 'pool' }),
+    context.l1Public.readContract({ ...route, functionName: 'privateAsset' }),
     context.l1Public.readContract({ ...route, functionName: 'liquidityStatus' }),
   ])
-  const allowance = (token: Address) =>
-    context.l1Public.readContract({
-      address: token,
-      abi: erc20Abi,
-      functionName: 'allowance',
-      args: [router, pool],
-    })
-  const [baseBalance, alternateBalance, earnShareBalance, baseAllowance, alternateAllowance] =
-    await Promise.all([
-      tokenBalance(context, context.assets.base, router),
-      tokenBalance(context, context.assets.alternate, router),
-      tokenBalance(context, context.contracts.earnShare, router),
-      allowance(context.assets.base),
-      allowance(context.assets.alternate),
-    ])
+  // Hosted contexts need not have fixture assets, so read the router's actual private input.
+  const [vaultAssetBalance, privateAssetBalance, earnShareBalance, allowances] = await Promise.all([
+    tokenBalance(context, context.contracts.asset, router),
+    tokenBalance(context, privateAsset, router),
+    tokenBalance(context, context.contracts.earnShare, router),
+    routerAllowances(context.l1Public, context.deployment, { router, pool, privateAsset }),
+  ])
+  // Exact equality detects residue and deficits. Snapshots cannot attribute concurrent donations:
+  // they may fail equality or offset a deficit; accepting increases would weaken the check further.
   return {
-    baseBalance,
-    alternateBalance,
+    vaultAssetBalance,
+    privateAssetBalance,
     earnShareBalance,
-    baseAllowance,
-    alternateAllowance,
+    allowances,
+    privateAsset: getAddress(privateAsset),
     pool: getAddress(pool),
     paused,
     admitted,
     atPar,
   }
+}
+
+/** Checks every approval used by deposit, redemption, conversion, and return to the source Portal. */
+async function routerAllowances(
+  client: DeploymentPublicClient,
+  deployment: E2eStack,
+  route: { router: Address; pool: Address; privateAsset: Address },
+) {
+  const { asset, earnShare, earnVault } = deployment.contracts
+  const { router, pool, privateAsset } = route
+  const portal = deployment.network.zone?.portal
+  assert(
+    portal !== undefined && getAddress(portal) !== zeroAddress,
+    'EarnRouter has no source Portal',
+  )
+  const targets: { token: Address; spender: Address; label: string }[] = [
+    { token: asset, spender: earnVault, label: 'vault asset to EarnVault' },
+    { token: earnShare, spender: earnVault, label: 'EarnShare to EarnVault' },
+    { token: privateAsset, spender: portal, label: 'private asset to source Portal' },
+    { token: earnShare, spender: portal, label: 'EarnShare to source Portal' },
+  ]
+  if (getAddress(pool) !== zeroAddress) {
+    targets.push(
+      { token: asset, spender: pool, label: 'vault asset to conversion pool' },
+      { token: privateAsset, spender: pool, label: 'private asset to conversion pool' },
+    )
+  }
+  return Promise.all(
+    targets.map(async ({ token, spender, label }) => {
+      const allowance = await client.readContract({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'allowance',
+        args: [router, spender],
+      })
+      assert(allowance === 0n, `EarnRouter retains an allowance at rest: ${label}`)
+      return { token: getAddress(token), spender: getAddress(spender), allowance }
+    }),
+  )
 }

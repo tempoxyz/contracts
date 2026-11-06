@@ -10,8 +10,9 @@ interface ILocalMorphoVault {
     function balanceOf(address account) external view returns (uint256);
     function convertToAssets(uint256 shares) external view returns (uint256 assets);
     function deposit(uint256 assets, address receiver) external returns (uint256 shares);
+    function previewDeposit(uint256 assets) external view returns (uint256 shares);
+    function previewRedeem(uint256 shares) external view returns (uint256 assets);
     function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets);
-    function withdraw(uint256 assets, address receiver, address owner) external returns (uint256 shares);
 }
 
 /// @notice Disposable stand-in for a Morpho fee wrapper that allocates into the same ERC-4626
@@ -88,23 +89,39 @@ contract LocalMorphoFeeWrapper {
     }
 
     function previewDeposit(uint256 assets) external view returns (uint256) {
-        return convertToShares(assets);
+        uint256 venueShares = venue.previewDeposit(assets);
+        if (venueShares == 0) return 0;
+        uint256 supply = totalSupply;
+        if (supply == 0) return assets;
+        uint256 held = venue.balanceOf(address(this));
+        if (held == 0) return 0;
+        return Math.mulDiv(venueShares, supply, held);
     }
 
     function previewRedeem(uint256 shares) external view returns (uint256) {
-        return convertToAssets(shares);
+        uint256 supply = totalSupply;
+        if (supply == 0) return shares;
+        // Executable exits round in venue shares before assets, unlike the ideal asset conversion.
+        uint256 venueShares = Math.mulDiv(shares, venue.balanceOf(address(this)), supply);
+        return venue.previewRedeem(venueShares);
     }
 
     function deposit(uint256 assets, address receiver) external returns (uint256 shares) {
         if (assets == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
-        shares = convertToShares(assets);
-        if (shares == 0) revert InsufficientOutput();
+        uint256 supply = totalSupply;
+        uint256 held = venue.balanceOf(address(this));
+        if (supply != 0 && held == 0) revert InsufficientOutput();
 
         _safeTransferFrom(asset, msg.sender, address(this), assets);
         _safeApprove(asset, address(venue), 0);
         _safeApprove(asset, address(venue), assets);
-        if (venue.deposit(assets, address(this)) == 0) revert InsufficientOutput();
+        venue.deposit(assets, address(this));
+        uint256 received = venue.balanceOf(address(this)) - held;
+        if (received == 0) revert InsufficientOutput();
+        // Venue rounding belongs to the entrant, never to existing wrapper holders.
+        shares = supply == 0 ? assets : Math.mulDiv(received, supply, held);
+        if (shares == 0) revert InsufficientOutput();
         _mint(receiver, shares);
         emit Deposit(msg.sender, receiver, assets, shares);
     }
@@ -113,17 +130,14 @@ contract LocalMorphoFeeWrapper {
         if (shares == 0) revert ZeroAmount();
         if (receiver == address(0) || owner == address(0)) revert ZeroAddress();
 
-        uint256 supply = totalSupply;
-        assets = convertToAssets(shares);
-        if (assets == 0) revert InsufficientOutput();
+        if (balanceOf[owner] < shares) revert InsufficientShares();
+        // Asset-denominated withdrawals round venue burns up and can consume other holders' backing.
+        uint256 venueShares = Math.mulDiv(shares, venue.balanceOf(address(this)), totalSupply);
+        if (venueShares == 0) revert InsufficientOutput();
         if (msg.sender != owner) _spendAllowance(owner, shares);
         _burn(owner, shares);
 
-        if (shares == supply) {
-            assets = venue.redeem(venue.balanceOf(address(this)), receiver, address(this));
-        } else {
-            venue.withdraw(assets, receiver, address(this));
-        }
+        assets = venue.redeem(venueShares, receiver, address(this));
         if (assets == 0) revert InsufficientOutput();
         emit Withdraw(msg.sender, receiver, owner, assets, shares);
     }

@@ -2,13 +2,14 @@ import { stringify } from 'viem'
 import { Abis } from 'viem/tempo'
 import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 import type { E2eContext } from './context.js'
+import { readVaultCustody } from './custody.js'
 import { moduleIntegrity } from './modules.js'
 import { assert } from './support/utils.js'
 
 /** Pause and access state, plus each capability module's own snapshot; see `E2eModule.integrity`. */
 export async function captureCaseIntegrity(context: E2eContext) {
   const vault = { address: context.contracts.earnVault, abi: earnVaultAbi } as const
-  const [depositsPaused, operator, emergencyGuardian, transferPolicyId, ...modules] =
+  const [depositsPaused, operator, emergencyGuardian, transferPolicyId, custody, ...modules] =
     await Promise.all([
       context.l1Public.readContract({ ...vault, functionName: 'depositsPaused' }),
       context.l1Public.readContract({ ...vault, functionName: 'operator' }),
@@ -18,10 +19,12 @@ export async function captureCaseIntegrity(context: E2eContext) {
         abi: Abis.tip20,
         functionName: 'transferPolicyId',
       }),
+      readVaultCustody(context.l1Public, context.contracts),
       ...moduleIntegrity.map(async ([id, capture]) => [id, await capture(context)] as const),
     ])
   return {
     depositsPaused,
+    custody,
     operator,
     emergencyGuardian,
     transferPolicyId,
@@ -36,6 +39,6 @@ export async function assertCaseIntegrity(
   const current = await captureCaseIntegrity(context)
   assert(
     stringify(current) === stringify(baseline),
-    'case did not restore pause/access state or a module invariant (such as router custody, allowances, or conversion-pool admission)',
+    'case did not restore pause/access state, vault custody, or a module invariant (such as router custody, allowances, or conversion-pool admission)',
   )
 }

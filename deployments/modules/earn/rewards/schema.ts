@@ -12,6 +12,9 @@ import {
   unique,
 } from '../../../core/parse.js'
 
+/** Unclaimed boost rewards return to the treasury after this many seconds. */
+export const boostRewardsClaimGraceSeconds = 30 * 24 * 60 * 60
+
 export type FixedAnnualRate = { bps: number }
 export type AnnualRate =
   | { bps: number }
@@ -143,6 +146,10 @@ function parseBoostRewards(
   )
   const startTimestamp = timestamp(source.startTimestamp, `${path}.startTimestamp`)
   const endTimestamp = timestamp(source.endTimestamp, `${path}.endTimestamp`)
+  if (endTimestamp + boostRewardsClaimGraceSeconds > 2 ** 40 - 1)
+    throw new Error(
+      `${path}.endTimestamp plus claim grace must fit uint40 (use seconds, not milliseconds)`,
+    )
   const intervalSeconds = interval(source.intervalSeconds, `${path}.intervalSeconds`)
   if (endTimestamp <= startTimestamp || (endTimestamp - startTimestamp) % intervalSeconds !== 0)
     throw new Error(`${path} must contain whole positive intervals`)

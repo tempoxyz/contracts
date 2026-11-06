@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -6,6 +5,8 @@ import { getAddress, isAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import * as Devnet from './devnet.js'
+import * as Config from './config.js'
+import { cleanSourceRevision } from './provenance.js'
 
 /**
  * `pnpm devnet:deploy -- --out <dir> --eligible-account <address>`: the supported entry point for
@@ -24,9 +25,9 @@ if (!eligible || !isAddress(eligible)) throw new Error('--eligible-account <addr
 
 // Resolve everything local before any chain write: a failure here must not leave a deployed stack
 // with no record of its addresses, and the deployer key is single-use per L1.
+const revision = cleanSourceRevision(Config.root)
 const configuration = Devnet.configuration(process.env)
 const user = getAddress(eligible)
-const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
 // pnpm runs the script in localnet/, so a relative --out is the caller's.
 const directory = resolve(process.env.INIT_CWD ?? process.cwd(), out)
 mkdirSync(directory, { recursive: true })

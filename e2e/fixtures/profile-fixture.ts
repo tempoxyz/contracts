@@ -6,7 +6,15 @@ import {
   type EarnDeploymentProfile,
 } from '@tempoxyz/contracts/deployments/operations'
 import type { EarnDeploymentRecord } from '@tempoxyz/contracts/deployments/node'
-import { address, exactKeys, isBytes32, object } from '@tempoxyz/contracts/deployments'
+import { localEngines } from 'localnet'
+import {
+  address,
+  exactKeys,
+  hostedEnvironment,
+  isBytes32,
+  object,
+  type EngineKind,
+} from '@tempoxyz/contracts/deployments'
 import { getAddress, keccak256, type Address, type Hex } from 'viem'
 import type { DeploymentPublicClient } from '../harness/context.js'
 
@@ -232,6 +240,7 @@ function validateProfileFixtureRecord(
   if (fixture.genesisHash !== deployment.target.genesisHash) {
     throw new Error(`Profile fixture ${profile.id} does not match the deployment genesis`)
   }
+  assertHostedFixtureChain(fixture.chainId)
   const stablecoins = fixture.stablecoinFixture
   const zone = configuredZone(profile)
   if (!stablecoins) {
@@ -263,7 +272,9 @@ function validateProfileFixtureRecord(
 export async function validateProfileFixtureRuntime(
   client: DeploymentPublicClient,
   fixture: ProfileFixtureRecord,
+  deployment: { engineKind: EngineKind; engine: Address; asset: Address; venue: Address },
 ) {
+  assertHostedFixtureChain(fixture.chainId)
   const genesis = await client.getBlock({ blockNumber: 0n })
   if (genesis.hash !== fixture.genesisHash) {
     throw new Error(`Profile fixture ${fixture.profileId} does not match the live genesis`)
@@ -277,6 +288,21 @@ export async function validateProfileFixtureRuntime(
       }
     }),
   )
+  await localEngines[deployment.engineKind].validate?.(client, {
+    baseAsset: deployment.asset,
+    engine: deployment.engine,
+    vault: deployment.venue,
+    engineFixtures: fixture.engineFixtures ?? {},
+  })
+}
+
+/** Hosted synthetic fixture records cannot authorize mainnet minting or retired venue reuse. */
+export function assertHostedFixtureChain(chainId: number) {
+  if (!hostedEnvironment(chainId)?.testnet) {
+    throw new Error(
+      `Hosted synthetic fixtures require a testnet; chain ${chainId} is not supported`,
+    )
+  }
 }
 
 function hash(value: unknown, label: string): Hex {

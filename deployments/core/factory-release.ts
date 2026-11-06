@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -18,13 +19,17 @@ import {
   stringToBytes,
   type Address,
   type Hex,
+  type PublicClient,
+  type TransactionReceipt,
 } from 'viem'
 import { Addresses } from 'viem/tempo'
 
 import { deployFactoryReleaseScriptAbi } from '../abis/index.js'
 import {
   assertFoundryVersion,
+  assertFoundryProjectEnvironment,
   foundryProjectRoot,
+  foundryRpcEnvironment,
   foundryProcessEnvironment,
   foundryVerificationEnvironment,
   sourceVerificationCompilerArguments,
@@ -32,6 +37,14 @@ import {
 import { configuredRpcTransport, rpcConfiguration } from '../chain/runtime.js'
 import { hostedEnvironments, type HostedEnvironmentId } from '../chain/tempo.js'
 import { engineFactories } from '../modules/earn/engines/index.js'
+import {
+  address,
+  array,
+  exactKeys,
+  object,
+  positiveInteger,
+  nonemptyString as string,
+} from './parse.js'
 import { verifyContractSource } from './verify.js'
 
 const releaseScript = 'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
@@ -70,6 +83,8 @@ export type ReleaseContract = {
    * ZoneRouter its factory creates); `create2Deployer` with `releaseSalt` when omitted.
    */
   creator?: { address: Address; salt: Hex }
+  /** Confirms a nested creation from its mined event, never simulation metadata. */
+  createdInReceipt?: (receipt: TransactionReceipt, address: Address) => boolean
 }
 
 /** The Foundry project that compiles, deploys and source-verifies a release. */
@@ -94,6 +109,8 @@ export type ReleasePlan<Kind extends string = string> = {
   registryKey?: string
   /** Extra `forge script` arguments. */
   forgeArguments: readonly string[]
+  /** Onchain bindings required even when every release address already exists. */
+  validate?: (client: Pick<PublicClient, 'readContract'>) => Promise<void>
 }
 
 export type FactoryReleasePlan = ReleasePlan<FactoryReleaseKind>
@@ -188,7 +205,10 @@ type BroadcastFile = {
   receipts?: { transactionHash?: string; status?: string }[]
 }
 
-export type CreatedContract = Omit<ReleaseContract, 'constructorArgs' | 'creator'> & {
+export type CreatedContract = Omit<
+  ReleaseContract,
+  'constructorArgs' | 'creator' | 'createdInReceipt'
+> & {
   address: Address
   /** The creating transaction; null for a contract that already existed at its address. */
   transaction: Hex | null
@@ -213,18 +233,20 @@ export function predictRelease(
   creationBytecode: (contract: string) => Hex,
 ): PredictedContract[] {
   const addresses: Record<string, Address> = {}
-  return plan.contracts.map(({ constructorArgs: encode, creator, ...contract }) => {
-    const constructorArgs = encode?.(addresses) ?? '0x'
-    const initCode = concatHex([creationBytecode(contract.contract), constructorArgs])
-    const address = getContractAddress({
-      opcode: 'CREATE2',
-      from: creator?.address ?? create2Deployer,
-      salt: creator?.salt ?? releaseSalt,
-      bytecode: initCode,
-    })
-    addresses[contract.name] = address
-    return { ...contract, address, transaction: null, constructorArgs, initCode }
-  })
+  return plan.contracts.map(
+    ({ constructorArgs: encode, creator, createdInReceipt: _createdInReceipt, ...contract }) => {
+      const constructorArgs = encode?.(addresses) ?? '0x'
+      const initCode = concatHex([creationBytecode(contract.contract), constructorArgs])
+      const address = getContractAddress({
+        opcode: 'CREATE2',
+        from: creator?.address ?? create2Deployer,
+        salt: creator?.salt ?? releaseSalt,
+        bytecode: initCode,
+      })
+      addresses[contract.name] = address
+      return { ...contract, address, transaction: null, constructorArgs, initCode }
+    },
+  )
 }
 
 /**
@@ -331,6 +353,49 @@ export function createdContracts(
   })
 }
 
+/** Preserves previous evidence without allowing Forge's no-op run to claim it as fresh output. */
+export function archiveReleaseBroadcast(path: string) {
+  if (existsSync(path)) renameSync(path, `${path}.previous-${randomUUID()}`)
+}
+
+/** Reconciles Forge's simulated creations against the mined transaction and receipt. */
+export async function confirmReleaseCreations(
+  client: Pick<PublicClient, 'getTransactionReceipt' | 'getTransaction'>,
+  plan: ReleasePlan,
+  created: readonly CreatedContract[],
+  predicted: readonly PredictedContract[],
+): Promise<CreatedContract[]> {
+  return Promise.all(
+    created.map(async (contract) => {
+      if (!contract.transaction) return contract
+      const receipt = await client.getTransactionReceipt({ hash: contract.transaction })
+      if (
+        receipt.status !== 'success' ||
+        receipt.transactionHash.toLowerCase() !== contract.transaction.toLowerCase()
+      )
+        throw new Error(`${contract.name} creation has no successful mined receipt`)
+      const definition = plan.contracts.find((entry) => entry.name === contract.name)!
+      if (definition.creator) {
+        if (!definition.createdInReceipt)
+          throw new Error(`${contract.name} has no mined creation evidence checker`)
+        // A competing deployment can turn the simulated factory creation into a successful reuse.
+        return definition.createdInReceipt(receipt, contract.address)
+          ? contract
+          : { ...contract, transaction: null }
+      }
+      const transaction = await client.getTransaction({ hash: contract.transaction })
+      const expected = predicted.find((entry) => entry.name === contract.name)!
+      if (
+        transaction.to?.toLowerCase() !== create2Deployer.toLowerCase() ||
+        transaction.input.toLowerCase() !==
+          concatHex([releaseSalt, expected.initCode]).toLowerCase()
+      )
+        throw new Error(`${contract.name} mined transaction is not its deterministic creation`)
+      return contract
+    }),
+  )
+}
+
 /**
  * Replaces the authenticated RPC URL and its credentials, raw and percent-encoded, in text that is
  * written to the result, the job summary, or an artifact, where GitHub's secret masking does not
@@ -387,6 +452,17 @@ export type ReleaseResult<Kind extends string = string> = {
 export type FactoryReleaseResult = ReleaseResult<FactoryReleaseKind>
 
 export type FactoryReleaseDependencies = {
+  /** RPC reads are made before even an already-deployed release can be certified. */
+  client: (
+    rpc: ReturnType<typeof rpcConfiguration>,
+  ) => Pick<
+    PublicClient,
+    'getChainId' | 'readContract' | 'getTransactionReceipt' | 'getTransaction'
+  >
+  /** Moves aside the previous selector-latest artifact before starting Forge. */
+  archiveBroadcast: (path: string) => void
+  /** Confirms attributed creations with mined RPC evidence. */
+  confirmCreations: typeof confirmReleaseCreations
   /** Runs Forge from the release's Foundry project, where Earn's `solc` wrapper path resolves. */
   forge: (arguments_: string[], environment: Record<string, string>, cwd: string) => void
   readFile: (path: string) => string
@@ -408,7 +484,11 @@ export type FactoryReleaseDependencies = {
 }
 
 const defaultDependencies: FactoryReleaseDependencies = {
+  client: (rpc) => createPublicClient({ transport: configuredRpcTransport(rpc) }),
+  archiveBroadcast: archiveReleaseBroadcast,
+  confirmCreations: confirmReleaseCreations,
   forge: (arguments_, environment, cwd) => {
+    assertFoundryProjectEnvironment(cwd)
     const result = spawnSync('forge', arguments_, {
       cwd,
       env: environment as NodeJS.ProcessEnv,
@@ -420,6 +500,7 @@ const defaultDependencies: FactoryReleaseDependencies = {
   },
   readFile: (path) => readFileSync(path, 'utf8'),
   creationBytecode: (root, contract, environment) => {
+    assertFoundryProjectEnvironment(root)
     const bytecode = execFileSync('forge', ['inspect', contract, 'bytecode'], {
       cwd: root,
       encoding: 'utf8',
@@ -507,6 +588,13 @@ export async function deployRelease<Kind extends string>(
   if (!rpc.authenticatedUrl) throw new Error(`No RPC for ${network.id}`)
   const root = foundryProjectRoot(options.root, plan.project === 'earn' ? undefined : plan.project)
 
+  const client = runtime.client(rpc)
+  const actualChainId = await client.getChainId()
+  if (actualChainId !== network.chainId)
+    throw new Error(
+      `Release RPC chain ${actualChainId} does not match ${network.id} (${network.chainId})`,
+    )
+  await plan.validate?.(client)
   runtime.preflight(root, options.environment)
   const predicted = predictRelease(plan, (contract) =>
     runtime.creationBytecode(root, contract, options.environment),
@@ -518,6 +606,8 @@ export async function deployRelease<Kind extends string>(
   const current = predicted.every((contract) => existing.has(contract.address))
   let created: CreatedContract[] = predicted.map(({ initCode: _initCode, ...contract }) => contract)
   if (!current) {
+    const path = broadcastPath(root, plan, network.chainId, options.broadcast)
+    runtime.archiveBroadcast(path)
     try {
       runtime.forge(
         [
@@ -529,22 +619,43 @@ export async function deployRelease<Kind extends string>(
           plan.calldata,
           '--network',
           'tempo',
-          '--rpc-url',
-          rpc.authenticatedUrl,
           '--slow',
           ...plan.forgeArguments,
           ...(options.broadcast ? ['--broadcast'] : []),
         ],
-        foundryProcessEnvironment(options.environment),
+        foundryRpcEnvironment(foundryProcessEnvironment(options.environment), rpc.authenticatedUrl),
         root,
       )
     } finally {
       runtime.removeScriptCache(root, basename(plan.script.split(':')[0]!))
     }
-    const file = JSON.parse(
-      runtime.readFile(broadcastPath(root, plan, network.chainId, options.broadcast)),
-    ) as BroadcastFile
-    created = createdContracts(plan, file, predicted, existing, options.broadcast)
+    let contents: string | undefined
+    try {
+      contents = runtime.readFile(path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    if (contents === undefined) {
+      // Another deployment can win before Forge simulates. No new artifact means no creation claim.
+      const observed = await runtime.existingCode(
+        rpc,
+        predicted.map((contract) => contract.address),
+      )
+      if (!predicted.every((contract) => observed.has(contract.address)))
+        throw new Error(
+          'Forge produced no fresh release artifact and release contracts are missing',
+        )
+    } else {
+      created = createdContracts(
+        plan,
+        JSON.parse(contents) as BroadcastFile,
+        predicted,
+        existing,
+        options.broadcast,
+      )
+      if (options.broadcast)
+        created = await runtime.confirmCreations(client, plan, created, predicted)
+    }
   }
 
   const contracts: ReleaseResult['contracts'] = []
@@ -564,6 +675,7 @@ export async function deployRelease<Kind extends string>(
         address: contract.address,
         contract: contract.contract,
         constructorArgs: contract.constructorArgs,
+        ...(contract.transaction ? { creationTransactionHash: contract.transaction } : {}),
       })
       contracts.push({ ...contract, match: verification.match })
     } catch (error) {
@@ -671,24 +783,136 @@ export async function runReleases<Kind extends string>(options: {
   return run
 }
 
+/** Parses result files before they can become a reviewed registry change. */
+export function parseReleaseRun(value: unknown): FactoryReleaseRun {
+  const run = object(value, 'release run')
+  exactKeys(run, 'release run', ['network', 'chainId', 'broadcast', 'releases'], ['failed'])
+  const network = string(run.network, 'network')
+  if (!Object.hasOwn(hostedEnvironments, network))
+    throw new Error(`Unknown hosted network ${network}`)
+  const chainId = positiveInteger(run.chainId, 'chainId')
+  if (chainId !== hostedEnvironments[network as HostedEnvironmentId].chainId)
+    throw new Error(`Release run chainId does not match ${network}`)
+  if (typeof run.broadcast !== 'boolean') throw new Error('broadcast must be boolean')
+  const broadcast = run.broadcast
+  const releases = array(run.releases, 'releases').map((value, index): FactoryReleaseResult => {
+    const path = `releases.${index}`
+    const release = object(value, path)
+    exactKeys(
+      release,
+      path,
+      ['network', 'chainId', 'kind', 'broadcast', 'contracts', 'registry'],
+      ['parameters', 'current'],
+    )
+    if (
+      release.network !== network ||
+      release.chainId !== chainId ||
+      release.broadcast !== broadcast
+    )
+      throw new Error(`${path} does not match its run`)
+    const plan = planFactoryRelease(string(release.kind, `${path}.kind`), chainId)
+    if (release.parameters !== undefined)
+      exactKeys(object(release.parameters, `${path}.parameters`), `${path}.parameters`, [])
+    if (release.current !== undefined && release.current !== true)
+      throw new Error(`${path}.current must be true`)
+    const contracts = array(release.contracts, `${path}.contracts`).map((value) => {
+      const contract = object(value, `${path}.contract`)
+      exactKeys(
+        contract,
+        `${path}.contract`,
+        ['name', 'contract', 'address', 'transaction', 'constructorArgs', 'match'],
+        ['verificationError'],
+      )
+      const input = string(contract.constructorArgs, 'constructorArgs')
+      if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(input)) throw new Error('Invalid constructorArgs')
+      const transaction = contract.transaction
+      if (
+        transaction !== null &&
+        (typeof transaction !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(transaction))
+      )
+        throw new Error('Invalid creation transaction')
+      if (contract.match !== null && contract.match !== 'match' && contract.match !== 'exact_match')
+        throw new Error('Invalid source match')
+      return {
+        name: string(contract.name, 'name'),
+        contract: string(contract.contract, 'contract'),
+        address: address(contract.address, 'address'),
+        transaction: transaction as Hex | null,
+        constructorArgs: input as Hex,
+        match: contract.match as 'match' | 'exact_match' | null,
+        ...(contract.verificationError === undefined
+          ? {}
+          : { verificationError: string(contract.verificationError, 'verificationError') }),
+      }
+    })
+    const registry =
+      release.registry === null
+        ? null
+        : Object.fromEntries(
+            Object.entries(object(release.registry, 'registry')).map(([key, value]) => [
+              key,
+              address(value, `registry.${key}`),
+            ]),
+          )
+    return {
+      network: network as HostedEnvironmentId,
+      chainId,
+      kind: plan.kind,
+      broadcast,
+      contracts,
+      registry,
+      ...(release.current ? { current: true } : {}),
+    }
+  })
+  if (new Set(releases.map((release) => release.kind)).size !== releases.length)
+    throw new Error('Duplicate release kind')
+  const failed = run.failed === undefined ? undefined : object(run.failed, 'failed')
+  if (failed) exactKeys(failed, 'failed', ['kind'])
+  return {
+    network,
+    chainId,
+    broadcast,
+    releases,
+    ...(failed
+      ? { failed: { kind: planFactoryRelease(string(failed.kind, 'failed.kind'), chainId).kind } }
+      : {}),
+  }
+}
+
 type RegistryUpdate = { network: string; key: string; address: Address; kind: string }
 
 /**
  * The registry entries a set of runs proves: each broadcast release that names a registry entry and
  * whose every contract source verified. Anything else is skipped with its reason.
  */
-export function registryUpdates(runs: readonly FactoryReleaseRun[]) {
+export function registryUpdates(
+  values: readonly unknown[],
+  compile: (contract: string) => Hex = (contract) =>
+    defaultDependencies.creationBytecode(
+      fileURLToPath(new URL('../../earn', import.meta.url)),
+      contract,
+      process.env,
+    ),
+) {
+  const runs = values.map(parseReleaseRun)
   const updates: RegistryUpdate[] = []
   const skipped: { network: string; kind: string; reason: string }[] = []
   for (const run of runs) {
     if (run.failed) skipped.push({ network: run.network, kind: run.failed.kind, reason: 'failed' })
     for (const release of run.releases) {
-      if (!release.registry) continue
-      if (!release.broadcast) {
+      const plan = planFactoryRelease(release.kind, release.chainId)
+      if (!plan.registryKey) {
+        if (release.registry !== null)
+          throw new Error(`Release ${release.kind} has no registry entry`)
+        continue
+      }
+      if (!run.broadcast || !release.broadcast) {
         skipped.push({ network: run.network, kind: release.kind, reason: 'dry run' })
         continue
       }
-      const unverified = release.contracts.filter((contract) => contract.match === null)
+      const unverified = release.contracts.filter(
+        (contract) => contract.match !== 'match' && contract.match !== 'exact_match',
+      )
       if (unverified.length > 0) {
         skipped.push({
           network: run.network,
@@ -697,6 +921,30 @@ export function registryUpdates(runs: readonly FactoryReleaseRun[]) {
         })
         continue
       }
+      const predicted = predictRelease(plan, compile)
+      if (
+        release.contracts.length !== predicted.length ||
+        new Set(release.contracts.map((contract) => contract.name)).size !== predicted.length
+      )
+        throw new Error(`Release ${release.kind} must contain its complete expected contract set`)
+      for (const expected of predicted) {
+        const actual = release.contracts.find((contract) => contract.name === expected.name)
+        if (
+          !actual ||
+          actual.contract !== expected.contract ||
+          actual.address !== expected.address ||
+          actual.constructorArgs.toLowerCase() !== expected.constructorArgs.toLowerCase()
+        )
+          throw new Error(
+            `Release ${release.kind} ${expected.name} does not match the locally compiled CREATE2 release`,
+          )
+      }
+      if (
+        !release.registry ||
+        Object.keys(release.registry).length !== 1 ||
+        release.registry[plan.registryKey] !== predicted.at(-1)!.address
+      )
+        throw new Error(`Release ${release.kind} registry does not match its deterministic address`)
       for (const [key, address] of Object.entries(release.registry)) {
         updates.push({ network: run.network, key, address, kind: release.kind })
       }
@@ -712,6 +960,10 @@ export function updateReleaseRegistry(
 ) {
   let result = source
   for (const { network, key, address } of updates) {
+    if (!Object.hasOwn(hostedEnvironments, network))
+      throw new Error(`releases.ts has no ${network} release`)
+    const keys = ['earn', ...engineFactories.map((factory) => factory.releaseKey)]
+    if (!keys.includes(key)) throw new Error(`releases.ts has no ${network}.${key} entry`)
     const start = result.indexOf(`\n  ${network}: {\n    factories: {\n`)
     const end = start < 0 ? -1 : result.indexOf('\n    },\n', start)
     if (start < 0 || end < 0) throw new Error(`releases.ts has no ${network} release`)
@@ -770,7 +1022,7 @@ const usage =
 /** Applies every verified release in the result files to releases.ts. */
 function registryMain(files: string[], body: string | undefined) {
   if (files.length === 0) throw new Error(usage)
-  const runs = files.map((file) => JSON.parse(readFileSync(file, 'utf8')) as FactoryReleaseRun)
+  const runs = files.map((file) => parseReleaseRun(JSON.parse(readFileSync(file, 'utf8'))))
   const summary = registryUpdates(runs)
   const path = fileURLToPath(new URL('./releases.ts', import.meta.url))
   writeFileSync(path, updateReleaseRegistry(readFileSync(path, 'utf8'), summary.updates))

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 import { getAddress } from 'viem'
 
+import { assertNoPublicFixtureAuthority } from './deploy.js'
 import { accessMembers } from '../modules/earn/access-policy/membership.js'
 import { loadEarnProfileBundle } from './bundle.js'
 import {
@@ -13,6 +14,8 @@ import {
   deploymentIntentHash,
   parseEarnDeploymentProfile as parseProfile,
   profileCapabilities,
+  engineAddress,
+  privilegedPrincipals,
 } from './profile.js'
 import { engineDefinitions } from '../modules/earn/engines/index.js'
 import { parseRewardConfiguration } from '../modules/earn/rewards/schema.js'
@@ -197,4 +200,94 @@ describe('committed Zone profiles', () => {
       ).toEqual(profile)
     },
   )
+})
+
+describe('pre-broadcast profile guards', () => {
+  test('rejects zero ordinary fees but preserves omitted fees and inactive protected fees', () => {
+    expect(() =>
+      parseEarnDeploymentProfile({
+        ...generic,
+        core: { fees: { fixed: [{ recipient: address('6'), rateBps: 0 }] } },
+      }),
+    ).toThrow('rateBps')
+    expect(parseEarnDeploymentProfile(generic).core.fees.fixed).toEqual([])
+    expect(
+      parseEarnDeploymentProfile({
+        ...generic,
+        core: {
+          fees: {
+            protectedFixed: {
+              recipient: address('0'),
+              rateBps: 0,
+              distributor: address('7'),
+              updateDelaySeconds: '60',
+            },
+          },
+        },
+      }).core.fees.protectedFixed?.rateBps,
+    ).toBe(0)
+  })
+
+  test('rejects duplicate ordinary and active protected recipients regardless of case', () => {
+    const recipient = address('ab')
+    const fee = { recipient, rateBps: 10 }
+    for (const fees of [
+      { fixed: [fee, { ...fee, recipient: recipient.toLowerCase() }] },
+      {
+        fixed: [fee],
+        protectedFixed: { ...fee, distributor: address('7'), updateDelaySeconds: '60' },
+      },
+    ])
+      expect(() => parseEarnDeploymentProfile({ ...generic, core: { fees } })).toThrow('unique')
+    expect(
+      parseEarnDeploymentProfile({
+        ...generic,
+        core: {
+          fees: {
+            fixed: [fee, { ...fee, recipient: address('8') }],
+          },
+        },
+      }).core.fees.fixed,
+    ).toHaveLength(2)
+  })
+
+  test('keeps the deployer privileged when an independent owner is configured', () => {
+    const profile = parseEarnDeploymentProfile(generic)
+    expect(profile.owner).not.toBe(profile.deployer)
+    expect(privilegedPrincipals(profile)).toContainEqual(['deployer', deployer])
+    expect(() => assertNoPublicFixtureAuthority(profile, new Set([deployer]))).toThrow(
+      'deployer is the public fixture identity',
+    )
+  })
+
+  test('rejects contradictory recorded creation engines', () => {
+    const profile = parseEarnDeploymentProfile({
+      ...generic,
+      engine: { kind: 'erc4626', address: address('6') },
+    })
+    expect(() => engineAddress(profile, { engine: address('7') })).toThrow(
+      'does not match configured engine',
+    )
+    expect(engineAddress(profile, { engine: address('6') })).toBe(address('6'))
+  })
+
+  test('bounds the boost claim deadline including its grace period to uint40', () => {
+    const lastEnd = 2 ** 40 - 1 - 30 * 24 * 60 * 60
+    const configuration = { ...boostRewards, startTimestamp: lastEnd - 120, endTimestamp: lastEnd }
+    expect(
+      parseEarnDeploymentProfile({ ...generic, boostRewards: configuration }).boostRewards
+        ?.endTimestamp,
+    ).toBe(lastEnd)
+    for (const endTimestamp of [lastEnd + 1, 1_900_000_000_000])
+      expect(() =>
+        parseEarnDeploymentProfile({
+          ...generic,
+          boostRewards: {
+            ...configuration,
+            startTimestamp: endTimestamp - 120,
+            endTimestamp,
+          },
+        }),
+      ).toThrow('must fit uint40')
+  })
 })

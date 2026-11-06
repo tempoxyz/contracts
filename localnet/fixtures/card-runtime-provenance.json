@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "compatibility": {
+    "status": "unresolved",
+    "foundryAssurance": "model-only",
+    "runtimeEquivalenceEstablished": false,
+    "reason": "The Foundry harness compiles a different Zone runtime revision and models the Zone side in one EVM. Its passes do not establish private-flow behavior on the locked integration runtime.",
+    "requiredEvidence": "Review the relevant protocol differences and demonstrate both private legs on the pinned native runtime before claiming runtime-equivalent acceptance."
+  },
+  "vendor": {
+    "sourceCommit": "ce9998460dad466d0d36c05c971c988dc7e67582",
+    "tempoStdCommit": "96f882963ce3b0e0abc7ec2b41d03d42457877bb",
+    "foundryConfigSha256": "555e8785940cc2f5829c229c688870caba7b8c44817f594329880c3b643a1fc4",
+    "sources": {
+      "interfaces/IZone.sol": "aaafc7ed81a5074bf79db306d6a92791f22107507ea218957d7872a2471cc7cf",
+      "libraries/BlockHashHistory.sol": "e4e7c34ec50507c07446208aacdc86595e276c2e433d611d565ea5673832acba",
+      "libraries/DepositQueueLib.sol": "c504e7a07a5bfbd1c6104c18fdb3e6a82b89535294b2f054d7ae1090ec46bdf1",
+      "libraries/EncryptedDeposit.sol": "dbb671c1abd3310d6442a3fa10ceda04dfc9871847589f8e0a7c4db687719c43",
+      "libraries/Secp256k1Lib.sol": "87b3279ffdf6ebe20dc53095031108d867076afb3ccc0b1c7acd259736550938",
+      "libraries/WithdrawalQueueLib.sol": "9bccb120c816a812223936313467db177ae54493db1417d559766b530fa27e3f",
+      "tempo/Verifier.sol": "a39532ac0e1a34716fa972baedda2981d7c4f1c5775f8ebd198d463db3b0aa76",
+      "tempo/ZoneMessenger.sol": "8f4dd27851b209c178e5adb030b699863d23d4aa33f2186daff3ca66c6c107b3",
+      "tempo/ZonePortal.sol": "248ece75b0a7dd7a91e1580418d74375383f9ee6750906e6673ee5aafefb165f"
+    }
+  },
+  "runtime": {
+    "version": 1,
+    "protocol": "tip1091-v1",
+    "zoneInfoFields": 9,
+    "l1Image": "ghcr.io/tempoxyz/tempo@sha256:cf4801c1b9d9b244a4efe6d21da3591f14e01db5e316d23c787ed31068234296",
+    "zoneImage": "ghcr.io/tempoxyz/tempo-zone@sha256:9df31e55cfe3825cedb2f3df8d0444df3df3e2a0e1cce47f2753df023152bd54",
+    "runtimeFixture": "tip1091-runtime.json",
+    "runtimeFixtureSha256": "bde3c8a90da662d6e645fead5a0a938391afc7e7f4ab2858bcc4f546c102c778",
+    "sourceCommit": "446e948e60db00b99b6152a69351ff6dac59e67b",
+    "solcVersion": "0.8.35"
+  },
+  "evidence": {
+    "vendorSource": "https://github.com/tempoxyz/tempo/tree/ce9998460dad466d0d36c05c971c988dc7e67582/crates/zones/contracts/src/runtime",
+    "vendorComparison": "All nine recorded Solidity files matched the upstream bytes at the declared vendor commit.",
+    "runtimeSource": "https://github.com/tempoxyz/tempo/blob/446e948e60db00b99b6152a69351ff6dac59e67b/crates/contracts/src/zones.rs",
+    "runtimeSourceSha256": "e0e2adb714b4d5409a44da880de8cf9713b1f84551ffd6c383e93bbbd8e967bc",
+    "runtimeConstants": {
+      "zonePortal": {
+        "name": "T13_ZONE_PORTAL_RUNTIME",
+        "bytecodeSha256": "f0e181b7ce01aa430f6c7c5fbb6bd3dca6a704129b6bd6789172ab445d8f392d"
+      },
+      "zoneMessenger": {
+        "name": "T13_ZONE_MESSENGER_RUNTIME",
+        "bytecodeSha256": "bd9dacbb7a366354e7f99891c94de791453c82e51b61869b15da3c6f7674eabe"
+      },
+      "verifier": {
+        "name": "T13_ZONE_VERIFIER_RUNTIME",
+        "bytecodeSha256": "20d7cdf8d786a8e7ff51a4546175a4875b2b0a25993f231e36ca41b15ff2b6c4"
+      }
+    },
+    "runtimeComparison": "The fixture bytecode matched the three named T13 constants at the runtime source commit. This is not a comparison with bytecode compiled from the vendored sources.",
+    "limits": "The runtime source commit has no crates/zones/contracts/src/runtime directory. No source-level compatibility mapping, deployed-image attestation, or native private-flow proof is established by this record."
+  }
+}

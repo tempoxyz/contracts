@@ -1,5 +1,5 @@
 import { demoStablecoinFunderAbi, propAMMPoolAbi } from '@tempoxyz/contracts/abis'
-import type { EngineKind } from '@tempoxyz/contracts/deployments'
+import { hostedEnvironment, type EngineKind } from '@tempoxyz/contracts/deployments'
 import { custom, type Address, type Hex, type PublicClient } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { Abis, createClient as createTempoClient } from 'viem/tempo'
@@ -42,6 +42,7 @@ export type ConversionPool = { pool: Address; oracle: Address; registry: Address
  * pair and its funder, and with `conversionPool` the router's pool, funded and unpaused.
  */
 export async function provisionFixtures(options: provisionFixtures.Options): Promise<Fixtures> {
+  assertFixtureChain(options.chainId)
   const receipts: Foundry.Receipt[] = []
   const deploy = async (step: Foundry.Step) => {
     const deployment = await Foundry.deploy({ ...options, step })
@@ -230,4 +231,13 @@ export async function validateFixtures(
     if (paused) throw new Error('Conversion pool is paused')
   }
   await localEngines[engineKind].validate?.(client, fixtures)
+}
+
+/** Synthetic venues may run on disposable chains and hosted testnets, never hosted production. */
+export function assertFixtureChain(chainId: number) {
+  const network = hostedEnvironment(chainId)
+  if (network && !network.testnet)
+    throw new Error(
+      `Synthetic fixtures refuse non-testnet chain ${chainId}; retired fixtures must not be reused or funded`,
+    )
 }

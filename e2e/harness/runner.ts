@@ -30,65 +30,101 @@ export async function runE2e(options: runE2e.Options) {
   console.log(`Selection · ${selected.length} shared E2E cases\n`)
   if (options.selection.shard) console.log(`Shard · ${options.selection.shard}\n`)
 
-  for (const testCase of selected) {
-    const started = Date.now()
-    let caseError: unknown
-    let status: CaseResult['status'] = 'PASS'
-    if (caseResults.length > 0) process.stdout.write('\n')
-    process.stdout.write(`RUN      ${testCase.id}\n`)
-    if (testCase.flow) process.stdout.write(`FLOW     ${testCase.flow}\n`)
-    try {
-      await testCase.preflight?.(context)
-    } catch (error) {
-      caseError = error
-    }
-    const timingMark = context.timings.mark()
-    if (!caseError) {
-      const baseline = await captureCaseIntegrity(context)
+  try {
+    for (const testCase of selected) {
+      const started = Date.now()
+      let caseError: unknown
+      let status: CaseResult['status'] = 'PASS'
+      if (caseResults.length > 0) process.stdout.write('\n')
+      process.stdout.write(`RUN      ${testCase.id}\n`)
+      if (testCase.flow) process.stdout.write(`FLOW     ${testCase.flow}\n`)
       try {
-        await testCase.run(context)
+        await testCase.preflight?.(context)
       } catch (error) {
         caseError = error
-      } finally {
+      }
+      const timingMark = context.timings.mark()
+      if (!caseError) {
+        let baseline: Awaited<ReturnType<typeof captureCaseIntegrity>> | undefined
         try {
-          const cleanup = testCase.cleanup
-          if (cleanup) {
-            await context.progress.withMuted(() => cleanup(context))
-            context.progress.step('CLEANUP', 'reusable test state restored')
-          }
-          await assertCaseIntegrity(context, baseline)
-        } catch (cleanupError) {
-          caseError = caseError
-            ? new AggregateError([caseError, cleanupError], 'case and guaranteed cleanup failed')
-            : cleanupError
+          baseline = await captureCaseIntegrity(context)
+          await testCase.run(context)
+        } catch (error) {
+          caseError = error
+        } finally {
+          // A failed baseline precedes every mutation, so cleanup must not invent test state.
+          if (baseline)
+            try {
+              const cleanup = testCase.cleanup
+              if (cleanup) {
+                await context.progress.withMuted(() => cleanup(context))
+                context.progress.step('CLEANUP', 'reusable test state restored')
+              }
+              await assertCaseIntegrity(context, baseline)
+            } catch (cleanupError) {
+              caseError = caseError
+                ? new AggregateError(
+                    [caseError, cleanupError],
+                    'case and guaranteed cleanup failed',
+                  )
+                : cleanupError
+            }
         }
       }
-    }
-    if (caseError) {
-      failures += 1
-      if (caseError instanceof E2ePrerequisiteError) {
-        status = 'BLOCKED'
-        blocked += 1
-      } else {
-        status = 'FAIL'
+      let timings: Awaited<ReturnType<typeof context.timings.since>> = []
+      try {
+        timings = await context.timings.since(timingMark)
+      } catch (error) {
+        caseError = caseError
+          ? new AggregateError([caseError, error], 'case and timing capture failed')
+          : error
       }
-      console.error(`${status.padEnd(9)}${testCase.id}: ${errorSummary(caseError)}`)
-    } else {
-      console.log(`PASS     ${testCase.id} (${duration(started)})`)
+      if (caseError) {
+        failures += 1
+        if (caseError instanceof E2ePrerequisiteError) {
+          status = 'BLOCKED'
+          blocked += 1
+        } else {
+          status = 'FAIL'
+        }
+        console.error(`${status.padEnd(9)}${testCase.id}: ${errorSummary(caseError)}`)
+      } else {
+        console.log(`PASS     ${testCase.id} (${duration(started)})`)
+      }
+      for (const timing of timings) console.log(formatTiming(timing))
+      caseResults.push({
+        id: testCase.id,
+        status,
+        durationMs: Date.now() - started,
+        ...(timings.length > 0 ? { timings } : {}),
+        ...(caseError
+          ? status === 'BLOCKED'
+            ? { blocker: errorSummary(caseError) }
+            : { failure: errorSummary(caseError) }
+          : {}),
+      })
     }
-    const timings = await context.timings.since(timingMark)
-    for (const timing of timings) console.log(formatTiming(timing))
-    caseResults.push({
-      id: testCase.id,
-      status,
-      durationMs: Date.now() - started,
-      ...(timings.length > 0 ? { timings } : {}),
-      ...(caseError
-        ? status === 'BLOCKED'
-          ? { blocker: errorSummary(caseError) }
-          : { failure: errorSummary(caseError) }
-        : {}),
+  } finally {
+    const artifact = writeResult(`${context.engineKind}-${context.deploymentId}`, {
+      schemaVersion: 2,
+      environment: { id: context.environmentId, provider: context.provider },
+      engine: context.engineKind,
+      deployment: {
+        id: context.deploymentId,
+        manifestSha256: options.manifest.sha256,
+        source: options.manifest.source,
+      },
+      profile: options.profile && {
+        id: options.profile.profile.id,
+        source: options.profile.path,
+        sha256: options.profile.sha256,
+      },
+      source: options.source,
+      selectedCases: selected.map((testCase) => testCase.id),
+      completed: caseResults.length === selected.length,
+      cases: caseResults,
     })
+    console.log(`Results · ${artifact}`)
   }
 
   const passed = selected.length - failures
@@ -97,25 +133,6 @@ export async function runE2e(options: runE2e.Options) {
   if (options.selection.mode === 'launch') {
     console.log(`Launch readiness · ${failures === 0 ? 'PASS' : 'NOT READY'}`)
   }
-  const artifact = writeResult(`${context.engineKind}-${context.deploymentId}`, {
-    schemaVersion: 2,
-    environment: { id: context.environmentId, provider: context.provider },
-    engine: context.engineKind,
-    deployment: {
-      id: context.deploymentId,
-      manifestSha256: options.manifest.sha256,
-      source: options.manifest.source,
-    },
-    profile: options.profile && {
-      id: options.profile.profile.id,
-      source: options.profile.path,
-      sha256: options.profile.sha256,
-    },
-    source: options.source,
-    selectedCases: caseResults.map((result) => result.id),
-    cases: caseResults,
-  })
-  console.log(`Results · ${artifact}`)
   return { failures }
 }
 

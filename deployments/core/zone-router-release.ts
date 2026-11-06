@@ -7,6 +7,8 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   keccak256,
+  getAddress,
+  parseEventLogs,
   zeroAddress,
   zeroHash,
   type Abi,
@@ -14,7 +16,12 @@ import {
   type Hex,
 } from 'viem'
 
-import { deployRouterReleaseScriptAbi, sendSpenderAbi, zoneRouterAbi } from '../abis/index.js'
+import {
+  deployRouterReleaseScriptAbi,
+  sendSpenderAbi,
+  zoneRouterAbi,
+  zoneRouterFactoryAbi,
+} from '../abis/index.js'
 import { hostedEnvironments } from '../chain/tempo.js'
 import {
   deployRelease,
@@ -260,6 +267,17 @@ export function planRouterRelease(
       project: 'zone-router',
       script: routerReleaseScript,
       parameters: router,
+      validate: async (client) => {
+        for (const spender of router.mode.spenders) {
+          const bound = await client.readContract({
+            address: spender,
+            abi: sendSpenderAbi,
+            functionName: 'ROUTER_FACTORY',
+          })
+          if (getAddress(bound) !== router.factory)
+            throw new Error(`Spender ${spender} binds factory ${bound}, expected ${router.factory}`)
+        }
+      },
       calldata: encodeFunctionData({
         abi: deployRouterReleaseScriptAbi,
         functionName: 'zoneRouter',
@@ -271,6 +289,18 @@ export function planRouterRelease(
           contract: 'src/ZoneRouter.sol:ZoneRouter',
           constructorArgs: () => modeArgs,
           creator: { address: router.factory, salt: keccak256(modeArgs) },
+          createdInReceipt: (receipt, address) =>
+            parseEventLogs({
+              abi: zoneRouterFactoryAbi,
+              eventName: 'RouterDeployed',
+              logs: receipt.logs,
+            }).some(
+              (log) =>
+                getAddress(log.address) === router.factory &&
+                getAddress(log.args.router) === address &&
+                log.args.modeHash === keccak256(modeArgs) &&
+                encodeAbiParameters(constructorInputs(zoneRouterAbi), [log.args.mode]) === modeArgs,
+            ),
         },
       ],
       forgeArguments: [],

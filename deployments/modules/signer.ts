@@ -1,6 +1,13 @@
-import type { Address, Hex, Transport } from 'viem'
+import {
+  isAddressEqual,
+  type Address,
+  type Chain,
+  type Hex,
+  type PublicClient,
+  type Transport,
+} from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { createClient } from 'viem/tempo'
+import { Addresses, createClient } from 'viem/tempo'
 import {
   configuredTempoNetworkChain,
   deploymentEnvironmentId,
@@ -93,13 +100,11 @@ export async function sendAuthorityCalls(
 ) {
   await dependencies.fundFromFaucet(client, profile, client.account.address)
   const receipt = await client.sendTransactionSync({
-    account: client.account,
-    calls,
-    chain: client.chain,
-    forceAtomic: true,
-    throwOnFailure: true,
+    ...(await guardedTransactionRequest(client, calls)),
+    throwOnReceiptRevert: true,
     timeout: 180_000,
   })
+  if (receipt.status !== 'success') throw new Error('Authority transaction did not succeed')
   return { transactions: [receipt.transactionHash] }
 }
 
@@ -109,10 +114,120 @@ export function privateKeyMatches(
   name: string,
   expected: Address,
 ) {
+  const key = envPrivateKey(environment, name)
+  if (!key) return false
   try {
-    const key = envPrivateKey(environment, name)
-    return key !== undefined && privateKeyToAccount(key).address === expected
+    return isAddressEqual(privateKeyToAccount(key).address, expected)
   } catch {
-    return false
+    throw new Error(`${name} must be a valid secp256k1 private key`)
   }
+}
+
+/** Captures caller intent and checks the final prepared envelope immediately before local signing. */
+export async function guardedTransactionRequest<const chain extends Chain>(
+  client: {
+    account: ReturnType<typeof privateKeyToAccount>
+    chain: chain
+    getTransactionCount: PublicClient['getTransactionCount']
+  },
+  calls: readonly { to: Address; data: Hex; value?: bigint | undefined }[],
+  feeToken: Address = Addresses.pathUsd,
+) {
+  const nonce = await client.getTransactionCount({
+    address: client.account.address,
+    blockTag: 'pending',
+  })
+  const validBefore = Math.floor(Date.now() / 1000) + 300
+  const intent = { calls, chainId: client.chain.id, feeToken, nonce, validBefore }
+  const account: typeof client.account = {
+    ...client.account,
+    signTransaction: (transaction, options) => {
+      assertSigningIntent(transaction as unknown as Record<string, unknown>, intent)
+      return client.account.signTransaction(transaction, options)
+    },
+  }
+  return {
+    account,
+    calls,
+    chain: client.chain,
+    chainId: intent.chainId,
+    feeToken,
+    forceAtomic: true as const,
+    nonce,
+    nonceKey: 0n,
+    validBefore,
+    type: 'tempo' as const,
+  }
+}
+
+/** Rejects unsolicited signing fields, altered caller intent, and unbounded gas liability. */
+export function assertSigningIntent(
+  transaction: Record<string, unknown>,
+  intent: {
+    calls: readonly { to: Address; data: Hex; value?: bigint | undefined }[]
+    chainId: number
+    feeToken: Address
+    nonce: number
+    validBefore?: number | undefined
+  },
+) {
+  if (transaction.type !== 'tempo')
+    throw new Error('Prepared transaction changed the Tempo envelope type')
+  if (
+    transaction.chainId !== intent.chainId ||
+    transaction.nonce !== intent.nonce ||
+    transaction.nonceKey !== 0n
+  )
+    throw new Error('Prepared transaction changed the signing chain or protocol nonce')
+  if (
+    typeof transaction.feeToken !== 'string' ||
+    !isAddressEqual(transaction.feeToken as Address, intent.feeToken)
+  )
+    throw new Error('Prepared transaction changed the fee token')
+  for (const field of [
+    'keyAuthorization',
+    'authorizationList',
+    'aaAuthorizationList',
+    'validAfter',
+    'feePayer',
+    'feePayerSignature',
+  ])
+    if (
+      transaction[field] !== undefined &&
+      transaction[field] !== null &&
+      transaction[field] !== false
+    )
+      throw new Error(`Prepared transaction contains unsolicited ${field}`)
+  if (
+    transaction.validBefore !== intent.validBefore ||
+    (intent.validBefore !== undefined && intent.validBefore <= Math.floor(Date.now() / 1000))
+  )
+    throw new Error('Prepared transaction changed or exceeded its local signing validity')
+  const calls = transaction.calls as typeof intent.calls | undefined
+  if (
+    !calls ||
+    calls.length !== intent.calls.length ||
+    calls.some((call, index) => {
+      const expected = intent.calls[index]!
+      return (
+        !isAddressEqual(call.to, expected.to) ||
+        call.data.toLowerCase() !== expected.data.toLowerCase() ||
+        (call.value ?? 0n) !== (expected.value ?? 0n)
+      )
+    })
+  )
+    throw new Error('Prepared transaction changed the authorized calls')
+  // Tempo quotes gas in attodollars. A single operational action may reserve at most one USD.
+  const { gas, maxFeePerGas, maxPriorityFeePerGas } = transaction
+  if (
+    typeof gas !== 'bigint' ||
+    gas <= 0n ||
+    typeof maxFeePerGas !== 'bigint' ||
+    maxFeePerGas < 0n ||
+    typeof maxPriorityFeePerGas !== 'bigint' ||
+    maxPriorityFeePerGas < 0n ||
+    maxPriorityFeePerGas > maxFeePerGas ||
+    gas * maxFeePerGas > 10n ** 18n
+  )
+    throw new Error('Prepared transaction exceeds the one-USD fee limit or has invalid gas fees')
 }

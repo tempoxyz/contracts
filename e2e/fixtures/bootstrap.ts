@@ -53,7 +53,7 @@ import {
  * test profile's fixture with localnet's fixture steps, one transaction each, owned by the deployer:
  *
  * - An engine whose hosted fixture runs over canonical PATHUSD gets its localnet venue and
- *   engine there; the source-verified, ready engine is named in the profile. Public profiles only.
+ *   engine there; the source-verified, ready engine is named in the profile. Public testnets only.
  * - Any other gets a disposable stablecoin pair and funder, a venue with locked seed liquidity, and
  *   for a Zone profile the router's conversion pool; testnets only.
  *
@@ -99,11 +99,13 @@ const profilePath =
   args.profile.includes('/') || args.profile.endsWith('.json')
     ? resolveProfilePath(args.profile)
     : resolve(repositoryRoot, 'profiles', args.profile, 'profile.json')
+// Canonical identity and schema must be checked before selecting a dotenv file or signer.
+const validatedProfile = loadEarnProfile(profilePath)
 const original = object(JSON.parse(readFileSync(profilePath, 'utf8')), 'profile')
 if (original.chainId !== chainId) {
   throw new Error(`Profile ${profilePath} targets chain ${original.chainId}, not ${network}`)
 }
-const profileId = String(original.id)
+const profileId = validatedProfile.id
 const engineKind = object(original.engine, 'profile.engine').kind as EngineKind
 if (!Object.hasOwn(localEngines, engineKind)) throw new Error(`Unknown engine kind ${engineKind}`)
 const { label } = engineDefinitions[engineKind]
@@ -114,8 +116,8 @@ if (!hostedFixture) {
 const { overPathUsd, engineConstructorArgs } = hostedFixture
 const zone = original.zone === undefined ? undefined : object(original.zone, 'profile.zone')
 if (overPathUsd && zone) throw new Error(`A ${label} fixture supports public profiles only`)
-if (!overPathUsd && !hostedEnvironments[network].testnet) {
-  throw new Error(`Stablecoin fixtures are test-only; ${network} is not a testnet`)
+if (!hostedEnvironments[network].testnet) {
+  throw new Error(`Synthetic fixtures are test-only; ${network} is not a testnet`)
 }
 
 const deploymentPath = profileDeploymentPath(profilePath)

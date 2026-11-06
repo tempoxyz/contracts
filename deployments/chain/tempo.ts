@@ -131,9 +131,20 @@ export function configuredTempoChain(deployment: Pick<EarnStack, 'network'>) {
   })
 }
 
-/** The `viem/tempo/chains` template of a Tempo L1: its hosted network's, else Moderato's. */
+/** Hosted facts stay on hosted chains; custom chains inherit only Tempo protocol behavior. */
 function tempoChainTemplate(chainId: number) {
-  return hostedEnvironment(chainId)?.chain ?? tempoModerato
+  return (
+    hostedEnvironment(chainId)?.chain ?? {
+      blockTime: tempoMainnet.blockTime,
+      extendSchema: tempoMainnet.extendSchema,
+      formatters: tempoMainnet.formatters,
+      nativeCurrency: tempoMainnet.nativeCurrency,
+      prepareTransactionRequest: tempoMainnet.prepareTransactionRequest,
+      serializers: tempoMainnet.serializers,
+      transactionReplacement: tempoMainnet.transactionReplacement,
+      verifyHash: tempoMainnet.verifyHash,
+    }
+  )
 }
 
 /** Whether a Tempo L1 serves the testnet faucet: a hosted network's fact, else true (local chains). */

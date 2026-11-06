@@ -1,4 +1,4 @@
-import { Actions as TempoActions } from 'viem/tempo'
+import { Abis, Actions as TempoActions } from 'viem/tempo'
 import { encodeFunctionData, parseEventLogs, type Address, type Hex } from 'viem'
 import { simulateCalls } from 'viem/actions'
 import { earnVaultAbi, morphoFeeWrapperAbi, simple4626VaultAbi } from '@tempoxyz/contracts/abis'
@@ -15,6 +15,7 @@ import { minimumOutput, previewEarnDeposit } from '../../harness/support/slippag
 import { write } from '../../harness/support/transactions.js'
 import { accrueFees, depositIntoVenue } from '../../harness/support/public.js'
 import { waitForZoneCredit, zoneBalance } from './actions.js'
+import { portalDeposit, waitForDepositDelivery } from './delivery.js'
 import { ensureZoneReady } from './readiness.js'
 
 const MIGRATION_ASSETS = 1_000_000n
@@ -62,7 +63,7 @@ export async function migrateExistingVenueSharesToZone(context: E2eContext) {
       functionName: 'totalEarnShares',
     }),
   ])
-  const receipt = await privatizeEarnShares(
+  const privateEntry = await privatizeEarnShares(
     context,
     earnShares,
     TempoActions.earn.depositShares.calls({
@@ -99,7 +100,7 @@ export async function migrateExistingVenueSharesToZone(context: E2eContext) {
     'Migration minted an unexpected EarnShare amount',
   )
 
-  return { earnShares, receipt, venueShares }
+  return { earnShares: privateEntry.netAmount, receipt: privateEntry.receipt, venueShares }
 }
 
 /** The engine's Morpho fee-wrapper fixture, whose bindings localnet validated when deploying it. */
@@ -118,23 +119,31 @@ export function requireMorphoFeeWrapperMigration(context: E2eContext) {
  * the source wrapper, deposits into EarnVault, and privately deposits the replacement EarnShare.
  */
 export async function migrateMorphoFeeWrapperToPrivateEarn(context: E2eContext) {
+  requireE2eZone(context)
   const position = await createMorphoFeeWrapperPosition(context)
   const migration = await prepareExistingMorphoFeeWrapperMigration(
     context,
     position.morphoFeeWrapper,
   )
   const before = await morphoFeeWrapperMigrationState(context, migration.morphoFeeWrapper)
-  const receipt = await privatizeEarnShares(context, migration.earnShares, migration.calls)
+  const privateEntry = await privatizeEarnShares(context, migration.earnShares, migration.calls)
   const after = await morphoFeeWrapperMigrationState(context, migration.morphoFeeWrapper)
-  const result = assertMorphoFeeWrapperMigrationSucceeded(before, after, migration, receipt)
-  // The source redemption can leave one rounding unit of the replacement EarnShare public.
-  if (result.publicDust > 0n) {
+  const result = assertMorphoFeeWrapperMigrationSucceeded(before, after, migration, privateEntry)
+  // A fee-bearing Portal cannot accept one-unit dust; keep it explicitly accounted for publicly.
+  let privateEarnShares = privateEntry.netAmount
+  const depositFee = await context.l1Public.readContract({
+    address: context.deployment.network.zone.portal,
+    abi: Abis.zonePortal,
+    functionName: 'calculateDepositFee',
+  })
+  if (result.publicDust > depositFee) {
     const publicBefore = await tokenBalance(
       context,
       context.contracts.earnShare,
       context.user.address,
     )
-    await privatizeEarnShares(context, result.publicDust)
+    const dustEntry = await privatizeEarnShares(context, result.publicDust)
+    privateEarnShares += dustEntry.netAmount
     const publicAfter = await tokenBalance(
       context,
       context.contracts.earnShare,
@@ -148,9 +157,9 @@ export async function migrateMorphoFeeWrapperToPrivateEarn(context: E2eContext) 
 
   return {
     assets: migration.assets,
-    earnShares: result.mintedEarnShares,
+    earnShares: privateEarnShares,
     morphoFeeShares: migration.morphoFeeShares,
-    receipt,
+    receipt: privateEntry.receipt,
   }
 }
 
@@ -245,7 +254,7 @@ function assertMorphoFeeWrapperMigrationSucceeded(
   before: Awaited<ReturnType<typeof morphoFeeWrapperMigrationState>>,
   after: Awaited<ReturnType<typeof morphoFeeWrapperMigrationState>>,
   migration: Awaited<ReturnType<typeof prepareExistingMorphoFeeWrapperMigration>>,
-  receipt: Awaited<ReturnType<typeof privatizeEarnShares>>,
+  entry: Awaited<ReturnType<typeof privatizeEarnShares>>,
 ) {
   assert(
     before.userMorphoFeeShares - after.userMorphoFeeShares === migration.morphoFeeShares,
@@ -279,7 +288,7 @@ function assertMorphoFeeWrapperMigrationSucceeded(
   const depositEvents = parseEventLogs({
     abi: earnVaultAbi,
     eventName: 'Deposited',
-    logs: receipt.logs,
+    logs: entry.receipt.logs,
     strict: true,
   })
   assert(depositEvents.length === 1, 'Migration emitted an unexpected earnVault deposit count')
@@ -294,11 +303,13 @@ function assertMorphoFeeWrapperMigrationSucceeded(
     after.earnShareSupply - before.earnShareSupply >= mintedEarnShares,
     'Migration supply delta did not include its principal EarnShare mint',
   )
-  assert(
-    privateEarnShares + publicDust === mintedEarnShares,
-    'Replacement EarnShare was not fully attributable to private credit and public rounding dust',
-  )
-  assert(publicDust <= 1n, 'Migration left more than one rounding unit of public EarnShare')
+  assertPrivateMigrationCredit({
+    privateEarnShares,
+    netAmount: entry.netAmount,
+    fee: entry.fee,
+    publicDust,
+    mintedEarnShares,
+  })
   return { mintedEarnShares, publicDust }
 }
 
@@ -323,7 +334,8 @@ async function privatizeEarnShares(
     zoneId: context.deployment.network.zone.id,
   })
   const before = await zoneBalance(context, context.contracts.earnShare, 'user')
-  const receipt = await context.actors.user.wallet.sendTransactionSync({
+  const fromBlock = await context.actors.user.zone.client.getBlockNumber()
+  const submitted = await context.actors.user.wallet.sendTransactionSync({
     account: user,
     calls: [...prefixCalls, ...TempoActions.zone.encryptedDeposit.calls(prepared)],
     chain: context.actors.user.wallet.chain,
@@ -331,14 +343,36 @@ async function privatizeEarnShares(
     throwOnFailure: true,
     timeout: TIMEOUT_MS,
   })
+  const receipt =
+    submitted.status === 'pending'
+      ? await context.l1Public.waitForTransactionReceipt({
+          hash: submitted.transactionHash,
+          timeout: TIMEOUT_MS,
+        })
+      : submitted
+  assert(receipt.status === 'success', 'Private migration has no successful Portal receipt')
+  const deposit = portalDeposit(receipt.logs, {
+    portal: context.deployment.network.zone.portal,
+    sender: user.address,
+    token: context.contracts.earnShare,
+    gross: amount,
+  })
+  await waitForDepositDelivery(context, {
+    hash: deposit.hash,
+    token: context.contracts.earnShare,
+    sender: user.address,
+    recipient: user.address,
+    amount: deposit.netAmount,
+    fromBlock,
+  })
   await waitForZoneCredit(context, {
     token: context.contracts.earnShare,
     before,
-    expected: amount,
+    expected: deposit.netAmount,
     exact: true,
     message: 'Zone did not credit the privatized EarnShare',
   })
-  return receipt
+  return { receipt, ...deposit }
 }
 
 async function morphoFeeWrapperMigrationState(
@@ -400,4 +434,24 @@ async function morphoFeeWrapperMigrationState(
     venueAssets,
     venueSupply,
   }
+}
+
+/** Accounts for the private position separately from gross issuance, the recorded Portal fee and public dust. */
+export function assertPrivateMigrationCredit(options: {
+  privateEarnShares: bigint
+  netAmount: bigint
+  fee: bigint
+  publicDust: bigint
+  mintedEarnShares: bigint
+}) {
+  assert(
+    options.privateEarnShares === options.netAmount &&
+      options.fee >= 0n &&
+      options.privateEarnShares + options.fee + options.publicDust === options.mintedEarnShares,
+    'Replacement EarnShare was not fully attributable to private credit, Portal fee and public rounding dust',
+  )
+  assert(
+    options.publicDust >= 0n && options.publicDust <= 1n,
+    'Migration public rounding dust is outside its bound',
+  )
 }

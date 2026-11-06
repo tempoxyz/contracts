@@ -42,7 +42,8 @@ export const history = {
   code: '0x3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5ffd5b5f35611fff60014303065500',
 }
 
-function parseRuntimeLock(value: unknown): RuntimeLock {
+/** Validates the locked protocol and exact, immutable image references without normalizing them. */
+export function parseRuntimeLock(value: unknown): RuntimeLock {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('runtime lock must be an object')
   }
@@ -69,11 +70,14 @@ function parseRuntimeLock(value: unknown): RuntimeLock {
   ) {
     throw new Error('runtime lock has an unsupported protocol version')
   }
+  // Testcontainers discards extra @ segments, so a digest substring does not prove immutability.
+  // Accept repository names, optional registry ports and tags, and exactly one SHA-256 digest.
+  const imageReference =
+    /^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$/
   if (
-    typeof lock.l1Image !== 'string' ||
-    typeof lock.zoneImage !== 'string' ||
-    !lock.l1Image.includes('@sha256:') ||
-    !lock.zoneImage.includes('@sha256:')
+    ![lock.l1Image, lock.zoneImage].every(
+      (image) => typeof image === 'string' && !/\s/.test(image) && imageReference.test(image),
+    )
   ) {
     throw new Error('runtime lock images must use immutable sha256 digests')
   }

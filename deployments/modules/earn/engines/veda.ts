@@ -1,4 +1,4 @@
-import type { Address } from 'viem'
+import { zeroAddress, type Address } from 'viem'
 
 import { vedaAccountantAbi, vedaEngineAbi, vedaTellerAbi } from '../../../abis/index.js'
 import type { DeploymentContracts } from '../../../core/stack.js'
@@ -62,6 +62,26 @@ export const veda = defineEngine({
     exactWithdraw: true,
     asyncRedeem: true,
   },
+  recognizes: async (client, engine) =>
+    (await client.readContract({
+      address: engine,
+      abi: vedaEngineAbi,
+      functionName: 'peripheryRegistry',
+    })) !== zeroAddress,
+  readCapabilities: async (client, engine) => ({
+    asyncRedeem:
+      (await client.readContract({
+        address: engine,
+        abi: vedaEngineAbi,
+        functionName: 'queue',
+      })) !== zeroAddress,
+  }),
+  shareScale: (client, engine) =>
+    client.readContract({
+      address: engine,
+      abi: vedaEngineAbi,
+      functionName: 'shareScale',
+    }),
   readVenue: (client, engine) =>
     client.readContract({ address: engine, abi: vedaEngineAbi, functionName: 'vault' }),
   readPeriphery: readVedaStackPeriphery,

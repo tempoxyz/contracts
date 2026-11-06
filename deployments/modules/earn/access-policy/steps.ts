@@ -1,7 +1,7 @@
 import { encodeFunctionData } from 'viem'
 
 import { attachEarnSharePolicyScriptAbi } from '../../../abis/index.js'
-import { validateEarnShareWhitelist } from './policy.js'
+import { PolicyStateMismatchError, validateEarnShareWhitelist } from './policy.js'
 import {
   defineFoundryStep,
   deployerAuthority,
@@ -33,6 +33,7 @@ export const validateAccess = defineFoundryStep({
   },
   async satisfied(client, profile, outputs) {
     if (profile.access.kind === 'open') return true
+    if (!outputs.earnShare) return false
     try {
       await validateEarnShareWhitelist(client, {
         earnShare: requiredOutput(outputs, 'earnShare'),
@@ -40,8 +41,9 @@ export const validateAccess = defineFoundryStep({
         requiredMembers: [],
       })
       return true
-    } catch {
-      return false
+    } catch (error) {
+      if (error instanceof PolicyStateMismatchError) return false
+      throw error
     }
   },
 })

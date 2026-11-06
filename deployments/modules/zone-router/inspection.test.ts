@@ -1,7 +1,12 @@
-import { getAddress, type Address, type PublicClient } from 'viem'
+import { ContractFunctionZeroDataError, getAddress, type Address, type PublicClient } from 'viem'
 import { describe, expect, test, vi } from 'vitest'
 
-import { nonMemberSpenders, spenderProvenanceBlockers, type SpenderReleases } from './inspection.js'
+import {
+  nonMemberSpenders,
+  spenderProvenanceBlockers,
+  spenderRouterFactory,
+  type SpenderReleases,
+} from './inspection.js'
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as Address
 const customerId = `0x${'c'.repeat(64)}` as const
@@ -35,7 +40,7 @@ function chain(contracts: Record<Address, Record<string, unknown>>) {
         args?: readonly unknown[]
       }) => {
         const value = contracts[target]?.[functionName]
-        if (value === undefined) throw new Error(`${functionName} reverted`)
+        if (value === undefined) throw new ContractFunctionZeroDataError({ functionName })
         return typeof value === 'function' ? value(...(args ?? [])) : value
       },
     ),
@@ -141,4 +146,30 @@ describe('nonMemberSpenders', () => {
       expect.objectContaining({ functionName: 'isAuthorized', args: [469n, send] }),
     )
   })
+})
+
+describe('spender transport failures', () => {
+  test.each(['ROUTER_FACTORY', 'PROVIDER', 'convertVault', 'isDeployed'])(
+    'preserves RPC errors at %s',
+    async (failed) => {
+      const error = new Error('RPC unavailable')
+      const client = {
+        readContract: async ({ functionName }: { functionName: string }) => {
+          if (functionName === failed) throw error
+          if (functionName === 'ROUTER_FACTORY') return routerFactory
+          if (functionName === 'PROVIDER' && failed === 'isDeployed') return address('9a0')
+          throw new ContractFunctionZeroDataError({ functionName })
+        },
+      }
+      if (failed === 'ROUTER_FACTORY')
+        await expect(spenderRouterFactory(client as never, card)).rejects.toBe(error)
+      await expect(
+        spenderProvenanceBlockers(
+          client as never,
+          { factory: routerFactory, spenders: [card] },
+          releases,
+        ),
+      ).rejects.toBe(error)
+    },
+  )
 })

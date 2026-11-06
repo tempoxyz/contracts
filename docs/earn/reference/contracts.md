@@ -34,15 +34,15 @@ one locked `EarnVault` implementation, and one locked `EarnFees` implementation,
 
 `deploy(DeployParams)` accepts:
 
-| Field               | Meaning                                                                        |
-| ------------------- | ------------------------------------------------------------------------------ |
-| `deploymentId`      | Nonzero logical stack namespace                                                |
-| `engine`            | Already-deployed, unbound initial engine                                       |
-| `owner`             | EarnVault operator; cannot be the factory                                      |
-| `controls`          | Guardian, async janitor, and managed-assets limit                              |
-| `distributorConfig` | Optional distributor and its fixed fee-update delay                            |
-| `fees`              | Initial complete fee configuration                                             |
-| `transferPolicyId`  | Optional existing simple TIP-403 whitelist; zero means always-allow policy `1` |
+| Field               | Meaning                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `deploymentId`      | Nonzero logical stack namespace                                                                                       |
+| `engine`            | Already-deployed, unbound initial engine                                                                              |
+| `owner`             | EarnVault operator; cannot be the factory                                                                             |
+| `controls`          | Guardian, async janitor, managed-assets limit, and deployment-fixed `migrationMode` (`UserOnly` or `OperatorEnabled`) |
+| `distributorConfig` | Optional distributor and its fixed fee-update delay                                                                   |
+| `fees`              | Initial complete fee configuration                                                                                    |
+| `transferPolicyId`  | Optional existing simple TIP-403 whitelist; zero means always-allow policy `1`                                        |
 
 A zero distributor requires a zero delay and a nonzero distributor a nonzero delay. With a
 distributor, `fees.fixedFees[0]` becomes its protected item, or the item starts at zero when `fees`
@@ -75,7 +75,7 @@ different or missing binding or an unexpected engine owner.
 
 [`EarnVault`](../../../earn/src/core/EarnVault.sol) is the persistent public integration point. Its
 `initialize` runs once, from the factory, and emits `EarnVaultInitialized` with the engine,
-EarnShare, fee module, operator, emergency seats, asset limit, distributor, update
+EarnShare, fee module, operator, emergency seats, asset limit, migration mode, distributor, update
 delay, and distributor fee. The factory's later `EarnStackDeployed` is the signal that issuer and
 transfer-policy setup completed.
 
@@ -86,6 +86,7 @@ transfer-policy setup completed.
 | `asset()`                                     | Immutable base asset, read from the initial engine                      |
 | `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                         |
 | `engine()`                                    | Current engine                                                          |
+| `engineMigrationMode()`                       | Deployment-fixed `UserOnly` or `OperatorEnabled`; no setter             |
 | `operator()` / `pendingOperator()`            | Operator and nominated successor                                        |
 | `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                        |
 | `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                                |
@@ -172,19 +173,29 @@ receiver of an async claim may implement
 already matches. The managed-assets limit and reward-admission limit are specified under
 [accounting anchors](../architecture/system.md#accounting-anchors).
 
+### Engine migration
+
+`migrateEngine(newEngine, minNewEngineShares, minAssetsRetained)` returns the new managed engine-share
+count. Only the operator may call it, and only under deployment-fixed `OperatorEnabled`; `UserOnly`
+permanently refuses it. It moves all raw custody atomically, with no open async claims and with
+compatible asset, vault binding, interface, and output bounds. The full
+[migration mechanics](../architecture/system.md#whole-pool-engine-migration) and
+[operator trust requirements](../architecture/security-and-privacy.md#earnvault-operator) apply.
+
 ### Events
 
-| Event                                                                                     | Emitted when                                                   |
-| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `Deposited`, `VenueSharesDeposited`                                                       | A base-asset or in-kind entry mints EarnShare                  |
-| `Redeemed`, `WithdrewExact`                                                               | An immediate exit pays its receiver                            |
-| `Contributed`, `EngineShareSurplusAbsorbed`                                               | A reward is recognized, with the new anchor                    |
-| `EngineShareShortfallReconciled`                                                          | Raw custody fell below the managed count and the count was cut |
-| `RedeemRequested`, `RedeemFinalized`, `RedeemCancelled`                                   | An async claim opens or closes                                 |
-| `DepositPauseChanged`, `MaxManagedAssetsChanged`, `EmergencyRolesChanged`                 | A control changes                                              |
-| `OperatorTransferStarted`, `OperatorTransferCancelled`, `OperatorTransferred`             | The operator handoff progresses                                |
-| `DistributorFeeUpdateScheduled`, `DistributorFeeUpdateCancelled`, `DistributorFeeUpdated` | A distributor fee update progresses                            |
-| `DistributorTransferStarted`, `DistributorTransferCancelled`, `DistributorTransferred`    | The distributor handoff progresses                             |
+| Event                                                                                     | Emitted when                                                                            |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `Deposited`, `VenueSharesDeposited`                                                       | A base-asset or in-kind entry mints EarnShare                                           |
+| `Redeemed`, `WithdrewExact`                                                               | An immediate exit pays its receiver                                                     |
+| `Contributed`, `EngineShareSurplusAbsorbed`                                               | A reward is recognized, with the new anchor                                             |
+| `EngineMigrated`                                                                          | The operator replaces the current engine, recording custody, supply, and the new anchor |
+| `EngineShareShortfallReconciled`                                                          | Raw custody fell below the managed count and the count was cut                          |
+| `RedeemRequested`, `RedeemFinalized`, `RedeemCancelled`                                   | An async claim opens or closes                                                          |
+| `DepositPauseChanged`, `MaxManagedAssetsChanged`, `EmergencyRolesChanged`                 | A control changes                                                                       |
+| `OperatorTransferStarted`, `OperatorTransferCancelled`, `OperatorTransferred`             | The operator handoff progresses                                                         |
+| `DistributorFeeUpdateScheduled`, `DistributorFeeUpdateCancelled`, `DistributorFeeUpdated` | A distributor fee update progresses                                                     |
+| `DistributorTransferStarted`, `DistributorTransferCancelled`, `DistributorTransferred`    | The distributor handoff progresses                                                      |
 
 ### Errors that enforce core rules
 
@@ -197,7 +208,9 @@ already matches. The managed-assets limit and reward-admission limit are specifi
 | `RewardRateLimitExceeded`                                                                             | A reward would exceed 100× the reward-rate baseline                                          |
 | `NoEarnShares`, `InsufficientEngineShareSurplus`                                                      | A reward needs holders and enough surplus                                                    |
 | `InsufficientOutput`                                                                                  | A conversion or measured delta is zero, or a measured delta differs from the reported amount |
-| `ResidualBacking`                                                                                     | An exact withdrawal would strand backing                                                     |
+| `ResidualBacking`                                                                                     | An exact withdrawal would strand backing, or migration leaves old-engine custody             |
+| `OperatorMigrationDisabled`, `NotOperator`, `PendingRedeemsOpen`                                      | Migration is disabled, the caller lacks authority, or async claims remain open               |
+| `SameEngine`, `EngineAssetMismatch`, `EngineEarnVaultMismatch`, `InvalidEngineShareScale`             | Replacement engine identity, binding, or denomination is invalid                             |
 | `MinimumEarnSharesNotMet`, `MinimumAssetsNotMet`, `MinimumEngineSharesNotMet`, `ExceedsMaxEarnShares` | A caller bound is missed                                                                     |
 | `EngineCapabilityUnsupported`, `EngineExitUnsupported`                                                | The engine lacks the called capability, or any exit capability                               |
 | `FeeValuationStale`                                                                                   | A fee configuration change needs a fresh valuation                                           |

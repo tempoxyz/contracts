@@ -33,15 +33,30 @@ complete investment policy. See [client permission setup](../integrations/client
 
 ### EarnVault operator
 
+The operator manages the EarnVault, whose engine holds the pool's yield-venue shares. A fixed
+deployment mode either permits the operator to replace that engine (`OperatorEnabled`) or forbids
+that whole-pool action (`UserOnly`).
+
 The operator may:
 
 - pause or unpause deposits, in-kind entry, contributions, and surplus absorption;
 - update the managed-assets limit, including setting zero for unlimited capacity;
 - rotate or clear the emergency guardian and async janitor;
-- configure ordinary positive-accrual fees, and disable all fees on a stack without a distributor; and
+- configure ordinary positive-accrual fees, and disable all fees on a stack without a distributor;
+- migrate the whole pool to a replacement engine when the deployment-fixed mode is `OperatorEnabled`; and
 - hand the operator role to a successor.
 
-It cannot change EarnShare, `EarnFees`, the base asset, or the distributor's item, delay, or role.
+It cannot change EarnShare, `EarnFees`, the base asset, the migration mode, or the distributor's item,
+delay, or role. Under `UserOnly`, users move their own positions through ordinary exit and entry
+paths; the operator cannot migrate the pool.
+
+`OperatorEnabled` is whole-pool custody authority, not just an operational setting: the operator
+chooses the replacement venue and the migration's output bounds. Compatibility and measured-balance
+checks do not establish the replacement engine's economic safety
+([migration mechanics](system.md#whole-pool-engine-migration)). The operator must be a reviewed
+timelock or multisig when this mode is enabled. EarnVault itself imposes no migration delay, signer
+threshold, or holder approval; the production operator account must enforce its intended approval
+and delay policy. The distributor fee-update delay does not protect engine migration.
 
 The handoff is two-step: the operator nominates a nonzero successor, which must accept; until then
 the operator may cancel or replace the nomination.
@@ -154,8 +169,9 @@ balance changes atomically.
 
 EarnShare burns when a request is created; the pending entitlement is not active supply or NAV.
 Finalization and cancellation use one stored receiver. The request's fee snapshot pins its
-configuration ID, so active fee changes cannot rewrite prior cancellation terms, and a crossed
-disable transition permanently waives it ([queued withdrawals](fees.md#queued-withdrawals)).
+configuration ID, so active fee changes cannot rewrite prior cancellation terms. Disabling fees
+after the request permanently waives that request's cancellation fees
+([queued withdrawals](fees.md#queued-withdrawals)).
 Cancellation cannot expand the contribution limit
 ([reward-admission limit](system.md#reward-admission-limit)).
 
@@ -233,7 +249,10 @@ reveal the private recipient from that correlation alone, but it does not hide t
   - contributions under the venue's fees, rate caps, and accounting rules;
   - `totalAssets` and `previewRedeem` under stale, inflated, illiquid, and fee-bearing states; and
   - venue pause, loss, and insolvency as explicit runbook cases.
-- Engine owner and EarnVault operator assigned to the intended production accounts.
+- Engine owner and EarnVault operator assigned to the intended production accounts. Verify the
+  deployment-fixed migration mode; for `OperatorEnabled`, verify the operator timelock or multisig
+  configuration, approval threshold or delay, and role-handoff procedure. Monitor `EngineMigrated`
+  and operator transfers; review each replacement engine and its bounds before authorizing migration.
 - Verified immutable EarnVault–EarnFees and EarnVault–engine bindings.
 - Verified that the installed engine advertises at least one redeem, exact-withdraw, or async-redeem
   capability.
@@ -244,7 +263,7 @@ reveal the private recipient from that correlation alone, but it does not hide t
 - Verified EarnShare directly uses the intended simple TIP-403 whitelist and every required
   protocol member remains authorized.
 - For reward periphery, the [rewards validation](../modules/rewards.md#validation) checks.
-- Tested the exact production scripts, manifests, app, local E2E, and hosted flows.
+- Tested the exact production scripts, manifests, consuming application, local E2E, and hosted flows.
 - Published v1 addresses and ABIs; deployments are replaced rather than upgraded in place.
 
 Passing repository tests reduces implementation risk but does not replace the audits or a venue review.

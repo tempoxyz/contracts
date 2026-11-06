@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
 import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/contracts/abis'
 import {
+  assertFoundryProjectEnvironment,
   foundryProcessEnvironment,
+  foundryRpcEnvironment,
   planFactoryRelease,
   predictRelease,
 } from '@tempoxyz/contracts/deployments/node'
@@ -82,6 +84,7 @@ export const release = script(
  * factory, which the release entry points create there or reuse when they already exist.
  */
 export function releaseAddresses(releaseKeys: readonly string[]): Record<string, Address> {
+  assertFoundryProjectEnvironment(Config.earnRoot)
   ensureDependencies('earn')
   const environment = foundryProcessEnvironment(process.env)
   delete environment.DEPLOYER_PRIVATE_KEY
@@ -134,19 +137,12 @@ export async function run(options: run.Options) {
   const latest = () => readLatest(options.broadcastDirectory, options.chainId, step)
   const previous = latest()
   const forge = spawnForge(
-    [
-      'script',
-      step.target,
-      '--sig',
-      step.calldata,
-      '--network',
-      'tempo',
-      '--rpc-url',
-      options.rpcUrl,
-      '--broadcast',
-    ],
+    ['script', step.target, '--sig', step.calldata, '--network', 'tempo', '--broadcast'],
     // Only the deployer key reaches Forge; every other input is typed calldata.
-    foundryProcessEnvironment({ ...process.env, DEPLOYER_PRIVATE_KEY: options.privateKey }),
+    foundryRpcEnvironment(
+      foundryProcessEnvironment({ ...process.env, DEPLOYER_PRIVATE_KEY: options.privateKey }),
+      options.rpcUrl,
+    ),
     options.broadcastDirectory,
     step.rawGasEstimate,
   )
@@ -243,6 +239,7 @@ function ensureDependencies(project: string) {
   // earn/solar.lock names only when that binary is missing, so an older checkout picks up a new pin.
   execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), [project], {
     cwd: Config.root,
+    env: dependencyEnvironment(process.env),
     stdio: 'inherit',
   })
   dependenciesReady.add(project)
@@ -256,6 +253,7 @@ function spawnForge(
   rawGasEstimate: boolean | undefined,
   root = Config.earnRoot,
 ) {
+  assertFoundryProjectEnvironment(root)
   ensureDependencies(basename(root))
   return spawnSync(
     'forge',
@@ -271,7 +269,10 @@ function spawnForge(
     {
       cwd: root,
       encoding: 'utf8',
-      env: { ...environment, FOUNDRY_BROADCAST: broadcastDirectory },
+      env: {
+        ...environment,
+        FOUNDRY_BROADCAST: environment.FOUNDRY_BROADCAST ?? broadcastDirectory,
+      },
       maxBuffer: 32 * 1024 * 1024,
     },
   )
@@ -406,4 +407,33 @@ async function reportFailure(
       `Could not read failed transaction diagnostics: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
+}
+
+/** Build subprocesses receive tool locations and platform settings, never deployment credentials. */
+export function dependencyEnvironment(environment: NodeJS.ProcessEnv) {
+  const allowed = [
+    'PATH',
+    'HOME',
+    'USER',
+    'LOGNAME',
+    'SHELL',
+    'TMPDIR',
+    'TMP',
+    'TEMP',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'NO_COLOR',
+    'CI',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+    'CARGO_HOME',
+    'RUSTUP_HOME',
+  ]
+  return Object.fromEntries(
+    allowed.flatMap((name) => {
+      const value = environment[name]
+      return value === undefined ? [] : [[name, value]]
+    }),
+  )
 }

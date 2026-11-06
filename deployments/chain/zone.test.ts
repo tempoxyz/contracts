@@ -1,7 +1,13 @@
 import { describe, expect, test, vi } from 'vitest'
 import { getAddress } from 'viem'
 
-import { inspectZone, zoneFactoryAddress, zoneInboxAddress, zoneMessengerAddress } from './zone.js'
+import {
+  inspectZone,
+  waitForWithdrawalProcessed,
+  zoneFactoryAddress,
+  zoneInboxAddress,
+  zoneMessengerAddress,
+} from './zone.js'
 
 const address = (suffix: string) => `0x${suffix.padStart(40, '0')}` as const
 const zone = { id: 7, chainId: 1424310007, portal: getAddress(address('7')) }
@@ -48,18 +54,50 @@ describe('canonical Zone inspection', () => {
     )
   })
 
-  test('rejects a Portal sequencer set that differs from the Factory', async () => {
+  test('rejects duplicate live Portal sequencers', async () => {
     await expect(
       inspect({
         zones: { zoneId: 7, portal: zone.portal, sequencers: [address('a'), address('b')] },
         sequencerCount: 2n,
       }),
-    ).rejects.toThrow('Factory and Portal sequencers do not match')
+    ).rejects.toThrow('empty or duplicate Portal sequencer set')
+  })
+
+  test('accepts authenticated Portal rotation without trusting creation-time sequencers', async () => {
+    const result = await inspect({ sequencerAt: address('b') })
+    expect(result.sequencers).toEqual([getAddress(address('b'))])
+  })
+
+  test.each([
+    [{ zoneId: 8 }, 'Portal reports Zone'],
+    [{ encryptionKeyCount: 0n }, 'no registered encryption key'],
+    [{ sequencerCount: 0n }, 'empty or duplicate'],
+    [{ messenger: address('8') }, 'Portal resolves Messenger'],
+  ])('rejects incomplete canonical callback graph %s', async (reads, reason) => {
+    await expect(inspect(reads)).rejects.toThrow(reason)
   })
 
   test('rejects a self-consistent Zone RPC identity that is not registered by the canonical Factory', async () => {
-    await expect(inspect({ messenger: address('8') }, address('b'))).rejects.toThrow(
-      'ZoneInbox resolves Portal',
-    )
+    await expect(inspect({}, address('b'))).rejects.toThrow('ZoneInbox resolves Portal')
   })
+})
+
+describe('withdrawal correlation', () => {
+  test.each([undefined, null, '0x', '0x12', `0x${'g'.repeat(64)}`])(
+    'refuses invalid sender tag %s before querying logs',
+    async (senderTag) => {
+      const getLogs = vi.fn()
+      await expect(
+        waitForWithdrawalProcessed({ getLogs } as never, {
+          portal: zone.portal,
+          to: zone.portal,
+          senderTag: senderTag as never,
+          fromBlock: 0n,
+          pollingInterval: 1,
+          timeout: 1,
+        }),
+      ).rejects.toThrow('bytes32 sender tag')
+      expect(getLogs).not.toHaveBeenCalled()
+    },
+  )
 })

@@ -254,10 +254,11 @@ release's `ZoneRouterFactory`, whose routers alone may call it), and whether to 
 
 - refuses an RPC serving another chain, and runs Forge at the chain's hardfork from
   `tempo_forkSchedule`;
-- predicts each address from the locally compiled creation code, and checks that the run created
-  exactly that contract there from that code, or nothing when it already existed. For a program,
-  `CardFactory` and `BridgeProvider` come from the CREATE2 deployer and the program from
-  `CardFactory.deploy`;
+- predicts each address from the locally compiled creation code and attributes creation only
+  from matching successful receipts. `CardFactory` and `BridgeProvider` come from the CREATE2
+  deployer; a program requires the matching `ProgramDeployed` event from `CardFactory.deploy`.
+  A concurrent creation or successful call with no creation event is reuse, with `created: false`
+  and no creation transaction hash passed to source verification;
 - after a broadcast, source-verifies each one on Tempo's verifier (`https://contracts.tempo.xyz`),
   including a contract that already existed, and fails if the verifier has no source match. A
   program's release verifies all three.

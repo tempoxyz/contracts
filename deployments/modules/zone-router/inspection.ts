@@ -1,4 +1,9 @@
 import {
+  AbiDecodingDataSizeTooSmallError,
+  AbiDecodingZeroDataError,
+  BaseError,
+  ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   getAddress,
   isAddress,
   parseAbi,
@@ -19,6 +24,7 @@ import type { ZoneRouterMode } from './profile.js'
 export type ExpectedZoneRouter = {
   router: Address
   factory: Address
+  portal: Address
   mode: ZoneRouterMode
   /** The profile's EarnShare and vault asset, which an Earn mode binds; ignored otherwise. */
   earnShare: Address
@@ -35,7 +41,7 @@ export async function inspectZoneRouterBinding(
   expected: ExpectedZoneRouter,
 ) {
   const { router, factory, mode } = expected
-  const [deployed, predicted, enabledOps, spenders] = await Promise.all([
+  const [deployed, predicted, enabledOps, spenders, portal] = await Promise.all([
     client.readContract({
       address: factory,
       abi: zoneRouterFactoryAbi,
@@ -50,6 +56,7 @@ export async function inspectZoneRouterBinding(
     }),
     client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'enabledOps' }),
     client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'spenders' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'portal' }),
   ])
   if (!deployed) {
     throw new InspectionMismatchError(
@@ -57,6 +64,7 @@ export async function inspectZoneRouterBinding(
     )
   }
   equalAddress(predicted, router, 'router for the profile mode')
+  equalAddress(portal, expected.portal, 'router Portal')
   if (enabledOps !== mode.enabledOps) {
     throw new InspectionMismatchError(`Router ops are ${enabledOps}, expected ${mode.enabledOps}`)
   }
@@ -111,7 +119,7 @@ export async function spenderRouterFactory(
 ) {
   const value: unknown = await client
     .readContract({ address: spender, abi: spenderAbi, functionName: 'ROUTER_FACTORY' })
-    .catch(() => undefined)
+    .catch(missingGetter)
   return typeof value === 'string' && isAddress(value) ? getAddress(value) : undefined
 }
 
@@ -130,7 +138,7 @@ export async function spenderProvenanceBlockers(
     address: Address,
     functionName: (typeof spenderAbi)[number]['name'],
   ): Promise<unknown> =>
-    client.readContract({ address, abi: spenderAbi, functionName }).catch(() => undefined)
+    client.readContract({ address, abi: spenderAbi, functionName }).catch(missingGetter)
   const readAddress = async (
     address: Address,
     functionName: (typeof spenderAbi)[number]['name'],
@@ -148,42 +156,46 @@ export async function spenderProvenanceBlockers(
       if (routerFactory !== factory) {
         return `Spender ${spender} takes spendFrom only from routers of ZoneRouterFactory ${routerFactory}, not the router's ${factory}`
       }
-      try {
-        if (await readAddress(spender, 'PROVIDER')) {
-          const cardFactory = releases.cardFactory(factory)
-          const deployed = await client
-            .readContract({
-              address: cardFactory,
-              abi: cardFactoryAbi,
-              functionName: 'isDeployed',
-              args: [spender],
-            })
-            .catch(() => false)
-          return deployed
-            ? undefined
-            : `Spender ${spender} is not a CardSpender the release CardFactory ${cardFactory} deployed`
-        }
-        const [convertVault, pool, customerId] = await Promise.all([
-          readAddress(spender, 'convertVault'),
-          readAddress(spender, 'pool'),
-          read(spender, 'customerId'),
-        ])
-        if (!convertVault || !pool || !isBytes32(customerId)) {
-          return `Spender ${spender} is neither a CardSpender nor a SendSpender`
-        }
-        const release = releases.sendSpender({
+      if (await readAddress(spender, 'PROVIDER')) {
+        const cardFactory = releaseAddress(() => releases.cardFactory(factory))
+        if (typeof cardFactory !== 'string')
+          return `Spender ${spender} provenance is unknown: ${cardFactory.error}`
+        const deployed = await client
+          .readContract({
+            address: cardFactory,
+            abi: cardFactoryAbi,
+            functionName: 'isDeployed',
+            args: [spender],
+          })
+          .catch((error: unknown) => {
+            missingGetter(error)
+            return false
+          })
+        return deployed
+          ? undefined
+          : `Spender ${spender} is not a CardSpender the release CardFactory ${cardFactory} deployed`
+      }
+      const [convertVault, pool, customerId] = await Promise.all([
+        readAddress(spender, 'convertVault'),
+        readAddress(spender, 'pool'),
+        read(spender, 'customerId'),
+      ])
+      if (!convertVault || !pool || !isBytes32(customerId)) {
+        return `Spender ${spender} is neither a CardSpender nor a SendSpender`
+      }
+      const release = releaseAddress(() =>
+        releases.sendSpender({
           routerFactory: factory,
           convertVault,
           pool,
           customerId,
-        })
-        return getAddress(release) === spender
-          ? undefined
-          : `Spender ${spender} is not the release SendSpender for its settings, which is at ${release}`
-      } catch (error) {
-        // The release addresses come from this checkout's builds; without them provenance is unknown.
-        return `Spender ${spender} provenance is unknown: ${error instanceof Error ? error.message : String(error)}`
-      }
+        }),
+      )
+      if (typeof release !== 'string')
+        return `Spender ${spender} provenance is unknown: ${release.error}`
+      return getAddress(release) === spender
+        ? undefined
+        : `Spender ${spender} is not the release SendSpender for its settings, which is at ${release}`
     }),
   )
   return blockers.filter((blocker) => blocker !== undefined)
@@ -209,4 +221,28 @@ export async function nonMemberSpenders(
     ),
   )
   return options.spenders.filter((_, index) => !authorized[index])
+}
+
+/** Missing getters are contract evidence; transport errors must not become authentication claims. */
+function missingGetter(error: unknown): undefined {
+  if (
+    error instanceof BaseError &&
+    error.walk(
+      (cause) =>
+        cause instanceof ContractFunctionRevertedError ||
+        cause instanceof ContractFunctionZeroDataError ||
+        cause instanceof AbiDecodingZeroDataError ||
+        cause instanceof AbiDecodingDataSizeTooSmallError,
+    ) !== null
+  )
+    return undefined
+  throw error
+}
+
+function releaseAddress(read: () => Address): Address | { error: string } {
+  try {
+    return read()
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
 }

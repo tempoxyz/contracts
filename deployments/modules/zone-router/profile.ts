@@ -79,7 +79,7 @@ export const zoneRouterModeProfile = {
     profile.zoneRouter ? { zoneRouter: profile.zoneRouter } : {},
   // Absent, it adds nothing, so profiles without a router keep their deployment intent hash.
   deploymentIntent: (profile: RouterProfile) =>
-    profile.zoneRouter ? { zoneRouter: profile.zoneRouter } : {},
+    profile.zoneRouter ? { zoneRouter: profile.zoneRouter, ...routerReleaseIntent() } : {},
   components: {
     zoneRouterFactory: (profile: RouterProfile, deployment: string) =>
       profile.zoneRouter && profile.zoneRouter.factory === undefined
@@ -202,4 +202,9 @@ function parseEarn(value: Record<string, unknown>, path: string): ZoneRouterEarn
     pool: address(value.pool, `${path}.pool`),
     customerId: value.customerId.toLowerCase() as Hex,
   }
+}
+
+/** Release 1 retains existing record hashes; every later release changes the pending identity. */
+export function routerReleaseIntent(release: number = zoneRouterContractRelease) {
+  return release === 1 ? {} : { zoneRouterContractRelease: release }
 }

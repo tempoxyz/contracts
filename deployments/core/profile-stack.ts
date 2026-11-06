@@ -5,6 +5,7 @@ import {
   toHex,
   type Address,
   type Client,
+  type Hex,
   type PublicClient,
 } from 'viem'
 import { Abis, Addresses } from 'viem/tempo'
@@ -13,12 +14,22 @@ import { configuredRpcTransport, rpcConfiguration } from '../chain/runtime.js'
 import { configuredTempoNetworkChain, hostedEnvironment } from '../chain/tempo.js'
 import { capabilityModules } from '../../deployments/modules/index.js'
 import { requiredOutput, type StackSlice } from '../../deployments/modules/module.js'
-import { engineDefinitions, readEngineVenue } from '../modules/earn/engines/index.js'
-import { loadEarnProfileBundle } from './bundle.js'
+import { engineDefinitions } from '../modules/earn/engines/index.js'
+import {
+  loadEarnProfileBundle,
+  loadReviewedDeploymentIdentity,
+  resolveProfilePath,
+} from './bundle.js'
 import { optionalPeriphery } from './components.js'
-import { deploysEngine, profileCapabilities, type EarnDeploymentProfile } from './profile.js'
+import {
+  deploysEngine,
+  engineAddress,
+  profileCapabilities,
+  type EarnDeploymentProfile,
+} from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
-import type { EarnStack } from './stack.js'
+import type { ReviewedDeploymentIdentity } from './releases.js'
+import { inspectStackBinding, readCurrentEngine, type EarnStack } from './stack.js'
 
 /**
  * Builds the stack of one deployed profile from its generated record and live reads. Nothing is
@@ -28,28 +39,50 @@ import type { EarnStack } from './stack.js'
  */
 export async function profileStack(options: profileStack.Options): Promise<EarnStack> {
   const { client, environment, profile, record } = options
+  const [chainId, genesis] = await Promise.all([
+    client.getChainId(),
+    client.getBlock({ blockNumber: 0n }),
+  ])
+  if (chainId !== profile.chainId || chainId !== record.target.chainId)
+    throw new Error('RPC chain ID does not match the profile and generated deployment record')
+  if (!genesis.hash || genesis.hash.toLowerCase() !== record.target.genesisHash.toLowerCase())
+    throw new Error('RPC genesis hash does not match the generated deployment record')
   const outputs = record.addresses as Record<string, Address>
   const asset = requiredOutput(outputs, 'asset')
   const earnShare = requiredOutput(outputs, 'earnShare')
   const earnVault = requiredOutput(outputs, 'earnVault')
   const earnFees = requiredOutput(outputs, 'earnFees')
-  const engine = requiredOutput(outputs, 'engine')
-  const engineKind = profile.engine.kind
-  const [operator, periphery, slices] = await Promise.all([
+  const creationEngine = engineAddress(profile, outputs)
+  const { engine, engineKind, venue } = await readCurrentEngine(client, {
+    creationEngine,
+    engineKind: profile.engine.kind,
+    asset,
+    earnVault,
+  })
+  if (engine !== creationEngine && profile.core.migrationMode !== 'OperatorEnabled')
+    throw new Error('Profile does not allow operator engine migration')
+  await inspectStackBinding(client, {
+    asset,
+    engine,
+    earnVault,
+    earnShare,
+    earnFees,
+    engineKind,
+    venue:
+      engine === creationEngine && 'venue' in profile.engine ? profile.engine.venue : undefined,
+  })
+  const [operator, periphery, slices, capabilities] = await Promise.all([
     // The current transferable operator, not the deployment owner the record names.
     client.readContract({ address: earnVault, abi: Abis.earnVault, functionName: 'operator' }),
     engineDefinitions[engineKind].readPeriphery?.(client, engine),
     Promise.all(capabilityModules.map((module) => module.stack?.(options))),
+    engineDefinitions[engineKind].readCapabilities?.(client, engine),
   ])
   // Each capability's fields, merged in module order into their places in the stack.
   const slice = <Key extends keyof StackSlice>(key: Key) =>
     Object.assign({}, ...slices.map((entry) => entry?.[key])) as NonNullable<StackSlice[Key]>
   const access = slices.find((entry) => entry?.access)?.access
   if (!access) throw new Error(`Profile ${profile.id} has no access capability`)
-  const venue =
-    'venue' in profile.engine
-      ? getAddress(profile.engine.venue)
-      : await readEngineVenue(client, engineKind, engine)
   const [assetMetadata, earnShareMetadata, venueMetadata] = await Promise.all(
     [asset, earnShare, venue].map((token) => tokenMetadata(client, token)),
   )
@@ -81,6 +114,7 @@ export async function profileStack(options: profileStack.Options): Promise<EarnS
       earnFees,
       ...slice('contracts'),
       engine,
+      creationEngine,
       venue,
       ...(periphery ? { periphery } : {}),
       ...(deploysEngine(profile) ? { factories: profile.factories } : {}),
@@ -94,7 +128,11 @@ export async function profileStack(options: profileStack.Options): Promise<EarnS
       public: { availability: 'available' },
       ...slice('modes'),
     },
-    capabilities: profileCapabilities(profile),
+    capabilities: {
+      ...profileCapabilities(profile),
+      ...engineDefinitions[engineKind].capabilities,
+      ...capabilities,
+    },
     access,
     operations: {
       owner: getAddress(operator),
@@ -118,7 +156,11 @@ export async function profileStack(options: profileStack.Options): Promise<EarnS
 
 export declare namespace profileStack {
   type Options = {
-    client: Pick<PublicClient, 'getCode' | 'readContract'> & Client
+    client: Pick<PublicClient, 'getCode' | 'readContract'> &
+      Client & {
+        getChainId(): Promise<number>
+        getBlock(options: { blockNumber: bigint }): Promise<{ hash: Hex | null }>
+      }
     environment: { id: string; tempoRpcUrl: string; explorerUrl: string }
     profile: EarnDeploymentProfile
     record: EarnDeploymentRecord
@@ -127,13 +169,19 @@ export declare namespace profileStack {
 
 /**
  * Builds a deployed hosted profile's stack from its record and live reads on its chain: the hosted
- * environment's public RPC unless `values` configures `TEMPO_RPC_URL`.
+ * environment's public RPC unless `values` configures `TEMPO_RPC_URL`. Unknown profiles require
+ * independent identity passed directly or explicitly selected by `EARN_TRUSTED_DEPLOYMENT_IDENTITY`.
  */
 export async function loadHostedProfileStack(
   profilePath: string,
   values: Readonly<Record<string, string | undefined>>,
+  trustedIdentity?: ReviewedDeploymentIdentity,
 ) {
-  const bundle = loadEarnProfileBundle(profilePath)
+  const identityPath = values.EARN_TRUSTED_DEPLOYMENT_IDENTITY?.trim()
+  const identity =
+    trustedIdentity ??
+    (identityPath ? loadReviewedDeploymentIdentity(resolveProfilePath(identityPath)) : undefined)
+  const bundle = loadEarnProfileBundle(profilePath, identity)
   const { profile, record } = bundle
   const environment = hostedEnvironment(profile.chainId)
   if (!environment) {

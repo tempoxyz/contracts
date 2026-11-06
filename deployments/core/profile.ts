@@ -33,6 +33,7 @@ import {
   nonemptyString,
   object,
   positiveInteger,
+  positiveBps,
 } from './parse.js'
 import {
   engineFactoryAddress,
@@ -341,7 +342,12 @@ export function configuredEngineAddress(profile: EarnDeploymentProfile) {
 
 /** The profile's existing engine, or the one its engine step deployed. */
 export function engineAddress(profile: EarnDeploymentProfile, outputs: Record<string, Address>) {
-  const engine = configuredEngineAddress(profile) ?? outputs.engine
+  const configured = configuredEngineAddress(profile)
+  if (configured && outputs.engine && getAddress(outputs.engine) !== configured)
+    throw new Error(
+      `Recorded engine ${outputs.engine} does not match configured engine ${configured}`,
+    )
+  const engine = configured ?? outputs.engine
   if (!engine) throw new Error('deployment output engine is required')
   return engine
 }
@@ -351,6 +357,7 @@ export function privilegedPrincipals(profile: EarnDeploymentProfile): Privileged
   const { core } = profile
   const assigned: [string, Address | null | undefined][] = [
     ['owner', profile.owner],
+    ['deployer', profile.deployer],
     ['emergency guardian', core.emergencyGuardian],
     ['async janitor', core.asyncJanitor],
     ...core.fees.fixed.map(({ recipient }, index): [string, Address] => [
@@ -443,7 +450,7 @@ function parseFixedFee(value: Record<string, unknown>, path: string) {
   exactKeys(value, path, ['recipient', 'rateBps'])
   return {
     recipient: address(value.recipient, `${path}.recipient`),
-    rateBps: bps(value.rateBps, `${path}.rateBps`),
+    rateBps: positiveBps(value.rateBps, `${path}.rateBps`),
   }
 }
 
@@ -495,6 +502,12 @@ function validateFees(profile: EarnDeploymentProfile) {
     throw new Error(
       'profile.json.core.fees: configure operator fixed fees after deploying a zero-rate distributor',
     )
+  const recipients = [
+    ...profile.core.fees.fixed.map((fee) => fee.recipient.toLowerCase()),
+    ...(protectedFee?.rateBps ? [protectedFee.recipient.toLowerCase()] : []),
+  ]
+  if (new Set(recipients).size !== recipients.length)
+    throw new Error('profile.json.core.fees fixed recipients must be unique')
   const totalFixed =
     profile.core.fees.fixed.reduce((sum, fee) => sum + fee.rateBps, 0) +
     (protectedFee?.rateBps ?? 0)

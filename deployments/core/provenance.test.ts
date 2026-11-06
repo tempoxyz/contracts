@@ -108,3 +108,77 @@ describe('deployment provenance', () => {
     ).rejects.toThrow('reverted')
   })
 })
+
+describe('receipt-free historical provenance', () => {
+  const adopted = { ...record, actions: {} }
+  test('requires archive proof, rejecting a late scan bound or nonexistent creation', async () => {
+    const client = {
+      getCode: async () => runtime,
+      getTransactionReceipt: async () => {
+        throw new Error('unexpected')
+      },
+    }
+    await expect(verifyDeploymentProvenance(client as never, adopted)).rejects.toThrow(
+      'archive proof',
+    )
+    const archive = {
+      ...client,
+      getCode: async ({ blockNumber }: { blockNumber?: bigint }) =>
+        blockNumber === 9n ? '0x' : runtime,
+    }
+    await expect(verifyDeploymentProvenance(archive as never, adopted)).resolves.toBeUndefined()
+    await expect(
+      verifyDeploymentProvenance(archive as never, { ...adopted, deploymentBlock: '11' }),
+    ).rejects.toThrow('archive proof')
+  })
+})
+
+describe('adopted core with other receipts', () => {
+  test('a successful later binding receipt cannot move the claim scan past vault creation', async () => {
+    const actions: EarnDeploymentRecord['actions'] = {
+      'deploy-core': { ...record.actions['deploy-core']!, verification: 'chain', transactions: [] },
+      'bind-core': { ...record.actions['bind-core']!, transactions: [transaction] },
+    }
+    const client = (receiptBlock: bigint) => ({
+      getCode: async ({ blockNumber }: { blockNumber?: bigint }) =>
+        blockNumber !== undefined && blockNumber < 10n ? '0x' : runtime,
+      getTransactionReceipt: async () => ({
+        blockNumber: receiptBlock,
+        status: 'success',
+        transactionHash: transaction,
+      }),
+    })
+    const adopted = { ...record, actions, deploymentBlock: '11' }
+    await expect(verifyDeploymentProvenance(client(11n) as never, adopted)).rejects.toThrow(
+      'claim scan starts before EarnVault creation',
+    )
+    // A receipt before core creation is a conservative, independently proven scan boundary.
+    await expect(
+      verifyDeploymentProvenance(client(5n) as never, { ...adopted, deploymentBlock: '5' }),
+    ).resolves.toBeUndefined()
+    await expect(
+      verifyDeploymentProvenance(client(10n) as never, { ...adopted, deploymentBlock: '10' }),
+    ).resolves.toBeUndefined()
+  })
+
+  test('requires archive evidence when only non-core receipts remain', async () => {
+    const adopted = {
+      ...record,
+      actions: { 'bind-core': { ...record.actions['bind-core']!, transactions: [transaction] } },
+    }
+    const client = {
+      getCode: async ({ blockNumber }: { blockNumber?: bigint }) => {
+        if (blockNumber !== undefined) throw new Error('archive state unavailable')
+        return runtime
+      },
+      getTransactionReceipt: async () => ({
+        blockNumber: 10n,
+        status: 'success',
+        transactionHash: transaction,
+      }),
+    }
+    await expect(verifyDeploymentProvenance(client as never, adopted)).rejects.toThrow(
+      'archive state unavailable',
+    )
+  })
+})

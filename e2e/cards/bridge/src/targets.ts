@@ -11,22 +11,18 @@
 //   only with `--admit`: otherwise, when the router, cardholder, program wallet or refund recipient
 //   lacks the role the Portal requires, the private steps report BLOCKED with the call the Zone administrator must make.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  BaseError,
   concat,
   decodeFunctionResult,
   encodeFunctionData,
   getAddress,
   http,
-  HttpRequestError,
   keccak256,
-  TimeoutError,
   pad,
   parseAbi,
   zeroAddress,
-  zeroHash,
   type Account as ViemAccount,
   type Address,
   type Hex,
@@ -34,12 +30,15 @@ import {
 } from 'viem'
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts'
 import { zoneRouterFactoryAbi } from '@tempoxyz/contracts/abis'
+import { guardedTransactionRequest } from '@tempoxyz/contracts/deployments/node'
 import { createClient as createTempoClient, Store, http as zoneHttp } from 'viem/tempo'
 import { tempoModerato } from 'viem/tempo/chains'
 
 import { Deployment as Localnet } from 'localnet'
 import { loadProfile } from '../../../harness/profile.js'
 import * as Network from './network.js'
+import * as Safety from './targets-safety.js'
+import * as Provenance from './targets-provenance.js'
 
 /** The Bridge integration's Foundry project: Forge runs, artifacts and reports live here. */
 export const root = resolve(new URL('.', import.meta.url).pathname, '../../../../cards')
@@ -180,77 +179,42 @@ function required(env: Record<string, string | undefined>, name: string, target:
   return value
 }
 
-/** Inputs a forge script reads and keys this run holds, which a forge run only gets explicitly. */
-const FORGE_WITHHELD = [
-  'FACTORY',
-  'SPENDER_ID',
-  'SETTLEMENT',
-  'TOKEN',
-  'ZONE_ID',
-  'ROUTER',
-  'ROUTER_FACTORY',
-  'REFUND_RECIPIENT',
-  'PROGRAM_WALLET',
-  'VAULTS',
-  'BRIDGE_PROGRAM',
-  'EARN_VAULT',
-  'PRIVATE_ASSET',
-  'POOL',
-  'CUSTOMER_ID',
-  'SEND_CUSTOMER_ID',
-  'OUT',
-  'DEPLOYER_PK',
-  'DEPLOYER_PRIVATE_KEY',
-  'CARDHOLDER_PRIVATE_KEY',
-  'ZONE_ADMIN_PRIVATE_KEY',
-  'TEMPO_API_KEY',
-]
-
-/**
- * The environment forge runs with: this process's, so proxies and Foundry settings still apply,
- * without stray script inputs or keys, plus the script's own inputs.
- */
+/** The child receives process plumbing and only this script's explicit inputs. */
 export function forgeEnv(inputs: Record<string, string> = {}) {
-  const env: Record<string, string> = {}
-  for (const [name, value] of Object.entries(process.env)) {
-    if (value !== undefined && !FORGE_WITHHELD.includes(name)) env[name] = value
-  }
-  return { ...env, ...inputs }
+  return Safety.childEnvironment(inputs)
 }
 
 function deployProgram(
   rpcUrl: string,
   env: { deployerPk: Hex; settlement: Address; programWallet: Address; zoneId: number },
 ) {
-  mkdirSync(resolve(root, 'reports'), { recursive: true })
-  const out = `reports/zone-e2e-deploy-${env.zoneId}.json`
-  execFileSync(
-    'forge',
-    [
-      'script',
-      'script/bridge/ZoneE2EDeploy.s.sol',
-      '--rpc-url',
-      rpcUrl,
-      '--broadcast',
-      '--slow',
-      '--gas-estimate-multiplier',
-      '105',
-    ],
-    {
-      cwd: root,
-      stdio: 'ignore',
-      env: forgeEnv({
-        DEPLOYER_PK: env.deployerPk,
-        SETTLEMENT: env.settlement,
-        PROGRAM_WALLET: env.programWallet,
-        ZONE_ID: String(env.zoneId),
-        OUT: out,
-      }),
-    },
-  )
-  return JSON.parse(readFileSync(resolve(root, out), 'utf8')) as Omit<Program, 'settlement'> & {
-    zoneToken: Address
-  }
+  return Safety.withReport(root, (out) => {
+    execFileSync(
+      'forge',
+      [
+        'script',
+        'script/bridge/ZoneE2EDeploy.s.sol',
+        '--rpc-url',
+        rpcUrl,
+        '--broadcast',
+        '--slow',
+        '--gas-estimate-multiplier',
+        '105',
+      ],
+      {
+        cwd: root,
+        stdio: 'ignore',
+        env: forgeEnv({
+          DEPLOYER_PK: env.deployerPk,
+          SETTLEMENT: env.settlement,
+          PROGRAM_WALLET: env.programWallet,
+          ZONE_ID: String(env.zoneId),
+          OUT: out,
+        }),
+      },
+    )
+    return Safety.readReport(out) as Omit<Program, 'settlement'> & { zoneToken: Address }
+  })
 }
 
 /**
@@ -272,44 +236,66 @@ async function deployRouter(
   env: {
     deployerPk: Hex
     factory: Address
+    clone: Address
     spenderId: Hex
     zoneId: number
     routerFactory: Address
   },
 ): Promise<RouterDeployment> {
   // The script reads the Zone factory, which forge runs only at the L1's hardfork.
+  await Provenance.assertClone(l1Public, env)
+  const zone = await l1Public.readContract({
+    address: Network.address.zoneFactory,
+    abi: zoneFactoryAbi,
+    functionName: 'zones',
+    args: [env.zoneId],
+  })
   const foundryHardfork = await hardfork(l1Public)
-  mkdirSync(resolve(root, 'reports'), { recursive: true })
-  const out = `reports/zone-e2e-router-${env.zoneId}.json`
-  execFileSync(
-    'forge',
-    [
-      'script',
-      'script/bridge/deploy/DeployZoneRouter.s.sol',
-      '--rpc-url',
-      rpcUrl,
-      '--broadcast',
-      '--slow',
-      '--gas-estimate-multiplier',
-      '105',
-    ],
-    {
-      cwd: root,
-      stdio: 'ignore',
-      env: forgeEnv({
-        FOUNDRY_HARDFORK: foundryHardfork,
-        DEPLOYER_PK: env.deployerPk,
-        FACTORY: env.factory,
-        SPENDER_ID: env.spenderId,
-        ZONE_ID: String(env.zoneId),
-        ROUTER_FACTORY: env.routerFactory,
-        OUT: out,
-      }),
-    },
+  const report = Safety.withReport(root, (out) => {
+    execFileSync(
+      'forge',
+      [
+        'script',
+        'script/bridge/deploy/DeployZoneRouter.s.sol',
+        '--rpc-url',
+        rpcUrl,
+        '--broadcast',
+        '--slow',
+        '--gas-estimate-multiplier',
+        '105',
+      ],
+      {
+        cwd: root,
+        stdio: 'ignore',
+        env: forgeEnv({
+          FOUNDRY_HARDFORK: foundryHardfork,
+          DEPLOYER_PK: env.deployerPk,
+          FACTORY: env.factory,
+          SPENDER_ID: env.spenderId,
+          ZONE_ID: String(env.zoneId),
+          ROUTER_FACTORY: env.routerFactory,
+          OUT: out,
+        }),
+      },
+    )
+    return Safety.readReport(out)
+  })
+  Safety.assertReportBinding(report, {
+    factory: env.factory,
+    clone: env.clone,
+    portal: zone.portal,
+    spenderId: env.spenderId,
+    zoneId: env.zoneId,
+    routerFactory: env.routerFactory,
+  })
+  const { program, provider, cardFactory, router, routerFactory } = report as RouterDeployment
+  await Provenance.assertProgram(
+    l1Public,
+    report as Program,
+    env.zoneId,
+    Provenance.reviewedArtifacts(root),
+    zone.portal,
   )
-  const { program, provider, cardFactory, router, routerFactory } = JSON.parse(
-    readFileSync(resolve(root, out), 'utf8'),
-  ) as RouterDeployment
   return { program, provider, cardFactory, router, routerFactory }
 }
 
@@ -664,32 +650,31 @@ async function deployRouterFlows(
   },
 ): Promise<RouterFlowsTarget> {
   const { conversion } = inputs
-  const out = `reports/zone-e2e-router-flows-${inputs.zoneId}.json`
-  execFileSync(
-    'forge',
-    ['script', 'script/bridge/ZoneE2ERouter.s.sol', '--rpc-url', rpcUrl, '--broadcast', '--slow'],
-    {
-      cwd: root,
-      stdio: 'ignore',
-      env: forgeEnv({
-        FOUNDRY_HARDFORK: await hardfork(l1Public),
-        DEPLOYER_PK: inputs.deployerPk,
-        ROUTER_FACTORY: inputs.program.routerFactory,
-        BRIDGE_PROGRAM: inputs.program.program,
-        ZONE_ID: String(inputs.zoneId),
-        EARN_VAULT: inputs.earn.vault,
-        PRIVATE_ASSET: conversion.privateAsset,
-        POOL: conversion.pool,
-        CUSTOMER_ID: keccak256(concat(['0x01', inputs.program.router])),
-        SEND_CUSTOMER_ID: keccak256(concat(['0x02', inputs.program.router])),
-        OUT: out,
-      }),
-    },
-  )
-  const { router, sendSpender } = JSON.parse(readFileSync(resolve(root, out), 'utf8')) as {
-    router: Address
-    sendSpender: Address
-  }
+  const foundryHardfork = await hardfork(l1Public)
+  const { router, sendSpender } = Safety.withReport(root, (out) => {
+    execFileSync(
+      'forge',
+      ['script', 'script/bridge/ZoneE2ERouter.s.sol', '--rpc-url', rpcUrl, '--broadcast', '--slow'],
+      {
+        cwd: root,
+        stdio: 'ignore',
+        env: forgeEnv({
+          FOUNDRY_HARDFORK: foundryHardfork,
+          DEPLOYER_PK: inputs.deployerPk,
+          ROUTER_FACTORY: inputs.program.routerFactory,
+          BRIDGE_PROGRAM: inputs.program.program,
+          ZONE_ID: String(inputs.zoneId),
+          EARN_VAULT: inputs.earn.vault,
+          PRIVATE_ASSET: conversion.privateAsset,
+          POOL: conversion.pool,
+          CUSTOMER_ID: keccak256(concat(['0x01', inputs.program.router])),
+          SEND_CUSTOMER_ID: keccak256(concat(['0x02', inputs.program.router])),
+          OUT: out,
+        }),
+      },
+    )
+    return Safety.readReport(out) as { router: Address; sendSpender: Address }
+  })
   const owner = await l1Public.readContract({
     address: conversion.pool,
     abi: poolAdminAbi,
@@ -739,8 +724,6 @@ const moderato = {
 
 /** Tries per synchronous L1 send, resending the same signed bytes after a transport failure. */
 const SEND_ATTEMPTS = 3
-/** JSON-RPC error codes viem's own retry treats as transient. */
-const TRANSIENT_RPC_CODES = [-1, -32005, -32603]
 
 const tsAbi = parseAbi([
   'function governorCall(bytes32 spenderId, bytes data)',
@@ -780,19 +763,14 @@ async function zoneAdministrator(
   )
   const safe = admin === account.address ? undefined : admin
   if (safe) {
-    const [owners, threshold] = await Promise.all([
-      l1Public
-        .readContract({ address: safe, abi: safeAbi, functionName: 'getOwners' })
-        .catch(() => [] as readonly Address[]),
-      l1Public
-        .readContract({ address: safe, abi: safeAbi, functionName: 'getThreshold' })
-        .catch(() => 0n),
-    ])
-    if (threshold !== 1n || owners.length !== 1 || getAddress(owners[0]!) !== account.address) {
-      throw new Error(
-        `ZONE_ADMIN_PRIVATE_KEY ${account.address} does not control portal ${portal}: its admin ${admin} is neither that account nor a threshold-1 Safe it solely owns`,
-      )
-    }
+    await Safety.safeControl({
+      account: account.address,
+      safe,
+      readOwners: () =>
+        l1Public.readContract({ address: safe, abi: safeAbi, functionName: 'getOwners' }),
+      readThreshold: () =>
+        l1Public.readContract({ address: safe, abi: safeAbi, functionName: 'getThreshold' }),
+    })
   }
   const signature = concat([pad(account.address), pad('0x00'), '0x01'])
   const wrap = (call: { to: Address; data: Hex }) =>
@@ -869,10 +847,13 @@ export async function hosted(
     })
     // The deployer doubles as the program's refund account: admitted, and a key the test holds.
     const refundRecipient = privateKeyToAccount(deployerPk).address
-    writeFileSync(
-      moderatoRecord,
-      `${JSON.stringify({ ...deployed, settlement, refundRecipient }, null, 2)}\n`,
+    await Provenance.assertProgram(
+      l1Public,
+      { ...deployed, settlement, programWallet },
+      moderato.zone.id,
+      Provenance.reviewedArtifacts(root),
     )
+    Safety.saveRecord(moderatoRecord, { ...deployed, settlement, programWallet, refundRecipient })
   }
   if (!existsSync(moderatoRecord))
     throw new Error(
@@ -904,12 +885,13 @@ export async function hosted(
     const routed = await deployRouter(l1Public, moderato.rpcUrl, {
       deployerPk,
       factory: record.factory,
+      clone: record.clone,
       spenderId: record.spenderId,
       zoneId: moderato.zone.id,
       routerFactory: required(env, 'ROUTER_FACTORY', 'moderato') as Address,
     })
     const { receiver: _receiver, settler: _settler, ...rest } = record
-    writeFileSync(moderatoRecord, `${JSON.stringify({ ...rest, ...routed }, null, 2)}\n`)
+    Safety.saveRecord(moderatoRecord, { ...rest, ...routed })
     Object.assign(record, routed)
     delete record.settler
     console.log(
@@ -955,6 +937,14 @@ export async function hosted(
   if (zoneChainId !== moderato.zone.chainId)
     throw new Error(`Tempo API served Zone chain ${zoneChainId}, not ${moderato.zone.chainId}`)
   step(3, `Moderato Zone ${moderato.zone.id} through Tempo API, portal ${portal}`)
+
+  await Provenance.assertProgram(
+    l1Public,
+    program,
+    moderato.zone.id,
+    Provenance.reviewedArtifacts(root),
+    portal,
+  )
 
   const [accessEnforced, gatewayOpen] = await Promise.all([
     l1Public.readContract({ address: portal, abi: portalAbi, functionName: 'isAccessEnforced' }),
@@ -1014,6 +1004,15 @@ export async function hosted(
     }
     return grants
   }
+  const transition = Safety.routerTransition({
+    router: program.router,
+    portal,
+    gatewayOpen,
+    accessEnforced,
+    accountRole: await hasRole(program.router, ROLE.account),
+    gatewayRole: await hasRole(program.router, ROLE.callbackGateway),
+  })
+  if (transition) throw new Error(transition)
   let grants = await missing()
   if (grants.length > 0 && options.admit) {
     const administrator = await zoneAdministrator(
@@ -1096,6 +1095,7 @@ async function prepareEarn(
     console.log(`    Earn: EarnShare ${earn.earnShare} is not enabled on portal ${portal}`)
     return undefined
   }
+  await Provenance.assertClone(l1Public, program)
   const allowed = async () => {
     const { data } = await l1Public.call({
       to: program.clone,
@@ -1117,6 +1117,7 @@ async function prepareEarn(
       )
       return undefined
     }
+    await Provenance.assertClone(l1Public, program)
     // Send, then wait: Moderato's gateway can drop a synchronous send that waits for its block.
     const hash = await l1Wallet(privateKeyToAccount(deployerPk)).writeContract({
       address: program.factory,
@@ -1135,15 +1136,6 @@ async function prepareEarn(
 }
 
 /**
- * Sends `calls` from `wallet`'s account with `eth_sendRawTransactionSync` and returns the receipt and
- * the milliseconds until it was in hand. Tempo's public RPC proxy ends any request after 1 s with a
- * 502 or 504, usually while the node keeps the transaction, so on those the node is polled briefly
- * for it and the receipt awaited by hash. When the node does not know the transaction after a
- * transport failure, the same signed bytes are resent, so a transaction is never sent twice.
- * `recovered` marks sends whose receipt was read back by hash: their time includes up to one 100 ms
- * poll.
- */
-/**
  * Deploys a card program's Spend-mode router (Spend only, the program its one spender) through its factory.
  * A router reads its Zone's Portal when it is created, so this runs once the Zone exists; the deploy scripts
  * predicted its address, which this checks.
@@ -1153,41 +1145,46 @@ export async function deploySpendRouter(
   wallet: WalletClient,
   options: { routerFactory: Address; program: Address; router: Address; zoneId: number },
 ) {
-  const mode = {
-    zoneId: options.zoneId,
-    enabledOps: 4,
-    earnVault: zeroAddress,
-    privateAsset: zeroAddress,
-    pool: zeroAddress,
-    customerId: zeroHash,
-    spenders: [options.program],
-  } as const
-  await sendL1Sync(wallet, l1Public, [
+  const mode = Provenance.spendMode(options.program, options.zoneId)
+  await Provenance.assertRouter(l1Public, options, options.zoneId, false)
+  const { receipt } = await sendL1Sync(wallet, l1Public, [
     {
       to: options.routerFactory,
       data: encodeFunctionData({ abi: zoneRouterFactoryAbi, functionName: 'deploy', args: [mode] }),
     },
   ])
-  const deployed = await l1Public.readContract({
-    address: options.routerFactory,
-    abi: zoneRouterFactoryAbi,
-    functionName: 'isRouter',
-    args: [options.router],
-  })
-  if (!deployed)
-    throw new Error(`router ${options.router} was not deployed by ${options.routerFactory}`)
+  if (receipt.status !== 'success') throw new Error('Spend router deployment reverted')
+  await Provenance.assertRouter(l1Public, options, options.zoneId)
 }
 
+/**
+ * Sends `calls` from `wallet`'s account with `eth_sendRawTransactionSync` and returns the receipt and
+ * the milliseconds until it was in hand. Tempo's public RPC proxy ends any request after 1 s with a
+ * 502 or 504, usually while the node keeps the transaction, so on those the node is polled briefly
+ * for it and the receipt awaited by hash. When the node does not know the transaction after a
+ * transport failure, the same signed bytes are resent, so a transaction is never sent twice.
+ * `recovered` marks sends whose receipt was read back by hash: their time includes receipt polling and any transport recovery.
+ */
 export async function sendL1Sync(
   wallet: WalletClient,
   l1Public: PublicClient,
   calls: readonly { to: Address; data: Hex }[],
 ) {
-  const request = await wallet.prepareTransactionRequest({
+  if (wallet.account.type !== 'local' || !wallet.account.signTransaction)
+    throw new Error('Synchronous recovery requires a local signing account')
+  const request = await guardedTransactionRequest(
+    {
+      ...wallet,
+      account: wallet.account as PrivateKeyAccount,
+      getTransactionCount: l1Public.getTransactionCount,
+    },
     calls,
-    feeToken: Network.address.pathUsd,
-  } as never)
-  const raw = await wallet.signTransaction(request as never)
+    Network.address.pathUsd,
+  )
+  const prepared = await wallet.prepareTransactionRequest(request as never)
+  const raw = await request.account.signTransaction(prepared as never, {
+    serializer: wallet.chain.serializers.transaction,
+  })
   const hash = keccak256(raw)
   const known = () =>
     l1Public.getTransaction({ hash }).then(
@@ -1211,21 +1208,7 @@ export async function sendL1Sync(
       })
       break
     } catch (error) {
-      // Transport failures, and the JSON-RPC errors viem itself retries: unknown, limit exceeded, internal.
-      const transport =
-        error instanceof BaseError
-          ? error.walk(
-              (e) =>
-                e instanceof HttpRequestError ||
-                e instanceof TimeoutError ||
-                (typeof (e as { code?: unknown }).code === 'number' &&
-                  TRANSIENT_RPC_CODES.includes((e as { code: number }).code)),
-            )
-          : null
-      const status = transport instanceof HttpRequestError ? transport.status : undefined
-      // The proxy cut the wait short. The node normally has the transaction, but it may not yet
-      // show it, or may never have received it, in which case it is resent below.
-      const cutShort = status === 502 || status === 504
+      const { transient: transport, cutShort } = Safety.sendFailure(error)
       // A resend the node rejects as already seen, or any failure after which it holds the transaction.
       if (attempt > 1 || transport) {
         if (await (cutShort ? knownWithin(3_000) : known())) {

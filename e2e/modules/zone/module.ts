@@ -1,5 +1,6 @@
 import type { E2eBenchmark, E2eCase, E2eModule, LaunchFeature } from '../../harness/case.js'
-import { assert, ZONE_CASE_AMOUNT } from '../../harness/support/utils.js'
+import { isAddressEqual } from 'viem'
+import { E2ePrerequisiteError, assert, ZONE_CASE_AMOUNT } from '../../harness/support/utils.js'
 import { protectedZoneCases } from './access.js'
 import {
   fundPrivateFeeBuffer,
@@ -45,7 +46,10 @@ function thirdPartyRecipientCase(): E2eCase {
     coverage: { 'private-router': ['third-party'] },
     weight: 6,
     // The recipient redeems as itself, so its router returns must refund to it.
-    preflight: (context) => requireSelfRefunds(context, ['operator']),
+    async preflight(context) {
+      requireDistinctPrivateActors(context.user.address, context.operator.address)
+      await requireSelfRefunds(context, ['operator'])
+    },
     async run(context) {
       unredeemed = undefined
       const entry = await zoneDeposit(context, {
@@ -177,4 +181,12 @@ export const benchmark: E2eBenchmark = {
       })
     },
   },
+}
+
+/** Third-party coverage needs two separately controlled private legs, not actor aliases. */
+export function requireDistinctPrivateActors(user: `0x${string}`, recipient: `0x${string}`) {
+  if (isAddressEqual(user, recipient))
+    throw new E2ePrerequisiteError(
+      'Third-party Zone coverage requires distinct user and operator addresses',
+    )
 }

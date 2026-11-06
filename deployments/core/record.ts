@@ -27,6 +27,7 @@ import {
 import {
   componentDeploymentIntentHashes,
   deploymentIntentHash,
+  engineAddress,
   profileDeploymentSalt,
   profileFactoryDeploymentId,
   type ComponentIntentHashes,
@@ -231,6 +232,7 @@ export function parseEarnDeploymentRecord(
     if (!addresses[key] && !changedAddress(key))
       throw new Error(`${path}.addresses.${key} is required by profile ${profile.id}`)
   }
+  engineAddress(profile, addresses as Record<string, Address>)
   if (!targetChanged) {
     for (const slice of targetSlices)
       slice.checkAddresses?.(addresses, targetIdentity(target, slice.key), path)

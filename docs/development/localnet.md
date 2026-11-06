@@ -39,8 +39,11 @@ Deploying onto an existing devnet instead is documented in
 - `l1 { image, rpcUrl }` and `zone { image, publicRpcUrl, rpcUrl }`, where `zone.rpcUrl` is the
   authenticated private RPC.
 
-`localStack(environment, { name?, publicZoneRpc? })` turns that state into an `EarnStack`, handing
-the Zone and router it deployed to the Zone router's `zoneRouterStackFields`.
+`localStack(environment, { name?, publicZoneRpc? })` turns that state into an executable `EarnStack`,
+handing the Zone and router it deployed to the Zone router's `zoneRouterStackFields`. Persisted
+stack manifests use `stackManifest` to retain only the L1 and Zone RPC origins: credentials, paths,
+queries, and fragments are removed. Those origins are provenance, not replayable connection
+configuration; in-memory clients keep their configured endpoints.
 
 Side contracts a kind provisions beyond its venue and engine (the ERC-4626 `morphoFeeWrapper`;
 Veda's Accountant, Teller, Queue, registry, solvers, and replacement periphery) are returned by name
@@ -88,7 +91,10 @@ contracts, and a router through the local conversion pool, with `access` selecti
 open EarnShare. With `earnProfile`, `localizeProfile` replaces only the profile's external
 dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router private asset and pool) and
 deploys its core settings, principals, rewards, and router customer ID as authored; it rejects a
-profile whose access does not match the local policy.
+profile whose access does not match the local policy. Profiles with a general `zoneRouter` are
+rejected before starting containers or provisioning fixtures: localization of that router's
+source-chain dependencies is not implemented. This does not disable the supported Earn `zone`
+route through `SingleZoneEarnRouter`.
 
 A kind whose `provision` deploys its engine with `deployAsEngineOwner` (PropAMM, which has no engine
 factory) leaves that engine with a separate funded setup owner, so the lifecycle stops at the
@@ -104,12 +110,17 @@ shared engine facts come from `engineDefinitions`. [Adding an
 engine](../earn/integrations/engines.md#adding-an-engine) lists every file a new kind needs.
 
 The hosted fixture bootstrap (`e2e/fixtures/bootstrap.ts`) runs the same
-`Deployment.provisionFixtures` and `localEngines` steps against a hosted chain with
+`Deployment.provisionFixtures` and `localEngines` steps against a hosted testnet only, with
 `persistent: true`, under which the Veda engine accepts a ten-year rate age instead of the local one
 day. After provisioning, `validateFixtures` checks code at every fixture address, the funder's pair
 and issuer roles, the conversion pool's pair, oracle, registry, owner, and unpaused state, and the
 kind's own `validate`; a local stack also checks that its router supports exactly deposit and redeem
-and prices at par with the full pool inventory.
+and prices at par with the full pool inventory. All synthetic hosted fixtures are refused on
+non-testnet chains, including Veda fixtures over a canonical asset. Retired fixtures on those chains
+must not be reused or funded; source verification does not make a fixture a production venue.
+Veda fixture checks bind the current engine, cached Teller, Queue, Accountant, registry, and solver.
+After an authorized periphery rotation, refresh fixture metadata to the new verified bindings
+before acceptance; stale fixture addresses do not prohibit rotation or authorize the new setup.
 
 ## Foundry and containers
 
@@ -120,8 +131,11 @@ and prices at par with the full pool inventory.
   engine's deploy script (`erc4626EngineFactory` in `earn/script/deploy/DeployERC4626Engine.s.sol`); it
   deploys no rewards factory. `Foundry.script` binds a script to its generated ABI from
   `@tempoxyz/contracts/abis`, so step names and arguments are checked against the Solidity signatures.
-- Forge receives `DEPLOYER_PRIVATE_KEY` as its only secret, alongside an allowlist of ordinary
-  process variables and `FOUNDRY_PROFILE=deploy`, the profile hosted deployments use. Fixture and
+- Fixture and deployment scripts receive `DEPLOYER_PRIVATE_KEY` as their only signing key, alongside
+  an allowlist of ordinary process variables and `FOUNDRY_PROFILE=deploy`, the profile hosted
+  deployments use. Read-only compiler, provenance, and source-verification subprocesses receive
+  no signing keys; project `.env` files are refused and the effective compiler must match
+  `foundry.toml`. Fixture and
   lifecycle steps run with `--batch` and the PATHUSD fee token; Tempo batches allow a top-level
   CREATE only in the first slot.
 - Fixture scripts extend `earn/script/local/script/FixtureScript.sol`, shared with the hosted fixture
@@ -159,6 +173,11 @@ and prices at par with the full pool inventory.
   revision. `tip1091-runtime.json` holds the Portal, Messenger, and Verifier runtimes the L1 image's
   `dump-genesis --chain dev` installs at `0x5AD1…`, `0x5A4d…`, and `0x5A56…` (the constants in that
   revision's `crates/contracts/src/zones.rs`), and `runtimeFixtureSha256` is the file's SHA-256.
+- Card Foundry tests compile a different vendored Zone runtime from the locked Docker pair.
+  [`card-runtime-provenance.json`](../../localnet/fixtures/card-runtime-provenance.json) binds both
+  source and bytecode sets and records compatibility as unresolved. Passing those model tests is
+  not runtime-equivalent private-flow acceptance; both private legs still need native-runtime
+  evidence and a review of protocol differences.
 - The Zone token's local `transferPolicyId()` may report policy `1`, while the TIP-403 proxy mirrors
   and enforces the L1 compound policy by its registered ID.
 - The Zone starts with the freshly deployed base fixture token as its initial token. The pinned Zone

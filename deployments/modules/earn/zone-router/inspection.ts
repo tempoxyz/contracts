@@ -143,7 +143,9 @@ export async function oracleFreshness(
       abi: priceOracleAbi,
       functionName: 'latestPrice',
     })
-    const age = block.timestamp > updatedAt ? block.timestamp - updatedAt : 0n
+    if (updatedAt > block.timestamp)
+      return `oracle report is in the future (${updatedAt - block.timestamp}s ahead)`
+    const age = block.timestamp - updatedAt
     return age > maxAge ? `oracle report is stale (${age}s old, maximum ${maxAge}s)` : undefined
   } catch {
     return 'oracle freshness is unavailable'

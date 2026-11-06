@@ -14,6 +14,6 @@ owns the test fixture bootstrap.
 - Reuse the Zone transport in `harness/context.ts`. API-key runs do not prove caller-token RPC
   isolation.
 - Before blaming Earn code, check canonical Zone identity, protocol compatibility, access controls,
-  and output readiness, and compare with the working app path.
+  and output readiness against the canonical deployment record and the relevant integration case.
 - Benchmarks finish setup before timing, stop when the user's result is observable, and need no
   deployment or access-role keys.

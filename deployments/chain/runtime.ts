@@ -12,7 +12,16 @@ import {
  * instead of viem's default three quick retries.
  */
 export function rpcTransport(url: string | undefined, config: HttpTransportConfig = {}) {
-  return http(url, { retryCount: 6, retryDelay: 250, ...config })
+  const rpc = rpcConfiguration('TEMPO', {}, url)
+  const headers = new Headers(config.fetchOptions?.headers)
+  if (rpc.headers && !headers.has('Authorization'))
+    headers.set('Authorization', rpc.headers.Authorization)
+  return http(rpc.url, {
+    retryCount: 6,
+    retryDelay: 250,
+    ...config,
+    fetchOptions: { ...config.fetchOptions, headers },
+  })
 }
 
 const clients = new Map<string, PublicClient>()
@@ -72,9 +81,22 @@ export function rpcConfiguration(
   fallbackUrl?: string,
 ) {
   const rawUrl = values[`${prefix}_RPC_URL`] || fallbackUrl
-  const parsed = rawUrl ? new URL(rawUrl) : undefined
-  const username = values[`${prefix}_RPC_USERNAME`] || decodeURIComponent(parsed?.username ?? '')
-  const password = values[`${prefix}_RPC_PASSWORD`] || decodeURIComponent(parsed?.password ?? '')
+  const { parsed, username, password } = (() => {
+    try {
+      const parsed = rawUrl ? new URL(rawUrl) : undefined
+      if (parsed && !['http:', 'https:'].includes(parsed.protocol)) throw new Error()
+      return {
+        parsed,
+        username: values[`${prefix}_RPC_USERNAME`] || decodeURIComponent(parsed?.username ?? ''),
+        password: values[`${prefix}_RPC_PASSWORD`] || decodeURIComponent(parsed?.password ?? ''),
+      }
+    } catch {
+      // URL errors retain raw input as an enumerable property, including malformed userinfo.
+      throw new Error(
+        `${prefix}_RPC_URL must be a valid HTTP(S) URL with valid credential encoding`,
+      )
+    }
+  })()
   if (parsed) {
     parsed.username = ''
     parsed.password = ''
@@ -87,12 +109,20 @@ export function rpcConfiguration(
     : undefined
   const authenticatedUrl = parsed ? new URL(parsed) : undefined
   if (authenticatedUrl && username) {
-    authenticatedUrl.username = username
-    authenticatedUrl.password = password
+    authenticatedUrl.username = encodeURIComponent(username)
+    authenticatedUrl.password = encodeURIComponent(password)
   }
   return {
     authenticatedUrl: authenticatedUrl?.toString(),
     headers,
     url: parsed?.toString(),
   }
+}
+
+/** Renders only a sanitized message, never an error object's enumerable RPC request or cause. */
+export function sanitizedDiagnostic(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Operation failed with an unknown error'
+  return message
+    .replace(/(https?:\/\/)[^\s/]*@/gi, '$1[redacted]@')
+    .replace(/(Authorization[\s"':=]+)(?:Basic|Bearer)\s+[^\s,}]+/gi, '$1[redacted]')
 }

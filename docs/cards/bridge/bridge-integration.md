@@ -150,6 +150,24 @@ approves those tokens. Unsponsored, the cardholder approves `input + withdrawalF
 Approve the card on the Zone receipt. Settlement on the L1 follows once the Zone posts its batch
 (see [`design.md`](design.md#latency)).
 
+## Settlement identity
+
+Before marking any card pull completed, the backend must match its own authorized request against
+the observed L1 destination payment: the expected chain ID, exact token contract, token-unit amount, authorized
+destination, program and clone, and expected reference. Token symbols, names, decimals, a successful
+receipt, or `ref` alone do not establish payment of an accepted asset. Direct token funding
+(`fromVault = 0`) has no onchain token allowlist: a caller can pay an authorized destination with
+its own arbitrary token. Such a payment must not be credited as a different accepted asset.
+Earn-funded legs additionally require the allowed vault's actual asset.
+
+Persist the expected chain and token addresses before submission. Bind observed events to the
+submitted transaction and trusted emitting contracts, and deduplicate by chain ID, transaction
+hash, and log index. For private spends, also correlate the exact withdrawal as described
+[below](#after-approval-private-settlement); record and validate each funding leg independently.
+These are backend integration requirements. The contract tests do not verify that Bridge's
+deployed backend enforces them. They do not change receipt-first approval: a private card is still approved on
+the Zone receipt, with later L1 failure covered by the reserve.
+
 ## After approval: private settlement
 
 A private spend ends in one of three ways:
@@ -163,10 +181,12 @@ A private spend ends in one of three ways:
 - Match both outcomes by the `senderTag` in the portal's `WithdrawalProcessed`:
   `keccak256(abi.encodePacked(sender, txHash, fallbackNonce))`, where `fallbackNonce` is in the
   outbox's withdrawal event in Bridge's own Zone receipt. Neither the router nor the program emits
-  it, so read `Spent` and `InputSpent` from the same transaction. Trust only events emitted by the
-  program's portal, router and program. `ref` and the `CardSpend`
+  it, so read `Spent` and `InputSpent` from that callback's log segment, bounded by the Portal's
+  `WithdrawalProcessed` events. Sharing a batched transaction is not enough: another callback may
+  emit the same reference. Trust only the configured portal, router, program and clone emitters.
+  `ref` and the `CardSpend`
   fields come from callback data anyone can write, so never match on `ref` alone: key each record on the
-  transaction hash and log index, and bind the program's `CardSpent` and `InputSpent` to the portal's
+  chain ID, transaction hash and log index, and bind the program's `CardSpent` and `InputSpent` to the portal's
   `WithdrawalProcessed` and the router's `Spent` in that transaction. `ref` is advisory and public on
   the L1, so for a private spend use one that cannot be linked to the cardholder, such as
   `keccak256(pullId, programSecret)` with a secret Bridge keeps per program.

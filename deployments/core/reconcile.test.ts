@@ -3,12 +3,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { parseEarnDeploymentProfile } from '@tempoxyz/contracts/deployments/operations'
-import { keccak256, zeroAddress, type Hex } from 'viem'
+import { getAddress, keccak256, zeroAddress, type Hex } from 'viem'
 import { Addresses } from 'viem/tempo'
 
 import { foundryProcessEnvironment } from '../chain/foundry.js'
 import {
   foundryOutputPath,
+  foundryBroadcastPath,
+  lockPendingDeployment,
+  stageFoundryOutputs,
   loadPendingDeployment,
   restorePendingDeployment,
   savePendingDeployment,
@@ -18,12 +21,19 @@ import { validateSharedFactoryRelease } from './releases.js'
 import { resolvedEngineStateSatisfied } from '../modules/earn/engines/steps.js'
 import { componentDeploymentIntentHashes, engineOwnerAccepted } from './profile.js'
 import { planEarnDeployment } from './plan.js'
-import { prepareLifecycleStep, recordAuthorityAction, recordFoundryAction } from './reconcile.js'
+import {
+  preflightEarnDeployment,
+  prepareLifecycleStep,
+  recordAuthorityAction,
+  recordFoundryAction,
+} from './reconcile.js'
 import { deploymentStep } from '../modules/index.js'
+import * as Inspection from './inspection.js'
 import { pendingDeploymentPath } from './bundle.js'
 
 const chain = vi.hoisted(() => ({
   getBlockNumber: vi.fn(async () => 250_000n),
+  getChainId: vi.fn(async () => 4217),
   getLogs: vi.fn(
     async (_parameters: { fromBlock: bigint }): Promise<{ transactionHash: string }[]> => [],
   ),
@@ -35,7 +45,7 @@ vi.mock(import('../chain/runtime.js'), async (original) => ({
   rpcClient: () => chain as never,
 }))
 
-const address = (suffix: string) => `0x${suffix.padStart(40, '0')}` as `0x${string}`
+const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
 const engineFactory = address('5')
 const profile = parseEarnDeploymentProfile(
   {
@@ -232,6 +242,216 @@ describe('Earn deployment lifecycle', () => {
     }
   })
 
+  test('preserves compatible interrupted optional outputs across committed-record restoration', () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-optional-'))
+    try {
+      const path = join(root, 'profile.json')
+      const cached = {
+        ...loadPendingDeployment(path, profile),
+        latestOutputs: { earnMerkleRewardDistributor: address('a') },
+      }
+      savePendingDeployment(path, profile, cached)
+      const restored = restorePendingDeployment(path, profile, {
+        componentDeploymentIntentHashes: componentDeploymentIntentHashes(profile),
+        addresses: {},
+        actions: {},
+      })
+      expect(restored.latestOutputs).toEqual(cached.latestOutputs)
+      expect(loadPendingDeployment(path, profile).latestOutputs).toEqual(cached.latestOutputs)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects unsupported output keys before persistence without poisoning valid state', () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-output-schema-'))
+    try {
+      const path = join(root, 'profile.json')
+      const pending = loadPendingDeployment(path, profile)
+      savePendingDeployment(path, profile, pending)
+      for (const field of ['outputs', 'latestOutputs'])
+        expect(() =>
+          savePendingDeployment(path, profile, { ...pending, [field]: { unknown: address('a') } }),
+        ).toThrow('unsupported output')
+      expect(loadPendingDeployment(path, profile)).toEqual(pending)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('isolates staging and receipts for equal profile IDs from different repositories', () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-isolation-'))
+    try {
+      const first = join(root, 'first', 'profiles', profile.id, 'profile.json')
+      const second = join(root, 'second', 'profiles', profile.id, 'profile.json')
+      expect(foundryOutputPath(root, first)).not.toBe(foundryOutputPath(root, second))
+      expect(foundryBroadcastPath(root, first)).not.toBe(foundryBroadcastPath(root, second))
+      for (const path of [first, second]) {
+        savePendingDeployment(path, profile, loadPendingDeployment(path, profile))
+        stageFoundryOutputs(root, path)
+      }
+      syncFoundryOutputs(root, second)
+      expect(existsSync(foundryOutputPath(root, first))).toBe(true)
+      const unlock = lockPendingDeployment(first)
+      expect(() => lockPendingDeployment(first)).toThrow('locked by another run')
+      const unlockSecond = lockPendingDeployment(second)
+      unlockSecond()
+      unlock()
+      lockPendingDeployment(first)()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('replaces discovered sequencer metadata instead of retaining removed keys', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-metadata-'))
+    try {
+      const path = join(root, 'profile.json')
+      savePendingDeployment(path, profile, {
+        ...loadPendingDeployment(path, profile),
+        outputs: {
+          zoneSequencer0: address('a'),
+          zoneSequencer1: address('b'),
+          zoneSequencer: address('c'),
+        },
+      })
+      const result = await prepareLifecycleStep({
+        root,
+        profilePath: path,
+        profile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: [],
+        discoveredOutputs: { zoneSequencer0: address('d') },
+      })
+      expect(result.pending.outputs).toEqual({ zoneSequencer0: address('d') })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('refuses an ownerless unbound engine before deployment but preserves external owner handoffs', async () => {
+    const configured = { ...profile, engine: { kind: 'erc4626' as const, address: address('1') } }
+    let owner: `0x${string}` = zeroAddress
+    chain.getCode.mockResolvedValue('0x60')
+    chain.readContract.mockImplementation(
+      async ({ functionName }: { functionName: string }) =>
+        ({ asset: address('a'), owner, earnVault: zeroAddress })[functionName],
+    )
+    await expect(preflightEarnDeployment(configured, 'http://chain.test')).rejects.toThrow(
+      'has no owner',
+    )
+    owner = address('f')
+    await expect(preflightEarnDeployment(configured, 'http://chain.test')).resolves.toBeUndefined()
+  })
+
+  test('preflight inspects the active migrated engine instead of a retired Veda venue', async () => {
+    const vault = address('b')
+    const currentEngine = address('c')
+    const asset = address('d')
+    const venue = address('e')
+    const migrated = {
+      ...profile,
+      core: { ...profile.core, migrationMode: 'OperatorEnabled' as const },
+    }
+    const values: Record<string, Record<string, unknown>> = {
+      [address('1')]: { asset, owner: profile.owner, earnVault: vault },
+      [vault]: { operator: profile.owner, engine: currentEngine, asset, engineMigrationMode: 1 },
+      [currentEngine]: {
+        asset,
+        owner: profile.owner,
+        earnVault: vault,
+        supportsInterface: true,
+        vault: venue,
+      },
+    }
+    chain.getCode.mockResolvedValue('0x60')
+    chain.readContract.mockImplementation(
+      async ({ address: target, functionName }: { address: string; functionName: string }) => {
+        const value = values[target]?.[functionName]
+        if (value === undefined)
+          throw new Error(`Unexpected retired-engine read ${target}.${functionName}`)
+        return value
+      },
+    )
+    await expect(
+      preflightEarnDeployment(migrated, 'http://chain.test', vault),
+    ).resolves.toBeUndefined()
+    await expect(preflightEarnDeployment(profile, 'http://chain.test', vault)).rejects.toThrow(
+      'immutable vault cannot migrate',
+    )
+  })
+
+  test('recovers an existing bound engine only through its profile predictions before preflight', async () => {
+    const core = { earnVault: address('b'), earnShare: address('c'), earnFees: address('d') }
+    const configured = { ...profile, engine: { kind: 'erc4626' as const, address: address('1') } }
+    const values: Record<string, Record<string, unknown>> = {
+      [configured.factories.earn]: {
+        predictEarnShare: core.earnShare,
+        predictEarnFees: core.earnFees,
+      },
+      [address('1')]: {
+        asset: address('e'),
+        owner: configured.owner,
+        earnVault: core.earnVault,
+        vault: address('f'),
+      },
+      [core.earnVault]: {
+        ...core,
+        engine: address('1'),
+        asset: address('e'),
+        operator: configured.owner,
+      },
+      [core.earnFees]: { earnVault: core.earnVault },
+    }
+    chain.getCode.mockResolvedValue('0x60')
+    chain.readContract.mockImplementation(
+      async ({ address: target, functionName }: { address: string; functionName: string }) =>
+        values[target]?.[functionName],
+    )
+    await expect(preflightEarnDeployment(configured, 'http://chain.test')).resolves.toBeUndefined()
+    values[address('1')]!.earnVault = address('9')
+    values[address('9')] = { operator: configured.owner }
+    await expect(preflightEarnDeployment(configured, 'http://chain.test')).rejects.toThrow(
+      "not this profile's predicted vault",
+    )
+  })
+
+  test('includes computed provenance blockers in the activation authority handoff', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-handoff-'))
+    const step = deploymentStep('admit-zone-router-account')
+    if (step.execution !== 'authority') throw new Error('Expected authority step')
+    const inspect = vi.spyOn(Inspection, 'inspectEarnDeployment').mockResolvedValue({
+      router: {
+        label: 'Zone router provenance',
+        status: 'blocked',
+        blockers: ['Spender has no reviewed release provenance'],
+      },
+    })
+    const satisfied = vi.spyOn(step, 'satisfied').mockResolvedValue(false)
+    const handoff = vi
+      .spyOn(step, 'handoff')
+      .mockReturnValue('The Zone administrator must approve the account.')
+    try {
+      const result = await prepareLifecycleStep({
+        root,
+        profilePath: join(root, 'profile.json'),
+        profile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: [{ id: step.id } as never],
+      })
+      if (result.kind !== 'handoff') throw new Error('Expected handoff')
+      expect(result.instructions).toContain('Spender has no reviewed release provenance')
+      expect(result.instructions).toContain('Review and resolve these blockers before approving')
+    } finally {
+      inspect.mockRestore()
+      satisfied.mockRestore()
+      handoff.mockRestore()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('stages Forge outputs for a profile outside the checkout and syncs them back', () => {
     const root = mkdtempSync(join(tmpdir(), 'earn-staging-'))
     try {
@@ -239,7 +459,7 @@ describe('Earn deployment lifecycle', () => {
       expect(foundryOutputPath(root, inside)).toBe(pendingDeploymentPath(inside))
       const outside = join(root, 'deployments', 'profiles', profile.id, 'profile.json')
       const staged = foundryOutputPath(root, outside)
-      expect(staged).toBe(join(root, '.earn', 'external', profile.id, 'deployment.pending.json'))
+      expect(staged).toContain(join(root, '.earn', 'external', `${profile.id}-`))
 
       savePendingDeployment(outside, profile, loadPendingDeployment(outside, profile))
       const pending = JSON.parse(readFileSync(pendingDeploymentPath(outside), 'utf8'))
@@ -272,14 +492,16 @@ describe('Earn deployment lifecycle', () => {
         predictEarnShare: core.earnShare,
         predictEarnFees: core.earnFees,
       }
-      const vault = { engine: address('1'), ...core, operator: profile.owner }
+      const vault = { engine: address('1'), ...core, asset: engine.asset, operator: profile.owner }
       let broadcasted = false
       chain.getCode.mockImplementation(async ({ address: target }: { address: string }) =>
         broadcasted || !Object.values(core).includes(target as never) ? '0x60' : '0x',
       )
       chain.readContract.mockImplementation(
         async ({ address: target, functionName }: { address: string; functionName: string }) =>
-          (target === core.earnVault ? vault : engine)[functionName as never],
+          target === core.earnFees && functionName === 'earnVault'
+            ? core.earnVault
+            : (target === core.earnVault ? vault : engine)[functionName as never],
       )
       const root = mkdtempSync(join(tmpdir(), 'earn-recovery-'))
       try {
@@ -293,6 +515,9 @@ describe('Earn deployment lifecycle', () => {
         const deploy = await prepareLifecycleStep(options)
         if (deploy.kind !== 'foundry') throw new Error(`planned ${deploy.kind}`)
         expect(deploy.action.id).toBe('deploy-core')
+        expect(deploy.arguments).not.toContain(options.rpcUrl)
+        expect(deploy.arguments).not.toContain('--rpc-url')
+        expect(deploy.environment.FOUNDRY_ETH_RPC_URL).toBe(options.rpcUrl)
         // Forge broadcast and wrote its outputs, then the run stopped before recording them.
         const written = JSON.parse(readFileSync(deploy.outputPath, 'utf8'))
         writeFileSync(deploy.outputPath, JSON.stringify({ ...written, latestOutputs: core }))
@@ -377,7 +602,7 @@ describe('Earn deployment lifecycle', () => {
     // Someone called the permissionless factory with this profile's exact parameters first.
     const factory = { predictEarnShare: core.earnShare, predictEarnFees: core.earnFees }
     const engine = { asset: address('5'), owner: address('14'), earnVault: zeroAddress }
-    const vault = { engine: address('1'), ...core, operator: profile.owner }
+    const vault = { engine: address('1'), ...core, asset: engine.asset, operator: profile.owner }
     const creation: Hex = `0x${'cd'.repeat(32)}`
     chain.getCode.mockImplementation(async () => '0x60')
     // The creation event sits two log windows behind the head.
@@ -409,6 +634,18 @@ describe('Earn deployment lifecycle', () => {
         asset: engine.asset,
       })
       expect(step.pending.actions['deploy-core']?.transactions).toEqual([creation])
+      const profilePath = join(root, 'profiles', profile.id, 'profile.json')
+      savePendingDeployment(profilePath, profile, { ...step.pending, actions: {} })
+      const satisfied = await prepareLifecycleStep({
+        root,
+        profilePath,
+        profile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: planEarnDeployment(profile).filter(({ id }) => id === 'deploy-core'),
+      })
+      expect(satisfied.kind).toBe('complete')
+      expect(satisfied.pending.actions['deploy-core']?.transactions).toEqual([creation])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -475,6 +712,23 @@ describe('Earn deployment lifecycle', () => {
         },
       })
       expect(recorded.actions['deploy-zone-router']?.transactions).toEqual([creation])
+      savePendingDeployment(profilePath, routerProfile, {
+        ...pending,
+        latestOutputs: { zoneRouter: router },
+      })
+      satisfied.mockImplementation(
+        async (_client, _profile, outputs) => outputs.zoneRouter === router,
+      )
+      const resumed = await prepareLifecycleStep({
+        root,
+        profilePath,
+        profile: routerProfile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: planEarnDeployment(routerProfile).filter(({ id }) => id === 'deploy-zone-router'),
+      })
+      expect(resumed.kind).toBe('complete')
+      expect(resumed.pending.actions['deploy-zone-router']?.transactions).toEqual([creation])
     } finally {
       satisfied.mockRestore()
       rmSync(checkout, { recursive: true, force: true })

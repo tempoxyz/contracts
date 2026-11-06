@@ -119,14 +119,17 @@ export function createE2eContext(options: createE2eContext.Options) {
     E2eActor,
     ReturnType<typeof actor>
   >
+  // Mirrored TIP-403 policies use the public, zero-address state view, not an actor's private view.
+  // Keep the user's authentication store without changing that view or the configured endpoint.
   const policyZoneClient =
     zone && zoneChain
       ? createClient({
           account: zeroAddress,
           chain: zoneChain,
-          transport: http(options.zoneSubmissionRpcUrl ?? zone.rpcUrl, {
+          transport: createZoneTransport(options.zoneSubmissionRpcUrl ?? zone.rpcUrl, {
             fetchOptions: { headers: zoneHeaders },
             timeout: 10_000,
+            store: actors.user.zone!.store,
           }),
           ...localPolling,
         })

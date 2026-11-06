@@ -9,18 +9,25 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 import { inspectEngineBindings } from '../modules/earn/engines/index.js'
 import { capabilityModules, executeAvailableAuthority } from '../../deployments/modules/index.js'
-import type { DiscoveryOptions, InspectionReport } from '../../deployments/modules/module.js'
+import type {
+  DiscoveryOptions,
+  InspectionReport,
+  PrivilegedPrincipal,
+} from '../../deployments/modules/module.js'
 import {
   assertFoundryVersion,
+  assertFoundryProjectEnvironment,
   foundryVerificationEnvironment,
   sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
 import { activationActions, deploymentActions, type EarnDeploymentAction } from './plan.js'
 import {
   loadPendingDeployment,
+  lockPendingDeployment,
   removePendingDeployment,
   restorePendingDeployment,
   savePendingDeployment,
+  syncFoundryOutputs,
   type PendingDeployment,
 } from './pending.js'
 import {
@@ -52,7 +59,11 @@ import {
   type EarnDeploymentProfile,
 } from './profile.js'
 import { inspectEarnDeployment } from './inspection.js'
-import { sharedFactoryRuntimeCodeHashes, type CompiledRuntimeCode } from './releases.js'
+import {
+  sharedFactoryRuntimeCodeHashes,
+  type CompiledRuntimeCode,
+  type ReviewedDeploymentIdentity,
+} from './releases.js'
 import {
   captureDeploymentSource,
   earliestDeploymentBlock,
@@ -109,13 +120,34 @@ type LifecycleOptions = {
   profilePath: string
   root: string
   rpcUrl: string
+  /** An independently reviewed identity for hosted records not in the built-in registry. */
+  trustedIdentity?: ReviewedDeploymentIdentity
 }
 
 /** Reconciles one authored profile until it is complete or reaches external authority. */
 export async function deployEarnProfile(options: LifecycleOptions): Promise<EarnDeploymentResult> {
-  const profile = loadEarnProfileForEnvironment(options.profilePath, options.environment)
+  const unlock = lockPendingDeployment(options.profilePath)
+  try {
+    return await deployEarnProfileLocked(options)
+  } finally {
+    unlock()
+  }
+}
+
+async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnDeploymentResult> {
+  const profile = loadEarnProfileForEnvironment(
+    options.profilePath,
+    options.environment,
+    options.trustedIdentity,
+  )
   assertNoPublicFixtureAuthority(profile, publicFixtureAddresses())
   const client = rpcClient(options.rpcUrl)
+  const livePrincipals = (
+    await Promise.all(
+      capabilityModules.map((module) => module.livePrivilegedPrincipals?.(client, profile) ?? []),
+    )
+  ).flat()
+  assertNoPublicFixtureAuthority(profile, publicFixtureAddresses(), livePrincipals)
   const summary = (addresses: Record<string, Address>): DeploymentSummary => ({
     profile,
     deploymentIntentHash: deploymentIntentHash(profile),
@@ -128,6 +160,7 @@ export async function deployEarnProfile(options: LifecycleOptions): Promise<Earn
   const reconciling = committed
     ? changedIntentComponents(committed.componentDeploymentIntentHashes, profile)
     : new Set<IntentComponent>()
+  syncFoundryOutputs(options.root, options.profilePath)
   let pending: PendingDeployment
   if (committed) {
     await verifyDeploymentProvenance(client, committed)
@@ -159,8 +192,10 @@ export async function deployEarnProfile(options: LifecycleOptions): Promise<Earn
   await preflightEarnDeployment(
     profile,
     options.rpcUrl,
-    pending.outputs.earnVault,
+    pending.outputs.earnVault ?? pending.latestOutputs?.earnVault,
     expectedFactoryRuntimeCodeHashes,
+    'ready',
+    { ...pending.outputs, ...pending.latestOutputs },
   )
   if (expectedFactoryRuntimeCodeHashes && !pending.factoryRuntimeCodeHashes) {
     pending = { ...pending, factoryRuntimeCodeHashes: expectedFactoryRuntimeCodeHashes }
@@ -407,7 +442,7 @@ async function completeDeploymentSourceVerification(
 export async function verifyEarnProfile(
   options: LifecycleOptions & { skipLive?: readonly string[] },
 ) {
-  const { profile, record } = loadEarnProfileBundle(options.profilePath)
+  const { profile, record } = loadEarnProfileBundle(options.profilePath, options.trustedIdentity)
   const skipLive = options.skipLive ?? []
   const unverified = skipLive.map((flag) => {
     const check = capabilityModules.find((module) => module.liveCheck?.flag === flag)?.liveCheck
@@ -456,6 +491,7 @@ export async function verifyEarnProfile(
 }
 
 function executeFoundry(step: Extract<ReconciliationStep, { kind: 'foundry' }>) {
+  assertFoundryProjectEnvironment(step.root)
   const result = spawnSync('forge', step.arguments, {
     cwd: step.root,
     // The child receives only the deployment allowlist, not the parent's environment.
@@ -470,10 +506,12 @@ function executeFoundry(step: Extract<ReconciliationStep, { kind: 'foundry' }>) 
   }
 }
 
-function formatCommitReadyOutput(root: string, outputPath: string) {
+/** Formats the published record without giving package-manager children any signing authority. */
+export function formatCommitReadyOutput(root: string, outputPath: string) {
   const result = spawnSync('pnpm', ['exec', 'vp', 'fmt', outputPath], {
     cwd: root,
     encoding: 'utf8',
+    env: foundryVerificationEnvironment(process.env),
   })
   if (result.error) throw result.error
   if (result.status !== 0) {
@@ -524,8 +562,9 @@ async function discoverDeploymentTarget(
 export function assertNoPublicFixtureAuthority(
   profile: EarnDeploymentProfile,
   fixtureAddresses: ReadonlySet<Address>,
+  livePrincipals: readonly PrivilegedPrincipal[] = [],
 ) {
-  const exposed = privilegedPrincipals(profile).find(([, address]) =>
+  const exposed = [...privilegedPrincipals(profile), ...livePrincipals].find(([, address]) =>
     fixtureAddresses.has(getAddress(address)),
   )
   if (exposed) {
@@ -557,6 +596,7 @@ function compiledRuntimeCode(
   contract: string,
   environment: Readonly<Record<string, string | undefined>>,
 ): CompiledRuntimeCode {
+  assertFoundryProjectEnvironment(root)
   const [source, name] = contract.split(':')
   if (!source || !name) throw new Error(`Invalid Foundry contract identifier ${contract}`)
   const bytecode = execFileSync('forge', ['inspect', contract, 'deployedBytecode'], {

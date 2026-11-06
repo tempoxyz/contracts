@@ -101,7 +101,16 @@ export type TargetSlice<Key extends string, Value, Fields extends object> = {
  */
 export type CapabilityModule = {
   /** Read-only checks before any key is consumed. */
-  preflight?(client: PublicClient, profile: EarnDeploymentProfile): Promise<void>
+  preflight?(
+    client: PublicClient,
+    profile: EarnDeploymentProfile,
+    outputs?: Record<string, Address>,
+  ): Promise<void>
+  /** Privileged roles discovered onchain, screened by the hosted lifecycle before any broadcast. */
+  livePrivilegedPrincipals?(
+    client: PublicClient,
+    profile: EarnDeploymentProfile,
+  ): Promise<readonly PrivilegedPrincipal[]>
   /** Live external addresses the capability uses but does not deploy, merged into outputs. */
   discover?(options: DiscoveryOptions): Promise<Record<string, Address> | undefined>
   /**

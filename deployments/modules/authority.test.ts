@@ -19,6 +19,9 @@ import {
 import { planEarnDeployment } from '../core/plan.js'
 import { parseEarnDeploymentProfile } from '../core/profile.js'
 
+// Provenance rejection is covered independently; these tests exercise authority and receipt dispatch.
+vi.mock('./earn/zone-router/provenance.js', () => ({ requireRouterProvenance: vi.fn() }))
+
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as `0x${string}`
 const profile = parseEarnDeploymentProfile(
   {
@@ -42,6 +45,7 @@ const profile = parseEarnDeploymentProfile(
 )
 const outputs = {
   asset: address('a'),
+  earnVault: address('e'),
   earnShare: address('b'),
   zonePortal: address('8'),
 }
@@ -58,7 +62,13 @@ const engineProfile = parseEarnDeploymentProfile(
   },
   { deployer: engineOwner, factories: { earn: address('3'), erc4626Engine: address('5') } },
 )
-const engineOutputs = { engine: address('1'), earnVault: address('e') }
+const engineOutputs = {
+  engine: address('1'),
+  asset: address('a'),
+  earnVault: address('e'),
+  earnShare: address('b'),
+  earnFees: address('c'),
+}
 const authorityKey = `0x${'3'.repeat(64)}` as const
 const authorityAccount = privateKeyToAccount(authorityKey).address
 const receiptHash = `0x${'a'.repeat(64)}` as const
@@ -66,13 +76,17 @@ const receiptHash = `0x${'a'.repeat(64)}` as const
 function mockDependencies(values: unknown[]) {
   const readContract = vi.fn()
   for (const value of values) readContract.mockResolvedValueOnce(value)
-  const sendTransactionSync = vi.fn().mockResolvedValue({ transactionHash: receiptHash })
+  const sendTransactionSync = vi
+    .fn()
+    .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
   const fundFromFaucet = vi.fn()
   return {
     dependencies: {
       authorityClient: ((_options: unknown, account: unknown) => ({
         account,
-        chain: {},
+        chain: { id: 42431 },
+        getTransactionCount: async () => 0,
+        getCode: async () => '0x6000',
         readContract,
         sendTransactionSync,
       })) as never,
@@ -114,15 +128,10 @@ function canAuthorize(dependencies: Parameters<typeof canAuthorizeRouter>[1]) {
 
 describe('deployment authority adapters', () => {
   test('binds as setup owner, transfers to the final owner, and records the receipt', async () => {
-    // The engine's asset, owner, and (unbound) EarnVault.
-    const readContract = vi
-      .fn()
-      .mockResolvedValueOnce(address('a'))
-      .mockResolvedValueOnce(engineOwner)
-      .mockResolvedValueOnce(address('0'))
+    const readContract = coreReadContract()
     const sendTransactionSync = vi
       .fn()
-      .mockResolvedValue({ transactionHash: `0x${'a'.repeat(64)}` })
+      .mockResolvedValue({ status: 'success', transactionHash: `0x${'a'.repeat(64)}` })
     const fund = vi.fn()
     const result = await execute(
       engineProfile,
@@ -132,7 +141,9 @@ describe('deployment authority adapters', () => {
       {
         authorityClient: ((_options: unknown, account: unknown) => ({
           account,
-          chain: {},
+          chain: { id: 42431 },
+          getTransactionCount: async () => 0,
+          getCode: async () => '0x6000',
           readContract,
           sendTransactionSync,
         })) as never,
@@ -150,7 +161,8 @@ describe('deployment authority adapters', () => {
   })
 
   test('leaves binding to a handoff when the deployer is not the engine owner', async () => {
-    const runtime = mockDependencies([address('a'), engineOwner, address('0')])
+    const runtime = mockDependencies([])
+    runtime.readContract.mockImplementation(coreReadContract())
     await expect(
       execute(
         engineProfile,
@@ -211,7 +223,14 @@ describe('deployment authority adapters', () => {
     { name: 'an unregistered router', gatewayOpen: false, registered: false, sends: true },
   ])('registers the router as a callback gateway only for $name', async (scenario) => {
     const router = address('9')
-    const runtime = mockDependencies([authorityAccount, scenario.gatewayOpen, scenario.registered])
+    const runtime = mockDependencies([])
+    runtime.readContract.mockImplementation(async ({ functionName, args }) => {
+      if (functionName === 'admin') return authorityAccount
+      if (functionName === 'isGatewayOpen') return scenario.gatewayOpen
+      if (functionName === 'isAccessEnforced') return false
+      if (functionName === 'hasRole') return args[1] === 3 && scenario.registered
+      throw new Error(`Unexpected Portal read ${functionName}`)
+    })
     const result = await execute(
       profile,
       'register-zone-gateway',
@@ -220,7 +239,9 @@ describe('deployment authority adapters', () => {
       runtime.dependencies,
     )
     // An open gateway needs no role read, so Portals without `hasRole` still reconcile.
-    expect(runtime.readContract).toHaveBeenCalledTimes(scenario.gatewayOpen ? 2 : 3)
+    expect(runtime.readContract).toHaveBeenCalledTimes(
+      scenario.gatewayOpen ? 4 : scenario.registered ? 5 : 4,
+    )
     if (!scenario.gatewayOpen) {
       expect(runtime.readContract.mock.calls[2]![0]).toMatchObject({
         functionName: 'hasRole',
@@ -357,3 +378,20 @@ describe('deployment authority adapters', () => {
     expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
   })
 })
+
+function coreReadContract() {
+  return vi.fn(
+    async ({ address: target, functionName }: { address: string; functionName: string }) => {
+      if (functionName === 'predictEarnShare' || functionName === 'earnShare')
+        return engineOutputs.earnShare
+      if (functionName === 'predictEarnFees' || functionName === 'earnFees')
+        return engineOutputs.earnFees
+      if (functionName === 'engine') return engineOutputs.engine
+      if (functionName === 'asset') return engineOutputs.asset
+      if (functionName === 'owner') return engineOwner
+      if (functionName === 'earnVault')
+        return target === engineOutputs.earnFees ? engineOutputs.earnVault : address('0')
+      throw new Error(`Unexpected core read ${functionName}`)
+    },
+  )
+}

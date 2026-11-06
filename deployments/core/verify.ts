@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -15,7 +15,9 @@ import {
 } from 'viem'
 
 import {
+  assertFoundryProjectEnvironment,
   foundryProjectRoot,
+  foundryRpcEnvironment,
   foundryVerificationEnvironment,
   sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
@@ -57,6 +59,8 @@ export type VerificationDependencies = {
   spawn: typeof spawnSync
   /** Extra `forge verify-contract` arguments naming the deploy profile's compiler build. */
   compilerArguments: (root: string, environment: NodeJS.ProcessEnv) => string[]
+  /** The independent compiler input manifest, never paths supplied by the verifier. */
+  sourcePaths: (root: string, contract: string, environment: NodeJS.ProcessEnv) => readonly string[]
 }
 
 type SourceVerificationOptions<Record = Pick<EarnDeploymentRecord, 'actions' | 'addresses'>> = {
@@ -66,6 +70,8 @@ type SourceVerificationOptions<Record = Pick<EarnDeploymentRecord, 'actions' | '
   record: Record
   root: string
   rpcUrl: string
+  /** Explicitly replace an existing verifier entry by submitting canonical compiler inputs. */
+  resubmit?: boolean
 }
 
 /** Verifies every deployment-owned Solidity artifact and classifies native/proxy outputs. */
@@ -98,7 +104,25 @@ export async function verifyRecordedDeploymentSources(
     )
   }
   const observed = await inspectDeploymentSources(options, false, dependencies)
-  if (!isDeepStrictEqual(observed.contracts, options.record.source.contracts)) {
+  const compatible = Object.fromEntries(
+    Object.entries(observed.contracts).map(([key, value]) => {
+      const previous =
+        options.record.source.contracts[key as keyof typeof options.record.source.contracts]
+      // A stricter verifier match strengthens the same source evidence; downgrades remain a failure.
+      return [
+        key,
+        value &&
+        previous &&
+        'match' in value &&
+        'match' in previous &&
+        value.match === 'exact_match' &&
+        previous.match === 'match'
+          ? { ...value, match: 'match' }
+          : value,
+      ]
+    }),
+  )
+  if (!isDeepStrictEqual(compatible, options.record.source.contracts)) {
     throw new Error('Recorded deployment source verification does not match current provenance')
   }
 }
@@ -230,10 +254,12 @@ export async function verifyContractSource(
     /** Fully qualified `<source>:<name>`. */
     contract: string
     constructorArgs: Hex
+    creationTransactionHash?: Hex
+    resubmit?: boolean
   },
   dependencies: Partial<VerificationDependencies> = {},
 ) {
-  const { address, contract, constructorArgs, ...target } = options
+  const { address, contract, constructorArgs, creationTransactionHash, ...target } = options
   return verifySource(
     {
       ...target,
@@ -242,7 +268,13 @@ export async function verifyContractSource(
       submitMissing: true,
       compilerArguments: new Map(),
     },
-    { address, constructorArgs, contract, name: contract.slice(contract.lastIndexOf(':') + 1) },
+    {
+      address,
+      constructorArgs,
+      creationTransactionHash,
+      contract,
+      name: contract.slice(contract.lastIndexOf(':') + 1),
+    },
   )
 }
 
@@ -255,6 +287,30 @@ function verificationRuntime(
     readSource: (path) => readFileSync(path, 'utf8'),
     spawn: spawnSync,
     compilerArguments: sourceVerificationCompilerArguments,
+    sourcePaths: (root, contract, environment) => {
+      assertFoundryProjectEnvironment(root)
+      const input = JSON.parse(
+        execFileSync(
+          'forge',
+          [
+            'verify-contract',
+            '0x0000000000000000000000000000000000000001',
+            contract,
+            '--show-standard-json-input',
+            ...sourceVerificationCompilerArguments(root, environment),
+          ],
+          {
+            cwd: root,
+            encoding: 'utf8',
+            env: foundryVerificationEnvironment(environment),
+            maxBuffer: 32 * 1024 * 1024,
+          },
+        ),
+      ) as { sources?: Record<string, unknown> }
+      if (!input.sources || Object.keys(input.sources).length === 0)
+        throw new Error('Compiler returned no source input manifest')
+      return Object.keys(input.sources)
+    },
     ...dependencies,
   }
 }
@@ -285,7 +341,7 @@ async function verifySource(
 ): Promise<Extract<ContractSourceVerification, { kind: 'source' }>> {
   const root = target.root ?? context.root
   const existing = await lookupContract(context, target.address)
-  if (existing?.match) {
+  if (existing?.match && !context.resubmit) {
     return sourceMatch(context, existing, target)
   }
   if (!context.submitMissing) {
@@ -301,6 +357,7 @@ async function verifySource(
   let lastTransient = false
   const maximumAttempts = 6
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+    assertFoundryProjectEnvironment(root)
     const result = context.runtime.spawn(
       'forge',
       [
@@ -311,8 +368,6 @@ async function verifySource(
         root,
         '--chain',
         String(context.chainId),
-        '--rpc-url',
-        context.rpcUrl,
         '--verifier',
         'sourcify',
         '--verifier-url',
@@ -329,7 +384,10 @@ async function verifySource(
       {
         cwd: root,
         encoding: 'utf8',
-        env: foundryVerificationEnvironment(context.environment) as NodeJS.ProcessEnv,
+        env: foundryRpcEnvironment(
+          foundryVerificationEnvironment(context.environment),
+          context.rpcUrl,
+        ) as NodeJS.ProcessEnv,
       },
     )
     if (result.error) throw result.error
@@ -449,7 +507,7 @@ function sourceMatch(
     name: string
   },
 ): Extract<ContractSourceVerification, { kind: 'source' }> {
-  if (!contract.match) {
+  if (contract.match !== 'match' && contract.match !== 'exact_match') {
     throw new Error(`${target.name} ${target.address} has no source match`)
   }
   if (
@@ -467,7 +525,6 @@ function sourceMatch(
   }
   if (
     target.creationTransactionHash &&
-    contract.transactionHash &&
     contract.transactionHash?.toLowerCase() !== target.creationTransactionHash.toLowerCase()
   ) {
     throw new Error(
@@ -506,6 +563,17 @@ function requireCanonicalSources(
   // A fixed collation: the default follows the operator's locale (Czech and Slovak sort 'ch' after
   // 'h'), which would change the recorded hash. 'en' matches what existing records were hashed with.
   const entries = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right, 'en'))
+  if (context.submitMissing) {
+    const expected = context.runtime.sourcePaths(
+      projectRoot,
+      fullyQualifiedName,
+      context.environment,
+    )
+    if (!isDeepStrictEqual([...expected].sort(), Object.keys(sources).sort()))
+      throw new Error(
+        `Verifier source paths do not match the complete compiler input manifest for ${fullyQualifiedName}`,
+      )
+  }
   for (const [relativePath, source] of entries) {
     if (typeof source.content !== 'string')
       throw new Error(`Verifier did not return source content for ${relativePath}`)
@@ -564,6 +632,7 @@ type VerificationContext = {
   verifierUrl: string
   runtime: VerificationDependencies
   submitMissing: boolean
+  resubmit?: boolean | undefined
   /** Each project's compiler arguments, resolved on its first submission. */
   compilerArguments: Map<string, string[]>
 }

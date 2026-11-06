@@ -5,6 +5,7 @@ import { parseEarnDeploymentProfile } from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
 import {
   VerifierUnavailableError,
+  verifyContractSource,
   verifyDeploymentSources,
   verifyRecordedDeploymentSources,
   type VerificationDependencies,
@@ -83,6 +84,9 @@ function dependencies(engineName = 'VedaEngine') {
     readSource: vi.fn((path: string) => `canonical:${path.replace('/repo/', '')}`),
     spawn: vi.fn(),
     compilerArguments: vi.fn((): string[] => []),
+    sourcePaths: vi.fn((_root: string, contract: string) => [
+      contract.slice(0, contract.lastIndexOf(':')),
+    ]),
   } satisfies VerificationDependencies
 }
 
@@ -130,6 +134,11 @@ describe('deployment source verification', () => {
       'lib/forge-std/src/hash.sol': { content: 'canonical:lib/forge-std/src/hash.sol' },
       'src/engines/veda/VedaEngine.sol': { content: 'canonical:src/engines/veda/VedaEngine.sol' },
     }
+    runtime.sourcePaths = vi.fn((_root: string, contract: string) =>
+      contract.endsWith(':VedaEngine')
+        ? Object.keys(engineSources)
+        : [contract.slice(0, contract.lastIndexOf(':'))],
+    )
     runtime.fetch = vi.fn(async (input) => {
       const url = String(input)
       if (url.toLowerCase().includes(engine.toLowerCase())) {
@@ -315,7 +324,12 @@ describe('deployment source verification', () => {
         transaction,
       ]),
     )
-    expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
+    expect(spawnOptions?.env).toEqual({
+      PATH: '/bin',
+      FOUNDRY_PROFILE: 'deploy',
+      FOUNDRY_ETH_RPC_URL: 'https://rpc.example',
+    })
+    expect(arguments_).not.toContain('--rpc-url')
   })
 
   test('retries a submission the verifier failed, and fails a compile error at once', async () => {
@@ -485,7 +499,12 @@ describe('deployment source verification', () => {
       ]),
     )
     expect(runtime.compilerArguments).toHaveBeenCalledWith('/repo', expect.any(Object))
-    expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
+    expect(spawnOptions?.env).toEqual({
+      PATH: '/bin',
+      FOUNDRY_PROFILE: 'deploy',
+      FOUNDRY_ETH_RPC_URL: 'https://rpc.example',
+    })
+    expect(arguments_).not.toContain('--rpc-url')
   })
 
   test('verifies a sibling project contract from its own root, allowing Earn imports', async () => {
@@ -518,6 +537,11 @@ describe('deployment source verification', () => {
     })
     const verify = (sources: Record<string, string>) => {
       const runtime = dependencies()
+      runtime.sourcePaths = vi.fn((_root: string, contract: string) =>
+        contract.endsWith(':ZoneRouter')
+          ? ['src/ZoneRouter.sol', '../earn/src/interfaces/core/IEarnVault.sol']
+          : [contract.slice(0, contract.lastIndexOf(':'))],
+      )
       let routerLookups = 0
       runtime.fetch = vi.fn(async (input) => {
         const url = String(input)
@@ -586,7 +610,7 @@ describe('deployment source verification', () => {
         'src/ZoneRouter.sol': 'canonical:zone-router/src/ZoneRouter.sol',
         '../../outside/Secret.sol': 'canonical:outside',
       }).result,
-    ).rejects.toThrow('Verifier source path ../../outside/Secret.sol escapes the repository root')
+    ).rejects.toThrow('Verifier source paths do not match the complete compiler input manifest')
   })
 
   test('read-only verification never submits a missing source', async () => {
@@ -662,5 +686,111 @@ describe('deployment source verification', () => {
     await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
       'does not match the recorded deployment transaction',
     )
+  })
+})
+
+describe('source verifier admission', () => {
+  test.each(['no_match', 'partial', true, {}, 1])(
+    'rejects unexpected truthy match %s',
+    async (match) => {
+      const runtime = dependencies()
+      runtime.fetch = async () =>
+        Response.json({ ...verifiedContract(engine, 'VedaEngine'), match })
+      await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow('has no source match')
+    },
+  )
+
+  test('rejects omitted dependencies and injected checkout paths before reading any source', async () => {
+    for (const injected of ['../.env', '../README.md', 'src/Secret.sol']) {
+      const runtime = dependencies()
+      runtime.fetch = async () =>
+        Response.json({
+          ...verifiedContract(engine, 'VedaEngine'),
+          sources: {
+            ...verifiedContract(engine, 'VedaEngine').sources,
+            [injected]: { content: 'guess' },
+          },
+        })
+      await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+        'complete compiler input manifest',
+      )
+      expect(runtime.readSource).not.toHaveBeenCalled()
+    }
+    const runtime = dependencies()
+    runtime.sourcePaths.mockReturnValue([
+      'src/engines/veda/VedaEngine.sol',
+      'src/interfaces/Engine.sol',
+    ])
+    await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+      'complete compiler input manifest',
+    )
+    expect(runtime.readSource).not.toHaveBeenCalled()
+  })
+
+  test('accepts stronger matches on recheck but refuses downgrades and changed sources', async () => {
+    const runtime = dependencies()
+    const exact = runtime.fetch
+    runtime.fetch = async (input) => {
+      const response = await exact(input)
+      return Response.json({ ...(await response.json()), match: 'match' })
+    }
+    const source = await verifyDeploymentSources(run(), runtime)
+    runtime.fetch = exact
+    await expect(verifyRecordedDeploymentSources(run({ source }), runtime)).resolves.toBeUndefined()
+    const stronger = await verifyDeploymentSources(run(), runtime)
+    runtime.fetch = async (input) => {
+      const response = await exact(input)
+      return Response.json({ ...(await response.json()), match: 'match' })
+    }
+    await expect(
+      verifyRecordedDeploymentSources(run({ source: stronger }), runtime),
+    ).rejects.toThrow('does not match current provenance')
+  })
+
+  test('does not waive the recorded creation hash for a hashless verifier entry', async () => {
+    const runtime = dependencies()
+    const fetch = runtime.fetch
+    runtime.fetch = async (input) => {
+      const response = await fetch(input)
+      const value = await response.json()
+      delete value.transactionHash
+      return Response.json(value)
+    }
+    await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+      'does not match the recorded deployment transaction',
+    )
+  })
+
+  test('explicit resubmission replaces an invalid existing entry only with canonical evidence', async () => {
+    const runtime = dependencies()
+    let reads = 0
+    runtime.fetch = async (input) =>
+      String(input).endsWith('/v2/verify/job')
+        ? Response.json({ isJobCompleted: true, contract: { match: 'exact_match' }, error: null })
+        : Response.json({
+            ...verifiedContract(engine, 'VedaEngine'),
+            name: ++reads === 1 ? 'Wrong' : 'VedaEngine',
+          })
+    runtime.spawn = vi.fn(() => ({
+      status: 0,
+      stdout: 'Verification Job ID: `job`',
+      stderr: '',
+    })) as never
+    await expect(
+      verifyContractSource(
+        {
+          address: engine,
+          chainId: 4217,
+          constructorArgs: '0x',
+          contract: contracts.VedaEngine,
+          environment: {},
+          root: '/repo',
+          rpcUrl: 'https://rpc.example',
+          resubmit: true,
+        },
+        runtime,
+      ),
+    ).resolves.toMatchObject({ name: 'VedaEngine', match: 'exact_match' })
+    expect(runtime.spawn).toHaveBeenCalledOnce()
   })
 })

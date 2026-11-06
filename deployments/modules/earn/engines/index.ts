@@ -1,6 +1,6 @@
-import { getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
+import { erc20Abi, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
 
-import { earnEngineBindingAbi, earnVaultAbi } from '../../../abis/index.js'
+import { earnEngineBindingAbi, earnFeesAbi, earnVaultAbi } from '../../../abis/index.js'
 import type { Engine, EngineFactory, EngineStack } from './engine.js'
 import { erc4626 } from './erc4626.js'
 import { propamm } from './propamm.js'
@@ -47,7 +47,10 @@ export async function readEngineVenue(client: ReadClient, kind: EngineKind, engi
 }
 
 /** An engine's asset, owner, and EarnVault binding, plus that EarnVault's operator once bound. */
-export async function readEngineBinding(client: ReadClient, engine: Address) {
+export async function readEngineBinding(
+  client: Pick<PublicClient, 'getCode' | 'readContract'>,
+  engine: Address,
+) {
   const contract = { address: engine, abi: earnEngineBindingAbi } as const
   const [asset, owner, earnVault] = (
     await Promise.all([
@@ -56,16 +59,25 @@ export async function readEngineBinding(client: ReadClient, engine: Address) {
       client.readContract({ ...contract, functionName: 'earnVault' }),
     ])
   ).map((value) => getAddress(value)) as [Address, Address, Address]
-  const vaultOperator =
-    earnVault === zeroAddress
-      ? undefined
-      : getAddress(
-          await client.readContract({
-            address: earnVault,
-            abi: earnVaultAbi,
-            functionName: 'operator',
-          }),
-        )
+  const vaultOperator = await (async () => {
+    if (earnVault === zeroAddress) return undefined
+    try {
+      const code = await client.getCode({ address: earnVault })
+      if (!code || code === '0x') throw new Error('bound address has no runtime code')
+      return getAddress(
+        await client.readContract({
+          address: earnVault,
+          abi: earnVaultAbi,
+          functionName: 'operator',
+        }),
+      )
+    } catch (cause) {
+      throw new Error(
+        `Engine ${engine} is already bound to ${earnVault}, which is not a readable EarnVault`,
+        { cause },
+      )
+    }
+  })()
   return { asset, owner, earnVault, vaultOperator }
 }
 
@@ -84,19 +96,64 @@ export async function inspectEngineBindings(
 
 /** EarnShare a deposit of `assets` mints at the current state, through the engine's own quote. */
 export async function quoteEarnDeposit(
-  client: ReadClient,
+  client: ReadClient & Pick<PublicClient, 'getBlockNumber'>,
   stack: { engineKind: EngineKind; contracts: EngineStack & { earnVault: Address } },
   assets: bigint,
 ) {
-  const engineShares = await engineDefinitions[stack.engineKind].quoteDeposit(
-    client,
-    stack.contracts,
-    assets,
-  )
-  return client.readContract({
-    address: stack.contracts.earnVault,
-    abi: earnVaultAbi,
-    functionName: 'convertEngineSharesToEarnShares',
-    args: [engineShares],
+  // All venue and accrual reads use one block, so pending fees and supply cannot straddle a deposit.
+  const blockNumber = await client.getBlockNumber({ cacheTime: 0 })
+  const snapshot: ReadClient = {
+    readContract: (parameters) => client.readContract({ ...parameters, blockNumber } as never),
+  }
+  const vault = { address: stack.contracts.earnVault, abi: earnVaultAbi } as const
+  const [engineShares, supply, held, earnFees, currentEngine] = await Promise.all([
+    engineDefinitions[stack.engineKind].quoteDeposit(snapshot, stack.contracts, assets),
+    snapshot.readContract({ ...vault, functionName: 'totalEarnShares' }),
+    snapshot.readContract({ ...vault, functionName: 'engineShares' }),
+    snapshot.readContract({ ...vault, functionName: 'earnFees' }),
+    snapshot.readContract({ ...vault, functionName: 'engine' }),
+  ])
+  if (getAddress(currentEngine) !== getAddress(stack.contracts.engine))
+    throw new Error('EarnVault engine changed before the deposit quote; reload the stack')
+  const fees = await snapshot.readContract({
+    address: earnFees,
+    abi: earnFeesAbi,
+    functionName: 'previewAccruedFees',
   })
+  const projectedSupply = supply + fees.totalFeeEarnShares
+  if (projectedSupply === 0n) {
+    const [engineScale, share] = await Promise.all([
+      engineDefinitions[stack.engineKind].shareScale(snapshot, currentEngine),
+      snapshot.readContract({ ...vault, functionName: 'earnShare' }),
+    ])
+    const decimals = await snapshot.readContract({
+      address: share,
+      abi: erc20Abi,
+      functionName: 'decimals',
+    })
+    if (engineScale <= 0n || decimals > 77)
+      throw new Error('Earn engine or share has an invalid scale')
+    return (engineShares * 10n ** BigInt(decimals)) / engineScale
+  }
+
+  if (held === 0n) throw new Error('EarnVault has active supply without managed backing')
+  // Deposit accrues fee shares and reanchors to managed custody before converting venue output.
+  return (engineShares * projectedSupply) / held
+}
+
+/** Resolves a migrated engine's supported adapter; ambiguous or unknown interfaces fail closed. */
+export async function readEngineKind(client: ReadClient, engine: Address): Promise<EngineKind> {
+  const matches = await Promise.all(
+    engineKinds.map(async (kind) => {
+      try {
+        return (await engineDefinitions[kind].recognizes(client, engine)) ? kind : undefined
+      } catch {
+        return undefined
+      }
+    }),
+  )
+  const supported = matches.filter((kind) => kind !== undefined)
+  if (supported.length !== 1)
+    throw new Error(`Current engine ${engine} has unknown or ambiguous engine interfaces`)
+  return supported[0]!
 }

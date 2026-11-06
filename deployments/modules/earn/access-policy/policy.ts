@@ -55,12 +55,16 @@ export async function validateWhitelistPolicy<chain extends Chain | undefined>(
     ),
   ])
 
-  if (policy[0] !== 0) throw new Error('TIP-403 transfer policy is not a whitelist.')
+  if (policy[0] !== 0)
+    throw new PolicyStateMismatchError('TIP-403 transfer policy is not a whitelist.')
   const administrator = getAddress(policy[1])
-  if (administrator === zeroAddress) throw new Error('TIP-403 whitelist has no administrator.')
+  if (administrator === zeroAddress)
+    throw new PolicyStateMismatchError('TIP-403 whitelist has no administrator.')
   const unauthorized = memberResults.find((result) => !result.authorized)
   if (unauthorized) {
-    throw new Error(`Required TIP-403 member is unauthorized: ${unauthorized.member}`)
+    throw new PolicyStateMismatchError(
+      `Required TIP-403 member is unauthorized: ${unauthorized.member}`,
+    )
   }
   return administrator
 }
@@ -80,7 +84,12 @@ export async function validateEarnShareWhitelist<chain extends Chain | undefined
     functionName: 'transferPolicyId',
   })
   if (tokenPolicyId !== parameters.policyId) {
-    throw new Error('EarnShare transfer policy mismatch.')
+    throw new PolicyStateMismatchError('EarnShare transfer policy mismatch.')
   }
   await validateWhitelistPolicy(client, parameters)
+}
+
+/** A successfully read policy or binding that does not match the required state. */
+export class PolicyStateMismatchError extends Error {
+  override name = 'PolicyStateMismatchError'
 }

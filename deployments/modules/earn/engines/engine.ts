@@ -1,4 +1,4 @@
-import type { Address, Hex, PublicClient } from 'viem'
+import type { AbiEvent, Address, Hex, PublicClient } from 'viem'
 
 type ReadClient = Pick<PublicClient, 'readContract'>
 
@@ -61,6 +61,12 @@ export type Engine = {
    * profile can then name `engine.venue` instead of a reviewed, deployed `engine.address`.
    */
   factory?: EngineFactory | undefined
+  /** Identifies a supported adapter after an operator changes the vault's current engine. */
+  recognizes(client: ReadClient, engine: Address): Promise<boolean>
+  /** Runtime capabilities override defaults when an engine's configuration makes them conditional. */
+  readCapabilities?(client: ReadClient, engine: Address): Promise<Partial<Engine['capabilities']>>
+  /** Raw engine-share units used by an empty EarnVault's conversion anchor. */
+  shareScale(client: ReadClient, engine: Address): Promise<bigint>
   /** The venue a deployed engine holds shares of, read from the engine itself. */
   readVenue(client: ReadClient, engine: Address): Promise<Address>
   /** The `contracts.periphery` a deployed engine reports, when the kind declares periphery. */
@@ -91,6 +97,8 @@ export type EngineFactory = {
   releaseKey: string
   /** `path:Contract` of the Foundry script the `deploy-engine` step runs. */
   deployScript: string
+  /** Creation event emitted once by the shared factory. */
+  creationEvent: AbiEvent
   /** Calldata for `deployScript`'s typed `run(Input)`. */
   deployInput(input: EngineDeployInput): Hex
   /** Calldata for `deployScript`'s release entry point `<releaseKey>Factory(uint256 expectedChainId)`. */

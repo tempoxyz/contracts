@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs'
 import {
   concatHex,
+  createPublicClient,
+  custom,
   decodeFunctionData,
+  encodeEventTopics,
   encodeAbiParameters,
   getAddress,
   getContractAddress,
@@ -15,9 +18,10 @@ import {
 } from 'viem'
 import { describe, expect, test, vi } from 'vitest'
 
-import { deployRouterReleaseScriptAbi, zoneRouterAbi } from '../abis/index.js'
+import { deployRouterReleaseScriptAbi, zoneRouterAbi, zoneRouterFactoryAbi } from '../abis/index.js'
 import { hostedEnvironments } from '../chain/tempo.js'
 import {
+  confirmReleaseCreations,
   broadcastPath,
   create2Deployer,
   createdContracts,
@@ -379,6 +383,11 @@ describe('createdContracts for a contract created inside a call', () => {
 describe('deployRouterRelease', () => {
   function runtime(existing: readonly Address[] = []) {
     return {
+      client: vi.fn(() => releaseClient(42431, routerParameters.factory)),
+      archiveBroadcast: vi.fn(),
+      confirmCreations: vi.fn<FactoryReleaseDependencies['confirmCreations']>(
+        async (_client, _plan, created) => [...created],
+      ),
       forge: vi.fn(),
       preflight: vi.fn(),
       removeScriptCache: vi.fn(),
@@ -425,7 +434,7 @@ describe('deployRouterRelease', () => {
     )
     const result = await deployRouterRelease(
       options({ network: 'moderato', kind: 'zoneRouter', parameters: routerParameters }),
-      dependencies as Partial<FactoryReleaseDependencies>,
+      dependencies,
     )
     expect(dependencies.preflight.mock.calls[0]![0]).toBe('/repo/zone-router')
     expect(dependencies.creationBytecode.mock.calls[0]!.slice(0, 2)).toEqual([
@@ -459,7 +468,7 @@ describe('deployRouterRelease', () => {
     const current = runtime([factory!.address])
     const existing = await deployRouterRelease(
       options({ network: 'moderato', kind: 'zoneRouterFactory' }),
-      current as Partial<FactoryReleaseDependencies>,
+      current,
     )
     expect(current.forge).not.toHaveBeenCalled()
     expect(existing).toMatchObject({ kind: 'zoneRouterFactory', current: true, registry: null })
@@ -471,7 +480,7 @@ describe('deployRouterRelease', () => {
     await expect(
       deployRouterRelease(
         options({ kind: 'zoneRouterFactory', parameters: { factory: address('f1') } }),
-        dependencies as Partial<FactoryReleaseDependencies>,
+        dependencies,
       ),
     ).rejects.toThrow('The zoneRouterFactory release takes no parameters')
     expect(dependencies.preflight).not.toHaveBeenCalled()
@@ -520,3 +529,65 @@ describe('router release CLI', () => {
     )
   })
 })
+
+describe('router release mined evidence and bindings', () => {
+  const plan = planRouterRelease('zoneRouter', 4217, routerParameters)
+  const predicted = predictRelease(plan, bytecode)
+  const router = predicted[0]!
+  test('rejects a spender bound to another factory even before an existence shortcut', async () => {
+    await expect(
+      plan.validate!({ readContract: async () => address('bad') } as never),
+    ).rejects.toThrow('binds factory')
+    await expect(
+      plan.validate!({ readContract: async () => routerParameters.factory } as never),
+    ).resolves.toBeUndefined()
+  })
+
+  test('does not claim a simulated nested creation without the matching mined event', async () => {
+    const { initCode: _initCode, ...contract } = router
+    const created = [{ ...contract, transaction: hash(0) }]
+    const receipt = { status: 'success', transactionHash: hash(0), logs: [] as unknown[] }
+    const client = { getTransactionReceipt: async () => receipt }
+    expect(
+      (await confirmReleaseCreations(client as never, plan, created, predicted))[0]!.transaction,
+    ).toBeNull()
+    const mode = (plan.parameters as { mode: Parameters<typeof encodeAbiParameters>[1][number] })
+      .mode
+    const event = zoneRouterFactoryAbi.find(
+      (item) => item.type === 'event' && item.name === 'RouterDeployed',
+    )!
+    receipt.logs.push({
+      address: routerParameters.factory,
+      topics: encodeEventTopics({
+        abi: zoneRouterFactoryAbi,
+        eventName: 'RouterDeployed',
+        args: { router: router.address, modeHash: keccak256(router.constructorArgs) },
+      }),
+      data: encodeAbiParameters(
+        event.inputs.filter((input) => !input.indexed),
+        [mode] as never,
+      ),
+    })
+    expect(
+      (await confirmReleaseCreations(client as never, plan, created, predicted))[0]!.transaction,
+    ).toBe(hash(0))
+    receipt.logs[0] = { ...(receipt.logs[0] as object), address: address('bad') }
+    expect(
+      (await confirmReleaseCreations(client as never, plan, created, predicted))[0]!.transaction,
+    ).toBeNull()
+  })
+})
+
+/** In-memory RPC boundary with real client encoding; unplanned requests fail the test. */
+function releaseClient(chainId: number, binding?: Address) {
+  return createPublicClient({
+    transport: custom({
+      request: async ({ method }) => {
+        if (method === 'eth_chainId') return `0x${chainId.toString(16)}`
+        if (method === 'eth_call' && binding)
+          return encodeAbiParameters(parseAbiParameters('address'), [binding])
+        throw new Error(`Unexpected release RPC ${method}`)
+      },
+    }),
+  })
+}

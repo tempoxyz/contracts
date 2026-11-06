@@ -32,13 +32,17 @@ pnpm earn verify profiles/e2e-moderato/profile.json
 | `deposit` | Quotes, and with `--broadcast` submits, a user deposit into the deployed stack.                                                                                          | see below                                                                                |
 | `access`  | Reads or changes one member of a protected profile's TIP-403 whitelist ([access](../earn/modules/access.md#deployment-and-operations)).                                  | `--earn-file <profile.json> <status\|add\|remove> <address>`                             |
 
+`plan`, `deploy`, `status`, `verify`, and `deposit` also accept `--trusted-identity <path>`
+for an independently reviewed historical deployment identity
+([shared factory releases](#shared-factory-releases)).
+
 Every command loads only the ignored `.env.<profile-id>` beside the `profiles/` directory that holds
 the profile (the repository root for this repository's own;
 [profiles in another repository](../../profiles/README.md#profiles-in-another-repository)); values already in the process environment take precedence. A command fails, naming that file, when
 neither supplies a value it needs:
 
-- `DEPLOYER_PRIVATE_KEY`, for every command until the profile has a `deployment.json`, because the
-  deployer fixes the deterministic deployment identity;
+- `DEPLOYER_PRIVATE_KEY`, to establish a fresh deterministic deployment identity; read-only
+  `plan` and `status` use the identity in `deployment.json` or `deployment.pending.json` without a key;
 - `TEMPO_RPC_URL` (or `--rpc-url`), for `deploy`, `verify`, and `deposit`.
 
 `verify` of a Zone profile also needs `TEMPO_API_KEY` or `ZONE_RPC_URL` unless `--skip-zone` is
@@ -60,8 +64,11 @@ pnpm earn deposit profiles/e2e-moderato/profile.json --assets 1 --broadcast
 `--assets` is a decimal amount of the vault asset. The helper signs with `DEPLOYER_PRIVATE_KEY`;
 `--account <address>` quotes for another account without that key, and `--receiver <address>`
 mints elsewhere. The minimum output defaults to 50 bps below the quote (`--slippage-bps`, 0 to
-10000). It refuses an RPC whose chain or genesis differs from the record. Nothing is sent without
-`--broadcast`, and approval and deposit are one Tempo transaction.
+9999). The quote uses one block snapshot and includes pending fee dilution; a zero-share minimum
+is refused. It refuses an RPC whose chain or genesis differs from the record. Nothing is sent
+without `--broadcast`, and approval and deposit are one Tempo transaction. A hosted record with
+pending source verification may be quoted but cannot be funded until verification completes; local
+records whose verification is not applicable remain usable.
 
 ## Lifecycle
 
@@ -83,10 +90,21 @@ token enablement, gateway registration) are mutable external readiness: each is 
 run, a handoff on one does not block the others or source verification, and none of them is
 recorded as a completed action.
 Forge writes only where its project's `foundry.toml` allows, so each Forge step writes its outputs
-to a staging copy under the ignored `earn/.earn/external/<id>/`, which the tooling moves back into
+to a staging copy under the ignored `earn/.earn/external/<id>-<path-hash>/`, which the tooling moves back into
 the profile's `deployment.pending.json` after the step or, if the run stopped, on the next run. A step whose contracts live in a sibling Foundry project, such as the
 Zone router's in `zone-router/` (solc), names it as its `project`: Forge compiles, broadcasts and
 source-verifies from that project, and writes its outputs to the same place as Earn's steps.
+The hash identifies the canonical profile path, so profiles with the same ID in different
+repositories cannot share staging state or Forge receipts. Receipts live under
+`<foundry-project>/broadcast/<id>-<path-hash>/`. An unscoped staging journal at
+`.earn/external/<id>/deployment.pending.json` blocks resume: verify which canonical profile owns it,
+then move it to that profile's hashed staging path. The tool cannot safely assign a shared-ID journal
+automatically.
+
+`deploy` holds an adjacent `deployment.pending.json.lock` directory for the run, refusing concurrent
+writers to the same profile. Normal completion or failure releases it. After a crash, verify that
+no deployment process is still active before manually removing a stale lock; never delete a live
+run's lock or its pending state to force another writer through.
 
 The profile declares immutable creation intent and the external readiness it requires; the chain
 is authoritative, and later operator-authorized changes are operational state. The ignored
@@ -112,10 +130,13 @@ asset, which a configured engine has no other step to record, and the factory tr
 created the stack: the predicted EarnShare and EarnFees cover every creation-time parameter, and
 inspection checks the adopted stack before any record is written. An interrupted run's own outputs
 are recovered first. Either way, `deploy-core` records the transaction named by the factory's
-`EarnStackDeployed` event for that EarnShare, never a hash from Forge's latest-broadcast file, which
-every profile on the chain shares and which may lack the receipt. `deploy-zone-router` likewise
+`EarnStackDeployed` event for that EarnShare, never an unrelated hash from Forge's latest-broadcast
+file. Per-profile receipt isolation does not replace this event and onchain binding check. `deploy-zone-router` likewise
 adopts the router its permissionless `ZoneRouterFactory` already deployed for the profile's mode,
 such as one Spend's script created, recording the transaction its `RouterDeployed` event names.
+Factory-provisioned engines also adopt their exact creation event rather than an unrelated receipt.
+Before binding, predicted core addresses and reciprocal asset, engine, and fee-module bindings must
+match; an engine already bound elsewhere stops rather than producing an impossible handoff.
 
 ## Generated record
 
@@ -145,22 +166,37 @@ reuse stale addresses. Publication is strict: the record must contain exactly th
 completed deployment steps derived from the plan. Activation steps are not recorded; their state is
 always read from the pool and Portal. Changing an optional component (`zone`, `targetYield`,
 `boostRewards`, `zoneRouterFactory`, `zoneRouter`) redeploys only that component's contracts and republishes the record; core and
-engine never change in place, so a record whose `core` or `engine` hash differs from the profile is
-refused.
+engine creation intent never changes in place, so a record whose `core` or `engine` hash differs
+from the profile is refused. The deployment-fixed engine migration mode either permits the operator
+to move the whole pool to a replacement engine (`OperatorEnabled`) or permanently forbids that
+action (`UserOnly`). A permitted [whole-pool migration](../earn/architecture/system.md#whole-pool-engine-migration)
+does not rewrite creation provenance.
+Live inspection and the hosted stack projection resolve the vault's current engine, venue, kind,
+and exit capabilities, while `contracts.creationEngine` preserves the original address. Unknown or ambiguous replacement kinds, invalid reciprocal bindings, or migration under
+`UserOnly` (which permanently disables that operator action) are refused. The creation record's
+source verification does not verify a replacement
+engine; review its provenance separately.
 
 The record does not choose its own trust roots. `source.factoryDeploymentId` must equal the
 keccak-256 hash of `<profile-id>:v<version>`, and the recorded verifier must be the trusted Tempo
 verifier the tooling hard-codes before it is contacted. Every ordinary Solidity source match must
-identify the expected fully qualified contract, reproduce every source input from the canonical
-checkout, and, when the verifier reports a creation transaction, point to Earn's recorded
-transaction (factory-created contracts may omit it). The Git commit is provenance, not a required
-local object in a fresh or squash-merged checkout. Changing the recorded deployment transaction or
+identify the expected fully qualified contract. Initial verification requires the exact complete
+Forge compiler-input source set and matching checkout contents, not a selected subset. When a
+creation transaction is named, the verifier must return that same hash; an omitted hash is not
+evidence. Historical rechecks compare the recorded source-input hash and contract identity without
+requiring the original checkout or Git object, and allow `match` to strengthen to `exact_match`
+but never downgrade. The Git commit remains provenance, not a required local object. Changing the recorded deployment transaction or
 Zone Factory identity requires a fresh successful verification before promotion.
 
 On a fresh checkout, the command seeds pending state from the committed record only after
 revalidating its runtime provenance, derived contract identity, and each completed action onchain;
 a stale or edited record is rejected before it can drive an authority transaction. A record marked
 `pending` resumes source verification without repeating deployment or activation.
+
+When a record lacks a core-creation receipt, including one with receipts for other actions, its
+`deploymentBlock` needs archival evidence that the vault had no code immediately before that
+block. With no deployment receipts at all, the vault must also match its current runtime at the
+claimed block. Present-day code verification alone does not establish the creation boundary.
 
 ### Source verification
 
@@ -212,8 +248,8 @@ Steps run in the order of [`deploymentSteps`](../../deployments/modules/index.ts
 is the enabled subset. Each [module page](../earn/README.md#capability-modules) owns its steps'
 preconditions and results.
 
-Before any step, `pnpm earn deploy` refuses a profile that assigns a privileged role to an address
-derived from a private key in the public `.env.example`. The guard covers core's roles (owner,
+Before any step, `pnpm earn deploy` refuses a deployer or privileged role derived from a private
+key in the public `.env.example`, even when an explicit owner is safe. The guard covers core's roles (owner,
 including one defaulted from the deployer; emergency guardian; async janitor; every fee recipient;
 fee distributor) and every role a capability slice declares through `privilegedPrincipals`, such as
 the reward treasury.
@@ -237,7 +273,13 @@ the reward treasury.
 | `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
 | `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
 
-Forge receives only `DEPLOYER_PRIVATE_KEY`; it never receives another authority key. Each typed
+Deployment scripts receive only `DEPLOYER_PRIVATE_KEY`; Forge never receives another authority
+key. Read-only version, build, provenance, source-verification, and formatting subprocesses receive
+no signing keys. A Foundry project's `.env` is refused, and its effective compiler configuration
+must match its tracked `foundry.toml`; keep credentials in the profile-specific environment file.
+Operational authority and deposit sends pin the final signed calls, chain, fee token, pending
+nonce in protocol nonce key `0`, and a locally set 300-second expiry. Altered RPC-provided signing
+fields or a gas fee liability above $1 abort before signing. Each typed
 authority step first proves with read-only calls that its signer holds the exact authority (the
 Zone administrator key may also be the sole owner of a threshold-1 Safe that administers the
 Portal), batches its changes atomically, and continues. Authority signing is pinned to the
@@ -262,7 +304,26 @@ deploy command compiles the current EarnFactory, EarnVault, EarnFees, and, for a
 provisions its engine from a venue, that engine's factory, and compares their runtime code with the
 reviewed onchain release and its immutable implementation bindings, so a source change requires a
 fresh release. Pending deployments pin the resolved factory runtime hashes; completed records keep
-the release with their source provenance.
+the release with their source provenance. Resuming a historical release requires the independently
+reviewed deployer and factory identity in the registry; a pending journal cannot authorize its own
+deployer, factory address, or runtime hash. An unknown hosted record must be enrolled through
+reviewed identity data or supplied with an independent trusted identity. The CLI accepts
+`--trusted-identity <path>`; deployment-package callers supply `trustedIdentity`. The separate
+JSON file must contain exactly `deployer` and `factories`, with the reviewed deployer address and
+factory-release object. A full `deployment.json` is rejected. Review this identity independently;
+copying the untrusted record into a new file does not establish trust. Importing a record never
+enrolls it automatically.
+
+```sh
+pnpm earn verify ../deployments/profiles/<profile-id>/profile.json \
+  --trusted-identity ../deployments/reviewed-identities/<profile-id>.json
+```
+
+The profile-index command also accepts these files: `pnpm profiles --profiles <dir>
+--trusted-identity <path>`. Repeat `--trusted-identity` for mixed-profile directories. It tries the
+built-in registry first, then the supplied independent identities; without any flags, it takes one
+file from `EARN_TRUSTED_DEPLOYMENT_IDENTITY`. The same identity checks apply, with no automatic
+enrollment from records.
 
 Releases create EarnShare with empty currency metadata (`""`) and the underlying asset as its quote
 token: an EarnShare is not a USD stablecoin or a 1:1 claim on another EarnShare. Shared factories
@@ -318,6 +379,14 @@ addresses, transactions, and source matches; a run that stops keeps the releases
 Zone router and Bridge releases share these environments and the hosted-contracts queue, and release
 separately ([Zone router releases](#zone-router-releases), [Bridge releases](#bridge-releases)); the
 command refuses them.
+
+Registry inputs must contain the complete expected contract set at addresses independently derived
+from the local compile and CREATE2 parameters, with only `match` or `exact_match` source results.
+Every release validates the RPC chain. Existing selector-latest receipts are archived before a new
+attempt, so an old file cannot prove a new creation. Direct CREATE2 attribution requires the mined
+receipt and actual transaction calldata; a nested router requires its matching factory event.
+Already-present contracts without that creation proof are recorded as reused with no creator
+transaction. Reused routers still require each spender's router-factory binding to match.
 
 After a broadcast, the last job records every release whose contracts all source verified, from
 every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a

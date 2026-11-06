@@ -3,6 +3,7 @@ import {
   getAddress,
   toFunctionSelector,
   zeroHash,
+  zeroAddress,
   type Address,
   type PublicClient,
 } from 'viem'
@@ -168,6 +169,18 @@ export const propamm = defineEngine({
     exactWithdraw: true,
     asyncRedeem: false,
   },
+  recognizes: async (client, engine) =>
+    (await client.readContract({
+      address: engine,
+      abi: propAMMEngineAbi,
+      functionName: 'pool',
+    })) !== zeroAddress,
+  shareScale: (client, engine) =>
+    client.readContract({
+      address: engine,
+      abi: propAMMEngineAbi,
+      functionName: 'shareScale',
+    }),
   readVenue: (client, engine) =>
     client.readContract({ address: engine, abi: propAMMEngineAbi, functionName: 'baseToken' }),
   inspectBindings: async (client, engine, mode) =>

@@ -292,3 +292,58 @@ export async function validateSharedFactoryRelease(
     }),
   ])
 }
+
+/** Deployment identity supplied by an independently reviewed registry or trusted operator config. */
+export type ReviewedDeploymentIdentity = {
+  deployer: Address
+  factories: EarnFactoryRelease
+}
+
+// These historical identities were reviewed before current release promotion; records cannot enroll themselves.
+const reviewedDeploymentIdentities: Readonly<Record<string, ReviewedDeploymentIdentity>> = {
+  '4217:veda-mainnet': {
+    deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
+    factories: {
+      earn: getAddress('0x3085A8003f340CD51C72D9e1a1298CDafB171B02'),
+      erc4626Engine: getAddress('0xd43D00981222a8db444A528E69f19E3cE5A7D2Ff'),
+    },
+  },
+  '42431:veda-moderato': {
+    deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
+    factories: {
+      earn: getAddress('0x749a947811764a14CD17fE3C7BcC5c470e2Ac5cC'),
+      erc4626Engine: getAddress('0x0d57c10249eb3a92b7d81bBA6221F80F2865448A'),
+    },
+  },
+  '42431:e2e-moderato': {
+    deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
+    factories: {
+      earn: getAddress('0x749a947811764a14CD17fE3C7BcC5c470e2Ac5cC'),
+      erc4626Engine: getAddress('0x0d57c10249eb3a92b7d81bBA6221F80F2865448A'),
+    },
+  },
+}
+
+/** Rejects a hosted record whose identity has no independent reviewed baseline. Local chains remain disposable. */
+export function assertReviewedDeploymentIdentity(
+  record: ReviewedDeploymentIdentity & { chainId: number; deploymentId: string },
+  trusted?: ReviewedDeploymentIdentity,
+) {
+  if (!hostedEnvironment(record.chainId)) return
+  const expected =
+    trusted ?? reviewedDeploymentIdentities[`${record.chainId}:${record.deploymentId}`]
+  if (!expected)
+    throw new Error(
+      `Deployment ${record.deploymentId} needs an independently reviewed deployer and historical factory identity; a deployment record cannot approve itself`,
+    )
+  if (
+    getAddress(record.deployer) !== getAddress(expected.deployer) ||
+    !sameFactoryRelease(
+      parseFactoryRelease(record.factories, 'record.factories'),
+      parseFactoryRelease(expected.factories, 'trusted.factories'),
+    )
+  )
+    throw new Error(
+      `Deployment ${record.deploymentId} does not match its independently reviewed identity`,
+    )
+}

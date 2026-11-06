@@ -45,6 +45,7 @@ export interface CardProvider {
   accounts: PrivateKeyAccount[]
   /** Deploys the provider's own contracts, its provider contract and a CardSpender over it. */
   deploy(input: {
+    chainId: number
     rpcUrl: string
     deployerPk: Hex
     cardholder: Address

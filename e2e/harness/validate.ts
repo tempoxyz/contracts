@@ -5,16 +5,16 @@ import {
   type EarnDeploymentRecord,
 } from '@tempoxyz/contracts/deployments/node'
 import {
-  optionalPeriphery,
   parseWhitelistPolicy,
   requiredAccessMembers,
   validateEarnShareWhitelist,
   type EarnDeploymentProfile,
 } from '@tempoxyz/contracts/deployments/operations'
-import { erc20Abi, getAddress, isAddress, type Address, type PublicClient } from 'viem'
+import { getAddress, isAddress, type Address, type PublicClient } from 'viem'
 import { Abis } from 'viem/tempo'
 import type { DeploymentPublicClient, E2eStack } from './context.js'
 import { moduleValidators } from './modules.js'
+import { readVaultCustody } from './custody.js'
 import type { StablecoinFixture } from '../fixtures/profile-fixture.js'
 import { assert } from './support/utils.js'
 
@@ -26,16 +26,22 @@ const ERC1967_IMPLEMENTATION_SLOT =
  * shared deployment inspection against its profile's record and requires what that inspection only
  * reports: a ready engine and capabilities, exclusive EarnShare issuance, aligned accounting, and
  * every required TIP-403 member; localnet already verified the stacks it deploys. E2E then adds
- * what its cases assume: EarnVault custody at rest, the fixture funder's issuer roles, and each
+ * what its cases assume: aligned backing, the fixture funder's issuer roles, and each
  * capability module's own checks.
  */
 export async function validateDeployment(
   client: DeploymentPublicClient,
   deployment: E2eStack,
   hosted?: { profile: EarnDeploymentProfile; record: EarnDeploymentRecord },
+  engineFixtures: Readonly<Record<string, Address>> = {},
 ) {
-  if (hosted) await validateHostedDeployment(client, deployment, hosted)
-  await validateCustodyAtRest(client, deployment)
+  if (hosted) await validateHostedDeployment(client, deployment, hosted, engineFixtures)
+  const custody = await readVaultCustody(client, deployment.contracts)
+  if (custody.assets > 0n || custody.venueShares > 0n) {
+    console.info(
+      `EarnVault preexisting custody · assets=${custody.assets} venueShares=${custody.venueShares}; excluded from managed backing and preserved by case integrity`,
+    )
+  }
   const fixture = deployment.stablecoinFixture
   if (fixture?.funder) await validateFixtureFunder(client, fixture, fixture.funder)
   for (const validate of moduleValidators) await validate(client, deployment)
@@ -45,8 +51,9 @@ async function validateHostedDeployment(
   client: DeploymentPublicClient,
   deployment: E2eStack,
   hosted: { profile: EarnDeploymentProfile; record: EarnDeploymentRecord },
+  engineFixtures: Readonly<Record<string, Address>>,
 ) {
-  const { contracts, operations } = deployment
+  const { contracts } = deployment
   const report = await inspectEarnDeployment(
     client,
     hosted.profile,
@@ -77,20 +84,8 @@ async function validateHostedDeployment(
     'EarnVault proxy implementation has no contract code',
   )
 
-  // The shared inspection proved EarnVault issues EarnShare; no other known contract may.
-  const others = [
-    operations.owner,
-    operations.factory,
-    ...Object.values(optionalPeriphery(operations)),
-    ...Object.values(contracts.periphery ?? {}),
-    ...Object.entries(contracts).flatMap(([key, value]) =>
-      typeof value === 'string' &&
-      isAddress(value) &&
-      !['asset', 'earnShare', 'earnVault'].includes(key)
-        ? [value]
-        : [],
-    ),
-  ]
+  // This is a finite screen of recorded addresses, not an exhaustive enumeration of all token roles.
+  const others = knownIssuerCandidates(deployment, engineFixtures)
   const issuerRole = await client.readContract({
     address: contracts.earnShare,
     abi: Abis.tip20,
@@ -123,21 +118,26 @@ async function validateHostedDeployment(
   }
 }
 
-/** EarnVault holds neither vault assets nor venue shares between actions. */
-async function validateCustodyAtRest(client: DeploymentPublicClient, deployment: E2eStack) {
-  const { contracts } = deployment
-  const [vaultAssets, vaultVenueShares] = await Promise.all(
-    [contracts.asset, contracts.venue].map((token) =>
-      client.readContract({
-        address: token,
-        abi: erc20Abi,
-        functionName: 'balanceOf',
-        args: [contracts.earnVault],
-      }),
-    ),
-  )
-  assert(vaultAssets === 0n, 'EarnVault retains vault assets at rest')
-  assert(vaultVenueShares === 0n, 'EarnVault retains venue shares at rest')
+/** Known fixture, control, and deployment addresses screened for unexpected EarnShare issuance. */
+export function knownIssuerCandidates(
+  deployment: Pick<E2eStack, 'contracts' | 'operations' | 'stablecoinFixture'>,
+  engineFixtures: Readonly<Record<string, Address>> = {},
+): Address[] {
+  const addresses = new Set<Address>()
+  const collect = (value: unknown) => {
+    if (typeof value === 'string' && isAddress(value)) addresses.add(getAddress(value))
+    else if (typeof value === 'object' && value !== null) Object.values(value).forEach(collect)
+  }
+  for (const value of [
+    deployment.contracts,
+    deployment.operations,
+    deployment.stablecoinFixture,
+    engineFixtures,
+  ]) {
+    collect(value)
+  }
+  addresses.delete(getAddress(deployment.contracts.earnVault))
+  return [...addresses]
 }
 
 /** A fixture funder mints exactly the fixture pair it claims to fund. */

@@ -103,6 +103,7 @@ export function isProtected(profile: AuthoredProfile) {
  * rewards, and the router's customer ID are deployed as authored.
  */
 export function localizeProfile(source: AuthoredProfile, local: LocalTargets) {
+  assertLocalProfile(source)
   const { tip403PolicyId: _policy, zone, ...rest } = source
   const engine = localEngines[source.engine.kind].profileEngine(local.venueOrEngine)
   if ('venue' in engine && !('venue' in source.engine)) {
@@ -157,4 +158,16 @@ export function sameAssetProfile(primary: EarnDeploymentProfile, local: LocalTar
     },
     local,
   )
+}
+
+/** Refuses chain-specific spender graphs that do not yet have disposable replacements. */
+export function assertLocalProfile(profile: {
+  id: string
+  zoneRouter?: AuthoredProfile['zoneRouter'] | null
+}) {
+  if (profile.zoneRouter) {
+    throw new Error(
+      `Profile ${profile.id} uses zoneRouter; local replacement of its factory, spenders, and conversion routes is not supported`,
+    )
+  }
 }

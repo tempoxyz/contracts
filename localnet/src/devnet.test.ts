@@ -1,3 +1,4 @@
+import { encodeAbiParameters, parseAbiParameters, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -18,7 +19,7 @@ const privateKeys = { deployer: key(1), zoneAdministrator: key(5) }
 const zoneAdministrator = privateKeyToAccount(privateKeys.zoneAdministrator).address
 const user = privateKeyToAccount(key(2)).address
 const portal = privateKeyToAccount(key(6)).address
-const client = { getChainId: vi.fn(), readContract: vi.fn() }
+const client = { getChainId: vi.fn(), readContract: vi.fn(), call: vi.fn() }
 const options = {
   chainId: 31318,
   rpcUrl: 'http://l1.test',
@@ -71,5 +72,25 @@ describe('devnet safety checks', () => {
     arrange()
     await expect(deploy(options)).rejects.toThrow(message)
     expect(Deployment.createBase).not.toHaveBeenCalled()
+  })
+})
+
+describe('virtual devnet principals', () => {
+  const virtual = '0x58e21090fdfdfdfdfdfdfdfdfdfd010203040506' as const
+  it('rejects an unregistered virtual fee recipient before fixture broadcasts', async () => {
+    client.call.mockResolvedValue({
+      data: encodeAbiParameters(parseAbiParameters('address'), [zeroAddress]),
+    })
+    await expect(deploy({ ...options, user: virtual })).rejects.toThrow('has no registered master')
+    expect(Deployment.createBase).not.toHaveBeenCalled()
+  })
+  it('resolves a registered virtual fee recipient before reaching fixture broadcasts', async () => {
+    client.call.mockResolvedValue({
+      data: encodeAbiParameters(parseAbiParameters('address'), [user]),
+    })
+    vi.mocked(Deployment.createBase).mockRejectedValueOnce(new Error('fixture boundary reached'))
+    await expect(deploy({ ...options, user: virtual })).rejects.toThrow('fixture boundary reached')
+    expect(client.call).toHaveBeenCalledOnce()
+    expect(Deployment.createBase).toHaveBeenCalledOnce()
   })
 })

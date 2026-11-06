@@ -182,6 +182,16 @@ describe('deployment records', () => {
     )
   })
 
+  test('rejects a recorded engine different from the configured creation engine', () => {
+    const deployed = record()
+    expect(() =>
+      parseEarnDeploymentRecord(
+        { ...deployed, addresses: { ...deployed.addresses, engine: address('9') } },
+        profile,
+      ),
+    ).toThrow('does not match configured engine')
+  })
+
   test('rejects different deployment intent', () => {
     const root = mkdtempSync(join(tmpdir(), 'earn-record-'))
     const profilePath = join(root, 'profile.json')

@@ -29,7 +29,18 @@ import {
   previewEarnDeposit,
   previewEarnRedeem,
 } from '../../harness/support/slippage.js'
-import { ensureZoneReady, zoneWithdrawalQueueStatus } from './readiness.js'
+import { ensureZoneReady } from './readiness.js'
+import { submitZoneWithdrawal } from './proof.js'
+import {
+  assertRouterReceipt,
+  callbackBounce,
+  portalDeposit,
+  receiptBalanceChange,
+  sourceWithdrawal,
+  waitForCallbackBounce,
+  waitForDepositDelivery,
+} from './delivery.js'
+import { waitForRecipientRefund } from './refund-settlement.js'
 import { zoneRefundRecipients } from './refund.js'
 
 /** PATHUSD moved into the Zone for its fees before each private leg when Zone gas is priced. */
@@ -75,7 +86,6 @@ export async function fundPrivateInput(context: E2eContext, amount: bigint) {
       `${context.user.address} holds ${balance} of the ${amount} units of ${token} this case needs in Zone ${zone.id}; top up its Zone balance manually, then rerun`,
     )
   }
-  await fundAsset(context, token, amount - balance)
   const funding = await encryptedEntry(context, token, amount - balance)
   context.progress.step(
     'INPUT',
@@ -86,47 +96,90 @@ export async function fundPrivateInput(context: E2eContext, amount: bigint) {
 
 export async function zoneDeposit(context: E2eContext, input: ZoneDepositInput) {
   requireE2eZone(context)
-  if (!input.funded) await fundPrivateInput(context, input.amount)
+  await ensureZoneReady(context)
+  if (!input.funded) {
+    await fundPrivateInput(context, input.amount)
+    await fundPrivateFeeBuffer(context)
+  }
   const before = await zoneBalance(context, context.contracts.earnShare, input.recipient)
-  const leg = await submitDeposit(context, input)
+  const leg = await submitDeposit(context, { ...input, funded: true })
   if (!leg.processed.args.callbackSuccess) throw callbackReverted(context, leg.processed)
   context.progress.step('L1', 'router deposit settled', leg.processed.transactionHash)
   const settled = await routerEvent(context, leg, 'EarnDeposit')
+  const delivery = await routerDelivery(context, leg, {
+    token: context.contracts.earnShare,
+    gross: settled.args.earnShares,
+    hash: settled.args.zoneDepositHash,
+    recipient: input.recipient,
+  })
   const earnShares = await waitForZoneCredit(context, {
     token: context.contracts.earnShare,
     actor: input.recipient,
     before,
-    expected: settled.args.earnShares,
+    expected:
+      delivery.netAmount +
+      receiptBalanceChange(
+        leg.receipt.logs,
+        context.contracts.earnShare,
+        context.actors[input.recipient ?? 'user'].account.address,
+      ),
+    exact: true,
     message: 'Zone did not credit the router-deposited EarnShare',
   })
   recordZoneTiming(context, 'zone-deposit', leg)
   context.progress.step('RETURN', 'EarnShare delivered privately', settled.args.zoneDepositHash)
   context.progress.step('CHECK', 'private balance and public backing increased')
-  return { earnShares }
+  assert(
+    earnShares === delivery.netAmount,
+    'EarnShare delivery changed beyond the certified credit',
+  )
+  return { earnShares: delivery.netAmount }
 }
 
 export async function zoneDepositExpectBounce(context: E2eContext, input: ZoneDepositInput) {
   requireE2eZone(context)
+  await ensureZoneReady(context)
   const state = () =>
     Promise.all([
       zoneBalance(context, context.contracts.earnShare, input.recipient),
       tokenSupply(context, context.contracts.earnShare),
       tokenBalance(context, context.contracts.venue, context.contracts.engine),
     ])
-  if (!input.funded) await fundPrivateInput(context, input.amount)
+  if (!input.funded) {
+    await fundPrivateInput(context, input.amount)
+    await fundPrivateFeeBuffer(context)
+  }
   const privateInputBefore = await zoneBalance(context, context.assets.alternate)
   const before = await state()
-  const leg = await submitDeposit(context, input)
+  const leg = await submitDeposit(context, { ...input, funded: true })
   assert(!leg.processed.args.callbackSuccess, 'bounded router deposit unexpectedly succeeded')
   context.progress.step('L1', 'router rejected the bounded deposit', leg.processed.transactionHash)
-  await waitFor(
-    'private callback bounce-back',
-    async () =>
-      (await zoneBalance(context, context.assets.alternate)) >= privateInputBefore
-        ? true
-        : undefined,
-    { intervalMs: context.pollingInterval },
-  )
+  const callbackReceipt = await context.l1Public.getTransactionReceipt({
+    hash: leg.processed.transactionHash,
+  })
+  const hash = callbackBounce(callbackReceipt.logs, {
+    portal: context.deployment.network.zone.portal,
+    fallbackNonce: leg.request.fallbackNonce,
+    token: context.assets.alternate,
+    amount: input.amount,
+  })
+  await waitForCallbackBounce(context, {
+    hash,
+    fallbackNonce: leg.request.fallbackNonce,
+    token: context.assets.alternate,
+    amount: input.amount,
+    recipient: context.user.address,
+    fromBlock: leg.zoneFromBlock,
+  })
+  await waitForZoneCredit(context, {
+    token: context.assets.alternate,
+    before: privateInputBefore,
+    expected:
+      input.amount +
+      receiptBalanceChange(leg.receipt.logs, context.assets.alternate, context.user.address),
+    exact: true,
+    message: 'Callback bounce did not return the input after recorded fees',
+  })
   const [after, depositLogs] = await Promise.all([state(), routerDeposits(context, leg.fromBlock)])
   assert(after[0] === before[0], 'bounced deposit credited private EarnShare')
   assert(after[1] === before[1], 'bounced deposit changed public EarnShare supply')
@@ -146,6 +199,7 @@ export async function zoneDepositExpectRecipientBounce(
   requireE2eZone(context)
   const { earnShare, earnFees, engine, venue } = context.contracts
   await fundPrivateInput(context, input.amount)
+  await fundPrivateFeeBuffer(context)
   const [recipientEarnBefore, publicRefundBefore, feeEarnBefore, supplyBefore, backingBefore] =
     await Promise.all([
       zoneBalance(context, earnShare, input.recipient),
@@ -154,46 +208,46 @@ export async function zoneDepositExpectRecipientBounce(
       tokenSupply(context, earnShare),
       tokenBalance(context, venue, engine),
     ])
-  const queueBefore = await zoneWithdrawalQueueStatus(context)
-  const leg = await submitDeposit(context, input)
-  // The recipient bounce is a second withdrawal the Zone queues after the router's return.
-  await waitFor(
-    'ineligible private recipient bounce settlement',
-    async () => {
-      const queue = await zoneWithdrawalQueueStatus(context)
-      return queue.head >= queueBefore.head + 2n ? true : undefined
-    },
-    { intervalMs: context.pollingInterval },
-  )
-  const publicRefundAfter = await waitFor(
-    'public EarnShare bounce refund',
-    async () => {
-      const balance = await tokenBalance(context, earnShare, context.user.address)
-      return balance > publicRefundBefore ? balance : undefined
-    },
-    { intervalMs: context.pollingInterval },
-  )
-  const [recipientEarnAfter, feeEarnAfter, supplyAfter, backingAfter, depositLogs] =
-    await Promise.all([
-      zoneBalance(context, earnShare, input.recipient),
-      tokenBalance(context, earnShare, earnFees),
-      tokenSupply(context, earnShare),
-      tokenBalance(context, venue, engine),
-      routerDeposits(context, leg.fromBlock),
-    ])
-  const depositLog = depositLogs.find((log) => log.args.actionId === leg.actionId)
+  const leg = await submitDeposit(context, { ...input, funded: true })
+  if (!leg.processed.args.callbackSuccess) throw callbackReverted(context, leg.processed)
+  const depositLog = await routerEvent(context, leg, 'EarnDeposit')
+  const receipt = await context.l1Public.getTransactionReceipt({
+    hash: leg.processed.transactionHash,
+  })
+  const deposit = portalDeposit(receipt.logs, {
+    portal: context.deployment.network.zone.portal,
+    sender: context.contracts.earnRouter,
+    token: earnShare,
+    gross: depositLog.args.earnShares,
+    hash: depositLog.args.zoneDepositHash,
+  })
+  const refundedEarnShares = await waitForRecipientRefund(context, {
+    depositHash: deposit.hash,
+    token: earnShare,
+    sender: context.contracts.earnRouter,
+    recipient: context.user.address,
+    netAmount: deposit.netAmount,
+    zoneFromBlock: leg.zoneFromBlock,
+    l1FromBlock: leg.fromBlock,
+  })
+  const publicRefundAfter = await tokenBalance(context, earnShare, context.user.address)
   assert(
-    depositLog !== undefined,
-    'ineligible private recipient path emitted no successful router deposit',
+    publicRefundAfter - publicRefundBefore === refundedEarnShares,
+    'Public EarnShare balance does not match the attributable fee-net refund',
   )
-  const refundedEarnShares = publicRefundAfter - publicRefundBefore
+  const [recipientEarnAfter, feeEarnAfter, supplyAfter, backingAfter] = await Promise.all([
+    zoneBalance(context, earnShare, input.recipient),
+    tokenBalance(context, earnShare, earnFees),
+    tokenSupply(context, earnShare),
+    tokenBalance(context, venue, engine),
+  ])
   const mintedEarnShares = depositLog.args.earnShares
   assert(
     recipientEarnAfter === recipientEarnBefore,
     'ineligible private recipient received EarnShare',
   )
   assert(
-    refundedEarnShares > 0n && refundedEarnShares <= mintedEarnShares,
+    refundedEarnShares > 0n && refundedEarnShares <= deposit.netAmount,
     `public refund ${refundedEarnShares} is invalid for ${mintedEarnShares} minted EarnShare`,
   )
   assert(
@@ -209,11 +263,15 @@ export async function zoneDepositExpectRecipientBounce(
 
 export async function zoneRedeem(context: E2eContext, input: ZoneRedeemInput) {
   requireE2eZone(context)
+  await ensureZoneReady(context)
+  if (!input.funded) {
+    await fundPrivateFeeBuffer(context, input.owner)
+  }
   const assetAmountMin = minimumOutput(await previewEarnRedeem(context, input.earnShares))
   const before = await zoneBalance(context, context.assets.alternate, input.recipient)
   const leg = await submitRouterLeg(
     context,
-    { owner: input.owner ?? 'user', recipient: input.recipient ?? 'user', funded: input.funded },
+    { owner: input.owner ?? 'user', recipient: input.recipient ?? 'user', funded: true },
     (common) =>
       TempoActions.earn.privateRedeem.prepare(context.l1Public, {
         ...common,
@@ -225,18 +283,31 @@ export async function zoneRedeem(context: E2eContext, input: ZoneRedeemInput) {
   if (!leg.processed.args.callbackSuccess) throw callbackReverted(context, leg.processed)
   context.progress.step('L1', 'router redemption settled', leg.processed.transactionHash)
   const settled = await routerEvent(context, leg, 'EarnRedeem')
-  // The output token can also pay the withdrawal's Zone fee, so only a net increase is required.
-  const outputAmount = await waitForZoneCredit(context, {
+  const delivery = await routerDelivery(context, leg, {
+    token: context.assets.alternate,
+    gross: settled.args.outputAmount,
+    hash: settled.args.zoneDepositHash,
+    recipient: input.recipient,
+  })
+  // Only movements in the source receipt adjust the baseline; unrelated credits never prove delivery.
+  await waitForZoneCredit(context, {
     token: context.assets.alternate,
     actor: input.recipient,
     before,
-    expected: 1n,
+    expected:
+      delivery.netAmount +
+      receiptBalanceChange(
+        leg.receipt.logs,
+        context.assets.alternate,
+        context.actors[input.recipient ?? 'user'].account.address,
+      ),
+    exact: true,
     message: 'Zone did not credit the redeemed output token',
   })
   recordZoneTiming(context, 'zone-redeem', leg)
   context.progress.step('RETURN', 'private output asset delivered', settled.args.zoneDepositHash)
   context.progress.step('CHECK', 'private output balance increased')
-  return { outputAmount }
+  return { outputAmount: delivery.netAmount }
 }
 
 /** Submits a funded private deposit leg; the caller has already funded its private input. */
@@ -296,30 +367,55 @@ async function submitRouterLeg(
   })
   // Fee and nonce reads finish before the timer, so the phase is submission alone.
   const parameters = await withdrawalParameters(context, leg.owner, leg.funded)
+  const zoneFromBlock = await owner.zone.client.getBlockNumber()
   const submitted = performance.now()
-  const withdrawal = await owner.zone.submission.zone.requestWithdrawalSync({
+  const receipt = await submitZoneWithdrawal(context, leg.owner, {
     ...prepared,
     ...parameters,
   })
+  const request = sourceWithdrawal(receipt, {
+    sender: owner.account.address,
+    to: earnRouter,
+    token: prepared.token,
+    amount: prepared.amount,
+    data: prepared.data,
+    gasLimit: prepared.callbackGas,
+  })
   const zoneReceiptMs = wallMs(submitted)
-  context.progress.step('ZONE', 'private withdrawal submitted', withdrawal.receipt.transactionHash)
+  context.progress.step('ZONE', 'private withdrawal submitted', receipt.transactionHash)
   const processed = await waitForWithdrawalProcessed(context.l1Public, {
     portal,
     to: earnRouter,
-    senderTag: withdrawal.senderTag,
+    senderTag: request.senderTag,
     fromBlock: prepared.fromBlock,
     pollingInterval: context.pollingInterval,
     timeout: TIMEOUT_MS,
   })
+  const callbackReceipt = await context.l1Public.getTransactionReceipt({
+    hash: processed.transactionHash,
+  })
+  const privateAsset = await context.l1Public.readContract({
+    address: earnRouter,
+    abi: Abis.earnRouter,
+    functionName: 'privateAsset',
+  })
+  assertRouterReceipt(
+    callbackReceipt.logs,
+    [context.contracts.asset, privateAsset, context.contracts.earnShare],
+    earnRouter,
+  )
   return {
     actionId: prepared.actionId,
     fromBlock: prepared.fromBlock,
     processed,
+    receipt,
+    request,
+    zoneFromBlock,
     timing: {
       owner: leg.owner,
       submitted,
       zoneReceiptMs,
-      zoneBlockNumber: withdrawal.receipt.blockNumber,
+      zoneBlockNumber: receipt.blockNumber,
     },
   }
 }
@@ -377,6 +473,32 @@ function routerEvent<const Name extends 'EarnDeposit' | 'EarnRedeem'>(
     actionId: leg.actionId,
     eventName,
   })
+}
+
+async function routerDelivery(
+  context: E2eZoneContext,
+  leg: Awaited<ReturnType<typeof submitRouterLeg>>,
+  options: { token: Address; gross: bigint; hash: Hex; recipient?: E2eActor },
+) {
+  const receipt = await context.l1Public.getTransactionReceipt({
+    hash: leg.processed.transactionHash,
+  })
+  const deposit = portalDeposit(receipt.logs, {
+    portal: context.deployment.network.zone.portal,
+    sender: context.contracts.earnRouter,
+    token: options.token,
+    gross: options.gross,
+    hash: options.hash,
+  })
+  await waitForDepositDelivery(context, {
+    hash: deposit.hash,
+    token: options.token,
+    sender: context.contracts.earnRouter,
+    recipient: context.actors[options.recipient ?? 'user'].account.address,
+    amount: deposit.netAmount,
+    fromBlock: leg.zoneFromBlock,
+  })
+  return deposit
 }
 
 function routerDeposits(context: E2eZoneContext, fromBlock: bigint) {
@@ -452,6 +574,7 @@ async function withdrawalParameters(
 
 export async function fundPrivateFeeBuffer(context: E2eContext, actor: E2eActor = 'user') {
   requireE2eZone(context)
+  await ensureZoneReady(context)
   const { account, zone } = context.actors[actor]
   if ((await getGasPrice(zone.client)) === 0n) return
   // Fund every withdrawal independently: a recent encrypted balance read is not a reliable
@@ -468,20 +591,55 @@ async function encryptedEntry(
   actor: E2eActor = 'user',
 ) {
   const { account, wallet } = context.actors[actor]
+  const fee = await context.l1Public.readContract({
+    address: context.deployment.network.zone.portal,
+    abi: Abis.zonePortal,
+    functionName: 'calculateDepositFee',
+  })
+  const gross = amount + fee
+  await fundAsset(context, token, gross, actor)
   const before = await zoneBalance(context, token, actor)
+  const fromBlock = await context.actors[actor].zone.client.getBlockNumber()
   const result = await wallet.zone.encryptedDepositSync({
-    amount,
+    amount: gross,
     recipient: account.address,
     timeout: TIMEOUT_MS,
     token,
     portalAddress: context.deployment.network.zone.portal,
     zoneId: context.deployment.network.zone.id,
   })
+  const receipt =
+    result.receipt.status === 'pending'
+      ? await context.l1Public.waitForTransactionReceipt({
+          hash: result.receipt.transactionHash,
+          timeout: TIMEOUT_MS,
+        })
+      : result.receipt
+  assert(receipt.status === 'success', 'Portal funding transaction did not succeed')
+  const deposit = portalDeposit(receipt.logs, {
+    portal: context.deployment.network.zone.portal,
+    sender: account.address,
+    token,
+    gross,
+  })
+  assert(
+    deposit.netAmount >= amount,
+    'Portal fee changed during funding; requested private balance was not funded',
+  )
+  await waitForDepositDelivery(context, {
+    hash: deposit.hash,
+    token,
+    sender: account.address,
+    recipient: account.address,
+    amount: deposit.netAmount,
+    fromBlock,
+  })
   await waitForZoneCredit(context, {
     token,
     actor,
     before,
-    expected: amount,
+    expected: deposit.netAmount,
+    exact: true,
     message: `Zone did not credit the ${actor}'s Portal entry`,
   })
   return result

@@ -6,17 +6,19 @@ import {
   zonePortalAbi,
   zoneRouterFactoryAbi,
 } from '../../abis/index.js'
+import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { InspectionMismatchError } from '../../chain/inspect.js'
 import {
   missingZoneTokens,
   zoneCallbackGatewayRegistered,
   zoneGatewayDepositsAdmitted,
-  zonePortalRole,
+  portalRoleCalls,
 } from '../../chain/zone.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
 import {
   admitPoolRouter,
   canAdministerPool,
+  canAdministerZone,
   poolAdministrator,
   poolAdmission,
   zoneAdministrator,
@@ -159,7 +161,11 @@ export async function adoptPredictedZoneRouter(
     args: [router],
   })
   if (!deployed) return undefined
-  for (let toBlock = await client.getBlockNumber(); toBlock >= 0n; toBlock -= maxLogBlockRange) {
+  for (
+    let toBlock = await client.getBlockNumber({ cacheTime: 0 });
+    toBlock >= 0n;
+    toBlock -= maxLogBlockRange
+  ) {
     const fromBlock = toBlock >= maxLogBlockRange ? toBlock - maxLogBlockRange + 1n : 0n
     const [log] = await client.getLogs({
       address: factory,
@@ -230,6 +236,10 @@ export const enableZoneRouterTokens = defineAuthorityStep({
   intent: ['zoneRouter'],
   // Spend returns whatever token the Portal already enables; only Earn ops need their pair.
   enabled: (profile) => profile.zoneRouter?.earn !== undefined,
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) =>
+    canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
   satisfied: async (client, profile, outputs) =>
     (
       await missingZoneTokens(
@@ -291,12 +301,14 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const provenance = profile.zoneRouter?.factory
       ? `confirm that ZoneRouterFactory ${factory} is source verified as zone-router/src/ZoneRouterFactory.sol, then `
       : ''
-    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
+    return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },
   // A factory the profile names is trusted only for its own answers, so a router it made is admitted
   // by a person who checked its verified source; the lifecycle admits only routers of its own factory.
-  signerAvailable: (profile, environment) =>
-    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && !namesFactory(profile),
+  signerAvailable: (profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven && !namesFactory(profile),
+  probeSigner: (options) =>
+    canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
   async execute(options, dependencies) {
     if (namesFactory(options.profile)) return undefined
     const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
@@ -305,6 +317,7 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const router = requiredOutput(options.outputs, 'zoneRouter')
     if (await zoneCallbackGatewayRegistered(administrator.client, portal, router))
       return { transactions: [] }
+    await requireModeProvenance(administrator.client, options.profile, options.outputs)
     return administrator.send(
       await portalRoleCalls(administrator.client, portal, router, 'callbackGateway'),
     )
@@ -334,11 +347,13 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     ),
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
-    return `Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should ${namedFactoryCheck(profile, outputs)}confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, then, if the router holds the callback-gateway role, call setGateway(${router}, false), and call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
+    return `Zone ${configuredZoneRouter(profile).zoneId} enforces account access with open callback gateways, so the router deposits back as an account: its Portal administrator should ${namedFactoryCheck(profile, outputs)}confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the callback-gateway role, call setGateway(${router}, false), and call setAllowedAccount(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the admission and continue.`
   },
   // As for gateway admission, a router from a factory the profile names is admitted only by a person.
-  signerAvailable: (profile, environment) =>
-    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && !namesFactory(profile),
+  signerAvailable: (profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven && !namesFactory(profile),
+  probeSigner: (options) =>
+    canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
   async execute(options, dependencies) {
     if (namesFactory(options.profile)) return undefined
     const portal = requiredOutput(options.outputs, 'zoneRouterPortal')
@@ -347,37 +362,12 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     const router = requiredOutput(options.outputs, 'zoneRouter')
     if (await zoneGatewayDepositsAdmitted(administrator.client, portal, router))
       return { transactions: [] }
+    await requireModeProvenance(administrator.client, options.profile, options.outputs)
     return administrator.send(
       await portalRoleCalls(administrator.client, portal, router, 'account'),
     )
   },
 })
-
-/**
- * The Portal calls that give the router `role`. The Portal holds one role per account and grants
- * one only from none, so a router admitted under the other gateway mode is moved in one batch:
- * revoke the role it holds, then grant the one the current mode needs.
- */
-async function portalRoleCalls(
-  client: Pick<ChainClient, 'readContract'>,
-  portal: Address,
-  router: Address,
-  role: 'account' | 'callbackGateway',
-) {
-  const other = role === 'account' ? 'callbackGateway' : 'account'
-  const setter = { account: 'setAllowedAccount', callbackGateway: 'setGateway' } as const
-  const call = (functionName: (typeof setter)[keyof typeof setter], allowed: boolean) => ({
-    to: portal,
-    data: encodeFunctionData({ abi: zonePortalAbi, functionName, args: [router, allowed] }),
-  })
-  const holdsOther = await client.readContract({
-    address: portal,
-    abi: zonePortalAbi,
-    functionName: 'hasRole',
-    args: [router, zonePortalRole[other]],
-  })
-  return [...(holdsOther ? [call(setter[other], false)] : []), call(setter[role], true)]
-}
 
 /** The tokens an Earn mode moves in and out of its Zone, labeled for readiness reports. */
 export function zoneRouterTokens(
@@ -400,6 +390,7 @@ export async function zoneRouterBound(
   return inspectZoneRouterBinding(client, {
     router: requiredOutput(outputs, 'zoneRouter'),
     factory: zoneRouterFactory(profile, outputs),
+    portal: requiredOutput(outputs, 'zoneRouterPortal'),
     mode: zoneRouterMode(profile, outputs),
     earnShare: requiredOutput(outputs, 'earnShare'),
     vaultAsset: requiredOutput(outputs, 'asset'),
@@ -410,4 +401,24 @@ export async function zoneRouterBound(
       throw error
     },
   )
+}
+
+/** Both the restored factory and its mode must be canonical before a Zone administrator grants access. */
+async function requireModeProvenance(
+  client: Pick<ChainClient, 'call' | 'getCode'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address>,
+) {
+  await requireRouterProvenance(client, {
+    address: zoneRouterFactory(profile, outputs),
+    project: 'zone-router',
+    contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    constructorArgs: '0x',
+  })
+  await requireRouterProvenance(client, {
+    address: requiredOutput(outputs, 'zoneRouter'),
+    project: 'zone-router',
+    contract: 'src/ZoneRouter.sol:ZoneRouter',
+    constructorArgs: zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
+  })
 }

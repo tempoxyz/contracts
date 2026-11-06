@@ -1,4 +1,11 @@
-import { encodeAbiParameters, encodeFunctionData, erc4626Abi, parseAbiParameters } from 'viem'
+import {
+  encodeAbiParameters,
+  encodeFunctionData,
+  getAbiItem,
+  erc4626Abi,
+  parseAbiParameters,
+  toFunctionSelector,
+} from 'viem'
 
 import {
   deployERC4626EngineScriptAbi,
@@ -25,6 +32,7 @@ export const erc4626 = defineEngine({
     contract: 'ERC4626EngineFactory',
     source: 'src/engines/ERC4626EngineFactory.sol',
     releaseKey: 'erc4626Engine',
+    creationEvent: getAbiItem({ abi: erc4626EngineFactoryAbi, name: 'ERC4626EngineDeployed' }),
     deployScript: 'script/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript',
     deployInput: (input) =>
       encodeFunctionData({
@@ -55,6 +63,19 @@ export const erc4626 = defineEngine({
     venueAsset: (client, venue) =>
       client.readContract({ address: venue, abi: erc4626Abi, functionName: 'asset' }),
   },
+  recognizes: (client, engine) =>
+    client.readContract({
+      address: engine,
+      abi: erc4626EngineAbi,
+      functionName: 'supportsInterface',
+      args: [toFunctionSelector('depositInKind(uint256,address)')],
+    }),
+  shareScale: (client, engine) =>
+    client.readContract({
+      address: engine,
+      abi: erc4626EngineAbi,
+      functionName: 'shareScale',
+    }),
   readVenue: (client, engine) =>
     client.readContract({ address: engine, abi: erc4626EngineAbi, functionName: 'vault' }),
   // The engine deposits into the venue and holds exactly the venue shares it mints.

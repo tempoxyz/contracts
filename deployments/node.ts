@@ -1,8 +1,10 @@
 /** Node-only profile lifecycle, records, runtime, and Foundry tooling. Inspectors live in `./deployments`. */
 export { discoverOutputs, reconcileEarnProfileActions } from './core/deploy.js'
 export {
+  assertFoundryProjectEnvironment,
   assertFoundryVersion,
   foundryProcessEnvironment,
+  foundryRpcEnvironment,
   sourceVerificationCompilerArguments,
 } from './chain/foundry.js'
 export {
@@ -31,3 +33,4 @@ export {
   recordAuthorityAction,
   verifyEarnDeploymentState,
 } from './core/reconcile.js'
+export { guardedTransactionRequest } from './modules/signer.js'

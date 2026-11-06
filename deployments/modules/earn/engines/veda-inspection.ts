@@ -146,21 +146,44 @@ export async function inspectVedaPeriphery(
   }
 }
 
-/** The stack periphery record the engine reports, after `inspectVedaPeriphery` verifies its wiring. */
+/**
+ * Projects the engine's cached periphery without requiring its registry's latest version. Identity
+ * checks remain required; funding and launch use inspectVedaEngine for readiness and permissions.
+ */
 export async function readVedaStackPeriphery(
   client: Pick<PublicClient, 'readContract'>,
   engine: Address,
 ): Promise<VedaPeriphery> {
-  const { accountant, authority, queue, registry, teller } = await inspectVedaPeriphery(
-    client,
-    engine,
-  )
+  const contract = { address: engine, abi: vedaEngineAbi } as const
+  const [registry, vault, asset, teller, queue, accountant] = await Promise.all([
+    client.readContract({ ...contract, functionName: 'peripheryRegistry' }),
+    client.readContract({ ...contract, functionName: 'vault' }),
+    client.readContract({ ...contract, functionName: 'asset' }),
+    client.readContract({ ...contract, functionName: 'teller' }),
+    client.readContract({ ...contract, functionName: 'queue' }),
+    client.readContract({ ...contract, functionName: 'accountant' }),
+  ])
+  const registryContract = { address: registry, abi: vedaPeripheryRegistryAbi } as const
+  const [registryEngine, registryVault, registryAsset, accountantVault, accountantBase, authority] =
+    await Promise.all([
+      client.readContract({ ...registryContract, functionName: 'engine' }),
+      client.readContract({ ...registryContract, functionName: 'vault' }),
+      client.readContract({ ...registryContract, functionName: 'baseAsset' }),
+      client.readContract({ address: accountant, abi: vedaAccountantAbi, functionName: 'vault' }),
+      client.readContract({ address: accountant, abi: vedaAccountantAbi, functionName: 'base' }),
+      client.readContract({ address: vault, abi: vedaBoringVaultAbi, functionName: 'authority' }),
+    ])
+  expectAddress(registryEngine, engine, 'Veda registry engine')
+  expectAddress(registryVault, vault, 'Veda registry BoringVault')
+  expectAddress(registryAsset, asset, 'Veda registry base asset')
+  expectAddress(accountantVault, vault, 'Veda Accountant BoringVault')
+  expectAddress(accountantBase, asset, 'Veda Accountant base asset')
   return {
-    teller,
-    accountant,
-    ...(queue === zeroAddress ? {} : { queue }),
-    peripheryRegistry: registry,
-    rolesAuthority: authority,
+    teller: getAddress(teller),
+    accountant: getAddress(accountant),
+    ...(queue === zeroAddress ? {} : { queue: getAddress(queue) }),
+    peripheryRegistry: getAddress(registry),
+    rolesAuthority: getAddress(authority),
   }
 }
 
