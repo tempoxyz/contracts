@@ -210,9 +210,9 @@ creation event, and the verifier must return the same hash. Missing, ambiguous, 
 evidence fails before source submissions. Direct creation additionally compares the mined transaction
 input with the verifier's canonical-source-bound compiled creation bytecode and the declared
 constructor arguments, checking the transaction hash and expected deployer. A partial source match
-may differ only in the hash inside a recognized terminal Solidity IPFS metadata trailer; its compiler
-version, executable bytes, arguments, and input length still match exactly. Unsupported metadata
-formats or missing compiled creation bytecode fail closed. Fresh checkout proof before caching or
+may differ only in the digests inside a recognized terminal chain of Solidity IPFS metadata trailers,
+including adjacent child-initcode metadata. Compiler versions, executable bytes, arguments, and input
+length still match exactly. Unsupported metadata formats or missing compiled creation bytecode fail closed. Fresh checkout proof before caching or
 publication remains byte-for-byte exact. Existing engines selected by address retain their separate
 source-only check.
 Historical rechecks of recorded source identities compare the source-input hash and contract name without
@@ -248,7 +248,9 @@ on lookup or on forge's submission, a job that does not complete, or only transi
 the state `verification-pending`: rerunning resumes at verification after rechecking deployed
 state, and never rebroadcasts. When an optional component changes, an outage also leaves the replacement
 record published and allows activation. Unchanged contracts retain their admitted source identities
-in that pending record; completion rechecks them rather than replacing them with the current checkout.
+in that pending record when their creating step's intent, action, and output address are unchanged;
+a changed consumer does not discard its factory's identity. Completion rechecks retained identities
+rather than replacing them with the current checkout.
 Any other failure, such as a new source that differs from the checkout,
 a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
 nonzero exit; the record stays `pending`, and rerunning after the fix resumes the same way.

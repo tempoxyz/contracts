@@ -20,6 +20,7 @@ import {
   getAbiItem,
   keccak256,
   zeroAddress,
+  zeroHash,
   type Hex,
   type TransactionReceipt,
 } from 'viem'
@@ -31,12 +32,14 @@ import {
   profileDeploymentPath,
   publishProfileDeploymentRecord,
 } from './bundle.js'
-import { earnFactoryAbi, erc4626EngineFactoryAbi } from '../abis/index.js'
+import { earnFactoryAbi, erc4626EngineFactoryAbi, zoneRouterFactoryAbi } from '../abis/index.js'
+import { zoneFactoryAddress, zoneMessengerAddress } from '../chain/zone.js'
 import * as Runtime from '../chain/runtime.js'
 import * as Inspection from './inspection.js'
 import * as Provenance from './provenance.js'
 import * as Reconcile from './reconcile.js'
 import * as Verify from './verify.js'
+import { loadPendingDeployment } from './pending.js'
 import { deploymentActions } from './plan.js'
 import * as Plan from './plan.js'
 import { deploymentStep } from '../modules/index.js'
@@ -687,13 +690,205 @@ describe('retained historical direct creation', () => {
   })
 })
 
+describe('retained factory creation across consumer changes', () => {
+  test.each([false, true])(
+    'keeps the lifecycle-created factory proof across a mode change (verifier outage: %s)',
+    async (outage) => {
+      const fixture = pendingSourceDeployment({ retainedRouter: true })
+      try {
+        const record = structuredClone(fixture.record)
+        record.actions['deploy-core']!.transactions = [fixture.creation]
+        const source = await fixture.verifySources({
+          ...fixture.options,
+          client: fixture.chain as never,
+          record,
+        })
+        const verified = { ...record, source: { ...record.source, ...source } }
+        publishProfileDeploymentRecord(
+          fixture.options.profilePath,
+          fixture.options.profile,
+          verified,
+        )
+        fixture.changeRouterMode()
+        const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
+        const fetch = fixture.dependencies.fetch.getMockImplementation()!
+        if (outage)
+          fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
+        expect((await deployEarnProfile(fixture.options)).state).toBe(
+          outage ? 'verification-pending' : 'complete',
+        )
+        expect(
+          fixture.verification.mock.calls[0]![0].record.source!.contracts.zoneRouter,
+        ).toBeUndefined()
+        expect(
+          fixture.verification.mock.calls[0]![0].record.source!.contracts.zoneRouterFactory,
+        ).toEqual(verified.source.contracts.zoneRouterFactory)
+        if (outage) {
+          expect(fixture.read().source.contracts.zoneRouterFactory).toEqual(
+            verified.source.contracts.zoneRouterFactory,
+          )
+          rmSync(pendingDeploymentPath(fixture.options.profilePath))
+          fixture.dependencies.fetch.mockImplementation(fetch)
+          const readSource = fixture.dependencies.readSource.getMockImplementation()!
+          fixture.dependencies.readSource.mockImplementation((path) =>
+            path.endsWith('/ZoneRouterFactory.sol')
+              ? 'today’s different factory source'
+              : readSource(path),
+          )
+          expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+        }
+        const retained = fixture.read()
+        expect(retained.addresses.zoneRouter).toBe(fixture.nextRouter)
+        expect(retained.addresses.zoneRouterFactory).toBe(record.addresses.zoneRouterFactory)
+        expect(retained.actions['deploy-zone-router-factory']).toEqual(
+          record.actions['deploy-zone-router-factory'],
+        )
+        expect(retained.source.contracts.zoneRouterFactory).toEqual(
+          verified.source.contracts.zoneRouterFactory,
+        )
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+        expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        expect(compiler).not.toHaveBeenCalled()
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test.each([
+    'factory source',
+    'factory input',
+    'factory sender',
+    'factory receipt',
+    'new router source',
+    'action',
+    'address',
+    'intent',
+  ] as const)(
+    'rejects changed %s evidence rather than carrying the previous proof',
+    async (corruption) => {
+      const fixture = pendingSourceDeployment({ retainedRouter: true })
+      try {
+        const record = structuredClone(fixture.record)
+        record.actions['deploy-core']!.transactions = [fixture.creation]
+        const source = await fixture.verifySources({
+          ...fixture.options,
+          client: fixture.chain as never,
+          record,
+        })
+        const verified = { ...record, source: { ...record.source, ...source } }
+        publishProfileDeploymentRecord(
+          fixture.options.profilePath,
+          fixture.options.profile,
+          verified,
+        )
+        if (corruption === 'intent') {
+          verified.componentDeploymentIntentHashes.zoneRouterFactory = '0'.repeat(64)
+          writeFileSync(fixture.recordPath, JSON.stringify(verified))
+        }
+        fixture.changeRouterMode()
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
+        if (corruption === 'factory input') fixture.factoryTransaction.input = '0x6000'
+        if (corruption === 'factory sender') fixture.factoryTransaction.from = zeroAddress
+        if (corruption === 'factory receipt') {
+          const receipt = fixture.chain.getTransactionReceipt.getMockImplementation()!
+          fixture.chain.getTransactionReceipt.mockImplementation(async (parameters) => ({
+            ...(await receipt(parameters)),
+            ...(parameters.hash === fixture.factoryTransaction.hash
+              ? { contractAddress: zeroAddress }
+              : {}),
+          }))
+        }
+        if (corruption === 'factory source' || corruption === 'new router source') {
+          const target =
+            corruption === 'factory source'
+              ? record.addresses.zoneRouterFactory!
+              : fixture.nextRouter
+          const fetch = fixture.dependencies.fetch.getMockImplementation()!
+          fixture.dependencies.fetch.mockImplementation(async (input) => {
+            const response = await fetch(input)
+            if (!String(input).toLowerCase().includes(target.toLowerCase())) return response
+            return Response.json({
+              ...((await response.json()) as object),
+              sources: { 'src/Changed.sol': { content: 'changed source' } },
+            })
+          })
+        }
+        if (corruption === 'action' || corruption === 'address' || corruption === 'intent') {
+          const prepare = Reconcile.prepareLifecycleStep
+          vi.spyOn(Reconcile, 'prepareLifecycleStep').mockImplementation(async (parameters) => {
+            // Re-present the old creation after its declared intent changed; it must be admitted anew.
+            if (corruption === 'intent')
+              return {
+                kind: 'complete',
+                pending: {
+                  ...loadPendingDeployment(parameters.profilePath, parameters.profile),
+                  actions: record.actions,
+                  outputs: record.addresses as Record<string, Hex>,
+                },
+              }
+            const result = await prepare(parameters)
+            if (result.kind === 'complete') {
+              if (corruption === 'address')
+                result.pending.outputs.zoneRouterFactory = getAddress(`0x${'f'.repeat(40)}`)
+              else
+                result.pending.actions['deploy-zone-router-factory'] = {
+                  ...result.pending.actions['deploy-zone-router-factory']!,
+                  completedAt: '2026-02-01T00:00:00.000Z',
+                }
+            }
+            return result
+          })
+        }
+        await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
+          corruption === 'action' || corruption === 'intent'
+            ? /unexpected creation input/
+            : corruption === 'address' || corruption === 'factory receipt'
+              ? /does not prove creation/
+              : corruption === 'factory input'
+                ? /unexpected creation input/
+                : corruption === 'factory sender'
+                  ? /expected direct creation/
+                  : /source/,
+        )
+        // A new output is durably pending before source admission; it never acquires the old router's proof.
+        if (corruption === 'new router source') {
+          expect(fixture.read().source.contractVerification).toBe('pending')
+          expect(fixture.read().source.contracts.zoneRouter).toBeUndefined()
+          expect(fixture.read().source.contracts.zoneRouterFactory).toEqual(
+            verified.source.contracts.zoneRouterFactory,
+          )
+        } else expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        if (corruption === 'action' || corruption === 'intent')
+          expect(compiler).toHaveBeenCalledOnce()
+        else expect(compiler).not.toHaveBeenCalled()
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+})
+
 /** Exercises real record publication, reconciliation, provenance, and source checks over read-only RPC fixtures. */
-function pendingSourceDeployment({ provisionEngine = false, retainedController = false } = {}) {
+function pendingSourceDeployment({
+  provisionEngine = false,
+  retainedController = false,
+  retainedRouter = false,
+} = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'earn-pending-source-'))
   const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
   const creation: Hex = `0x${'ab'.repeat(32)}`
   const controllerCreation: Hex = `0x${'ca'.repeat(32)}`
   const distributorCreation: Hex = `0x${'da'.repeat(32)}`
+  const factoryCreation: Hex = `0x${'fa'.repeat(32)}`
+  const routerCreation: Hex = `0x${'fb'.repeat(32)}`
+  const nextRouterCreation: Hex = `0x${'fc'.repeat(32)}`
+  const nextRouter = address('b2')
+  let routerChanged = false
   const historicalBytecode = '0x6001'
   const engineCreation: Hex = `0x${'ac'.repeat(32)}`
   const venue = address('a')
@@ -709,6 +904,13 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
     earnShare: address('22'),
     earnFees: address('23'),
     asset: address('6'),
+    ...(retainedRouter
+      ? {
+          zoneRouterFactory: address('f0'),
+          zoneRouter: address('b1'),
+          zoneRouterPortal: address('b0'),
+        }
+      : {}),
     ...(retainedController
       ? { earnContributionController: address('c0'), earnMerkleRewardDistributor: address('d0') }
       : {}),
@@ -718,6 +920,9 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
     id: 'pending-source-test',
     chainId: 4217,
     owner: address('4'),
+    ...(retainedRouter
+      ? { zoneRouter: { zoneId: 123, ops: ['spend'], spenders: [address('e1')] } }
+      : {}),
     ...(retainedController
       ? {
           targetYield: {
@@ -797,15 +1002,19 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
           completedAt: '2026-01-01T00:00:00.000Z',
           verification: 'chain',
           transactions:
-            id === 'deploy-contribution-controller'
-              ? [controllerCreation]
-              : id === 'deploy-merkle-distributor'
-                ? [distributorCreation]
-                : id === 'bind-core'
-                  ? [binding]
-                  : provisionEngine && id === 'deploy-core'
-                    ? [creation]
-                    : [],
+            id === 'deploy-zone-router-factory'
+              ? [factoryCreation]
+              : id === 'deploy-zone-router'
+                ? [routerCreation]
+                : id === 'deploy-contribution-controller'
+                  ? [controllerCreation]
+                  : id === 'deploy-merkle-distributor'
+                    ? [distributorCreation]
+                    : id === 'bind-core'
+                      ? [binding]
+                      : provisionEngine && id === 'deploy-core'
+                        ? [creation]
+                        : [],
         },
       ]),
     ),
@@ -882,8 +1091,50 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
     input:
       `${historicalBytecode}${encodeAbiParameters([{ type: 'address' }, { type: 'address' }], [addresses.earnVault, profile.owner]).slice(2)}` as Hex,
   }
+  const factoryTransaction = {
+    hash: factoryCreation,
+    from: profile.deployer,
+    to: null,
+    input: historicalBytecode as Hex,
+  }
+  const routerEvent = getAbiItem({ abi: zoneRouterFactoryAbi, name: 'RouterDeployed' })
+  const routerModeData = (hash: Hex) =>
+    encodeAbiParameters(
+      routerEvent.inputs.filter((input) => !input.indexed),
+      [
+        {
+          zoneId: 123,
+          enabledOps: 4,
+          earnVault: zeroAddress,
+          privateAsset: zeroAddress,
+          pool: zeroAddress,
+          customerId: zeroHash,
+          spenders: [address(hash === nextRouterCreation ? 'e2' : 'e1')],
+        },
+      ],
+    )
+  const routerReceipt = (hash: Hex) => ({
+    ...receipt,
+    transactionHash: hash,
+    logs: [
+      {
+        address: addresses.zoneRouterFactory!,
+        removed: false,
+        topics: encodeEventTopics({
+          abi: zoneRouterFactoryAbi,
+          eventName: 'RouterDeployed',
+          args: {
+            router: hash === nextRouterCreation ? nextRouter : addresses.zoneRouter!,
+            modeHash: keccak256(routerModeData(hash)),
+          },
+        }),
+        data: routerModeData(hash),
+      },
+    ],
+  })
   const chain = {
     getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
+      if (hash === factoryCreation) return factoryTransaction
       if (hash === controllerCreation) return minedTransaction
       const step = deploymentStep('deploy-merkle-distributor')
       if (step.execution !== 'foundry' || !step.source)
@@ -899,32 +1150,92 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
     getBlockNumber: vi.fn(async () => 10n),
     getLogs: vi.fn(
       async ({ address: target }: { address: string }): Promise<{ transactionHash: Hex }[]> => [
-        { transactionHash: target === profile.factories.erc4626Engine ? engineCreation : creation },
+        {
+          transactionHash:
+            target === addresses.zoneRouterFactory
+              ? routerChanged
+                ? nextRouterCreation
+                : routerCreation
+              : target === profile.factories.erc4626Engine
+                ? engineCreation
+                : creation,
+        },
       ],
     ),
     getCode: vi.fn(async ({ address, blockNumber }: { address: string; blockNumber?: bigint }) =>
       blockNumber === 9n ? '0x' : code(address),
     ),
     getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) =>
-      hash === controllerCreation || hash === distributorCreation
+      hash === factoryCreation
         ? {
             ...receipt,
             transactionHash: hash,
-            contractAddress:
-              hash === controllerCreation
-                ? addresses.earnContributionController
-                : addresses.earnMerkleRewardDistributor,
+            contractAddress: addresses.zoneRouterFactory,
             logs: [],
           }
-        : hash === engineCreation
-          ? engineReceipt
-          : hash === creation
-            ? receipt
-            : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
+        : hash === routerCreation || hash === nextRouterCreation
+          ? routerReceipt(hash)
+          : hash === controllerCreation || hash === distributorCreation
+            ? {
+                ...receipt,
+                transactionHash: hash,
+                contractAddress:
+                  hash === controllerCreation
+                    ? addresses.earnContributionController
+                    : addresses.earnMerkleRewardDistributor,
+                logs: [],
+              }
+            : hash === engineCreation
+              ? engineReceipt
+              : hash === creation
+                ? receipt
+                : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
     ),
     getStorageAt: vi.fn(async () => `0x${'0'.repeat(24)}${vaultImplementation.slice(2)}`),
     readContract: vi.fn(
-      async ({ address: target, functionName }: { address: string; functionName: string }) => {
+      async ({
+        address: target,
+        functionName,
+        args,
+      }: {
+        address: string
+        functionName: string
+        args?: readonly unknown[]
+      }) => {
+        if (retainedRouter) {
+          const zoneReads: Record<string, unknown> = {
+            zones: { zoneId: 123, portal: addresses.zoneRouterPortal },
+            zoneFactory: zoneFactoryAddress,
+            zoneId: 123,
+            messenger: zoneMessengerAddress,
+            encryptionKeyCount: 1n,
+            sequencerCount: 1n,
+            sequencerAt: address('b3'),
+          }
+          if (functionName in zoneReads) return zoneReads[functionName]
+          if (target === addresses.zoneRouterFactory)
+            return functionName === 'isRouter'
+              ? args?.[0] !== zeroAddress
+              : routerChanged
+                ? nextRouter
+                : addresses.zoneRouter
+          if (target === addresses.zoneRouter || target === nextRouter) {
+            const routerReads: Record<string, unknown> = {
+              enabledOps: 4,
+              spenders: profile.zoneRouter!.spenders,
+              portal: addresses.zoneRouterPortal,
+              allowedZoneId: 123,
+              earnVault: zeroAddress,
+              earnShare: zeroAddress,
+              privateAsset: zeroAddress,
+              vaultAsset: zeroAddress,
+              pool: zeroAddress,
+              customerId: zeroHash,
+              privateAssetIsBase: false,
+            }
+            if (functionName in routerReads) return routerReads[functionName]
+          }
+        }
         const factory = {
           predictEngine: addresses.engine,
           predictEarnShare: addresses.earnShare,
@@ -970,6 +1281,16 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
       'src/rewards/EarnMerkleRewardDistributor.sol:EarnMerkleRewardDistributor',
     )
   }
+  if (retainedRouter) {
+    contracts.set(
+      addresses.zoneRouterFactory!.toLowerCase(),
+      'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    )
+    contracts.set(addresses.zoneRouter!.toLowerCase(), 'src/ZoneRouter.sol:ZoneRouter')
+    contracts.set(nextRouter.toLowerCase(), 'src/ZoneRouter.sol:ZoneRouter')
+    // Activation owns live access policy, not creation or retained-source admission.
+    vi.spyOn(Plan, 'activationActions').mockReturnValue([])
+  }
   const dependencies = {
     fetch: vi.fn(async (input: Parameters<typeof fetch>[0]) => {
       const target = [...contracts.keys()].find((address) =>
@@ -984,19 +1305,28 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
         match: 'exact_match',
         name,
         transactionHash:
-          target === addresses.earnContributionController?.toLowerCase()
-            ? controllerCreation
-            : target === addresses.earnMerkleRewardDistributor?.toLowerCase()
-              ? distributorCreation
-              : provisionEngine && target === addresses.engine.toLowerCase()
-                ? engineCreation
-                : creation,
+          target === addresses.zoneRouterFactory?.toLowerCase()
+            ? factoryCreation
+            : target === addresses.zoneRouter?.toLowerCase()
+              ? routerCreation
+              : target === nextRouter.toLowerCase()
+                ? nextRouterCreation
+                : target === addresses.earnContributionController?.toLowerCase()
+                  ? controllerCreation
+                  : target === addresses.earnMerkleRewardDistributor?.toLowerCase()
+                    ? distributorCreation
+                    : provisionEngine && target === addresses.engine.toLowerCase()
+                      ? engineCreation
+                      : creation,
         creationBytecode: { bytecode: historicalBytecode },
         sources: { [source!]: { content: `canonical:${source}` } },
       })
     }),
     pause: vi.fn(async () => undefined),
-    readSource: vi.fn((path: string) => `canonical:${path.slice(options.root.length + 1)}`),
+    readSource: vi.fn(
+      (path: string) =>
+        `canonical:${path.replace(directory + '/', '').replace(/^(earn|zone-router)\//, '')}`,
+    ),
     spawn: vi.fn(() => {
       throw new Error('Unexpected verifier submission')
     }),
@@ -1040,6 +1370,21 @@ function pendingSourceDeployment({ provisionEngine = false, retainedController =
     options,
     record,
     minedTransaction,
+    factoryTransaction,
+    nextRouter,
+    changeRouterMode() {
+      const updated = {
+        ...authored,
+        zoneRouter: { ...authored.zoneRouter!, spenders: [address('e2')] },
+      }
+      profile = parseEarnDeploymentProfile(updated, {
+        deployer: profile.deployer,
+        factories: profile.factories,
+      })
+      options.profile = profile
+      routerChanged = true
+      writeFileSync(options.profilePath, JSON.stringify(updated))
+    },
     removeBoostRewards() {
       const updated = { ...authored, boostRewards: undefined }
       profile = parseEarnDeploymentProfile(updated, {

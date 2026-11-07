@@ -439,7 +439,7 @@ async function buildDeploymentRecord(
   const changed = previous
     ? changedIntentComponents(previous.componentDeploymentIntentHashes, profile)
     : undefined
-  // Carry source identities only with unchanged intent, addresses, and action evidence, including across pending retries.
+  // Carry proof with its creator's unchanged intent, address, and action, not with consumers that may change independently.
   const contracts = Object.fromEntries(
     Object.entries(previous?.source.contracts ?? {}).filter(([name]) => {
       const key = name as DeploymentAddressKey
@@ -450,8 +450,13 @@ async function buildDeploymentRecord(
         previous!.addresses[key] === addresses[key] &&
         deploymentActions(profile).every(({ id }) => {
           const step = deploymentStep(id)
+          if (step.execution !== 'foundry') return true
+          const output =
+            step.source?.output ??
+            step.creationEvent?.(profile, addresses as Record<string, Address>).output
+          const creates = output === key || step.creates?.includes(component)
           return (
-            !step.intent.includes(component) ||
+            !creates ||
             (step.intent.every((part) => !changed!.has(part)) &&
               isDeepStrictEqual(previous!.actions[id], actions[id]))
           )

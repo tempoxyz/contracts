@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import {
   createPublicClient,
@@ -228,7 +229,7 @@ describe('assertVerifiedCreationTransaction', () => {
   const original = creationBytecode.replace(
     '4c899a1ea253fbc50fb0b72b2713033892383111d799842d3d02bb6dc73c1f8c',
     '11'.repeat(32),
-  )
+  ) as Hex
   const input = `${original}${constructorArgs.slice(2)}` as Hex
   const compiler = { name: 'solc', language: 'Solidity', version: '0.8.36+commit.8a079791' }
   const range = { offset: 6, value: `0x${metadata}` }
@@ -255,6 +256,164 @@ describe('assertVerifiedCreationTransaction', () => {
         },
       }),
     ).not.toThrow()
+  })
+
+  test('accepts both adjacent metadata digests in the compiled ZoneRouterFactory', ({ skip }) => {
+    let artifact: { bytecode: { object: Hex }; metadata: { compiler: { version: string } } }
+    try {
+      artifact = JSON.parse(
+        readFileSync(
+          new URL(
+            '../../zone-router/out/ZoneRouterFactory.sol/ZoneRouterFactory.json',
+            import.meta.url,
+          ),
+          'utf8',
+        ),
+      )
+    } catch (error) {
+      // Full verification builds this artifact; TypeScript-only checkouts may not have compiled Solidity.
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+        skip('Run forge build src in zone-router for the compiled factory regression')
+      throw error
+    }
+    const creationBytecode = artifact.bytecode.object
+    const trailers = [
+      ...creationBytecode.matchAll(/a2646970667358221220[0-9a-f]{64}64736f6c6343[0-9a-f]{6}0033/gi),
+    ]
+    expect(trailers).toHaveLength(2)
+    expect(trailers[0]!.index + trailers[0]![0].length).toBe(trailers[1]!.index)
+    expect(trailers[1]!.index + trailers[1]![0].length).toBe(creationBytecode.length)
+    const cborAuxdata = Object.fromEntries(
+      trailers.map((trailer, index) => [
+        String(index + 1),
+        {
+          offset: (trailer.index - 2) / 2,
+          value: `0x${trailer[0]}`,
+        },
+      ]),
+    )
+    const changed = creationBytecode.replace(/(?<=a2646970667358221220)[0-9a-f]{64}/gi, (digest) =>
+      digest === '11'.repeat(32) ? '22'.repeat(32) : '11'.repeat(32),
+    ) as Hex
+    const fixture = {
+      ...options,
+      creationBytecode,
+      constructorArgs: '0x' as const,
+      compiler: { ...compiler, version: artifact.metadata.compiler.version },
+      minedTransaction: { ...options.minedTransaction, input: changed },
+    }
+    for (const ranges of [undefined, null, cborAuxdata])
+      expect(() =>
+        assertVerifiedCreationTransaction({ ...fixture, cborAuxdata: ranges }),
+      ).not.toThrow()
+    expect(() => assertDirectCreationTransaction(fixture)).toThrow('creation input')
+    expect(() =>
+      assertDirectCreationTransaction({
+        ...fixture,
+        minedTransaction: { ...fixture.minedTransaction, input: creationBytecode },
+      }),
+    ).not.toThrow()
+  })
+
+  describe('adjacent factory metadata', () => {
+    const bytecode = `${creationBytecode}${metadata}` as Hex
+    const input =
+      `${original}${metadata.replace('4c899a', '4c899b')}${constructorArgs.slice(2)}` as Hex
+    const second = { ...range, offset: range.offset + metadata.length / 2 }
+    const cborAuxdata = { '1': range, '2': second }
+    const fixture = {
+      ...options,
+      creationBytecode: bytecode,
+      cborAuxdata,
+      minedTransaction: { ...options.minedTransaction, input },
+    }
+
+    test('derives every digest with absent, null or independently ordered verifier ranges', () => {
+      for (const cborAuxdata of [undefined, null, fixture.cborAuxdata, { '1': second, '2': range }])
+        expect(() => assertVerifiedCreationTransaction({ ...fixture, cborAuxdata })).not.toThrow()
+      // Each trailer can differ independently; fresh checkout proof still permits neither difference.
+      for (const input of [
+        `${original}${metadata}${constructorArgs.slice(2)}`,
+        `${creationBytecode}${metadata.replace('4c899a', '4c899b')}${constructorArgs.slice(2)}`,
+      ] as const) {
+        expect(() =>
+          assertVerifiedCreationTransaction({
+            ...fixture,
+            minedTransaction: { ...fixture.minedTransaction, input },
+          }),
+        ).not.toThrow()
+        expect(() =>
+          assertDirectCreationTransaction({
+            ...fixture,
+            minedTransaction: { ...fixture.minedTransaction, input },
+          }),
+        ).toThrow('creation input')
+      }
+    })
+
+    test('rejects missing, duplicate, overlapping, outside or injected auxiliary ranges', () => {
+      for (const cborAuxdata of [
+        { '1': range },
+        { '1': range, '2': range },
+        { '1': range, '2': { ...second, offset: second.offset - 1 } },
+        { '1': { ...range, value: `0x${metadata}${metadata}` }, '2': second },
+        { '1': range, '2': { ...second, value: `${second.value}${constructorArgs.slice(2)}` } },
+        { '1': range, '2': { offset: bytecode.length / 2 - 1, value: constructorArgs } },
+        { '1': range, '2': { offset: 0, value: '0x6001600055' } },
+        { ...fixture.cborAuxdata, '3': { offset: 0, value: '0x6001600055' } },
+      ])
+        expect(() => assertVerifiedCreationTransaction({ ...fixture, cborAuxdata })).toThrow(
+          'creation input',
+        )
+    })
+
+    test('keeps opcodes, arguments, every trailer structure and surrounding bytes exact', () => {
+      for (const changed of [
+        input.replace('6001600055', '6002600055'),
+        `${input.slice(0, -2)}ff`,
+        input.replace('55fea2', '5500a2'),
+        input.replace('1220', '1221'),
+        input.replace('0033a2', '0034a2'),
+        input.replace('0033a2', '003300a2'),
+        input.replace('0033a2', '0033a3'),
+        input.replace('000824', '000825'),
+        input.replace(
+          '0008240033' + constructorArgs.slice(2),
+          '0008250033' + constructorArgs.slice(2),
+        ),
+        `${input}00`,
+      ])
+        expect(() =>
+          assertVerifiedCreationTransaction({
+            ...fixture,
+            minedTransaction: { ...fixture.minedTransaction, input: changed as Hex },
+          }),
+        ).toThrow('creation input')
+    })
+
+    test('validates grammar, delimiter, alignment and compiler version from compiler output too', () => {
+      for (const creationBytecode of [
+        bytecode.replace('55fea2', '5500a2'),
+        bytecode.replace('1220', '1221'),
+        bytecode.replace('0033a2', '0034a2'),
+        bytecode.replace('000824', '000825'),
+        `${bytecode.slice(0, -10)}0008250033`,
+        // Metadata must start on a byte boundary, never at a half-byte offset.
+        bytecode.replace('55fe', '55ffe'),
+      ])
+        expect(() =>
+          assertVerifiedCreationTransaction({
+            ...fixture,
+            creationBytecode: creationBytecode as Hex,
+            cborAuxdata: null,
+            minedTransaction: {
+              ...fixture.minedTransaction,
+              input:
+                `${creationBytecode.replace('4c899a', '4c899b')}${constructorArgs.slice(2)}` as Hex,
+            },
+          }),
+        ).toThrow('creation input')
+    })
   })
 
   test('never ignores constructor bytes, opcodes, metadata structure, compiler version or appended data', () => {
@@ -321,7 +480,7 @@ describe('assertVerifiedCreationTransaction', () => {
       )
   })
 
-  test('does not strip embedded CBOR, arbitrary initcode or unsupported metadata formats', () => {
+  test('does not strip separated embedded CBOR, arbitrary initcode or unsupported metadata formats', () => {
     const embedded = `0x6001fe${metadata}6002fe${metadata}` as const
     expect(() =>
       assertVerifiedCreationTransaction({

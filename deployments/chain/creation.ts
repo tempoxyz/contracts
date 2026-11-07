@@ -80,11 +80,11 @@ export function assertDirectCreationTransaction(options: {
     )
 }
 
-/** Checks an admitted Solidity recompilation, allowing only a terminal IPFS metadata digest difference. */
+/** Checks an admitted Solidity recompilation, allowing only validated terminal IPFS metadata digest differences. */
 export function assertVerifiedCreationTransaction(
   options: Parameters<typeof assertDirectCreationTransaction>[0] & {
     compiler: { name?: string | null; version?: string | null; language?: string | null }
-    /** Verifier ranges never authorize masking; any supplied range must agree with the derived trailer. */
+    /** Verifier ranges never authorize masking; supplied ranges must exactly cover the derived trailers. */
     cborAuxdata?: unknown
   },
 ): void {
@@ -93,52 +93,79 @@ export function assertVerifiedCreationTransaction(
   const expected = `${creationBytecode}${constructorArgs.slice(2)}`.toLowerCase()
   if (input?.toLowerCase() === expected) return assertDirectCreationTransaction(options)
 
-  // Solidity's terminal CBOR map is exactly {ipfs: <sha256 multihash>, solc: <three version bytes>}.
-  // Derive its boundary from compiler output, never from a caller-supplied range or transaction input.
-  const trailer = /fea2646970667358221220([0-9a-f]{64})64736f6c6343([0-9a-f]{6})0033$/i.exec(
+  // Factory output can end with a child's metadata followed immediately by its own, behind one INVALID delimiter.
+  // Read only this terminal chain from compiler output; never search executable bytes or trust verifier mask offsets.
+  const tail = /fe((?:a2646970667358221220[0-9a-f]{64}64736f6c6343[0-9a-f]{6}0033)+)$/i.exec(
     creationBytecode,
   )
   const version = compiler.version?.match(/^(\d+)\.(\d+)\.(\d+)\+commit\.[0-9a-f]+$/i)
-  const offset = trailer ? trailer.index / 2 : -1
+  const trailers = [
+    ...(tail?.[1] ?? '').matchAll(
+      /a2646970667358221220[0-9a-f]{64}64736f6c6343([0-9a-f]{6})0033/gi,
+    ),
+  ].map((match) => {
+    const start = tail!.index + 2 + match.index
+    return {
+      offset: (start - 2) / 2,
+      digestStart: start + 'a2646970667358221220'.length,
+      value: `0x${match[0]}`.toLowerCase(),
+      version: match[1]!,
+    }
+  })
   const ranges = cborAuxdata == null ? [] : Object.values(Object(cborAuxdata))
+  const seen = new Set<number>()
   const validRanges =
     cborAuxdata == null ||
     (typeof cborAuxdata === 'object' &&
       !Array.isArray(cborAuxdata) &&
-      ranges.length === 1 &&
+      ranges.length === trailers.length &&
       ranges.every((range: unknown) => {
-        if (!range || typeof range !== 'object') return false
+        if (!range || typeof range !== 'object' || Array.isArray(range)) return false
         const { offset: start, value } = range as { offset?: unknown; value?: unknown }
-        return (
-          Number.isSafeInteger(start) &&
-          start === offset &&
-          typeof value === 'string' &&
-          value.toLowerCase() === `0x${creationBytecode.slice(2 + offset * 2)}`.toLowerCase()
+        if (typeof start !== 'number' || !Number.isSafeInteger(start) || seen.has(start))
+          return false
+        seen.add(start)
+        return trailers.some(
+          (trailer) =>
+            trailer.offset === start &&
+            typeof value === 'string' &&
+            value.toLowerCase() === trailer.value,
         )
       }))
-  const digestStart = trailer ? trailer.index + 'fea2646970667358221220'.length : -1
+  const matchingBytes = (() => {
+    if (typeof input !== 'string') return false
+    let start = 0
+    for (const { digestStart } of trailers) {
+      if (input.slice(start, digestStart).toLowerCase() !== expected.slice(start, digestStart))
+        return false
+      start = digestStart + 64
+    }
+    return input.slice(start).toLowerCase() === expected.slice(start)
+  })()
   if (
     compiler.name !== 'solc' ||
     compiler.language !== 'Solidity' ||
     !version ||
-    !trailer ||
-    version
-      .slice(1)
-      .some(
-        (part, index) =>
-          Number(part) !== Number.parseInt(trailer[2]!.slice(index * 2, index * 2 + 2), 16),
-      ) ||
+    !tail ||
+    tail.index % 2 !== 0 ||
+    trailers.some((trailer) =>
+      version
+        .slice(1)
+        .some(
+          (part, index) =>
+            Number(part) !== Number.parseInt(trailer.version.slice(index * 2, index * 2 + 2), 16),
+        ),
+    ) ||
     !validRanges ||
     !/^0x(?:[0-9a-fA-F]{2})+$/.test(creationBytecode) ||
     !/^0x(?:[0-9a-fA-F]{2})*$/.test(constructorArgs) ||
     typeof input !== 'string' ||
     !/^0x(?:[0-9a-fA-F]{2})+$/.test(input) ||
     input.length !== expected.length ||
-    input.slice(0, digestStart).toLowerCase() !== expected.slice(0, digestStart) ||
-    input.slice(digestStart + 64).toLowerCase() !== expected.slice(digestStart + 64)
+    !matchingBytes
   )
     throw new Error(
-      `Recorded transaction ${options.transaction} has unexpected creation input for ${options.address}; only a validated terminal Solidity IPFS metadata difference is supported`,
+      `Recorded transaction ${options.transaction} has unexpected creation input for ${options.address}; only validated terminal Solidity IPFS metadata differences are supported`,
     )
 }
 
