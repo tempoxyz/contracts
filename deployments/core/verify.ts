@@ -27,6 +27,7 @@ import { isHostedDeploymentChain } from '../chain/tempo.js'
 import { deploysEngine, profileEngineFactory, type EarnDeploymentProfile } from './profile.js'
 import {
   type ContractSourceVerification,
+  type CreationFactoryVerification,
   type DeploymentSource,
   type EarnDeploymentRecord,
 } from './record.js'
@@ -171,6 +172,7 @@ async function inspectDeploymentSources(
         )
       : undefined,
     compilerArguments: new Map(),
+    creationFactories: new Map(),
   }
   const engine = requiredOutput(addresses, 'engine')
   const earnVault = requiredOutput(addresses, 'earnVault')
@@ -280,6 +282,7 @@ async function inspectDeploymentSources(
     name: 'ERC1967Proxy',
     match: proxySource.match,
     sourceInputsHash: proxySource.sourceInputsHash,
+    ...(proxySource.creationFactory ? { creationFactory: proxySource.creationFactory } : {}),
     implementation: vaultImplementation,
     implementationCodeHash: vaultImplementationCodeHash,
   }
@@ -649,6 +652,9 @@ function sourceMatch(
     name: target.name,
     match: contract.match,
     sourceInputsHash,
+    ...(context.creationFactories?.has(target.address.toLowerCase())
+      ? { creationFactory: context.creationFactories.get(target.address.toLowerCase())! }
+      : {}),
   }
 }
 
@@ -782,13 +788,17 @@ async function creationTransactionFor(
       ? step.creationEvent?.(options.profile, options.record.addresses as Record<string, Address>)
       : undefined
   if (factory?.source) {
-    // An arbitrary configured emitter can imitate creation events; require its canonical source first.
-    await prepareExistingSource(
+    // Admit the factory canonically once, then recheck its own recorded identity, not the router's.
+    const previous = recordedSource(context, { address })?.creationFactory
+    if (previous && getAddress(previous.address) !== getAddress(factory.address))
+      throw new Error(`Recorded creation factory for ${address} does not match ${factory.address}`)
+    const verifyFactory = await prepareExistingSource(
       {
         ...context,
         root: foundryProjectRoot(options.root, factory.source.project),
-        // External admission is not established by an owned contract's historical source record.
-        recordedSources: undefined,
+        recordedSources: previous
+          ? new Map([[factory.address.toLowerCase(), { kind: 'source', ...previous }]])
+          : undefined,
       },
       factory.address,
       {
@@ -796,6 +806,15 @@ async function creationTransactionFor(
         name: factory.source.contract.slice(factory.source.contract.lastIndexOf(':') + 1),
       },
     )
+    const admitted = await verifyFactory()
+    // Records without factory evidence still require canonical admission, without silently rewriting history.
+    if (!context.recordedSources || previous)
+      context.creationFactories!.set(address.toLowerCase(), {
+        address: getAddress(factory.address),
+        name: admitted.name,
+        match: previous?.match ?? admitted.match,
+        sourceInputsHash: admitted.sourceInputsHash,
+      })
   }
   assertCreationReceipt({
     address,
@@ -817,6 +836,8 @@ type VerificationContext = {
   /** Completed records trust their recorded inputs, independently of permission to submit repairs. */
   recordedSources?: Map<string, ContractSourceVerification | undefined> | undefined
   resubmit?: boolean | undefined
+  /** External factory identities admitted for each created target. */
+  creationFactories?: Map<string, CreationFactoryVerification>
   /** Each project's compiler arguments, resolved on its first submission. */
   compilerArguments: Map<string, string[]>
 }

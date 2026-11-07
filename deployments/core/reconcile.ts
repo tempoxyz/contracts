@@ -5,8 +5,8 @@ import {
 } from '../modules/earn/engines/index.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { zeroAddress, type Address } from 'viem'
-import { object } from './parse.js'
+import { zeroAddress, type Address, type PublicClient } from 'viem'
+import { isBytes32, object } from './parse.js'
 import { deploymentActions, planEarnDeployment, type EarnDeploymentAction } from './plan.js'
 import {
   configuredEngineAddress,
@@ -112,13 +112,30 @@ export async function prepareLifecycleStep(options: {
         ? await inspectEarnDeployment(client, profile, pending.outputs)
         : undefined
     if (await step.satisfied(client, profile, pending.outputs)) {
-      if (!pending.actions[action.id]) {
+      const recorded = pending.actions[action.id]
+      // Earlier resumes may have cached the bindings before Forge saved a creation receipt.
+      const recoverCreation =
+        step.execution === 'foundry' &&
+        (step.source || step.creationEvent || step.creates?.length) &&
+        recorded?.transactions.length === 0
+      if (!recorded || recoverCreation) {
         const adopted =
           step.execution === 'foundry' && step.adopt
             ? await step.adopt(client, profile, pending.outputs)
             : undefined
         if (adopted) pending = { ...pending, outputs: adopted.outputs }
-        complete(action, adopted ? [adopted.transaction] : [])
+        const transactions = adopted
+          ? [adopted.transaction]
+          : step.execution === 'foundry'
+            ? await successfulBroadcastTransactions(
+                client,
+                foundryBroadcastPath(options.root, profilePath),
+                foundryScript(step, profile),
+                step.input(profile, pending.outputs, foundryOutputPath(options.root, profilePath)),
+                profile.chainId,
+              )
+            : []
+        if (!recorded || transactions.length > 0) complete(action, transactions)
       }
       continue
     }
@@ -157,7 +174,8 @@ export async function prepareLifecycleStep(options: {
           action,
           adopted
             ? [adopted.transaction]
-            : successfulBroadcastTransactions(
+            : await successfulBroadcastTransactions(
+                client,
                 foundryBroadcastPath(options.root, profilePath),
                 foundryScript(step, profile),
                 step.input(profile, outputs, outputPath),
@@ -232,7 +250,8 @@ export async function recordFoundryAction(options: {
       : undefined
   const transactions = created
     ? [created.transaction]
-    : successfulBroadcastTransactions(
+    : await successfulBroadcastTransactions(
+        rpcClient(options.rpcUrl),
         options.step.environment.FOUNDRY_BROADCAST ??
           foundryBroadcastPath(options.root, options.profilePath),
         required(options.step.arguments[1], 'Foundry target'),
@@ -387,12 +406,13 @@ function readActionOutputs(path: string): Record<string, `0x${string}`> {
 }
 
 /** Forge names a calldata invocation's latest broadcast after the function selector. */
-function successfulBroadcastTransactions(
+async function successfulBroadcastTransactions(
+  client: Pick<PublicClient, 'getTransactionReceipt'>,
   root: string,
   target: string,
   calldata: `0x${string}`,
   chainId: number,
-): `0x${string}`[] {
+): Promise<`0x${string}`[]> {
   const script = basename(required(target.split(':')[0], 'Foundry script'))
   const latest = `${calldata.slice(2, 10)}-latest.json`
   const path = resolve(root, script, String(chainId), latest)
@@ -408,11 +428,22 @@ function successfulBroadcastTransactions(
         : [],
     ),
   )
-  return (raw.transactions ?? []).flatMap((transaction) =>
-    typeof transaction.hash === 'string' &&
-    /^0x[0-9a-fA-F]{64}$/.test(transaction.hash) &&
-    successful.has(transaction.hash.toLowerCase())
-      ? [transaction.hash as `0x${string}`]
-      : [],
-  )
+  const transactions: `0x${string}`[] = []
+  for (const { hash } of raw.transactions ?? []) {
+    if (!isBytes32(hash)) continue
+    if (!successful.has(hash.toLowerCase())) {
+      // Forge can save a broadcast hash before its receipt. Only the RPC can confirm it landed.
+      const receipt = await client.getTransactionReceipt({ hash }).catch(() => {
+        // RPC errors can contain endpoint credentials; retain only the hash needed for recovery.
+        throw new Error(
+          `Cannot recover creation receipt for ${hash}; retry when the RPC receipt is available`,
+        )
+      })
+      if (receipt.transactionHash.toLowerCase() !== hash.toLowerCase())
+        throw new Error(`RPC returned a different transaction receipt for ${hash}`)
+      if (receipt.status !== 'success') continue
+    }
+    transactions.push(hash)
+  }
+  return transactions
 }

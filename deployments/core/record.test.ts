@@ -122,6 +122,35 @@ function record(overrides: Partial<EarnDeploymentRecord> = {}): EarnDeploymentRe
 }
 
 describe('deployment records', () => {
+  test('round-trips admitted creation factory evidence and rejects malformed proof fields', () => {
+    const value = record()
+    const source = value.source.contracts.engine
+    if (source?.kind !== 'source') throw new Error('Missing source')
+    source.creationFactory = {
+      address: address('abc'),
+      name: 'Factory',
+      match: 'exact_match',
+      sourceInputsHash,
+    }
+    expect(parseEarnDeploymentRecord(value, profile)).toEqual(value)
+    for (const patch of [
+      { address: '0x1234' },
+      { sourceInputsHash: '0x1234' },
+      { match: 'partial' },
+      { name: '' },
+      { extra: true },
+    ]) {
+      source.creationFactory = {
+        address: address('abc'),
+        name: 'Factory',
+        match: 'exact_match',
+        sourceInputsHash,
+        ...patch,
+      } as never
+      expect(() => parseEarnDeploymentRecord(value, profile)).toThrow('creationFactory')
+    }
+  })
+
   test('rejects a Zone target that is not the profile Zone identity', () => {
     const deployed = record({
       deploymentId: zoneProfile.id,

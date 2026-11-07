@@ -137,6 +137,10 @@ file. Per-profile receipt isolation does not replace this event and onchain bind
 adopts the router its permissionless `ZoneRouterFactory` already deployed for the profile's mode,
 such as one Spend's script created, recording the transaction its `RouterDeployed` event names.
 Factory-provisioned engines also adopt their exact creation event rather than an unrelated receipt.
+For other creating steps, an interrupted broadcast's saved transaction hashes are confirmed against
+RPC receipts when Forge has not saved successful receipts. Resume can repair an empty pending
+action's transaction list without rebroadcasting; unavailable receipts remain retryable. Missing
+or ambiguous creation evidence still fails source verification.
 Before binding, predicted core addresses and reciprocal asset, engine, and fee-module bindings must
 match; an engine already bound elsewhere stops rather than producing an impossible handoff.
 
@@ -194,8 +198,10 @@ but never downgrade. The Git commit remains provenance, not a required local obj
 Zone Factory identity requires a fresh successful verification before promotion.
 
 A profile-named Zone router factory must already have a source match against the canonical checkout
-before its event is trusted. These external factories are not covered by the record's source
-identities, so this read-only admission requires their canonical source checkout on every recheck.
+before its event is trusted. The created contract records that factory's address, name, match
+strength and source-input hash. Historical rechecks use this independent factory identity, not
+the evolving checkout; changed verifier sources and weaker matches fail. A record without this
+factory evidence still requires the canonical factory checkout and is never silently rewritten.
 
 On a fresh checkout, the command seeds pending state from the committed record only after
 revalidating its runtime provenance, derived contract identity, and each completed action onchain;

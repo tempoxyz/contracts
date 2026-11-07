@@ -207,6 +207,57 @@ function run(
   }
 }
 
+function namedFactoryRun() {
+  const factory = address('fac')
+  const router = address('70')
+  const runtime = dependencies()
+  const factoryContract = {
+    address: factory,
+    name: 'ZoneRouterFactory',
+    fullyQualifiedName: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    match: 'exact_match',
+    sources: {
+      'src/ZoneRouterFactory.sol': { content: 'canonical:zone-router/src/ZoneRouterFactory.sol' },
+    },
+  }
+  runtime.readSource = vi.fn(
+    (path: string) => `canonical:${path.replace(/^\/checkout\/(earn\/)?/, '')}`,
+  )
+  runtime.fetch = vi.fn(async (input) => {
+    const url = String(input).toLowerCase()
+    if (url.includes(factory.toLowerCase())) return Response.json(factoryContract)
+    if (url.includes(router.toLowerCase()))
+      return Response.json({
+        address: router,
+        name: 'ZoneRouter',
+        fullyQualifiedName: 'src/ZoneRouter.sol:ZoneRouter',
+        match: 'exact_match',
+        transactionHash: transaction,
+        sources: { 'src/ZoneRouter.sol': { content: 'canonical:zone-router/src/ZoneRouter.sol' } },
+      })
+    return dependencies().fetch(input)
+  }) as unknown as typeof fetch
+  const options = run({
+    root: '/checkout/earn',
+    profile: {
+      ...profile,
+      zoneRouter: { zoneId: 7, ops: ['spend'], spenders: [address('5e')], factory },
+    },
+    record: {
+      actions: {
+        ...actions,
+        'deploy-zone-router': {
+          completedAt: '2026-01-01T00:00:00.000Z',
+          verification: 'broadcast',
+          transactions: [transaction],
+        },
+      },
+      addresses: { ...addresses, zoneRouter: router },
+    },
+  })
+  return { options, runtime, factoryContract }
+}
+
 describe('deployment source verification', () => {
   test('hashes source inputs in the same order under any operator locale', async () => {
     const runtime = dependencies()
@@ -710,70 +761,110 @@ describe('deployment source verification', () => {
   test.each(['deployment', 'recorded'] as const)(
     'rejects a noncanonical named factory even when its event and verifier hash agree: %s',
     async (entry) => {
-      const factory = address('fac')
-      const router = address('70')
-      const routerProfile = {
-        ...profile,
-        zoneRouter: { zoneId: 7, ops: ['spend' as const], spenders: [address('5e')], factory },
-      }
-      const runtime = dependencies()
-      let malicious = false
-      runtime.readSource = vi.fn(
-        (path: string) => `canonical:${path.replace(/^\/checkout\/(earn\/)?/, '')}`,
-      )
-      runtime.fetch = vi.fn(async (input) => {
-        const url = String(input).toLowerCase()
-        if (url.includes(factory.toLowerCase()) || url.includes(router.toLowerCase())) {
-          const name = url.includes(factory.toLowerCase()) ? 'ZoneRouterFactory' : 'ZoneRouter'
-          return Response.json({
-            address: name === 'ZoneRouterFactory' ? factory : router,
-            name,
-            fullyQualifiedName: `src/${name}.sol:${name}`,
-            match: 'exact_match',
-            transactionHash: transaction,
-            sources: {
-              [`src/${name}.sol`]: {
-                content:
-                  malicious && name === 'ZoneRouterFactory'
-                    ? 'contract FakeFactory { /* emits RouterDeployed without creation */ }'
-                    : `canonical:zone-router/src/${name}.sol`,
-              },
-            },
-          })
-        }
-        return dependencies().fetch(input)
-      }) as unknown as typeof fetch
-      const options = run({
-        root: '/checkout/earn',
-        profile: routerProfile,
-        record: {
-          actions: {
-            ...actions,
-            'deploy-zone-router': {
-              completedAt: '2026-01-01T00:00:00.000Z',
-              verification: 'broadcast',
-              transactions: [transaction],
-            },
-          },
-          addresses: { ...addresses, zoneRouter: router },
-        },
-      })
-      const source = await verifyDeploymentSources(options, runtime)
-      options.record.source = source as EarnDeploymentRecord['source']
-      malicious = true
+      const { options, runtime, factoryContract } = namedFactoryRun()
+      options.record.source = (await verifyDeploymentSources(
+        options,
+        runtime,
+      )) as EarnDeploymentRecord['source']
+      factoryContract.sources['src/ZoneRouterFactory.sol']!.content =
+        'contract FakeFactory { /* emits RouterDeployed without creation */ }'
       const result =
         entry === 'deployment'
           ? verifyDeploymentSources({ ...options, resubmit: true }, runtime)
           : verifyRecordedDeploymentSources({ ...options, resubmit: true }, runtime)
-      await expect(result).rejects.toThrow('does not match the canonical checkout')
-      expect(runtime.sourcePaths).toHaveBeenCalledWith(
-        '/checkout/zone-router',
-        'src/ZoneRouterFactory.sol:ZoneRouterFactory',
-        {},
+      await expect(result).rejects.toThrow(
+        entry === 'deployment'
+          ? 'does not match the canonical checkout'
+          : 'does not match current provenance for ZoneRouterFactory',
       )
       expect(runtime.spawn).not.toHaveBeenCalled()
     },
   )
+
+  test.each([false, true])(
+    'pins external factory admission across checkout changes (repair=%s)',
+    async (resubmit) => {
+      const { options, runtime } = namedFactoryRun()
+      const source = await verifyDeploymentSources(options, runtime)
+      expect(source.contracts.zoneRouter).toMatchObject({
+        creationFactory: {
+          address: address('fac'),
+          name: 'ZoneRouterFactory',
+          match: 'exact_match',
+          sourceInputsHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+        },
+      })
+      options.record.source = source as EarnDeploymentRecord['source']
+      const before = structuredClone(source)
+      runtime.readSource.mockImplementation(() => {
+        throw new Error('Checkout no longer contains historical sources')
+      })
+      runtime.sourcePaths.mockImplementation(() => {
+        throw new Error('Compiler configuration changed')
+      })
+      runtime.readSource.mockClear()
+      runtime.sourcePaths.mockClear()
+      await expect(
+        verifyRecordedDeploymentSources({ ...options, resubmit }, runtime),
+      ).resolves.toBeUndefined()
+      expect(source).toEqual(before)
+      expect(runtime.readSource).not.toHaveBeenCalled()
+      expect(runtime.sourcePaths).not.toHaveBeenCalled()
+      expect(runtime.spawn).not.toHaveBeenCalled()
+    },
+  )
+
+  test('allows stronger external factory matches but rejects downgrade and identity changes', async () => {
+    const { options, runtime, factoryContract } = namedFactoryRun()
+    factoryContract.match = 'match'
+    options.record.source = (await verifyDeploymentSources(
+      options,
+      runtime,
+    )) as EarnDeploymentRecord['source']
+    factoryContract.match = 'exact_match'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).resolves.toBeUndefined()
+    options.record.source = (await verifyDeploymentSources(
+      options,
+      runtime,
+    )) as EarnDeploymentRecord['source']
+    factoryContract.match = 'match'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      'does not match current provenance',
+    )
+    factoryContract.match = 'exact_match'
+    factoryContract.name = 'FakeFactory'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      'expected ZoneRouterFactory',
+    )
+    factoryContract.name = 'ZoneRouterFactory'
+    const contract = options.record.source.contracts.zoneRouter
+    if (contract?.kind !== 'source' || !contract.creationFactory)
+      throw new Error('Missing factory proof')
+    contract.creationFactory.address = address('bad')
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      'Recorded creation factory',
+    )
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('requires canonical admission for records without factory evidence without rewriting them', async () => {
+    const { options, runtime } = namedFactoryRun()
+    options.record.source = (await verifyDeploymentSources(
+      options,
+      runtime,
+    )) as EarnDeploymentRecord['source']
+    const contract = options.record.source.contracts.zoneRouter
+    if (contract?.kind !== 'source') throw new Error('Missing router source')
+    delete contract.creationFactory
+    const before = structuredClone(options.record.source)
+    await expect(verifyRecordedDeploymentSources(options, runtime)).resolves.toBeUndefined()
+    expect(options.record.source).toEqual(before)
+    runtime.readSource.mockReturnValue('new checkout')
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      'does not match the canonical checkout',
+    )
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
 
   test('read-only verification never submits a missing source', async () => {
     const runtime = dependencies()
