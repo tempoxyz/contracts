@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { parseEarnDeploymentProfile } from '@tempoxyz/contracts/deployments/operations'
-import { getAddress, keccak256, zeroAddress, type Hex } from 'viem'
+import { TransactionReceiptNotFoundError, getAddress, keccak256, zeroAddress, type Hex } from 'viem'
 import { Addresses } from 'viem/tempo'
 
 import { foundryProcessEnvironment } from '../chain/foundry.js'
@@ -915,6 +915,135 @@ describe('broadcast receipt recovery', () => {
       fixture.cleanup()
     }
   })
+
+  test.each([
+    ['before', 'rpc'],
+    ['after', 'rpc'],
+    ['before', 'saved'],
+    ['after', 'saved'],
+  ])('recovers a mined replacement %s a dropped hash with a %s receipt', async (order, receipt) => {
+    const fixture = await interruptedFactoryBroadcast()
+    const dropped: Hex = `0x${'dd'.repeat(32)}`
+    try {
+      const hashes = order === 'before' ? [fixture.hash, dropped] : [dropped, fixture.hash]
+      writeFileSync(
+        fixture.broadcast,
+        JSON.stringify({
+          transactions: hashes.map((hash) => ({ hash })),
+          receipts: receipt === 'saved' ? [{ transactionHash: fixture.hash, status: '0x1' }] : [],
+        }),
+      )
+      chain.getTransactionReceipt.mockImplementation(async ({ hash }) => {
+        if (hash === dropped) throw new TransactionReceiptNotFoundError({ hash })
+        return { transactionHash: hash, status: 'success' }
+      })
+      const resumed = await prepareLifecycleStep(fixture.options)
+      expect(resumed.kind).toBe('complete')
+      expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
+        fixture.hash,
+      ])
+      expect(chain.getTransactionReceipt).toHaveBeenCalledWith({ hash: dropped })
+      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(receipt === 'saved' ? 1 : 2)
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test.each(['unrecorded', 'cached empty'])(
+    'keeps a %s creation retryable when every broadcast hash is missing',
+    async (state) => {
+      const fixture = await interruptedFactoryBroadcast()
+      try {
+        if (state === 'cached empty') {
+          chain.getTransactionReceipt.mockResolvedValue({
+            transactionHash: fixture.hash,
+            status: 'reverted',
+          })
+          await recordFoundryAction({ ...fixture.options, step: fixture.deploy })
+        }
+        syncFoundryOutputs(fixture.options.root, fixture.options.profilePath)
+        const before = loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)
+        chain.getTransactionReceipt.mockRejectedValue(
+          new TransactionReceiptNotFoundError({ hash: fixture.hash }),
+        )
+        await expect(prepareLifecycleStep(fixture.options)).rejects.toThrow(
+          `Missing creation receipts for ${fixture.hash} in ${fixture.broadcast}; wait for mining or recover the successful original/replacement transaction in this broadcast artifact`,
+        )
+        expect(loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)).toEqual(
+          before,
+        )
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test('does not mistake a transport failure for a dropped transaction', async () => {
+    const fixture = await interruptedFactoryBroadcast()
+    const failed: Hex = `0x${'dd'.repeat(32)}`
+    try {
+      writeFileSync(
+        fixture.broadcast,
+        JSON.stringify({
+          transactions: [{ hash: fixture.hash }, { hash: failed }],
+          receipts: [{ transactionHash: fixture.hash, status: '0x1' }],
+        }),
+      )
+      chain.getTransactionReceipt.mockRejectedValue(new Error('RPC unavailable'))
+      await expect(prepareLifecycleStep(fixture.options)).rejects.toThrow(
+        `Cannot recover creation receipt for ${failed}`,
+      )
+      expect(
+        loadPendingDeployment(fixture.options.profilePath, fixture.options.profile).actions[
+          fixture.deploy.action.id
+        ],
+      ).toBeUndefined()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test.each(['already satisfied', 'recovered outputs'])(
+    'does not require stale receipts for a non-creating step with %s',
+    async (state) => {
+      const fixture = await interruptedFactoryBroadcast()
+      const step = deploymentStep('validate-access')
+      if (step.execution !== 'foundry') throw new Error('expected a Foundry step')
+      const satisfied = vi.spyOn(step, 'satisfied').mockResolvedValue(true)
+      if (state === 'recovered outputs') satisfied.mockResolvedValueOnce(false)
+      const input = vi.spyOn(step, 'input').mockReturnValue('0x12345678')
+      try {
+        const directory = join(
+          foundryBroadcastPath(fixture.options.root, fixture.options.profilePath),
+          'AttachEarnSharePolicy.s.sol',
+          String(fixture.options.profile.chainId),
+        )
+        mkdirSync(directory, { recursive: true })
+        writeFileSync(
+          join(directory, '12345678-latest.json'),
+          JSON.stringify({ transactions: [{ hash: fixture.hash }] }),
+        )
+        chain.getTransactionReceipt.mockRejectedValue(
+          new TransactionReceiptNotFoundError({ hash: fixture.hash }),
+        )
+        const resumed = await prepareLifecycleStep({
+          ...fixture.options,
+          actions: [{ ...fixture.deploy.action, id: 'validate-access' }],
+        })
+        expect(resumed.kind).toBe('complete')
+        expect(resumed.pending.actions['validate-access']).toMatchObject({
+          transactions: [],
+          verification: 'chain',
+        })
+        expect(chain.getTransactionReceipt).not.toHaveBeenCalled()
+        expect(input).not.toHaveBeenCalled()
+      } finally {
+        input.mockRestore()
+        satisfied.mockRestore()
+        fixture.cleanup()
+      }
+    },
+  )
 
   test.each([
     ['missing file', undefined],

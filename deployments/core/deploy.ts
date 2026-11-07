@@ -8,7 +8,11 @@ import { erc20Abi, getAddress, isHex, type Address, type Hex, type PublicClient 
 import { privateKeyToAccount } from 'viem/accounts'
 
 import { inspectEngineBindings } from '../modules/earn/engines/index.js'
-import { capabilityModules, executeAvailableAuthority } from '../../deployments/modules/index.js'
+import {
+  capabilityModules,
+  deploymentStep,
+  executeAvailableAuthority,
+} from '../../deployments/modules/index.js'
 import type {
   DiscoveryOptions,
   InspectionReport,
@@ -245,6 +249,31 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
     recordPath = publishProfileDeploymentRecord(options.profilePath, profile, candidate)
     formatCommitReadyOutput(options.root, recordPath)
     record = loadProfileDeploymentRecord(options.profilePath, profile)
+  } else if (record.source.contractVerification === 'pending') {
+    // Persist recovered creation evidence before verification, or the next restore discards it.
+    // Existing transactions, deployment identity, and already-verified history stay unchanged.
+    const recovered: EarnDeploymentRecord['actions'] = {}
+    for (const { id } of deploymentActions(profile)) {
+      const step = deploymentStep(id)
+      const recorded = record.actions[id]
+      const transactions = deployed.pending.actions[id]?.transactions
+      if (
+        step.execution !== 'foundry' ||
+        !(step.source || step.creationEvent || step.creates?.length) ||
+        recorded?.transactions.length !== 0 ||
+        !transactions?.length
+      )
+        continue
+      recovered[id] = { ...recorded, transactions }
+    }
+    if (Object.keys(recovered).length > 0) {
+      const candidate = { ...record, actions: { ...record.actions, ...recovered } }
+      // New receipts must still agree with the recorded creation block and runtime identity.
+      await verifyDeploymentProvenance(client, candidate)
+      recordPath = publishProfileDeploymentRecord(options.profilePath, profile, candidate)
+      formatCommitReadyOutput(options.root, recordPath)
+      record = loadProfileDeploymentRecord(options.profilePath, profile)
+    }
   }
 
   // Every activation action is attempted; the first handoff is reported afterward.

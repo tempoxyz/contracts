@@ -1,16 +1,59 @@
-import { readdirSync, mkdtempSync, chmodSync, writeFileSync, rmSync } from 'node:fs'
+import {
+  readdirSync,
+  mkdtempSync,
+  chmodSync,
+  writeFileSync,
+  rmSync,
+  mkdirSync,
+  readFileSync,
+  existsSync,
+} from 'node:fs'
+import * as ChildProcess from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { describe, expect, test, vi } from 'vitest'
+import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  getAddress,
+  getAbiItem,
+  keccak256,
+  zeroAddress,
+  type Hex,
+  type TransactionReceipt,
+} from 'viem'
 
-import { loadEarnProfileBundle } from './bundle.js'
+import {
+  loadEarnProfileBundle,
+  loadProfileDeploymentRecord,
+  pendingDeploymentPath,
+  profileDeploymentPath,
+  publishProfileDeploymentRecord,
+} from './bundle.js'
+import { earnFactoryAbi } from '../abis/index.js'
+import * as Runtime from '../chain/runtime.js'
+import * as Inspection from './inspection.js'
+import * as Provenance from './provenance.js'
+import * as Reconcile from './reconcile.js'
+import * as Verify from './verify.js'
+import { deploymentActions } from './plan.js'
+import { runtimeCodeAddressKeysFor, type EarnDeploymentRecord } from './record.js'
 import {
   assertNoPublicFixtureAuthority,
+  deployEarnProfile,
   publicFixtureAddresses,
   formatCommitReadyOutput,
 } from './deploy.js'
-import type { EarnDeploymentProfile } from './profile.js'
+import {
+  componentDeploymentIntentHashes,
+  deploymentIntentHash,
+  parseEarnDeploymentProfile,
+  profileFactoryDeploymentId,
+  type EarnDeploymentProfile,
+} from './profile.js'
+
+vi.mock(import('node:child_process'), async (original) => ({ ...(await original()) }))
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const fixtures = publicFixtureAddresses()
@@ -92,3 +135,420 @@ exit 0
     }
   })
 })
+
+describe('deployEarnProfile committed source recovery', () => {
+  test('publishes recovered creation evidence before verification without rebroadcasting or changing identity', async () => {
+    const fixture = pendingSourceDeployment()
+    try {
+      const result = await deployEarnProfile(fixture.options)
+      expect(result.state).toBe('complete')
+      const recovered = {
+        ...fixture.record,
+        actions: {
+          ...fixture.record.actions,
+          'deploy-core': {
+            ...fixture.record.actions['deploy-core']!,
+            transactions: [fixture.creation],
+          },
+        },
+      }
+      expect(fixture.verification).toHaveBeenCalledOnce()
+      expect(fixture.verification.mock.calls[0]![0].record).toEqual(recovered)
+      const verified = fixture.read()
+      expect(verified).toEqual({
+        ...recovered,
+        source: expect.objectContaining({ contractVerification: 'verified' }),
+      })
+      expect(verified.source.contracts.earnVault).toMatchObject({
+        kind: 'erc1967-proxy',
+        match: 'exact_match',
+      })
+      expect(existsSync(pendingDeploymentPath(fixture.options.profilePath))).toBe(false)
+      expect(fixture.chain.getLogs).toHaveBeenCalledOnce()
+      fixture.assertNoBroadcast()
+
+      // The verified record and its original nonempty transactions are immutable on later resumes.
+      const published = readFileSync(fixture.recordPath, 'utf8')
+      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+      expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+      expect(fixture.verification).toHaveBeenCalledOnce()
+      expect(fixture.chain.getLogs).toHaveBeenCalledOnce()
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test('preserves nonempty creation transactions in a source-pending record', async () => {
+    const fixture = pendingSourceDeployment()
+    try {
+      const record = {
+        ...fixture.record,
+        actions: {
+          ...fixture.record.actions,
+          'deploy-core': {
+            ...fixture.record.actions['deploy-core']!,
+            transactions: [fixture.creation],
+          },
+        },
+      }
+      publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, record)
+      fixture.chain.getLogs.mockRejectedValue(new Error('Recorded creation must not be replaced'))
+      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+      expect(fixture.verification.mock.calls[0]![0].record).toEqual(record)
+      expect(fixture.read().actions).toEqual(record.actions)
+      expect(fixture.chain.getLogs).not.toHaveBeenCalled()
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test('keeps the repaired pending record through verifier downtime and resumes from it without the cache', async () => {
+    const fixture = pendingSourceDeployment()
+    try {
+      const fetch = fixture.dependencies.fetch.getMockImplementation()!
+      fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
+      const result = await deployEarnProfile(fixture.options)
+      expect(result.state).toBe('verification-pending')
+      const pending = fixture.read()
+      expect(pending.source).toEqual(fixture.record.source)
+      expect(pending.actions['deploy-core']?.transactions).toEqual([fixture.creation])
+      expect(pending.actions['bind-core']).toEqual(fixture.record.actions['bind-core'])
+
+      rmSync(pendingDeploymentPath(fixture.options.profilePath))
+      fixture.chain.getLogs.mockRejectedValue(new Error('Creation discovery must not repeat'))
+      fixture.dependencies.fetch.mockImplementation(fetch)
+      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+      expect(fixture.verification.mock.calls[1]![0].record).toEqual(pending)
+      expect(fixture.read().source.contractVerification).toBe('verified')
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test.each(['missing event', 'reverted receipt', 'changed creation block'])(
+    'does not publish an invalid repair after %s',
+    async (failure) => {
+      const fixture = pendingSourceDeployment()
+      try {
+        if (failure === 'missing event') fixture.chain.getLogs.mockResolvedValue([])
+        if (failure === 'reverted receipt') fixture.receipt.status = 'reverted'
+        if (failure === 'changed creation block') fixture.receipt.blockNumber = 9n
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
+          failure === 'missing event'
+            ? /did not return EarnStackDeployed/
+            : failure === 'reverted receipt'
+              ? /reverted/
+              : /earliest recorded receipt/,
+        )
+        expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        expect(fixture.read().source.contractVerification).toBe('pending')
+        expect(fixture.verification).not.toHaveBeenCalled()
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test.each(['unrelated creation receipt', 'noncanonical source'])(
+    'never marks the repaired record verified after %s',
+    async (failure) => {
+      const fixture = pendingSourceDeployment()
+      try {
+        if (failure === 'unrelated creation receipt') fixture.receipt.logs = []
+        else fixture.dependencies.readSource.mockReturnValue('noncanonical source')
+        await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
+          failure === 'unrelated creation receipt' ? /does not prove creation/ : /source/,
+        )
+        expect(fixture.verification).toHaveBeenCalledOnce()
+        expect(fixture.read().source).toEqual(fixture.record.source)
+        expect(fixture.read().actions['deploy-core']?.transactions).toEqual([fixture.creation])
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test('refuses to repair an already-verified record with missing creation evidence', async () => {
+    const fixture = pendingSourceDeployment()
+    try {
+      const record = {
+        ...fixture.record,
+        actions: {
+          ...fixture.record.actions,
+          'deploy-core': {
+            ...fixture.record.actions['deploy-core']!,
+            transactions: [fixture.creation],
+          },
+        },
+      }
+      const source = await fixture.verifySources({
+        ...fixture.options,
+        client: fixture.chain as never,
+        record,
+      })
+      publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, {
+        ...fixture.record,
+        source: { ...fixture.record.source, ...source },
+      })
+      const published = readFileSync(fixture.recordPath, 'utf8')
+      await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
+        /Missing or ambiguous creation transaction/,
+      )
+      expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+      expect(fixture.chain.getLogs).not.toHaveBeenCalled()
+      expect(fixture.verification).not.toHaveBeenCalled()
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+})
+
+/** Exercises real record publication, reconciliation, provenance, and source checks over read-only RPC fixtures. */
+function pendingSourceDeployment() {
+  const directory = mkdtempSync(join(tmpdir(), 'earn-pending-source-'))
+  const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
+  const creation: Hex = `0x${'ab'.repeat(32)}`
+  const binding: Hex = `0x${'cd'.repeat(32)}`
+  const genesis: Hex = `0x${'ef'.repeat(32)}`
+  const runtime: Hex = '0x6000'
+  const vaultImplementation = address('7')
+  const feesImplementation = address('8')
+  const tip20Factory = address('9')
+  const addresses = {
+    engine: address('1'),
+    earnVault: address('21'),
+    earnShare: address('22'),
+    earnFees: address('23'),
+    asset: address('6'),
+  }
+  const authored = {
+    version: 1,
+    id: 'pending-source-test',
+    chainId: 4217,
+    owner: address('4'),
+    engine: { kind: 'veda', address: addresses.engine },
+  }
+  const profile = parseEarnDeploymentProfile(authored, {
+    deployer: address('2'),
+    factories: { earn: address('3'), erc4626Engine: address('5') },
+  })
+  const options = {
+    environment: {},
+    profile,
+    profilePath: join(directory, 'profiles', profile.id, 'profile.json'),
+    root: join(directory, 'earn'),
+    rpcUrl: 'https://chain.test',
+    trustedIdentity: { deployer: profile.deployer, factories: profile.factories },
+  }
+  mkdirSync(join(directory, 'profiles', profile.id), { recursive: true })
+  writeFileSync(options.profilePath, JSON.stringify(authored))
+  const recordPath = profileDeploymentPath(options.profilePath)
+  const read = () => loadProfileDeploymentRecord(options.profilePath, profile)
+  const feesRuntime: Hex = `0x363d3d373d3d3d363d73${feesImplementation.slice(2)}5af43d82803e903d91602b57fd5bf3`
+  const code = (target: string) => (target === addresses.earnFees ? feesRuntime : runtime)
+  const record: EarnDeploymentRecord = {
+    version: 4,
+    deploymentId: profile.id,
+    deployer: profile.deployer,
+    owner: profile.owner,
+    factories: profile.factories,
+    deploymentIntentHash: deploymentIntentHash(profile),
+    componentDeploymentIntentHashes: componentDeploymentIntentHashes(profile),
+    target: { chainId: profile.chainId, genesisHash: genesis },
+    assetDecimals: 6,
+    deploymentBlock: '10',
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    source: {
+      factoryDeploymentId: profileFactoryDeploymentId(profile),
+      commit: null,
+      treeDirty: null,
+      foundryVersion: null,
+      contractVerification: 'pending',
+      verifierUrl: null,
+      contracts: {},
+    },
+    runtimeCodeHashes: Object.fromEntries(
+      runtimeCodeAddressKeysFor(addresses).map((key) => [
+        key,
+        keccak256(code(addresses[key as keyof typeof addresses])),
+      ]),
+    ),
+    addresses,
+    actions: Object.fromEntries(
+      deploymentActions(profile).map(({ id }) => [
+        id,
+        {
+          completedAt: '2026-01-01T00:00:00.000Z',
+          verification: 'chain',
+          transactions: id === 'bind-core' ? [binding] : [],
+        },
+      ]),
+    ),
+  }
+  publishProfileDeploymentRecord(options.profilePath, profile, record)
+  const event = getAbiItem({ abi: earnFactoryAbi, name: 'EarnStackDeployed' })
+  const receipt = {
+    status: 'success',
+    transactionHash: creation,
+    blockNumber: 10n,
+    contractAddress: null,
+    logs: [
+      {
+        address: profile.factories.earn,
+        removed: false,
+        topics: encodeEventTopics({
+          abi: earnFactoryAbi,
+          eventName: 'EarnStackDeployed',
+          args: {
+            earnVault: addresses.earnVault,
+            earnShare: addresses.earnShare,
+            earnFees: addresses.earnFees,
+          },
+        }),
+        data: encodeAbiParameters(
+          event.inputs.filter((input) => !input.indexed),
+          [
+            addresses.engine,
+            addresses.asset,
+            profile.owner,
+            creation,
+            zeroAddress,
+            zeroAddress,
+            0n,
+            0,
+            0n,
+            creation,
+            creation,
+            creation,
+            creation,
+          ],
+        ),
+      },
+    ],
+  } as Pick<
+    TransactionReceipt,
+    'status' | 'transactionHash' | 'blockNumber' | 'contractAddress' | 'logs'
+  >
+  const chain = {
+    getBlock: vi.fn(async () => ({ hash: genesis })),
+    getBlockNumber: vi.fn(async () => 10n),
+    getLogs: vi.fn(async (): Promise<{ transactionHash: Hex }[]> => [
+      { transactionHash: creation },
+    ]),
+    getCode: vi.fn(async ({ address, blockNumber }: { address: string; blockNumber?: bigint }) =>
+      blockNumber === 9n ? '0x' : code(address),
+    ),
+    getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) =>
+      hash === creation
+        ? receipt
+        : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
+    ),
+    getStorageAt: vi.fn(async () => `0x${'0'.repeat(24)}${vaultImplementation.slice(2)}`),
+    readContract: vi.fn(
+      async ({ address: target, functionName }: { address: string; functionName: string }) => {
+        const factory = {
+          predictEarnShare: addresses.earnShare,
+          predictEarnFees: addresses.earnFees,
+          tip20Factory,
+          earnVaultImplementation: vaultImplementation,
+          earnFeesImplementation: feesImplementation,
+        }
+        const values =
+          target === profile.factories.earn
+            ? factory
+            : { ...addresses, owner: profile.owner, operator: profile.owner }
+        if (!(functionName in values)) throw new Error(`Unexpected contract read ${functionName}`)
+        return values[functionName as keyof typeof values]
+      },
+    ),
+  }
+  const contracts = new Map([
+    [addresses.engine.toLowerCase(), 'src/engines/veda/VedaEngine.sol:VedaEngine'],
+    [
+      addresses.earnVault.toLowerCase(),
+      'lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy',
+    ],
+  ])
+  const dependencies = {
+    fetch: vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      const target = [...contracts.keys()].find((address) =>
+        String(input).toLowerCase().includes(address),
+      )
+      if (!target) throw new Error(`Unexpected verifier lookup ${String(input)}`)
+      const contract = contracts.get(target)!
+      const [source, name] = contract.split(':')
+      return Response.json({
+        address: target,
+        fullyQualifiedName: contract,
+        match: 'exact_match',
+        name,
+        transactionHash: creation,
+        sources: { [source!]: { content: `canonical:${source}` } },
+      })
+    }),
+    pause: vi.fn(async () => undefined),
+    readSource: vi.fn((path: string) => `canonical:${path.slice(options.root.length + 1)}`),
+    spawn: vi.fn(() => {
+      throw new Error('Unexpected verifier submission')
+    }),
+    compilerArguments: vi.fn(() => []),
+    sourcePaths: vi.fn((_root: string, contract: string) => [contract.split(':')[0]!]),
+  } satisfies Verify.VerificationDependencies
+  const verifySources = (parameters: Parameters<typeof Verify.verifyDeploymentSources>[0]) =>
+    verifyDeploymentSources(parameters, dependencies)
+  const verifyDeploymentSources = Verify.verifyDeploymentSources
+  const verifyRecordedDeploymentSources = Verify.verifyRecordedDeploymentSources
+  vi.spyOn(Runtime, 'rpcClient').mockReturnValue(chain as never)
+  // Binding inspection and preflight have their own tests; reconciliation and creation evidence stay real.
+  vi.spyOn(Reconcile, 'preflightEarnDeployment').mockResolvedValue(undefined)
+  vi.spyOn(Inspection, 'inspectEarnDeployment').mockResolvedValue({})
+  vi.spyOn(Provenance, 'captureDeploymentSource').mockImplementation((options) => ({
+    ...record.source,
+    contractVerification: options.contractVerification,
+    contracts: options.contracts ?? {},
+    verifierUrl: Verify.tempoVerifierUrl,
+  }))
+  const subprocess = vi.spyOn(ChildProcess, 'spawnSync').mockImplementation((command) => {
+    if (command !== 'pnpm') throw new Error(`Unexpected subprocess ${command}`)
+    return { status: 0, stdout: '', stderr: '' } as never
+  })
+  const verification = vi
+    .spyOn(Verify, 'verifyDeploymentSources')
+    .mockImplementation((parameters) => {
+      // Verification must see durable evidence, not a repair that exists only in the private cache.
+      expect(read()).toEqual(parameters.record)
+      return verifySources(parameters)
+    })
+  vi.spyOn(Verify, 'verifyRecordedDeploymentSources').mockImplementation((parameters) =>
+    verifyRecordedDeploymentSources(parameters, dependencies),
+  )
+  return {
+    options,
+    record,
+    recordPath,
+    read,
+    creation,
+    receipt,
+    chain,
+    dependencies,
+    verification,
+    verifySources,
+    assertNoBroadcast() {
+      expect(
+        subprocess.mock.calls.every(([command, args]) => command === 'pnpm' && args?.[2] === 'fmt'),
+      ).toBe(true)
+      expect(dependencies.spawn).not.toHaveBeenCalled()
+    },
+    cleanup() {
+      vi.restoreAllMocks()
+      rmSync(directory, { recursive: true, force: true })
+    },
+  }
+}

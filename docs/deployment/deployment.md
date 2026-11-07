@@ -139,8 +139,13 @@ such as one Spend's script created, recording the transaction its `RouterDeploye
 Factory-provisioned engines also adopt their exact creation event rather than an unrelated receipt.
 For other creating steps, an interrupted broadcast's saved transaction hashes are confirmed against
 RPC receipts when Forge has not saved successful receipts. Resume can repair an empty pending
-action's transaction list without rebroadcasting; unavailable receipts remain retryable. Missing
-or ambiguous creation evidence still fails source verification.
+action's transaction list without rebroadcasting. A missing receipt does not hide another confirmed
+transaction in the same broadcast artifact; transport failures remain retryable. If every candidate
+receipt is missing, the error names the artifact that needs the original or replacement transaction
+evidence. Already-satisfied steps that create no contracts do not require old broadcast receipts.
+For a published record still marked source-verification `pending`, recovered creation hashes replace
+empty action transaction lists before verification. This recovery never rewrites verified records.
+Missing or ambiguous creation evidence still fails source verification.
 Before binding, predicted core addresses and reciprocal asset, engine, and fee-module bindings must
 match; an engine already bound elsewhere stops rather than producing an impossible handoff.
 
@@ -224,8 +229,9 @@ the state `verification-pending`: rerunning resumes at verification after rechec
 state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
 a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
 nonzero exit; the record stays `pending`, and rerunning after the fix resumes the same way.
-Verification errors redact configured RPC URLs and credentials, including encoded forms, and do
-not retain subprocess error causes or fields that could expose them.
+Verification errors redact configured RPC URLs and credentials, including encoded forms and the
+credential-stripped transport URL, so path and query tokens stay hidden. Repeated redaction keeps
+masks stable. Errors do not retain subprocess error causes or fields that could expose credentials.
 For an invalid existing verifier entry, explicitly request canonical re-verification:
 
 ```sh

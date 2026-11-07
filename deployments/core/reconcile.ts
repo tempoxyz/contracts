@@ -5,7 +5,7 @@ import {
 } from '../modules/earn/engines/index.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { zeroAddress, type Address, type PublicClient } from 'viem'
+import { TransactionReceiptNotFoundError, zeroAddress, type Address, type PublicClient } from 'viem'
 import { isBytes32, object } from './parse.js'
 import { deploymentActions, planEarnDeployment, type EarnDeploymentAction } from './plan.js'
 import {
@@ -106,6 +106,9 @@ export async function prepareLifecycleStep(options: {
 
   for (const action of options.actions ?? planEarnDeployment(profile)) {
     const step = deploymentStep(action.id)
+    const createsContracts =
+      step.execution === 'foundry' &&
+      Boolean(step.source || step.creationEvent || step.creates?.length)
     // Each activation acts on a published deployment, so it is inspected again first.
     const inspection =
       step.execution === 'authority' && step.phase === 'activation'
@@ -114,10 +117,7 @@ export async function prepareLifecycleStep(options: {
     if (await step.satisfied(client, profile, pending.outputs)) {
       const recorded = pending.actions[action.id]
       // Earlier resumes may have cached the bindings before Forge saved a creation receipt.
-      const recoverCreation =
-        step.execution === 'foundry' &&
-        (step.source || step.creationEvent || step.creates?.length) &&
-        recorded?.transactions.length === 0
+      const recoverCreation = createsContracts && recorded?.transactions.length === 0
       if (!recorded || recoverCreation) {
         const adopted =
           step.execution === 'foundry' && step.adopt
@@ -126,7 +126,7 @@ export async function prepareLifecycleStep(options: {
         if (adopted) pending = { ...pending, outputs: adopted.outputs }
         const transactions = adopted
           ? [adopted.transaction]
-          : step.execution === 'foundry'
+          : step.execution === 'foundry' && createsContracts
             ? await successfulBroadcastTransactions(
                 client,
                 foundryBroadcastPath(options.root, profilePath),
@@ -174,13 +174,15 @@ export async function prepareLifecycleStep(options: {
           action,
           adopted
             ? [adopted.transaction]
-            : await successfulBroadcastTransactions(
-                client,
-                foundryBroadcastPath(options.root, profilePath),
-                foundryScript(step, profile),
-                step.input(profile, outputs, outputPath),
-                profile.chainId,
-              ),
+            : createsContracts
+              ? await successfulBroadcastTransactions(
+                  client,
+                  foundryBroadcastPath(options.root, profilePath),
+                  foundryScript(step, profile),
+                  step.input(profile, outputs, outputPath),
+                  profile.chainId,
+                )
+              : [],
         )
         continue
       }
@@ -429,21 +431,32 @@ async function successfulBroadcastTransactions(
     ),
   )
   const transactions: `0x${string}`[] = []
+  const missing: string[] = []
   for (const { hash } of raw.transactions ?? []) {
     if (!isBytes32(hash)) continue
     if (!successful.has(hash.toLowerCase())) {
       // Forge can save a broadcast hash before its receipt. Only the RPC can confirm it landed.
-      const receipt = await client.getTransactionReceipt({ hash }).catch(() => {
+      const receipt = await client.getTransactionReceipt({ hash }).catch((error: unknown) => {
+        // A dropped hash must not hide a later mined replacement in the same broadcast artifact.
+        if (error instanceof TransactionReceiptNotFoundError) {
+          missing.push(hash)
+          return undefined
+        }
         // RPC errors can contain endpoint credentials; retain only the hash needed for recovery.
         throw new Error(
           `Cannot recover creation receipt for ${hash}; retry when the RPC receipt is available`,
         )
       })
+      if (!receipt) continue
       if (receipt.transactionHash.toLowerCase() !== hash.toLowerCase())
         throw new Error(`RPC returned a different transaction receipt for ${hash}`)
       if (receipt.status !== 'success') continue
     }
     transactions.push(hash)
   }
+  if (transactions.length === 0 && missing.length > 0)
+    throw new Error(
+      `Missing creation receipts for ${missing.join(', ')} in ${path}; wait for mining or recover the successful original/replacement transaction in this broadcast artifact`,
+    )
   return transactions
 }

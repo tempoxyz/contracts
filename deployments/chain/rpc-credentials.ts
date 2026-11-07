@@ -28,6 +28,11 @@ export function redactRpcCredentials(
       addCredentialForms(secrets, url.href.replace(/\/+$/, ''))
       addCredentialForms(secrets, url.username)
       addCredentialForms(secrets, url.password)
+      // viem moves userinfo into an auth header but still includes path/query tokens in errors.
+      url.username = ''
+      url.password = ''
+      addCredentialForms(secrets, url.href)
+      addCredentialForms(secrets, url.href.replace(/\/+$/, ''))
     } catch {
       // Invalid URLs still need redaction; a URL parser error would retain its input.
     }
@@ -48,7 +53,10 @@ export function redactRpcCredentials(
         ),
     )
     .join('|')
-  return text.replace(new RegExp(pattern, 'g'), '***')
+  const redacted = text.replace(new RegExp(pattern, 'g'), '***')
+  // Short asterisk credentials can expand an existing mask. Coalesce only after matching every
+  // credential, since a URL or credential can itself contain mask-shaped text.
+  return secrets.has('*') || secrets.has('**') ? redacted.replace(/\*{3,}/g, '***') : redacted
 }
 
 function addCredentialForms(secrets: Set<string>, value: string | undefined) {
