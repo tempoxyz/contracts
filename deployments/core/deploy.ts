@@ -42,6 +42,7 @@ import {
   verifyEarnDeploymentState,
   type ReconciliationStep,
 } from './reconcile.js'
+import { assertStepCreation } from './creation.js'
 import type { IntentComponent } from './components.js'
 import {
   changedIntentComponents,
@@ -264,6 +265,13 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
         !transactions?.length
       )
         continue
+      await assertStepCreation({
+        client,
+        outputs: record.addresses as Record<string, Address>,
+        profile,
+        step,
+        transactions,
+      })
       recovered[id] = { ...recorded, transactions }
     }
     if (Object.keys(recovered).length > 0) {
@@ -414,6 +422,18 @@ async function buildDeploymentRecord(
       options.pending.actions[action.id] ? [[action.id, options.pending.actions[action.id]]] : [],
     ),
   ) as EarnDeploymentRecord['actions']
+  for (const { id } of deploymentActions(profile)) {
+    const step = deploymentStep(id)
+    const action = actions[id]
+    if (step.execution === 'foundry' && action && action.transactions.length > 0)
+      await assertStepCreation({
+        client,
+        outputs: addresses as Record<string, Address>,
+        profile,
+        step,
+        transactions: action.transactions,
+      })
+  }
   const asset = addresses.asset
   if (!asset) throw new Error('Completed deployment record is missing its asset')
   const [assetDecimals, deploymentBlock] = await Promise.all([

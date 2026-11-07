@@ -138,7 +138,10 @@ adopts the router its permissionless `ZoneRouterFactory` already deployed for th
 such as one Spend's script created, recording the transaction its `RouterDeployed` event names.
 Factory-provisioned engines also adopt their exact creation event rather than an unrelated receipt.
 For other creating steps, an interrupted broadcast's saved transaction hashes are confirmed against
-RPC receipts when Forge has not saved successful receipts. Resume can repair an empty pending
+RPC receipts when Forge has not saved successful receipts. For hosted deployments, every recovered
+creation hash must also prove the expected direct creation or factory event before it is saved,
+even when Forge has saved a successful receipt. Rejected evidence leaves the action unchanged, so
+correcting the artifact or RPC evidence permits another retry without rebroadcasting. Resume can repair an empty pending
 action's transaction list without rebroadcasting, preserving its completion metadata and any later
 step's saved outputs. A missing receipt does not hide another confirmed
 transaction in the same broadcast artifact; transport failures remain retryable. If every candidate
@@ -147,8 +150,10 @@ evidence. Already-satisfied steps that create no contracts do not require old br
 For a published record still marked source-verification `pending`, recovered creation hashes replace
 empty action transaction lists before verification. An earlier successful receipt moves
 `deploymentBlock` back to the earliest recorded receipt, never forward, preserving a conservative
-claim-scan boundary. Runtime, receipt, and applicable archive checks run before publication; source
-verification still requires each target's creation proof. This recovery never rewrites verified records.
+claim-scan boundary. Target creation, runtime, receipt, and applicable archive checks run before
+publication; canonical source verification remains a separate requirement. Recovery never rewrites
+nonempty committed creation history or verified records. An invalid nonempty action from an earlier
+run requires reviewed record correction, not automatic replacement or an advanced claim-scan boundary.
 Missing or ambiguous creation evidence still fails source verification.
 Before binding, predicted core addresses and reciprocal asset, engine, and fee-module bindings must
 match; an engine already bound elsewhere stops rather than producing an impossible handoff.

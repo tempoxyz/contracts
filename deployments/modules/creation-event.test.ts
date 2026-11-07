@@ -28,6 +28,7 @@ describe('creationEvent', () => {
       address: factories.earn,
       event: getAbiItem({ abi: earnFactoryAbi, name: 'EarnStackDeployed' }),
       argument: 'earnVault',
+      output: 'earnVault',
     })
   })
 
@@ -36,6 +37,7 @@ describe('creationEvent', () => {
       address: factories.erc4626Engine,
       event: getAbiItem({ abi: erc4626EngineFactoryAbi, name: 'ERC4626EngineDeployed' }),
       argument: 'engine',
+      output: 'engine',
     })
   })
 
@@ -50,6 +52,7 @@ describe('creationEvent', () => {
       address: address('7'),
       event: getAbiItem({ abi: zoneRouterFactoryAbi, name: 'RouterDeployed' }),
       argument: 'router',
+      output: 'zoneRouter',
     })
     expect(() => deployZoneRouter.creationEvent!(profile, {})).toThrow(
       'deployment output zoneRouterFactory is required',
@@ -62,6 +65,7 @@ describe('creationEvent', () => {
       address: address('8'),
       event: getAbiItem({ abi: zoneRouterFactoryAbi, name: 'RouterDeployed' }),
       argument: 'router',
+      output: 'zoneRouter',
       source: { project: 'zone-router', contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory' },
     })
   })

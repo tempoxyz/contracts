@@ -234,6 +234,8 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
     address: Address
     event: AbiEvent
     argument: string
+    /** Recorded output the factory event must prove was created. */
+    output: DeploymentAddressKey
     /** Canonical source admission for an external factory not covered by the deployment's own source targets. */
     source?: { project: string; contract: string }
   }

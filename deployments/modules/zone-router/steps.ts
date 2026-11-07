@@ -110,6 +110,7 @@ export const deployZoneRouter = defineFoundryStep({
     address: zoneRouterFactory(profile, outputs),
     event: routerDeployed,
     argument: 'router',
+    output: 'zoneRouter',
     ...(namesFactory(profile)
       ? { source: { project: 'zone-router', contract: deployZoneRouterFactory.source!.contract } }
       : {}),

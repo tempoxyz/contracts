@@ -3,7 +3,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { parseEarnDeploymentProfile } from '@tempoxyz/contracts/deployments/operations'
-import { TransactionReceiptNotFoundError, getAddress, keccak256, zeroAddress, type Hex } from 'viem'
+import {
+  TransactionReceiptNotFoundError,
+  getAddress,
+  keccak256,
+  zeroAddress,
+  type Hex,
+  type TransactionReceipt,
+  type AbiEvent,
+  type AbiParameter,
+  encodeAbiParameters,
+  encodeEventTopics,
+} from 'viem'
 import { Addresses } from 'viem/tempo'
 
 import { foundryProcessEnvironment } from '../chain/foundry.js'
@@ -35,7 +46,14 @@ const chain = vi.hoisted(() => ({
   getBlockNumber: vi.fn(async () => 250_000n),
   getChainId: vi.fn(async () => 4217),
   getTransactionReceipt: vi.fn(
-    async (_parameters: { hash: Hex }): Promise<{ transactionHash: Hex; status: string }> => {
+    async (_parameters: {
+      hash: Hex
+    }): Promise<{
+      transactionHash: Hex
+      status: string
+      contractAddress?: `0x${string}` | null
+      logs?: TransactionReceipt['logs']
+    }> => {
       throw new Error('Unexpected receipt request')
     },
   ),
@@ -531,6 +549,9 @@ describe('Earn deployment lifecycle', () => {
         const hash: Hex = `0x${'ab'.repeat(32)}`
         const creation: Hex = `0x${'cd'.repeat(32)}`
         chain.getLogs.mockImplementation(async () => [{ transactionHash: creation }])
+        chain.getTransactionReceipt.mockImplementation(async () =>
+          factoryReceipt('deploy-core', profile, core, creation),
+        )
         broadcasted = true
         mkdirSync(broadcast, { recursive: true })
         writeFileSync(
@@ -610,6 +631,9 @@ describe('Earn deployment lifecycle', () => {
     const vault = { engine: address('1'), ...core, asset: engine.asset, operator: profile.owner }
     const creation: Hex = `0x${'cd'.repeat(32)}`
     chain.getCode.mockImplementation(async () => '0x60')
+    chain.getTransactionReceipt.mockImplementation(async () =>
+      factoryReceipt('deploy-core', profile, core, creation),
+    )
     // The creation event sits two log windows behind the head.
     chain.getLogs.mockImplementation(async ({ fromBlock }: { fromBlock: bigint }) =>
       fromBlock === 50_001n ? [{ transactionHash: creation }] : [],
@@ -682,6 +706,9 @@ describe('Earn deployment lifecycle', () => {
       functionName === 'predict' ? router : functionName === 'isRouter' ? true : undefined,
     )
     chain.getLogs.mockImplementation(async () => [{ transactionHash: creation }])
+    chain.getTransactionReceipt.mockImplementation(async () =>
+      factoryReceipt('deploy-zone-router', routerProfile, { zoneRouter: router }, creation),
+    )
     const checkout = mkdtempSync(join(tmpdir(), 'earn-reuse-'))
     try {
       const root = join(checkout, 'earn')
@@ -757,6 +784,8 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: `0x${fixture.hash.slice(2).toUpperCase()}`,
         status: 'success',
+        contractAddress: fixture.factory,
+        logs: [],
       })
       const resumed = await prepareLifecycleStep(fixture.options)
       expect(resumed.kind).toBe('complete')
@@ -764,9 +793,10 @@ describe('broadcast receipt recovery', () => {
       expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
         fixture.hash,
       ])
-      expect(chain.getTransactionReceipt).toHaveBeenCalledExactlyOnceWith({ hash: fixture.hash })
+      expect(chain.getTransactionReceipt).toHaveBeenCalledWith({ hash: fixture.hash })
+      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(2)
       expect(await prepareLifecycleStep(fixture.options)).toEqual(resumed)
-      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(1)
+      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(2)
     } finally {
       fixture.cleanup()
     }
@@ -778,13 +808,16 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
+        contractAddress: fixture.factory,
+        logs: [],
       })
       const recorded = await recordFoundryAction({ ...fixture.options, step: fixture.deploy })
       expect(recorded.actions[fixture.deploy.action.id]).toMatchObject({
         transactions: [fixture.hash],
         verification: 'broadcast',
       })
-      expect(chain.getTransactionReceipt).toHaveBeenCalledExactlyOnceWith({ hash: fixture.hash })
+      expect(chain.getTransactionReceipt).toHaveBeenCalledWith({ hash: fixture.hash })
+      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(2)
     } finally {
       fixture.cleanup()
     }
@@ -804,12 +837,15 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
+        contractAddress: fixture.factory,
+        logs: [],
       })
       const resumed = await prepareLifecycleStep(fixture.options)
       expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
         fixture.hash,
       ])
-      expect(chain.getTransactionReceipt).toHaveBeenCalledExactlyOnceWith({ hash: fixture.hash })
+      expect(chain.getTransactionReceipt).toHaveBeenCalledWith({ hash: fixture.hash })
+      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(2)
     } finally {
       fixture.cleanup()
     }
@@ -834,6 +870,8 @@ describe('broadcast receipt recovery', () => {
       chain.getTransactionReceipt.mockResolvedValue({
         transactionHash: fixture.hash,
         status: 'success',
+        contractAddress: fixture.factory,
+        logs: [],
       })
       const resumed = await prepareLifecycleStep(fixture.options)
       expect(resumed.kind).toBe('complete')
@@ -873,10 +911,16 @@ describe('broadcast receipt recovery', () => {
     }
     chain.getCode.mockResolvedValue('0x60')
     chain.getLogs.mockResolvedValue([{ transactionHash: creation }])
-    chain.getTransactionReceipt.mockReset().mockResolvedValue({
-      transactionHash: routerCreation,
-      status: 'success',
-    })
+    chain.getTransactionReceipt.mockReset().mockImplementation(async ({ hash }) =>
+      hash === creation
+        ? factoryReceipt('deploy-core', routerProfile, core, creation)
+        : {
+            transactionHash: routerCreation,
+            status: 'success',
+            contractAddress: router,
+            logs: [],
+          },
+    )
     chain.readContract.mockImplementation(
       async ({ address: target, functionName }: { address: string; functionName: string }) => {
         if (target === router)
@@ -940,7 +984,11 @@ describe('broadcast receipt recovery', () => {
       })
       expect(resumed.pending.outputs).toEqual({ ...outputs, earnRouter: router })
       expect(resumed.pending.actions['deploy-router']?.transactions).toEqual([routerCreation])
-      expect(chain.getTransactionReceipt).toHaveBeenCalledExactlyOnceWith({ hash: routerCreation })
+      expect(chain.getTransactionReceipt.mock.calls).toEqual([
+        [{ hash: creation }],
+        [{ hash: routerCreation }],
+        [{ hash: routerCreation }],
+      ])
       expect(loadPendingDeployment(profilePath, routerProfile)).toEqual(resumed.pending)
       expect(await prepareLifecycleStep(options)).toEqual(resumed)
 
@@ -960,7 +1008,104 @@ describe('broadcast receipt recovery', () => {
     }
   })
 
-  test('retains a successful saved receipt without another RPC lookup', async () => {
+  test.each(['unrecorded', 'cached empty'])(
+    'rejects a stale selector receipt without poisoning a corrected direct creation retry (%s)',
+    async (state) => {
+      const fixture = await interruptedFactoryBroadcast()
+      try {
+        if (state === 'cached empty') {
+          chain.getTransactionReceipt.mockResolvedValue({
+            transactionHash: fixture.hash,
+            status: 'reverted',
+          })
+          await recordFoundryAction({ ...fixture.options, step: fixture.deploy })
+        }
+        syncFoundryOutputs(fixture.options.root, fixture.options.profilePath)
+        const before = loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)
+        const stale: Hex = `0x${'ee'.repeat(32)}`
+        writeFileSync(
+          fixture.broadcast,
+          JSON.stringify({
+            transactions: [{ hash: stale }],
+            receipts: [{ transactionHash: stale, status: '0x1' }],
+          }),
+        )
+        chain.getTransactionReceipt.mockResolvedValue({
+          transactionHash: stale,
+          status: 'success',
+          contractAddress: address('ff'),
+          logs: [],
+        })
+        await expect(prepareLifecycleStep(fixture.options)).rejects.toThrow(
+          'does not prove creation',
+        )
+        expect(loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)).toEqual(
+          before,
+        )
+
+        writeFileSync(fixture.broadcast, JSON.stringify({ transactions: [{ hash: fixture.hash }] }))
+        chain.getTransactionReceipt.mockResolvedValue({
+          transactionHash: fixture.hash,
+          status: 'success',
+          contractAddress: fixture.factory,
+          logs: [],
+        })
+        const result = await prepareLifecycleStep(fixture.options)
+        expect(result.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
+          fixture.hash,
+        ])
+        if (state === 'cached empty')
+          expect(result.pending.actions[fixture.deploy.action.id]?.completedAt).toBe(
+            before.actions[fixture.deploy.action.id]?.completedAt,
+          )
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test.each(['reverted', 'missing', 'transport failure'])(
+    'does not trust a saved successful creation receipt during %s',
+    async (failure) => {
+      const fixture = await interruptedFactoryBroadcast()
+      try {
+        writeFileSync(
+          fixture.broadcast,
+          JSON.stringify({
+            transactions: [{ hash: fixture.hash }],
+            receipts: [{ transactionHash: fixture.hash, status: '0x1' }],
+          }),
+        )
+        if (failure === 'reverted')
+          chain.getTransactionReceipt.mockResolvedValue({
+            transactionHash: fixture.hash,
+            status: 'reverted',
+            contractAddress: fixture.factory,
+            logs: [],
+          })
+        else
+          chain.getTransactionReceipt.mockRejectedValue(
+            failure === 'missing'
+              ? new TransactionReceiptNotFoundError({ hash: fixture.hash })
+              : new Error('RPC https://operator:fake-secret@rpc.example/secret-path failed'),
+          )
+        await expect(prepareLifecycleStep(fixture.options)).rejects.toThrow(
+          failure === 'reverted'
+            ? 'not the successful recorded transaction'
+            : 'Cannot validate creation receipt',
+        )
+        const pending = loadPendingDeployment(fixture.options.profilePath, fixture.options.profile)
+        expect(pending.actions[fixture.deploy.action.id]).toBeUndefined()
+        expect(pending.latestOutputs).toEqual({ zoneRouterFactory: fixture.factory })
+        const error = await prepareLifecycleStep(fixture.options).catch((error: Error) => error)
+        expect(String(error)).not.toContain('fake-secret')
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test('validates a successful saved receipt against its direct creation target', async () => {
     const fixture = await interruptedFactoryBroadcast()
     try {
       writeFileSync(
@@ -970,11 +1115,17 @@ describe('broadcast receipt recovery', () => {
           receipts: [{ transactionHash: fixture.hash, status: '0x1' }],
         }),
       )
+      chain.getTransactionReceipt.mockResolvedValue({
+        transactionHash: fixture.hash,
+        status: 'success',
+        contractAddress: fixture.factory,
+        logs: [],
+      })
       const resumed = await prepareLifecycleStep(fixture.options)
       expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
         fixture.hash,
       ])
-      expect(chain.getTransactionReceipt).not.toHaveBeenCalled()
+      expect(chain.getTransactionReceipt).toHaveBeenCalledExactlyOnceWith({ hash: fixture.hash })
     } finally {
       fixture.cleanup()
     }
@@ -998,7 +1149,32 @@ describe('broadcast receipt recovery', () => {
     },
   )
 
-  test('checks each unsaved receipt and keeps only successful broadcast hashes', async () => {
+  test('preserves local batched script receipts without requiring hosted creation evidence', async () => {
+    const fixture = await interruptedFactoryBroadcast(1337)
+    const earlier: Hex = `0x${'cd'.repeat(32)}`
+    try {
+      writeFileSync(
+        fixture.broadcast,
+        JSON.stringify({
+          transactions: [{ hash: earlier }, { hash: fixture.hash }],
+          receipts: [earlier, fixture.hash].map((transactionHash) => ({
+            transactionHash,
+            status: '0x1',
+          })),
+        }),
+      )
+      const resumed = await prepareLifecycleStep(fixture.options)
+      expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
+        earlier,
+        fixture.hash,
+      ])
+      expect(chain.getTransactionReceipt).not.toHaveBeenCalled()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test('checks each unsaved receipt but rejects ambiguous successful creation hashes', async () => {
     const fixture = await interruptedFactoryBroadcast()
     const saved: Hex = `0x${'cd'.repeat(32)}`
     const reverted: Hex = `0x${'ef'.repeat(32)}`
@@ -1014,11 +1190,9 @@ describe('broadcast receipt recovery', () => {
         transactionHash: hash,
         status: hash === reverted ? 'reverted' : 'success',
       }))
-      const resumed = await prepareLifecycleStep(fixture.options)
-      expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
-        saved,
-        fixture.hash,
-      ])
+      await expect(prepareLifecycleStep(fixture.options)).rejects.toThrow(
+        'Missing or ambiguous creation transaction',
+      )
       expect(chain.getTransactionReceipt.mock.calls).toEqual([
         [{ hash: reverted }],
         [{ hash: fixture.hash }],
@@ -1047,7 +1221,12 @@ describe('broadcast receipt recovery', () => {
       )
       chain.getTransactionReceipt.mockImplementation(async ({ hash }) => {
         if (hash === dropped) throw new TransactionReceiptNotFoundError({ hash })
-        return { transactionHash: hash, status: 'success' }
+        return {
+          transactionHash: hash,
+          status: 'success',
+          contractAddress: fixture.factory,
+          logs: [],
+        }
       })
       const resumed = await prepareLifecycleStep(fixture.options)
       expect(resumed.kind).toBe('complete')
@@ -1055,7 +1234,7 @@ describe('broadcast receipt recovery', () => {
         fixture.hash,
       ])
       expect(chain.getTransactionReceipt).toHaveBeenCalledWith({ hash: dropped })
-      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(receipt === 'saved' ? 1 : 2)
+      expect(chain.getTransactionReceipt).toHaveBeenCalledTimes(receipt === 'saved' ? 2 : 3)
     } finally {
       fixture.cleanup()
     }
@@ -1183,6 +1362,8 @@ describe('broadcast receipt recovery', () => {
           chain.getTransactionReceipt.mockResolvedValue({
             transactionHash: `0x${'cd'.repeat(32)}`,
             status: 'success',
+            contractAddress: fixture.factory,
+            logs: [],
           })
         else
           chain.getTransactionReceipt.mockRejectedValue(
@@ -1211,6 +1392,8 @@ describe('broadcast receipt recovery', () => {
         chain.getTransactionReceipt.mockResolvedValue({
           transactionHash: fixture.hash,
           status: 'success',
+          contractAddress: fixture.factory,
+          logs: [],
         })
         const resumed = await prepareLifecycleStep(fixture.options)
         expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
@@ -1223,17 +1406,21 @@ describe('broadcast receipt recovery', () => {
   )
 })
 
-async function interruptedFactoryBroadcast() {
+async function interruptedFactoryBroadcast(chainId = 4217) {
   const profile = parseEarnDeploymentProfile(
     {
       version: 1,
       id: 'interrupted-factory',
-      chainId: 4217,
+      chainId,
       owner: address('4'),
       engine: { kind: 'veda', address: address('1') },
       zoneRouter: { zoneId: 7, ops: ['spend'], spenders: [address('5e')] },
     },
-    { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+    {
+      allowEphemeralChain: true,
+      deployer: address('2'),
+      factories: { earn: address('3'), erc4626Engine: address('5') },
+    },
   )
   const checkout = mkdtempSync(join(tmpdir(), 'earn-receipt-recovery-'))
   const cleanup = () => rmSync(checkout, { recursive: true, force: true })
@@ -1277,4 +1464,56 @@ async function interruptedFactoryBroadcast() {
     cleanup()
     throw error
   }
+}
+
+function factoryReceipt(
+  id: Parameters<typeof deploymentStep>[0],
+  profile: Parameters<typeof prepareLifecycleStep>[0]['profile'],
+  outputs: Record<string, `0x${string}`>,
+  transactionHash: Hex,
+) {
+  const step = deploymentStep(id)
+  if (step.execution !== 'foundry' || !step.creationEvent)
+    throw new Error('Expected factory creation')
+  const factory = step.creationEvent(profile, outputs)
+  const args = Object.fromEntries(
+    factory.event.inputs
+      .filter((input) => input.indexed)
+      .map((input) => [
+        input.name,
+        input.name === factory.argument
+          ? outputs[factory.output]
+          : input.type === 'address'
+            ? zeroAddress
+            : `0x${'00'.repeat(32)}`,
+      ]),
+  )
+  const inputs = factory.event.inputs.filter((input) => !input.indexed)
+  const values = inputs.map(emptyAbiValue)
+  return {
+    transactionHash,
+    status: 'success',
+    contractAddress: null,
+    logs: [
+      {
+        address: factory.address,
+        removed: false,
+        topics: encodeEventTopics({
+          abi: [factory.event] as readonly AbiEvent[],
+          eventName: factory.event.name,
+          args,
+        }),
+        data: encodeAbiParameters(inputs, values),
+      },
+    ] as TransactionReceipt['logs'],
+  }
+}
+
+function emptyAbiValue(input: AbiParameter): unknown {
+  if (input.type.endsWith('[]')) return []
+  if (input.type === 'tuple' && 'components' in input) return input.components.map(emptyAbiValue)
+  if (input.type === 'address') return zeroAddress
+  if (input.type === 'bool') return false
+  if (input.type === 'bytes32') return `0x${'00'.repeat(32)}`
+  return 0n
 }

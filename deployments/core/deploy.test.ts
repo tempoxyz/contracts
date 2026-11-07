@@ -292,7 +292,7 @@ describe('deployEarnProfile committed source recovery', () => {
           failure === 'missing event'
             ? /did not return EarnStackDeployed/
             : failure === 'reverted receipt'
-              ? /reverted/
+              ? /not the successful recorded transaction/
               : /earliest recorded receipt/,
         )
         expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
@@ -330,22 +330,13 @@ describe('deployEarnProfile committed source recovery', () => {
           failure === 'missing event'
             ? /did not return the factory creation event/
             : failure === 'reverted receipt'
-              ? /reverted/
+              ? /not the successful recorded transaction/
               : failure === 'unrelated receipt'
                 ? /does not prove creation/
                 : /Runtime bytecode hash changed/,
         )
-        if (failure === 'unrelated receipt') {
-          // Provenance alone never upgrades a record: the real creation proof still rejects it.
-          expect(fixture.read().deploymentBlock).toBe('8')
-          expect(fixture.read().actions['deploy-engine']?.transactions).toEqual([
-            fixture.engineCreation,
-          ])
-          expect(fixture.verification).toHaveBeenCalledOnce()
-        } else {
-          expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
-          expect(fixture.verification).not.toHaveBeenCalled()
-        }
+        expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        expect(fixture.verification).not.toHaveBeenCalled()
         expect(fixture.read().source).toEqual(fixture.record.source)
         expect(fixture.read().actions['deploy-core']).toEqual(fixture.record.actions['deploy-core'])
         fixture.assertNoBroadcast()
@@ -355,25 +346,84 @@ describe('deployEarnProfile committed source recovery', () => {
     },
   )
 
-  test.each(['unrelated creation receipt', 'noncanonical source'])(
-    'never marks the repaired record verified after %s',
-    async (failure) => {
-      const fixture = pendingSourceDeployment()
+  test.each([false, true])(
+    'rejects unrelated creation evidence without poisoning a corrected retry (engine: %s)',
+    async (provisionEngine) => {
+      const fixture = pendingSourceDeployment({ provisionEngine })
       try {
-        if (failure === 'unrelated creation receipt') fixture.receipt.logs = []
-        else fixture.dependencies.readSource.mockReturnValue('noncanonical source')
-        await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
-          failure === 'unrelated creation receipt' ? /does not prove creation/ : /source/,
+        const receipt = provisionEngine ? fixture.engineReceipt : fixture.receipt
+        const unrelated: Hex = `0x${'ff'.repeat(32)}`
+        const getReceipt = fixture.chain.getTransactionReceipt.getMockImplementation()!
+        fixture.chain.getLogs.mockResolvedValue([{ transactionHash: unrelated }])
+        fixture.chain.getTransactionReceipt.mockImplementation(async (parameters) =>
+          parameters.hash === unrelated
+            ? { ...receipt, transactionHash: unrelated, blockNumber: 7n, logs: [] }
+            : getReceipt(parameters),
         )
-        expect(fixture.verification).toHaveBeenCalledOnce()
-        expect(fixture.read().source).toEqual(fixture.record.source)
-        expect(fixture.read().actions['deploy-core']?.transactions).toEqual([fixture.creation])
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        await expect(deployEarnProfile(fixture.options)).rejects.toThrow(/does not prove creation/)
+        expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        expect(fixture.verification).not.toHaveBeenCalled()
+        const pending = JSON.parse(
+          readFileSync(pendingDeploymentPath(fixture.options.profilePath), 'utf8'),
+        )
+        expect(
+          pending.actions[provisionEngine ? 'deploy-engine' : 'deploy-core'].transactions,
+        ).toEqual([])
+
+        fixture.chain.getLogs.mockResolvedValue([{ transactionHash: receipt.transactionHash }])
+        expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+        expect(
+          fixture.read().actions[provisionEngine ? 'deploy-engine' : 'deploy-core']?.transactions,
+        ).toEqual([receipt.transactionHash])
+        expect(fixture.read().deploymentBlock).toBe(provisionEngine ? '8' : '10')
         fixture.assertNoBroadcast()
       } finally {
         fixture.cleanup()
       }
     },
   )
+
+  test('never marks the repaired record verified after noncanonical source', async () => {
+    const fixture = pendingSourceDeployment()
+    try {
+      fixture.dependencies.readSource.mockReturnValue('noncanonical source')
+      await expect(deployEarnProfile(fixture.options)).rejects.toThrow(/source/)
+      expect(fixture.verification).toHaveBeenCalledOnce()
+      expect(fixture.read().source).toEqual(fixture.record.source)
+      expect(fixture.read().actions['deploy-core']?.transactions).toEqual([fixture.creation])
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
+  test('does not rewrite nonempty invalid source-pending history from an earlier run', async () => {
+    const fixture = pendingSourceDeployment()
+    try {
+      const unrelated: Hex = `0x${'ff'.repeat(32)}`
+      const getReceipt = fixture.chain.getTransactionReceipt.getMockImplementation()!
+      fixture.chain.getTransactionReceipt.mockImplementation(async (parameters) =>
+        parameters.hash === unrelated
+          ? { ...fixture.receipt, transactionHash: unrelated, logs: [] }
+          : getReceipt(parameters),
+      )
+      publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, {
+        ...fixture.record,
+        actions: {
+          ...fixture.record.actions,
+          'deploy-core': { ...fixture.record.actions['deploy-core']!, transactions: [unrelated] },
+        },
+      })
+      const published = readFileSync(fixture.recordPath, 'utf8')
+      await expect(deployEarnProfile(fixture.options)).rejects.toThrow(/does not prove creation/)
+      expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+      expect(fixture.chain.getLogs).not.toHaveBeenCalled()
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
 
   test('refuses to repair an already-verified record with missing creation evidence', async () => {
     const fixture = pendingSourceDeployment()

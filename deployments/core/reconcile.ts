@@ -6,6 +6,7 @@ import {
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { TransactionReceiptNotFoundError, zeroAddress, type Address, type PublicClient } from 'viem'
+import { assertStepCreation } from './creation.js'
 import { isBytes32, object } from './parse.js'
 import { deploymentActions, planEarnDeployment, type EarnDeploymentAction } from './plan.js'
 import {
@@ -99,7 +100,10 @@ export async function prepareLifecycleStep(options: {
     pending = { ...pending, outputs: { ...retained, ...options.discoveredOutputs } }
     savePendingDeployment(profilePath, profile, pending)
   }
-  const complete = (action: EarnDeploymentAction, transactions: `0x${string}`[] = []) => {
+  const complete = async (action: EarnDeploymentAction, transactions: `0x${string}`[] = []) => {
+    const step = deploymentStep(action.id)
+    if (step.execution === 'foundry' && transactions.length > 0)
+      await assertStepCreation({ client, outputs: pending.outputs, profile, step, transactions })
     pending = completeAction(pending, action.id, 'chain', transactions)
     savePendingDeployment(profilePath, profile, pending)
   }
@@ -135,8 +139,15 @@ export async function prepareLifecycleStep(options: {
                 profile.chainId,
               )
             : []
-        if (!recorded) complete(action, transactions)
-        else if (transactions.length > 0) {
+        if (!recorded) await complete(action, transactions)
+        else if (transactions.length > 0 && step.execution === 'foundry') {
+          await assertStepCreation({
+            client,
+            outputs: pending.outputs,
+            profile,
+            step,
+            transactions,
+          })
           // Receipt repair must preserve completion metadata and a later interrupted step's outputs.
           pending = {
             ...pending,
@@ -178,7 +189,7 @@ export async function prepareLifecycleStep(options: {
         pending = { ...pending, outputs }
         const adopted = step.adopt ? await step.adopt(client, profile, outputs) : undefined
         if (adopted) pending = { ...pending, outputs: adopted.outputs }
-        complete(
+        await complete(
           action,
           adopted
             ? [adopted.transaction]
@@ -200,7 +211,7 @@ export async function prepareLifecycleStep(options: {
     const adopted = step.adopt ? await step.adopt(client, profile, pending.outputs) : undefined
     if (adopted && (await step.satisfied(client, profile, adopted.outputs))) {
       pending = { ...pending, outputs: adopted.outputs }
-      complete(action, [adopted.transaction])
+      await complete(action, [adopted.transaction])
       continue
     }
 
@@ -268,6 +279,14 @@ export async function recordFoundryAction(options: {
         options.step.calldata,
         options.profile.chainId,
       )
+  if (step.execution === 'foundry' && transactions.length > 0)
+    await assertStepCreation({
+      client: rpcClient(options.rpcUrl),
+      outputs,
+      profile: options.profile,
+      step,
+      transactions,
+    })
   const pending = completeAction(
     { ...options.step.pending, outputs },
     options.step.action.id,

@@ -27,7 +27,12 @@ export const deployEngine = defineFoundryStep({
   intent: ['engine'],
   creationEvent(profile) {
     const factory = factoryOf(profile)
-    return { address: factory.address, event: factory.creationEvent, argument: 'engine' }
+    return {
+      address: factory.address,
+      event: factory.creationEvent,
+      argument: 'engine',
+      output: 'engine',
+    }
   },
   script: (profile) => factoryOf(profile).deployScript,
   rawGasEstimate: true,
