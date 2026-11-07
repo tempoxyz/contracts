@@ -102,9 +102,9 @@ describe('parseRuntimeLock', () => {
 describe('card runtime provenance', () => {
   const provenance = readJson('localnet/fixtures/card-runtime-provenance.json')
 
-  it('records unresolved compatibility rather than promoting model acceptance to runtime proof', () => {
+  it('keeps model acceptance separate from the reviewed native subset', () => {
     expect(provenance.version).toBe(1)
-    expect(provenance.compatibility.status).toBe('unresolved')
+    expect(provenance.compatibility.status).toBe('mapped-native-subset')
     expect(provenance.compatibility.foundryAssurance).toBe('model-only')
     expect(provenance.compatibility.runtimeEquivalenceEstablished).toBe(false)
     expect(provenance.vendor.sourceCommit).not.toBe(Config.runtimeLock.sourceCommit)

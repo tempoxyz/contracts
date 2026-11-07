@@ -16,6 +16,7 @@ import { zoneFactoryAbi } from '@tempoxyz/contracts/abis'
 import { configuredTempoNetworkChain } from '@tempoxyz/contracts/deployments/operations'
 
 import * as Config from './config.js'
+import * as CardRuntime from './card-runtime.js'
 
 const tip1091RuntimeSource = readFileSync(
   new URL('../fixtures/tip1091-runtime.json', import.meta.url),
@@ -50,6 +51,12 @@ for (const [name, runtime] of Object.entries({
   }
 }
 
+const canonicalRuntime = [
+  ['Portal', Config.address.zonePortalImplementation, tip1091Runtime.zonePortal],
+  ['Messenger', Config.address.zoneMessenger, tip1091Runtime.zoneMessenger],
+  ['Verifier', Config.address.zoneVerifier, tip1091Runtime.verifier],
+] as const
+
 const zoneCreated = getAbiItem({ abi: zoneFactoryAbi, name: 'ZoneCreated' })
 
 /** Docker identity for a run's containers, so an outside owner can find and remove them. */
@@ -78,17 +85,7 @@ export async function startL1(zoneFactoryOwner: Address, containers: Containers 
     ],
     { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
   )
-  const genesis = JSON.parse(dumped) as {
-    alloc: Record<
-      string,
-      {
-        balance?: string
-        code?: string
-        nonce?: string
-        storage?: Record<string, string>
-      }
-    >
-  }
+  const genesis = parseGenesis(dumped)
   genesis.alloc[Config.history.address] = {
     balance: '0x0',
     code: Config.history.code,
@@ -180,8 +177,12 @@ export async function startL1(zoneFactoryOwner: Address, containers: Containers 
   const port = container.getMappedPort(8545)
   const rpcUrl = `http://${container.getHost()}:${port}`
   try {
+    await CardRuntime.checkImageIdentity('l1', container.getId())
     const chainId = await createPublicClient({ transport: http(rpcUrl) }).getChainId()
-    return { chainId, client: createClient(rpcUrl, chainId), container, port, rpcUrl }
+    const client = createClient(rpcUrl, chainId)
+    for (const [name, address, expected] of canonicalRuntime)
+      CardRuntime.assertRuntimeCode(`${name} deployed`, await client.getCode({ address }), expected)
+    return { chainId, client, container, port, rpcUrl }
   } catch (error) {
     await container.stop()
     throw error
@@ -189,6 +190,29 @@ export async function startL1(zoneFactoryOwner: Address, containers: Containers 
 }
 
 export type L1 = Awaited<ReturnType<typeof startL1>>
+
+/** Parses the image's genesis only when its original canonical runtimes match the locked fixture. */
+export function parseGenesis(dumped: string) {
+  const genesis = JSON.parse(dumped) as {
+    alloc: Record<
+      string,
+      {
+        balance?: string
+        code?: string
+        nonce?: string
+        storage?: Record<string, string>
+      }
+    >
+  }
+  // Check the image's original bytes before the local overlay can hide a mismatch.
+  for (const [name, address, expected] of canonicalRuntime)
+    CardRuntime.assertRuntimeCode(
+      `${name} dumped genesis`,
+      genesis.alloc[address.toLowerCase()]?.code,
+      expected,
+    )
+  return genesis
+}
 
 export async function resolveZoneSequencer(options: resolveZoneSequencer.Options) {
   const info = await options.client.readContract({
@@ -219,8 +243,12 @@ export declare namespace resolveZoneSequencer {
 }
 
 export async function startZone(options: startZone.Options) {
+  // Prool exposes no container ID, so retain the unique name given to the same runtime.
+  const containerName = options.containers?.name
+    ? `${options.containers.name}.zone`
+    : `tempo-zone.${crypto.randomUUID()}`
   const instance = Instance.tempoZone({
-    ...(options.containers?.name ? { containerName: `${options.containers.name}.zone` } : {}),
+    containerName,
     dev: { key: options.privateKey, token: options.initialToken },
     image: Config.image.zone,
     l1: { rpcUrl: `ws://host.docker.internal:${options.l1Port}` },
@@ -229,6 +257,7 @@ export async function startZone(options: startZone.Options) {
   })
   try {
     await instance.start()
+    await CardRuntime.checkImageIdentity('zone', containerName)
     const publicRpcUrl = `http://${instance.host}:${instance.port}`
     const privateRpc = instance._internal.privateRpc
     if (!privateRpc) throw new Error('Prool started without exposing the private Zone RPC endpoint')
