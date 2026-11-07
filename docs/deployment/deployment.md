@@ -209,9 +209,12 @@ successful RPC receipt must identify the contract directly or through the expect
 creation event, and the verifier must return the same hash. Missing, ambiguous, or unrelated receipt
 evidence fails before source submissions. Direct creation additionally compares the mined transaction
 input with the verifier's canonical-source-bound compiled creation bytecode and the declared
-constructor arguments, checking the transaction hash and expected deployer. Missing compiled creation
-bytecode or a different input fails verification. Existing engines selected by address retain their
-separate source-only check.
+constructor arguments, checking the transaction hash and expected deployer. A partial source match
+may differ only in the hash inside a recognized terminal Solidity IPFS metadata trailer; its compiler
+version, executable bytes, arguments, and input length still match exactly. Unsupported metadata
+formats or missing compiled creation bytecode fail closed. Fresh checkout proof before caching or
+publication remains byte-for-byte exact. Existing engines selected by address retain their separate
+source-only check.
 Historical rechecks of recorded source identities compare the source-input hash and contract name without
 requiring the original checkout or Git object. Direct-creation rechecks use that historical
 verifier compilation rather than today's local bytecode. This also applies before republishing
@@ -243,11 +246,14 @@ For hosted deployments, `pnpm earn deploy` submits missing source to `https://co
 waits for a bytecode and source match, and saves the result in `deployment.json`. A verifier outage (unreachable, 429 or 5xx,
 on lookup or on forge's submission, a job that does not complete, or only transient compiler errors) leaves the record `pending` and
 the state `verification-pending`: rerunning resumes at verification after rechecking deployed
-state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
+state, and never rebroadcasts. When an optional component changes, an outage also leaves the replacement
+record published and allows activation. Unchanged contracts retain their admitted source identities
+in that pending record; completion rechecks them rather than replacing them with the current checkout.
+Any other failure, such as a new source that differs from the checkout,
 a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
 nonzero exit; the record stays `pending`, and rerunning after the fix resumes the same way.
-Verification errors redact configured RPC URLs and credentials, including encoded forms and the
-credential-stripped transport URL, so path and query tokens stay hidden. Repeated redaction keeps
+Verification errors redact configured RPC URLs and credentials, including encoded forms, HTTP Basic
+authentication tokens, and the credential-stripped transport URL, so path and query tokens stay hidden. Repeated redaction keeps
 masks stable. Errors do not retain subprocess error causes or fields that could expose credentials.
 For an invalid existing verifier entry, explicitly request canonical re-verification:
 
@@ -269,8 +275,9 @@ For contracts created by the profile, repair submits the recorded creation trans
 sources and the selected compiler settings. The returned address, contract, full source set, match
 strength, and creation hash must still satisfy the recorded evidence. Existing engines selected by
 address rather than deployed by this profile must already have matching source; the lifecycle does
-not own their creation inputs. Pending records have no completed source identity yet, so their
-sources must match the selected checkout.
+not own their creation inputs. New outputs in pending records must match the selected checkout.
+Retained identities from an earlier verified record keep their original source hashes and match
+strength through optional-component reconciliation and cache-free retries.
 `verify` without the flag never submits jobs; the flag authorizes verifier writes, not onchain writes.
 Only `deploy` upgrades a pending record to verified, so use it to finish an incomplete deployment.
 

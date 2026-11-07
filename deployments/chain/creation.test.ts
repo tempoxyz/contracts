@@ -6,9 +6,14 @@ import {
   encodeEventTopics,
   parseAbiItem,
   type TransactionReceipt,
+  type Hex,
 } from 'viem'
 
-import { assertCreationReceipt, assertDirectCreationTransaction } from './creation.js'
+import {
+  assertCreationReceipt,
+  assertDirectCreationTransaction,
+  assertVerifiedCreationTransaction,
+} from './creation.js'
 
 const address = `0x${'ab'.repeat(20)}` as const
 const other = `0x${'cd'.repeat(20)}` as const
@@ -211,5 +216,150 @@ describe('assertDirectCreationTransaction', () => {
           minedTransaction: { ...minedTransaction, input: creationBytecode },
         }),
       ).toThrow('creation input')
+  })
+})
+
+describe('assertVerifiedCreationTransaction', () => {
+  // Captured terminal CBOR from Tempo verifier testnet match 29712, whose cborAuxdata is null.
+  const metadata =
+    'a26469706673582212204c899a1ea253fbc50fb0b72b2713033892383111d799842d3d02bb6dc73c1f8c64736f6c63430008240033'
+  const creationBytecode = `0x6001600055fe${metadata}` as const
+  const constructorArgs = encodeAbiParameters([{ type: 'address' }], [other])
+  const original = creationBytecode.replace(
+    '4c899a1ea253fbc50fb0b72b2713033892383111d799842d3d02bb6dc73c1f8c',
+    '11'.repeat(32),
+  )
+  const input = `${original}${constructorArgs.slice(2)}` as Hex
+  const compiler = { name: 'solc', language: 'Solidity', version: '0.8.36+commit.8a079791' }
+  const range = { offset: 6, value: `0x${metadata}` }
+  const options = {
+    address,
+    transaction,
+    deployer: other,
+    creationBytecode,
+    constructorArgs,
+    compiler,
+    minedTransaction: { hash: transaction, from: other, to: null, input },
+  }
+
+  test('accepts only the metadata digest difference and keeps canonical proof exact', () => {
+    for (const cborAuxdata of [undefined, null, { '1': range }])
+      expect(() => assertVerifiedCreationTransaction({ ...options, cborAuxdata })).not.toThrow()
+    expect(() => assertDirectCreationTransaction(options)).toThrow('creation input')
+    expect(() =>
+      assertVerifiedCreationTransaction({
+        ...options,
+        minedTransaction: {
+          ...options.minedTransaction,
+          input: `0x${input.slice(2).toUpperCase()}`,
+        },
+      }),
+    ).not.toThrow()
+  })
+
+  test('never ignores constructor bytes, opcodes, metadata structure, compiler version or appended data', () => {
+    for (const changed of [
+      input.replace('6001600055', '6002600055'),
+      `${input.slice(0, -2)}ff`,
+      input.slice(0, -2),
+      `${input}00`,
+      input.replace('64736f6c63430008240033', '64736f6c63430008250033'),
+      input.replace('64736f6c63430008240033', '64736f6c63430008240034'),
+      input.replace('a2646970667358221220', 'a2646970667358221221'),
+      '0x60006000f3',
+    ] as const)
+      expect(() =>
+        assertVerifiedCreationTransaction({
+          ...options,
+          minedTransaction: { ...options.minedTransaction, input: changed as `0x${string}` },
+        }),
+      ).toThrow('creation input')
+  })
+
+  test('rejects malformed or attacker-selected auxiliary ranges rather than masking them', () => {
+    for (const cborAuxdata of [
+      {},
+      [],
+      'range',
+      6,
+      { '1': null },
+      { '1': {} },
+      { '1': { ...range, offset: -1 } },
+      { '1': { ...range, offset: 6.5 } },
+      { '1': { ...range, offset: 7 } },
+      { '1': { ...range, offset: Number.MAX_SAFE_INTEGER } },
+      { '1': { offset: 0, value: creationBytecode } },
+      { '1': { ...range, value: '0x00' } },
+      { '1': range, '2': range },
+    ])
+      expect(() => assertVerifiedCreationTransaction({ ...options, cborAuxdata })).toThrow(
+        'creation input',
+      )
+    // An otherwise valid metadata range never excuses a custom constructor opcode.
+    expect(() =>
+      assertVerifiedCreationTransaction({
+        ...options,
+        cborAuxdata: { '1': range },
+        minedTransaction: {
+          ...options.minedTransaction,
+          input: input.replace('6001600055', '6002600055') as `0x${string}`,
+        },
+      }),
+    ).toThrow('creation input')
+  })
+
+  test('requires an admitted Solidity compiler version matching the actual trailer', () => {
+    for (const changed of [
+      {},
+      { ...compiler, name: 'vyper' },
+      { ...compiler, language: 'Yul' },
+      { ...compiler, version: '0.8.35+commit.8a079791' },
+      { ...compiler, version: '0.8.36-nightly' },
+    ])
+      expect(() => assertVerifiedCreationTransaction({ ...options, compiler: changed })).toThrow(
+        'creation input',
+      )
+  })
+
+  test('does not strip embedded CBOR, arbitrary initcode or unsupported metadata formats', () => {
+    const embedded = `0x6001fe${metadata}6002fe${metadata}` as const
+    expect(() =>
+      assertVerifiedCreationTransaction({
+        ...options,
+        creationBytecode: embedded,
+        minedTransaction: {
+          ...options.minedTransaction,
+          input: `${embedded.replace('4c899a', '4c899b')}${constructorArgs.slice(2)}` as Hex,
+        },
+      }),
+    ).toThrow('creation input')
+    for (const creationBytecode of [
+      '0x6001600055',
+      `0x600160005500${metadata}`,
+      '0x',
+      '0x0',
+      '0xzz',
+    ] as const)
+      expect(() => assertVerifiedCreationTransaction({ ...options, creationBytecode })).toThrow(
+        'creation input',
+      )
+  })
+
+  test('checks the sender, transaction and Tempo envelope before metadata compatibility', () => {
+    for (const minedTransaction of [
+      { ...options.minedTransaction, from: address },
+      { ...options.minedTransaction, hash: `0x${'34'.repeat(32)}` as const },
+      { ...options.minedTransaction, to: address },
+      { ...options.minedTransaction, typeHex: '0x76' as const, calls: [{ input }, { input }] },
+    ])
+      expect(() => assertVerifiedCreationTransaction({ ...options, minedTransaction })).toThrow(
+        'expected direct creation',
+      )
+    expect(() =>
+      assertVerifiedCreationTransaction({
+        ...options,
+        minedTransaction: { hash: transaction, from: other, typeHex: '0x76', calls: [{ input }] },
+      }),
+    ).not.toThrow()
   })
 })

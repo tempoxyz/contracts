@@ -38,6 +38,7 @@ import * as Provenance from './provenance.js'
 import * as Reconcile from './reconcile.js'
 import * as Verify from './verify.js'
 import { deploymentActions } from './plan.js'
+import * as Plan from './plan.js'
 import { deploymentStep } from '../modules/index.js'
 import { runtimeCodeAddressKeysFor, type EarnDeploymentRecord } from './record.js'
 import {
@@ -463,6 +464,138 @@ describe('deployEarnProfile committed source recovery', () => {
 })
 
 describe('retained historical direct creation', () => {
+  test.each(['none', 'source', 'input', 'sender', 'receipt'] as const)(
+    'publishes retained history during a verifier outage and rechecks cache-free retry (%s corruption)',
+    async (corruption) => {
+      const fixture = pendingSourceDeployment({ retainedController: true })
+      try {
+        const record = structuredClone(fixture.record)
+        record.actions['deploy-core']!.transactions = [fixture.creation]
+        const source = await fixture.verifySources({
+          ...fixture.options,
+          client: fixture.chain as never,
+          record,
+        })
+        const verified = { ...record, source: { ...record.source, ...source } }
+        publishProfileDeploymentRecord(
+          fixture.options.profilePath,
+          fixture.options.profile,
+          verified,
+        )
+        fixture.removeBoostRewards()
+        const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
+        const fetch = fixture.dependencies.fetch.getMockImplementation()!
+        fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
+        // Isolate external activation while exercising its real post-publication dispatch.
+        const step = deploymentStep('authorize-router')
+        const activationPlan = vi.spyOn(Plan, 'activationActions').mockReturnValue([
+          {
+            id: step.id,
+            authority: step.authority.id,
+            execution: step.execution,
+            summary: step.summary,
+          },
+        ])
+        const prepare = Reconcile.prepareLifecycleStep
+        const activation = vi.fn(async (parameters: Parameters<typeof prepare>[0]) => {
+          expect(fixture.read().source.contractVerification).toBe('pending')
+          return prepare({ ...parameters, actions: [] })
+        })
+        const preparation = vi
+          .spyOn(Reconcile, 'prepareLifecycleStep')
+          .mockImplementation((parameters) =>
+            parameters.actions?.[0]?.id === step.id ? activation(parameters) : prepare(parameters),
+          )
+        const result = await deployEarnProfile(fixture.options)
+        expect(result.state).toBe('verification-pending')
+        const pending = fixture.read()
+        expect(pending.source.contractVerification).toBe('pending')
+        expect(pending.source.contracts.earnContributionController).toEqual(
+          verified.source.contracts.earnContributionController,
+        )
+        expect(pending.actions['deploy-contribution-controller']).toEqual(
+          verified.actions['deploy-contribution-controller'],
+        )
+        expect(pending.addresses.earnMerkleRewardDistributor).toBeUndefined()
+        expect(activation).toHaveBeenCalledOnce()
+        activationPlan.mockRestore()
+        preparation.mockRestore()
+        rmSync(pendingDeploymentPath(fixture.options.profilePath))
+        fixture.dependencies.fetch.mockImplementation(fetch)
+        const publishedPending = readFileSync(fixture.recordPath, 'utf8')
+        const transaction = { ...fixture.minedTransaction }
+        const getReceipt = fixture.chain.getTransactionReceipt.getMockImplementation()!
+        const readSource = fixture.dependencies.readSource.getMockImplementation()!
+        if (corruption === 'input') fixture.minedTransaction.input = '0x6000'
+        if (corruption === 'sender') fixture.minedTransaction.from = zeroAddress
+        if (corruption === 'receipt')
+          fixture.chain.getTransactionReceipt.mockImplementation(async (parameters) => ({
+            ...(await getReceipt(parameters)),
+            ...(parameters.hash === transaction.hash ? { contractAddress: zeroAddress } : {}),
+          }))
+        if (corruption === 'source') {
+          fixture.dependencies.fetch.mockImplementation(async (input) => {
+            const response = await fetch(input)
+            if (
+              !String(input)
+                .toLowerCase()
+                .includes(record.addresses.earnContributionController!.toLowerCase())
+            )
+              return response
+            return Response.json({
+              ...((await response.json()) as object),
+              sources: {
+                'src/rewards/EarnContributionController.sol': { content: 'changed source' },
+              },
+            })
+          })
+          // Matching today's checkout cannot replace the historical source-input hash.
+          fixture.dependencies.readSource.mockImplementation((path) =>
+            path.endsWith('EarnContributionController.sol') ? 'changed source' : readSource(path),
+          )
+        }
+        if (corruption !== 'none') {
+          await expect(deployEarnProfile(fixture.options)).rejects.toThrow()
+          expect(readFileSync(fixture.recordPath, 'utf8')).toBe(publishedPending)
+          Object.assign(fixture.minedTransaction, transaction)
+          fixture.chain.getTransactionReceipt.mockImplementation(getReceipt)
+          fixture.dependencies.fetch.mockImplementation(fetch)
+        }
+        // Historical checks do not read the current checkout, even after its source text has changed.
+        fixture.dependencies.readSource.mockReturnValue('today’s different source')
+        expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+        expect(fixture.read().source.contracts.earnContributionController).toEqual(
+          verified.source.contracts.earnContributionController,
+        )
+        expect(compiler).not.toHaveBeenCalled()
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+        expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+  test('never treats unverified direct creation as retained history during an outage', async () => {
+    const fixture = pendingSourceDeployment({ retainedController: true })
+    try {
+      const record = structuredClone(fixture.record)
+      record.actions['deploy-core']!.transactions = [fixture.creation]
+      publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, record)
+      fixture.removeBoostRewards()
+      const published = readFileSync(fixture.recordPath, 'utf8')
+      const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
+      fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
+      await expect(deployEarnProfile(fixture.options)).rejects.toThrow(/unexpected creation input/)
+      expect(compiler).toHaveBeenCalledOnce()
+      expect(Verify.verifyRecordedStepCreation).not.toHaveBeenCalled()
+      expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
   test.each(['source', 'input', 'sender', 'receipt'] as const)(
     'rejects corrupt retained %s evidence before publishing a replacement record',
     async (corruption) => {

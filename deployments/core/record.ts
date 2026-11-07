@@ -383,25 +383,26 @@ function parseDeploymentSource(
   }
   const hosted = isHostedDeploymentChain(profile.chainId)
   const contracts = parsed.contracts
-  if (parsed.contractVerification !== 'verified') {
-    if (
-      parsed.verifierUrl !== null ||
-      Object.keys(contracts).length > 0 ||
-      hosted !== (parsed.contractVerification === 'pending')
-    )
-      mismatch(path)
+  const keys = Object.keys(contracts) as DeploymentAddressKey[]
+  if (parsed.contractVerification === 'not-applicable') {
+    if (hosted || parsed.verifierUrl !== null || keys.length > 0) mismatch(path)
+    return parsed
+  }
+  if (!hosted) mismatch(path)
+  // Pending reconciliation retains admitted identities, but new outputs need not be verified yet.
+  if (parsed.contractVerification === 'pending' && keys.length === 0) {
+    if (parsed.verifierUrl !== null) mismatch(path)
     return parsed
   }
   const verified = (key: DeploymentAddressKey) => !externalAddressKeys.includes(key)
   const expected = deploymentAddressKeysForProfile(profile).filter(verified)
-  const keys = Object.keys(contracts) as DeploymentAddressKey[]
   if (
-    !hosted ||
     parsed.verifierUrl === null ||
     keys.some((key) => !verified(key) || (!expected.includes(key) && !changedAddress(key))) ||
-    expected.some((key) => !contracts[key] && !changedAddress(key)) ||
     keys.some((key) => contracts[key]!.kind !== (contractKinds[key] ?? 'source')) ||
-    Object.keys(contractKinds).some((key) => !contracts[key as DeploymentAddressKey])
+    (parsed.contractVerification === 'verified' &&
+      (expected.some((key) => !contracts[key] && !changedAddress(key)) ||
+        Object.keys(contractKinds).some((key) => !contracts[key as DeploymentAddressKey])))
   )
     mismatch(path)
   return parsed

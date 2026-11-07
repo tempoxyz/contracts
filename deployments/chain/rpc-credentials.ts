@@ -13,6 +13,13 @@ export function redactRpcCredentials(
   ]) {
     addCredentialForms(secrets, value)
   }
+  for (const prefix of ['TEMPO', 'ZONE']) {
+    addBasicCredential(
+      secrets,
+      environment[`${prefix}_RPC_USERNAME`],
+      environment[`${prefix}_RPC_PASSWORD`],
+    )
+  }
   for (const value of [
     authenticatedUrl,
     environment.TEMPO_RPC_URL,
@@ -28,11 +35,23 @@ export function redactRpcCredentials(
       addCredentialForms(secrets, url.href.replace(/\/+$/, ''))
       addCredentialForms(secrets, url.username)
       addCredentialForms(secrets, url.password)
+      const userinfo = { username: url.username, password: url.password }
       // viem moves userinfo into an auth header but still includes path/query tokens in errors.
       url.username = ''
       url.password = ''
       addCredentialForms(secrets, url.href)
       addCredentialForms(secrets, url.href.replace(/\/+$/, ''))
+      const username = decodeURIComponent(userinfo.username)
+      const password = decodeURIComponent(userinfo.password)
+      addBasicCredential(secrets, username, password)
+      // Each environment field can override URL userinfo independently, as rpcConfiguration does.
+      for (const prefix of ['TEMPO', 'ZONE']) {
+        addBasicCredential(
+          secrets,
+          environment[`${prefix}_RPC_USERNAME`] || username,
+          environment[`${prefix}_RPC_PASSWORD`] || password,
+        )
+      }
     } catch {
       // Invalid URLs still need redaction; a URL parser error would retain its input.
     }
@@ -77,4 +96,13 @@ function addCredentialForms(secrets: Set<string>, value: string | undefined) {
       // Malformed Unicode must not replace the original failure with an encoding error.
     }
   }
+}
+
+function addBasicCredential(
+  secrets: Set<string>,
+  username: string | undefined,
+  password: string | undefined,
+) {
+  if (username && password)
+    addCredentialForms(secrets, Buffer.from(`${username}:${password}`).toString('base64'))
 }

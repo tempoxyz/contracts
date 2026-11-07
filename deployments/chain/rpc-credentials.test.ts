@@ -21,6 +21,42 @@ describe('redactRpcCredentials', () => {
     )
   })
 
+  test.each(['authenticatedUrl', 'TEMPO_RPC_URL', 'ZONE_RPC_URL', 'FOUNDRY_ETH_RPC_URL'])(
+    'redacts labeled and token-only HTTP Basic credentials from %s',
+    (source) => {
+      const token = Buffer.from(`${username}:${password}`).toString('base64')
+      const configured = source === 'authenticatedUrl' ? {} : { [source]: rpcUrl }
+      const message = `Authorization: Basic ${token}; token=${token}; encoded=${encodeURIComponent(token)}`
+      const redacted = redactRpcCredentials(
+        message,
+        source === 'authenticatedUrl' ? rpcUrl : '',
+        configured,
+      )
+      expect(redacted).toBe('Authorization: Basic ***; token=***; encoded=***')
+      expect(redactRpcCredentials(redacted, rpcUrl, configured)).toBe(redacted)
+    },
+  )
+
+  test.each(['TEMPO', 'ZONE'])(
+    'redacts raw %s environment credential pairs and URL-fallback pairs',
+    (prefix) => {
+      const url = 'https://url-user:url%2Fpass@rpc.example'
+      const rawUser = 'env-user%41'
+      const rawPass = 'env-pass%2F'
+      for (const [values, pair] of [
+        [
+          { [`${prefix}_RPC_USERNAME`]: rawUser, [`${prefix}_RPC_PASSWORD`]: rawPass },
+          `${rawUser}:${rawPass}`,
+        ],
+        [{ [`${prefix}_RPC_USERNAME`]: rawUser }, `${rawUser}:url/pass`],
+        [{ [`${prefix}_RPC_PASSWORD`]: rawPass }, `url-user:${rawPass}`],
+      ] as const) {
+        const token = Buffer.from(pair).toString('base64')
+        expect(redactRpcCredentials(`failure: ${token}`, url, values)).toBe('failure: ***')
+      }
+    },
+  )
+
   test('removes whole URLs before their credentials, including percent-encoded URLs', () => {
     const forms = [
       rpcUrl,
@@ -92,6 +128,11 @@ describe('redactRpcCredentials', () => {
     },
   )
 
+  test('keeps stripping transport URLs when userinfo has malformed percent encoding', () => {
+    const url = 'https://fixture-user:fixture%password@rpc.example/api/fixture-token'
+    expect(redactRpcCredentials('https://rpc.example/api/fixture-token', url, {})).toBe('***')
+  })
+
   test('redacts credential-stripped URLs with and without a trailing slash', () => {
     const forms = ['https://rpc.example/', 'https://rpc.example']
     expect(
@@ -104,7 +145,7 @@ describe('redactRpcCredentials', () => {
     const server = createServer((request, response) => {
       received = { authorization: request.headers.authorization, url: request.url }
       response.writeHead(503, { 'content-type': 'text/plain' })
-      response.end('Service unavailable')
+      response.end(`Service unavailable; Authorization: ${request.headers.authorization}`)
     })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     try {
@@ -142,11 +183,19 @@ describe('redactRpcCredentials', () => {
         url: '/fixture-path-token?key=fixture-query-token',
       })
       expect(error.message).toContain(transportUrl)
+      const token = Buffer.from(`${username}:${password}`).toString('base64')
+      expect(error.message).toContain(token)
       const redacted = redactRpcCredentials(error.message, url.href, {})
       expect(redacted).toContain('HTTP request failed')
       expect(redacted).toContain('Status: 503')
       expect(redacted).toContain('URL: ***')
-      for (const secret of [username, password, 'fixture-path-token', 'fixture-query-token']) {
+      for (const secret of [
+        username,
+        password,
+        token,
+        'fixture-path-token',
+        'fixture-query-token',
+      ]) {
         expect(redacted).not.toContain(secret)
         expect(redacted).not.toContain(encodeURIComponent(secret))
       }

@@ -66,8 +66,84 @@ export function assertDirectCreationTransaction(options: {
       | undefined
   }
 }): void {
-  const { address, transaction, deployer, creationBytecode, constructorArgs, minedTransaction } =
-    options
+  const { address, transaction, creationBytecode, constructorArgs } = options
+  const input = directCreationInput(options)
+  if (
+    !/^0x(?:[0-9a-fA-F]{2})+$/.test(creationBytecode) ||
+    !/^0x(?:[0-9a-fA-F]{2})*$/.test(constructorArgs) ||
+    typeof input !== 'string' ||
+    !/^0x(?:[0-9a-fA-F]{2})+$/.test(input) ||
+    input.toLowerCase() !== `${creationBytecode}${constructorArgs.slice(2)}`.toLowerCase()
+  )
+    throw new Error(
+      `Recorded transaction ${transaction} has unexpected creation input for ${address}`,
+    )
+}
+
+/** Checks an admitted Solidity recompilation, allowing only a terminal IPFS metadata digest difference. */
+export function assertVerifiedCreationTransaction(
+  options: Parameters<typeof assertDirectCreationTransaction>[0] & {
+    compiler: { name?: string | null; version?: string | null; language?: string | null }
+    /** Verifier ranges never authorize masking; any supplied range must agree with the derived trailer. */
+    cborAuxdata?: unknown
+  },
+): void {
+  const { creationBytecode, constructorArgs, compiler, cborAuxdata } = options
+  const input = directCreationInput(options)
+  const expected = `${creationBytecode}${constructorArgs.slice(2)}`.toLowerCase()
+  if (input?.toLowerCase() === expected) return assertDirectCreationTransaction(options)
+
+  // Solidity's terminal CBOR map is exactly {ipfs: <sha256 multihash>, solc: <three version bytes>}.
+  // Derive its boundary from compiler output, never from a caller-supplied range or transaction input.
+  const trailer = /fea2646970667358221220([0-9a-f]{64})64736f6c6343([0-9a-f]{6})0033$/i.exec(
+    creationBytecode,
+  )
+  const version = compiler.version?.match(/^(\d+)\.(\d+)\.(\d+)\+commit\.[0-9a-f]+$/i)
+  const offset = trailer ? trailer.index / 2 : -1
+  const ranges = cborAuxdata == null ? [] : Object.values(Object(cborAuxdata))
+  const validRanges =
+    cborAuxdata == null ||
+    (typeof cborAuxdata === 'object' &&
+      !Array.isArray(cborAuxdata) &&
+      ranges.length === 1 &&
+      ranges.every((range: unknown) => {
+        if (!range || typeof range !== 'object') return false
+        const { offset: start, value } = range as { offset?: unknown; value?: unknown }
+        return (
+          Number.isSafeInteger(start) &&
+          start === offset &&
+          typeof value === 'string' &&
+          value.toLowerCase() === `0x${creationBytecode.slice(2 + offset * 2)}`.toLowerCase()
+        )
+      }))
+  const digestStart = trailer ? trailer.index + 'fea2646970667358221220'.length : -1
+  if (
+    compiler.name !== 'solc' ||
+    compiler.language !== 'Solidity' ||
+    !version ||
+    !trailer ||
+    version
+      .slice(1)
+      .some(
+        (part, index) =>
+          Number(part) !== Number.parseInt(trailer[2]!.slice(index * 2, index * 2 + 2), 16),
+      ) ||
+    !validRanges ||
+    !/^0x(?:[0-9a-fA-F]{2})+$/.test(creationBytecode) ||
+    !/^0x(?:[0-9a-fA-F]{2})*$/.test(constructorArgs) ||
+    typeof input !== 'string' ||
+    !/^0x(?:[0-9a-fA-F]{2})+$/.test(input) ||
+    input.length !== expected.length ||
+    input.slice(0, digestStart).toLowerCase() !== expected.slice(0, digestStart) ||
+    input.slice(digestStart + 64).toLowerCase() !== expected.slice(digestStart + 64)
+  )
+    throw new Error(
+      `Recorded transaction ${options.transaction} has unexpected creation input for ${options.address}; only a validated terminal Solidity IPFS metadata difference is supported`,
+    )
+}
+
+function directCreationInput(options: Parameters<typeof assertDirectCreationTransaction>[0]) {
+  const { address, transaction, deployer, minedTransaction } = options
   if (
     minedTransaction.hash.toLowerCase() !== transaction.toLowerCase() ||
     getAddress(minedTransaction.from) !== getAddress(deployer)
@@ -75,7 +151,7 @@ export function assertDirectCreationTransaction(options: {
     throw new Error(
       `Recorded transaction ${transaction} is not the expected direct creation of ${address}`,
     )
-  const input = (() => {
+  return (() => {
     const { calls, input, to, type, typeHex } = minedTransaction
     const tempo = type === 'tempo' || type === '0x76' || typeHex === '0x76'
     if (tempo || calls !== undefined) {
@@ -104,14 +180,4 @@ export function assertDirectCreationTransaction(options: {
       )
     return input
   })()
-  if (
-    !/^0x(?:[0-9a-fA-F]{2})+$/.test(creationBytecode) ||
-    !/^0x(?:[0-9a-fA-F]{2})*$/.test(constructorArgs) ||
-    typeof input !== 'string' ||
-    !/^0x(?:[0-9a-fA-F]{2})+$/.test(input) ||
-    input.toLowerCase() !== `${creationBytecode}${constructorArgs.slice(2)}`.toLowerCase()
-  )
-    throw new Error(
-      `Recorded transaction ${transaction} has unexpected creation input for ${address}`,
-    )
 }

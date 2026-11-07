@@ -43,7 +43,11 @@ import {
   type ReconciliationStep,
 } from './reconcile.js'
 import { assertStepCreation } from './creation.js'
-import type { IntentComponent } from './components.js'
+import {
+  deploymentAddressComponents,
+  type DeploymentAddressKey,
+  type IntentComponent,
+} from './components.js'
 import {
   changedIntentComponents,
   deploymentAddressKeysForProfile,
@@ -431,33 +435,56 @@ async function buildDeploymentRecord(
       options.pending.actions[action.id] ? [[action.id, options.pending.actions[action.id]]] : [],
     ),
   ) as EarnDeploymentRecord['actions']
+  const previous = options.committed
+  const changed = previous
+    ? changedIntentComponents(previous.componentDeploymentIntentHashes, profile)
+    : undefined
+  // Carry source identities only with unchanged intent, addresses, and action evidence, including across pending retries.
+  const contracts = Object.fromEntries(
+    Object.entries(previous?.source.contracts ?? {}).filter(([name]) => {
+      const key = name as DeploymentAddressKey
+      const component = deploymentAddressComponents[key]
+      return (
+        !changed!.has(component) &&
+        addresses[key] !== undefined &&
+        previous!.addresses[key] === addresses[key] &&
+        deploymentActions(profile).every(({ id }) => {
+          const step = deploymentStep(id)
+          return (
+            !step.intent.includes(component) ||
+            (step.intent.every((part) => !changed!.has(part)) &&
+              isDeepStrictEqual(previous!.actions[id], actions[id]))
+          )
+        })
+      )
+    }),
+  ) as EarnDeploymentRecord['source']['contracts']
   for (const { id } of deploymentActions(profile)) {
     const step = deploymentStep(id)
     const action = actions[id]
     if (step.execution !== 'foundry' || !action || action.transactions.length === 0) continue
-    const previous = options.committed
-    const changed = previous
-      ? changedIntentComponents(previous.componentDeploymentIntentHashes, profile)
-      : undefined
     // Retained history uses its own verified compilation; fresh or recovered evidence uses today's checkout.
     if (
       isHostedDeploymentChain(profile.chainId) &&
-      previous?.source.contractVerification === 'verified' &&
+      previous &&
       step.source &&
       !step.creationEvent &&
-      step.intent.every((component) => !changed!.has(component)) &&
-      isDeepStrictEqual(previous.actions[id], action) &&
-      previous.addresses[step.source.output] === addresses[step.source.output]
+      contracts[step.source.output]
     ) {
-      await verifyRecordedStepCreation({
-        client,
-        root: options.root,
-        rpcUrl: options.rpcUrl,
-        environment: options.environment,
-        profile,
-        record: previous,
-        action: id,
-      })
+      try {
+        await verifyRecordedStepCreation({
+          client,
+          root: options.root,
+          rpcUrl: options.rpcUrl,
+          environment: options.environment,
+          profile,
+          record: previous,
+          action: id,
+        })
+      } catch (error) {
+        // Keep admitted history pending during outages; completion rechecks its persisted identity before declaring verification.
+        if (!(error instanceof VerifierUnavailableError)) throw error
+      }
     } else
       await assertStepCreation({
         client,
@@ -490,11 +517,17 @@ async function buildDeploymentRecord(
     assetDecimals,
     deploymentBlock: deploymentBlock.toString(),
     generatedAt: new Date().toISOString(),
-    source: captureDeploymentSource({
-      profile,
-      root: options.root,
-      contractVerification: isHostedDeploymentChain(profile.chainId) ? 'pending' : 'not-applicable',
-    }),
+    source: {
+      ...captureDeploymentSource({
+        profile,
+        root: options.root,
+        contractVerification: isHostedDeploymentChain(profile.chainId)
+          ? 'pending'
+          : 'not-applicable',
+      }),
+      contracts,
+      verifierUrl: Object.keys(contracts).length > 0 ? previous!.source.verifierUrl : null,
+    },
     runtimeCodeHashes: await runtimeCodeHashes(client, addresses),
     addresses,
     actions,

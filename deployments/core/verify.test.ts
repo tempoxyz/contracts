@@ -18,6 +18,7 @@ import {
   verifyContractSource,
   verifyDeploymentSources,
   verifyRecordedDeploymentSources,
+  verifyRecordedStepCreation,
   type VerificationDependencies,
 } from './verify.js'
 
@@ -323,6 +324,36 @@ function directControllerRun() {
     },
   })
   return { options, runtime, rpc, contract, minedTransaction, constructorArgs }
+}
+
+// Terminal Solidity 0.8.36 metadata captured from Tempo verifier match 29712 (testnet router).
+// Its creationBytecode.cborAuxdata is null; the compiler bytes themselves supply the trailer boundary.
+const solidityMetadata =
+  'a26469706673582212204c899a1ea253fbc50fb0b72b2713033892383111d799842d3d02bb6dc73c1f8c64736f6c63430008240033'
+
+async function partialControllerRun() {
+  const fixture = directControllerRun()
+  const { contract, minedTransaction, constructorArgs, options, runtime } = fixture
+  contract.match = 'match'
+  contract.creationBytecode.bytecode += `fe${solidityMetadata}`
+  Object.assign(contract.creationBytecode, { cborAuxdata: null })
+  Object.assign(contract, {
+    compiler: 'solc',
+    compilerVersion: '0.8.36+commit.8a079791',
+    language: 'Solidity',
+    compilerSettings: { metadata: { bytecodeHash: 'ipfs', appendCBOR: true } },
+  })
+  minedTransaction.input = `${contract.creationBytecode.bytecode}${constructorArgs.slice(2)}` as Hex
+  options.record.source = (await verifyDeploymentSources(
+    options,
+    runtime,
+  )) as EarnDeploymentRecord['source']
+  // The original compiler metadata digest differs from the verifier's recompilation; code and args do not.
+  contract.creationBytecode.bytecode = contract.creationBytecode.bytecode.replace(
+    '4c899a1ea253fbc50fb0b72b2713033892383111d799842d3d02bb6dc73c1f8c',
+    '11'.repeat(32),
+  )
+  return fixture
 }
 
 describe('deployment source verification', () => {
@@ -837,7 +868,14 @@ describe('deployment source verification', () => {
         'contract FakeFactory { /* emits RouterDeployed without creation */ }'
       const result =
         entry === 'deployment'
-          ? verifyDeploymentSources({ ...options, resubmit: true }, runtime)
+          ? verifyDeploymentSources(
+              {
+                ...options,
+                record: { actions: options.record.actions, addresses: options.record.addresses },
+                resubmit: true,
+              },
+              runtime,
+            )
           : verifyRecordedDeploymentSources({ ...options, resubmit: true }, runtime)
       await expect(result).rejects.toThrow(
         entry === 'deployment'
@@ -890,8 +928,12 @@ describe('deployment source verification', () => {
     )) as EarnDeploymentRecord['source']
     factoryContract.match = 'exact_match'
     await expect(verifyRecordedDeploymentSources(options, runtime)).resolves.toBeUndefined()
+    // A separate fresh admission is needed to exercise an originally exact historical record.
     options.record.source = (await verifyDeploymentSources(
-      options,
+      {
+        ...options,
+        record: { actions: options.record.actions, addresses: options.record.addresses },
+      },
       runtime,
     )) as EarnDeploymentRecord['source']
     factoryContract.match = 'match'
@@ -1093,6 +1135,164 @@ describe('source verifier admission', () => {
       /initcode|creation input/,
     )
     expect(options.record.source).toEqual(before)
+  })
+
+  test('preserves a historical partial match with only a Solidity IPFS metadata difference', async () => {
+    const { options, runtime, contract } = await partialControllerRun()
+    const before = structuredClone(options.record.source)
+    runtime.readSource.mockImplementation(() => {
+      throw new Error('historical checkout unavailable')
+    })
+    await expect(verifyRecordedDeploymentSources(options, runtime)).resolves.toBeUndefined()
+    expect(options.record.source).toEqual(before)
+    contract.match = 'exact_match'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).resolves.toBeUndefined()
+    expect(options.record.source).toEqual(before)
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('rechecks retained partial steps without verifier writes or record mutation', async () => {
+    const { options, runtime } = await partialControllerRun()
+    const before = structuredClone(options.record)
+    await expect(
+      verifyRecordedStepCreation({ ...options, action: 'deploy-contribution-controller' }, runtime),
+    ).resolves.toBeUndefined()
+    expect(options.record).toEqual(before)
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('accepts a fresh partial verifier compilation after canonical source admission', async () => {
+    const { options, runtime } = await partialControllerRun()
+    await expect(
+      verifyDeploymentSources(
+        {
+          ...options,
+          record: { addresses: options.record.addresses, actions: options.record.actions },
+        },
+        runtime,
+      ),
+    ).resolves.toMatchObject({ contracts: { earnContributionController: { match: 'match' } } })
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test.each(['arguments', 'opcode', 'source'] as const)(
+    'rejects fresh partial verification with changed %s',
+    async (changed) => {
+      const { options, runtime, minedTransaction, contract } = await partialControllerRun()
+      if (changed === 'arguments')
+        minedTransaction.input = `${minedTransaction.input.slice(0, -2)}ff` as Hex
+      if (changed === 'opcode') minedTransaction.input = `0x00${minedTransaction.input.slice(4)}`
+      if (changed === 'source') Object.values(contract.sources)[0]!.content = 'noncanonical source'
+      await expect(
+        verifyDeploymentSources(
+          {
+            ...options,
+            record: { actions: options.record.actions, addresses: options.record.addresses },
+          },
+          runtime,
+        ),
+      ).rejects.toThrow()
+      expect(runtime.spawn).not.toHaveBeenCalled()
+    },
+  )
+
+  test('does not let partial metadata compatibility bypass source identity or receipt creation', async () => {
+    const { options, runtime, contract, rpc } = await partialControllerRun()
+    const before = structuredClone(options.record.source)
+    Object.values(contract.sources)[0]!.content = 'different historical source'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      'current provenance',
+    )
+    Object.values(contract.sources)[0]!.content =
+      'canonical:src/rewards/EarnContributionController.sol'
+    rpc.getTransactionReceipt.mockResolvedValue({
+      status: 'success',
+      transactionHash: contract.transactionHash,
+      contractAddress: null,
+      logs: [],
+    })
+    await expect(
+      verifyRecordedStepCreation({ ...options, action: 'deploy-contribution-controller' }, runtime),
+    ).rejects.toThrow('does not prove creation')
+    expect(options.record.source).toEqual(before)
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('completes pending verification using retained partial identity and canonical admission for new outputs', async () => {
+    const { options, runtime, contract } = await partialControllerRun()
+    const retained = options.record.source.contracts.earnContributionController!
+    options.record.source = {
+      ...options.record.source,
+      contractVerification: 'pending',
+      contracts: { earnContributionController: retained },
+    }
+    const before = structuredClone(options.record.source)
+    const read = runtime.readSource.getMockImplementation()!
+    runtime.readSource.mockImplementation((path) => {
+      if (path.endsWith('EarnContributionController.sol'))
+        throw new Error('historical checkout unavailable')
+      return read(path)
+    })
+    contract.match = 'exact_match'
+    const source = await verifyDeploymentSources(options, runtime)
+    expect(source.contractVerification).toBe('verified')
+    expect(source.contracts.earnContributionController).toEqual(retained)
+    expect(source.contracts.engine).toMatchObject({ kind: 'source', name: 'VedaEngine' })
+    expect(runtime.readSource).toHaveBeenCalledWith('/repo/src/engines/veda/VedaEngine.sol')
+    expect(options.record.source).toEqual(before)
+    await expect(
+      verifyRecordedStepCreation({ ...options, action: 'deploy-contribution-controller' }, runtime),
+    ).resolves.toBeUndefined()
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test.each(['source', 'downgrade', 'verifier', 'new-source'] as const)(
+    'fails closed on invalid pending evidence: %s',
+    async (invalid) => {
+      const { options, runtime, contract, rpc } = directControllerRun()
+      const source = await verifyDeploymentSources(options, runtime)
+      options.record.source = {
+        ...source,
+        contractVerification: 'pending',
+        contracts: { earnContributionController: source.contracts.earnContributionController },
+      } as EarnDeploymentRecord['source']
+      const before = structuredClone(options.record.source)
+      if (invalid === 'source') Object.values(contract.sources)[0]!.content = 'changed source'
+      if (invalid === 'downgrade') contract.match = 'match'
+      if (invalid === 'verifier') options.record.source.verifierUrl = 'https://attacker.example'
+      if (invalid === 'new-source') runtime.readSource.mockReturnValue('noncanonical new source')
+      rpc.getTransaction.mockClear()
+      await expect(verifyDeploymentSources(options, runtime)).rejects.toThrow()
+      if (invalid !== 'verifier') expect(options.record.source).toEqual(before)
+      expect(runtime.spawn).not.toHaveBeenCalled()
+      expect(rpc.getTransaction).not.toHaveBeenCalled()
+      if (invalid === 'verifier')
+        await expect(
+          verifyRecordedStepCreation(
+            { ...options, action: 'deploy-contribution-controller' },
+            runtime,
+          ),
+        ).rejects.toThrow('trusted verifier')
+    },
+  )
+
+  test('preserves nested factory evidence through a pending-source completion and upgrade', async () => {
+    const { options, runtime, factoryContract } = namedFactoryRun()
+    factoryContract.match = 'match'
+    const source = await verifyDeploymentSources(options, runtime)
+    options.record.source = {
+      ...source,
+      contractVerification: 'pending',
+    } as EarnDeploymentRecord['source']
+    const before = structuredClone(options.record.source)
+    factoryContract.match = 'exact_match'
+    runtime.readSource.mockImplementation(() => {
+      throw new Error('new checkout')
+    })
+    const observed = await verifyDeploymentSources(options, runtime)
+    expect(observed.contracts).toEqual(before.contracts)
+    expect(options.record.source).toEqual(before)
+    expect(runtime.spawn).not.toHaveBeenCalled()
   })
 
   test('preserves direct historical source identity and exact-match downgrade checks', async () => {
