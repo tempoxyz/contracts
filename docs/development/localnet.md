@@ -256,10 +256,18 @@ and Verifier executable bytes must exactly match the locked fixture. Only the st
 IPFS metadata trailer may differ; no opcodes, immutables or library addresses are masked. This
 comparison does not change the card project's solc 0.8.36/Cancun settings.
 
-Every localnet startup checks the pulled image digest and recorded source labels. It also reads the
-three canonical L1 contracts and requires their full bytes to equal the fixture before exposing the
-client. A mismatch fails and stops any started container. Image labels describe the observed build;
-they are not signed attestations that independently prove its source.
+Every localnet startup inspects the running container's image digest and recorded source labels on
+the daemon selected by Testcontainers. Before applying local genesis overrides, it requires the
+image's dumped Portal, Messenger and Verifier bytes to match the fixture. After startup it reads
+those contracts again to check that L1 applied the prepared genesis. A mismatch fails and stops any
+started container. Image labels describe the observed build; they are not signed attestations that
+independently prove its source.
+
+The opt-in daemon regression runs against a disposable L1:
+
+```sh
+CARD_RUNTIME_NATIVE=1 pnpm --filter localnet test --run src/card-runtime-native.test.ts
+```
 
 | Surface                     | Native evidence                                                                                                                         | Model boundary                                                                                                    |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |

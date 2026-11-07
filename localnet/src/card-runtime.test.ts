@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import * as Config from './config.js'
-import { assertImageIdentity, assertRuntimeCode, executable } from './card-runtime.js'
+import {
+  assertImageIdentity,
+  assertRuntimeCode,
+  executable,
+  repositoryDigest,
+} from './card-runtime.js'
 
 const provenance = JSON.parse(
   readFileSync(resolve(Config.root, 'localnet/fixtures/card-runtime-provenance.json'), 'utf8'),
@@ -76,4 +81,18 @@ describe('executable', () => {
     'refuses missing, malformed or different-compiler metadata: %s',
     (code) => expect(() => executable(code)).toThrow(),
   )
+})
+
+describe('repositoryDigest', () => {
+  const digest = `sha256:${'a'.repeat(64)}`
+  it.each([
+    ['ghcr.io/tempoxyz/tempo', 'ghcr.io/tempoxyz/tempo'],
+    ['ghcr.io/tempoxyz/tempo:v1.2.3', 'ghcr.io/tempoxyz/tempo'],
+    ['localhost:5000/team/tempo:Build_123', 'localhost:5000/team/tempo'],
+    ['localhost:5000/team/tempo', 'localhost:5000/team/tempo'],
+    ['tempo:v1', 'tempo'],
+    ['team/tempo', 'team/tempo'],
+  ])('normalizes %s without changing repository or digest', (reference, repository) => {
+    expect(repositoryDigest(`${reference}@${digest}`)).toBe(`${repository}@${digest}`)
+  })
 })

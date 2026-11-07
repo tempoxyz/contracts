@@ -1,7 +1,7 @@
-import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { getContainerRuntimeClient, ImageName } from 'testcontainers'
 import type { Hex } from 'viem'
 
 import * as Config from './config.js'
@@ -18,7 +18,7 @@ export function assertImageIdentity(role: 'l1' | 'zone', observed: ImageIdentity
   const expected = provenance.evidence.images[role]
   if (
     !isDeepStrictEqual(provenance.runtime, Config.runtimeLock) ||
-    !observed.RepoDigests?.includes(Config.image[role]) ||
+    !observed.RepoDigests?.includes(repositoryDigest(Config.image[role])) ||
     observed.Config?.Labels?.['org.opencontainers.image.source'] !== expected.source ||
     observed.Config?.Labels?.['org.opencontainers.image.revision'] !== expected.revision
   )
@@ -30,20 +30,23 @@ export type ImageIdentity = {
   Config?: { Labels?: Record<string, string> | null }
 }
 
-/** Checks Docker's identity after the requested digest has been pulled. */
-export function checkImageIdentity(role: 'l1' | 'zone') {
-  const observed = JSON.parse(
-    execFileSync('docker', ['image', 'inspect', Config.image[role], '--format', '{{json .}}'], {
-      encoding: 'utf8',
-    }),
-  ) as ImageIdentity
+/** Checks the running container's image on the same daemon selected by Testcontainers. */
+export async function checkImageIdentity(role: 'l1' | 'zone', containerId: string) {
+  const runtime = await getContainerRuntimeClient()
+  const container = await runtime.container.inspect(runtime.container.getById(containerId))
+  const observed = await runtime.image.inspect(ImageName.fromString(container.Image))
   assertImageIdentity(role, observed)
 }
 
-/** Refuses a running L1 whose canonical runtime differs from the locked fixture. */
-export function assertRuntimeCode(name: string, observed: Hex | undefined, expected: Hex) {
+/** Docker reports repository digests without the optional tag, while preserving registry ports. */
+export function repositoryDigest(reference: string) {
+  return reference.replace(/:[^/:@]+@/, '@')
+}
+
+/** Refuses missing or changed canonical runtime bytes, before overrides and after startup. */
+export function assertRuntimeCode(name: string, observed: string | undefined, expected: Hex) {
   if (!observed || observed.toLowerCase() !== expected.toLowerCase())
-    throw new Error(`${name} deployed bytecode differs from the locked runtime`)
+    throw new Error(`${name} bytecode differs from the locked runtime`)
 }
 
 /** Removes only the reviewed solc 0.8.35 IPFS trailer; executable differences always fail. */

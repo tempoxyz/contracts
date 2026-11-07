@@ -9,7 +9,7 @@
     "mapping": [
       {
         "surface": "Portal, Messenger, Verifier",
-        "supported": "Vendored sources rebuilt with solc 0.8.35, Osaka, viaIR and 200 optimizer runs match locked executable bytes. Network startup checks the full deployed fixture bytes.",
+        "supported": "Vendored sources rebuilt with solc 0.8.35, Osaka, viaIR and 200 optimizer runs match locked executable bytes. Startup checks both the original dumped genesis bytes and the fixture bytes applied to the running L1.",
         "notEstablished": "The regular card Foundry build uses solc 0.8.36/Cancun and mocks signature recovery; no production attestation proof follows."
       },
       {
