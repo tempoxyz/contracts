@@ -4,7 +4,7 @@ import { Abis, Addresses } from 'viem/tempo'
 import type { E2eCase } from '../../harness/case.js'
 import { requireE2eZone, type E2eContext } from '../../harness/context.js'
 import { redeem } from '../../harness/support/public.js'
-import { expectContractRevert } from '../../harness/support/transactions.js'
+import { expectRevertedReceipt } from '../../harness/support/transactions.js'
 import {
   assert,
   E2ePrerequisiteError,
@@ -76,26 +76,29 @@ export const protectedZoneCases: readonly E2eCase[] = [
           zoneBalance(context, context.contracts.earnShare, 'user'),
           zoneBalance(context, context.contracts.earnShare, 'outsider'),
         ])
-      const [userBefore, outsiderBefore] = await balances()
-      const zoneClient = context.actors.user.zone.client
-      await expectContractRevert(async () => {
-        const hash = await zoneClient.writeContract({
-          address: context.contracts.earnShare,
-          abi: erc20Abi,
-          functionName: 'transfer',
-          args: [context.outsider.address, 1n],
-        })
-        const receipt = await zoneClient.waitForTransactionReceipt({ hash, timeout: TIMEOUT_MS })
-        assert(receipt.status === 'success', `private transaction ${hash} reverted`)
-      }, 'private transfer to ineligible recipient unexpectedly succeeded')
-      const [userAfter, outsiderAfter] = await balances()
-      assert(userAfter === userBefore, 'rejected private transfer changed sender balance')
-      assert(
-        outsiderAfter === outsiderBefore,
-        'rejected private transfer changed recipient balance',
-      )
-      context.progress.step('CHECK', 'ineligible private transfer rejected; balances unchanged')
-      await zoneRedeem(context, { earnShares: entry.earnShares })
+      try {
+        const [userBefore, outsiderBefore] = await balances()
+        const zoneClient = context.actors.user.zone.client
+        await expectRevertedReceipt(async () => {
+          const hash = await zoneClient.writeContract({
+            address: context.contracts.earnShare,
+            abi: erc20Abi,
+            functionName: 'transfer',
+            args: [context.outsider.address, 1n],
+          })
+          const receipt = await zoneClient.waitForTransactionReceipt({ hash, timeout: TIMEOUT_MS })
+          return receipt
+        }, 'private transfer to ineligible recipient unexpectedly succeeded')
+        const [userAfter, outsiderAfter] = await balances()
+        assert(userAfter === userBefore, 'rejected private transfer changed sender balance')
+        assert(
+          outsiderAfter === outsiderBefore,
+          'rejected private transfer changed recipient balance',
+        )
+        context.progress.step('CHECK', 'ineligible private transfer rejected; balances unchanged')
+      } finally {
+        await zoneRedeem(context, { earnShares: entry.earnShares })
+      }
     },
   },
   ineligibleRecipientBounceCase(),

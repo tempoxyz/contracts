@@ -155,7 +155,10 @@ deployer through `script/deploy/DeployEarnMerkleRewardDistributor.s.sol` and
 `script/deploy/DeployEarnContributionController.s.sol`. Both contracts are owned directly by the
 profile `owner`. The distributor's treasury is `boostRewards.treasury`, its campaign ID derives from
 the chain ID, profile ID, and version, and its claim deadline is 30 days after
-`boostRewards.endTimestamp`. A protected EarnShare must whitelist the distributor and its treasury
+`boostRewards.endTimestamp`. The profile parser requires that derived deadline to fit `uint40`.
+Before a new distributor deploys, the lifecycle also checks that the deadline is later than the
+selected chain's latest block timestamp. Already-deployed historical distributors remain verifiable
+after expiry. A protected EarnShare must whitelist the distributor and its treasury
 ([required members](access.md#required-members)), and the treasury is a privileged role the public
 fixture-key guard checks. Each component is its own intent component, so a constructor change
 replaces only that contract. The lifecycle never deploys or configures the offchain service.

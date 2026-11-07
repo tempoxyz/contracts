@@ -70,6 +70,10 @@ those scripts are the list of checks:
   `pnpm test` (every workspace's tests, including the documentation link and anchor check in
   `deployments/docs.test.ts`).
 
+The RPC-environment compatibility test runs against real Forge when it is installed. TypeScript-only
+CI skips that native probe, but always checks the environment helper. An installed Forge that fails
+or reports the wrong RPC configuration still fails the test.
+
 CI also runs the bounded symbolic fee proofs, the PropAMM fixture rebuild, the brutalized-memory
 router fuzz, and local E2E ([continuous integration](#continuous-integration)); `pnpm verify` does
 not. While iterating, use `forge test --match-path <path> -vvv`, then finish with the full suite.

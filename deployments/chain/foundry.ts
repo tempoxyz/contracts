@@ -1,12 +1,25 @@
 import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /** Earn builds, tests, and deploys with the `forge` on PATH, which must be stable Foundry v1.8.6 or newer. */
 export function assertFoundryVersion(root: string) {
-  const forgeVersion = execFileSync('forge', ['--version'], { cwd: root, encoding: 'utf8' })
-  const match = /forge Version:\s*(\d+)\.(\d+)\.(\d+)/i.exec(forgeVersion)
+  assertFoundryProjectEnvironment(root)
+  const forgeVersion = execFileSync('forge', ['--version'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: foundryVerificationEnvironment(process.env),
+  })
+  requireStableFoundryVersion(forgeVersion)
+}
+
+/** Checks the advertised stable channel and minimum supported Foundry version. */
+export function requireStableFoundryVersion(forgeVersion: string) {
+  const match = /forge Version:\s*(\d+)\.(\d+)\.(\d+)([^\s]*)/i.exec(forgeVersion)
   if (!match) throw new Error(`Could not parse Foundry version from: ${forgeVersion.trim()}`)
-  const [major, minor, patch] = match.slice(1).map(Number) as [number, number, number]
+  if (match[4] && !/^-(?:stable)(?:\+[^\s]+)?$/.test(match[4]) && !/^\+[^\s]+$/.test(match[4]))
+    throw new Error('Earn requires a stable Foundry release, not a prerelease or nightly')
+  const [major, minor, patch] = match.slice(1, 4).map(Number) as [number, number, number]
   if (major * 1e6 + minor * 1e3 + patch < 1_008_006) {
     throw new Error(`Earn requires Foundry v1.8.6 or newer, found ${match[0]}`)
   }
@@ -80,11 +93,23 @@ export function sourceVerificationCompilerArguments(
   root: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): string[] {
+  assertFoundryProjectEnvironment(root)
   const env = foundryVerificationEnvironment(environment)
   const config = JSON.parse(
     execFileSync('forge', ['config', '--json'], { cwd: root, encoding: 'utf8', env }),
   ) as { solc?: string | null }
-  if (!config.solc || !/[\\/]/.test(config.solc)) return []
+  const authored = /^\s*(?:solc|solc_version)\s*=\s*["']([^"']+)["']/m.exec(
+    readFileSync(resolve(root, 'foundry.toml'), 'utf8'),
+  )?.[1]
+  if (
+    !authored ||
+    !config.solc ||
+    (/[\\/]/.test(authored)
+      ? resolve(root, config.solc) !== resolve(root, authored)
+      : config.solc !== authored)
+  )
+    throw new Error('Effective compiler does not match the reviewed foundry.toml pin')
+  if (!/[\\/]/.test(config.solc)) return []
   const output = execFileSync(resolve(root, config.solc), ['--version'], {
     cwd: root,
     encoding: 'utf8',
@@ -111,4 +136,27 @@ export function solcWrapperVersion(output: string) {
     /^Version: (\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.\d+\.\d+\.\d+)\s*$/m.exec(output)?.[1] ??
     null
   )
+}
+
+/** Refuses Forge's implicit dotenv reload before it can restore keys or compiler overrides. */
+export function assertFoundryProjectEnvironment(root: string) {
+  if (existsSync(resolve(root, '.env')))
+    throw new Error(
+      `Remove ${resolve(root, '.env')} before running deployment tooling; use the profile-specific environment file`,
+    )
+}
+
+/** Carries RPC credentials through the child environment, never process arguments. */
+export function foundryRpcEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+  rpcUrl: string,
+) {
+  return {
+    ...Object.fromEntries(
+      Object.entries(environment).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
+    FOUNDRY_ETH_RPC_URL: rpcUrl,
+  }
 }

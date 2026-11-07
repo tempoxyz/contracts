@@ -61,21 +61,25 @@ export const zoneRouterModeModule: CapabilityModule = {
   async stackAccessPrincipals(client, stack) {
     const router = stackAddress(stack, 'zoneRouter')
     if (!router) return []
-    const [zoneId, spenders] = await Promise.all([
+    const [zoneId, spenders, enabledOps] = await Promise.all([
       client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'allowedZoneId' }),
       client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'spenders' }),
+      client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'enabledOps' }),
     ])
     const zone = await registeredZone(client, Number(zoneId))
-    const earnShareEnabled =
+    // Protect intended EarnShare routes during onboarding, without pinning unrelated Spend-only modes.
+    const needsSpenders =
       spenders.length !== 0 &&
-      (await missingZoneTokens(client, zone.portal, [['EarnShare', stack.contracts.earnShare]]))
-        .length === 0
+      ((enabledOps & 3) !== 0 ||
+        stack.network?.zone?.id === Number(zoneId) ||
+        (await missingZoneTokens(client, zone.portal, [['EarnShare', stack.contracts.earnShare]]))
+          .length === 0)
     return [
       zone.portal,
       zone.messenger,
       ...zone.sequencers,
       getAddress(Addresses.zoneOutbox),
-      ...(earnShareEnabled ? spenders : []),
+      ...(needsSpenders ? spenders : []),
     ]
   },
   async inspect(client, profile, outputs) {
@@ -88,6 +92,7 @@ export const zoneRouterModeModule: CapabilityModule = {
     await inspectZoneRouterBinding(client, {
       router,
       factory,
+      portal,
       mode,
       earnShare: requiredOutput(outputs, 'earnShare'),
       vaultAsset: requiredOutput(outputs, 'asset'),
@@ -189,6 +194,7 @@ function isZoneRouterMetadataOutput(key: string) {
 async function preflightZoneRouter(
   client: Pick<PublicClient, 'getCode' | 'readContract'>,
   profile: EarnDeploymentProfile,
+  outputs: Record<string, Address> = {},
 ) {
   const router = profile.zoneRouter
   if (!router) return
@@ -228,6 +234,7 @@ async function preflightZoneRouter(
       privateAsset: router.earn.privateAsset,
       pool: router.earn.pool,
       path: 'zoneRouter.earn',
+      earnShare: outputs.earnShare,
     })
   }
 }

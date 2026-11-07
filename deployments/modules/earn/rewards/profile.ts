@@ -1,8 +1,13 @@
 import { concat, keccak256, stringToHex } from 'viem'
 
+import type { LatestBlockClient } from '../../../chain/inspect.js'
 import type { CoreProfile } from '../../../core/profile.js'
 import type { ProfileSlice, SliceProfile } from '../../../../deployments/modules/module.js'
-import { parseRewardConfiguration, type RewardConfiguration } from './schema.js'
+import {
+  boostRewardsClaimGraceSeconds,
+  parseRewardConfiguration,
+  type RewardConfiguration,
+} from './schema.js'
 
 type RewardsProfile = SliceProfile<RewardConfiguration>
 
@@ -107,5 +112,18 @@ export function boostRewardsCampaignId(profile: Pick<CoreProfile, 'chainId'>, de
 /** Unclaimed boost rewards return to the treasury 30 days after the program ends. */
 export function boostRewardsClaimDeadline(profile: Pick<CoreProfile, 'id'> & RewardConfiguration) {
   if (!profile.boostRewards) throw new Error(`Deployment profile ${profile.id} has no boostRewards`)
-  return String(profile.boostRewards.endTimestamp + 30 * 24 * 60 * 60)
+  return String(profile.boostRewards.endTimestamp + boostRewardsClaimGraceSeconds)
+}
+
+/** Rejects an expired constructor claim deadline against the selected chain, not local wall time. */
+export async function assertBoostClaimDeadline(
+  client: LatestBlockClient,
+  profile: Pick<CoreProfile, 'id'> & RewardConfiguration,
+) {
+  if (!profile.boostRewards) return
+  const { timestamp } = await client.getBlock()
+  if (BigInt(boostRewardsClaimDeadline(profile)) <= timestamp)
+    throw new Error(
+      `Profile ${profile.id} boost rewards claim deadline has expired on the deployment chain`,
+    )
 }

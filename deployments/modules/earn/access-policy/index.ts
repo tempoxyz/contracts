@@ -9,6 +9,12 @@ import { transferPolicyId } from './profile.js'
  * whose administrator stays mutable and is read live rather than recorded.
  */
 export const accessPolicyModule: CapabilityModule = {
+  async livePrivilegedPrincipals(client, profile) {
+    const policyId = transferPolicyId(profile)
+    if (policyId === undefined) return []
+    const administrator = await validateWhitelistPolicy(client, { policyId, requiredMembers: [] })
+    return [['access administrator', administrator]]
+  },
   async preflight(client, profile) {
     const policyId = transferPolicyId(profile)
     if (policyId === undefined) return

@@ -45,7 +45,7 @@ For application onboarding, use [SKILL.md](../SKILL.md) and the
 - Secrets and funded private keys stay out of source, logs, and generated records. External
   authority handoffs must be completed by their actual owners.
 - Core Zones owns hosted Zone infrastructure, and the Zone administrator and pool owner their
-  admission and inventory. CI, app projection, and hosted E2E never hold a hosted Zone administrator
+  admission and inventory. CI, deployment projection, and hosted E2E never hold a hosted Zone administrator
   or pool owner key, and never disable policy, admission, or gateway checks or repair Zone
   infrastructure to pass.
 - Zones hide activity from outsiders, not their sequencer. Preserve the

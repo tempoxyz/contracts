@@ -31,7 +31,8 @@ pnpm e2e:benchmark -- --earn-file profiles/<profile-id>/profile.json --group all
 
 The runner resolves every contract from the profile's record and live reads; private and all use
 its Zone route over the same EarnVault. It always signs as the committed public test identity from
-`.env.example`, funded through the faucet, so it runs only on a network with a faucet (Moderato);
+`.env.example`, funded through the faucet, so it requires a known faucet-enabled testnet
+(Moderato). Mainnet and unknown networks are rejected before funding or signing;
 that identity must stay eligible under a protected profile's policy and admitted on an
 access-enforced Zone. It needs no deployment, Zone administrator, access administrator, or end-user
 key. Because that key is public, anyone can transact as the account, so a sample can fail or record

@@ -65,10 +65,16 @@ function client(overrides: Overrides = {}) {
     [`${address('8')}.latestPrice`]: [100_000_000n, 1_800_000_000n],
     [`${outputs.zonePortal}.isTokenEnabled`]: true,
     [`${outputs.zonePortal}.areDepositsActive`]: true,
+    [`${outputs.zonePortal}.isGatewayOpen`]: true,
+    [`${outputs.zonePortal}.isAccessEnforced`]: false,
+    [`${outputs.zonePortal}.isAccountAllowed`]: true,
     ...overrides,
   }
   return {
-    getBlock: async () => ({ timestamp: (overrides.now as bigint | undefined) ?? 1_800_000_100n }),
+    getBlock: async () => ({
+      number: 7n,
+      timestamp: (overrides.now as bigint | undefined) ?? 1_800_000_100n,
+    }),
     getCode: async () => '0x01' as const,
     readContract: async ({
       address: target,
@@ -160,4 +166,57 @@ describe('SingleZoneEarnRouter inspection', () => {
       ).rejects.toThrow(message)
     }
   })
+})
+
+test('rejects a record that substitutes a different creation engine', async () => {
+  await expect(
+    inspectEarnDeployment(client() as never, profile, {
+      ...outputs,
+      engine: address('99'),
+    }),
+  ).rejects.toThrow('does not match configured engine')
+})
+
+test('inspects current custody after migration while retaining creation-engine predictions', async () => {
+  const migrated = address('99')
+  const overrides = {
+    [`${outputs.earnVault}.engine`]: migrated,
+    [`${outputs.earnVault}.engineMigrationMode`]: 1,
+    [`${migrated}.asset`]: outputs.asset,
+    [`${migrated}.earnVault`]: outputs.earnVault,
+    [`${migrated}.owner`]: profile.owner,
+    [`${migrated}.supportsInterface`]: true,
+    [`${migrated}.vault`]: address('98'),
+  }
+  const enabled = {
+    ...profile,
+    core: { ...profile.core, migrationMode: 'OperatorEnabled' as const },
+  }
+  const rpc = client(overrides)
+  const read = rpc.readContract
+  let predictions = 0
+  rpc.readContract = async (parameters) => {
+    if (
+      parameters.functionName === 'predictEarnShare' ||
+      parameters.functionName === 'predictEarnFees'
+    ) {
+      expect(parameters.args?.[0]).toMatchObject({ engine: address('1') })
+      predictions++
+    }
+    return read(parameters)
+  }
+  await expect(inspectEarnDeployment(rpc as never, enabled, outputs)).resolves.toMatchObject({
+    router: { status: 'ready' },
+  })
+  expect(predictions).toBe(2)
+  await expect(inspectEarnDeployment(client(overrides) as never, profile, outputs)).rejects.toThrow(
+    'does not allow',
+  )
+  await expect(
+    inspectEarnDeployment(
+      client({ ...overrides, [`${migrated}.earnVault`]: address('97') }) as never,
+      enabled,
+      outputs,
+    ),
+  ).rejects.toThrow('current engine EarnVault binding')
 })

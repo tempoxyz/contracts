@@ -1,8 +1,12 @@
 import { earnFeesAbi, earnVaultAbi } from '@tempoxyz/contracts/abis'
 import { quotePropAMMRoute } from '@tempoxyz/contracts/deployments'
+import type { Abi } from 'viem'
+import fixture from '../../../earn/test/fixtures/propamm/DirectPropAMM.json' with { type: 'json' }
 import type { E2eEngine } from '../index.js'
 
 export const engine: E2eEngine = {
+  // The pool enforces output bounds before the engine; use the pinned venue artifact's ABI.
+  redeemBoundErrors: () => ({ abi: fixture.abi as Abi, errors: ['SlippageExceeded'] }),
   /**
    * `previewRedeem` values engine shares at the oracle price, rounded down, but the pool's sell also
    * pays the engine route's accrued rounding credit. Quote that route as deposits do, after the same

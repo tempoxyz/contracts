@@ -7,6 +7,8 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 import { envPrivateKey } from '../chain/runtime.js'
 import {
+  assertReviewedDeploymentIdentity,
+  type ReviewedDeploymentIdentity,
   parseFactoryRelease,
   resolveEarnFactoryRelease,
   sameFactoryRelease,
@@ -15,6 +17,7 @@ import {
 import { address, object } from './parse.js'
 import { parseEarnDeploymentProfile, type EarnDeploymentProfile } from './profile.js'
 import { parseEarnDeploymentRecord, type EarnDeploymentRecord } from './record.js'
+import { loadPendingDeployment } from './pending.js'
 
 export type EarnProfileBundle = {
   path: string
@@ -88,6 +91,7 @@ function deploymentAccount(values: Readonly<Record<string, string | undefined>>)
 export function loadEarnProfileForEnvironment(
   profilePath: string,
   environment: Readonly<Record<string, string | undefined>>,
+  trustedIdentity?: ReviewedDeploymentIdentity,
 ) {
   const preliminary = loadEarnProfile(profilePath)
   const recordPath = profileDeploymentPath(profilePath)
@@ -98,6 +102,11 @@ export function loadEarnProfileForEnvironment(
       ? pendingPath
       : undefined
   const recorded = identityPath ? readDeploymentIdentity(identityPath) : undefined
+  if (identityPath === recordPath && recorded)
+    assertReviewedDeploymentIdentity(
+      { ...recorded, chainId: preliminary.chainId, deploymentId: preliminary.id },
+      trustedIdentity,
+    )
   // A committed record keeps the release it pinned; anything unpublished uses the current one.
   if (
     identityPath === pendingPath &&
@@ -105,16 +114,39 @@ export function loadEarnProfileForEnvironment(
   ) {
     throw new Error(`Pending deployment ${pendingPath} does not use the current factory release`)
   }
-  return loadEarnProfile(profilePath, {
+  const profile = loadEarnProfile(profilePath, {
     deployer: recorded?.deployer ?? deploymentAccount(environment),
     factories: recorded?.factories ?? resolveEarnFactoryRelease(preliminary.chainId),
   })
+  if (identityPath === pendingPath) loadPendingDeployment(profilePath, profile)
+  return profile
+}
+
+/** Reads an existing deployment identity for planning without materializing a signing key. */
+export function loadEarnProfileForRead(
+  profilePath: string,
+  trustedIdentity?: ReviewedDeploymentIdentity,
+) {
+  if (
+    existsSync(profileDeploymentPath(profilePath)) ||
+    existsSync(pendingDeploymentPath(profilePath))
+  )
+    return loadEarnProfileForEnvironment(profilePath, {}, trustedIdentity)
+  return loadEarnProfile(profilePath)
 }
 
 /** Loads the canonical authored/generated pair through one strict consumer boundary. */
-export function loadEarnProfileBundle(profilePath: string): EarnProfileBundle {
+export function loadEarnProfileBundle(
+  profilePath: string,
+  trustedIdentity?: ReviewedDeploymentIdentity,
+): EarnProfileBundle {
   const recordPath = profileDeploymentPath(profilePath)
   const identity = readDeploymentIdentity(recordPath)
+  const preliminary = loadEarnProfile(profilePath)
+  assertReviewedDeploymentIdentity(
+    { ...identity, chainId: preliminary.chainId, deploymentId: preliminary.id },
+    trustedIdentity,
+  )
   const profile = loadEarnProfile(profilePath, {
     deployer: identity.deployer,
     factories: identity.factories,
@@ -211,5 +243,18 @@ function readJson(path: string): unknown {
     return JSON.parse(readFileSync(path, 'utf8'))
   } catch {
     return undefined
+  }
+}
+
+/** Reads a separately reviewed identity selected explicitly by the operator, never auto-enrolled from a deployment record. */
+export function loadReviewedDeploymentIdentity(path: string): ReviewedDeploymentIdentity {
+  const value = object(JSON.parse(readFileSync(path, 'utf8')), path)
+  if (Object.keys(value).some((key) => key !== 'deployer' && key !== 'factories'))
+    throw new Error(
+      `Reviewed deployment identity ${path} accepts only deployer and factories, not a deployment record`,
+    )
+  return {
+    deployer: address(value.deployer, `${path}.deployer`),
+    factories: parseFactoryRelease(value.factories, `${path}.factories`),
   }
 }

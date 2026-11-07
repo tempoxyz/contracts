@@ -16,12 +16,15 @@ import type {
   CapabilityModule,
   DeploymentStep,
 } from '../../deployments/modules/module.js'
+import { rewardsModule } from './earn/rewards/module.js'
 import { deployContributionController, deployMerkleDistributor } from './earn/rewards/steps.js'
 import {
   authorityClient,
   fundFromFaucet,
   type AuthorityDependencies,
 } from '../../deployments/modules/signer.js'
+export { guardedTransactionRequest, pinnedAuthorityTransport } from './signer.js'
+
 import { zoneRouterModule } from './earn/zone-router/index.js'
 import { zoneRouterModeModule } from './zone-router/index.js'
 import {
@@ -99,6 +102,7 @@ export type RegisteredStep = DeploymentStep & {
 /** Capabilities with lifecycle hooks, in the order the core lifecycle runs them. */
 export const capabilityModules: readonly CapabilityModule[] = [
   accessPolicyModule,
+  rewardsModule,
   zoneRouterModule,
   zoneRouterModeModule,
 ]
@@ -169,3 +173,5 @@ export async function executeAvailableAuthority(
   if (step.execution !== 'authority') return undefined
   return step.execute(options, { authorityClient, fundFromFaucet, ...dependencies })
 }
+
+export { resolvePredictedCore } from './earn/core/steps.js'

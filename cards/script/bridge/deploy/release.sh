@@ -4,9 +4,10 @@
 # (script/bridge/deploy/BridgeRelease.sol), or a Bridge card program's CardSpender (bridgeProgram):
 # the release CardFactory for the program's ZoneRouterFactory and the program's BridgeProvider, each at
 # its release address, and the program, which that CardFactory creates at the address its program ID
-# (the spender ID), provider contract and router factory fix. It checks that the run created exactly
-# the missing contracts, each at the address predicted here from the locally compiled creation code,
-# and, after a broadcast to a hosted network, that Tempo's verifier has the source of every one.
+# (the spender ID), provider contract and router factory fix. It checks the planned transactions and
+# predicted addresses against locally compiled creation code, and records creation from receipts
+# (a concurrent program deployment is reuse). After a broadcast to a hosted network, it checks that
+# Tempo's verifier has the source of every contract.
 # Bridge running the deploy scripts itself lands on the same addresses. The Bridge Release workflow
 # (.github/workflows/bridge-release.yml) runs this; it runs locally too.
 #
@@ -181,7 +182,9 @@ for i in "${!names[@]}"; do
   [[ "$(cast code "${addresses[$i]}")" == 0x ]] || existed=true
   record_contract "$i" name "$(jq -n --arg v "${names[$i]}" '$v')"
   record_contract "$i" address "$(jq -n --arg v "${addresses[$i]}" '$v')"
+  # existed is the preflight observation; created is set only from broadcast receipts below.
   record_contract "$i" existed "$existed"
+  [[ "$broadcast" == false ]] || record_contract "$i" created false
 done
 # The release's own contract: the handler, or the program.
 last=$((${#names[@]} - 1))
@@ -192,7 +195,10 @@ record --json existed "$(jq ".contracts[$last].existed" <<<"$state")"
 forge_args=(script "$script" --network tempo --slow)
 if [[ "$broadcast" == true ]]; then
   forge_args+=(--broadcast)
-  [[ "$hosted" == false ]] || forge_args+=(--verify --verifier sourcify --verifier-url "$VERIFIER_URL")
+  # A program's simulation can create what its broadcast only reuses. Verify it after inspecting
+  # receipts below, rather than letting Forge infer a creation hash from that simulation.
+  [[ "$hosted" == false || "$contract" == bridgeProgram ]] ||
+    forge_args+=(--verify --verifier sourcify --verifier-url "$VERIFIER_URL")
 fi
 # Forge's sequence of this run, which a stale one from an earlier run must not stand in for.
 sequence=broadcast/$(basename "$script")/$chain_id/$([[ "$broadcast" == true ]] || echo dry-run/)run-latest.json
@@ -204,9 +210,9 @@ DEPLOYER_PK=$DEPLOYER_PRIVATE_KEY OUT=$out forge "${forge_args[@]}" || forge_sta
 record --json forgeStatus "$forge_status"
 [[ "$forge_status" == 0 || -f "$sequence" ]] || die "forge script failed (status $forge_status)"
 
-# The run must have sent exactly the transactions the missing contracts need: a CREATE2 through the
-# deployer for each missing release contract, from its creation code, and the CardFactory's deploy
-# call for a missing program.
+# The run must have sent exactly the transactions planned for contracts missing at preflight:
+# a CREATE2 through the deployer for each missing release contract, from its creation code, and
+# CardFactory.deploy for a missing program (which may become reuse before inclusion).
 transactions='[]'
 [[ ! -f "$sequence" ]] || transactions=$(jq -c '[.transactions[]?]' "$sequence")
 expected=0
@@ -229,9 +235,23 @@ for i in "${!names[@]}"; do
   fi
   if [[ "$broadcast" == true ]]; then
     transaction=$(jq -r '.[0].hash' <<<"$sent")
-    receipt=$(jq -r --arg hash "${transaction,,}" \
-      '[.receipts[]? | select((.transactionHash // "" | ascii_downcase) == $hash) | .status][0] // ""' "$sequence")
-    [[ "$receipt" == 0x1 ]] || die "$name creation $transaction has no successful receipt"
+    [[ "$transaction" =~ ^0x[0-9a-fA-F]{64}$ ]] || die "$name has no transaction hash"
+    receipt=$(jq -ce --arg hash "${transaction,,}" \
+      '[.receipts[]? | select((.transactionHash // "" | ascii_downcase) == $hash)] |
+       if length == 1 then .[0] else error("expected one matching receipt") end' "$sequence") ||
+      die "$name creation $transaction has no unique receipt"
+    [[ "$(jq -r '.status' <<<"$receipt")" == 0x1 ]] || die "$name creation $transaction has no successful receipt"
+    if [[ "${creators[$i]}" == cardFactory ]]; then
+      # A concurrent deploy turns this call into a successful no-op. Only the factory's event proves
+      # this transaction created the program; a no-op hash must never reach the source verifier.
+      created=$(jq -r --arg factory "${addresses[0],,}" --arg program "${address,,}" \
+        --arg programId "${SPENDER_ID,,}" --arg provider "${addresses[1],,}" \
+        --arg topic "$(cast keccak 'ProgramDeployed(address,bytes32,address)')" \
+        -f script/bridge/deploy/program-receipt.jq <<<"$receipt") ||
+        die "$name creation $transaction has invalid event evidence"
+      [[ "$created" == true ]] || continue
+    fi
+    record_contract "$i" created true
     record_contract "$i" transaction "$(jq -n --arg v "$transaction" '$v')"
   fi
 done
@@ -240,7 +260,13 @@ done
 
 if [[ "$broadcast" == true ]]; then
   [[ -f "$out" ]] || die "forge script failed (status $forge_status) before writing its output"
-  record --json output "$(cat "$out")"
+  if [[ "$contract" == bridgeProgram ]]; then
+    # Forge's OUT reflects simulation, which can precede another deployer's winning transaction.
+    record --json output "$(jq --argjson created "$(jq ".contracts[$last].created" <<<"$state")" \
+      '.created = $created' "$out")"
+  else
+    record --json output "$(cat "$out")"
+  fi
   for i in "${!names[@]}"; do
     [[ "$(jq -r --arg field "${fields[$i]}" '.[$field] | ascii_downcase' "$out")" == "${addresses[$i],,}" ]] ||
       die "the script's ${fields[$i]} is not the deterministic address ${addresses[$i]}"
@@ -285,8 +311,10 @@ if [[ "$broadcast" == true && "$hosted" == true ]]; then
 fi
 for i in "${!names[@]}"; do
   existed=$(jq ".contracts[$i].existed" <<<"$state")
-  if [[ "$existed" == true ]]; then outcome='already deployed'
-  elif [[ "$broadcast" == true ]]; then outcome=created
+  if [[ "$broadcast" == true ]]; then
+    if [[ "$(jq ".contracts[$i].created" <<<"$state")" == true ]]; then outcome=created
+    else outcome='already deployed'; fi
+  elif [[ "$existed" == true ]]; then outcome='already deployed'
   else outcome='would be created'; fi
   echo "release: ${names[$i]} at ${addresses[$i]} ($outcome)"
 done

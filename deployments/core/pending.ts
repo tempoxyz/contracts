@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 
 import type { Address } from 'viem'
@@ -145,6 +154,11 @@ export function savePendingDeployment(
   ) {
     throw new Error('Pending deployment does not match this profile')
   }
+  // Reject producer/version mistakes before they can poison the next resume.
+  parsePendingOutputs(pending.outputs, 'outputs', true)
+  if (pending.latestOutputs) parsePendingOutputs(pending.latestOutputs, 'latestOutputs')
+  for (const [id, action] of Object.entries(pending.actions))
+    parseCompletedAction(action, `actions.${id}`)
   writeJsonAtomic(pendingDeploymentPath(profilePath), pending)
 }
 
@@ -185,7 +199,7 @@ export function restorePendingDeployment(
     ),
   )
   const pending: PendingDeployment = {
-    ...pendingHeader(profile),
+    ...cached,
     outputs: { ...cached.outputs, ...committedAddresses },
     actions: { ...cached.actions, ...committedDeploymentActions },
   }
@@ -206,13 +220,25 @@ export function foundryOutputPath(root: string, profilePath: string) {
   const pending = pendingDeploymentPath(profilePath)
   const fromProfiles = relative(resolve(root, 'profiles'), resolve(pending))
   if (!fromProfiles.startsWith('..') && !isAbsolute(fromProfiles)) return pending
-  return resolve(
+  const isolated = resolve(
+    root,
+    '.earn',
+    'external',
+    profileWorkspaceId(profilePath),
+    'deployment.pending.json',
+  )
+  const legacy = resolve(
     root,
     '.earn',
     'external',
     basename(dirname(profilePath)),
     'deployment.pending.json',
   )
+  if (existsSync(legacy))
+    throw new Error(
+      `Legacy shared Foundry staging exists at ${legacy}. Verify its deployment identity and move it to ${isolated} before resuming; it cannot be assigned to a profile repository safely.`,
+    )
+  return isolated
 }
 
 /** Copies pending state to the staging path before Forge writes `latestOutputs` into it. */
@@ -271,4 +297,44 @@ function writeJsonAtomic(path: string, value: unknown) {
   const temporary = `${path}.${process.pid}.tmp`
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
   renameSync(temporary, path)
+}
+
+/** Canonical profile identity isolates journals and receipts across deployment repositories. */
+function profileWorkspaceId(profilePath: string) {
+  const path = existsSync(profilePath) ? realpathSync(profilePath) : resolve(profilePath)
+  return `${basename(dirname(profilePath))}-${createHash('sha256').update(path).digest('hex')}`
+}
+
+/** Each profile owns its Forge receipts; selector-latest files must never cross profiles. */
+export function foundryBroadcastPath(root: string, profilePath: string) {
+  return resolve(root, 'broadcast', profileWorkspaceId(profilePath))
+}
+
+/** Refuses concurrent writers to one profile; a stale lock requires an explicit operator check. */
+export function lockPendingDeployment(profilePath: string) {
+  const path = `${pendingDeploymentPath(profilePath)}.lock`
+  mkdirSync(dirname(path), { recursive: true })
+  try {
+    mkdirSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    throw new Error(
+      `Deployment ${profilePath} is locked by another run. Verify no run is active before removing ${path}.`,
+    )
+  }
+  return () => rmSync(path, { recursive: true })
+}
+
+/** Uses the same key and address boundary for staged outputs and durable resume state. */
+export function parsePendingOutputs(value: unknown, path: string, metadata = false) {
+  return Object.fromEntries(
+    Object.entries(object(value, path)).map(([key, value]) => {
+      if (
+        !deploymentAddressKeys.includes(key as DeploymentAddressKey) &&
+        !(metadata && capabilityModules.some((module) => module.metadataOutput?.(key)))
+      )
+        throw new Error(`${path} has unsupported output ${key}`)
+      return [key, address(value, `${path}.${key}`)]
+    }),
+  )
 }

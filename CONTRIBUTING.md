@@ -64,7 +64,7 @@ ci: run the symbolic proofs on stable Foundry
 ```
 
 Areas are project or top-level directories (`earn`, `zone-router`, `cards`, `e2e`, `localnet`), a shared
-or narrower directory (`deployments`, `profiles`, `app`), or `ci`, `docs`, `repo`, and `chore`. Pull requests are squash-merged
+or narrower directory (`deployments`, `profiles`), or `ci`, `docs`, `repo`, and `chore`. Pull requests are squash-merged
 with the title as the commit subject, so describe the change and its validation in the body.
 
 ## License

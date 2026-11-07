@@ -81,6 +81,10 @@ contract DeployRouterReleaseScript is DeterministicRelease {
         returns (ZoneRouter router)
     {
         if (address(factory).code.length == 0) revert NoFactory(address(factory));
+        // A spender authenticates routers through its own immutable factory, not their mode alone.
+        for (uint256 i; i < mode.spenders.length; ++i) {
+            if (SendSpender(mode.spenders[i]).ROUTER_FACTORY() != address(factory)) revert BindingFailed();
+        }
         address predicted = factory.predict(mode);
         if (!factory.isRouter(predicted)) factory.deploy(mode);
         router = ZoneRouter(predicted);

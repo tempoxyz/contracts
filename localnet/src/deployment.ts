@@ -8,11 +8,13 @@ import {
   factoryReleaseStep,
   optionalPeriphery,
   planEarnDeployment,
+  resolveAccessAddress,
   serializeWhitelistPolicy,
   type EarnDeploymentProfile,
 } from '@tempoxyz/contracts/deployments/operations'
 import {
   authoredProfile,
+  guardedTransactionRequest,
   discoverOutputs,
   preflightEarnDeployment,
   prepareLifecycleStep,
@@ -38,6 +40,7 @@ import * as Foundry from './foundry.js'
 import * as Network from './network.js'
 import { provisionFixtures, routerPoolInventory, validateFixtures } from './deployment/fixtures.js'
 import {
+  assertLocalProfile,
   isProtected,
   localizeProfile,
   sameAssetProfile,
@@ -54,7 +57,7 @@ import type {
   State,
 } from './deployment/types.js'
 import { earnEngineBindingAbi, earnRouterAbi, zonePortalAbi } from '@tempoxyz/contracts/abis'
-import { missingZoneTokens, zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
+import { missingZoneTokens, portalRoleCalls, zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
 
 /** Pure profile helpers, so consumers can derive what a variant deploys without a chain. */
 export {
@@ -65,6 +68,7 @@ export {
 } from './deployment/profile.js'
 
 export {
+  assertFixtureChain,
   provisionFixtures,
   routerPoolInventory,
   validateFixtures,
@@ -103,7 +107,10 @@ export async function createBase(options: createBase.Options): Promise<Base> {
   const large = { rawGasEstimate: true }
   // Release contracts are created deterministically, and an entry point reuses one that exists
   // without a transaction (a persistent devnet deployed before), so take it from its address.
-  const predicted = Foundry.releaseAddresses(engineFactories.map((factory) => factory.releaseKey))
+  const predicted = Foundry.releaseAddresses(
+    engineFactories.map((factory) => factory.releaseKey),
+    options.broadcastDirectory,
+  )
   const released = async (name: string, step: Foundry.Step) => {
     const address = predicted[name]
     if (!address) throw new Error(`No deterministic address for ${name}`)
@@ -168,6 +175,10 @@ export declare namespace createBase {
  */
 export async function create(options: create.Options): Promise<Result> {
   const { base, client } = options
+  if (options.earnProfile) assertLocalProfile(options.earnProfile)
+  const startedAtBlock = await client.getBlockNumber()
+  // Reject malformed fixture bindings before policy creation, immutable binding, or Portal writes.
+  await validateFixtures(client, base.engineKind, base, options.account)
   const zoneId = options.zone.id
   const zoneSequencer = await Network.resolveZoneSequencer({
     client,
@@ -189,14 +200,21 @@ export async function create(options: create.Options): Promise<Result> {
       })
 
   // Disposable stand-in for the profile's TIP-403 policy; the Zone principals join before deploy.
-  const preDeploymentMembers = unique([
-    options.zone.portal,
-    options.zone.messenger,
-    zoneSequencer,
-    Addresses.zoneOutbox,
-    options.account,
-    options.revenueShareRecipient,
-  ])
+  const preDeploymentMembers = isProtected(source)
+    ? unique(
+        await Promise.all(
+          unique([
+            options.zone.portal,
+            options.zone.messenger,
+            zoneSequencer,
+            Addresses.zoneOutbox,
+            options.account,
+            options.revenueShareRecipient,
+            ...(options.earnProfile ? accessMembers(options.earnProfile, {}) : []),
+          ]).map((member) => resolveAccessAddress(client, member)),
+        ),
+      )
+    : []
   const policy = isProtected(source)
     ? await accessClient.policy.createSync({ addresses: preDeploymentMembers, type: 'whitelist' })
     : undefined
@@ -241,7 +259,10 @@ export async function create(options: create.Options): Promise<Result> {
     const members = deployments.flatMap((deployment) =>
       accessMembers(deployment.profile, deployment.outputs),
     )
-    for (const member of unique(members)) {
+    const resolved = await Promise.all(
+      members.map((member) => resolveAccessAddress(client, member)),
+    )
+    for (const member of unique(resolved)) {
       if (preDeploymentMembers.includes(member)) continue
       const update = await accessClient.policy.modifyWhitelistSync({
         policyId: policy.policyId,
@@ -290,7 +311,7 @@ export async function create(options: create.Options): Promise<Result> {
     engineKind: base.engineKind,
     earnProfile: primary,
     chainId: options.chainId,
-    deployedAtBlock: await client.getBlockNumber(),
+    deployedAtBlock: deploymentStartBlock(startedAtBlock, base.receipts),
     transactions: [
       ...base.receipts,
       ...accessReceipts,
@@ -486,12 +507,22 @@ async function bindAsEngineOwner(
   if (!options.engineOwnerPrivateKey || !('address' in profile.engine)) {
     throw new Error(`Local ${profile.id} engine has no local setup owner to bind it`)
   }
-  const receipt = await tempoClient(options, options.engineOwnerPrivateKey).writeContractSync({
-    address: profile.engine.address,
-    abi: earnEngineBindingAbi,
-    functionName: 'initializeEarnVault',
-    args: [required(outputs, 'earnVault'), profile.owner],
-    feeToken: Config.address.pathUsd,
+  const client = tempoClient(options, options.engineOwnerPrivateKey)
+  const receipt = await client.sendTransactionSync({
+    ...(await guardedTransactionRequest(
+      client,
+      [
+        {
+          to: profile.engine.address,
+          data: encodeFunctionData({
+            abi: earnEngineBindingAbi,
+            functionName: 'initializeEarnVault',
+            args: [required(outputs, 'earnVault'), profile.owner],
+          }),
+        },
+      ],
+      Config.address.pathUsd,
+    )),
     throwOnReceiptRevert: true,
     timeout: 180_000,
   })
@@ -506,61 +537,89 @@ function tempoClient(options: Pick<create.Options, 'chainId' | 'rpcUrl'>, privat
   })
 }
 
-/**
- * Enables the fixture stablecoins the profile lifecycle does not and registers every router as a
- * callback gateway, as hosted Zone administrators do, in one Zone administrator call. The local
- * Zone starts with access and gateway enforcement off; registration keeps routers working when a
- * consumer enables them.
- */
-async function administerZonePortal(
+/** Enables fixture tokens and admits routers under the Portal's current access and gateway modes. */
+export async function administerZonePortal(
   zoneAdministrator: ReturnType<typeof tempoClient>,
   portal: Address,
   options: { tokens: Address[]; gateways: Address[] },
 ) {
-  const [missing, registered] = await Promise.all([
+  const [missing, accessEnforced, gatewayOpen] = await Promise.all([
     missingZoneTokens(
       zoneAdministrator,
       portal,
       options.tokens.map((token) => [token, token] as const),
     ),
-    Promise.all(
-      options.gateways.map((gateway) =>
-        zoneAdministrator.readContract({
-          address: portal,
-          abi: zonePortalAbi,
-          functionName: 'hasRole',
-          args: [gateway, zonePortalRole.callbackGateway],
-        }),
-      ),
-    ),
+    zoneAdministrator.readContract({
+      address: portal,
+      abi: zonePortalAbi,
+      functionName: 'isAccessEnforced',
+    }),
+    zoneAdministrator.readContract({
+      address: portal,
+      abi: zonePortalAbi,
+      functionName: 'isGatewayOpen',
+    }),
   ])
+  // Open gateways confer no deposit access; retain the lifecycle's Account role in this mode.
+  const role = accessEnforced && gatewayOpen ? 'account' : 'callbackGateway'
+  const gateways = unique(options.gateways)
+  const registrations = await Promise.all(
+    gateways.map(async (gateway) => {
+      const registered = await zoneAdministrator.readContract({
+        address: portal,
+        abi: zonePortalAbi,
+        functionName: 'hasRole',
+        args: [gateway, zonePortalRole[role]],
+      })
+      return registered ? [] : portalRoleCalls(zoneAdministrator, portal, gateway, role)
+    }),
+  )
   const calls = [
-    ...missing.map((token) =>
-      encodeFunctionData({
+    ...missing.map((token) => ({
+      to: portal,
+      data: encodeFunctionData({
         abi: zonePortalAbi,
         functionName: 'enableToken',
         args: [getAddress(token)],
       }),
-    ),
-    ...options.gateways
-      .filter((_, index) => !registered[index])
-      .map((gateway) =>
-        encodeFunctionData({
-          abi: zonePortalAbi,
-          functionName: 'setGateway',
-          args: [gateway, true],
-        }),
-      ),
-  ].map((data) => ({ to: portal, data }))
+    })),
+    ...registrations.flat(),
+  ]
   if (calls.length === 0) return undefined
-  return await zoneAdministrator.sendTransactionSync({
-    account: zoneAdministrator.account,
-    calls,
-    chain: zoneAdministrator.chain,
-    forceAtomic: true,
-    throwOnFailure: true,
+  const receipt = await zoneAdministrator.sendTransactionSync({
+    ...(await guardedTransactionRequest(zoneAdministrator, calls, Config.address.pathUsd)),
+    throwOnReceiptRevert: true,
     timeout: 180_000,
   })
+  if (receipt.status !== 'success') throw new Error('Zone fixture administration reverted')
+  const stillMissing = await missingZoneTokens(
+    zoneAdministrator,
+    portal,
+    options.tokens.map((token) => [token, token] as const),
+  )
+  if (stillMissing.length > 0) throw new Error('Zone fixture tokens were not enabled')
+  for (const gateway of gateways) {
+    const registered = await zoneAdministrator.readContract({
+      address: portal,
+      abi: zonePortalAbi,
+      functionName: 'hasRole',
+      args: [gateway, zonePortalRole[role]],
+    })
+    if (!registered)
+      throw new Error('Zone fixture gateway was not registered for the current Portal mode')
+  }
+  return receipt
+}
+
+/** Conservative scan boundary includes fixture receipts and every later lifecycle transaction. */
+export function deploymentStartBlock(
+  startedAtBlock: bigint,
+  receipts: readonly { blockNumber: bigint }[],
+) {
+  return receipts.reduce(
+    (earliest, receipt) => (receipt.blockNumber < earliest ? receipt.blockNumber : earliest),
+    startedAtBlock,
+  )
 }
 
 function unique(addresses: readonly Address[]) {

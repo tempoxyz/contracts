@@ -1,11 +1,11 @@
 # CI and repository automation
 
 [Development](../docs/development/README.md#continuous-integration) owns the required checks and the
-workflow trust model, including preview deployment.
+workflow trust model.
 
-- Untrusted PR code never receives deployment or administrative secrets. Privileged `workflow_run`
-  jobs execute trusted default-branch code and validate same-repository provenance before consuming
-  artifacts.
+- Pull Request, Verify, and Local E2E execute contributor code without deployment or administrative
+  secrets. Release workflows are manual, restricted to `main`, and use the network-specific release
+  environment; this repository has no preview-deployment or `workflow_run` workflow.
 - Keep required aggregate checks stable, including when a path-filtered lane does not run.
 - Keep benchmark RPC credentials separate from deployment environments.
 

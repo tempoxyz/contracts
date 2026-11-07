@@ -290,10 +290,12 @@ on one tuple at the published version and point at each other, the Accountant to
 BoringVault in the engine's asset, and the Teller capabilities above. `inspectVedaEngine` adds, in
 queued mode, a tracking Queue and its capabilities, and in `ready` mode a fresh, nonzero rate and a
 Teller accepting the base asset. `pnpm earn deploy` preflight and E2E acceptance run it in `ready`
-mode; `pnpm earn verify` runs the bindings checks only. The hosted stack built from a Veda record reads the Teller, optional
-Queue, Accountant, registry, and RolesAuthority into `contracts.periphery`, so
-[rechecking a deployed profile](../../deployment/deployment.md#rechecking-deployed-profiles) fails on
-broken wiring, a missing capability, an untracked Queue, or a stale report.
+mode; `pnpm earn verify` runs the bindings checks only. Stack projection reads the current engine's
+cached Teller, optional Queue, Accountant, registry, and RolesAuthority into `contracts.periphery`,
+even when the registry has published a version the engine has not activated. Async availability
+comes from that engine's live capabilities, not its original profile. Projection is not a readiness
+check: funding and launch validation still require synchronized periphery, usable capabilities,
+and fresh rates. See [rechecking a deployed profile](../../deployment/deployment.md#rechecking-deployed-profiles).
 
 For queued mode, stop unless the reviewed release satisfies all of the following; do not accept an
 event-only or untracked Queue:

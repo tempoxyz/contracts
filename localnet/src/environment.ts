@@ -8,6 +8,8 @@ import { createClient as createTempoClient } from 'viem/tempo'
 
 import * as Config from './config.js'
 import * as Deployment from './deployment.js'
+import { assertLocalProfile } from './deployment/profile.js'
+import { accessMembers, resolveAccessAddress } from '@tempoxyz/contracts/deployments/operations'
 import { defaultEngineKind } from './engines/index.js'
 import * as Log from './log.js'
 import * as Network from './network.js'
@@ -37,6 +39,7 @@ export type State = {
 }
 
 export async function run<Result>(options: run.Options<Result>) {
+  if (options.earnProfile) assertLocalProfile(options.earnProfile)
   const engineKind = options.earnProfile?.engine.kind ?? options.engineKind ?? defaultEngineKind
   if (options.engineKind && options.engineKind !== engineKind) {
     throw new Error(`Profile ${options.earnProfile?.id} needs the ${engineKind} local variant`)
@@ -85,6 +88,13 @@ export async function run<Result>(options: run.Options<Result>) {
       `└─ Ineligible user · ${Log.address(outsider.address)}`,
     ])
 
+    if (options.earnProfile) {
+      await Promise.all(
+        accessMembers(options.earnProfile, {}).map((address) =>
+          resolveAccessAddress(l1!.client, address),
+        ),
+      )
+    }
     const base = await Deployment.createBase({
       account: deployer.address,
       broadcastDirectory,

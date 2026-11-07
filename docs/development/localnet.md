@@ -39,8 +39,11 @@ Deploying onto an existing devnet instead is documented in
 - `l1 { image, rpcUrl }` and `zone { image, publicRpcUrl, rpcUrl }`, where `zone.rpcUrl` is the
   authenticated private RPC.
 
-`localStack(environment, { name?, publicZoneRpc? })` turns that state into an `EarnStack`, handing
-the Zone and router it deployed to the Zone router's `zoneRouterStackFields`.
+`localStack(environment, { name?, publicZoneRpc? })` turns that state into an executable `EarnStack`,
+handing the Zone and router it deployed to the Zone router's `zoneRouterStackFields`. Persisted
+stack manifests use `stackManifest` to retain only the L1 and Zone RPC origins: credentials, paths,
+queries, and fragments are removed. Those origins are provenance, not replayable connection
+configuration; in-memory clients keep their configured endpoints.
 
 Side contracts a kind provisions beyond its venue and engine (the ERC-4626 `morphoFeeWrapper`;
 Veda's Accountant, Teller, Queue, registry, solvers, and replacement periphery) are returned by name
@@ -88,7 +91,10 @@ contracts, and a router through the local conversion pool, with `access` selecti
 open EarnShare. With `earnProfile`, `localizeProfile` replaces only the profile's external
 dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router private asset and pool) and
 deploys its core settings, principals, rewards, and router customer ID as authored; it rejects a
-profile whose access does not match the local policy.
+profile whose access does not match the local policy. Profiles with a general `zoneRouter` are
+rejected before starting containers or provisioning fixtures: localization of that router's
+source-chain dependencies is not implemented. This does not disable the supported Earn `zone`
+route through `SingleZoneEarnRouter`.
 
 A kind whose `provision` deploys its engine with `deployAsEngineOwner` (PropAMM, which has no engine
 factory) leaves that engine with a separate funded setup owner, so the lifecycle stops at the
@@ -104,12 +110,56 @@ shared engine facts come from `engineDefinitions`. [Adding an
 engine](../earn/integrations/engines.md#adding-an-engine) lists every file a new kind needs.
 
 The hosted fixture bootstrap (`e2e/fixtures/bootstrap.ts`) runs the same
-`Deployment.provisionFixtures` and `localEngines` steps against a hosted chain with
+`Deployment.provisionFixtures` and `localEngines` steps against a hosted testnet only, with
 `persistent: true`, under which the Veda engine accepts a ten-year rate age instead of the local one
 day. After provisioning, `validateFixtures` checks code at every fixture address, the funder's pair
 and issuer roles, the conversion pool's pair, oracle, registry, owner, and unpaused state, and the
 kind's own `validate`; a local stack also checks that its router supports exactly deposit and redeem
-and prices at par with the full pool inventory.
+and prices at par with the full pool inventory. All synthetic hosted fixtures are refused on
+non-testnet chains, including Veda fixtures over a canonical asset. Retired fixtures on those chains
+must not be reused or funded; source verification does not make a fixture a production venue.
+Veda fixture checks bind the current engine, cached Teller, Queue, Accountant, registry, and solver.
+After an authorized periphery rotation, refresh fixture metadata to the new verified bindings
+before acceptance; stale fixture addresses do not prohibit rotation or authorize the new setup.
+
+### Devnet source evidence
+
+`pnpm devnet:deploy` deploys an Earn stack on an existing devnet. It requires a clean repository.
+Before resolving credentials, it validates existing Earn and Zone-router libraries against their
+respective `foundry.lock` revisions, then installs missing dependencies through the pinned installer.
+Symlinked checkouts, modified sources, unpublished files (including ignored files), and unpinned
+installed libraries fail before the installer can replace them. The completed installation is
+checked before any chain write and again before certifying the deployment. Disposable
+`Environment.run` consumers still install dependencies on first use.
+
+`pnpm deps` runs the [dependency installer](../../scripts/solidity-deps.sh), which builds solar,
+Earn's Solidity compiler invoked by Forge, in a temporary directory. It writes `install-receipt.json`
+with the requested source revision and executable SHA-256 only after Cargo succeeds. It reuses an
+existing compiler only when that receipt matches its pin and executable bytes. Missing or mismatched
+receipts trigger a fresh pinned rebuild; a failed build preserves the previous installation.
+The temporary build replaces the previous installation only after success, with rollback if that
+replacement fails.
+
+Devnet bootstrap rebuilds an unreceipted or changed compiler before resolving credentials, then
+requires the matching receipt. In the directory selected by `--out`, `earn-source-revision` identifies
+the repository revision and pinned Solidity sources; `earn-build-provenance.json` also records the
+requested solar source revision and receipt-matched executable SHA-256. The command rechecks the
+sources, receipt, and compiler bytes after deployment, before writing any address or certification
+files. This keeps its own outputs from failing the check when `--out` is unignored inside the checkout.
+If that check fails, the command exits unsuccessfully but still writes the deployed address files for
+recovery. It withholds both certification files and removes any from an earlier run in the same
+output directory. Address files alone do not certify a successful run.
+
+Every devnet and disposable localnet run uses fresh Forge output and cache directories, separated
+by project under its temporary run directory. Release-address inspection and deployment scripts
+share only that run's compiled artifacts, never the checkout's ignored caches or caller overrides.
+Cleanup removes the run's build state without touching another run or the checkout's caches.
+
+`earn-build-provenance.json` sets `solar.authenticated` to `false`: the receipt trusts the local
+installer, Cargo, and filesystem, not a remote signature or independent rebuild. It detects binary
+replacement without a matching receipt, not a malicious host changing both. Fresh build directories
+prevent reuse of older cached artifacts, but the record does not attest other tools or equivalence
+between deployed runtime and independently rebuilt source.
 
 ## Foundry and containers
 
@@ -120,8 +170,11 @@ and prices at par with the full pool inventory.
   engine's deploy script (`erc4626EngineFactory` in `earn/script/deploy/DeployERC4626Engine.s.sol`); it
   deploys no rewards factory. `Foundry.script` binds a script to its generated ABI from
   `@tempoxyz/contracts/abis`, so step names and arguments are checked against the Solidity signatures.
-- Forge receives `DEPLOYER_PRIVATE_KEY` as its only secret, alongside an allowlist of ordinary
-  process variables and `FOUNDRY_PROFILE=deploy`, the profile hosted deployments use. Fixture and
+- Fixture and deployment scripts receive `DEPLOYER_PRIVATE_KEY` as their only signing key, alongside
+  an allowlist of ordinary process variables and `FOUNDRY_PROFILE=deploy`, the profile hosted
+  deployments use. Read-only compiler, provenance, and source-verification subprocesses receive
+  no signing keys; project `.env` files are refused and the effective compiler must match
+  `foundry.toml`. Fixture and
   lifecycle steps run with `--batch` and the PATHUSD fee token; Tempo batches allow a top-level
   CREATE only in the first slot.
 - Fixture scripts extend `earn/script/local/script/FixtureScript.sol`, shared with the hosted fixture
@@ -129,7 +182,7 @@ and prices at par with the full pool inventory.
   have one definition. `DeployLocalEarn.s.sol` deploys the `earn/src/demo/` par oracle and recipient
   registry.
 - Each `Environment.run` gets a temporary run directory `localnet/.local/run-*` holding its
-  `FOUNDRY_BROADCAST` directory (`broadcast/`) and lifecycle resume state (each profile's
+  `FOUNDRY_BROADCAST` directory (`broadcast/`), isolated Forge build state (`build/<project>/`), and lifecycle resume state (each profile's
   `deployment.pending.json` beside a nominal `profiles/<id>/profile.json`; no record is written),
   and removes it during cleanup. Local app and E2E processes use the same dev chain ID and must never
   share `*-latest.json` broadcasts.
@@ -159,6 +212,11 @@ and prices at par with the full pool inventory.
   revision. `tip1091-runtime.json` holds the Portal, Messenger, and Verifier runtimes the L1 image's
   `dump-genesis --chain dev` installs at `0x5AD1…`, `0x5A4d…`, and `0x5A56…` (the constants in that
   revision's `crates/contracts/src/zones.rs`), and `runtimeFixtureSha256` is the file's SHA-256.
+- Card Foundry tests compile a different vendored Zone runtime from the locked Docker pair.
+  [`card-runtime-provenance.json`](../../localnet/fixtures/card-runtime-provenance.json) binds both
+  source and bytecode sets and records compatibility as unresolved. Passing those model tests is
+  not runtime-equivalent private-flow acceptance; both private legs still need native-runtime
+  evidence and a review of protocol differences.
 - The Zone token's local `transferPolicyId()` may report policy `1`, while the TIP-403 proxy mirrors
   and enforces the L1 compound policy by its registered ID.
 - The Zone starts with the freshly deployed base fixture token as its initial token. The pinned Zone
@@ -184,13 +242,13 @@ and prices at par with the full pool inventory.
   newly deployed EarnShare. The Portal rejects enabling a token whose name, symbol, or currency
   exceeds 31 bytes (`TokenMetadataTooLong`), so local venue names leave room for the factory's
   ` (Earn)` suffix.
-- The local Zone starts with access and gateway enforcement off. The Zone administrator registers
-  every deployed router as a callback gateway (`setGateway`), as hosted administrators do, so
-  routers keep working when a consumer enforces gateway mode, or both modes as hosted Zones do,
-  through `environment.accounts.zoneAdministrator`. A Portal account holds one role, so with access
-  enforced and gateway mode off a registered router is not an admitted depositor. Do not infer
-  hosted Portal admission or gateway policy from the disposable fixture; inspect those controls
-  independently in hosted runs.
+- The local Zone starts with access and gateway enforcement off. Fixture administration registers
+  routers as callback gateways by default. If an existing devnet enforces access but leaves
+  gateways open, routers instead need the Account role for return deposits. A Portal account holds
+  one role, so mode changes revoke the old role and grant the new one in one atomic batch; an
+  already-correct role is left alone. Consumers changing modes through
+  `environment.accounts.zoneAdministrator` must reconcile router admission for the new mode.
+  Inspect hosted Portal admission and gateway policy independently, not from disposable defaults.
 - The router's `onWithdrawalReceived` callback takes six arguments
   `(zoneId, sourcePortal, senderTag, token, amount, data)`, part of the locked protocol ABI.
 - Setup and E2E progress print as numbered trees. Successful Forge output is buffered into receipt

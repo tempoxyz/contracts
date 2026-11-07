@@ -282,10 +282,15 @@ The fee portion of the re-entry, `floor(reentry × fee assets / returned value)`
 `EarnFees` and allocated like an active fee; the rest is minted to the stored receiver, which must
 meet the caller's nonzero `minReceiverEarnShares`. A re-entry into a nonempty pool that leaves more
 than one basis point of the returned engine shares unrepresented reverts. Losses pay no fee and
-re-enter at their returned value. Queuing therefore never avoids fees on growth.
+re-enter at their returned value. With a chargeable snapshot, queuing does not avoid fees on
+positive queued growth; stale valuation and fee disablement are explicit exceptions.
 
 A request filed while the valuation is stale records no snapshot, and a stale cancellation charges
-none, so either remains cancellable and finalizable without the expired NAV.
+none, so either remains cancellable and finalizable without the expired NAV. Cancellation closes
+any existing snapshot even when it charges nothing. Later freshness does not recover the waived
+queued-period fee. This is an accepted fee-revenue tradeoff: the contracts do not charge against
+stale valuation, and a requester may time cancellation within a stale window. It does not grant
+authority over other holders' principal.
 
 When a cancellation reopens an empty pool with fees active:
 

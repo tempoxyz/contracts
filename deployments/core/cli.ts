@@ -19,11 +19,13 @@ import { depositEarnProfile, type ProfileDepositResult } from './deposit.js'
 import { loadPendingDeployment } from './pending.js'
 import { activationActions, presentEarnDeploymentPlan } from './plan.js'
 import { deploymentIntentHash } from './profile.js'
-import { rpcConfiguration } from '../chain/runtime.js'
+import { rpcConfiguration, sanitizedDiagnostic } from '../chain/runtime.js'
 import {
   loadDeploymentEnvironment,
   loadEarnProfile,
-  loadEarnProfileBundle,
+  loadEarnProfileForRead,
+  loadReviewedDeploymentIdentity,
+  pendingDeploymentPath,
   loadEarnProfileForEnvironment,
   loadProfileDeploymentRecord,
   profileDeploymentPath,
@@ -37,8 +39,9 @@ const skipLiveFlags = capabilityModules.flatMap((module) =>
 )
 
 const usage =
-  'Usage: pnpm earn <plan|deploy|status|verify|deposit> <profile.json> [--rpc-url <url>] [--watch] [--json]\n' +
-  `       pnpm earn verify <profile.json> ${skipLiveFlags.map((flag) => `[--skip-${flag}]`).join(' ')} [--rpc-url <url>] [--json]\n` +
+  'Usage: pnpm earn <plan|deploy|status|verify|deposit> <profile.json> [--trusted-identity <path>] [--rpc-url <url>] [--watch] [--json]\n' +
+  '       pnpm earn deploy <profile.json> [--resubmit-verification] [--rpc-url <url>] [--json]\n' +
+  `       pnpm earn verify <profile.json> ${skipLiveFlags.map((flag) => `[--skip-${flag}]`).join(' ')} [--resubmit-verification] [--rpc-url <url>] [--json]\n` +
   '       pnpm earn deposit <profile.json> --assets <amount> [--account <address>] [--receiver <address>] [--slippage-bps <bps>] [--broadcast] [--rpc-url <url>] [--json]\n' +
   capabilityCommands.map((command) => `       ${command.usage.replace('Usage: ', '')}`).join('\n')
 
@@ -67,23 +70,27 @@ export async function main(
   if (!input || !isCommand(command)) throw new Error(usage)
   const options = parseArguments(command, rawArguments)
 
+  const trustedIdentity = options.trustedIdentity
+    ? loadReviewedDeploymentIdentity(resolveProfilePath(options.trustedIdentity))
+    : undefined
   const profilePath = resolveProfilePath(input)
   const authoredProfile = JSON.parse(readFileSync(profilePath, 'utf8')) as unknown
   const preliminaryProfile = loadEarnProfile(profilePath)
-  const recorded = existsSync(profileDeploymentPath(profilePath))
+  const recorded =
+    existsSync(profileDeploymentPath(profilePath)) || existsSync(pendingDeploymentPath(profilePath))
   const environment = loadDeploymentEnvironment(
     profileRepositoryRoot(profilePath),
     preliminaryProfile.id,
     process.env,
     [
-      // Without a record, the deployer key resolves the deterministic deployment identity.
+      // Only a fresh identity requires a deployer key; pending journals also pin it.
       ...(recorded ? [] : ['DEPLOYER_PRIVATE_KEY']),
       ...(command === 'plan' || command === 'status' || options.rpcUrl ? [] : ['TEMPO_RPC_URL']),
     ],
   )
   const profile = environment.DEPLOYER_PRIVATE_KEY
-    ? loadEarnProfileForEnvironment(profilePath, environment)
-    : loadEarnProfileBundle(profilePath).profile
+    ? loadEarnProfileForEnvironment(profilePath, environment, trustedIdentity)
+    : loadEarnProfileForRead(profilePath, trustedIdentity)
 
   if (command === 'plan') {
     const configuredRpc = rpcConfiguration('TEMPO', environment)
@@ -163,6 +170,8 @@ export async function main(
       profilePath,
       root: repositoryRoot,
       rpcUrl,
+      trustedIdentity,
+      resubmit: options.resubmit,
       skipLive: options.skipLive,
     })
     print(
@@ -204,6 +213,8 @@ export async function main(
       profilePath,
       root: repositoryRoot,
       rpcUrl,
+      trustedIdentity,
+      resubmit: options.resubmit,
     })
     if (result.state === 'complete' || result.state === 'verification-pending') {
       print(
@@ -253,7 +264,9 @@ function parseArguments(command: Command, args: string[]) {
     args,
     options: {
       'rpc-url': { type: 'string' },
+      'trusted-identity': { type: 'string' },
       watch: { type: 'boolean', default: false },
+      'resubmit-verification': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       account: { type: 'string' },
       assets: { type: 'string' },
@@ -271,8 +284,13 @@ function parseArguments(command: Command, args: string[]) {
   const { 'rpc-url': rpcUrl, watch, json, account, assets, broadcast, receiver } = values
   const slippage = values['slippage-bps']
   const slippageBps = slippage === undefined ? undefined : Number(slippage)
-  if (slippageBps !== undefined && !Number.isInteger(slippageBps))
-    throw new Error('--slippage-bps must be an integer')
+  if (
+    slippageBps !== undefined &&
+    (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps >= 10_000)
+  )
+    throw new Error('--slippage-bps must be an integer from 0 through 9999')
+  if (command !== 'deploy' && command !== 'verify' && values['resubmit-verification'])
+    throw new Error('--resubmit-verification is supported only by deploy or verify')
   if (command !== 'deploy' && watch) throw new Error('--watch is supported only by deploy')
   if (
     command !== 'deposit' &&
@@ -286,7 +304,19 @@ function parseArguments(command: Command, args: string[]) {
   )
   if (command !== 'verify' && skipLive.length > 0)
     throw new Error(`--skip-${skipLive[0]} is supported only by verify`)
-  return { account, assets, broadcast, receiver, rpcUrl, skipLive, slippageBps, watch, json }
+  return {
+    account,
+    assets,
+    broadcast,
+    receiver,
+    resubmit: values['resubmit-verification'],
+    rpcUrl,
+    skipLive,
+    slippageBps,
+    watch,
+    json,
+    trustedIdentity: values['trusted-identity'],
+  }
 }
 
 function print(
@@ -370,6 +400,10 @@ function print(
     output.log(
       `Current balance: ${formatUnits(BigInt(result.balanceBefore), result.asset.decimals)} ${result.asset.symbol}`,
     )
+    if (result.sourceVerification === 'pending')
+      output.warn(
+        'Source verification is pending; funding is blocked until deploy completes verification.',
+      )
     if (result.state === 'preview') {
       output.log('No transaction submitted. Add --broadcast to execute this exact plan.')
       return
@@ -397,10 +431,7 @@ if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
   try {
     await main()
   } catch (error) {
-    // The lifecycle's own failures are plain errors naming the failed check and its remedy; any
-    // other error keeps its stack.
-    if (!(error instanceof Error) || error.constructor !== Error) throw error
-    console.error(error.message)
+    console.error(sanitizedDiagnostic(error))
     process.exitCode = 1
   }
 }

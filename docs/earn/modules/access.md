@@ -69,8 +69,13 @@ rest of `pnpm earn`. A virtual address resolves to its registered master, which 
 authorizes; the zero address is refused. `status` is read-only and works on open stacks. `add` and
 `remove` sign with `EARN_ACCESS_ADMIN_PRIVATE_KEY`, falling back to `DEPLOYER_PRIVATE_KEY` with a
 warning, and refuse unless that key is the policy's registered administrator. `remove` refuses a
-required protocol address, reading fee recipients live from `EarnFees`, or a receiver with an open
-async claim, which could otherwise never be paid. Each change is simulated, sent, and read back.
+required protocol identity, reading fee recipients live from `EarnFees`, or any receiver whose open
+async claim resolves to that same identity, which could otherwise never be paid. The check resolves
+virtual aliases for both required members and receivers. An unregistered claim receiver has no
+policy identity and does not block unrelated removals; registry failures still stop the command.
+The scan requires a valid deployment-block anchor, reads request and closure events in bounded
+block ranges, and checks only outstanding claims, with at most 16 concurrent reads. Each change is
+simulated, sent, and read back against the verified stack and policy bindings.
 
 ## Tests
 

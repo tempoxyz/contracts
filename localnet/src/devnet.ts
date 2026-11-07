@@ -5,6 +5,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 import { zonePortalAbi } from '@tempoxyz/contracts/abis'
 import { hostedEnvironment } from '@tempoxyz/contracts/deployments'
+import { resolveAccessAddress } from '@tempoxyz/contracts/deployments/operations'
 import { envPrivateKey } from '@tempoxyz/contracts/deployments/node'
 import { inspectZone, zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
 
@@ -82,6 +83,9 @@ export async function deploy(options: deploy.Options): Promise<Deployment.State>
       )
     }
   }
+
+  // Resolve virtual fee recipients before any fixture transaction can persist on the devnet.
+  await resolveAccessAddress(client, options.user)
 
   mkdirSync(Config.directory, { recursive: true })
   const directory = mkdtempSync(resolve(Config.directory, 'devnet-'))

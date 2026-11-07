@@ -43,6 +43,7 @@
 //    back at par, a refund into the Zone, a paused pool, and the Zone's closed loop. Writes each
 //    flow's router callback gas to reports/zone-e2e-router-flows-<target>.json.
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -72,6 +73,7 @@ import {
   PROGRAM_SPEND_SELECTOR,
   artifact,
   assert,
+  assertWithdrawalDebit,
   cardSpendType,
   cardSpent,
   findCall,
@@ -81,7 +83,6 @@ import {
   outbox,
   outboxAbi,
   pathUsd,
-  portalEventsAbi,
   programAbi,
   revertData,
   since,
@@ -89,6 +90,8 @@ import {
   step,
   waitFor,
   withdrawalRequested,
+  withdrawalSettlement,
+  zoneTransactionFeeFromChain,
   zoneTokenAbi,
   type CallFrame,
 } from './support.js'
@@ -385,19 +388,15 @@ async function privateSpend(t: Prepared, run: string) {
     `Bridge requested a ${formatUnits(SPEND, 6)} pathUSD private spend, ${(callbackData.length - 2) / 2}-byte callback (Zone tx ${spend.transactionHash})`,
   )
 
-  const events = await waitFor(
-    'settlement on L1',
-    () => settledEvents(spendRef, fromBlock),
-    (found) => found.length > 0,
-    100,
+  const { receipt: settlementReceipt, logs: settlementLogs } = await withdrawalSettlement(
+    l1Public,
+    t.zone.portal,
+    spend,
+    fromBlock,
   )
   const l1SettlementMs = since(zoneAccepted)
-  assert(events.length === 1, 'one CardSpender InputSpent event for the spend')
-  const settlementReceipt = await l1Public.getTransactionReceipt({
-    hash: events[0]!.transactionHash,
-  })
   assert(
-    paid(settlementReceipt.logs, program.settlement),
+    paid(settlementLogs, program.settlement),
     'the settlement transaction paid the settlement wallet',
   )
   assert(
@@ -408,8 +407,8 @@ async function privateSpend(t: Prepared, run: string) {
       ),
     'no L1 log or input of the settlement, callback data included, names the cardholder',
   )
-  const routed = routerSpent(settlementReceipt.logs, program.router)
-  const carded = cardSpent(settlementReceipt.logs, program.program, spendRef)
+  const routed = routerSpent(settlementLogs, program.router)
+  const carded = cardSpent(settlementLogs, program.program, spendRef, program.clone)
   assert(
     carded.isPrivate && isAddressEqual(carded.payer, program.router) && carded.amount === SPEND,
     'the CardSpender recorded a private spend paid by the router, not the cardholder',
@@ -461,12 +460,13 @@ async function privateSpend(t: Prepared, run: string) {
     withdrawalRequested(spend).fee === withdrawalFee,
     'the outbox charged the quoted withdrawal fee',
   )
-  // What the request's own block left short of its amount and fee is the Zone transaction's fee.
-  const spendTxFee =
-    zoneBefore - SPEND - change - withdrawalFee - (await balanceAt(spend.blockNumber))
-  assert(
-    spendTxFee >= 0n,
-    'the request took no more than its amount, withdrawal fee and transaction fee',
+  const spendTxFee = await zoneTransactionFeeFromChain(bridgeZone, spend, cardholder.address)
+  assertWithdrawalDebit(
+    zoneBefore,
+    await balanceAt(spend.blockNumber),
+    SPEND + change,
+    withdrawalFee,
+    spendTxFee,
   )
   // The router deposits the change back, which the portal credits net of its deposit fee.
   const expectedAfterSpend = zoneBefore - SPEND - withdrawalFee - spendTxFee - depositFee
@@ -488,26 +488,29 @@ async function privateSpend(t: Prepared, run: string) {
   const outside = await requestSpend(await callback(bounceRef, stranger))
   assert(outside.status === 'success', 'spend outside the program requested in the Zone')
   const bounceRequest = withdrawalRequested(outside)
-  const bounceTxFee =
-    zoneBeforeBounce - SPEND - change - withdrawalFee - (await balanceAt(outside.blockNumber))
-  const [processed] = await waitFor(
-    'the portal processing the spend outside the program',
-    () =>
-      l1Public.getContractEvents({
-        address: t.zone.portal,
-        abi: portalEventsAbi,
-        eventName: 'WithdrawalProcessed',
-        args: { to: program.router, senderTag: bounceRequest.senderTag },
-        fromBlock: bounceFrom,
-      }),
-    (found) => found.length > 0,
-    250,
+  const bounceTxFee = await zoneTransactionFeeFromChain(bridgeZone, outside, cardholder.address)
+  assertWithdrawalDebit(
+    zoneBeforeBounce,
+    await balanceAt(outside.blockNumber),
+    SPEND + change,
+    bounceRequest.fee,
+    bounceTxFee,
+  )
+  const { receipt: bounceReceipt } = await withdrawalSettlement(
+    l1Public,
+    t.zone.portal,
+    outside,
+    bounceFrom,
+    false,
   )
   assert(
-    processed!.args.callbackSuccess === false,
-    'the router callback reverted for the spend outside the program',
+    !names(bounceReceipt.logs, cardholder.address) &&
+      !inputNames(
+        await l1Public.getTransaction({ hash: bounceReceipt.transactionHash }),
+        cardholder.address,
+      ),
+    'no L1 log or input of the refused settlement names the cardholder',
   )
-  assert(processed!.args.amount === SPEND + change, 'the portal processed the whole withdrawal')
   // The portal bounces the whole withdrawal back, so the cardholder is out only the fees.
   await waitFor(
     'the bounce back in the Zone',
@@ -569,7 +572,6 @@ const SHARE_TOLERANCE_BPS = 50n
  * settlement wallet.
  */
 async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
-  const programArtifact = artifact('CardSpender')
   const { cardholder, program, refundRecipient } = t
   const l1Public = t.l1Public
   const userL1 = t.l1Wallet(cardholder)
@@ -722,7 +724,16 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
     Account.fromSecp256k1(bridgeKeyPk, { access: cardholder.address }),
     true,
   )
+  const zoneBalance = (token: Address, blockNumber?: bigint) =>
+    userZone.readContract({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [cardholder.address],
+      ...(blockNumber === undefined ? {} : { blockNumber }),
+    })
   const zoneBefore = await shares()
+  const feeTokenBefore = await zoneBalance(pathUsd)
   const fromBlock = await l1Public.getBlockNumber()
   const requested = performance.now()
   const request = await bridgeZone.sendTransactionSync({
@@ -757,28 +768,42 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   })
   const zoneReceiptMs = since(requested)
   assert(request.status === 'success', 'Bridge Zone key requested the Earn spend')
+  const transactionFee = await zoneTransactionFeeFromChain(bridgeZone, request, cardholder.address)
+  assert(
+    withdrawalRequested(request).fee === withdrawalFee,
+    'the Earn request charged its quoted withdrawal fee',
+  )
+  assertWithdrawalDebit(
+    zoneBefore,
+    await zoneBalance(earn.earnShare, request.blockNumber),
+    input,
+    withdrawalFee,
+    0n,
+  )
+  assert(
+    feeTokenBefore - (await zoneBalance(pathUsd, request.blockNumber)) === transactionFee,
+    'the Earn request charged only its receipt fee in pathUSD',
+  )
   step(
     15,
     `Bridge requested a ${formatUnits(SPEND, 6)} spend from Earn, up to ${formatUnits(maxShares, 6)} EarnShare (Zone tx ${request.transactionHash}, ${zoneReceiptMs} ms to receipt)`,
   )
 
-  const events = await waitFor(
-    'Earn settlement on L1',
-    () =>
-      l1Public.getContractEvents({
-        address: program.program,
-        abi: programArtifact.abi,
-        eventName: 'InputSpent',
-        args: { ref: spendRef },
-        fromBlock,
-      }),
-    (found) => found.length > 0,
-    250,
+  const { receipt: settlement, logs: settlementLogs } = await withdrawalSettlement(
+    l1Public,
+    t.zone.portal,
+    request,
+    fromBlock,
   )
-  assert(events.length === 1, 'one CardSpender InputSpent event for the Earn spend')
-  const settlement = await l1Public.getTransactionReceipt({ hash: events[0]!.transactionHash })
+  const events = parseEventLogs({
+    abi: programAbi,
+    eventName: 'InputSpent',
+    args: { ref: spendRef },
+    logs: settlementLogs.filter((log) => isAddressEqual(log.address, program.program)),
+  })
+  assert(events.length === 1, 'one CardSpender InputSpent event for the Earn withdrawal')
   assert(
-    paid(settlement.logs, program.settlement, earn.asset),
+    paid(settlementLogs, program.settlement, earn.asset),
     'the settlement wallet received the vault asset',
   )
   assert(
@@ -794,14 +819,14 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
     settled.inputConsumed <= maxShares,
     "the handler burned no more shares than Bridge's quote",
   )
-  const routed = routerSpent(settlement.logs, program.router)
+  const routed = routerSpent(settlementLogs, program.router)
   assert(
     isAddressEqual(routed.spender, program.program) &&
       routed.used === settled.inputConsumed &&
       routed.change === input - settled.inputConsumed,
     'the router used what the CardSpender consumed and returned the rest of the withdrawal',
   )
-  const carded = cardSpent(settlement.logs, program.program, spendRef)
+  const carded = cardSpent(settlementLogs, program.program, spendRef, program.clone)
   assert(
     carded.isPrivate &&
       isAddressEqual(carded.payer, program.router) &&
@@ -831,11 +856,11 @@ async function earnSpend(t: Prepared, run: string, earn: EarnTarget) {
   const after = await waitFor(
     'EarnShare change back in the Zone',
     shares,
-    (v) => v > zoneBefore - input - withdrawalFee,
+    (v) => v === zoneBefore - settled.inputConsumed - withdrawalFee - depositFee,
   )
   const spent = zoneBefore - after
   assert(
-    spent <= settled.inputConsumed + withdrawalFee + depositFee,
+    spent === settled.inputConsumed + withdrawalFee + depositFee,
     'the Zone balance paid only the burned shares and fees',
   )
   step(
@@ -918,7 +943,7 @@ async function publicSpend(t: Prepared, run: string) {
     if (sent.recovered) recovered++
     assert(receipt.status === 'success', 'public spend settled in one L1 transaction')
     assert(paid(receipt.logs, program.settlement), 'public spend paid the settlement wallet')
-    const carded = cardSpent(receipt.logs, program.program, spend.ref)
+    const carded = cardSpent(receipt.logs, program.program, spend.ref, program.clone)
     assert(
       !carded.isPrivate && isAddressEqual(carded.payer, cardholder.address),
       'the CardSpender recorded a public spend paid by the cardholder',
@@ -956,7 +981,7 @@ async function main() {
     target === 'local'
       ? await local(step, { earn: args.includes('--earn') })
       : await hosted(step, { deploy: args.includes('--deploy'), admit: args.includes('--admit') })
-  const run = `${t.name}.${Date.now()}`
+  const run = `${t.name}.${randomUUID()}`
   try {
     const privateResult = t.blocked.length === 0 ? await privateSpend(t, run) : undefined
     if (!privateResult)

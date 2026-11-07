@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { encodeAbiParameters, parseAbiParameters, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -18,7 +21,7 @@ const privateKeys = { deployer: key(1), zoneAdministrator: key(5) }
 const zoneAdministrator = privateKeyToAccount(privateKeys.zoneAdministrator).address
 const user = privateKeyToAccount(key(2)).address
 const portal = privateKeyToAccount(key(6)).address
-const client = { getChainId: vi.fn(), readContract: vi.fn() }
+const client = { getChainId: vi.fn(), readContract: vi.fn(), call: vi.fn() }
 const options = {
   chainId: 31318,
   rpcUrl: 'http://l1.test',
@@ -71,5 +74,68 @@ describe('devnet safety checks', () => {
     arrange()
     await expect(deploy(options)).rejects.toThrow(message)
     expect(Deployment.createBase).not.toHaveBeenCalled()
+  })
+})
+
+describe('virtual devnet principals', () => {
+  const virtual = '0x58e21090fdfdfdfdfdfdfdfdfdfd010203040506' as const
+  it('rejects an unregistered virtual fee recipient before fixture broadcasts', async () => {
+    client.call.mockResolvedValue({
+      data: encodeAbiParameters(parseAbiParameters('address'), [zeroAddress]),
+    })
+    await expect(deploy({ ...options, user: virtual })).rejects.toThrow('has no registered master')
+    expect(Deployment.createBase).not.toHaveBeenCalled()
+  })
+  it('resolves a registered virtual fee recipient before reaching fixture broadcasts', async () => {
+    client.call.mockResolvedValue({
+      data: encodeAbiParameters(parseAbiParameters('address'), [user]),
+    })
+    vi.mocked(Deployment.createBase).mockRejectedValueOnce(new Error('fixture boundary reached'))
+    await expect(deploy({ ...options, user: virtual })).rejects.toThrow('fixture boundary reached')
+    expect(client.call).toHaveBeenCalledOnce()
+    expect(Deployment.createBase).toHaveBeenCalledOnce()
+  })
+})
+
+describe('devnet build directory lifetime', () => {
+  it('allocates independent fresh run directories for concurrent deployments and removes their build state', async () => {
+    const directories: string[] = []
+    let ready!: () => void
+    const bothStarted = new Promise<void>((resolve) => {
+      ready = resolve
+    })
+    vi.mocked(Deployment.createBase).mockImplementation(async ({ broadcastDirectory }) => {
+      const directory = dirname(broadcastDirectory)
+      directories.push(directory)
+      expect(existsSync(resolve(directory, 'build'))).toBe(false)
+      mkdirSync(resolve(directory, 'build/earn/out'), { recursive: true })
+      writeFileSync(resolve(directory, 'build/earn/out/bytecode'), directory)
+      if (directories.length === 2) ready()
+      await bothStarted
+      return {} as never
+    })
+    vi.mocked(Deployment.create).mockImplementation(async ({ broadcastDirectory }) => {
+      const directory = dirname(broadcastDirectory)
+      expect(readFileSync(resolve(directory, 'build/earn/out/bytecode'), 'utf8')).toBe(directory)
+      return { state: {} } as never
+    })
+    await Promise.all([deploy(options), deploy(options)])
+    expect(new Set(directories).size).toBe(2)
+    for (const directory of directories) expect(existsSync(directory)).toBe(false)
+  })
+
+  it('removes failed build state and gives retries a new directory', async () => {
+    const directories: string[] = []
+    vi.mocked(Deployment.createBase).mockImplementation(async ({ broadcastDirectory }) => {
+      const directory = dirname(broadcastDirectory)
+      directories.push(directory)
+      expect(existsSync(resolve(directory, 'build'))).toBe(false)
+      mkdirSync(resolve(directory, 'build/earn/cache'), { recursive: true })
+      writeFileSync(resolve(directory, 'build/earn/cache/partial'), 'failed build')
+      throw new Error('fixture build failed')
+    })
+    for (const _ of [0, 1]) await expect(deploy(options)).rejects.toThrow('fixture build failed')
+    expect(new Set(directories).size).toBe(2)
+    for (const directory of directories) expect(existsSync(directory)).toBe(false)
   })
 })

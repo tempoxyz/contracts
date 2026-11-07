@@ -259,12 +259,12 @@ both or neither). The Zone EVM chain ID is derived from the parent chain ID and 
 authored. The [deployment lifecycle](../../deployment/deployment.md) runs these module steps after the
 core is bound:
 
-| Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                         |
-| ----------------------- | ---------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                 |
-| `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself       |
-| `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                    |
-| `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router holds the Portal callback-gateway role, or the Portal leaves gateways open (`isGatewayOpen()`) |
+| Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                              |
+| ----------------------- | ---------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                      |
+| `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself                                            |
+| `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                         |
+| `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router has callback and return-deposit admission: gateway role when restricted, Account role when gateways are open and access is enforced |
 
 Before any broadcast, preflight requires code at the private asset and pool and, for a conversion
 router, a pool trading exactly the private and vault assets with equal decimals; for a same-asset
@@ -293,11 +293,15 @@ Authorities and handoffs:
   committed profile and record and reruns the same command with only `ZONE_ADMIN_PRIVATE_KEY`. That
   key must be the Portal `admin()` or the sole owner of a threshold-1 Safe that is the admin, in
   which case each call goes through the Safe's `execTransaction`; any other key fails rather than
-  sending a transaction. Only missing tokens are enabled, and the gateway is registered only when the
-  Portal restricts gateways.
+  sending a transaction. Only missing tokens are enabled. The router needs the callback-gateway
+  role when gateways are restricted, or the Account role when gateways are open but account access
+  is enforced. A mode change revokes the obsolete role and grants the required role in one batch.
+  Before an automatic grant, a read-only constructor simulation of the reviewed local build must
+  produce runtime byte-for-byte equal to the deployed router, including immutable values. Missing
+  or mismatched provenance stops the grant; already-admitted routers cause no new grant.
 
 Router authorization and Zone activation reconcile independently, so a missing pool owner does not
-block the Zone administrator. CI, app projection, and hosted E2E never hold a hosted Zone
+block the Zone administrator. CI, stack projection, and hosted E2E never hold a hosted Zone
 administrator or pool owner key.
 
 ## Tests

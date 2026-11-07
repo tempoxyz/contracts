@@ -5,13 +5,12 @@ import {
 } from '../modules/earn/engines/index.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { getAbiItem, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
-import { address, object } from './parse.js'
+import { zeroAddress, type Address } from 'viem'
+import { object } from './parse.js'
 import { deploymentActions, planEarnDeployment, type EarnDeploymentAction } from './plan.js'
 import {
   configuredEngineAddress,
   deploysEngine,
-  earnFactoryDeployParams,
   engineOwnerAccepted,
   profileEngineFactory,
   type EarnDeploymentProfile,
@@ -22,10 +21,18 @@ import {
   type SharedFactoryRuntimeCodeHashes,
 } from './releases.js'
 import { inspectEarnDeployment } from './inspection.js'
-import { foundryProcessEnvironment, foundryProjectRoot } from '../chain/foundry.js'
+import { readCurrentEngine } from './stack.js'
+import {
+  assertFoundryProjectEnvironment,
+  foundryProcessEnvironment,
+  foundryProjectRoot,
+  foundryRpcEnvironment,
+} from '../chain/foundry.js'
 import {
   completeAction,
   foundryOutputPath,
+  foundryBroadcastPath,
+  parsePendingOutputs,
   loadPendingDeployment,
   savePendingDeployment,
   stageFoundryOutputs,
@@ -38,9 +45,9 @@ import {
   authorityStep,
   capabilityModules,
   deploymentStep,
+  resolvePredictedCore,
 } from '../../deployments/modules/index.js'
 import { foundryScript, required } from '../../deployments/modules/module.js'
-import { earnEngineBindingAbi, earnFactoryAbi, earnFeesAbi, earnVaultAbi } from '../abis/index.js'
 
 export type ReconciliationStep =
   | { kind: 'complete'; pending: PendingDeployment }
@@ -83,12 +90,13 @@ export async function prepareLifecycleStep(options: {
   syncFoundryOutputs(options.root, profilePath)
   let pending = loadPendingDeployment(profilePath, profile)
   if (options.discoveredOutputs) {
-    pending = { ...pending, outputs: { ...pending.outputs, ...options.discoveredOutputs } }
-    savePendingDeployment(profilePath, profile, pending)
-  }
-  const recoveredCore = await recoverBoundCoreOutputs(client, pending.outputs)
-  if (recoveredCore !== pending.outputs) {
-    pending = { ...pending, outputs: recoveredCore }
+    // Discovery metadata is a fresh set, not an append-only list of former principals.
+    const retained = Object.fromEntries(
+      Object.entries(pending.outputs).filter(
+        ([key]) => !capabilityModules.some((module) => module.metadataOutput?.(key)),
+      ),
+    )
+    pending = { ...pending, outputs: { ...retained, ...options.discoveredOutputs } }
     savePendingDeployment(profilePath, profile, pending)
   }
   const complete = (action: EarnDeploymentAction, transactions: `0x${string}`[] = []) => {
@@ -99,18 +107,35 @@ export async function prepareLifecycleStep(options: {
   for (const action of options.actions ?? planEarnDeployment(profile)) {
     const step = deploymentStep(action.id)
     // Each activation acts on a published deployment, so it is inspected again first.
-    if (step.execution === 'authority' && step.phase === 'activation') {
-      await inspectEarnDeployment(client, profile, pending.outputs)
-    }
+    const inspection =
+      step.execution === 'authority' && step.phase === 'activation'
+        ? await inspectEarnDeployment(client, profile, pending.outputs)
+        : undefined
     if (await step.satisfied(client, profile, pending.outputs)) {
-      if (!pending.actions[action.id]) complete(action)
+      if (!pending.actions[action.id]) {
+        const adopted =
+          step.execution === 'foundry' && step.adopt
+            ? await step.adopt(client, profile, pending.outputs)
+            : undefined
+        if (adopted) pending = { ...pending, outputs: adopted.outputs }
+        complete(action, adopted ? [adopted.transaction] : [])
+      }
       continue
     }
     if (step.execution === 'authority') {
       return {
         kind: 'handoff',
         action,
-        instructions: authorityStep(action.id).handoff(profile, pending.outputs),
+        instructions: [
+          authorityStep(action.id).handoff(profile, pending.outputs),
+          ...Object.values(inspection ?? {}).flatMap((capability) =>
+            capability.blockers.length > 0
+              ? [
+                  `${capability.label}: ${capability.blockers.join('; ')}. Review and resolve these blockers before approving this action.`,
+                ]
+              : [],
+          ),
+        ].join('\n'),
         pending,
       }
     }
@@ -126,20 +151,14 @@ export async function prepareLifecycleStep(options: {
       const outputs = { ...pending.outputs, ...recoveredOutputs }
       if (await step.satisfied(client, profile, outputs)) {
         pending = { ...pending, outputs }
+        const adopted = step.adopt ? await step.adopt(client, profile, outputs) : undefined
+        if (adopted) pending = { ...pending, outputs: adopted.outputs }
         complete(
           action,
-          // Every profile on a chain shares the script's latest broadcast file, and it can lack the
-          // receipt; the factory's own event names the transaction that created this stack.
-          action.id === 'deploy-core'
-            ? [
-                await creationTransaction(
-                  client,
-                  profile.factories.earn,
-                  required(outputs.earnShare, 'Recovered earnShare output'),
-                ),
-              ]
+          adopted
+            ? [adopted.transaction]
             : successfulBroadcastTransactions(
-                options.root,
+                foundryBroadcastPath(options.root, profilePath),
                 foundryScript(step, profile),
                 step.input(profile, outputs, outputPath),
                 profile.chainId,
@@ -157,23 +176,15 @@ export async function prepareLifecycleStep(options: {
       continue
     }
 
-    // The prediction is occupied, so the factory call could only revert: adopt that stack.
-    if (action.id === 'deploy-core') {
-      const adopted = await adoptPredictedCore(client, profile, pending.outputs)
-      if (adopted) {
-        pending = { ...pending, outputs: adopted.outputs }
-        complete(action, [adopted.transaction])
-        continue
-      }
-    }
-
     savePendingDeployment(profilePath, profile, pending)
     stageFoundryOutputs(options.root, profilePath)
     const calldata = step.input(profile, pending.outputs, outputPath)
+    const root = foundryProjectRoot(options.root, step.project)
+    assertFoundryProjectEnvironment(root)
     return {
       kind: 'foundry',
       action,
-      root: foundryProjectRoot(options.root, step.project),
+      root,
       arguments: [
         'script',
         foundryScript(step, profile),
@@ -182,14 +193,12 @@ export async function prepareLifecycleStep(options: {
         '--network',
         'tempo',
         '--broadcast',
-        '--rpc-url',
-        options.rpcUrl,
       ],
       // Only the deployer key reaches Forge; every other input is typed calldata. A sibling project's
       // receipts go to `<root>/broadcast` too, where they are read back.
       environment: {
-        ...foundryProcessEnvironment(options.environment),
-        ...(step.project ? { FOUNDRY_BROADCAST: resolve(options.root, 'broadcast') } : {}),
+        ...foundryRpcEnvironment(foundryProcessEnvironment(options.environment), options.rpcUrl),
+        FOUNDRY_BROADCAST: foundryBroadcastPath(options.root, profilePath),
       },
       calldata,
       rawGasEstimate: step.rawGasEstimate === true,
@@ -221,18 +230,20 @@ export async function recordFoundryAction(options: {
     step.execution === 'foundry' && step.adopt
       ? await step.adopt(rpcClient(options.rpcUrl), options.profile, outputs)
       : undefined
+  const transactions = created
+    ? [created.transaction]
+    : successfulBroadcastTransactions(
+        options.step.environment.FOUNDRY_BROADCAST ??
+          foundryBroadcastPath(options.root, options.profilePath),
+        required(options.step.arguments[1], 'Foundry target'),
+        options.step.calldata,
+        options.profile.chainId,
+      )
   const pending = completeAction(
     { ...options.step.pending, outputs },
     options.step.action.id,
-    'broadcast',
-    created
-      ? [created.transaction]
-      : successfulBroadcastTransactions(
-          options.root,
-          required(options.step.arguments[1], 'Foundry target'),
-          options.step.calldata,
-          options.profile.chainId,
-        ),
+    transactions.length > 0 ? 'broadcast' : 'chain',
+    transactions,
   )
   savePendingDeployment(options.profilePath, options.profile, pending)
   return pending
@@ -280,6 +291,7 @@ export async function preflightEarnDeployment(
   expectedEarnVault?: Address,
   expectedFactoryRuntimeCodeHashes?: SharedFactoryRuntimeCodeHashes,
   poolInspectionMode: 'ready' | 'bindings' = 'ready',
+  outputs: Record<string, Address> = {},
 ) {
   const client = rpcClient(rpcUrl)
   const chainId = await client.getChainId()
@@ -291,7 +303,7 @@ export async function preflightEarnDeployment(
   if (expectedFactoryRuntimeCodeHashes) {
     await validateSharedFactoryRelease(client, profile, expectedFactoryRuntimeCodeHashes)
   }
-  for (const module of capabilityModules) await module.preflight?.(client, profile)
+  for (const module of capabilityModules) await module.preflight?.(client, profile, outputs)
   const existingEngine = configuredEngineAddress(profile)
   if (existingEngine) {
     const { asset, owner, earnVault, vaultOperator } = await readEngineBinding(
@@ -299,16 +311,37 @@ export async function preflightEarnDeployment(
       existingEngine,
     )
     if (asset === zeroAddress) throw new Error('Existing engine has a zero asset')
-    await inspectEngineBindings(client, profile.engine.kind, existingEngine, poolInspectionMode)
+    if (earnVault === zeroAddress && owner === zeroAddress)
+      throw new Error(`Existing engine ${existingEngine} has no owner to initialize its vault`)
     if (earnVault !== zeroAddress) {
-      if (earnVault !== expectedEarnVault)
-        throw new Error(`Existing engine is already bound to ${earnVault}`)
-      if (!engineOwnerAccepted(profile, owner, vaultOperator)) {
+      const expected =
+        expectedEarnVault ??
+        (await resolvePredictedCore(client, profile, { ...outputs, engine: existingEngine }))
+          ?.earnVault
+      if (earnVault !== expected)
         throw new Error(
-          `Existing engine owner is ${owner}, expected ${profile.owner} or EarnVault operator ${vaultOperator}`,
+          `Existing engine is already bound to ${earnVault}, not this profile's predicted vault`,
+        )
+      const current = await readCurrentEngine(client, {
+        creationEngine: existingEngine,
+        engineKind: profile.engine.kind,
+        asset,
+        earnVault,
+      })
+      if (current.engine !== existingEngine && profile.core.migrationMode !== 'OperatorEnabled')
+        throw new Error('Configured immutable vault cannot migrate its engine')
+      await inspectEngineBindings(client, current.engineKind, current.engine, poolInspectionMode)
+      const currentOwner =
+        current.engine === existingEngine
+          ? owner
+          : (await readEngineBinding(client, current.engine)).owner
+      if (!engineOwnerAccepted(profile, currentOwner, vaultOperator)) {
+        throw new Error(
+          `Current engine owner is ${currentOwner}, expected ${profile.owner} or EarnVault operator ${vaultOperator}`,
         )
       }
-    }
+    } else
+      await inspectEngineBindings(client, profile.engine.kind, existingEngine, poolInspectionMode)
   }
 }
 
@@ -320,113 +353,13 @@ export async function verifyEarnDeploymentState(
   factoryDeploymentId?: `0x${string}` | null,
   actions = deploymentActions(profile),
 ) {
-  await preflightEarnDeployment(profile, rpcUrl, outputs.earnVault, undefined, 'bindings')
+  await preflightEarnDeployment(profile, rpcUrl, outputs.earnVault, undefined, 'bindings', outputs)
   const client = rpcClient(rpcUrl)
   for (const action of actions) {
     const satisfied = await deploymentStep(action.id).satisfied(client, profile, outputs)
     if (!satisfied) throw new Error(`Deployment action ${action.id} is not satisfied onchain`)
   }
   return await inspectEarnDeployment(client, profile, outputs, factoryDeploymentId)
-}
-
-const earnStackDeployed = getAbiItem({ abi: earnFactoryAbi, name: 'EarnStackDeployed' })
-const maxLogBlockRange = 100_000n
-
-/**
- * Adopts a stack already created with this profile's exact factory parameters, by another account
- * or by a run that left no Foundry outputs, with the transaction that created it:
- * `EarnFactory.deploy` is permissionless and refuses an occupied EarnShare prediction, so
- * `deploy-core` could otherwise never complete. Both CREATE2 predictions cover every creation-time
- * parameter, and inspection checks the stack again before a record is written.
- */
-async function adoptPredictedCore(
-  client: Pick<PublicClient, 'getBlockNumber' | 'getCode' | 'getLogs' | 'readContract'>,
-  profile: EarnDeploymentProfile,
-  outputs: Record<string, Address>,
-) {
-  const engine = configuredEngineAddress(profile) ?? outputs.engine
-  if (!engine) return undefined
-  const params = earnFactoryDeployParams(profile, engine)
-  const factory = { address: profile.factories.earn, abi: earnFactoryAbi, args: [params] } as const
-  const [earnShare, earnFees] = await Promise.all([
-    client.readContract({ ...factory, functionName: 'predictEarnShare' }),
-    client.readContract({ ...factory, functionName: 'predictEarnFees' }),
-  ])
-  const code = await client.getCode({ address: earnShare })
-  if (!code || code === '0x') return undefined
-  const earnVault = getAddress(
-    await client.readContract({ address: earnFees, abi: earnFeesAbi, functionName: 'earnVault' }),
-  )
-  const vault = { address: earnVault, abi: earnVaultAbi } as const
-  const [vaultShare, vaultFees, vaultEngine] = await Promise.all([
-    client.readContract({ ...vault, functionName: 'earnShare' }),
-    client.readContract({ ...vault, functionName: 'earnFees' }),
-    client.readContract({ ...vault, functionName: 'engine' }),
-  ])
-  if (
-    getAddress(vaultShare) !== getAddress(earnShare) ||
-    getAddress(vaultFees) !== getAddress(earnFees) ||
-    getAddress(vaultEngine) !== getAddress(engine)
-  ) {
-    throw new Error(`Predicted EarnShare ${earnShare} exists, but its stack is not this profile's`)
-  }
-  // Record what DeployEarnCore records: a configured engine never runs deploy-engine.
-  const asset = await client.readContract({
-    address: engine,
-    abi: earnEngineBindingAbi,
-    functionName: 'asset',
-  })
-  return {
-    outputs: {
-      ...outputs,
-      engine: getAddress(engine),
-      asset: getAddress(asset),
-      earnVault,
-      earnShare: getAddress(earnShare),
-      earnFees: getAddress(earnFees),
-    },
-    transaction: await creationTransaction(client, profile.factories.earn, earnShare),
-  }
-}
-
-/** The factory transaction that deployed `earnShare`'s stack, searched back from the head. */
-async function creationTransaction(
-  client: Pick<PublicClient, 'getBlockNumber' | 'getLogs'>,
-  factory: Address,
-  earnShare: Address,
-) {
-  for (let toBlock = await client.getBlockNumber(); toBlock >= 0n; toBlock -= maxLogBlockRange) {
-    const fromBlock = toBlock >= maxLogBlockRange ? toBlock - maxLogBlockRange + 1n : 0n
-    const [log] = await client.getLogs({
-      address: factory,
-      event: earnStackDeployed,
-      args: { earnShare },
-      fromBlock,
-      toBlock,
-    })
-    if (log) return log.transactionHash
-    if (fromBlock === 0n) break
-  }
-  throw new Error(`No EarnStackDeployed event names the predicted EarnShare ${earnShare}`)
-}
-
-async function recoverBoundCoreOutputs(
-  client: Pick<PublicClient, 'readContract'>,
-  outputs: Record<string, Address>,
-) {
-  if (!outputs.engine || outputs.earnVault) return outputs
-  const { earnVault } = await readEngineBinding(client, outputs.engine)
-  if (earnVault === zeroAddress) return outputs
-  const [earnShare, earnFees] = await Promise.all([
-    client.readContract({ address: earnVault, abi: earnVaultAbi, functionName: 'earnShare' }),
-    client.readContract({ address: earnVault, abi: earnVaultAbi, functionName: 'earnFees' }),
-  ])
-  return {
-    ...outputs,
-    earnVault,
-    earnShare: getAddress(earnShare),
-    earnFees: getAddress(earnFees),
-  }
 }
 
 /** Resume caches may contain discovery metadata; only contract identity is commit-ready output. */
@@ -450,12 +383,7 @@ function readActionOutputs(path: string): Record<string, `0x${string}`> {
   if (!existsSync(path)) return {}
   const raw = object(JSON.parse(readFileSync(path, 'utf8')), path)
   if (raw.latestOutputs === undefined) return {}
-  return Object.fromEntries(
-    Object.entries(object(raw.latestOutputs, `${path}.latestOutputs`)).map(([key, value]) => [
-      key,
-      address(value, `${path}.latestOutputs.${key}`),
-    ]),
-  )
+  return parsePendingOutputs(raw.latestOutputs, `${path}.latestOutputs`)
 }
 
 /** Forge names a calldata invocation's latest broadcast after the function selector. */
@@ -467,7 +395,7 @@ function successfulBroadcastTransactions(
 ): `0x${string}`[] {
   const script = basename(required(target.split(':')[0], 'Foundry script'))
   const latest = `${calldata.slice(2, 10)}-latest.json`
-  const path = resolve(root, 'broadcast', script, String(chainId), latest)
+  const path = resolve(root, script, String(chainId), latest)
   if (!existsSync(path)) return []
   const raw = JSON.parse(readFileSync(path, 'utf8')) as {
     transactions?: Array<{ hash?: unknown }>

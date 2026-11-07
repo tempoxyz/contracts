@@ -1,4 +1,11 @@
-import { decodeFunctionData, getAddress, zeroAddress, zeroHash, type Address } from 'viem'
+import {
+  ContractFunctionZeroDataError,
+  decodeFunctionData,
+  getAddress,
+  zeroAddress,
+  zeroHash,
+  type Address,
+} from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { Addresses } from 'viem/tempo'
 import { describe, expect, test, vi } from 'vitest'
@@ -6,12 +13,15 @@ import { describe, expect, test, vi } from 'vitest'
 import { deployZoneRouterScriptAbi, propAMMPoolAbi, zonePortalAbi } from '../../abis/index.js'
 import { planEarnDeployment } from '../../core/plan.js'
 import { parseEarnDeploymentProfile } from '../../core/profile.js'
-import { zoneFactoryAddress } from '../../chain/zone.js'
+import { zoneFactoryAddress, zoneMessengerAddress } from '../../chain/zone.js'
 import { accessMembers } from '../earn/access-policy/membership.js'
 import { accessMemberContracts, deploymentStep, executeAvailableAuthority } from '../index.js'
 import type { ChainClient, FoundryStep } from '../module.js'
+import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { zoneRouterModeModule } from './index.js'
 import { zoneRouterConstructorArgs, zoneRouterMode } from './profile.js'
+
+vi.mock(import('../earn/zone-router/provenance.js'), () => ({ requireRouterProvenance: vi.fn() }))
 
 const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`) as Address
 const customerId = `0x${'c'.repeat(64)}` as const
@@ -73,6 +83,7 @@ function chain(profile: typeof card, overrides: Record<string, unknown> = {}) {
   const reads: Record<string, unknown> = {
     isRouter: true,
     predict: outputs.zoneRouter,
+    portal: outputs.zoneRouterPortal,
     enabledOps: mode.enabledOps,
     spenders: mode.spenders,
     allowedZoneId: mode.zoneId,
@@ -162,6 +173,7 @@ describe('Zone router steps', () => {
       { enabledOps: 5 },
       { spenders: [address('5e772e')] },
       { allowedZoneId: 8 },
+      { portal: address('88') },
       { earnVault: outputs.earnVault },
     ]) {
       await expect(step.satisfied(chain(card, override), card, outputs)).resolves.toBe(false)
@@ -238,22 +250,28 @@ describe('Zone router steps', () => {
     expect(accessMembers(protectedCard, outputs)).not.toContain(spender)
   })
 
-  test('requires the live spenders of a stack whose Portal enables EarnShare', async () => {
+  test('protects configured spenders before and after EarnShare enablement', async () => {
     const portal = address('8')
     const stack = {
       contracts: { earnShare: outputs.earnShare, zoneRouter: outputs.zoneRouter },
       operations: {},
     }
-    const principals = (enabled: boolean) =>
+    const principals = (enabled: boolean, enabledOps = 7) =>
       zoneRouterModeModule.stackAccessPrincipals!(
         {
           readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
             const reads: Record<string, unknown> = {
               allowedZoneId: 7,
+              enabledOps,
               spenders: [spender],
               zones: { zoneId: 7, portal, sequencers: [address('5e9')] },
               zoneFactory: zoneFactoryAddress,
               isTokenEnabled: enabled,
+              zoneId: 7,
+              messenger: zoneMessengerAddress,
+              encryptionKeyCount: 1n,
+              sequencerCount: 1n,
+              sequencerAt: address('5e9'),
             }
             return reads[functionName]
           }),
@@ -261,7 +279,9 @@ describe('Zone router steps', () => {
         stack as never,
       )
     await expect(principals(true)).resolves.toContain(spender)
-    await expect(principals(false)).resolves.not.toContain(spender)
+    await expect(principals(false)).resolves.toContain(spender)
+    await expect(principals(false, 4)).resolves.not.toContain(spender)
+    await expect(principals(true, 4)).resolves.toContain(spender)
   })
 
   test('adopts the router another deployer created for the same mode', async () => {
@@ -278,6 +298,7 @@ describe('Zone router steps', () => {
       outputs: { ...unrecorded, zoneRouter: outputs.zoneRouter },
       transaction: creation,
     })
+    expect(client.getBlockNumber).toHaveBeenCalledWith({ cacheTime: 0 })
     expect(getLogs).toHaveBeenCalledWith(
       expect.objectContaining({ address: address('fac'), args: { router: outputs.zoneRouter } }),
     )
@@ -329,7 +350,9 @@ describe('Zone router steps', () => {
       .mockResolvedValueOnce(authorityAccount)
       .mockResolvedValueOnce(scenario.gatewayOpen)
       .mockResolvedValueOnce(scenario.registered)
-    const sendTransactionSync = vi.fn().mockResolvedValue({ transactionHash: receiptHash })
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
     const result = await executeAvailableAuthority(
       {
         action: { id: 'register-zone-router-gateway' },
@@ -341,7 +364,8 @@ describe('Zone router steps', () => {
       {
         authorityClient: ((_options: unknown, account: unknown) => ({
           account,
-          chain: {},
+          chain: { id: 42431 },
+          getTransactionCount: async () => 0,
           readContract,
           sendTransactionSync,
         })) as never,
@@ -367,6 +391,35 @@ describe('Zone router steps', () => {
       functionName: 'setGateway',
       args: [outputs.zoneRouter, true],
     })
+  })
+
+  test('refuses a restored noncanonical factory before granting a gateway role', async () => {
+    const error = new Error('noncanonical factory')
+    vi.mocked(requireRouterProvenance).mockRejectedValueOnce(error)
+    const sendTransactionSync = vi.fn()
+    const runtime = {
+      authorityClient: (() => ({
+        account: privateKeyToAccount(authorityKey),
+        chain: { id: 42431 },
+        readContract: async ({ functionName }: { functionName: string }) =>
+          functionName === 'admin' ? authorityAccount : false,
+        sendTransactionSync,
+      })) as never,
+      fundFromFaucet: vi.fn() as never,
+    }
+    await expect(
+      executeAvailableAuthority(
+        {
+          action: { id: 'register-zone-router-gateway' },
+          environment: { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
+          outputs,
+          profile: cardAndEarn,
+          rpcUrl: 'https://rpc.invalid',
+        },
+        runtime,
+      ),
+    ).rejects.toBe(error)
+    expect(sendTransactionSync).not.toHaveBeenCalled()
   })
 
   test('leaves pool admission of a router from a factory the profile names to a person', async () => {
@@ -422,7 +475,9 @@ describe('Zone router steps', () => {
     const readContract = vi.fn(
       async ({ functionName }: { functionName: string }) => reads[functionName],
     )
-    const sendTransactionSync = vi.fn().mockResolvedValue({ transactionHash: receiptHash })
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
     const result = await executeAvailableAuthority(
       {
         action: { id: 'admit-zone-router-account' },
@@ -434,7 +489,8 @@ describe('Zone router steps', () => {
       {
         authorityClient: ((_options: unknown, account: unknown) => ({
           account,
-          chain: {},
+          chain: { id: 42431 },
+          getTransactionCount: async () => 0,
           readContract,
           sendTransactionSync,
         })) as never,
@@ -502,7 +558,9 @@ describe('Zone router steps', () => {
         return undefined
       },
     )
-    const sendTransactionSync = vi.fn().mockResolvedValue({ transactionHash: receiptHash })
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
     const result = await executeAvailableAuthority(
       {
         action: { id: scenario.action as 'admit-zone-router-account' },
@@ -514,7 +572,8 @@ describe('Zone router steps', () => {
       {
         authorityClient: ((_options: unknown, account: unknown) => ({
           account,
-          chain: {},
+          chain: { id: 42431 },
+          getTransactionCount: async () => 0,
           readContract,
           sendTransactionSync,
         })) as never,
@@ -547,7 +606,9 @@ describe('Zone router steps', () => {
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(outputs.zoneRouter)
-    const sendTransactionSync = vi.fn().mockResolvedValue({ transactionHash: receiptHash })
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
     const result = await executeAvailableAuthority(
       {
         action: { id: 'authorize-zone-router' },
@@ -559,7 +620,8 @@ describe('Zone router steps', () => {
       {
         authorityClient: ((_options: unknown, account: unknown) => ({
           account,
-          chain: {},
+          chain: { id: 42431 },
+          getTransactionCount: async () => 0,
           readContract,
           sendTransactionSync,
         })) as never,
@@ -588,7 +650,7 @@ describe('Zone router preflight', () => {
       readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
         if (functionName === 'isRouter') return false
         if (functionName === 'ROUTER_FACTORY' && routerFactory) return routerFactory
-        throw new Error(`${functionName} reverted`)
+        throw new ContractFunctionZeroDataError({ functionName })
       }),
     }) as never
 
@@ -626,7 +688,7 @@ describe('Zone router inspection', () => {
       latestPrice: [1n, 100n],
     })
     // The oracle report is 10 seconds old, within the pool's 60-second maximum.
-    const client = { ...reads, getBlock: async () => ({ timestamp: 110n }) }
+    const client = { ...reads, getBlock: async () => ({ number: 7n, timestamp: 110n }) }
     const report = await zoneRouterModeModule.inspect!(client, cardAndEarn, outputs)
     expect(report?.zoneRouter).toMatchObject({
       status: 'blocked',
@@ -655,7 +717,7 @@ describe('Zone router inspection', () => {
       ROUTER_FACTORY: outputs.zoneRouterFactory,
       isAuthorized: false,
     })
-    const client = { ...reads, getBlock: async () => ({ timestamp: 110n }) }
+    const client = { ...reads, getBlock: async () => ({ number: 7n, timestamp: 110n }) }
     const report = await zoneRouterModeModule.inspect!(client, protectedEarn, outputs)
     expect(report?.zoneRouterSpenders).toEqual({
       label: 'Zone router spenders',

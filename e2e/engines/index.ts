@@ -1,7 +1,7 @@
 import { readdirSync } from 'node:fs'
 
 import { engineKinds, type EngineKind } from '@tempoxyz/contracts/deployments'
-import type { Address } from 'viem'
+import type { Abi, Address } from 'viem'
 import type { E2eContext } from '../harness/context.js'
 
 /**
@@ -10,6 +10,10 @@ import type { E2eContext } from '../harness/context.js'
  * differently per engine.
  */
 export type E2eEngine = {
+  /** Venue errors that enforce the caller's redeem minimum before the engine's own check. */
+  redeemBoundErrors?(
+    context: E2eContext,
+  ): { abi?: Abi; errors: readonly E2eBoundError[] } | undefined
   /** Exact assets an immediate redemption of `earnShares` pays at the current state. */
   quoteRedeem(context: E2eContext, earnShares: bigint): Promise<bigint>
   /**
@@ -18,6 +22,9 @@ export type E2eEngine = {
    */
   morphoFeeWrapper?(context: E2eContext): Address | undefined
 }
+
+/** A custom error name or the exact decoded reason of a Solidity Error(string) revert. */
+export type E2eBoundError = string | { reason: string }
 
 /** Optional engine behavior a case can require. */
 export type E2eEngineHook = 'morphoFeeWrapper'

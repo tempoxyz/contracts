@@ -1,16 +1,17 @@
 import { erc20Abi, formatUnits, parseUnits, getAddress, type Address, type Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { createClient, EarnShares } from 'viem/tempo'
+import { Actions, createClient, EarnShares } from 'viem/tempo'
 
+import { guardedTransactionRequest, pinnedAuthorityTransport } from '../modules/index.js'
 import { configuredTempoNetworkChain, deploymentEnvironmentId } from '../chain/tempo.js'
 import { requireCode } from '../chain/inspect.js'
 import { configuredRpcTransport, envPrivateKey } from '../chain/runtime.js'
 import { earnVaultAbi } from '../abis/index.js'
-import { quoteEarnDeposit, readEngineVenue } from '../modules/earn/engines/index.js'
+import { quoteEarnDeposit } from '../modules/earn/engines/index.js'
 import { requiredOutput } from '../../deployments/modules/module.js'
-import type { EarnDeploymentProfile } from './profile.js'
+import { engineAddress, type EarnDeploymentProfile } from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
-import { inspectStackBinding } from './stack.js'
+import { inspectStackBinding, readCurrentEngine } from './stack.js'
 
 const defaultSlippageBps = 50
 const transactionTimeout = 180_000
@@ -29,6 +30,7 @@ export type ProfileDepositOptions = {
 
 export type ProfileDepositResult = {
   state: 'preview' | 'deposited'
+  sourceVerification: EarnDeploymentRecord['source']['contractVerification']
   deploymentId: string
   depositor: Address
   receiver: Address
@@ -56,11 +58,15 @@ export async function depositEarnProfile(
   options: ProfileDepositOptions,
 ): Promise<ProfileDepositResult> {
   const { profile, record } = options
-  const engineKind = profile.engine.kind
+  if (options.broadcast && record.source.contractVerification === 'pending')
+    throw new Error(
+      'Source verification must be complete before funding; run deploy to complete verification',
+    )
   const recorded = record.addresses as Record<string, Address>
+  const creationEngine = getAddress(engineAddress(profile, recorded))
   const contracts = {
     asset: requiredOutput(recorded, 'asset'),
-    engine: requiredOutput(recorded, 'engine'),
+    engine: creationEngine,
     earnShare: requiredOutput(recorded, 'earnShare'),
     earnVault: requiredOutput(recorded, 'earnVault'),
     earnFees: requiredOutput(recorded, 'earnFees'),
@@ -69,8 +75,8 @@ export async function depositEarnProfile(
   const assets = parseTokenAmount(options.assets, assetDecimals, '--assets')
   if (assets <= 0n) throw new Error('--assets must be greater than zero')
   const slippageBps = options.slippageBps ?? defaultSlippageBps
-  if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 10_000) {
-    throw new Error('--slippage-bps must be an integer from 0 through 10000')
+  if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps >= 10_000) {
+    throw new Error('--slippage-bps must be an integer from 0 through 9999')
   }
 
   const deployerKey = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
@@ -91,7 +97,10 @@ export async function depositEarnProfile(
     rpcUrl: options.rpcUrl,
     feeToken: contracts.asset,
   })
-  const transport = configuredRpcTransport({ url: options.rpcUrl })
+  const transport = pinnedAuthorityTransport(
+    configuredRpcTransport({ url: options.rpcUrl }),
+    profile.chainId,
+  )
   const publicClient = createClient({ chain, transport })
   const [chainId, genesis] = await Promise.all([
     publicClient.getChainId(),
@@ -103,12 +112,23 @@ export async function depositEarnProfile(
   if (!genesis.hash || genesis.hash.toLowerCase() !== record.target.genesisHash.toLowerCase()) {
     throw new Error('RPC genesis hash does not match the generated deployment record')
   }
-  const venue =
-    'venue' in profile.engine
-      ? profile.engine.venue
-      : await readEngineVenue(publicClient, engineKind, contracts.engine)
+  const { engine, engineKind, venue } = await readCurrentEngine(publicClient, {
+    creationEngine,
+    engineKind: profile.engine.kind,
+    asset: contracts.asset,
+    earnVault: contracts.earnVault,
+  })
+  if (engine !== creationEngine && profile.core.migrationMode !== 'OperatorEnabled')
+    throw new Error('Profile does not allow operator engine migration')
+  contracts.engine = engine
   await requireCode(publicClient, { ...contracts, venue })
-  await inspectStackBinding(publicClient, { ...contracts, engineKind, venue })
+  await inspectStackBinding(publicClient, {
+    ...contracts,
+    engineKind,
+    // The authored venue binds the creation engine, not an operator-authorized replacement.
+    venue:
+      engine === creationEngine && 'venue' in profile.engine ? profile.engine.venue : undefined,
+  })
 
   const [
     assetSymbol,
@@ -162,6 +182,7 @@ export async function depositEarnProfile(
 
   const baseResult: ProfileDepositResult = {
     state: 'preview',
+    sourceVerification: record.source.contractVerification,
     deploymentId: profile.id,
     depositor,
     receiver,
@@ -191,17 +212,21 @@ export async function depositEarnProfile(
   }
 
   const depositorClient = createClient({ account: signingAccount!, chain, transport })
-  const depositTransactionHash = await depositorClient.earn.deposit({
-    account: signingAccount!,
+  const calls = Actions.earn.deposit.calls({
+    assetToken: contracts.asset,
     assetAmount: assets,
     recipient: receiver,
     shareAmountMin: minimumEarnShares,
     vault: contracts.earnVault,
   })
+  const depositTransactionHash = await depositorClient.sendTransaction(
+    await guardedTransactionRequest(depositorClient, calls, contracts.asset),
+  )
   const receipt = await publicClient.waitForTransactionReceipt({
     hash: depositTransactionHash,
     timeout: transactionTimeout,
   })
+  if (receipt.status !== 'success') throw new Error('Deposit transaction did not succeed')
   const depositEvent = depositorClient.earn.deposit.extractEvent(receipt.logs, {
     vault: contracts.earnVault,
   })

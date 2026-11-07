@@ -9,7 +9,11 @@ import type { E2eBenchmark, E2eCase, LaunchFeature } from '../../harness/case.js
 import { expectContractRevert } from '../../harness/support/transactions.js'
 import { assert } from '../../harness/support/utils.js'
 import { accessEntryCases } from './entry.js'
-import { protectedAccessConfiguration, setOutsiderEligibility } from './shared.js'
+import {
+  protectedAccessConfiguration,
+  requirePolicyZoneRead,
+  withOutsiderEligibility,
+} from './shared.js'
 import { accessTransferCases } from './transfers.js'
 
 export const launchFeatures: Record<string, LaunchFeature> = {
@@ -35,29 +39,30 @@ const accessAdministrationCases: readonly E2eCase[] = [
       )
     },
     async run(context) {
-      await setOutsiderEligibility(context, false)
-      await expectContractRevert(
-        () =>
-          setAccessEligibility({
-            client: context.l1Public,
-            deployment: context.deployment,
-            target: context.outsider.address,
-            allowed: true,
-            wallet: context.actors.user.wallet,
-          }),
-        'non-administrator unexpectedly changed membership',
-      )
-      const after = await readAccessStatus(
-        context.l1Public,
-        context.deployment,
-        context.outsider.address,
-      )
-      assert(!after.eligible, 'failed admin call changed eligibility')
-      await expectErrorMessage(
-        () => resolveAccessAddress(context.l1Public, zeroAddress),
-        'Zero address cannot be allowlisted',
-        'zero address unexpectedly resolved for allowlisting',
-      )
+      await withOutsiderEligibility(context, false, async () => {
+        await expectContractRevert(
+          () =>
+            setAccessEligibility({
+              client: context.l1Public,
+              deployment: context.deployment,
+              target: context.outsider.address,
+              allowed: true,
+              wallet: context.actors.user.wallet,
+            }),
+          'non-administrator unexpectedly changed membership',
+        )
+        const after = await readAccessStatus(
+          context.l1Public,
+          context.deployment,
+          context.outsider.address,
+        )
+        assert(!after.eligible, 'failed admin call changed eligibility')
+        await expectErrorMessage(
+          () => resolveAccessAddress(context.l1Public, zeroAddress),
+          'Zero address cannot be allowlisted',
+          'zero address unexpectedly resolved for allowlisting',
+        )
+      })
     },
   },
 ]
@@ -81,7 +86,14 @@ export const cases: readonly E2eCase[] = [
   ...accessAdministrationCases,
   ...accessEntryCases,
   ...accessTransferCases,
-].map((testCase) => ({ ...testCase, requiresProtectedAccess: true }))
+].map((testCase) => ({
+  ...testCase,
+  requiresProtectedAccess: true,
+  async preflight(context) {
+    await testCase.preflight?.(context)
+    await requirePolicyZoneRead(context)
+  },
+}))
 
 export const benchmark: E2eBenchmark = {
   async preflight(context) {

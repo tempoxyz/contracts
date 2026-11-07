@@ -3,24 +3,29 @@
 // a cardholder-signed refund withdrawal and the daily payment to Rain's treasury, both authorized by
 // Rain's controller admin's EIP-712 signature, as on Rain's live contracts.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   concat,
   encodeAbiParameters,
+  encodeErrorResult,
   encodePacked,
   erc20Abi,
   formatUnits,
+  isAddress,
+  isAddressEqual,
   keccak256,
   parseAbi,
   toHex,
+  zeroAddress,
   type Address,
   type Hex,
 } from 'viem'
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts'
 
 import { forgeEnv } from '../../bridge/src/targets.js'
-import { assert } from '../../bridge/src/support.js'
+import { assert, revertData } from '../../bridge/src/support.js'
 import type { CardProvider, Context, Deployed } from '../provider.js'
 
 export const cardsRoot = resolve(new URL('.', import.meta.url).pathname, '../../../../cards')
@@ -41,7 +46,19 @@ const collateralAbi = parseAbi([
   'function isAdmin(address account) view returns (bool)',
 ])
 
-type RainDeployment = {
+type RainIdentity = {
+  runId: string
+  chainId: number
+  zoneId: number
+  deployer: Address
+  rainAdmin: Address
+  rainTreasury: Address
+  cardholder: Address
+  partner: Address
+  earn: boolean
+}
+
+type RainDeployment = RainIdentity & {
   rainFactory: Address
   rainController: Address
   cardholderCollateral: Address
@@ -70,43 +87,54 @@ export function rain(): CardProvider {
     name: 'rain',
     accounts: [backend],
     deploy(input) {
-      mkdirSync(resolve(cardsRoot, 'reports'), { recursive: true })
-      const out = `reports/cards-e2e-rain-${input.zoneId}.json`
-      try {
-        execFileSync(
-          'forge',
-          [
-            'script',
-            'script/rain/CardsE2EDeploy.s.sol',
-            '--rpc-url',
-            input.rpcUrl,
-            '--broadcast',
-            '--slow',
-            '--gas-estimate-multiplier',
-            '105',
-          ],
-          {
-            cwd: cardsRoot,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            encoding: 'utf8',
-            env: forgeEnv({
-              DEPLOYER_PK: input.deployerPk,
-              RAIN_ADMIN: admin.address,
-              RAIN_TREASURY: treasury,
-              CARDHOLDER: input.cardholder,
-              PARTNER: partner,
-              ZONE_ID: String(input.zoneId),
-              EARN: String(input.earn),
-              OUT: out,
-            }),
-          },
-        )
-      } catch (error) {
-        const failed = error as { stdout?: string; stderr?: string }
-        throw new Error(`CardsE2EDeploy failed:
+      const d = withRainReport((out, runId) => {
+        try {
+          execFileSync(
+            'forge',
+            [
+              'script',
+              'script/rain/CardsE2EDeploy.s.sol',
+              '--rpc-url',
+              input.rpcUrl,
+              '--broadcast',
+              '--slow',
+              '--gas-estimate-multiplier',
+              '105',
+            ],
+            {
+              cwd: cardsRoot,
+              stdio: ['ignore', 'pipe', 'pipe'],
+              encoding: 'utf8',
+              env: forgeEnv({
+                DEPLOYER_PK: input.deployerPk,
+                RAIN_ADMIN: admin.address,
+                RAIN_TREASURY: treasury,
+                RAIN_RUN_ID: runId,
+                CARDHOLDER: input.cardholder,
+                PARTNER: partner,
+                ZONE_ID: String(input.zoneId),
+                EARN: String(input.earn),
+                OUT: out,
+              }),
+            },
+          )
+        } catch (error) {
+          const failed = error as { stdout?: string; stderr?: string }
+          throw new Error(`CardsE2EDeploy failed:
 ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
-      }
-      const d = JSON.parse(readFileSync(resolve(cardsRoot, out), 'utf8')) as RainDeployment
+        }
+        return parseRainDeployment(readFileSync(out, 'utf8'), {
+          runId,
+          chainId: input.chainId,
+          zoneId: input.zoneId,
+          deployer: privateKeyToAccount(input.deployerPk).address,
+          rainAdmin: admin.address,
+          rainTreasury: treasury,
+          cardholder: input.cardholder,
+          partner,
+          earn: input.earn,
+        })
+      })
       deployment = d
       const deployed: Deployed = {
         program: d.program,
@@ -154,20 +182,20 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
       })
       assert(onChainAdmin === admin.address, "Rain's controller admin is the run's signing key")
 
-      // Rain's controller is the only caller its collateral contracts answer.
-      const direct = await l1Public
-        .simulateContract({
+      // A funded, otherwise valid withdrawal must fail at Rain's controller-only gate, not at RPC or token handling.
+      assert(
+        (await balanceOf(d.cardholderCollateral)) > 0n,
+        'the collateral is funded before the authorization probe',
+      )
+      await expectUnauthorizedWithdrawal(
+        l1Public.simulateContract({
           account: cardholder,
           address: d.cardholderCollateral,
           abi: collateralAbi,
           functionName: 'withdrawAsset',
           args: [token, cardholder.address, 1n],
-        })
-        .then(
-          () => 'succeeded',
-          () => 'reverted',
-        )
-      assert(direct === 'reverted', 'a direct withdrawal from the collateral contract reverts')
+        }),
+      )
 
       // Rain's contracts have no pause, so neither has the program: Rain stops a program by not sending
       // spends, since only its keys send them and they can pay only collateral Rain controls.
@@ -256,6 +284,75 @@ ${failed.stdout ?? ''}${failed.stderr ?? ''}`)
       return n
     },
   }
+}
+
+/** Requires Rain's exact controller-only rejection; transport failures and other reverts are not authorization evidence. */
+export async function expectUnauthorizedWithdrawal(simulation: Promise<unknown>) {
+  const data = await simulation.then(() => undefined, revertData)
+  const unauthorized = encodeErrorResult({
+    abi: parseAbi(['error Error(string)']),
+    errorName: 'Error',
+    args: ['Unauthorized'],
+  })
+  assert(
+    data?.toLowerCase() === unauthorized,
+    'a direct collateral withdrawal reverts with exactly Unauthorized',
+  )
+}
+
+/** Keeps each Forge report private to its invocation, including two runs for the same Zone. */
+export function withRainReport<result>(consume: (out: string, runId: string) => result): result {
+  mkdirSync(resolve(cardsRoot, 'reports'), { recursive: true })
+  const directory = mkdtempSync(resolve(cardsRoot, 'reports/cards-e2e-rain-'))
+  try {
+    return consume(resolve(directory, 'deployment.json'), randomUUID())
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+/** Rejects foreign, stale or incomplete deployment reports before any address is adopted by the run. */
+export function parseRainDeployment(json: string, expected: RainIdentity): RainDeployment {
+  const d = JSON.parse(json) as RainDeployment
+  assert(d !== null && typeof d === 'object' && !Array.isArray(d), 'Rain report is an object')
+  for (const field of ['runId', 'chainId', 'zoneId', 'earn'] as const)
+    assert(d[field] === expected[field], `Rain report ${field} matches this run`)
+  for (const field of ['deployer', 'rainAdmin', 'rainTreasury', 'cardholder', 'partner'] as const) {
+    assert(
+      typeof d[field] === 'string' && isAddress(d[field]),
+      `Rain report ${field} is an address`,
+    )
+    assert(isAddressEqual(d[field], expected[field]), `Rain report ${field} matches this run`)
+  }
+  for (const field of [
+    'rainFactory',
+    'rainController',
+    'cardholderCollateral',
+    'programCollateral',
+    'cardFactory',
+    'provider',
+    'program',
+    'routerFactory',
+    'router',
+    'zoneToken',
+    ...(expected.earn ? (['earnVault', 'earnShare'] as const) : []),
+  ] as const) {
+    const address = d[field]
+    assert(
+      typeof address === 'string' && isAddress(address) && !isAddressEqual(address, zeroAddress),
+      `Rain report ${field} is a nonzero address`,
+    )
+  }
+  assert(
+    d.cardholderCollateralIndex === 0 && d.programCollateralIndex === 1,
+    'Rain report uses the deployed collateral indexes',
+  )
+  if (!expected.earn)
+    assert(
+      d.earnVault === undefined && d.earnShare === undefined,
+      'Rain report has no unrequested Earn deployment',
+    )
+  return d
 }
 
 async function send(

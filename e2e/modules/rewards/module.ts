@@ -11,6 +11,8 @@ import { previewEarnRedeem } from '../../harness/support/slippage.js'
 import { expectRevertedWrite, write } from '../../harness/support/transactions.js'
 import type { E2eCase, LaunchFeature } from '../../harness/case.js'
 import type { E2eActor, E2eContext } from '../../harness/context.js'
+import { requireRewardActors } from './preflight.js'
+import { withRecovery } from '../controls/recovery.js'
 
 const DEPOSIT = 1_000_000n
 const REWARD = 100_000n
@@ -41,22 +43,26 @@ export const cases: readonly E2eCase[] = [
     requiredPeriphery: ['earnContributionController'],
     coverage: { rewards: ['positive', 'negative', 'authorization', 'recovery'] },
     async preflight(context) {
-      const active = await context.l1Public.readContract({
+      const controller = {
         address: context.operations.earnContributionController!,
         abi: earnContributionControllerAbi,
-        functionName: 'active',
-      })
+      } as const
+      const [active, owner] = await Promise.all([
+        context.l1Public.readContract({ ...controller, functionName: 'active' }),
+        context.l1Public.readContract({ ...controller, functionName: 'owner' }),
+      ])
+      requireRewardActors({ user: context.user.address, operator: context.operator.address, owner })
       if (!active) throw new E2ePrerequisiteError('EarnContributionController is already paused')
     },
     async run(context) {
       await mintVaultAsset(context, DEPOSIT + REWARD * 2n)
       const setup = await deposit(context, { assets: DEPOSIT, receiver: context.user.address })
-      await expectRevertedWrite(
-        context,
-        () => setActive(context, 'user', false),
-        'non-owner unexpectedly paused EarnContributionController',
-      )
-      try {
+      await withRecovery(async () => {
+        await expectRevertedWrite(
+          context,
+          () => setActive(context, 'user', false),
+          'non-owner unexpectedly paused EarnContributionController',
+        )
         await write(context.actors.operator.wallet, {
           address: context.operations.earnContributionController!,
           abi: earnContributionControllerAbi,
@@ -92,14 +98,27 @@ export const cases: readonly E2eCase[] = [
           valueAfterPaused,
           'direct contribution accounting reduced holder value',
         )
-      } finally {
-        await write(context.actors.operator.wallet, {
-          address: context.operations.earnContributionController!,
-          abi: earnContributionControllerAbi,
-          functionName: 'setActive',
-          args: [true],
-        })
-      }
+      }, [
+        {
+          label: `EarnContributionController ${context.operations.earnContributionController} on chain ${context.l1Public.chain.id}: owner setActive(true)`,
+          async restore() {
+            await write(context.actors.operator.wallet, {
+              address: context.operations.earnContributionController!,
+              abi: earnContributionControllerAbi,
+              functionName: 'setActive',
+              args: [true],
+            })
+            assert(
+              await context.l1Public.readContract({
+                address: context.operations.earnContributionController!,
+                abi: earnContributionControllerAbi,
+                functionName: 'active',
+              }),
+              'reward controller activity was not restored',
+            )
+          },
+        },
+      ])
 
       const totalEarnShares = () =>
         context.l1Public.readContract({

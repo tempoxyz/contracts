@@ -13,3 +13,17 @@ describe('Tempo chains', () => {
     expect(chain.supportsTransactionReplacementDetection).toBe(false)
   })
 })
+
+test('custom networks retain protocol behavior without inventing hosted chain facts', () => {
+  const chain = configuredTempoNetworkChain({
+    id: 'custom',
+    chainId: 991,
+    rpcUrl: 'https://rpc.example',
+  })
+  expect(chain.id).toBe(991)
+  expect(chain).not.toHaveProperty('blockExplorers')
+  expect(chain).not.toHaveProperty('testnet')
+  expect(chain).not.toHaveProperty('hardfork')
+  expect(chain).not.toHaveProperty('contracts')
+  expect(chain.serializers.transaction).toBeTypeOf('function')
+})

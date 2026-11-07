@@ -1,29 +1,34 @@
-import { BaseError, ContractFunctionRevertedError, maxUint256, type Hash } from 'viem'
-import { simulateCalls } from 'viem/actions'
+import { maxUint256, type Hash } from 'viem'
 import {
   deposit,
   depositIntoVenue,
   depositVenueShares,
   expectUnchanged,
   redeem,
-  redeemVenueShares,
   withdrawExact,
 } from '../../harness/support/public.js'
 import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 import { mintVaultAsset, tokenBalance } from '../../harness/support/funding.js'
 import { previewEarnDeposit, previewEarnRedeem } from '../../harness/support/slippage.js'
 import { expectRevertedWrite } from '../../harness/support/transactions.js'
-import { assert } from '../../harness/support/utils.js'
+import { assert, E2ePrerequisiteError } from '../../harness/support/utils.js'
 import { e2eEngines } from '../../engines/index.js'
 import type { E2eBenchmark, E2eCase, LaunchFeature } from '../../harness/case.js'
 import type { E2eContext } from '../../harness/context.js'
+import { simulateBound } from './bounds.js'
 import { accessKeyCase } from './access-keys.js'
 
 const DEPOSIT = 1_000_000n
 const WITHDRAW = 400_000n
 
 /** Requires `reject` to revert without changing the user's position or the vault's backing. */
-function expectRollback(context: E2eContext, label: string, reject: () => Promise<Hash>) {
+async function expectRollback(
+  context: E2eContext,
+  label: string,
+  reject: () => Promise<Hash>,
+  bounds: Parameters<typeof simulateBound>[1],
+) {
+  await simulateBound(context, bounds)
   return expectUnchanged(
     context,
     label,
@@ -39,6 +44,14 @@ function previewWithdraw(context: E2eContext, assets: bigint) {
     functionName: 'previewWithdraw',
     args: [assets],
   })
+}
+
+function requireThirdPartyActors(context: E2eContext) {
+  if (context.user.address.toLowerCase() === context.operator.address.toLowerCase()) {
+    throw new E2ePrerequisiteError(
+      'Third-party cases require END_USER_PRIVATE_KEY distinct from the operator',
+    )
+  }
 }
 
 const protectedRecovery = ['recovery'] as const
@@ -68,6 +81,7 @@ export const launchFeatures: Record<string, LaunchFeature> = {
 export const cases: readonly E2eCase[] = [
   {
     id: 'public-round-trip',
+    preflight: requireThirdPartyActors,
     description:
       'Deposit vault assets for the depositor and redeem them back, then deposit for another address, which redeems them back to the depositor.',
     default: true,
@@ -146,21 +160,19 @@ export const cases: readonly E2eCase[] = [
         shareAmountMin: expectedEarnShares + 1n,
         vault: earnVault,
       }
-      const simulation = await simulateCalls(context.l1Public, {
-        account: context.user.address,
-        calls: earn.deposit.calls({ ...depositRequest, assetToken: context.assets.base }),
-        validation: false,
-      })
-      const failure = simulation.results.find((result) => result.status === 'failure')
-      assert(failure?.error instanceof BaseError, 'deposit simulation returned no viem error')
-      const reverted = failure.error.walk((cause) => cause instanceof ContractFunctionRevertedError)
-      assert(
-        reverted instanceof ContractFunctionRevertedError &&
-          reverted.data?.errorName === 'MinimumEarnSharesNotMet',
-        'deposit simulation did not decode MinimumEarnSharesNotMet',
-      )
-      await expectRollback(context, 'deposit', () =>
-        earn.deposit({ account: context.user, ...depositRequest }),
+      await expectRollback(
+        context,
+        'deposit',
+        () => earn.deposit({ account: context.user, ...depositRequest }),
+        {
+          calls: earn.deposit.calls({ ...depositRequest, assetToken: context.assets.base }),
+          relaxedCalls: earn.deposit.calls({
+            ...depositRequest,
+            shareAmountMin: 1n,
+            assetToken: context.assets.base,
+          }),
+          errors: ['MinimumEarnSharesNotMet'],
+        },
       )
 
       if (context.deployment.capabilities.inKindDeposit) {
@@ -174,52 +186,87 @@ export const cases: readonly E2eCase[] = [
           functionName: 'convertEngineSharesToEarnShares',
           args: [venueShares],
         })
-        await expectRollback(context, 'in-kind deposit', () =>
-          earn.depositShares({
-            account: context.user,
-            earnShareAmountMin: expectedInKind + 1n,
-            recipient: context.user.address,
-            vault: earnVault,
-            venueShareAmount: venueShares,
-            venueShareToken: venue,
+        const request = {
+          account: context.user,
+          earnShareAmountMin: expectedInKind + 1n,
+          recipient: context.user.address,
+          vault: earnVault,
+          venueShareAmount: venueShares,
+          venueShareToken: venue,
+        }
+        await expectRollback(context, 'in-kind deposit', () => earn.depositShares(request), {
+          calls: earn.depositShares.calls({ ...request, engine: context.contracts.engine }),
+          relaxedCalls: earn.depositShares.calls({
+            ...request,
+            engine: context.contracts.engine,
+            earnShareAmountMin: 1n,
           }),
-        )
-        await redeemVenueShares(context, venueShares)
+          errors: ['MinimumEarnSharesNotMet'],
+        })
+        const entry = await depositVenueShares(context, {
+          venueShares,
+          receiver: context.user.address,
+        })
+        assert(entry.earnShares > 0n, 'relaxed in-kind deposit minted no EarnShare')
+        await redeem(context, { earnShares: entry.earnShares, receiver: context.user.address })
       }
 
       const { boundedRedeem, exactWithdraw } = context.deployment.capabilities
       const position = await deposit(context, { assets: DEPOSIT, receiver: context.user.address })
       if (boundedRedeem) {
+        const venueErrors = e2eEngines[context.engineKind].redeemBoundErrors?.(context)
         // Engine previews may conservatively omit route rounding credit, so use an impossible
         // minimum rather than assuming the preview is an exact execution quote.
-        await expectRollback(context, 'redeem', () =>
-          earn.redeem({
-            account: context.user,
-            assetAmountMin: maxUint256,
-            recipient: context.user.address,
-            shareAmount: position.earnShares,
-            vault: earnVault,
+        const request = {
+          account: context.user,
+          assetAmountMin: maxUint256,
+          recipient: context.user.address,
+          shareAmount: position.earnShares,
+          vault: earnVault,
+        }
+        await expectRollback(context, 'redeem', () => earn.redeem(request), {
+          calls: earn.redeem.calls({ ...request, shareToken: context.contracts.earnShare }),
+          relaxedCalls: earn.redeem.calls({
+            ...request,
+            assetAmountMin: 1n,
+            shareToken: context.contracts.earnShare,
           }),
-        )
+          errorAbi: venueErrors?.abi,
+          // Engines and venues enforce the same bound before EarnVault; string reverts match exactly.
+          errors: [
+            'MinimumAssetsNotMet',
+            'InsufficientAssetsReceived',
+            'InsufficientBacking',
+            ...(venueErrors?.errors ?? []),
+          ],
+        })
       }
       if (exactWithdraw) {
         const requiredEarnShares = await previewWithdraw(context, WITHDRAW)
         assert(requiredEarnShares > 0n, 'exact withdrawal preview returned zero EarnShare')
-        await expectRollback(context, 'exact withdrawal', () =>
-          earn.withdrawExact({
-            account: context.user,
-            assetAmount: WITHDRAW,
-            recipient: context.user.address,
-            shareAmountMax: requiredEarnShares - 1n,
-            vault: earnVault,
+        const request = {
+          account: context.user,
+          assetAmount: WITHDRAW,
+          recipient: context.user.address,
+          shareAmountMax: requiredEarnShares - 1n,
+          vault: earnVault,
+        }
+        await expectRollback(context, 'exact withdrawal', () => earn.withdrawExact(request), {
+          calls: earn.withdrawExact.calls({ ...request, shareToken: context.contracts.earnShare }),
+          relaxedCalls: earn.withdrawExact.calls({
+            ...request,
+            shareAmountMax: position.earnShares,
+            shareToken: context.contracts.earnShare,
           }),
-        )
+          errors: ['ExceedsMaxEarnShares'],
+        })
       }
       await redeem(context, { earnShares: position.earnShares, receiver: context.user.address })
     },
   },
   {
     id: 'public-withdraw-exact-third-party',
+    preflight: requireThirdPartyActors,
     description:
       'Withdraw exact asset amounts to the holder and to another address while retaining unused EarnShare.',
     default: false,

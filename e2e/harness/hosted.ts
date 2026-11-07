@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { parseEnv } from 'node:util'
 
+import { hostedEnvironment } from '@tempoxyz/contracts/deployments'
 import { configuredZone } from '@tempoxyz/contracts/deployments/operations'
 import {
   envPrivateKey,
@@ -21,6 +22,7 @@ import {
   e2eActors,
   type E2eActor,
   type E2eContext,
+  type DeploymentPublicClient,
 } from './context.js'
 import { environmentDefinitions, loadProfileRuntimeConfig } from './environments.js'
 import type { LoadedProfile } from './profile.js'
@@ -106,8 +108,15 @@ export async function validateHostedProfile(
     environment: definition,
     headers: tempo.headers,
   })
-  if (fixture) await validateProfileFixtureRuntime(client, fixture)
-  await validateDeployment(client, deployment, bundle)
+  await validateHostedTarget(client, bundle.record.target)
+  if (fixture)
+    await validateProfileFixtureRuntime(client, fixture, {
+      engineKind: deployment.engineKind,
+      engine: deployment.contracts.engine,
+      asset: deployment.contracts.asset,
+      venue: deployment.contracts.venue,
+    })
+  await validateDeployment(client, deployment, bundle, fixture?.engineFixtures)
   const zone = configuredZone(bundle.profile)
   if (zone && zoneRpc) {
     const inspected = await inspectZone({
@@ -132,6 +141,7 @@ export async function runHosted<Result>(
   options: runHosted.Options = {},
 ) {
   const identities = options.identities ?? 'configured'
+  assertHostedIdentities(loaded.profile.chainId, identities)
   const {
     bundle,
     values,
@@ -208,5 +218,35 @@ export function resolveHostedPrivateKeys(
     operator,
     outsider: derivedOutsiderPrivateKey(operator),
     user: user ?? operator,
+  }
+}
+
+/** Public fixture keys may sign only on a known faucet-enabled testnet. */
+export function assertHostedIdentities(
+  chainId: number,
+  identities: NonNullable<runHosted.Options['identities']>,
+) {
+  const environment = hostedEnvironment(chainId)
+  if (identities === 'public-fixture' && (!environment?.testnet || !environment.faucet)) {
+    throw new Error(
+      'Public-fixture identities require a faucet-enabled testnet; mainnet is not supported',
+    )
+  }
+}
+
+/** Checks L1 identity even when a hosted profile has no fixture record. */
+export async function validateHostedTarget(
+  client: Pick<DeploymentPublicClient, 'getBlock' | 'getChainId'>,
+  target: { chainId: number; genesisHash: Hex },
+) {
+  const [chainId, genesis] = await Promise.all([
+    client.getChainId(),
+    client.getBlock({ blockNumber: 0n }),
+  ])
+  if (chainId !== target.chainId) {
+    throw new Error(`RPC chain ${chainId} does not match deployment chain ${target.chainId}`)
+  }
+  if (!genesis.hash || genesis.hash.toLowerCase() !== target.genesisHash.toLowerCase()) {
+    throw new Error('RPC genesis hash does not match the generated deployment record')
   }
 }

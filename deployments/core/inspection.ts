@@ -1,7 +1,7 @@
-import { zeroHash, type Address, type PublicClient } from 'viem'
+import { getAddress, zeroHash, type Address, type PublicClient } from 'viem'
 import { Abis } from 'viem/tempo'
 
-import { earnFactoryAbi } from '../abis/index.js'
+import { earnFactoryAbi, earnVaultAbi } from '../abis/index.js'
 import { inspectEngineBindings, readEngineBinding } from '../modules/earn/engines/index.js'
 import { equalAddress, requireCode, type LatestBlockClient } from '../chain/inspect.js'
 import { capabilityModules } from '../../deployments/modules/index.js'
@@ -15,7 +15,7 @@ import {
   profileFactoryDeploymentId,
   type EarnDeploymentProfile,
 } from './profile.js'
-import { inspectStackBinding } from './stack.js'
+import { inspectStackBinding, readCurrentEngine } from './stack.js'
 
 /**
  * Performs the complete, shared post-deployment inspection used by deploy and verify. Binding
@@ -30,25 +30,44 @@ export async function inspectEarnDeployment(
   if (!factoryDeploymentId) {
     throw new Error('Factory deployment ID is required for deployment inspection')
   }
-  const engine = engineAddress(profile, outputs)
+  const creationEngine = engineAddress(profile, outputs)
   const vault = requiredOutput(outputs, 'earnVault')
   const share = requiredOutput(outputs, 'earnShare')
   const fees = requiredOutput(outputs, 'earnFees')
   const asset = requiredOutput(outputs, 'asset')
 
-  await requireCode(client, { engine, vault, share, fees })
+  await requireCode(client, { creationEngine, vault, share, fees })
+  const currentEngine = getAddress(
+    await client.readContract({
+      address: vault,
+      abi: earnVaultAbi,
+      functionName: 'engine',
+    }),
+  )
+  if (currentEngine !== creationEngine && profile.core.migrationMode !== 'OperatorEnabled')
+    throw new Error('Profile does not allow operator engine migration')
+  const { engine, engineKind } =
+    currentEngine === creationEngine
+      ? { engine: creationEngine, engineKind: profile.engine.kind }
+      : await readCurrentEngine(client, {
+          creationEngine,
+          engineKind: profile.engine.kind,
+          asset,
+          earnVault: vault,
+        })
   await inspectStackBinding(client, {
     asset,
     engine,
     earnVault: vault,
     earnShare: share,
     earnFees: fees,
-    engineKind: profile.engine.kind,
-    venue: 'venue' in profile.engine ? profile.engine.venue : undefined,
+    engineKind,
+    venue:
+      engine === creationEngine && 'venue' in profile.engine ? profile.engine.venue : undefined,
   })
   // The stack binding above proved the engine is bound to `vault`, whose operator this reads.
   const { owner, vaultOperator } = await readEngineBinding(client, engine)
-  await inspectEngineBindings(client, profile.engine.kind, engine)
+  await inspectEngineBindings(client, engineKind, engine)
   if (!engineOwnerAccepted(profile, owner, vaultOperator)) {
     throw new Error(
       `Engine owner is ${owner}, expected ${profile.owner} or EarnVault operator ${vaultOperator}`,
@@ -95,7 +114,7 @@ export async function inspectEarnDeployment(
   if (vaultIsAdministrator)
     throw new Error('EarnVault unexpectedly holds EarnShare administrator authority')
 
-  await inspectFactoryPredictions(client, profile, outputs, engine, factoryDeploymentId)
+  await inspectFactoryPredictions(client, profile, outputs, creationEngine, factoryDeploymentId)
   // Every capability's inspection, in registry order: binding mismatches throw, readiness is reported.
   const reports: Array<InspectionReport | undefined> = []
   for (const module of capabilityModules)

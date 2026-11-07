@@ -19,6 +19,7 @@
 // 4. Hands the funded destinations to the provider's own back office (Rain: a signed refund and the daily
 //    payment to its treasury) and writes the timings to cards/reports/cards-e2e-<provider>.json.
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -46,18 +47,22 @@ import {
   CALLBACK_GAS,
   OP_SPEND,
   assert,
+  assertWithdrawalDebit,
+  inputNames,
   median,
   names,
   outbox,
   outboxAbi,
   pathUsd,
-  portalEventsAbi,
   revertData,
+  revertDiagnostic,
   since,
   spendDataType,
   step,
   waitFor,
   withdrawalRequested,
+  withdrawalSettlement,
+  zoneTransactionFeeFromChain,
   zoneTokenAbi,
 } from '../bridge/src/support.js'
 import { deploySpendRouter, forgeEnv, portalAbi, sendL1Sync } from '../bridge/src/targets.js'
@@ -79,6 +84,7 @@ export const cardSpendType = parseAbiParameters([
 const cardProgramAbi = parseAbi([
   'struct CardSpend { address program; address token; uint256 amount; address destination; uint256 destinationHint; address vault; uint256 fromVault; uint256 maxShares; bytes32 ref; }',
   'function spend(CardSpend s)',
+  'error DestinationNotAuthorized(address destination)',
 ])
 const settledAbi = parseAbi([
   'event InputSpent(bytes32 indexed ref, address inputToken, uint256 inputConsumed, uint256 inputReturned)',
@@ -139,7 +145,7 @@ async function main() {
   const deployerPk = generatePrivateKey()
   const cardholder = privateKeyToAccount(generatePrivateKey())
   const refundRecipient = privateKeyToAccount(generatePrivateKey()).address
-  const run = `${name}.${Date.now()}`
+  const run = `${name}.${randomUUID()}`
   const ref = (label: string) => keccak256(toHex(`cards-e2e.${run}.${label}`))
 
   const l1 = await Network.startL1(zoneAdmin.address)
@@ -156,6 +162,7 @@ async function main() {
       await l1Public.faucet.fundSync({ account: a.address, timeout: 180_000 })
     }
     const deployed = provider.deploy({
+      chainId: l1.chainId,
       rpcUrl: l1.rpcUrl,
       deployerPk,
       cardholder: cardholder.address,
@@ -331,6 +338,14 @@ async function main() {
 
     // A key scoped to the program cannot move funds anywhere else.
     const stranger = privateKeyToAccount(generatePrivateKey()).address
+    // The same transfer is valid with the root key, so only the key scope differs.
+    await l1Public.simulateContract({
+      account: cardholder,
+      address: pathUsd,
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [stranger, 1n],
+    })
     const leakedTransfer = await providerL1
       .sendTransactionSync({
         calls: [
@@ -346,33 +361,50 @@ async function main() {
         feeToken: pathUsd,
       } as never)
       .then(
-        () => 'succeeded',
-        () => 'refused',
+        () => undefined,
+        (error: unknown) => error,
       )
     assert(
-      leakedTransfer === 'refused',
-      "the provider's key cannot transfer out of the cardholder's account",
+      revertData(leakedTransfer) === toFunctionSelector('CallNotAllowed()'),
+      `the provider's key cannot transfer out of the cardholder's account (expected CallNotAllowed; ${revertDiagnostic(leakedTransfer)})`,
     )
+    // Keep the allowed and forbidden destination probes funded and approved identically.
+    await write({
+      address: pathUsd,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [deployed.program, 1n],
+    })
+    const baseline = cardSpend(deployed, destination, 1n, ref('public.destination-probe'))
+    await l1Public.simulateContract({
+      account: cardholder,
+      address: deployed.program,
+      abi: cardProgramAbi,
+      functionName: 'spend',
+      args: [baseline],
+    })
     const leakedSpend = await l1Public
       .simulateContract({
         account: cardholder,
         address: deployed.program,
         abi: cardProgramAbi,
         functionName: 'spend',
-        args: [
-          cardSpend(
-            deployed,
-            { address: stranger, hint: 0n, label: 'stranger' },
-            1n,
-            ref('public.stranger'),
-          ),
-        ],
+        args: [{ ...baseline, destination: stranger }],
       })
       .then(
-        () => 'succeeded',
-        () => 'reverted',
+        () => undefined,
+        (error: unknown) => error,
       )
-    assert(leakedSpend === 'reverted', 'a spend to an address outside the program reverts')
+    await write({
+      address: pathUsd,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [deployed.program, 0n],
+    })
+    assert(
+      revertData(leakedSpend)?.startsWith(toFunctionSelector('DestinationNotAuthorized(address)')),
+      `a spend outside the program is refused specifically for its destination (expected DestinationNotAuthorized; ${revertDiagnostic(leakedSpend)})`,
+    )
     step(
       6,
       "The provider's key cannot transfer out, and a spend to an address outside the program reverts",
@@ -467,7 +499,7 @@ async function main() {
       )
     assert(
       revertData(transferError) === toFunctionSelector('Unauthorized()'),
-      'a Zone pathUSD transfer reverts with Unauthorized()',
+      `a Zone pathUSD transfer reverts with Unauthorized() (${revertDiagnostic(transferError)})`,
     )
     step(
       8,
@@ -591,14 +623,13 @@ async function main() {
       10,
       `${provider.name} requested a ${formatUnits(SPEND, 6)} pathUSD private spend, ${(data.length - 2) / 2}-byte callback, Zone receipt in ${zoneReceiptMs} ms`,
     )
-    const events = await waitFor(
-      'settlement on L1',
-      () => settled(privateRef, fromBlock),
-      (found) => found.length > 0,
-      100,
+    const { receipt, logs: settlementLogs } = await withdrawalSettlement(
+      l1Public,
+      portal,
+      request,
+      fromBlock,
     )
     const l1SettlementMs = since(accepted)
-    const receipt = await l1Public.getTransactionReceipt({ hash: events[0]!.transactionHash })
     assert(
       (await balanceOf(pathUsd, to.address)) - destinationBefore === SPEND,
       `${to.label} received exactly the spend`,
@@ -606,30 +637,36 @@ async function main() {
     const [spent] = parseEventLogs({
       abi: routerAbi,
       eventName: 'Spent',
-      logs: receipt.logs.filter((l) => isAddressEqual(l.address, deployed.router)),
+      logs: settlementLogs.filter((l) => isAddressEqual(l.address, deployed.router)),
     })
     assert(
       spent && spent.args.used === SPEND && spent.args.change === change,
       'the router used exactly the spend and returned the change',
     )
     assert(
-      !names(receipt.logs, cardholder.address),
-      'no L1 log of the settlement names the cardholder',
+      !names(receipt.logs, cardholder.address) &&
+        !inputNames(
+          await l1Public.getTransaction({ hash: receipt.transactionHash }),
+          cardholder.address,
+        ),
+      'no L1 log or input of the settlement names the cardholder',
     )
     fund(to.address, SPEND)
     step(
       11,
       `Settled on the L1 in ${l1SettlementMs} ms after the Zone receipt: ${to.label} paid, change returned, and none of the ${receipt.logs.length} logs names the cardholder`,
     )
-    const fee =
-      zoneBefore -
-      SPEND -
-      change -
-      withdrawalFee -
-      (await zoneBalance(pathUsd, request.blockNumber))
+    const fee = await zoneTransactionFeeFromChain(providerZone, request, cardholder.address)
     assert(
-      fee >= 0n,
-      'the request took no more than its amount, withdrawal fee and transaction fee',
+      withdrawalRequested(request).fee === withdrawalFee,
+      'the quoted withdrawal fee was charged',
+    )
+    assertWithdrawalDebit(
+      zoneBefore,
+      await zoneBalance(pathUsd, request.blockNumber),
+      SPEND + change,
+      withdrawalFee,
+      fee,
     )
     await waitFor(
       'the Zone balance after the spend and its change',
@@ -653,28 +690,32 @@ async function main() {
       await callbackData(cardSpend(deployed, refused, SPEND, bounceRef), SPEND),
     )
     assert(bounce.status === 'success', 'the refused spend was requested in the Zone')
-    const bounceFee =
-      bounceBefore -
-      SPEND -
-      change -
-      withdrawalFee -
-      (await zoneBalance(pathUsd, bounce.blockNumber))
-    const [processed] = await waitFor(
-      'the portal processing the refused spend',
-      () =>
-        l1Public.getContractEvents({
-          address: portal,
-          abi: portalEventsAbi,
-          eventName: 'WithdrawalProcessed',
-          args: { to: deployed.router, senderTag: withdrawalRequested(bounce).senderTag },
-          fromBlock: bounceFrom,
-        }),
-      (found) => found.length > 0,
-      250,
+    const bounceFee = await zoneTransactionFeeFromChain(providerZone, bounce, cardholder.address)
+    assert(
+      withdrawalRequested(bounce).fee === withdrawalFee,
+      'the bounce charged the quoted withdrawal fee',
+    )
+    assertWithdrawalDebit(
+      bounceBefore,
+      await zoneBalance(pathUsd, bounce.blockNumber),
+      SPEND + change,
+      withdrawalFee,
+      bounceFee,
+    )
+    const { receipt: bounceReceipt } = await withdrawalSettlement(
+      l1Public,
+      portal,
+      bounce,
+      bounceFrom,
+      false,
     )
     assert(
-      processed!.args.callbackSuccess === false,
-      'the router callback reverted for the refused destination',
+      !names(bounceReceipt.logs, cardholder.address) &&
+        !inputNames(
+          await l1Public.getTransaction({ hash: bounceReceipt.transactionHash }),
+          cardholder.address,
+        ),
+      'no L1 log or input of the refused settlement names the cardholder',
     )
     assert((await settled(bounceRef, bounceFrom)).length === 0, 'the refused spend settled nothing')
     assert(
@@ -705,6 +746,7 @@ async function main() {
       const maxShares = live + (live * SHARE_TOLERANCE_BPS) / 10_000n + 1n
       const input = maxShares + change
       const sharesBefore = await zoneBalance(earnShare)
+      const feeTokenBefore = await zoneBalance()
       const destBefore = await balanceOf(pathUsd, to.address)
       const earnFrom = await l1Public.getBlockNumber()
       const earnRef = ref('private.earn')
@@ -714,30 +756,57 @@ async function main() {
         await callbackData(cardSpend(deployed, to, SPEND, earnRef, { maxShares }), maxShares),
       )
       assert(earnRequest.status === 'success', 'the private Earn spend was requested')
-      const [earnEvent] = await waitFor(
-        'Earn settlement on L1',
-        () => settled(earnRef, earnFrom),
-        (found) => found.length > 0,
-        250,
+      const { receipt: earnReceipt, logs: earnLogs } = await withdrawalSettlement(
+        l1Public,
+        portal,
+        earnRequest,
+        earnFrom,
       )
-      const earnReceipt = await l1Public.getTransactionReceipt({ hash: earnEvent!.transactionHash })
+      const earnEvents = parseEventLogs({
+        abi: settledAbi,
+        eventName: 'InputSpent',
+        args: { ref: earnRef },
+        logs: earnLogs.filter((log) => isAddressEqual(log.address, deployed.program)),
+      })
+      assert(earnEvents.length === 1, 'one InputSpent for the source Earn withdrawal')
+      const earnEvent = earnEvents[0]!
+      const transactionFee = await zoneTransactionFeeFromChain(
+        providerZone,
+        earnRequest,
+        cardholder.address,
+      )
+      assertWithdrawalDebit(
+        sharesBefore,
+        await zoneBalance(earnShare, earnRequest.blockNumber),
+        input,
+        withdrawalFee,
+        0n,
+      )
+      assert(
+        feeTokenBefore - (await zoneBalance(pathUsd, earnRequest.blockNumber)) === transactionFee,
+        'the Earn request charged only its receipt fee in pathUSD',
+      )
       assert(
         (await balanceOf(pathUsd, to.address)) - destBefore === SPEND,
         `${to.label} received exactly the spend from Earn`,
       )
       assert(
-        !names(earnReceipt.logs, cardholder.address),
-        'no L1 log of the Earn settlement names the cardholder',
+        !names(earnReceipt.logs, cardholder.address) &&
+          !inputNames(
+            await l1Public.getTransaction({ hash: earnReceipt.transactionHash }),
+            cardholder.address,
+          ),
+        'no L1 log or input of the Earn settlement names the cardholder',
       )
       const consumed = (earnEvent!.args as { inputConsumed: bigint }).inputConsumed
       assert(consumed === live, 'the program burned exactly the live share cost')
       const after = await waitFor(
         'EarnShare change back in the Zone',
         () => zoneBalance(earnShare),
-        (v) => v > sharesBefore - input - withdrawalFee,
+        (v) => v === sharesBefore - consumed - withdrawalFee - depositFee,
       )
       assert(
-        sharesBefore - after <= consumed + withdrawalFee + depositFee,
+        sharesBefore - after === consumed + withdrawalFee + depositFee,
         'the Zone paid only the burned shares and fees',
       )
       fund(to.address, SPEND)

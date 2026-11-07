@@ -5,3 +5,5 @@ export * as Devnet from './devnet.js'
 export * as Network from './network.js'
 export { defaultEngineKind, localEngines } from './engines/index.js'
 export { localStack } from './stack.js'
+
+export { stackManifest } from './provenance.js'

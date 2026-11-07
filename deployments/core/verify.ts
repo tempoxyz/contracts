@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -15,7 +15,9 @@ import {
 } from 'viem'
 
 import {
+  assertFoundryProjectEnvironment,
   foundryProjectRoot,
+  foundryRpcEnvironment,
   foundryVerificationEnvironment,
   sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
@@ -57,6 +59,8 @@ export type VerificationDependencies = {
   spawn: typeof spawnSync
   /** Extra `forge verify-contract` arguments naming the deploy profile's compiler build. */
   compilerArguments: (root: string, environment: NodeJS.ProcessEnv) => string[]
+  /** The independent compiler input manifest, never paths supplied by the verifier. */
+  sourcePaths: (root: string, contract: string, environment: NodeJS.ProcessEnv) => readonly string[]
 }
 
 type SourceVerificationOptions<Record = Pick<EarnDeploymentRecord, 'actions' | 'addresses'>> = {
@@ -66,6 +70,8 @@ type SourceVerificationOptions<Record = Pick<EarnDeploymentRecord, 'actions' | '
   record: Record
   root: string
   rpcUrl: string
+  /** Request canonical re-verification of invalid entries; matching entries are left unchanged. */
+  resubmit?: boolean
 }
 
 /** Verifies every deployment-owned Solidity artifact and classifies native/proxy outputs. */
@@ -76,7 +82,7 @@ export async function verifyDeploymentSources(
   return inspectDeploymentSources(options, true, dependencies)
 }
 
-/** Rechecks recorded verifier results and proxy provenance without submitting verifier jobs. */
+/** Rechecks recorded evidence; explicit resubmission repairs verifier entries, never the recorded source identity. */
 export async function verifyRecordedDeploymentSources(
   options: SourceVerificationOptions<EarnDeploymentRecord>,
   dependencies: Partial<VerificationDependencies> = {},
@@ -97,8 +103,31 @@ export async function verifyRecordedDeploymentSources(
       `Recorded deployment verifier ${options.record.source.verifierUrl} does not match trusted verifier ${verifierUrl}`,
     )
   }
-  const observed = await inspectDeploymentSources(options, false, dependencies)
-  if (!isDeepStrictEqual(observed.contracts, options.record.source.contracts)) {
+  const observed = await inspectDeploymentSources(
+    options,
+    options.resubmit === true,
+    dependencies,
+    options.record.source.contracts,
+  )
+  const compatible = Object.fromEntries(
+    Object.entries(observed.contracts).map(([key, value]) => {
+      const previous =
+        options.record.source.contracts[key as keyof typeof options.record.source.contracts]
+      // A stricter verifier match strengthens the same source evidence; downgrades remain a failure.
+      return [
+        key,
+        value &&
+        previous &&
+        'match' in value &&
+        'match' in previous &&
+        value.match === 'exact_match' &&
+        previous.match === 'match'
+          ? { ...value, match: 'match' }
+          : value,
+      ]
+    }),
+  )
+  if (!isDeepStrictEqual(compatible, options.record.source.contracts)) {
     throw new Error('Recorded deployment source verification does not match current provenance')
   }
 }
@@ -107,42 +136,49 @@ async function inspectDeploymentSources(
   options: SourceVerificationOptions,
   submitMissing: boolean,
   dependencies: Partial<VerificationDependencies>,
+  recordedSources?: DeploymentSource['contracts'],
 ): Promise<Pick<DeploymentSource, 'contractVerification' | 'contracts' | 'verifierUrl'>> {
   if (!isHostedDeploymentChain(options.profile.chainId)) {
     return { contractVerification: 'not-applicable', contracts: {}, verifierUrl: null }
   }
+  const addresses = options.record.addresses as Record<string, Address>
   const context: VerificationContext = {
     ...options,
     chainId: options.profile.chainId,
     verifierUrl: tempoVerifierUrl,
     runtime: verificationRuntime(dependencies),
     submitMissing,
+    recordedSources: recordedSources
+      ? new Map(
+          Object.entries(addresses).map(([key, address]) => [
+            address.toLowerCase(),
+            recordedSources[key as keyof typeof recordedSources],
+          ]),
+        )
+      : undefined,
     compilerArguments: new Map(),
   }
-  const addresses = options.record.addresses as Record<string, Address>
   const engine = requiredOutput(addresses, 'engine')
   const earnVault = requiredOutput(addresses, 'earnVault')
   const earnFees = requiredOutput(addresses, 'earnFees')
   const contracts: DeploymentSource['contracts'] = {}
 
   const { engineContract, engineSource } = engineDefinitions[options.profile.engine.kind]
-  if (deploysEngine(options.profile)) {
-    contracts.engine = await verifySource(context, {
-      address: engine,
-      constructorArgs: profileEngineFactory(options.profile).engineConstructorArgs({
-        venue: options.profile.engine.venue,
-        owner: options.profile.deployer,
-      }),
-      contract: `${engineSource}:${engineContract}`,
-      creationTransactionHash: transactionFor(options.record, 'deploy-engine'),
-      name: engineContract,
-    })
-  } else {
-    contracts.engine = await requireExistingSource(context, engine, {
-      name: engineContract,
-      contract: `${engineSource}:${engineContract}`,
-    })
-  }
+  const verifyEngine = deploysEngine(options.profile)
+    ? await prepareSource(context, {
+        address: engine,
+        constructorArgs: profileEngineFactory(options.profile).engineConstructorArgs({
+          venue: options.profile.engine.venue,
+          owner: options.profile.deployer,
+        }),
+        contract: `${engineSource}:${engineContract}`,
+        creationTransactionHash: transactionFor(options.record, 'deploy-engine'),
+        name: engineContract,
+      })
+    : await prepareExistingSource(context, engine, {
+        name: engineContract,
+        contract: `${engineSource}:${engineContract}`,
+      })
 
   const {
     tip20Factory,
@@ -164,7 +200,7 @@ async function inspectDeploymentSources(
       `EarnVault proxy implementation is ${decodedProxyImplementation}, expected ${vaultImplementation}`,
     )
   }
-  const proxySource = await verifySource(context, {
+  const verifyProxy = await prepareSource(context, {
     address: earnVault,
     constructorArgs: encodeAbiParameters(parseAbiParameters('address implementation, bytes data'), [
       vaultImplementation,
@@ -174,14 +210,6 @@ async function inspectDeploymentSources(
     creationTransactionHash: transactionFor(options.record, 'deploy-core'),
     name: 'ERC1967Proxy',
   })
-  contracts.earnVault = {
-    kind: 'erc1967-proxy',
-    name: 'ERC1967Proxy',
-    match: proxySource.match,
-    sourceInputsHash: proxySource.sourceInputsHash,
-    implementation: vaultImplementation,
-    implementationCodeHash: vaultImplementationCodeHash,
-  }
 
   await requireMinimalProxy(options.client, earnFees, feesImplementation)
   contracts.earnFees = {
@@ -202,8 +230,9 @@ async function inspectDeploymentSources(
       (left, right) =>
         deploymentAddressKeys.indexOf(left.output) - deploymentAddressKeys.indexOf(right.output),
     )
+  const prepared = []
   for (const { id, project, output, contract, constructorArgs } of created) {
-    contracts[output] = await verifySource(context, {
+    const verify = await prepareSource(context, {
       root: foundryProjectRoot(options.root, project),
       address: requiredOutput(addresses, output),
       constructorArgs: constructorArgs(options.profile, addresses),
@@ -211,7 +240,21 @@ async function inspectDeploymentSources(
       creationTransactionHash: transactionFor(options.record, id),
       name: contract.slice(contract.lastIndexOf(':') + 1),
     })
+    prepared.push({ output, verify })
   }
+
+  // Validate every planned repair before any verifier submission can change historical evidence.
+  contracts.engine = await verifyEngine()
+  const proxySource = await verifyProxy()
+  contracts.earnVault = {
+    kind: 'erc1967-proxy',
+    name: 'ERC1967Proxy',
+    match: proxySource.match,
+    sourceInputsHash: proxySource.sourceInputsHash,
+    implementation: vaultImplementation,
+    implementationCodeHash: vaultImplementationCodeHash,
+  }
+  for (const { output, verify } of prepared) contracts[output] = await verify()
 
   return { contractVerification: 'verified', contracts, verifierUrl: context.verifierUrl }
 }
@@ -230,10 +273,12 @@ export async function verifyContractSource(
     /** Fully qualified `<source>:<name>`. */
     contract: string
     constructorArgs: Hex
+    creationTransactionHash?: Hex
+    resubmit?: boolean
   },
   dependencies: Partial<VerificationDependencies> = {},
 ) {
-  const { address, contract, constructorArgs, ...target } = options
+  const { address, contract, constructorArgs, creationTransactionHash, ...target } = options
   return verifySource(
     {
       ...target,
@@ -242,7 +287,13 @@ export async function verifyContractSource(
       submitMissing: true,
       compilerArguments: new Map(),
     },
-    { address, constructorArgs, contract, name: contract.slice(contract.lastIndexOf(':') + 1) },
+    {
+      address,
+      constructorArgs,
+      creationTransactionHash,
+      contract,
+      name: contract.slice(contract.lastIndexOf(':') + 1),
+    },
   )
 }
 
@@ -255,43 +306,91 @@ function verificationRuntime(
     readSource: (path) => readFileSync(path, 'utf8'),
     spawn: spawnSync,
     compilerArguments: sourceVerificationCompilerArguments,
+    sourcePaths: (root, contract, environment) => {
+      assertFoundryProjectEnvironment(root)
+      const input = JSON.parse(
+        execFileSync(
+          'forge',
+          [
+            'verify-contract',
+            '0x0000000000000000000000000000000000000001',
+            contract,
+            '--show-standard-json-input',
+            ...sourceVerificationCompilerArguments(root, environment),
+          ],
+          {
+            cwd: root,
+            encoding: 'utf8',
+            env: foundryVerificationEnvironment(environment),
+            maxBuffer: 32 * 1024 * 1024,
+          },
+        ),
+      ) as { sources?: Record<string, unknown> }
+      if (!input.sources || Object.keys(input.sources).length === 0)
+        throw new Error('Compiler returned no source input manifest')
+      return Object.keys(input.sources)
+    },
     ...dependencies,
   }
 }
 
-async function requireExistingSource(
+async function prepareExistingSource(
   context: VerificationContext,
   address: Address,
   target: { contract: string; name: string },
-): Promise<Extract<ContractSourceVerification, { kind: 'source' }>> {
+) {
   const contract = await lookupContract(context, address)
   if (!contract) {
     throw new Error(`Existing ${target.name} ${address} is not source verified`)
   }
-  return sourceMatch(context, contract, { ...target, address })
+  const verified = sourceMatch(context, contract, { ...target, address })
+  return async () => verified
 }
 
-async function verifySource(
-  context: VerificationContext,
-  target: {
-    /** The Foundry project that built the contract; Earn's when omitted. */
-    root?: string | undefined
-    address: Address
-    constructorArgs?: Hex | undefined
-    contract: string
-    creationTransactionHash?: Hex | undefined
-    name: string
-  },
-): Promise<Extract<ContractSourceVerification, { kind: 'source' }>> {
-  const root = target.root ?? context.root
+type SourceTarget = {
+  /** The Foundry project that built the contract; Earn's when omitted. */
+  root?: string | undefined
+  address: Address
+  constructorArgs?: Hex | undefined
+  contract: string
+  creationTransactionHash?: Hex | undefined
+  name: string
+}
+
+async function verifySource(context: VerificationContext, target: SourceTarget) {
+  return (await prepareSource(context, target))()
+}
+
+async function prepareSource(context: VerificationContext, target: SourceTarget) {
   const existing = await lookupContract(context, target.address)
   if (existing?.match) {
-    return sourceMatch(context, existing, target)
+    try {
+      // Even an explicit repair must leave good entries alone: exact matches cannot be replaced.
+      const verified = sourceMatch(context, existing, target)
+      return async () => verified
+    } catch (error) {
+      if (!context.submitMissing || !context.resubmit) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Retry with --resubmit-verification to request canonical re-verification; the verifier may require operator repair.`,
+          { cause: error },
+        )
+      }
+    }
   }
   if (!context.submitMissing) {
     throw new Error(`${target.name} ${target.address} does not have a source match`)
   }
 
+  requireRecordedRepairSources(context, target)
+  return () => submitSource(context, target, existing)
+}
+
+async function submitSource(
+  context: VerificationContext,
+  target: SourceTarget,
+  existing: VerifiedContract | undefined,
+): Promise<Extract<ContractSourceVerification, { kind: 'source' }>> {
+  const root = target.root ?? context.root
   let compilerArguments = context.compilerArguments.get(root)
   if (!compilerArguments) {
     compilerArguments = context.runtime.compilerArguments(root, context.environment)
@@ -301,6 +400,9 @@ async function verifySource(
   let lastTransient = false
   const maximumAttempts = 6
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+    assertFoundryProjectEnvironment(root)
+    // Inputs can change while another repair runs or while a transient failure backs off.
+    requireRecordedRepairSources(context, target)
     const result = context.runtime.spawn(
       'forge',
       [
@@ -311,8 +413,6 @@ async function verifySource(
         root,
         '--chain',
         String(context.chainId),
-        '--rpc-url',
-        context.rpcUrl,
         '--verifier',
         'sourcify',
         '--verifier-url',
@@ -329,7 +429,10 @@ async function verifySource(
       {
         cwd: root,
         encoding: 'utf8',
-        env: foundryVerificationEnvironment(context.environment) as NodeJS.ProcessEnv,
+        env: foundryRpcEnvironment(
+          foundryVerificationEnvironment(context.environment),
+          context.rpcUrl,
+        ) as NodeJS.ProcessEnv,
       },
     )
     if (result.error) throw result.error
@@ -337,6 +440,11 @@ async function verifySource(
     const jobId =
       result.status === 0 ? verifierOutput.match(/Verification Job ID: `([^`]+)`/)?.[1] : undefined
     if (!jobId) {
+      // Tempo's verifier refuses replacement of exact matches, including entries missing creation metadata.
+      if (existing?.match && /already[_ ]verified/i.test(verifierOutput))
+        throw new Error(
+          `Source verification failed for ${target.name} ${target.address}: the verifier refused replacement of its existing entry. Verifier-side repair is required; creation and source identity checks remain enforced.`,
+        )
       // A submission the verifier rate-limited, failed or never answered is retried; a compile or argument error is definitive.
       lastError =
         result.status === 0
@@ -449,7 +557,7 @@ function sourceMatch(
     name: string
   },
 ): Extract<ContractSourceVerification, { kind: 'source' }> {
-  if (!contract.match) {
+  if (contract.match !== 'match' && contract.match !== 'exact_match') {
     throw new Error(`${target.name} ${target.address} has no source match`)
   }
   if (
@@ -467,7 +575,6 @@ function sourceMatch(
   }
   if (
     target.creationTransactionHash &&
-    contract.transactionHash &&
     contract.transactionHash?.toLowerCase() !== target.creationTransactionHash.toLowerCase()
   ) {
     throw new Error(
@@ -480,12 +587,72 @@ function sourceMatch(
     target.contract,
     target.root ?? context.root,
   )
+  const recorded = recordedSource(context, target)
+  if (
+    recorded &&
+    (recorded.sourceInputsHash !== sourceInputsHash ||
+      (recorded.match === 'exact_match' && contract.match !== 'exact_match'))
+  )
+    throw new Error(
+      `Recorded deployment source verification does not match current provenance for ${target.name}`,
+    )
   return {
     kind: 'source',
     name: target.name,
     match: contract.match,
     sourceInputsHash,
   }
+}
+
+function recordedSource(context: VerificationContext, target: Pick<SourceTarget, 'address'>) {
+  if (!context.recordedSources) return undefined
+  const recorded = context.recordedSources.get(target.address.toLowerCase())
+  if (!recorded || !('sourceInputsHash' in recorded))
+    throw new Error(`Recorded source identity is missing for ${target.address}`)
+  return recorded
+}
+
+function requireRecordedRepairSources(context: VerificationContext, target: SourceTarget) {
+  const recorded = recordedSource(context, target)
+  if (!recorded) return
+  try {
+    const root = target.root ?? context.root
+    const paths = context.runtime.sourcePaths(root, target.contract, context.environment)
+    const sourcePath = target.contract.slice(0, target.contract.lastIndexOf(':'))
+    if (!paths.includes(sourcePath)) throw new Error('Compiler input manifest omits the target')
+    const sources = paths.map((path): [string, string] => [
+      path,
+      context.runtime.readSource(checkedSourcePath(context, root, path)),
+    ])
+    if (sourceInputsHash(sources) !== recorded.sourceInputsHash)
+      throw new Error('Current checkout does not reproduce the recorded source-input hash')
+  } catch (cause) {
+    throw new Error(
+      `Cannot repair ${target.name} ${target.address} from this checkout. Use the recorded source revision and its pinned dependencies before resubmitting.`,
+      { cause },
+    )
+  }
+}
+
+function checkedSourcePath(context: VerificationContext, projectRoot: string, path: string) {
+  const localPath = resolve(projectRoot, path)
+  const fromRoot = relative(resolve(context.root, '..'), localPath)
+  if (fromRoot === '' || fromRoot.startsWith('..') || isAbsolute(fromRoot))
+    throw new Error(`Verifier source path ${path} escapes the repository root`)
+  return localPath
+}
+
+function sourceInputsHash(sources: [string, string][]) {
+  // Fixed collation preserves hashes across operator locales, including Czech/Slovak 'ch'.
+  return keccak256(
+    stringToBytes(
+      JSON.stringify(
+        sources
+          .sort(([left], [right]) => left.localeCompare(right, 'en'))
+          .map(([path, content]) => [path, keccak256(stringToBytes(content))]),
+      ),
+    ),
+  )
 }
 
 function requireCanonicalSources(
@@ -501,20 +668,23 @@ function requireCanonicalSources(
   }
   // Source paths are relative to the contract's Foundry project, and a sibling project may import
   // Earn's sources (`../earn/src/...`); every one must resolve inside this checkout.
-  const project = resolve(projectRoot)
-  const root = resolve(context.root, '..')
-  // A fixed collation: the default follows the operator's locale (Czech and Slovak sort 'ch' after
-  // 'h'), which would change the recorded hash. 'en' matches what existing records were hashed with.
-  const entries = Object.entries(sources).sort(([left], [right]) => left.localeCompare(right, 'en'))
+  const entries = Object.entries(sources)
+  if (!context.recordedSources) {
+    const expected = context.runtime.sourcePaths(
+      projectRoot,
+      fullyQualifiedName,
+      context.environment,
+    )
+    if (!isDeepStrictEqual([...expected].sort(), Object.keys(sources).sort()))
+      throw new Error(
+        `Verifier source paths do not match the complete compiler input manifest for ${fullyQualifiedName}`,
+      )
+  }
   for (const [relativePath, source] of entries) {
     if (typeof source.content !== 'string')
       throw new Error(`Verifier did not return source content for ${relativePath}`)
-    const localPath = resolve(project, relativePath)
-    const fromRoot = relative(root, localPath)
-    if (fromRoot === '' || fromRoot.startsWith('..') || isAbsolute(fromRoot)) {
-      throw new Error(`Verifier source path ${relativePath} escapes the repository root`)
-    }
-    if (!context.submitMissing) continue
+    const localPath = checkedSourcePath(context, projectRoot, relativePath)
+    if (context.recordedSources) continue
     let canonical: string
     try {
       canonical = context.runtime.readSource(localPath)
@@ -525,13 +695,7 @@ function requireCanonicalSources(
       throw new Error(`Verifier source ${relativePath} does not match the canonical checkout`)
     }
   }
-  return keccak256(
-    stringToBytes(
-      JSON.stringify(
-        entries.map(([path, source]) => [path, keccak256(stringToBytes(source.content!))]),
-      ),
-    ),
-  )
+  return sourceInputsHash(entries.map(([path, source]) => [path, source.content!]))
 }
 
 async function requireMinimalProxy(
@@ -564,6 +728,9 @@ type VerificationContext = {
   verifierUrl: string
   runtime: VerificationDependencies
   submitMissing: boolean
+  /** Completed records trust their recorded inputs, independently of permission to submit repairs. */
+  recordedSources?: Map<string, ContractSourceVerification | undefined> | undefined
+  resubmit?: boolean | undefined
   /** Each project's compiler arguments, resolved on its first submission. */
   compilerArguments: Map<string, string[]>
 }

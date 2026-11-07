@@ -6,6 +6,7 @@ import {
   type Address,
   type Chain,
   type Client,
+  type Hex,
   type PublicClient,
   type Transport,
 } from 'viem'
@@ -19,9 +20,13 @@ import { accessMemberContracts, capabilityModules } from '../../../../deployment
 import { transferPolicyId } from './profile.js'
 
 type ReadClient = Pick<PublicClient, 'readContract'>
-type LogClient = ReadClient & Pick<PublicClient, 'getBlockNumber' | 'getLogs'>
+type LogClient = Client & ReadClient & Pick<PublicClient, 'getBlockNumber' | 'getLogs'>
 
-const redeemRequested = getAbiItem({ abi: earnVaultAbi, name: 'RedeemRequested' })
+const redeemEvents = [
+  getAbiItem({ abi: earnVaultAbi, name: 'RedeemRequested' }),
+  getAbiItem({ abi: earnVaultAbi, name: 'RedeemFinalized' }),
+  getAbiItem({ abi: earnVaultAbi, name: 'RedeemCancelled' }),
+] as const
 
 /**
  * Required policy membership, derived from deployment principals: every fee recipient, the EarnVault
@@ -140,8 +145,8 @@ async function currentFeeRecipients(client: ReadClient, earnFees: Address) {
 }
 
 /**
- * Refuses to remove a required protocol member or an account with an open async claim, which
- * could then never be paid.
+ * Refuses to remove an identity used by a required protocol member or open async claim receiver,
+ * preserving share transfers and claim cancellation even when the receiver is a virtual alias.
  */
 export async function assertAccessRemovalSafe(
   client: LogClient,
@@ -149,36 +154,68 @@ export async function assertAccessRemovalSafe(
   target: Address,
 ) {
   requireProtectedAccess(deployment)
+  const resolvedTarget = await resolveAccessAddress(client, target)
   const required = await requiredAccessMembers(client, deployment)
-  if (required.some((address) => getAddress(address) === getAddress(target))) {
+  const identities = await Promise.all(
+    required.map((member) => resolveAccessAddress(client, member)),
+  )
+  if (identities.includes(resolvedTarget)) {
     throw new Error(`Refusing to remove required protocol address ${target}`)
   }
-  if (!deployment.metadata.deployedAtBlock) return
+  const anchor = deployment.metadata?.deployedAtBlock
+  if (typeof anchor !== 'string' || !/^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(anchor)) {
+    throw new Error('Access removal requires a valid deployedAtBlock claim scan anchor')
+  }
   const head = await client.getBlockNumber({ cacheTime: 0 })
-  const firstBlock = BigInt(deployment.metadata.deployedAtBlock)
+  const firstBlock = BigInt(anchor)
+  if (firstBlock > head) {
+    throw new Error('Access removal claim scan anchor is beyond the current chain head')
+  }
+  const outstanding = new Set<Hex>()
   const maxBlockRange = 100_000n
   for (let fromBlock = firstBlock; fromBlock <= head; fromBlock += maxBlockRange) {
     const toBlock = fromBlock + maxBlockRange - 1n < head ? fromBlock + maxBlockRange - 1n : head
+    // A receiver-topic filter would miss aliases whose effective policy identity is the target.
     const logs = await client.getLogs({
       address: deployment.contracts.earnVault,
-      event: redeemRequested,
+      events: redeemEvents,
       fromBlock,
       toBlock,
-      args: { receiver: target },
+      strict: true,
     })
+    // Apply terminal events in order: a later request may reuse a closed engine request ID.
+    logs.sort((a, b) =>
+      a.blockNumber === b.blockNumber
+        ? a.logIndex - b.logIndex
+        : a.blockNumber < b.blockNumber
+          ? -1
+          : 1,
+    )
     for (const log of logs) {
-      const requestId = log.args.requestId
-      if (!requestId) continue
-      const pending = await client.readContract({
-        address: deployment.contracts.earnVault,
-        abi: earnVaultAbi,
-        functionName: 'pendingRedeem',
-        args: [requestId],
-      })
-      if (pending.open) {
-        throw new Error(`Address ${target} has open async claim ${requestId}; removal is unsafe`)
-      }
+      if (log.eventName === 'RedeemRequested') outstanding.add(log.args.requestId)
+      else outstanding.delete(log.args.requestId)
     }
+  }
+  // Closed history needs no eth_call; cap concurrency for the claims that remain outstanding.
+  const requestIds = [...outstanding]
+  const readBatchSize = 16
+  for (let offset = 0; offset < requestIds.length; offset += readBatchSize) {
+    await Promise.all(
+      requestIds.slice(offset, offset + readBatchSize).map(async (requestId) => {
+        const pending = await client.readContract({
+          address: deployment.contracts.earnVault,
+          abi: earnVaultAbi,
+          functionName: 'pendingRedeem',
+          args: [requestId],
+        })
+        if (!pending.open) return
+        // An unregistered alias has no policy identity to remove. RPC errors still fail closed.
+        const receiver = await Actions.virtualAddress.resolve(client, { address: pending.receiver })
+        if (receiver && getAddress(receiver) === resolvedTarget) {
+          throw new Error(`Address ${target} has open async claim ${requestId}; removal is unsafe`)
+        }
+      }),
+    )
   }
 }
 
@@ -194,17 +231,18 @@ export async function setAccessEligibility(parameters: {
   wallet: Client<Transport, Chain, Account>
 }) {
   const { access } = requireProtectedAccess(parameters.deployment)
+  const target = await resolveAccessAddress(parameters.client, parameters.target)
   if (!parameters.allowed) {
-    await assertAccessRemovalSafe(parameters.client, parameters.deployment, parameters.target)
+    await assertAccessRemovalSafe(parameters.client, parameters.deployment, target)
   }
   const whitelist = {
     policyId: BigInt(access.transferPolicyId),
-    address: parameters.target,
+    address: target,
     allowed: parameters.allowed,
   }
   await simulateContract(parameters.wallet, Actions.policy.modifyWhitelist.call(whitelist))
   const result = await Actions.policy.modifyWhitelistSync(parameters.wallet, whitelist)
-  const status = await readAccessStatus(parameters.client, parameters.deployment, parameters.target)
+  const status = await readAccessStatus(parameters.client, parameters.deployment, target)
   if (status.eligible !== parameters.allowed) {
     throw new Error('Policy readback did not match the requested membership update')
   }

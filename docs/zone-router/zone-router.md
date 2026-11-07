@@ -77,16 +77,20 @@ contracts:
    one in one batch). The lifecycle grants pool, gateway and account admission with its own keys only when it
    deployed the factory itself; for a router from a factory the profile names, each is always handed
    off, for the pool owner or the Portal administrator to check that factory's verified source
-   first.
+   first. Before any automatic Portal role grant, read-only constructor simulations of the reviewed local
+   factory and router builds must match the deployed runtime exactly, including their immutable
+   values. A matching getter or address alone is insufficient; missing evidence stops the grant.
 
 The module also lists the router and its Zone's Portal, Messenger, Outbox and sequencers, and its
-spenders when that Portal enables EarnShare, as
-[required members](../earn/modules/access.md#required-members) of EarnShare's access policy.
+spenders when the route is intended to move EarnShare, as
+[required members](../earn/modules/access.md#required-members) of EarnShare's access policy. This
+includes Earn operations, a same-Zone sibling private Earn router, or a Portal that already enables
+EarnShare; unrelated Spend-only modes do not require those memberships.
 `pnpm earn verify` rechecks the factory provenance and mode and reports gateway, account,
 token and conversion readiness, and for each spender: that its `ROUTER_FACTORY()` is the router's
 factory, that it is a `CardSpender` the release `CardFactory` for that factory deployed or the
 release `SendSpender` for its settings (both predicted from this checkout's builds), and, on a
-protected EarnShare its Portal enables, that the policy admits it. A profile deploys no spender: it lists deployed ones in
+protected EarnShare the route is intended to move, that the policy admits it. A profile deploys no spender: it lists deployed ones in
 `spenders`, such as a release's `SendSpender` or a card program's `CardSpender`.
 
 Outside a profile, the **Zone Router Release** workflow deploys and source-verifies a

@@ -35,6 +35,7 @@ import {
   cardSpent,
   findCall,
   names,
+  inputNames,
   OP_SPEND,
   outbox,
   outboxAbi,
@@ -45,6 +46,7 @@ import {
   step,
   waitFor,
   withdrawalRequested,
+  withdrawalLogs,
   type CallFrame,
 } from './support.js'
 import {
@@ -308,7 +310,8 @@ export async function routerFlows(
       feeToken: pathUsd,
     })
     assert(request.status === 'success', `${flow}: the Zone accepted the withdrawal request`)
-    const { senderTag } = withdrawalRequested(request)
+    const withdrawal = withdrawalRequested(request)
+    const { senderTag } = withdrawal
     const [processed] = await waitFor(
       `${flow}: the portal processing the withdrawal`,
       () =>
@@ -326,7 +329,12 @@ export async function routerFlows(
     const settlement: Settlement = {
       ok: processed!.args.callbackSuccess === true,
       fee,
-      logs: receipt.logs,
+      logs: withdrawalLogs(
+        receipt.logs,
+        t.zone.portal,
+        withdrawal,
+        processed!.args.callbackSuccess === true,
+      ),
       blockNumber: receipt.blockNumber,
     }
     if (t.l1.tracesCalls && settlement.ok) {
@@ -343,7 +351,11 @@ export async function routerFlows(
     }
     gas[flow] = settlement.callbackGas ?? null
     assert(
-      !names(receipt.logs, cardholder.address),
+      !names(receipt.logs, cardholder.address) &&
+        !inputNames(
+          await l1Public.getTransaction({ hash: receipt.transactionHash }),
+          cardholder.address,
+        ),
       `${flow}: no L1 log of the settlement names the cardholder`,
     )
     return settlement
@@ -501,7 +513,7 @@ export async function routerFlows(
         spent.change === change,
       'stablecoin card spend: the CardSpender used the spend, the router returned the change',
     )
-    const carded = cardSpent(s.logs, program.program, ref('card.stablecoin'))
+    const carded = cardSpent(s.logs, program.program, ref('card.stablecoin'), program.clone)
     assert(
       carded.isPrivate && isAddressEqual(carded.payer, r.router),
       'stablecoin card spend: the CardSpender recorded a private spend paid by the router',
@@ -534,7 +546,7 @@ export async function routerFlows(
     const spent = routerEvent(s, 'Spent')
     const used = spent.used as bigint
     assert(used <= quote, "Earn card spend: burned no more shares than Bridge's quote")
-    const carded = cardSpent(s.logs, program.program, ref('card.earn'))
+    const carded = cardSpent(s.logs, program.program, ref('card.earn'), program.clone)
     assert(
       carded.isPrivate && isAddressEqual(carded.payer, r.router) && carded.sharesUsed === used,
       'Earn card spend: the CardSpender recorded a private spend of the shares the router used',

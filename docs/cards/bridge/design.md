@@ -411,8 +411,10 @@ Tests and other pages cite these by number.
 3. No signatures and no on-chain action IDs. Bridge submits every spend and dedupes off chain.
 4. Refunds are stablecoin through Bridge's orchestration: public to the wallet, private into the Zone
    through the portal's own `depositEncrypted`.
-5. A spend settles in the stablecoin it is funded from. Bridge accepts any stablecoin, so there is no
-   conversion pool.
+5. A spend settles in its funded token without a conversion pool. The stable-token path has no
+   onchain token allowlist; an Earn leg must use its allowed vault's actual asset. The backend must
+   enforce its accepted chain and token policy and match the complete
+   [settlement identity](bridge-integration.md#settlement-identity) before crediting a card pull.
 6. One `CardSpender` per program, deployed by `CardFactory` with the program's `BridgeProvider`, with no
    owner and no pause of its own. Cardholders' keys and the Zone's router name the program, and
    it pays through the clone, so the factory keeps governing. A Zone's router lists the programs it

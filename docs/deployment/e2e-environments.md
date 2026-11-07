@@ -70,10 +70,13 @@ locally to be selected by some variant's `--all` run, so CI cannot silently drop
 Every selected case reports `PASS`, `FAIL`, or `BLOCKED`; `BLOCKED` (`E2ePrerequisiteError`) is
 reserved for advertised behavior stopped by an external dependency. Cleanup runs in `finally`, and
 post-case integrity checks verify that the EarnVault's pause, operator, and guardian state, the
-EarnShare transfer policy, and each module's `integrity` state are unchanged. Every run writes a
+EarnShare transfer policy, custody and accounting, and each module's `integrity` state are
+unchanged except for the tested economic result. Pre-existing raw vault residue is reported
+separately; case-induced custody changes or lost backing fail integrity checks. Every run writes a
 JSON result under `e2e/.results/` (`schemaVersion: 2`) with environment, engine, deployment,
 profile, source commit and dirty state, and per-case `id`, `status`, duration, and failure or
-blocker. Cases that run a public deposit or redemption, or a Zone deposit or redemption, also print
+blocker. `selectedCases` preserves the complete selected plan, and `completed: false` marks an
+interrupted run while retaining earlier case outcomes. Cases that run a public deposit or redemption, or a Zone deposit or redemption, also print
 `TIMING` lines and record those actions' [phases](benchmarks.md#phases) as `timings`, so every
 environment's run reports the same latency split as the benchmark.
 
@@ -86,11 +89,18 @@ aggregated as `Required / Local E2E`.
 
 The deployment profile is the hosted acceptance input: `pnpm e2e:profile <profile.json>` loads the
 profile's adjacent `deployment.json` and runs the acceptance cases its stack supports. Before any
-case, hosted validation repeats the shared deployment inspection and fails on what that inspection
+case, hosted validation checks the live L1 chain ID and genesis even without synthetic fixtures,
+repeats the shared deployment inspection, and fails on what that inspection
 only reports: a blocked capability or engine readiness, a contract other than EarnVault holding the
 EarnShare issuer role, unaligned accounting, a proxy implementation without code, or a missing
 required TIP-403 member. It then checks EarnVault custody at rest, the fixture's live runtime and
-funder, and each module's `validate`.
+funder, and each module's `validate`. Mirrored TIP-403 policy checks share the user's authorization
+token store but use the zero-address `eth_call` caller for the global policy view, on the configured
+policy/submission endpoint. Before funding or changing membership, access cases probe that read;
+a restricted endpoint that cannot expose global policy reports `BLOCKED`, with no endpoint fallback.
+Private actor balance reads keep their own caller context. Tests needing independent user, recipient, or privileged roles
+block when those actors alias; cleanup restores each changed role or activity independently and
+retains recovery instructions if any restoration fails.
 
 `--validate-only` runs only these read-only validations, with no signer, funding, or cases, and
 inspects the profile's live Zone when `TEMPO_API_KEY` or `ZONE_RPC_URL` is set
@@ -100,7 +110,9 @@ inspects the profile's live Zone when `TEMPO_API_KEY` or `ZONE_RPC_URL` is set
 external dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router assets and pool) with
 local equivalents; fees, access kind, principals, the router, and the reward
 contracts its `targetYield` and `boostRewards` imply are deployed as authored, at different
-deterministic addresses. Variant runs without a profile deploy both reward contracts so
+deterministic addresses. Profiles with a general `zoneRouter` are rejected before local setup
+because that router's source-chain dependencies cannot yet be localized; the Earn `zone` route is
+supported. Variant runs without a profile deploy both reward contracts so
 `--group rewards` exercises the controller. Tempo API owns campaign calculation, registration,
 scheduling, and distribution E2E coverage.
 
@@ -116,6 +128,25 @@ callback-gateway registration is not enforced), and `hasRole(account, role)` (`A
 `CallbackGateway` is `3`). Token enablement and TIP-403 membership do not replace Portal
 permissions, newly generated accounts also need admission while enforcement is on, and CI never
 changes Portal admission or enforcement.
+
+Private-flow proof reads also require the configured endpoint to expose canonical Inbox/Outbox
+logs, receipts, and system calldata. Before private funding, withdrawals, or migration, the harness
+queries both system addresses at the current block through a read-only proof client, after checking
+its chain ID and genesis against the configured Zone and actor endpoint. An empty result is valid;
+rejection of that query blocks the flow before a write. Disposable local runs explicitly use their
+own Zone's operator endpoint for proofs, while actor balances and privacy checks retain their
+caller-token clients. Hosted and devnet proofs retain the configured user endpoint and authority;
+there is no fallback to a submission or operator endpoint. Native caller-token RPC redaction
+excludes these system logs, so those endpoints report `BLOCKED`, never a balance-only `PASS`.
+Every operation must still prove its own matching outcome and refund.
+
+Deposit outcomes match the exact queue hash, including supported legacy encrypted event names.
+Continuation uses the certified net private credit, not the gross mint; actual Portal fees and any
+single-unit public share dust remain separately accounted. Migration dust stays public unless it
+exceeds the deposit fee plus bounce-back reserve, quoted at one block. Unknown deltas never count as fees, and
+ambiguous bounce evidence blocks rather than proving a refund from balance changes alone. Router
+balances donated before a case are allowed but must be preserved exactly; all temporary allowances
+must be zero. A concurrent donation changes that baseline and fails the check.
 
 On an access-enforced Zone, each router return's Tempo refund recipient must hold the Portal
 `Account` role. The first time a hosted case needs a refund recipient, E2E reads the Portal's
@@ -138,6 +169,13 @@ precedence. Start from Earn's [`.env.example`](../../.env.example), which docume
 credential surface, and replace its public fixture identities before hosted use. The L1 RPC
 defaults to the hosted network's public RPC unless `TEMPO_RPC_URL` is set.
 
+For an external or historical hosted profile without a reviewed identity in the registry, set
+`EARN_TRUSTED_DEPLOYMENT_IDENTITY` to an absolute path to its separately reviewed
+`{deployer, factories}` JSON file. This is the hosted equivalent of the lifecycle CLI
+[`--trusted-identity` input](deployment.md#shared-factory-releases); never derive trust from the
+deployment record itself. Package callers may instead pass `trustedIdentity` directly to
+`loadHostedProfileStack`, which takes precedence over the environment-selected file.
+
 `DEPLOYER_PRIVATE_KEY` (required for a case run) is the operator and, unless
 `END_USER_PRIVATE_KEY` or `EARN_ACCESS_ADMIN_PRIVATE_KEY` names a distinct key, also the positive
 user and access administrator; the run says which roles fall back to it. The protected-access
@@ -149,9 +187,13 @@ every actor's fees with the operator's PATHUSD where there is no faucet.
 Bootstrapping, deploying, and running a disposable hosted stack is in
 [deployment profiles](../../profiles/README.md#acceptance-and-test-fixtures). Hosted cases read a
 Veda fixture's `engineFixtures` exactly as local cases do
-([Veda test stacks](../earn/modules/veda.md#test-stacks)).
+([Veda test stacks](../earn/modules/veda.md#test-stacks)). Runtime validation binds the live venue to
+`fixture.json`'s recorded `stablecoinFixture.venue` or `engineFixtures.vault`, not another value
+read from the engine. Missing or conflicting venue records fail validation.
 
-Production scripts never deploy fixture funders or demo pools. The E2E stack's `stablecoinFixture`
+Hosted fixture bootstrap, validation, and funding require a testnet, even for Veda fixtures over a
+canonical asset. Retired mainnet fixtures must not be reused or funded. Production scripts never
+deploy fixture funders or demo pools. The E2E stack's `stablecoinFixture`
 (`e2e/fixtures/profile-fixture.ts`) is the one in `fixture.json` when there is one, otherwise the
 profile's own conversion pair with no funder, so E2E uses prefunded actors.
 
@@ -179,7 +221,10 @@ submission, so it must also answer unauthenticated chain ID and bytecode reads. 
 `pnpm devnet:deploy -- --out <dir> --eligible-account <address>` is the supported entry point for
 workflows outside this repository, such as the Zones txgen load and canary jobs, that need a fresh
 Earn stack on an existing devnet without running E2E cases. It runs the same `deploy` and the same
-pre-deployment checks as `pnpm e2e:devnet`, and changes the chains no further.
+pre-deployment checks as `pnpm e2e:devnet`, and changes the chains no further. Before any chain
+writes, `devnet:deploy` requires the contracts checkout to have no tracked edits or untracked
+source files. Its recorded revision is read from that checkout, not the caller's working directory;
+commit or remove unpublished source changes before running it.
 
 It reads the topology variables, `DEPLOYER_PRIVATE_KEY`, and `ZONE_ADMIN_PRIVATE_KEY` above. The
 fixture stablecoin addresses derive from the deployer, so each run needs a deployer that has not

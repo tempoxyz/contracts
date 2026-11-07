@@ -25,10 +25,17 @@ import {
   zonePortalAbi,
 } from '../../../abis/index.js'
 import { InspectionMismatchError } from '../../../chain/inspect.js'
+import { requireRouterProvenance } from './provenance.js'
 import { inspectRouterBinding } from './inspection.js'
 import type { EarnDeploymentProfile } from '../../../core/profile.js'
 import { configuredRouterPool, configuredZone, routerArgs } from './profile.js'
-import { missingZoneTokens, zoneCallbackGatewayRegistered } from '../../../chain/zone.js'
+import {
+  missingZoneTokens,
+  portalRoleCalls,
+  registeredZone,
+  zoneCallbackGatewayRegistered,
+  zoneGatewayDepositsAdmitted,
+} from '../../../chain/zone.js'
 import { zoneRouteTokens } from './index.js'
 import { envPrivateKey } from '../../../chain/runtime.js'
 import {
@@ -221,6 +228,10 @@ export const enableZoneTokens = defineAuthorityStep({
   phase: 'activation',
   intent: ['zone'],
   enabled: hasZone,
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) =>
+    canAdministerZone(options, required(configuredZone(options.profile), 'Zone').id),
   satisfied: async (client, profile, outputs) =>
     (
       await missingZoneTokens(
@@ -264,36 +275,44 @@ export const registerZoneGateway = defineAuthorityStep({
   id: 'register-zone-gateway',
   authority: zoneAdministratorAuthority,
   execution: 'authority',
-  summary: 'Register the router as a Portal callback gateway when the Zone restricts gateways.',
+  summary: 'Admit the router for callbacks and return deposits under the current Portal mode.',
   handoffSummary:
-    'Verify callback-gateway registration and emit a Zone administrator handoff if it is missing.',
+    'Verify callback and return-deposit admission, or emit a Zone administrator handoff.',
   phase: 'activation',
   intent: ['zone'],
   enabled: hasZone,
-  satisfied: (client, _profile, outputs) =>
-    zoneCallbackGatewayRegistered(
-      client,
-      requiredOutput(outputs, 'zonePortal'),
-      requiredOutput(outputs, 'earnRouter'),
-    ),
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) =>
+    canAdministerZone(options, required(configuredZone(options.profile), 'Zone').id),
+  async satisfied(client, _profile, outputs) {
+    const portal = requiredOutput(outputs, 'zonePortal')
+    const router = requiredOutput(outputs, 'earnRouter')
+    const [gateway, deposits] = await Promise.all([
+      zoneCallbackGatewayRegistered(client, portal, router),
+      zoneGatewayDepositsAdmitted(client, portal, router),
+    ])
+    return gateway && deposits
+  },
   handoff: (profile, outputs) =>
-    `Zone ${configuredZone(profile)?.id} restricts callback gateways: its Portal administrator must call setGateway(${requiredOutput(outputs, 'earnRouter')}, true) on ${requiredOutput(outputs, 'zonePortal')}. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`,
+    `Zone ${configuredZone(profile)?.id} must admit router ${requiredOutput(outputs, 'earnRouter')} on Portal ${requiredOutput(outputs, 'zonePortal')}. First verify the router's canonical implementation and immutable bindings. With restricted gateways, revoke any account role with setAllowedAccount(router, false), then call setGateway(router, true). With open gateways and enforced access, revoke any gateway role with setGateway(router, false), then call setAllowedAccount(router, true). Perform each revoke/grant pair in one batch. Re-run the same pnpm earn deploy command; it will verify both callback and return-deposit admission.`,
   async execute(options, dependencies) {
     const administrator = await zoneAdministrator(options, dependencies)
     if (!administrator) return undefined
     const { client, portal, send } = administrator
     const router = requiredOutput(options.outputs, 'earnRouter')
-    if (await zoneCallbackGatewayRegistered(client, portal, router)) return { transactions: [] }
-    return send([
-      {
-        to: portal,
-        data: encodeFunctionData({
-          abi: zonePortalAbi,
-          functionName: 'setGateway',
-          args: [router, true],
-        }),
-      },
-    ])
+    const gateway = await zoneCallbackGatewayRegistered(client, portal, router)
+    const deposits = gateway && (await zoneGatewayDepositsAdmitted(client, portal, router))
+    if (gateway && deposits) return { transactions: [] }
+    await requireRouterProvenance(client, {
+      address: router,
+      project: 'earn',
+      contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+      constructorArgs: deployRouter.source!.constructorArgs(options.profile, options.outputs),
+    })
+    return send(
+      await portalRoleCalls(client, portal, router, gateway ? 'account' : 'callbackGateway'),
+    )
   },
 })
 
@@ -409,6 +428,23 @@ function notRebalanceController(error: unknown) {
   )
 }
 
+/** Proves Zone administration without signing: the direct admin or its sole threshold-1 Safe owner. */
+export async function canAdministerZone(
+  options: Pick<AuthorityOptions, 'environment' | 'profile' | 'rpcUrl'>,
+  zoneId: number,
+  dependencies: Pick<AuthorityDependencies, 'authorityClient'> = { authorityClient },
+) {
+  const key = envPrivateKey(options.environment, zoneAdministratorAuthority.signer)
+  if (!key) return false
+  const account = privateKeyToAccount(key)
+  const client = dependencies.authorityClient(options, account)
+  const { portal } = await registeredZone(client, zoneId)
+  const administrator = getAddress(
+    await client.readContract({ address: portal, abi: zonePortalAbi, functionName: 'admin' }),
+  )
+  return administrator === account.address || soleSafeOwner(client, administrator, account.address)
+}
+
 /**
  * The configured administrator of `portal` (the profile Zone's by default), or `undefined` when none
  * is configured. The key either is the Portal admin or solely owns a threshold-1 Safe that is;
@@ -450,8 +486,9 @@ async function soleSafeOwner(client: AuthorityClient, safe: Address, owner: Addr
       client.readContract({ address: safe, abi: safeAbi, functionName: 'getThreshold' }),
     ])
     return threshold === 1n && owners.length === 1 && getAddress(owners[0]!) === owner
-  } catch {
-    return false
+  } catch (error) {
+    if (notRebalanceController(error)) return false
+    throw error
   }
 }
 

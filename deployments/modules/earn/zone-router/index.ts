@@ -1,10 +1,16 @@
 import { erc20Abi, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
 import { Addresses } from 'viem/tempo'
 
-import { earnEngineBindingAbi, propAMMPoolAbi } from '../../../abis/index.js'
+import { earnEngineBindingAbi, earnVaultAbi, propAMMPoolAbi } from '../../../abis/index.js'
 import { requireCode } from '../../../chain/inspect.js'
 import { tempoApiRpcUrl } from '../../../chain/tempo.js'
-import { inspectZone, missingZoneTokens, registeredZone } from '../../../chain/zone.js'
+import {
+  inspectZone,
+  missingZoneTokens,
+  registeredZone,
+  zoneCallbackGatewayRegistered,
+  zoneGatewayDepositsAdmitted,
+} from '../../../chain/zone.js'
 import {
   configuredEngineAddress,
   deploysEngine,
@@ -61,13 +67,17 @@ export const zoneRouterModule: CapabilityModule = {
     })
     const portal = requiredOutput(outputs, 'zonePortal')
     const tokens = zoneRouteTokens(profile, outputs)
-    const [conversion, disabled, inactive] = await Promise.all([
+    const [conversion, disabled, inactive, gateway, deposits] = await Promise.all([
       // A router whose private asset is the vault asset has no conversion to inspect or report.
       pool && pool !== zeroAddress ? inspectRouterReadiness(client, router, pool) : undefined,
       missingZoneTokens(client, portal, tokens),
       missingZoneTokens(client, portal, tokens, { depositsActive: true }),
+      zoneCallbackGatewayRegistered(client, portal, router),
+      zoneGatewayDepositsAdmitted(client, portal, router),
     ])
     const zoneBlockers = [
+      ...(gateway ? [] : [`Zone ${zone.id} has not registered the router as a callback gateway`]),
+      ...(deposits ? [] : [`Zone ${zone.id} has not admitted the router for return deposits`]),
       ...(disabled.length === 0
         ? []
         : [`Zone ${zone.id} has not enabled ${disabled.join(' and ')}`]),
@@ -140,6 +150,7 @@ export function zoneRouteTokens(
 async function preflightRouter(
   client: Pick<PublicClient, 'getCode' | 'readContract'>,
   profile: EarnDeploymentProfile,
+  outputs: Record<string, Address> = {},
 ) {
   const zone = configuredZone(profile)
   if (!zone) return
@@ -147,6 +158,7 @@ async function preflightRouter(
     privateAsset: zone.privateAsset,
     pool: zone.pool,
     path: 'zone.router',
+    earnShare: outputs.earnShare,
   })
 }
 
@@ -159,12 +171,37 @@ async function preflightRouter(
 export async function preflightRouterRoute(
   client: Pick<PublicClient, 'getCode' | 'readContract'>,
   profile: EarnDeploymentProfile,
-  zone: { privateAsset: Address; pool?: Address | undefined; path: string },
+  zone: {
+    privateAsset: Address
+    pool?: Address | undefined
+    path: string
+    earnShare?: Address | undefined
+  },
 ) {
+  if (zone.earnShare && getAddress(zone.earnShare) === getAddress(zone.privateAsset))
+    throw new Error(`${zone.path}.privateAsset cannot be this vault's EarnShare`)
   await requireCode(client, {
     'Zone private asset': zone.privateAsset,
     ...(zone.pool ? { 'PropAMM pool': zone.pool } : {}),
   })
+  // An existing bound engine exposes the exact share the router constructor forbids as input.
+  const engine = configuredEngineAddress(profile)
+  if (engine) {
+    const vault = await client.readContract({
+      address: engine,
+      abi: earnEngineBindingAbi,
+      functionName: 'earnVault',
+    })
+    if (getAddress(vault) !== zeroAddress) {
+      const share = await client.readContract({
+        address: vault,
+        abi: earnVaultAbi,
+        functionName: 'earnShare',
+      })
+      if (getAddress(share) === getAddress(zone.privateAsset))
+        throw new Error(`${zone.path}.privateAsset cannot be this vault's EarnShare`)
+    }
+  }
   // The engine's asset, or the asset of the venue its factory will provision it from.
   const vaultAsset = deploysEngine(profile)
     ? await profileEngineFactory(profile).venueAsset(client, profile.engine.venue)

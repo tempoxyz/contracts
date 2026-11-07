@@ -1,4 +1,5 @@
-import { getAddress } from 'viem'
+import { getAddress, zeroHash } from 'viem'
+import { Abis } from 'viem/tempo'
 
 import { zonePortalAbi } from '@tempoxyz/contracts/abis'
 import { inspectZone, missingZoneTokens, readZoneTempoBlock } from '@tempoxyz/contracts/tempo/zone'
@@ -10,6 +11,8 @@ import {
 } from '../../harness/context.js'
 import { E2ePrerequisiteError, errorSummary, waitFor } from '../../harness/support/utils.js'
 
+import { requireZoneProofReads } from './proof.js'
+
 const MAX_ZONE_TEMPO_LAG = 1_000n
 const ZONE_WITHDRAWAL_QUEUE_GRACE_MS = 30_000
 
@@ -17,7 +20,7 @@ const readiness = new WeakMap<E2eContext, Promise<void>>()
 
 /**
  * Proves once per run that the Zone is the deployment's canonical Zone, enables every token the
- * cases move, keeps up with Tempo, and drains its withdrawal queue. A failed check is retried by
+ * cases move, keeps up with Tempo, and makes withdrawal progress. A failed check is retried by
  * the next case that needs the Zone.
  */
 export function ensureZoneReady(context: E2eContext) {
@@ -40,6 +43,7 @@ async function checkZoneReady(context: E2eZoneContext) {
   for (const actor of ['user', 'operator', 'outsider'] as const) {
     await authorizeZoneActor(context, actor)
   }
+  await requireZoneProofReads(context)
   const userZone = context.actors.user.zone.client
   const identity = await inspectZone({
     id: zone.id,
@@ -84,18 +88,31 @@ async function checkZoneReady(context: E2eZoneContext) {
       `Zone L1 settlement is ${tempoHead - portalSyncedThrough} Tempo blocks behind (${portalSyncedThrough} synced by the portal, ${tempoHead} current)`,
     )
   }
+  await waitForZoneWithdrawalQueueProgress(context)
+}
+
+/** Accepts an empty queue or fresh progress within a batch, without extending the stall deadline. */
+export async function waitForZoneWithdrawalQueueProgress(context: E2eZoneContext) {
   const initial = await zoneWithdrawalQueueStatus(context)
   if (initial.pending === 0n) return
   await waitFor(
     'Zone withdrawal queue progress',
     async () => {
       const current = await zoneWithdrawalQueueStatus(context)
-      return current.pending === 0n || current.head > initial.head ? true : undefined
+      // A slot hash changes on every partial dequeue; a batch head moves only after its final item.
+      // New batches at the tail and repeated reads of old state are not withdrawal progress.
+      const progressed =
+        current.blockNumber > initial.blockNumber &&
+        current.head >= initial.head &&
+        (current.pending === 0n ||
+          current.head > initial.head ||
+          current.headHash !== initial.headHash)
+      return progressed ? true : undefined
     },
     { timeoutMs: ZONE_WITHDRAWAL_QUEUE_GRACE_MS, intervalMs: context.pollingInterval },
   ).catch(() => {
     throw new E2ePrerequisiteError(
-      `The Zone withdrawal queue is not draining: head ${initial.head}, tail ${initial.tail}, ${initial.pending} pending, and no head progress for ${ZONE_WITHDRAWAL_QUEUE_GRACE_MS / 1_000}s`,
+      `The Zone withdrawal queue is not draining: head ${initial.head}, tail ${initial.tail}, ${initial.pending} pending, and no head or current-batch progress for ${ZONE_WITHDRAWAL_QUEUE_GRACE_MS / 1_000}s`,
     )
   })
 }
@@ -106,19 +123,29 @@ export async function authorizeZoneActor(context: E2eContext, actor: E2eActor) {
   await client.zone.signAuthorizationToken({ zoneId: context.deployment.network.zone.id, store })
 }
 
+/** Reads the pending batch count and current batch commitment from one consistent L1 block. */
 export async function zoneWithdrawalQueueStatus(context: E2eZoneContext) {
-  const portal = { address: context.deployment.network.zone.portal, abi: zonePortalAbi } as const
-  // Both counters are monotonic. Reading head first avoids a false head > tail
-  // if the two RPC calls land on adjacent blocks while the queue is draining.
-  const head = await context.l1Public.readContract({
-    ...portal,
-    functionName: 'withdrawalQueueHead',
-  })
-  const tail = await context.l1Public.readContract({
-    ...portal,
-    functionName: 'withdrawalQueueTail',
-  })
+  const blockNumber = await context.l1Public.getBlockNumber({ cacheTime: 0 })
+  const portal = {
+    address: context.deployment.network.zone.portal,
+    abi: Abis.zonePortal,
+    blockNumber,
+  } as const
+  const [head, tail] = await Promise.all([
+    context.l1Public.readContract({ ...portal, functionName: 'withdrawalQueueHead' }),
+    context.l1Public.readContract({ ...portal, functionName: 'withdrawalQueueTail' }),
+  ])
   if (tail < head)
     throw new Error(`Zone withdrawal queue is inconsistent: head ${head}, tail ${tail}`)
-  return { head, tail, pending: tail - head }
+  const headHash =
+    head < tail
+      ? await context.l1Public.readContract({
+          ...portal,
+          functionName: 'withdrawalQueueSlot',
+          args: [head],
+        })
+      : undefined
+  if (headHash === zeroHash)
+    throw new Error(`Zone withdrawal queue is inconsistent: pending head ${head} has no hash`)
+  return { blockNumber, head, tail, pending: tail - head, headHash }
 }

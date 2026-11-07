@@ -67,3 +67,18 @@ describe('local deployment profiles', () => {
     expect(profile.boostRewards).toBeUndefined()
   })
 })
+
+it('rejects source-chain spender graphs rather than dropping or retaining their semantics', () => {
+  const source = authoredProfile(hosted)
+  const profile = {
+    ...source,
+    zoneRouter: {
+      zone: 9,
+      factory: address('f3'),
+      capabilities: { spend: { spenders: [address('51')] } },
+    },
+  }
+  expect(() => localizeProfile(profile as never, local)).toThrow(
+    'local replacement of its factory, spenders, and conversion routes is not supported',
+  )
+})

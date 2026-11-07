@@ -32,6 +32,7 @@ The repository implements:
 - base-asset deposit, EarnShare redemption, exact-asset withdrawal, and permissionless contribution;
 - an optional operator-set cap on active managed assets after voluntary inflows;
 - in-kind entry with the current venue's shares, which only `ERC4626Engine` supports;
+- whole-pool engine migration by the operator, only when enabled at deployment;
 - immediate ERC-4626 execution through `ERC4626Engine`;
 - immediate and queued Veda exits through `VedaEngine`;
 - experimental immediate execution against a DirectPropAMM pool through `PropAMMEngine`;
@@ -130,7 +131,7 @@ always-allow policy `1`.
 - exclusively mints and burns EarnShare;
 - holds the engine-share conversion anchor and the managed engine-share count;
 - checkpoints fees before every economic action;
-- coordinates deposits, in-kind entry, exits, contributions, and surplus absorption;
+- coordinates deposits, in-kind entry, exits, contributions, surplus absorption, and deployment-permitted engine migration;
 - rejects voluntary inflows that would exceed its managed-assets limit;
 - stores each open async claim's requester, receiver, burned EarnShare, and queued engine shares; and
 - holds the emergency guardian and async janitor seats.
@@ -160,6 +161,30 @@ rules, and each engine's behavior are in [yield engines](../integrations/engines
 EarnShare, the EarnVault proxy, and its `EarnFees` clone atomically around an already-deployed,
 unbound engine, which the engine's setup owner then binds. The creation sequence is in the
 [contract reference](../reference/contracts.md#earnfactory).
+
+## Whole-pool engine migration
+
+The `controls.migrationMode` input to `EarnFactory.deploy` fixes the authority at deployment, with no setter. `UserOnly` permanently
+disables `migrateEngine`; users move their own positions through the ordinary exit and entry paths.
+`OperatorEnabled` lets only the operator call
+`migrateEngine(newEngine, minNewEngineShares, minAssetsRetained)` to move the entire pool, including
+quarantined raw-share surplus, to a replacement engine. The operator
+[timelock or multisig](security-and-privacy.md#earnvault-operator) is therefore a custody trust boundary.
+
+Migration requires no open async claims. The replacement must expose the base engine interface and
+an exit capability, use the same base asset, bind reciprocally to this EarnVault, and have a nonzero
+share scale. When old raw custody exists, both output bounds must be nonzero. The old engine must
+redeem all raw custody immediately; queued-only or illiquid exits cannot migrate. The vault
+checkpoints fees, measures the redeemed assets and replacement-share increase, and requires the
+replacement to consume all redeemed assets. Any failed leg reverts the entire transaction.
+
+After the fee checkpoint, EarnShare supply stays unchanged. The vault maps the old managed/raw
+share ratio into the replacement denomination, rounding at most one replacement share toward
+managed backing and rejecting more than one basis point of managed-value error. Both output floors
+also apply independently to managed backing when it exists. Pre-existing replacement shares and
+the migrated unrecognized fraction remain surplus. The vault switches `engine`, re-anchors
+conversion and the reward-rate baseline, and emits `EngineMigrated`. These checks preserve accounting
+boundaries, not the safety of an operator-selected venue or valuation.
 
 ## Private routing
 
@@ -272,17 +297,17 @@ transaction order is in [flows](flows.md).
 
 ## Roles and authority
 
-| Authority                    | Scope                                                                                                                                        |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| EarnShare issuer             | EarnVault only; membership is frozen once factory creation returns                                                                           |
-| TIP-403 policy administrator | Whitelist membership only; cannot alter EarnShare issuer membership                                                                          |
-| EarnVault operator           | Pause and unpause, managed-assets limit, emergency seats, ordinary fees, global fee disable without a distributor, two-step operator handoff |
-| Fee distributor              | Delayed updates to its protected fixed-fee item, two-step distributor handoff                                                                |
-| Emergency guardian           | Pause deposits, in-kind entry, contributions, and surplus absorption; never unpause                                                          |
-| Async janitor                | Cancel an open request; the result goes only to its stored receiver                                                                          |
-| Engine setup owner           | One-time EarnVault binding, optionally with an atomic transfer to the final owner                                                            |
-| Final engine owner           | Engine-specific operational settings                                                                                                         |
-| Anyone                       | `accrueFees`, `contribute`, `absorbEngineShareSurplus`, and a ready `executeDistributorFeeUpdate`                                            |
+| Authority                    | Scope                                                                                                                                                                                                  |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| EarnShare issuer             | EarnVault only; membership is frozen once factory creation returns                                                                                                                                     |
+| TIP-403 policy administrator | Whitelist membership only; cannot alter EarnShare issuer membership                                                                                                                                    |
+| EarnVault operator           | Pause and unpause, managed-assets limit, emergency seats, ordinary fees, global fee disable without a distributor, two-step operator handoff; whole-pool engine migration only under `OperatorEnabled` |
+| Fee distributor              | Delayed updates to its protected fixed-fee item, two-step distributor handoff                                                                                                                          |
+| Emergency guardian           | Pause deposits, in-kind entry, contributions, and surplus absorption; never unpause                                                                                                                    |
+| Async janitor                | Cancel an open request; the result goes only to its stored receiver                                                                                                                                    |
+| Engine setup owner           | One-time EarnVault binding, optionally with an atomic transfer to the final owner                                                                                                                      |
+| Final engine owner           | Engine-specific operational settings                                                                                                                                                                   |
+| Anyone                       | `accrueFees`, `contribute`, `absorbEngineShareSurplus`, and a ready `executeDistributorFeeUpdate`                                                                                                      |
 
 `EarnFees` and `SingleZoneEarnRouter` have no owner. The role-bearing seats need not share one
 account; a zero guardian or janitor leaves that seat empty. Engine-specific roles, such as Veda's
@@ -350,12 +375,14 @@ Fixed per stack:
 
 - the EarnShare, EarnVault, and `EarnFees` pairing;
 - the base asset;
-- the EarnVault implementation and distributor update delay; and
+- the EarnVault implementation, engine migration mode, and distributor update delay; and
 - each engine's EarnVault, venue, and base asset.
 
 Changeable only through the named role:
 
 - the operator, through its two-step handoff;
+- the current engine, only by the operator under `OperatorEnabled` and the
+  [whole-pool migration checks](#whole-pool-engine-migration);
 - the managed-assets limit, deposit pause, and emergency seats;
 - ordinary fee configuration, prospectively;
 - the distributor, through its two-step handoff, and its protected fee item, through delayed

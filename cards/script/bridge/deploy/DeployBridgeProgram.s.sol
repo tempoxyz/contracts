@@ -100,10 +100,12 @@ function checkProgram(IBridgeSpenderFactory factory, bytes32 spenderId) view ret
 
 /// @dev The program pays through `factory`'s clone for `spenderId`.
 function requireProgram(CardSpender program, IBridgeSpenderFactory factory, bytes32 spenderId) view {
+    // Reused artifacts may have captured a historical registry value; agreement with each other is insufficient.
+    address clone = checkProgram(factory, spenderId);
     BridgeProvider provider = BridgeProvider(address(program.PROVIDER()));
     require(
         address(provider.FACTORY()) == address(factory) && provider.SPENDER_ID() == spenderId
-            && program.PAYOUT_TARGET() == provider.CLONE(),
+            && provider.CLONE() == clone && program.PAYOUT_TARGET() == clone,
         "program is bound to another Bridge program"
     );
 }

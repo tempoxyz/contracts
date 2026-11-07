@@ -1,6 +1,10 @@
 import { expect, test, vi } from 'vitest'
 import { InspectionMismatchError } from '../../../chain/inspect.js'
-import { inspectVedaEngine, inspectVedaPeriphery } from './veda-inspection.js'
+import {
+  inspectVedaEngine,
+  inspectVedaPeriphery,
+  readVedaStackPeriphery,
+} from './veda-inspection.js'
 
 const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const
 const [engine, vault, asset, teller, queue, accountant, registry, authority] = [
@@ -83,4 +87,24 @@ test('checks freshness and open deposits only when ready', async () => {
   const stale = client({ isFeeValuationFresh: false })
   await expect(inspectVedaEngine(stale, engine, 'bindings')).resolves.toBeUndefined()
   await expect(inspectVedaEngine(stale, engine)).rejects.toThrow('older than the engine maxRateAge')
+})
+
+test('projects the cached periphery during rotation but keeps strict readiness closed', async () => {
+  const rotating = client({
+    [`${registry}:version`]: 2n,
+    [`${registry}:teller`]: address(9),
+    canCall: false,
+  })
+  await expect(readVedaStackPeriphery(rotating, engine)).resolves.toMatchObject({
+    teller,
+    accountant,
+    peripheryRegistry: registry,
+  })
+  await expect(inspectVedaEngine(rotating, engine)).rejects.toThrow('registry Teller')
+  await expect(
+    readVedaStackPeriphery(client({ [`${registry}:engine`]: address(9) }), engine),
+  ).rejects.toThrow('registry engine')
+  await expect(
+    readVedaStackPeriphery(client({ [`${accountant}:base`]: address(9) }), engine),
+  ).rejects.toThrow('Accountant base asset')
 })

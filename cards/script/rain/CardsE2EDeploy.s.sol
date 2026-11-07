@@ -42,28 +42,39 @@ library CardSpendMode {
 ///         pooled one; with EARN=true, a Tempo Earn vault over pathUSD; a `RainProvider` accepting pathUSD
 ///         (and that vault); a `CardFactory` and the program's `CardSpender` over that provider; the
 ///         Spend-mode `ZoneRouter` for ZONE_ID listing the program as its spender; and a TIP-20 to launch
-///         the Zone with. Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY, CARDHOLDER, PARTNER, ZONE_ID, EARN
-///         and OUT.
+///         the Zone with. Reads DEPLOYER_PK, RAIN_ADMIN, RAIN_TREASURY, CARDHOLDER, PARTNER, ZONE_ID, EARN,
+///         RAIN_RUN_ID and OUT.
 contract CardsE2EDeploy is Script, RainStack {
     uint64 internal constant ALWAYS_ALLOW_POLICY_ID = 1;
 
+    struct Inputs {
+        uint256 deployerPk;
+        address deployer;
+        uint32 zoneId;
+        bool earn;
+        address rainAdmin;
+        address rainTreasury;
+        address cardholder;
+        address partner;
+        string runId;
+        string out;
+    }
+
     function run() external {
-        uint256 deployerPk = vm.envUint("DEPLOYER_PK");
-        address deployer = vm.addr(deployerPk);
-        uint256 zoneIdValue = vm.envUint("ZONE_ID");
-        require(zoneIdValue != 0 && zoneIdValue <= type(uint32).max, "ZONE_ID out of range");
-        bool earn = vm.envOr("EARN", false);
+        _run(_inputs());
+    }
 
-        vm.startBroadcast(deployerPk);
-        Rain memory rain = _deployRain(vm.envAddress("RAIN_ADMIN"), vm.envAddress("RAIN_TREASURY"));
-        address cardholderCollateral = rain.factory.createCollateralContract("cardholder", vm.envAddress("CARDHOLDER"));
-        address programCollateral = rain.factory.createCollateralContract("program", vm.envAddress("PARTNER"));
+    function _run(Inputs memory input) internal {
+        vm.startBroadcast(input.deployerPk);
+        Rain memory rain = _deployRain(input.rainAdmin, input.rainTreasury);
+        address cardholderCollateral = rain.factory.createCollateralContract("cardholder", input.cardholder);
+        address programCollateral = rain.factory.createCollateralContract("program", input.partner);
 
-        address vault = earn ? _deployEarn(deployer) : address(0);
+        address vault = input.earn ? _deployEarn(input.deployer) : address(0);
         address[] memory tokens = new address[](1);
         tokens[0] = StdTokens.PATH_USD_ADDRESS;
-        address[] memory vaults = new address[](earn ? 1 : 0);
-        if (earn) vaults[0] = vault;
+        address[] memory vaults = new address[](input.earn ? 1 : 0);
+        if (input.earn) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
         // Pooled collateral takes public spends too, as a partner-managed program's does.
@@ -74,7 +85,7 @@ contract CardsE2EDeploy is Script, RainStack {
         address program = cardFactory.deploy("cards-e2e.rain", ICardProvider(address(provider)));
         // A router reads its Zone's Portal when it is created, so the E2E deploys it once the Zone exists;
         // its address is fixed by the mode already.
-        address router = routerFactory.predict(CardSpendMode.forSpender(uint32(zoneIdValue), program));
+        address router = routerFactory.predict(CardSpendMode.forSpender(input.zoneId, program));
         // The Zone factory only launches with a token whose TIP-403 transfer policy is set.
         address zoneToken = StdPrecompiles.TIP20_FACTORY
             .createToken(
@@ -82,8 +93,8 @@ contract CardsE2EDeploy is Script, RainStack {
                 "zlUSD",
                 "USD",
                 ITIP20(StdTokens.PATH_USD_ADDRESS),
-                deployer,
-                keccak256(abi.encode("cards-e2e.launch-token", deployer, block.timestamp))
+                input.deployer,
+                keccak256(abi.encode("cards-e2e.launch-token", input.deployer, block.timestamp))
             );
         ITIP20(zoneToken).changeTransferPolicyId(ALWAYS_ALLOW_POLICY_ID);
         vm.stopBroadcast();
@@ -91,7 +102,17 @@ contract CardsE2EDeploy is Script, RainStack {
         require(IRainCollateralFactory(address(rain.factory)).collateralProxies(0) == cardholderCollateral, "index 0");
         require(IRainCollateralFactory(address(rain.factory)).collateralProxies(1) == programCollateral, "index 1");
 
-        string memory key = "cards-e2e";
+        string memory key = string.concat("cards-e2e.", input.runId);
+        // The consumer accepts only the report produced for its own chain, inputs and invocation.
+        vm.serializeString(key, "runId", input.runId);
+        vm.serializeUint(key, "chainId", block.chainid);
+        vm.serializeUint(key, "zoneId", input.zoneId);
+        vm.serializeAddress(key, "deployer", input.deployer);
+        vm.serializeAddress(key, "rainAdmin", input.rainAdmin);
+        vm.serializeAddress(key, "rainTreasury", input.rainTreasury);
+        vm.serializeAddress(key, "cardholder", input.cardholder);
+        vm.serializeAddress(key, "partner", input.partner);
+        vm.serializeBool(key, "earn", input.earn);
         vm.serializeAddress(key, "rainFactory", address(rain.factory));
         vm.serializeAddress(key, "rainController", address(rain.controller));
         vm.serializeAddress(key, "cardholderCollateral", cardholderCollateral);
@@ -103,12 +124,28 @@ contract CardsE2EDeploy is Script, RainStack {
         vm.serializeAddress(key, "program", program);
         vm.serializeAddress(key, "routerFactory", address(routerFactory));
         vm.serializeAddress(key, "router", router);
-        if (earn) {
+        if (input.earn) {
             vm.serializeAddress(key, "earnVault", vault);
             vm.serializeAddress(key, "earnShare", EarnVault(vault).earnShare());
         }
         string memory json = vm.serializeAddress(key, "zoneToken", zoneToken);
-        vm.writeJson(json, vm.envString("OUT"));
+        vm.writeJson(json, input.out);
+    }
+
+    function _inputs() private view returns (Inputs memory input) {
+        input.deployerPk = vm.envUint("DEPLOYER_PK");
+        input.deployer = vm.addr(input.deployerPk);
+        uint256 zoneId = vm.envUint("ZONE_ID");
+        require(zoneId != 0 && zoneId <= type(uint32).max, "ZONE_ID out of range");
+        input.zoneId = uint32(zoneId);
+        input.earn = vm.envOr("EARN", false);
+        input.rainAdmin = vm.envAddress("RAIN_ADMIN");
+        input.rainTreasury = vm.envAddress("RAIN_TREASURY");
+        input.cardholder = vm.envAddress("CARDHOLDER");
+        input.partner = vm.envAddress("PARTNER");
+        input.runId = vm.envString("RAIN_RUN_ID");
+        require(bytes(input.runId).length != 0, "RAIN_RUN_ID required");
+        input.out = vm.envString("OUT");
     }
 
     /// @dev A Tempo Earn vault over pathUSD through an ERC-4626 venue, without fees, owned by the deployer.

@@ -1,4 +1,4 @@
-import { zeroAddress, type ContractFunctionArgs, type ContractFunctionName } from 'viem'
+import { isAddressEqual, type ContractFunctionArgs, type ContractFunctionName } from 'viem'
 import {
   deposit,
   depositIntoVenue,
@@ -15,19 +15,30 @@ import {
   tokenSupply,
 } from '../../harness/support/funding.js'
 import { minimumOutput, previewEarnDeposit } from '../../harness/support/slippage.js'
-import { expectRevertedWrite, write } from '../../harness/support/transactions.js'
+import {
+  expectContractRevert,
+  expectRevertedWrite,
+  write,
+} from '../../harness/support/transactions.js'
 import type { E2eCase, LaunchFeature } from '../../harness/case.js'
 import type { E2eActor, E2eContext } from '../../harness/context.js'
+import { requireControlActors } from './preflight.js'
+import { withRecovery } from './recovery.js'
+import { migrationProbes } from './migrations.js'
 
 const DEPOSIT = 2_000_000n
 const IN_KIND = 1_000_000n
 const CONTRIBUTION = 100_000n
 const WITHDRAW = 400_000n
 
-function readVault<const Name extends 'depositsPaused' | 'emergencyGuardian' | 'asyncJanitor'>(
-  context: E2eContext,
-  functionName: Name,
-) {
+function readVault<
+  const Name extends
+    | 'depositsPaused'
+    | 'emergencyGuardian'
+    | 'asyncJanitor'
+    | 'operator'
+    | 'engineMigrationMode',
+>(context: E2eContext, functionName: Name) {
   return context.l1Public.readContract({
     address: context.contracts.earnVault,
     abi: earnVaultAbi,
@@ -68,6 +79,23 @@ function expectRejectedVaultCall<
   )
 }
 
+/** Simulates a migration probe and requires its exact custom error without submitting a mutation. */
+function expectExactVaultError<
+  const Name extends ContractFunctionName<typeof earnVaultAbi, 'nonpayable'>,
+>(context: E2eContext, actor: E2eActor, call: VaultCall<Name>, errorName: string) {
+  return expectContractRevert(
+    () =>
+      context.l1Public.simulateContract({
+        address: context.contracts.earnVault,
+        abi: earnVaultAbi,
+        ...call,
+        account: context.actors[actor].account,
+      } as never),
+    `${call.functionName} did not revert with ${errorName}`,
+    { abi: earnVaultAbi, errorName },
+  )
+}
+
 async function setPaused(context: E2eContext, paused: boolean, actor: E2eActor = 'operator') {
   await control(context, actor, { functionName: 'setDepositsPaused', args: [paused] })
   assert(
@@ -87,14 +115,26 @@ export const cases: readonly E2eCase[] = [
   {
     id: 'controls-operator-authority',
     description:
-      'Only the operator pauses, rotates emergency roles, or migrates the engine; a pause blocks every entry while exits stay live, the guardian can pause but not unpause, and invalid migrations roll back.',
+      'The operator controls emergency roles and unpausing; a pause blocks entry while exits stay live, the guardian can only pause, and migrations enforce either operator authorization or permanent UserOnly disablement.',
     default: false,
     launch: true,
     coverage: {
       'earn-vault-controls': ['positive', 'negative', 'rollback', 'authorization', 'recovery'],
     },
     async preflight(context) {
-      if (await readVault(context, 'depositsPaused')) {
+      const [operator, guardian, paused] = await Promise.all([
+        readVault(context, 'operator'),
+        readVault(context, 'emergencyGuardian'),
+        readVault(context, 'depositsPaused'),
+      ])
+      requireControlActors({
+        user: context.user.address,
+        operator: context.operator.address,
+        outsider: context.outsider.address,
+        vaultOperator: operator,
+        guardian,
+      })
+      if (paused) {
         throw new E2ePrerequisiteError('EarnVault deposits are already paused')
       }
     },
@@ -123,7 +163,7 @@ async function pauseBlocksEntryButPreservesExits(context: E2eContext) {
     ])
   const before = await entryState()
 
-  try {
+  await withRecovery(async () => {
     await expectRejectedVaultCall(
       context,
       'user',
@@ -185,9 +225,12 @@ async function pauseBlocksEntryButPreservesExits(context: E2eContext) {
       earnShares: position.earnShares - exact.earnSharesBurned,
       receiver: context.user.address,
     })
-  } finally {
-    await setPaused(context, false)
-  }
+  }, [
+    {
+      label: `EarnVault ${earnVault} on chain ${context.l1Public.chain.id}: operator setDepositsPaused(false)`,
+      restore: () => setPaused(context, false),
+    },
+  ])
   if (inKind) await redeemVenueShares(context, inKind.venueShares)
 }
 
@@ -196,13 +239,13 @@ async function guardianCanOnlyPause(context: E2eContext) {
     readVault(context, 'emergencyGuardian'),
     readVault(context, 'asyncJanitor'),
   ])
-  await expectRejectedVaultCall(
-    context,
-    'user',
-    { functionName: 'setEmergencyRoles', args: [context.outsider.address, janitor] },
-    'non-operator unexpectedly rotated emergency roles',
-  )
-  try {
+  await withRecovery(async () => {
+    await expectRejectedVaultCall(
+      context,
+      'user',
+      { functionName: 'setEmergencyRoles', args: [context.outsider.address, janitor] },
+      'non-operator unexpectedly rotated emergency roles',
+    )
     await control(context, 'operator', {
       functionName: 'setEmergencyRoles',
       args: [context.outsider.address, janitor],
@@ -218,17 +261,27 @@ async function guardianCanOnlyPause(context: E2eContext) {
       await readVault(context, 'depositsPaused'),
       'failed guardian unpause changed pause state',
     )
-  } finally {
-    await setPaused(context, false)
-    await control(context, 'operator', {
-      functionName: 'setEmergencyRoles',
-      args: [guardian, janitor],
-    })
-  }
-  assert(
-    (await readVault(context, 'emergencyGuardian')) === guardian,
-    'emergency guardian was not restored',
-  )
+  }, [
+    {
+      label: `EarnVault ${context.contracts.earnVault} on chain ${context.l1Public.chain.id}: operator setDepositsPaused(false)`,
+      restore: () => setPaused(context, false),
+    },
+    {
+      label: `EarnVault ${context.contracts.earnVault} on chain ${context.l1Public.chain.id}: operator setEmergencyRoles(${guardian}, ${janitor})`,
+      async restore() {
+        await control(context, 'operator', {
+          functionName: 'setEmergencyRoles',
+          args: [guardian, janitor],
+        })
+        const [restoredGuardian, restoredJanitor] = await Promise.all([
+          readVault(context, 'emergencyGuardian'),
+          readVault(context, 'asyncJanitor'),
+        ])
+        assert(isAddressEqual(restoredGuardian, guardian), 'emergency guardian was not restored')
+        assert(isAddressEqual(restoredJanitor, janitor), 'async janitor was not restored')
+      },
+    },
+  ])
 }
 
 /** Unauthorized, zero-address, and same-engine migrations leave the engine and its backing. */
@@ -241,16 +294,16 @@ async function invalidMigrationsRollBack(context: E2eContext) {
       context.l1Public.readContract({ ...vault, functionName: 'totalEarnShares' }),
     ])
   const before = await state()
-  for (const [actor, engine, message] of [
-    ['user', context.contracts.engine, 'non-operator unexpectedly migrated the engine'],
-    ['operator', zeroAddress, 'operator unexpectedly migrated to the zero address'],
-    ['operator', context.contracts.engine, 'operator unexpectedly migrated to the active engine'],
-  ] as const) {
-    await expectRejectedVaultCall(
+  const mode = await readVault(context, 'engineMigrationMode')
+  for (const { actor, engine, errorName } of migrationProbes(mode, context.contracts.engine)) {
+    await expectExactVaultError(
       context,
       actor,
-      { functionName: 'migrateEngine', args: [engine, 1n, 1n] },
-      message,
+      {
+        functionName: 'migrateEngine',
+        args: [engine, 1n, 1n],
+      },
+      errorName,
     )
   }
   const after = await state()

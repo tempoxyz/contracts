@@ -20,7 +20,11 @@ import {
   required,
   requiredOutput,
 } from '../../../../deployments/modules/module.js'
-import { boostRewardsCampaignId, boostRewardsClaimDeadline } from './profile.js'
+import {
+  assertBoostClaimDeadline,
+  boostRewardsCampaignId,
+  boostRewardsClaimDeadline,
+} from './profile.js'
 
 /**
  * The distributor's constructor arguments, which its deploy input, source verification, and
@@ -79,7 +83,10 @@ export const deployMerkleDistributor = defineFoundryStep({
     },
   },
   async satisfied(client, profile, outputs) {
-    if (!(await deployedOutputs(client, outputs, ['earnMerkleRewardDistributor']))) return false
+    if (!(await deployedOutputs(client, outputs, ['earnMerkleRewardDistributor']))) {
+      await assertBoostClaimDeadline(client, profile)
+      return false
+    }
     const address = requiredOutput(outputs, 'earnMerkleRewardDistributor')
     const read = <
       F extends
@@ -150,7 +157,7 @@ export const deployContributionController = defineFoundryStep({
   async satisfied(client, profile, outputs) {
     if (!(await deployedOutputs(client, outputs, ['earnContributionController']))) return false
     const controller = requiredOutput(outputs, 'earnContributionController')
-    const [vault, owner] = await Promise.all([
+    const [vault, owner, asset] = await Promise.all([
       client.readContract({
         address: controller,
         abi: earnContributionControllerAbi,
@@ -161,10 +168,16 @@ export const deployContributionController = defineFoundryStep({
         abi: earnContributionControllerAbi,
         functionName: 'owner',
       }),
+      client.readContract({
+        address: controller,
+        abi: earnContributionControllerAbi,
+        functionName: 'asset',
+      }),
     ])
     return (
       getAddress(vault) === requiredOutput(outputs, 'earnVault') &&
-      getAddress(owner) === profile.owner
+      getAddress(owner) === profile.owner &&
+      getAddress(asset) === requiredOutput(outputs, 'asset')
     )
   },
 })

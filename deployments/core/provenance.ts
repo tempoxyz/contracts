@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 
-import type { PublicClient } from 'viem'
+import { keccak256, type PublicClient } from 'viem'
 
 import { profileFactoryDeploymentId, type EarnDeploymentProfile } from './profile.js'
 import {
@@ -11,6 +11,11 @@ import {
 } from './record.js'
 import { runtimeCodeHash } from './releases.js'
 import { tempoVerifierUrl } from './verify.js'
+import { deploymentSteps } from '../modules/index.js'
+import {
+  assertFoundryProjectEnvironment,
+  foundryVerificationEnvironment,
+} from '../chain/foundry.js'
 
 /**
  * Record provenance: the runtime code, receipts, and checkout a deployment record was built from.
@@ -68,6 +73,32 @@ export async function verifyDeploymentProvenance(
       `deploymentBlock is ${record.deploymentBlock}, but the earliest recorded receipt is ${earliest}`,
     )
   }
+  const hasCoreCreation = deploymentSteps.some(
+    (step) =>
+      step.execution === 'foundry' &&
+      step.creates?.includes('core') &&
+      (record.actions[step.id]?.transactions.length ?? 0) > 0,
+  )
+  if (!hasCoreCreation) {
+    // A later configuration receipt cannot establish when an adopted vault first accepted claims.
+    const block = BigInt(record.deploymentBlock)
+    const address = record.addresses.earnVault
+    if (!address) throw new Error('Adopted record has no EarnVault creation bound')
+    const before =
+      block > 0n ? await client.getCode({ address, blockNumber: block - 1n }) : undefined
+    if (before && before !== '0x')
+      throw new Error(
+        'deploymentBlock requires archive proof that the claim scan starts before EarnVault creation',
+      )
+    if (earliest === undefined) {
+      // With no receipts at all, the claimed block itself must prove creation, not just a conservative bound.
+      const at = await client.getCode({ address, blockNumber: block })
+      if (!at || at === '0x' || keccak256(at) !== record.runtimeCodeHashes.earnVault)
+        throw new Error(
+          'Receipt-free deploymentBlock requires archive proof of EarnVault creation at that block',
+        )
+    }
+  }
 }
 
 /** The TIP-20 factory and implementations an EarnFactory deploys every stack with. */
@@ -92,7 +123,12 @@ export function captureDeploymentSource(options: {
 }
 
 function command(root: string, executable: string, arguments_: string[]) {
-  const result = spawnSync(executable, arguments_, { cwd: root, encoding: 'utf8' })
+  if (executable === 'forge') assertFoundryProjectEnvironment(root)
+  const result = spawnSync(executable, arguments_, {
+    cwd: root,
+    encoding: 'utf8',
+    env: foundryVerificationEnvironment(process.env),
+  })
   if (result.error || result.status !== 0) return undefined
   return result.stdout.trim()
 }

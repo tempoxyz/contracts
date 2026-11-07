@@ -5,6 +5,7 @@ import { parseEarnDeploymentProfile } from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
 import {
   VerifierUnavailableError,
+  verifyContractSource,
   verifyDeploymentSources,
   verifyRecordedDeploymentSources,
   type VerificationDependencies,
@@ -83,6 +84,9 @@ function dependencies(engineName = 'VedaEngine') {
     readSource: vi.fn((path: string) => `canonical:${path.replace('/repo/', '')}`),
     spawn: vi.fn(),
     compilerArguments: vi.fn((): string[] => []),
+    sourcePaths: vi.fn((_root: string, contract: string) => [
+      contract.slice(0, contract.lastIndexOf(':')),
+    ]),
   } satisfies VerificationDependencies
 }
 
@@ -130,6 +134,11 @@ describe('deployment source verification', () => {
       'lib/forge-std/src/hash.sol': { content: 'canonical:lib/forge-std/src/hash.sol' },
       'src/engines/veda/VedaEngine.sol': { content: 'canonical:src/engines/veda/VedaEngine.sol' },
     }
+    runtime.sourcePaths = vi.fn((_root: string, contract: string) =>
+      contract.endsWith(':VedaEngine')
+        ? Object.keys(engineSources)
+        : [contract.slice(0, contract.lastIndexOf(':'))],
+    )
     runtime.fetch = vi.fn(async (input) => {
       const url = String(input)
       if (url.toLowerCase().includes(engine.toLowerCase())) {
@@ -315,7 +324,12 @@ describe('deployment source verification', () => {
         transaction,
       ]),
     )
-    expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
+    expect(spawnOptions?.env).toEqual({
+      PATH: '/bin',
+      FOUNDRY_PROFILE: 'deploy',
+      FOUNDRY_ETH_RPC_URL: 'https://rpc.example',
+    })
+    expect(arguments_).not.toContain('--rpc-url')
   })
 
   test('retries a submission the verifier failed, and fails a compile error at once', async () => {
@@ -485,7 +499,12 @@ describe('deployment source verification', () => {
       ]),
     )
     expect(runtime.compilerArguments).toHaveBeenCalledWith('/repo', expect.any(Object))
-    expect(spawnOptions?.env).toEqual({ PATH: '/bin', FOUNDRY_PROFILE: 'deploy' })
+    expect(spawnOptions?.env).toEqual({
+      PATH: '/bin',
+      FOUNDRY_PROFILE: 'deploy',
+      FOUNDRY_ETH_RPC_URL: 'https://rpc.example',
+    })
+    expect(arguments_).not.toContain('--rpc-url')
   })
 
   test('verifies a sibling project contract from its own root, allowing Earn imports', async () => {
@@ -518,6 +537,11 @@ describe('deployment source verification', () => {
     })
     const verify = (sources: Record<string, string>) => {
       const runtime = dependencies()
+      runtime.sourcePaths = vi.fn((_root: string, contract: string) =>
+        contract.endsWith(':ZoneRouter')
+          ? ['src/ZoneRouter.sol', '../earn/src/interfaces/core/IEarnVault.sol']
+          : [contract.slice(0, contract.lastIndexOf(':'))],
+      )
       let routerLookups = 0
       runtime.fetch = vi.fn(async (input) => {
         const url = String(input)
@@ -586,7 +610,7 @@ describe('deployment source verification', () => {
         'src/ZoneRouter.sol': 'canonical:zone-router/src/ZoneRouter.sol',
         '../../outside/Secret.sol': 'canonical:outside',
       }).result,
-    ).rejects.toThrow('Verifier source path ../../outside/Secret.sol escapes the repository root')
+    ).rejects.toThrow('Verifier source paths do not match the complete compiler input manifest')
   })
 
   test('read-only verification never submits a missing source', async () => {
@@ -662,5 +686,362 @@ describe('deployment source verification', () => {
     await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
       'does not match the recorded deployment transaction',
     )
+  })
+})
+
+describe('source verifier admission', () => {
+  test.each(['no_match', 'partial', true, {}, 1])(
+    'rejects unexpected truthy match %s',
+    async (match) => {
+      const runtime = dependencies()
+      runtime.fetch = async () =>
+        Response.json({ ...verifiedContract(engine, 'VedaEngine'), match })
+      await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow('has no source match')
+    },
+  )
+
+  test('rejects omitted dependencies and injected checkout paths before reading any source', async () => {
+    for (const injected of ['../.env', '../README.md', 'src/Secret.sol']) {
+      const runtime = dependencies()
+      runtime.fetch = async () =>
+        Response.json({
+          ...verifiedContract(engine, 'VedaEngine'),
+          sources: {
+            ...verifiedContract(engine, 'VedaEngine').sources,
+            [injected]: { content: 'guess' },
+          },
+        })
+      await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+        'complete compiler input manifest',
+      )
+      expect(runtime.readSource).not.toHaveBeenCalled()
+    }
+    const runtime = dependencies()
+    runtime.sourcePaths.mockReturnValue([
+      'src/engines/veda/VedaEngine.sol',
+      'src/interfaces/Engine.sol',
+    ])
+    await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+      'complete compiler input manifest',
+    )
+    expect(runtime.readSource).not.toHaveBeenCalled()
+  })
+
+  test('accepts stronger matches on recheck but refuses downgrades and changed sources', async () => {
+    const runtime = dependencies()
+    const exact = runtime.fetch
+    runtime.fetch = async (input) => {
+      const response = await exact(input)
+      return Response.json({ ...(await response.json()), match: 'match' })
+    }
+    const source = await verifyDeploymentSources(run(), runtime)
+    runtime.fetch = exact
+    await expect(verifyRecordedDeploymentSources(run({ source }), runtime)).resolves.toBeUndefined()
+    const stronger = await verifyDeploymentSources(run(), runtime)
+    runtime.fetch = async (input) => {
+      const response = await exact(input)
+      return Response.json({ ...(await response.json()), match: 'match' })
+    }
+    await expect(
+      verifyRecordedDeploymentSources(run({ source: stronger }), runtime),
+    ).rejects.toThrow('does not match current provenance')
+  })
+
+  test('does not waive the recorded creation hash for a hashless verifier entry', async () => {
+    const runtime = dependencies()
+    const fetch = runtime.fetch
+    runtime.fetch = async (input) => {
+      const response = await fetch(input)
+      const value = await response.json()
+      delete value.transactionHash
+      return Response.json(value)
+    }
+    await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+      'does not match the recorded deployment transaction',
+    )
+  })
+
+  test('explicit resubmission replaces an invalid existing entry only with canonical evidence', async () => {
+    const runtime = dependencies()
+    let reads = 0
+    runtime.fetch = async (input) =>
+      String(input).endsWith('/v2/verify/job')
+        ? Response.json({ isJobCompleted: true, contract: { match: 'exact_match' }, error: null })
+        : Response.json({
+            ...verifiedContract(engine, 'VedaEngine'),
+            name: ++reads === 1 ? 'Wrong' : 'VedaEngine',
+          })
+    runtime.spawn = vi.fn(() => ({
+      status: 0,
+      stdout: 'Verification Job ID: `job`',
+      stderr: '',
+    })) as never
+    await expect(
+      verifyContractSource(
+        {
+          address: engine,
+          chainId: 4217,
+          constructorArgs: '0x',
+          contract: contracts.VedaEngine,
+          environment: {},
+          root: '/repo',
+          rpcUrl: 'https://rpc.example',
+          resubmit: true,
+        },
+        runtime,
+      ),
+    ).resolves.toMatchObject({ name: 'VedaEngine', match: 'exact_match' })
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+})
+
+describe('verifier recovery', () => {
+  function repairRuntime(
+    transactionHash: string | null | undefined,
+    repaired: Record<string, unknown> = {},
+    match: 'match' | 'exact_match' = 'match',
+  ) {
+    const runtime = dependencies()
+    const original = runtime.fetch
+    let submitted = false
+    runtime.fetch = vi.fn(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/v2/verify/repair'))
+        return Response.json({
+          isJobCompleted: true,
+          contract: { match: 'exact_match' },
+          error: null,
+        })
+      if (!url.toLowerCase().includes(earnVault.toLowerCase())) return original(input)
+      return Response.json({
+        ...verifiedContract(earnVault, 'ERC1967Proxy'),
+        ...(submitted ? repaired : { match, transactionHash }),
+      })
+    }) as typeof fetch
+    runtime.spawn = vi.fn(() => {
+      submitted = true
+      return { status: 0, stdout: 'Verification Job ID: `repair`', stderr: '' }
+    }) as never
+    return runtime
+  }
+
+  test.each([undefined, null])(
+    'repairs creation evidence %s only on opt-in and sends the recorded hash',
+    async (transactionHash) => {
+      const runtime = repairRuntime(transactionHash)
+      await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(
+        '--resubmit-verification',
+      )
+      expect(runtime.spawn).not.toHaveBeenCalled()
+      await expect(
+        verifyDeploymentSources(run({ resubmit: true }), runtime),
+      ).resolves.toMatchObject({ contractVerification: 'verified' })
+      expect(runtime.spawn).toHaveBeenCalledOnce()
+      expect(runtime.spawn).toHaveBeenCalledWith(
+        'forge',
+        expect.arrayContaining(['--creation-transaction-hash', transaction]),
+        expect.anything(),
+      )
+    },
+  )
+
+  test.each([
+    { transactionHash: null },
+    { transactionHash: `0x${'2'.repeat(64)}` },
+    { name: 'Wrong' },
+    { fullyQualifiedName: 'src/Lookalike.sol:ERC1967Proxy' },
+    { address: address('f') },
+    { sources: { [contracts.ERC1967Proxy.split(':')[0]!]: { content: 'wrong source' } } },
+  ])('never accepts invalid evidence after a successful job: %j', async (repaired) => {
+    const runtime = repairRuntime(null, repaired)
+    await expect(verifyDeploymentSources(run({ resubmit: true }), runtime)).rejects.toThrow()
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test('leaves valid exact matches untouched during an explicit repair', async () => {
+    const runtime = dependencies()
+    await expect(verifyDeploymentSources(run({ resubmit: true }), runtime)).resolves.toMatchObject({
+      contractVerification: 'verified',
+    })
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('rechecks a record read-only by default and repairs it only on explicit opt-in', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const runtime = repairRuntime(null)
+    const record = run({ source }).record
+    const before = structuredClone(record)
+    await expect(verifyRecordedDeploymentSources(run({ record }), runtime)).rejects.toThrow(
+      'does not match the recorded deployment transaction',
+    )
+    expect(runtime.spawn).not.toHaveBeenCalled()
+    await expect(
+      verifyRecordedDeploymentSources(run({ record, resubmit: true }), runtime),
+    ).resolves.toBeUndefined()
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+    expect(record).toEqual(before)
+  })
+
+  test('refuses incompatible repair sources before submitting anything', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const path = contracts.ERC1967Proxy.split(':')[0]!
+    const runtime = repairRuntime(null, {
+      sources: { [path]: { content: 'new canonical source' } },
+    })
+    const original = runtime.readSource
+    runtime.readSource = vi.fn((file) =>
+      file === `/repo/${path}` ? 'new canonical source' : original(file),
+    )
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).rejects.toThrow('Use the recorded source revision')
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test.each(['match', 'exact_match'] as const)(
+    'leaves historical %s entries untouched from a newer checkout during repair',
+    async (match) => {
+      const runtime = dependencies()
+      const original = runtime.fetch
+      runtime.fetch = async (input) => {
+        const response = await original(input)
+        return Response.json({ ...(await response.json()), match })
+      }
+      const source = await verifyDeploymentSources(run(), runtime)
+      runtime.readSource.mockImplementation(() => 'new checkout sources')
+      runtime.readSource.mockClear()
+      runtime.sourcePaths.mockClear()
+      await expect(
+        verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+      ).resolves.toBeUndefined()
+      expect(runtime.spawn).not.toHaveBeenCalled()
+      expect(runtime.readSource).not.toHaveBeenCalled()
+      expect(runtime.sourcePaths).not.toHaveBeenCalled()
+    },
+  )
+
+  test('repairs owned evidence without comparing an existing engine to the checkout', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const runtime = repairRuntime(null)
+    const readSource = runtime.readSource
+    runtime.readSource = vi.fn((file) =>
+      file.endsWith('/VedaEngine.sol') ? 'new unrelated engine source' : readSource(file),
+    )
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).resolves.toBeUndefined()
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test.each(['content', 'manifest', 'missing'] as const)(
+    'preflights the complete recorded source set before repair: %s',
+    async (change) => {
+      const source = await verifyDeploymentSources(run(), dependencies())
+      const runtime = repairRuntime(null)
+      const sourcePaths = runtime.sourcePaths
+      const readSource = runtime.readSource
+      runtime.sourcePaths = vi.fn((root, contract) => [
+        ...sourcePaths(root, contract),
+        ...(change === 'manifest' ? ['src/Added.sol'] : []),
+      ])
+      runtime.readSource = vi.fn((file) => {
+        if (change === 'missing') throw new Error('ENOENT')
+        return change === 'content' ? 'changed source' : readSource(file)
+      })
+      await expect(
+        verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+      ).rejects.toThrow('Use the recorded source revision')
+      expect(runtime.spawn).not.toHaveBeenCalled()
+    },
+  )
+
+  test('preflights every needed repair before submitting the first', async () => {
+    const deployedEngine = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'recorded-engine-repair',
+        chainId: 42431,
+        owner: address('9'),
+        engine: { kind: 'erc4626', venue: address('d') },
+      },
+      { deployer: address('1'), factories: { earn: coreFactory, erc4626Engine: address('c') } },
+    )
+    const runtime = dependencies('ERC4626Engine')
+    const original = runtime.fetch
+    let invalid = false
+    runtime.fetch = vi.fn(async (input) => {
+      const response = await original(input)
+      return Response.json({
+        ...(await response.json()),
+        transactionHash: invalid ? null : transaction,
+      })
+    }) as typeof fetch
+    const options = run({
+      profile: deployedEngine,
+      record: { addresses, actions: { ...actions, 'deploy-engine': actions['deploy-core'] } },
+    })
+    const source = await verifyDeploymentSources(options, runtime)
+    invalid = true
+    const readSource = runtime.readSource
+    runtime.readSource = vi.fn((file) =>
+      file.endsWith('/ERC1967Proxy.sol') ? 'changed proxy source' : readSource(file),
+    )
+    await expect(
+      verifyRecordedDeploymentSources(
+        {
+          ...options,
+          resubmit: true,
+          record: { ...options.record, source } as EarnDeploymentRecord,
+        },
+        runtime,
+      ),
+    ).rejects.toThrow('Use the recorded source revision')
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('checks repaired results against historical evidence, not newer source returned by the verifier', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const path = contracts.ERC1967Proxy.split(':')[0]!
+    const runtime = repairRuntime(null, { sources: { [path]: { content: 'unrecorded source' } } })
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).rejects.toThrow('does not match current provenance')
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test('refuses changed sources after a transient failure before retrying submission', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const runtime = repairRuntime(null)
+    runtime.spawn = vi.fn(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'HTTP status code 503 Service Unavailable',
+    })) as never
+    runtime.pause = vi.fn(async () => {
+      runtime.readSource.mockImplementation(() => 'changed during retry backoff')
+    })
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, resubmit: true }), runtime),
+    ).rejects.toThrow('Use the recorded source revision')
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+    expect(runtime.pause).toHaveBeenCalledOnce()
+  })
+
+  test('reports a terminal exact-match refusal without retrying or accepting the old entry', async () => {
+    const runtime = repairRuntime(null, {}, 'exact_match')
+    runtime.spawn = vi.fn(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'HTTP 409 already_verified: Contract is already verified',
+    })) as never
+    const error = await verifyDeploymentSources(run({ resubmit: true }), runtime).catch(
+      (caught: unknown) => caught,
+    )
+    expect(error).not.toBeInstanceOf(VerifierUnavailableError)
+    expect(error).toMatchObject({
+      message: expect.stringContaining('Verifier-side repair is required'),
+    })
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+    expect(runtime.pause).not.toHaveBeenCalled()
   })
 })

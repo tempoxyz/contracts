@@ -3,7 +3,7 @@ import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { toHex } from 'viem'
 
-import { Environment, localStack } from 'localnet'
+import { Environment, localStack, stackManifest } from 'localnet'
 import type { Deployment as LocalDeployment } from 'localnet'
 import {
   createDeploymentPublicClient,
@@ -74,13 +74,15 @@ export async function runOnStack<Result>(
       accessAdministrator: accounts.accessAdministrator.privateKey,
     },
     zoneSubmissionRpcUrl: environment.zone.publicRpcUrl,
+    localZoneProofRpcUrl:
+      definition.provider === 'local' ? environment.zone.publicRpcUrl : undefined,
     engineFixtures: environment.deployment.engineFixtures,
   })
   const deploymentPath = resolve(
     localDirectory,
     `deployment-${definition.id}-${environment.deployment.earnProfile.id}.json`,
   )
-  const manifestSource = `${JSON.stringify(deployment, null, 2)}\n`
+  const manifestSource = `${JSON.stringify(stackManifest(deployment), null, 2)}\n`
   mkdirSync(localDirectory, { recursive: true })
   writeFileSync(deploymentPath, manifestSource)
   console.log(`\nE2E deployment · ${relative(root, deploymentPath)}\n`)
