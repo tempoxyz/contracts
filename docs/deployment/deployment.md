@@ -139,12 +139,16 @@ such as one Spend's script created, recording the transaction its `RouterDeploye
 Factory-provisioned engines also adopt their exact creation event rather than an unrelated receipt.
 For other creating steps, an interrupted broadcast's saved transaction hashes are confirmed against
 RPC receipts when Forge has not saved successful receipts. Resume can repair an empty pending
-action's transaction list without rebroadcasting. A missing receipt does not hide another confirmed
+action's transaction list without rebroadcasting, preserving its completion metadata and any later
+step's saved outputs. A missing receipt does not hide another confirmed
 transaction in the same broadcast artifact; transport failures remain retryable. If every candidate
 receipt is missing, the error names the artifact that needs the original or replacement transaction
 evidence. Already-satisfied steps that create no contracts do not require old broadcast receipts.
 For a published record still marked source-verification `pending`, recovered creation hashes replace
-empty action transaction lists before verification. This recovery never rewrites verified records.
+empty action transaction lists before verification. An earlier successful receipt moves
+`deploymentBlock` back to the earliest recorded receipt, never forward, preserving a conservative
+claim-scan boundary. Runtime, receipt, and applicable archive checks run before publication; source
+verification still requires each target's creation proof. This recovery never rewrites verified records.
 Missing or ambiguous creation evidence still fails source verification.
 Before binding, predicted core addresses and reciprocal asset, engine, and fee-module bindings must
 match; an engine already bound elsewhere stops rather than producing an impossible handoff.

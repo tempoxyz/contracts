@@ -848,6 +848,118 @@ describe('broadcast receipt recovery', () => {
     }
   })
 
+  test('preserves an interrupted router and completion metadata while repairing an earlier receipt', async () => {
+    const asset = address('5')
+    const routerProfile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'repair-before-router',
+        chainId: 4217,
+        owner: address('4'),
+        engine: { kind: 'veda', address: address('1') },
+        zone: { id: 7, enableEarnShare: true, router: { privateAsset: asset } },
+      },
+      { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+    )
+    const core = { earnVault: address('11'), earnShare: address('12'), earnFees: address('13') }
+    const outputs = { ...core, engine: address('1'), asset }
+    const router = address('15')
+    const creation: Hex = `0x${'cd'.repeat(32)}`
+    const routerCreation: Hex = `0x${'ab'.repeat(32)}`
+    const recorded = {
+      completedAt: '2026-01-01T00:00:00.000Z',
+      verification: 'chain' as const,
+      transactions: [] as Hex[],
+    }
+    chain.getCode.mockResolvedValue('0x60')
+    chain.getLogs.mockResolvedValue([{ transactionHash: creation }])
+    chain.getTransactionReceipt.mockReset().mockResolvedValue({
+      transactionHash: routerCreation,
+      status: 'success',
+    })
+    chain.readContract.mockImplementation(
+      async ({ address: target, functionName }: { address: string; functionName: string }) => {
+        if (target === router)
+          return {
+            allowedZoneId: 7,
+            earnVault: core.earnVault,
+            earnShare: core.earnShare,
+            privateAsset: asset,
+            vaultAsset: asset,
+            pool: zeroAddress,
+            customerId: `0x${'00'.repeat(32)}`,
+            privateAssetIsBase: false,
+          }[functionName]
+        if (target === routerProfile.factories.earn)
+          return { predictEarnShare: core.earnShare, predictEarnFees: core.earnFees }[functionName]
+        if (target === core.earnVault) return outputs[functionName as keyof typeof outputs]
+        if (target === core.earnFees && functionName === 'earnVault') return core.earnVault
+        if (target === outputs.engine && functionName === 'asset') return asset
+        throw new Error(`Unexpected contract read ${target}.${functionName}`)
+      },
+    )
+    const root = mkdtempSync(join(tmpdir(), 'earn-repair-before-router-'))
+    try {
+      const profilePath = join(root, 'profiles', routerProfile.id, 'profile.json')
+      const pending = {
+        ...loadPendingDeployment(profilePath, routerProfile),
+        outputs,
+        actions: { 'deploy-core': recorded },
+        latestOutputs: { earnRouter: router },
+      }
+      savePendingDeployment(profilePath, routerProfile, pending)
+      const step = deploymentStep('deploy-router')
+      if (step.execution !== 'foundry') throw new Error('expected a Foundry step')
+      expect(step.adopt).toBeUndefined()
+      const calldata = step.input(routerProfile, outputs, foundryOutputPath(root, profilePath))
+      const broadcast = join(
+        foundryBroadcastPath(root, profilePath),
+        'DeployEarnRouter.s.sol',
+        String(routerProfile.chainId),
+      )
+      mkdirSync(broadcast, { recursive: true })
+      writeFileSync(
+        join(broadcast, `${calldata.slice(2, 10)}-latest.json`),
+        JSON.stringify({ transactions: [{ hash: routerCreation }] }),
+      )
+      const options = {
+        root,
+        profilePath,
+        profile: routerProfile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: planEarnDeployment(routerProfile).filter(
+          ({ id }) => id === 'deploy-core' || id === 'deploy-router',
+        ),
+      }
+      const resumed = await prepareLifecycleStep(options)
+      expect(resumed.kind).toBe('complete')
+      expect(resumed.pending.actions['deploy-core']).toEqual({
+        ...recorded,
+        transactions: [creation],
+      })
+      expect(resumed.pending.outputs).toEqual({ ...outputs, earnRouter: router })
+      expect(resumed.pending.actions['deploy-router']?.transactions).toEqual([routerCreation])
+      expect(chain.getTransactionReceipt).toHaveBeenCalledExactlyOnceWith({ hash: routerCreation })
+      expect(loadPendingDeployment(profilePath, routerProfile)).toEqual(resumed.pending)
+      expect(await prepareLifecycleStep(options)).toEqual(resumed)
+
+      // Stopping after the repair must also retain the later step's unconsumed outputs on disk.
+      savePendingDeployment(profilePath, routerProfile, pending)
+      const repaired = await prepareLifecycleStep({
+        ...options,
+        actions: options.actions.filter(({ id }) => id === 'deploy-core'),
+      })
+      expect(repaired.pending).toEqual({
+        ...pending,
+        actions: { 'deploy-core': { ...recorded, transactions: [creation] } },
+      })
+      expect(loadPendingDeployment(profilePath, routerProfile)).toEqual(repaired.pending)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('retains a successful saved receipt without another RPC lookup', async () => {
     const fixture = await interruptedFactoryBroadcast()
     try {

@@ -268,7 +268,10 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
     }
     if (Object.keys(recovered).length > 0) {
       const candidate = { ...record, actions: { ...record.actions, ...recovered } }
-      // New receipts must still agree with the recorded creation block and runtime identity.
+      // Recovered creation may predate the recorded receipts; widen the claim scan, never narrow it.
+      const earliest = await earliestDeploymentBlock(client, candidate.actions)
+      if (earliest !== undefined && earliest < BigInt(candidate.deploymentBlock))
+        candidate.deploymentBlock = earliest.toString()
       await verifyDeploymentProvenance(client, candidate)
       recordPath = publishProfileDeploymentRecord(options.profilePath, profile, candidate)
       formatCommitReadyOutput(options.root, recordPath)

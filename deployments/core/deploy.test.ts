@@ -31,7 +31,7 @@ import {
   profileDeploymentPath,
   publishProfileDeploymentRecord,
 } from './bundle.js'
-import { earnFactoryAbi } from '../abis/index.js'
+import { earnFactoryAbi, erc4626EngineFactoryAbi } from '../abis/index.js'
 import * as Runtime from '../chain/runtime.js'
 import * as Inspection from './inspection.js'
 import * as Provenance from './provenance.js'
@@ -179,6 +179,41 @@ describe('deployEarnProfile committed source recovery', () => {
     }
   })
 
+  test('recovers an earlier engine receipt without moving the claim scan forward or replacing core evidence', async () => {
+    const fixture = pendingSourceDeployment({ provisionEngine: true })
+    try {
+      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+      const recovered = {
+        ...fixture.record,
+        deploymentBlock: '8',
+        actions: {
+          ...fixture.record.actions,
+          'deploy-engine': {
+            ...fixture.record.actions['deploy-engine']!,
+            transactions: [fixture.engineCreation],
+          },
+        },
+      }
+      expect(fixture.verification.mock.calls[0]![0].record).toEqual(recovered)
+      expect(fixture.read()).toEqual({
+        ...recovered,
+        source: expect.objectContaining({ contractVerification: 'verified' }),
+      })
+      expect(fixture.chain.getLogs).toHaveBeenCalledOnce()
+      expect(fixture.chain.getLogs.mock.calls[0]![0].address).toBe(
+        fixture.record.factories.erc4626Engine,
+      )
+      const published = readFileSync(fixture.recordPath, 'utf8')
+      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+      expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+      expect(fixture.chain.getLogs).toHaveBeenCalledOnce()
+      expect(fixture.verification).toHaveBeenCalledOnce()
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
   test('preserves nonempty creation transactions in a source-pending record', async () => {
     const fixture = pendingSourceDeployment()
     try {
@@ -204,38 +239,54 @@ describe('deployEarnProfile committed source recovery', () => {
     }
   })
 
-  test('keeps the repaired pending record through verifier downtime and resumes from it without the cache', async () => {
-    const fixture = pendingSourceDeployment()
-    try {
-      const fetch = fixture.dependencies.fetch.getMockImplementation()!
-      fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
-      const result = await deployEarnProfile(fixture.options)
-      expect(result.state).toBe('verification-pending')
-      const pending = fixture.read()
-      expect(pending.source).toEqual(fixture.record.source)
-      expect(pending.actions['deploy-core']?.transactions).toEqual([fixture.creation])
-      expect(pending.actions['bind-core']).toEqual(fixture.record.actions['bind-core'])
+  test.each([false, true])(
+    'keeps repaired evidence through verifier downtime and cache-free resume (provision engine: %s)',
+    async (provisionEngine) => {
+      const fixture = pendingSourceDeployment({ provisionEngine })
+      try {
+        const fetch = fixture.dependencies.fetch.getMockImplementation()!
+        fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
+        const result = await deployEarnProfile(fixture.options)
+        expect(result.state).toBe('verification-pending')
+        const pending = fixture.read()
+        expect(pending.source).toEqual(fixture.record.source)
+        expect(pending.actions['deploy-core']?.transactions).toEqual([fixture.creation])
+        expect(pending.actions['bind-core']).toEqual(fixture.record.actions['bind-core'])
+        expect(pending.deploymentBlock).toBe(provisionEngine ? '8' : '10')
+        if (provisionEngine)
+          expect(pending.actions['deploy-engine']?.transactions).toEqual([fixture.engineCreation])
 
-      rmSync(pendingDeploymentPath(fixture.options.profilePath))
-      fixture.chain.getLogs.mockRejectedValue(new Error('Creation discovery must not repeat'))
-      fixture.dependencies.fetch.mockImplementation(fetch)
-      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
-      expect(fixture.verification.mock.calls[1]![0].record).toEqual(pending)
-      expect(fixture.read().source.contractVerification).toBe('verified')
-      fixture.assertNoBroadcast()
-    } finally {
-      fixture.cleanup()
-    }
-  })
+        rmSync(pendingDeploymentPath(fixture.options.profilePath))
+        fixture.chain.getLogs.mockRejectedValue(new Error('Creation discovery must not repeat'))
+        fixture.dependencies.fetch.mockImplementation(fetch)
+        expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+        expect(fixture.verification.mock.calls[1]![0].record).toEqual(pending)
+        expect(fixture.read().source.contractVerification).toBe('verified')
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
 
-  test.each(['missing event', 'reverted receipt', 'changed creation block'])(
+  test.each(['missing event', 'reverted receipt', 'later creation bound'])(
     'does not publish an invalid repair after %s',
     async (failure) => {
       const fixture = pendingSourceDeployment()
       try {
         if (failure === 'missing event') fixture.chain.getLogs.mockResolvedValue([])
         if (failure === 'reverted receipt') fixture.receipt.status = 'reverted'
-        if (failure === 'changed creation block') fixture.receipt.blockNumber = 9n
+        if (failure === 'later creation bound') {
+          // A recovered receipt may widen the scan, but cannot replace an earlier archive-proven bound.
+          fixture.receipt.blockNumber = 11n
+          publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, {
+            ...fixture.record,
+            actions: {
+              ...fixture.record.actions,
+              'bind-core': { ...fixture.record.actions['bind-core']!, transactions: [] },
+            },
+          })
+        }
         const published = readFileSync(fixture.recordPath, 'utf8')
         await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
           failure === 'missing event'
@@ -247,6 +298,56 @@ describe('deployEarnProfile committed source recovery', () => {
         expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
         expect(fixture.read().source.contractVerification).toBe('pending')
         expect(fixture.verification).not.toHaveBeenCalled()
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test.each(['missing event', 'reverted receipt', 'unrelated receipt', 'changed runtime'])(
+    'does not verify earlier engine recovery with %s',
+    async (failure) => {
+      const fixture = pendingSourceDeployment({ provisionEngine: true })
+      try {
+        if (failure === 'missing event') fixture.chain.getLogs.mockResolvedValue([])
+        if (failure === 'reverted receipt') fixture.engineReceipt.status = 'reverted'
+        if (failure === 'unrelated receipt') fixture.engineReceipt.logs = []
+        if (failure === 'changed runtime') {
+          const getCode = fixture.chain.getCode.getMockImplementation()!
+          fixture.chain.getLogs.mockImplementation(async () => {
+            // Change after initial admission to exercise the repaired candidate's provenance check.
+            fixture.chain.getCode.mockImplementation(async (parameters) =>
+              parameters.address === fixture.record.addresses.engine
+                ? '0x6001'
+                : getCode(parameters),
+            )
+            return [{ transactionHash: fixture.engineCreation }]
+          })
+        }
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
+          failure === 'missing event'
+            ? /did not return the factory creation event/
+            : failure === 'reverted receipt'
+              ? /reverted/
+              : failure === 'unrelated receipt'
+                ? /does not prove creation/
+                : /Runtime bytecode hash changed/,
+        )
+        if (failure === 'unrelated receipt') {
+          // Provenance alone never upgrades a record: the real creation proof still rejects it.
+          expect(fixture.read().deploymentBlock).toBe('8')
+          expect(fixture.read().actions['deploy-engine']?.transactions).toEqual([
+            fixture.engineCreation,
+          ])
+          expect(fixture.verification).toHaveBeenCalledOnce()
+        } else {
+          expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+          expect(fixture.verification).not.toHaveBeenCalled()
+        }
+        expect(fixture.read().source).toEqual(fixture.record.source)
+        expect(fixture.read().actions['deploy-core']).toEqual(fixture.record.actions['deploy-core'])
         fixture.assertNoBroadcast()
       } finally {
         fixture.cleanup()
@@ -311,10 +412,12 @@ describe('deployEarnProfile committed source recovery', () => {
 })
 
 /** Exercises real record publication, reconciliation, provenance, and source checks over read-only RPC fixtures. */
-function pendingSourceDeployment() {
+function pendingSourceDeployment({ provisionEngine = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'earn-pending-source-'))
   const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
   const creation: Hex = `0x${'ab'.repeat(32)}`
+  const engineCreation: Hex = `0x${'ac'.repeat(32)}`
+  const venue = address('a')
   const binding: Hex = `0x${'cd'.repeat(32)}`
   const genesis: Hex = `0x${'ef'.repeat(32)}`
   const runtime: Hex = '0x6000'
@@ -333,7 +436,9 @@ function pendingSourceDeployment() {
     id: 'pending-source-test',
     chainId: 4217,
     owner: address('4'),
-    engine: { kind: 'veda', address: addresses.engine },
+    engine: provisionEngine
+      ? { kind: 'erc4626', venue }
+      : { kind: 'veda', address: addresses.engine },
   }
   const profile = parseEarnDeploymentProfile(authored, {
     deployer: address('2'),
@@ -387,7 +492,12 @@ function pendingSourceDeployment() {
         {
           completedAt: '2026-01-01T00:00:00.000Z',
           verification: 'chain',
-          transactions: id === 'bind-core' ? [binding] : [],
+          transactions:
+            id === 'bind-core'
+              ? [binding]
+              : provisionEngine && id === 'deploy-core'
+                ? [creation]
+                : [],
         },
       ]),
     ),
@@ -436,24 +546,50 @@ function pendingSourceDeployment() {
     TransactionReceipt,
     'status' | 'transactionHash' | 'blockNumber' | 'contractAddress' | 'logs'
   >
+  const engineEvent = getAbiItem({ abi: erc4626EngineFactoryAbi, name: 'ERC4626EngineDeployed' })
+  const engineReceipt = {
+    ...receipt,
+    transactionHash: engineCreation,
+    blockNumber: 8n,
+    logs: [
+      {
+        address: profile.factories.erc4626Engine,
+        removed: false,
+        topics: encodeEventTopics({
+          abi: erc4626EngineFactoryAbi,
+          eventName: 'ERC4626EngineDeployed',
+          args: { engine: addresses.engine, vault: venue, owner: profile.deployer },
+        }),
+        data: encodeAbiParameters(
+          engineEvent.inputs.filter((input) => !input.indexed),
+          [addresses.asset, profileFactoryDeploymentId(profile), engineCreation],
+        ),
+      },
+    ],
+  } as typeof receipt
   const chain = {
     getBlock: vi.fn(async () => ({ hash: genesis })),
     getBlockNumber: vi.fn(async () => 10n),
-    getLogs: vi.fn(async (): Promise<{ transactionHash: Hex }[]> => [
-      { transactionHash: creation },
-    ]),
+    getLogs: vi.fn(
+      async ({ address: target }: { address: string }): Promise<{ transactionHash: Hex }[]> => [
+        { transactionHash: target === profile.factories.erc4626Engine ? engineCreation : creation },
+      ],
+    ),
     getCode: vi.fn(async ({ address, blockNumber }: { address: string; blockNumber?: bigint }) =>
       blockNumber === 9n ? '0x' : code(address),
     ),
     getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) =>
-      hash === creation
-        ? receipt
-        : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
+      hash === engineCreation
+        ? engineReceipt
+        : hash === creation
+          ? receipt
+          : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
     ),
     getStorageAt: vi.fn(async () => `0x${'0'.repeat(24)}${vaultImplementation.slice(2)}`),
     readContract: vi.fn(
       async ({ address: target, functionName }: { address: string; functionName: string }) => {
         const factory = {
+          predictEngine: addresses.engine,
           predictEarnShare: addresses.earnShare,
           predictEarnFees: addresses.earnFees,
           tip20Factory,
@@ -461,16 +597,21 @@ function pendingSourceDeployment() {
           earnFeesImplementation: feesImplementation,
         }
         const values =
-          target === profile.factories.earn
+          target === profile.factories.earn || target === profile.factories.erc4626Engine
             ? factory
-            : { ...addresses, owner: profile.owner, operator: profile.owner }
+            : { ...addresses, vault: venue, owner: profile.owner, operator: profile.owner }
         if (!(functionName in values)) throw new Error(`Unexpected contract read ${functionName}`)
         return values[functionName as keyof typeof values]
       },
     ),
   }
   const contracts = new Map([
-    [addresses.engine.toLowerCase(), 'src/engines/veda/VedaEngine.sol:VedaEngine'],
+    [
+      addresses.engine.toLowerCase(),
+      provisionEngine
+        ? 'src/engines/ERC4626Engine.sol:ERC4626Engine'
+        : 'src/engines/veda/VedaEngine.sol:VedaEngine',
+    ],
     [
       addresses.earnVault.toLowerCase(),
       'lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy',
@@ -489,7 +630,8 @@ function pendingSourceDeployment() {
         fullyQualifiedName: contract,
         match: 'exact_match',
         name,
-        transactionHash: creation,
+        transactionHash:
+          provisionEngine && target === addresses.engine.toLowerCase() ? engineCreation : creation,
         sources: { [source!]: { content: `canonical:${source}` } },
       })
     }),
@@ -536,6 +678,8 @@ function pendingSourceDeployment() {
     read,
     creation,
     receipt,
+    engineCreation,
+    engineReceipt,
     chain,
     dependencies,
     verification,

@@ -123,7 +123,7 @@ export async function prepareLifecycleStep(options: {
           step.execution === 'foundry' && step.adopt
             ? await step.adopt(client, profile, pending.outputs)
             : undefined
-        if (adopted) pending = { ...pending, outputs: adopted.outputs }
+        if (adopted && !recorded) pending = { ...pending, outputs: adopted.outputs }
         const transactions = adopted
           ? [adopted.transaction]
           : step.execution === 'foundry' && createsContracts
@@ -135,7 +135,15 @@ export async function prepareLifecycleStep(options: {
                 profile.chainId,
               )
             : []
-        if (!recorded || transactions.length > 0) complete(action, transactions)
+        if (!recorded) complete(action, transactions)
+        else if (transactions.length > 0) {
+          // Receipt repair must preserve completion metadata and a later interrupted step's outputs.
+          pending = {
+            ...pending,
+            actions: { ...pending.actions, [action.id]: { ...recorded, transactions } },
+          }
+          savePendingDeployment(profilePath, profile, pending)
+        }
       }
       continue
     }
