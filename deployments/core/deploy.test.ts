@@ -38,6 +38,7 @@ import * as Provenance from './provenance.js'
 import * as Reconcile from './reconcile.js'
 import * as Verify from './verify.js'
 import { deploymentActions } from './plan.js'
+import { deploymentStep } from '../modules/index.js'
 import { runtimeCodeAddressKeysFor, type EarnDeploymentRecord } from './record.js'
 import {
   assertNoPublicFixtureAuthority,
@@ -461,11 +462,106 @@ describe('deployEarnProfile committed source recovery', () => {
   })
 })
 
+describe('retained historical direct creation', () => {
+  test.each(['source', 'input', 'sender', 'receipt'] as const)(
+    'rejects corrupt retained %s evidence before publishing a replacement record',
+    async (corruption) => {
+      const fixture = pendingSourceDeployment({ retainedController: true })
+      try {
+        const record = structuredClone(fixture.record)
+        record.actions['deploy-core']!.transactions = [fixture.creation]
+        const source = await fixture.verifySources({
+          ...fixture.options,
+          client: fixture.chain as never,
+          record,
+        })
+        publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, {
+          ...record,
+          source: { ...record.source, ...source },
+        })
+        fixture.removeBoostRewards()
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
+        if (corruption === 'input') fixture.minedTransaction.input = '0x6000'
+        if (corruption === 'sender')
+          fixture.minedTransaction.from = getAddress(`0x${'f'.repeat(40)}`)
+        if (corruption === 'receipt') {
+          const receipt = fixture.chain.getTransactionReceipt.getMockImplementation()!
+          fixture.chain.getTransactionReceipt.mockImplementation(async (parameters) => ({
+            ...(await receipt(parameters)),
+            ...(parameters.hash === fixture.minedTransaction.hash
+              ? { contractAddress: zeroAddress }
+              : {}),
+          }))
+        }
+        if (corruption === 'source') {
+          const fetch = fixture.dependencies.fetch.getMockImplementation()!
+          fixture.dependencies.fetch.mockImplementation(async (input) => {
+            const response = await fetch(input)
+            if (
+              !String(input)
+                .toLowerCase()
+                .includes(record.addresses.earnContributionController!.toLowerCase())
+            )
+              return response
+            return Response.json({
+              ...((await response.json()) as object),
+              sources: {
+                'src/rewards/EarnContributionController.sol': { content: 'corrupt source' },
+              },
+            })
+          })
+        }
+        await expect(deployEarnProfile(fixture.options)).rejects.toThrow()
+        expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        expect(compiler).not.toHaveBeenCalled()
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+  test('keeps a verified controller when unrelated rewards are removed after compiler settings change', async () => {
+    const fixture = pendingSourceDeployment({ retainedController: true })
+    try {
+      const record = structuredClone(fixture.record)
+      record.actions['deploy-core']!.transactions = [fixture.creation]
+      const source = await fixture.verifySources({
+        ...fixture.options,
+        client: fixture.chain as never,
+        record,
+      })
+      const verified = { ...record, source: { ...record.source, ...source } }
+      publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, verified)
+      fixture.removeBoostRewards()
+      // The source text is unchanged, but today's compiler settings produce different initcode.
+      const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
+      const result = await deployEarnProfile(fixture.options)
+      expect(result.state).toBe('complete')
+      const retained = fixture.read()
+      expect(retained.addresses.earnContributionController).toBe(
+        verified.addresses.earnContributionController,
+      )
+      expect(retained.actions['deploy-contribution-controller']).toEqual(
+        verified.actions['deploy-contribution-controller'],
+      )
+      expect(retained.addresses.earnMerkleRewardDistributor).toBeUndefined()
+      expect(compiler).not.toHaveBeenCalled()
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+})
+
 /** Exercises real record publication, reconciliation, provenance, and source checks over read-only RPC fixtures. */
-function pendingSourceDeployment({ provisionEngine = false } = {}) {
+function pendingSourceDeployment({ provisionEngine = false, retainedController = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'earn-pending-source-'))
   const address = (suffix: string) => getAddress(`0x${suffix.padStart(40, '0')}`)
   const creation: Hex = `0x${'ab'.repeat(32)}`
+  const controllerCreation: Hex = `0x${'ca'.repeat(32)}`
+  const distributorCreation: Hex = `0x${'da'.repeat(32)}`
+  const historicalBytecode = '0x6001'
   const engineCreation: Hex = `0x${'ac'.repeat(32)}`
   const venue = address('a')
   const binding: Hex = `0x${'cd'.repeat(32)}`
@@ -480,17 +576,42 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
     earnShare: address('22'),
     earnFees: address('23'),
     asset: address('6'),
+    ...(retainedController
+      ? { earnContributionController: address('c0'), earnMerkleRewardDistributor: address('d0') }
+      : {}),
   }
   const authored = {
     version: 1,
     id: 'pending-source-test',
     chainId: 4217,
     owner: address('4'),
+    ...(retainedController
+      ? {
+          targetYield: {
+            startTimestamp: 1_800_000_000,
+            endTimestamp: 1_800_086_400,
+            intervalSeconds: 300,
+            annualRate: { bps: 500 },
+            funding: [{ wallet: address('f'), remainder: true }],
+          },
+          boostRewards: {
+            startTimestamp: 1_800_000_000,
+            endTimestamp: 1_800_086_400,
+            intervalSeconds: 300,
+            targetAnnualRateBps: 500,
+            perUserPrincipalCapAssets: '100',
+            totalPrincipalCapAssets: '1000',
+            treasury: address('e'),
+            funding: { wallet: address('f') },
+            excludedAddresses: [],
+          },
+        }
+      : {}),
     engine: provisionEngine
       ? { kind: 'erc4626', venue }
       : { kind: 'veda', address: addresses.engine },
   }
-  const profile = parseEarnDeploymentProfile(authored, {
+  let profile = parseEarnDeploymentProfile(authored, {
     deployer: address('2'),
     factories: { earn: address('3'), erc4626Engine: address('5') },
   })
@@ -532,7 +653,7 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
     runtimeCodeHashes: Object.fromEntries(
       runtimeCodeAddressKeysFor(addresses).map((key) => [
         key,
-        keccak256(code(addresses[key as keyof typeof addresses])),
+        keccak256(code(addresses[key as keyof typeof addresses]!)),
       ]),
     ),
     addresses,
@@ -543,11 +664,15 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
           completedAt: '2026-01-01T00:00:00.000Z',
           verification: 'chain',
           transactions:
-            id === 'bind-core'
-              ? [binding]
-              : provisionEngine && id === 'deploy-core'
-                ? [creation]
-                : [],
+            id === 'deploy-contribution-controller'
+              ? [controllerCreation]
+              : id === 'deploy-merkle-distributor'
+                ? [distributorCreation]
+                : id === 'bind-core'
+                  ? [binding]
+                  : provisionEngine && id === 'deploy-core'
+                    ? [creation]
+                    : [],
         },
       ]),
     ),
@@ -617,7 +742,26 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
       },
     ],
   } as typeof receipt
+  const minedTransaction = {
+    hash: controllerCreation,
+    from: profile.deployer,
+    to: null,
+    input:
+      `${historicalBytecode}${encodeAbiParameters([{ type: 'address' }, { type: 'address' }], [addresses.earnVault, profile.owner]).slice(2)}` as Hex,
+  }
   const chain = {
+    getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
+      if (hash === controllerCreation) return minedTransaction
+      const step = deploymentStep('deploy-merkle-distributor')
+      if (step.execution !== 'foundry' || !step.source)
+        throw new Error('Missing source declaration')
+      return {
+        ...minedTransaction,
+        hash,
+        input:
+          `${historicalBytecode}${step.source.constructorArgs(profile, addresses as never).slice(2)}` as Hex,
+      }
+    }),
     getBlock: vi.fn(async () => ({ hash: genesis })),
     getBlockNumber: vi.fn(async () => 10n),
     getLogs: vi.fn(
@@ -629,11 +773,21 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
       blockNumber === 9n ? '0x' : code(address),
     ),
     getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) =>
-      hash === engineCreation
-        ? engineReceipt
-        : hash === creation
-          ? receipt
-          : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
+      hash === controllerCreation || hash === distributorCreation
+        ? {
+            ...receipt,
+            transactionHash: hash,
+            contractAddress:
+              hash === controllerCreation
+                ? addresses.earnContributionController
+                : addresses.earnMerkleRewardDistributor,
+            logs: [],
+          }
+        : hash === engineCreation
+          ? engineReceipt
+          : hash === creation
+            ? receipt
+            : { ...receipt, status: 'success', transactionHash: hash, blockNumber: 10n },
     ),
     getStorageAt: vi.fn(async () => `0x${'0'.repeat(24)}${vaultImplementation.slice(2)}`),
     readContract: vi.fn(
@@ -649,7 +803,13 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
         const values =
           target === profile.factories.earn || target === profile.factories.erc4626Engine
             ? factory
-            : { ...addresses, vault: venue, owner: profile.owner, operator: profile.owner }
+            : {
+                ...addresses,
+                decimals: 6,
+                vault: venue,
+                owner: profile.owner,
+                operator: profile.owner,
+              }
         if (!(functionName in values)) throw new Error(`Unexpected contract read ${functionName}`)
         return values[functionName as keyof typeof values]
       },
@@ -667,6 +827,16 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
       'lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy',
     ],
   ])
+  if (retainedController) {
+    contracts.set(
+      addresses.earnContributionController!.toLowerCase(),
+      'src/rewards/EarnContributionController.sol:EarnContributionController',
+    )
+    contracts.set(
+      addresses.earnMerkleRewardDistributor!.toLowerCase(),
+      'src/rewards/EarnMerkleRewardDistributor.sol:EarnMerkleRewardDistributor',
+    )
+  }
   const dependencies = {
     fetch: vi.fn(async (input: Parameters<typeof fetch>[0]) => {
       const target = [...contracts.keys()].find((address) =>
@@ -681,7 +851,14 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
         match: 'exact_match',
         name,
         transactionHash:
-          provisionEngine && target === addresses.engine.toLowerCase() ? engineCreation : creation,
+          target === addresses.earnContributionController?.toLowerCase()
+            ? controllerCreation
+            : target === addresses.earnMerkleRewardDistributor?.toLowerCase()
+              ? distributorCreation
+              : provisionEngine && target === addresses.engine.toLowerCase()
+                ? engineCreation
+                : creation,
+        creationBytecode: { bytecode: historicalBytecode },
         sources: { [source!]: { content: `canonical:${source}` } },
       })
     }),
@@ -697,15 +874,17 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
     verifyDeploymentSources(parameters, dependencies)
   const verifyDeploymentSources = Verify.verifyDeploymentSources
   const verifyRecordedDeploymentSources = Verify.verifyRecordedDeploymentSources
+  const verifyRecordedStepCreation = Verify.verifyRecordedStepCreation
   vi.spyOn(Runtime, 'rpcClient').mockReturnValue(chain as never)
   // Binding inspection and preflight have their own tests; reconciliation and creation evidence stay real.
   vi.spyOn(Reconcile, 'preflightEarnDeployment').mockResolvedValue(undefined)
+  vi.spyOn(Reconcile, 'verifyEarnDeploymentState').mockResolvedValue({})
   vi.spyOn(Inspection, 'inspectEarnDeployment').mockResolvedValue({})
   vi.spyOn(Provenance, 'captureDeploymentSource').mockImplementation((options) => ({
     ...record.source,
     contractVerification: options.contractVerification,
     contracts: options.contracts ?? {},
-    verifierUrl: Verify.tempoVerifierUrl,
+    verifierUrl: options.contractVerification === 'verified' ? Verify.tempoVerifierUrl : null,
   }))
   const subprocess = vi.spyOn(ChildProcess, 'spawnSync').mockImplementation((command) => {
     if (command !== 'pnpm') throw new Error(`Unexpected subprocess ${command}`)
@@ -721,9 +900,22 @@ function pendingSourceDeployment({ provisionEngine = false } = {}) {
   vi.spyOn(Verify, 'verifyRecordedDeploymentSources').mockImplementation((parameters) =>
     verifyRecordedDeploymentSources(parameters, dependencies),
   )
+  vi.spyOn(Verify, 'verifyRecordedStepCreation').mockImplementation((parameters) =>
+    verifyRecordedStepCreation(parameters, dependencies),
+  )
   return {
     options,
     record,
+    minedTransaction,
+    removeBoostRewards() {
+      const updated = { ...authored, boostRewards: undefined }
+      profile = parseEarnDeploymentProfile(updated, {
+        deployer: profile.deployer,
+        factories: profile.factories,
+      })
+      options.profile = profile
+      writeFileSync(options.profilePath, JSON.stringify(updated))
+    },
     recordPath,
     read,
     creation,

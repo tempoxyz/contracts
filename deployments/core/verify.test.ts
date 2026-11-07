@@ -7,6 +7,7 @@ import {
   type Abi,
   type Address,
   type Log,
+  type Hex,
 } from 'viem'
 import { earnFactoryAbi, erc4626EngineFactoryAbi, zoneRouterFactoryAbi } from '../abis/index.js'
 
@@ -256,6 +257,72 @@ function namedFactoryRun() {
     },
   })
   return { options, runtime, factoryContract }
+}
+
+function directControllerRun() {
+  const controller = address('c0')
+  const hash = `0x${'c'.repeat(64)}` as const
+  const sourcePath = 'src/rewards/EarnContributionController.sol'
+  const constructorArgs = encodeAbiParameters(
+    [{ type: 'address' }, { type: 'address' }],
+    [earnVault, profile.owner],
+  )
+  const contract = {
+    address: controller,
+    fullyQualifiedName: `${sourcePath}:EarnContributionController`,
+    match: 'exact_match',
+    name: 'EarnContributionController',
+    sources: { [sourcePath]: { content: `canonical:${sourcePath}` } },
+    transactionHash: hash,
+    creationBytecode: { bytecode: '0x60016003556001601160003960016000f300' },
+  }
+  const minedTransaction = {
+    hash: hash as Hex,
+    from: profile.deployer,
+    to: null as Address | null,
+    input: `${contract.creationBytecode.bytecode}${constructorArgs.slice(2)}` as Hex,
+  }
+  const rpc = {
+    ...client(),
+    getTransaction: vi.fn(async () => minedTransaction),
+  }
+  const receipt = rpc.getTransactionReceipt
+  rpc.getTransactionReceipt = vi.fn(async (parameters?: { hash: Hex }) =>
+    parameters?.hash === hash
+      ? { status: 'success' as const, transactionHash: hash, contractAddress: controller, logs: [] }
+      : receipt(),
+  ) as typeof receipt
+  const runtime = dependencies()
+  const fetch = runtime.fetch
+  runtime.fetch = vi.fn(async (input) =>
+    String(input).toLowerCase().includes(controller.toLowerCase())
+      ? Response.json(contract)
+      : fetch(input),
+  ) as unknown as typeof fetch
+  const options = run({
+    client: rpc as never,
+    profile: {
+      ...profile,
+      targetYield: {
+        startTimestamp: 1_800_000_000,
+        endTimestamp: 1_800_086_400,
+        intervalSeconds: 86_400,
+        annualRate: { bps: 500 },
+        funding: [{ wallet: address('f'), remainder: true }],
+      },
+    },
+    record: {
+      addresses: { ...addresses, earnContributionController: controller },
+      actions: {
+        ...actions,
+        'deploy-contribution-controller': {
+          ...actions['deploy-core'],
+          transactions: [hash],
+        },
+      },
+    },
+  })
+  return { options, runtime, rpc, contract, minedTransaction, constructorArgs }
 }
 
 describe('deployment source verification', () => {
@@ -943,6 +1010,188 @@ describe('deployment source verification', () => {
 })
 
 describe('source verifier admission', () => {
+  test('accepts the complete canonical direct creation input without rewriting source evidence', async () => {
+    const { options, runtime, rpc } = directControllerRun()
+    const source = await verifyDeploymentSources(options, runtime)
+    expect(source.contracts.earnContributionController).toMatchObject({
+      kind: 'source',
+      name: 'EarnContributionController',
+      match: 'exact_match',
+    })
+    expect(rpc.getTransaction).toHaveBeenCalledExactlyOnceWith({
+      hash: options.record.actions['deploy-contribution-controller']!.transactions[0],
+    })
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test.each(['arguments', 'truncated', 'appended', 'sender', 'hash', 'call'] as const)(
+    'rejects direct creation with mismatched %s even during explicit resubmission',
+    async (mismatch) => {
+      const { options, runtime, minedTransaction } = directControllerRun()
+      if (mismatch === 'arguments')
+        minedTransaction.input = `${minedTransaction.input.slice(0, -2)}ff` as Hex
+      if (mismatch === 'truncated')
+        minedTransaction.input = minedTransaction.input.slice(0, -2) as Hex
+      if (mismatch === 'appended') minedTransaction.input = `${minedTransaction.input}00`
+      if (mismatch === 'sender') minedTransaction.from = address('bad')
+      if (mismatch === 'hash') minedTransaction.hash = transaction
+      if (mismatch === 'call') minedTransaction.to = address('fac')
+      await expect(
+        verifyDeploymentSources({ ...options, resubmit: true }, runtime),
+      ).rejects.toThrow()
+      expect(runtime.spawn).not.toHaveBeenCalled()
+    },
+  )
+
+  test.each([
+    undefined,
+    null,
+    {},
+    { bytecode: '0x' },
+    { bytecode: '0x1' },
+    { bytecode: '__unlinked__' },
+  ])('refuses missing or malformed expected creation bytecode: %j', async (creationBytecode) => {
+    const { options, runtime, contract, rpc } = directControllerRun()
+    Object.assign(contract, { creationBytecode })
+    await expect(verifyDeploymentSources(options, runtime)).rejects.toThrow(
+      'compiled creation bytecode',
+    )
+    expect(rpc.getTransaction).not.toHaveBeenCalled()
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('admits canonical sources before using their compiled creation bytecode', async () => {
+    const { options, runtime, contract, rpc } = directControllerRun()
+    Object.values(contract.sources)[0]!.content = 'untrusted source'
+    await expect(verifyDeploymentSources(options, runtime)).rejects.toThrow('canonical checkout')
+    expect(rpc.getTransaction).not.toHaveBeenCalled()
+  })
+
+  test('rechecks direct initcode using historical compilation, independently of the current checkout', async () => {
+    const { options, runtime, minedTransaction } = directControllerRun()
+    options.record.source = (await verifyDeploymentSources(
+      options,
+      runtime,
+    )) as EarnDeploymentRecord['source']
+    const before = structuredClone(options.record.source)
+    runtime.readSource.mockImplementation(() => {
+      throw new Error('new checkout')
+    })
+    runtime.sourcePaths.mockImplementation(() => {
+      throw new Error('new compiler configuration')
+    })
+    runtime.readSource.mockClear()
+    runtime.sourcePaths.mockClear()
+    await expect(verifyRecordedDeploymentSources(options, runtime)).resolves.toBeUndefined()
+    expect(options.record.source).toEqual(before)
+    expect(runtime.readSource).not.toHaveBeenCalled()
+    expect(runtime.sourcePaths).not.toHaveBeenCalled()
+    expect(runtime.compilerArguments).not.toHaveBeenCalled()
+    expect(runtime.spawn).not.toHaveBeenCalled()
+    minedTransaction.input = '0x6000'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      /initcode|creation input/,
+    )
+    expect(options.record.source).toEqual(before)
+  })
+
+  test('preserves direct historical source identity and exact-match downgrade checks', async () => {
+    const { options, runtime, contract, rpc } = directControllerRun()
+    options.record.source = (await verifyDeploymentSources(
+      options,
+      runtime,
+    )) as EarnDeploymentRecord['source']
+    rpc.getTransaction.mockClear()
+    contract.match = 'match'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      'does not match current provenance',
+    )
+    expect(rpc.getTransaction).not.toHaveBeenCalled()
+    contract.match = 'exact_match'
+    Object.values(contract.sources)[0]!.content = 'different historical source'
+    await expect(verifyRecordedDeploymentSources(options, runtime)).rejects.toThrow(
+      'does not match current provenance',
+    )
+    expect(rpc.getTransaction).not.toHaveBeenCalled()
+  })
+
+  test('redacts direct transaction lookup failures and discards nested RPC diagnostics', async () => {
+    const { options, runtime, rpc } = directControllerRun()
+    options.rpcUrl = 'https://user:fixture-secret@rpc.example/'
+    rpc.getTransaction.mockRejectedValue(
+      new Error(`RPC failed: ${options.rpcUrl}`, {
+        cause: new Error('fixture-secret'),
+      }),
+    )
+    const error = await verifyDeploymentSources(options, runtime).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).toContain('RPC failed')
+    expect(JSON.stringify(error)).not.toContain('fixture-secret')
+    expect(String(error)).not.toContain('fixture-secret')
+    expect(error).not.toHaveProperty('cause')
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('checks initcode after a new source submission rather than trusting job success', async () => {
+    const { options, runtime, minedTransaction, contract } = directControllerRun()
+    const fetch = runtime.fetch
+    let first = true
+    runtime.fetch = vi.fn(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/v2/verify/job'))
+        return Response.json({
+          isJobCompleted: true,
+          contract: { match: 'exact_match' },
+          error: null,
+        })
+      if (url.toLowerCase().includes(contract.address.toLowerCase()) && first) {
+        first = false
+        return new Response('{}', { status: 404 })
+      }
+      return fetch(input)
+    }) as unknown as typeof fetch
+    runtime.spawn = vi.fn(() => ({
+      status: 0,
+      stdout: 'Verification Job ID: `job`',
+      stderr: '',
+    })) as never
+    minedTransaction.input = '0x6000'
+    await expect(verifyDeploymentSources(options, runtime)).rejects.toThrow(
+      /initcode|creation input/,
+    )
+    expect(runtime.spawn).toHaveBeenCalledOnce()
+  })
+
+  test('does not treat a generic source verification hash as a direct creation', async () => {
+    const runtime = dependencies()
+    await expect(
+      verifyContractSource(
+        {
+          address: earnVault,
+          chainId: 42431,
+          constructorArgs: '0x',
+          contract: contracts.ERC1967Proxy,
+          creationTransactionHash: transaction,
+          environment: {},
+          root: '/repo',
+          rpcUrl: 'https://rpc.example',
+        },
+        runtime,
+      ),
+    ).resolves.toMatchObject({ name: 'ERC1967Proxy' })
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('rejects direct custom initcode even when canonical runtime sources and creation receipt match', async () => {
+    const { options, runtime, minedTransaction, constructorArgs } = directControllerRun()
+    // Both initcodes return STOP, but this one omits the storage initializer in the expected bytecode.
+    minedTransaction.input = `0x6001600c60003960016000f300${constructorArgs.slice(2)}`
+    await expect(verifyDeploymentSources(options, runtime)).rejects.toThrow(
+      /initcode|creation input/,
+    )
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
   test.each([undefined, [], [transaction, transaction], ['0x1234']])(
     'refuses missing, ambiguous or malformed action hashes before verifier writes: %s',
     async (transactions) => {

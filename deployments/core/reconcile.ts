@@ -6,7 +6,7 @@ import {
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { TransactionReceiptNotFoundError, zeroAddress, type Address, type PublicClient } from 'viem'
-import { assertStepCreation } from './creation.js'
+import { assertStepCreation, type CreationDependencies } from './creation.js'
 import { isBytes32, object } from './parse.js'
 import { deploymentActions, planEarnDeployment, type EarnDeploymentAction } from './plan.js'
 import {
@@ -77,15 +77,18 @@ export type ReconciliationStep =
  * Reconciles one action at a time. Pending state is only a cache: external handoffs and recovered
  * Foundry outputs are accepted only after their desired state is observed onchain.
  */
-export async function prepareLifecycleStep(options: {
-  root: string
-  profilePath: string
-  profile: EarnDeploymentProfile
-  rpcUrl: string
-  environment: NodeJS.ProcessEnv
-  actions?: EarnDeploymentAction[] | undefined
-  discoveredOutputs?: Record<string, `0x${string}`> | undefined
-}): Promise<ReconciliationStep> {
+export async function prepareLifecycleStep(
+  options: {
+    root: string
+    profilePath: string
+    profile: EarnDeploymentProfile
+    rpcUrl: string
+    environment: NodeJS.ProcessEnv
+    actions?: EarnDeploymentAction[] | undefined
+    discoveredOutputs?: Record<string, `0x${string}`> | undefined
+  },
+  dependencies: Partial<CreationDependencies> = {},
+): Promise<ReconciliationStep> {
   const { profile, profilePath } = options
   const client = rpcClient(options.rpcUrl)
   syncFoundryOutputs(options.root, profilePath)
@@ -103,7 +106,18 @@ export async function prepareLifecycleStep(options: {
   const complete = async (action: EarnDeploymentAction, transactions: `0x${string}`[] = []) => {
     const step = deploymentStep(action.id)
     if (step.execution === 'foundry' && transactions.length > 0)
-      await assertStepCreation({ client, outputs: pending.outputs, profile, step, transactions })
+      await assertStepCreation(
+        {
+          client,
+          root: options.root,
+          environment: options.environment,
+          outputs: pending.outputs,
+          profile,
+          step,
+          transactions,
+        },
+        dependencies,
+      )
     pending = completeAction(pending, action.id, 'chain', transactions)
     savePendingDeployment(profilePath, profile, pending)
   }
@@ -141,13 +155,18 @@ export async function prepareLifecycleStep(options: {
             : []
         if (!recorded) await complete(action, transactions)
         else if (transactions.length > 0 && step.execution === 'foundry') {
-          await assertStepCreation({
-            client,
-            outputs: pending.outputs,
-            profile,
-            step,
-            transactions,
-          })
+          await assertStepCreation(
+            {
+              client,
+              root: options.root,
+              environment: options.environment,
+              outputs: pending.outputs,
+              profile,
+              step,
+              transactions,
+            },
+            dependencies,
+          )
           // Receipt repair must preserve completion metadata and a later interrupted step's outputs.
           pending = {
             ...pending,
@@ -249,13 +268,16 @@ export async function prepareLifecycleStep(options: {
   return { kind: 'complete', pending }
 }
 
-export async function recordFoundryAction(options: {
-  root: string
-  profilePath: string
-  profile: EarnDeploymentProfile
-  rpcUrl: string
-  step: Extract<ReconciliationStep, { kind: 'foundry' }>
-}) {
+export async function recordFoundryAction(
+  options: {
+    root: string
+    profilePath: string
+    profile: EarnDeploymentProfile
+    rpcUrl: string
+    step: Extract<ReconciliationStep, { kind: 'foundry' }>
+  },
+  dependencies: Partial<CreationDependencies> = {},
+) {
   syncFoundryOutputs(options.root, options.profilePath)
   const outputs = {
     ...options.step.pending.outputs,
@@ -280,13 +302,18 @@ export async function recordFoundryAction(options: {
         options.profile.chainId,
       )
   if (step.execution === 'foundry' && transactions.length > 0)
-    await assertStepCreation({
-      client: rpcClient(options.rpcUrl),
-      outputs,
-      profile: options.profile,
-      step,
-      transactions,
-    })
+    await assertStepCreation(
+      {
+        client: rpcClient(options.rpcUrl),
+        root: options.root,
+        environment: options.step.environment,
+        outputs,
+        profile: options.profile,
+        step,
+        transactions,
+      },
+      dependencies,
+    )
   const pending = completeAction(
     { ...options.step.pending, outputs },
     options.step.action.id,

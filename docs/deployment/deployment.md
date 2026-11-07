@@ -140,7 +140,9 @@ Factory-provisioned engines also adopt their exact creation event rather than an
 For other creating steps, an interrupted broadcast's saved transaction hashes are confirmed against
 RPC receipts when Forge has not saved successful receipts. For hosted deployments, every recovered
 creation hash must also prove the expected direct creation or factory event before it is saved,
-even when Forge has saved a successful receipt. Rejected evidence leaves the action unchanged, so
+even when Forge has saved a successful receipt. Direct creation also requires the expected deployer
+and the complete transaction input to match the step's compiled creation bytecode and constructor
+arguments. A matching deployed runtime alone does not prove constructor execution. Rejected evidence leaves the action unchanged, so
 correcting the artifact or RPC evidence permits another retry without rebroadcasting. Resume can repair an empty pending
 action's transaction list without rebroadcasting, preserving its completion metadata and any later
 step's saved outputs. A missing receipt does not hide another confirmed
@@ -204,11 +206,17 @@ identify the expected fully qualified contract. Initial verification requires th
 Forge compiler-input source set and matching checkout contents, not a selected subset. A Solidity
 source match for a profile-deployed contract requires one recorded creation transaction. Its
 successful RPC receipt must identify the contract directly or through the expected factory's
-creation event, and the verifier must return the same hash. Missing, ambiguous, or unrelated creation evidence fails before
-source submissions. Existing engines selected by address retain their separate source-only check.
+creation event, and the verifier must return the same hash. Missing, ambiguous, or unrelated receipt
+evidence fails before source submissions. Direct creation additionally compares the mined transaction
+input with the verifier's canonical-source-bound compiled creation bytecode and the declared
+constructor arguments, checking the transaction hash and expected deployer. Missing compiled creation
+bytecode or a different input fails verification. Existing engines selected by address retain their
+separate source-only check.
 Historical rechecks of recorded source identities compare the source-input hash and contract name without
-requiring the original checkout or Git object, and allow `match` to strengthen to `exact_match`
-but never downgrade. The Git commit remains provenance, not a required local object. Changing the recorded deployment transaction or
+requiring the original checkout or Git object. Direct-creation rechecks use that historical
+verifier compilation rather than today's local bytecode. This also applies before republishing
+unchanged, already-verified direct creations when another optional component changes. Source matches may strengthen from `match`
+to `exact_match` but never downgrade. The Git commit remains provenance, not a required local object. Changing the recorded deployment transaction or
 Zone Factory identity requires a fresh successful verification before promotion.
 
 A profile-named Zone router factory must already have a source match against the canonical checkout

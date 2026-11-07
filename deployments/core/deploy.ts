@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { parseEnv } from 'node:util'
+import { isDeepStrictEqual, parseEnv } from 'node:util'
 import { fileURLToPath } from 'node:url'
 
 import { erc20Abi, getAddress, isHex, type Address, type Hex, type PublicClient } from 'viem'
@@ -79,6 +79,7 @@ import {
   VerifierUnavailableError,
   verifyDeploymentSources,
   verifyRecordedDeploymentSources,
+  verifyRecordedStepCreation,
 } from './verify.js'
 import {
   loadEarnProfileBundle,
@@ -237,6 +238,9 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
   if (!record) {
     const candidate = await buildDeploymentRecord(client, {
       pending: deployed.pending,
+      committed,
+      rpcUrl: options.rpcUrl,
+      environment: options.environment,
       profile,
       root: options.root,
       target,
@@ -267,6 +271,8 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
         continue
       await assertStepCreation({
         client,
+        root: options.root,
+        environment: options.environment,
         outputs: record.addresses as Record<string, Address>,
         profile,
         step,
@@ -405,6 +411,9 @@ async function buildDeploymentRecord(
   client: PublicClient,
   options: {
     pending: PendingDeployment
+    committed: EarnDeploymentRecord | undefined
+    rpcUrl: string
+    environment: NodeJS.ProcessEnv
     profile: EarnDeploymentProfile
     root: string
     target: DeploymentTarget
@@ -425,9 +434,35 @@ async function buildDeploymentRecord(
   for (const { id } of deploymentActions(profile)) {
     const step = deploymentStep(id)
     const action = actions[id]
-    if (step.execution === 'foundry' && action && action.transactions.length > 0)
+    if (step.execution !== 'foundry' || !action || action.transactions.length === 0) continue
+    const previous = options.committed
+    const changed = previous
+      ? changedIntentComponents(previous.componentDeploymentIntentHashes, profile)
+      : undefined
+    // Retained history uses its own verified compilation; fresh or recovered evidence uses today's checkout.
+    if (
+      isHostedDeploymentChain(profile.chainId) &&
+      previous?.source.contractVerification === 'verified' &&
+      step.source &&
+      !step.creationEvent &&
+      step.intent.every((component) => !changed!.has(component)) &&
+      isDeepStrictEqual(previous.actions[id], action) &&
+      previous.addresses[step.source.output] === addresses[step.source.output]
+    ) {
+      await verifyRecordedStepCreation({
+        client,
+        root: options.root,
+        rpcUrl: options.rpcUrl,
+        environment: options.environment,
+        profile,
+        record: previous,
+        action: id,
+      })
+    } else
       await assertStepCreation({
         client,
+        root: options.root,
+        environment: options.environment,
         outputs: addresses as Record<string, Address>,
         profile,
         step,
