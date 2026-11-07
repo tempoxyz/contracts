@@ -1,3 +1,4 @@
+import { pendingFeeTransition, requirePendingFeeGrowth } from './pending.js'
 import { Abis } from 'viem/tempo'
 import type { Address } from 'viem'
 import { deposit, redeem } from '../../harness/support/public.js'
@@ -29,6 +30,22 @@ export const launchFeatures: Record<string, LaunchFeature> = {
 }
 
 export const cases: readonly E2eCase[] = [
+  {
+    id: 'fees-pending-preview-transition',
+    requiresActiveFees: true,
+    requiredEngineHooks: ['pendingFeeGrowth'],
+    requiredCapabilities: ['redeem', 'exactWithdraw'],
+    environments: ['local'],
+    description:
+      'Uncheckpointed venue yield creates pending fees; redeem and withdraw previews survive fee minting and redemption pays the net quote.',
+    default: false,
+    launch: true,
+    coverage: { fees: ['positive'] },
+    preflight(context) {
+      requirePendingFeeGrowth(context)
+    },
+    run: pendingFeeTransition,
+  },
   {
     id: 'fees-waterfall',
     requiresActiveFees: true,

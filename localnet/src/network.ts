@@ -16,6 +16,7 @@ import { zoneFactoryAbi } from '@tempoxyz/contracts/abis'
 import { configuredTempoNetworkChain } from '@tempoxyz/contracts/deployments/operations'
 
 import * as Config from './config.js'
+import * as CardRuntime from './card-runtime.js'
 
 const tip1091RuntimeSource = readFileSync(
   new URL('../fixtures/tip1091-runtime.json', import.meta.url),
@@ -78,6 +79,7 @@ export async function startL1(zoneFactoryOwner: Address, containers: Containers 
     ],
     { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
   )
+  CardRuntime.checkImageIdentity('l1')
   const genesis = JSON.parse(dumped) as {
     alloc: Record<
       string,
@@ -181,7 +183,14 @@ export async function startL1(zoneFactoryOwner: Address, containers: Containers 
   const rpcUrl = `http://${container.getHost()}:${port}`
   try {
     const chainId = await createPublicClient({ transport: http(rpcUrl) }).getChainId()
-    return { chainId, client: createClient(rpcUrl, chainId), container, port, rpcUrl }
+    const client = createClient(rpcUrl, chainId)
+    for (const [name, address, expected] of [
+      ['Portal', Config.address.zonePortalImplementation, tip1091Runtime.zonePortal],
+      ['Messenger', Config.address.zoneMessenger, tip1091Runtime.zoneMessenger],
+      ['Verifier', Config.address.zoneVerifier, tip1091Runtime.verifier],
+    ] as const)
+      CardRuntime.assertRuntimeCode(name, await client.getCode({ address }), expected)
+    return { chainId, client, container, port, rpcUrl }
   } catch (error) {
     await container.stop()
     throw error
@@ -229,6 +238,7 @@ export async function startZone(options: startZone.Options) {
   })
   try {
     await instance.start()
+    CardRuntime.checkImageIdentity('zone')
     const publicRpcUrl = `http://${instance.host}:${instance.port}`
     const privateRpc = instance._internal.privateRpc
     if (!privateRpc) throw new Error('Prool started without exposing the private Zone RPC endpoint')

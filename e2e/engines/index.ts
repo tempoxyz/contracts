@@ -14,6 +14,8 @@ export type E2eEngine = {
   redeemBoundErrors?(
     context: E2eContext,
   ): { abi?: Abi; errors: readonly E2eBoundError[] } | undefined
+  /** Fixture-only growth that does not checkpoint Earn fees; absent on unsupported stacks. */
+  pendingFeeGrowth?(context: E2eContext): ((assets: bigint) => Promise<void>) | undefined
   /** Exact assets an immediate redemption of `earnShares` pays at the current state. */
   quoteRedeem(context: E2eContext, earnShares: bigint): Promise<bigint>
   /**
@@ -27,7 +29,7 @@ export type E2eEngine = {
 export type E2eBoundError = string | { reason: string }
 
 /** Optional engine behavior a case can require. */
-export type E2eEngineHook = 'morphoFeeWrapper'
+export type E2eEngineHook = 'morphoFeeWrapper' | 'pendingFeeGrowth'
 
 const enginesDirectory = new URL('./', import.meta.url)
 const discovered = readdirSync(enginesDirectory, { withFileTypes: true })

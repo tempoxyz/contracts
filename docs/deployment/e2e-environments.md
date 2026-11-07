@@ -85,6 +85,14 @@ workflow (`local-zone.yml`) runs on pull requests whose change `.github/actions/
 `pnpm e2e:local -- --variant <kind> --all --shard <n>/2` for every engine kind and both shards,
 aggregated as `Required / Local E2E`.
 
+The `fees-pending-preview-transition` case covers only the validated disposable local ERC-4626
+venue, through its `pendingFeeGrowth` engine hook. It donates to the venue without checkpointing
+Earn, requires nonzero pending fees and unchanged supply and claims, then checks fee minting,
+redeem and withdraw previews, and the actual redemption. Run it with
+`pnpm e2e:local -- --variant erc4626 --group fees`, alongside the existing `fees-waterfall` claim
+and rollback checks. Hosted acceptance retains `fees-waterfall`; it does not claim this
+synthetic pending-fee proof, and unsupported or mismatched fixtures cannot run the new case.
+
 ## Profile acceptance
 
 The deployment profile is the hosted acceptance input: `pnpm e2e:profile <profile.json>` loads the

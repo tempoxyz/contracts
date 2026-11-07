@@ -1,11 +1,33 @@
 {
   "version": 1,
   "compatibility": {
-    "status": "unresolved",
+    "status": "mapped-native-subset",
     "foundryAssurance": "model-only",
     "runtimeEquivalenceEstablished": false,
-    "reason": "The Foundry harness compiles a different Zone runtime revision and models the Zone side in one EVM. Its passes do not establish private-flow behavior on the locked integration runtime.",
-    "requiredEvidence": "Review the relevant protocol differences and demonstrate both private legs on the pinned native runtime before claiming runtime-equivalent acceptance."
+    "reason": "The reviewed Portal, Messenger and Verifier rebuild to the locked executable bytes under the native compiler settings. Foundry still substitutes Zone execution, cryptography and authorization, so model passes are not native equivalence.",
+    "requiredEvidence": "Run the isolated source rebuild, native protocol regression and both private Bridge legs on this exact image pair. No pass certifies the substituted Foundry Inbox/Outbox model or production attestation.",
+    "mapping": [
+      {
+        "surface": "Portal, Messenger, Verifier",
+        "supported": "Vendored sources rebuilt with solc 0.8.35, Osaka, viaIR and 200 optimizer runs match locked executable bytes. Network startup checks the full deployed fixture bytes.",
+        "notEstablished": "The regular card Foundry build uses solc 0.8.36/Cancun and mocks signature recovery; no production attestation proof follows."
+      },
+      {
+        "surface": "Deposit queue and Inbox",
+        "supported": "Native Inbox consumes the same typed hash chain and count; the native regression checks canonical Portal binding, genuine ECIES credit and matching cursors.",
+        "notEstablished": "ZoneEnv uses XOR instead of ECIES/Chaum-Pedersen and shadow-token mints; its acceptance is not proof of cryptographic validation."
+      },
+      {
+        "surface": "Outbox and withdrawal queue",
+        "supported": "Native batching delivers the requested amount and the transaction-bound senderTag to the locked Portal. Native zero amount, zero fallback and oversized callback payloads fail.",
+        "notEstablished": "ZoneOutboxSim lacks these validations, transfers without native burning, does not model fee sponsorship, and derives senderTag without the transaction hash."
+      },
+      {
+        "surface": "Private card callbacks and returns",
+        "supported": "The disposable Bridge --earn suite exercises stablecoin and EarnShare withdrawals, real Portal/Messenger callbacks, encrypted change, rejection bounce-backs, refunds and closed-loop return enforcement.",
+        "notEstablished": "Only the tested image pair, local dev verifier, supported cases and real provider contracts with synthetic venues; not production verifier attestation or exhaustive error equivalence."
+      }
+    ]
   },
   "vendor": {
     "sourceCommit": "ce9998460dad466d0d36c05c971c988dc7e67582",
@@ -53,7 +75,52 @@
         "bytecodeSha256": "20d7cdf8d786a8e7ff51a4546175a4875b2b0a25993f231e36ca41b15ff2b6c4"
       }
     },
-    "runtimeComparison": "The fixture bytecode matched the three named T13 constants at the runtime source commit. This is not a comparison with bytecode compiled from the vendored sources.",
-    "limits": "The runtime source commit has no crates/zones/contracts/src/runtime directory. No source-level compatibility mapping, deployed-image attestation, or native private-flow proof is established by this record."
+    "runtimeComparison": "The locked fixture matches the three T13 constants at the L1 source revision. The isolated native-settings rebuild additionally matches all three executables from the vendored Solidity, excluding only compiler IPFS metadata.",
+    "limits": "Image labels identify the observed pinned builds, not signed build attestations. The Foundry Zone model uses shadow tokens, simulated decryption and signature recovery, a different senderTag formula, and incomplete Outbox validation; production proof acceptance and full model equivalence remain unproven.",
+    "images": {
+      "l1": {
+        "source": "https://github.com/tempoxyz/tempo",
+        "revision": "446e948e60db00b99b6152a69351ff6dac59e67b"
+      },
+      "zone": {
+        "source": "https://github.com/tempoxyz/zones",
+        "revision": "700069eb8a40fce7e1f7a4bf0fc5703bcc692c43"
+      }
+    },
+    "nativeZoneSource": "https://github.com/tempoxyz/zones/tree/700069eb8a40fce7e1f7a4bf0fc5703bcc692c43/crates",
+    "sourceMapping": "All eight vendored implementation/library files match the Zone image revision byte-for-byte; IZone.sol differs only in error declarations. Native Inbox and Outbox are Rust precompiles at this Zone revision, not vendored Solidity.",
+    "nativeBuild": {
+      "solcVersion": "0.8.35",
+      "evmVersion": "osaka",
+      "viaIR": true,
+      "optimizerRuns": 200,
+      "command": "pnpm --filter localnet exec tsx src/check-card-runtime.ts",
+      "comparison": "Exact executable bytecode after removing only the solc 0.8.35 IPFS CBOR trailer; no opcode, immutable or linked-library masking.",
+      "executables": {
+        "zonePortal": {
+          "bytes": 23941,
+          "sha256": "8effc7aa83c673f56467ecb548a375d7c959b7c5edda8e821e1fb4a7f1f10ec5"
+        },
+        "zoneMessenger": {
+          "bytes": 1805,
+          "sha256": "15d1c2522de93879c0c0a94163c8ed0308fa854a18efd279148ef96acf88d196"
+        },
+        "verifier": {
+          "bytes": 334,
+          "sha256": "0d3d1c158203306bcf7a491da34d93899f7f5280e391c5a9ad95dbcb438aadb3"
+        }
+      }
+    },
+    "nativeZoneSources": {
+      "crates/contracts/src/precompiles/zone_inbox.rs": "37a4c547137354a8925d199f77f89c31b6117f817ae29edcde847554cf93c7a0",
+      "crates/contracts/src/precompiles/outbox.rs": "c4a96b05713ab02fcff8fb78c6bbb779145df989109888617162844de6565c88",
+      "crates/precompiles/src/inbox/mod.rs": "1b4c504d7b18f5a4ad92d648f7ca4fa1f8eb6e92e7efaa56536e7b853fc1a76b",
+      "crates/precompiles/src/outbox/mod.rs": "d787cbcc31a40a22edf5d293c60eff008206fb909bcf8435fccada520f0bd9ff"
+    },
+    "regressionCommands": [
+      "pnpm --filter localnet exec tsx src/check-card-runtime.ts",
+      "pnpm --filter localnet exec tsx src/check-card-runtime-native.ts",
+      "pnpm e2e:bridge -- --earn"
+    ]
   }
 }

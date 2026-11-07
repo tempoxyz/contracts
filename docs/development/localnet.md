@@ -8,6 +8,16 @@ protocol versions are owned by `localnet/src/config.ts` and `localnet/fixtures/r
 Deploying onto an existing devnet instead is documented in
 [existing devnet chains](../deployment/e2e-environments.md#existing-devnet-chains).
 
+This reference is for maintainers familiar with the linked deployment guides. An Earn stack is a
+vault and its related contracts; its EarnShare token represents a claim on the vault. TIP-403 is
+Tempo's transfer-policy system: protected shares require whitelist membership, while open shares
+do not. PATHUSD is a stablecoin used for local transaction fees. A pool-less route needs no asset
+conversion because its input and vault asset are the same token.
+
+The Zone Factory creates Zones. Each Zone's Portal holds its L1 assets and delivers withdrawals;
+registered callback gateways can handle those deliveries. The Zone-side Inbox consumes Portal
+deposits, and the Outbox queues withdrawals back to L1.
+
 ## Consumer API
 
 `localnet/src/index.ts`, the `localnet` workspace package's entry, exports the `Deployment`,
@@ -98,7 +108,7 @@ route through `SingleZoneEarnRouter`.
 
 A kind whose `provision` deploys its engine with `deployAsEngineOwner` (PropAMM, which has no engine
 factory) leaves that engine with a separate funded setup owner, so the lifecycle stops at the
-`bind-core` handoff; localnet binds the engine as that owner and records it with
+`bind-core` handoff, a required action by that separate owner; localnet binds the engine as that owner and records it with
 `recordAuthorityAction`, the path hosted operators use. Any other handoff fails the run. A final
 `prepareLifecycleStep` pass must find each stack complete with unchanged pending state.
 
@@ -194,7 +204,7 @@ between deployed runtime and independently rebuilt source.
   Tempo transaction. Generic Foundry's pre-broadcast simulation does not implement the pinned
   node's compound TIP-403 behavior and can report `PolicyForbids` for a transaction the node
   executes successfully.
-- Every Foundry profile compiles for Cancun ([toolchain](README.md#toolchain)): the pinned
+- Every contract-project Foundry profile compiles for Cancun ([toolchain](README.md#toolchain)): the pinned
   Tempo L1 executes Osaka and supports EIP-1153, while Cancun avoids emitting unrelated newer opcodes
   and keeps the production Veda transaction-rate checkpoint deployable in local E2E.
 - Genesis is derived from the selected Tempo image (`dump-genesis --chain dev`) with the canonical
@@ -204,24 +214,63 @@ between deployed runtime and independently rebuilt source.
 - Both images are pinned by immutable digest in `localnet/fixtures/runtime-lock.json`, which
   `Environment.run` checks, with the runtime fixture's hash, at import. Docker pulls the L1 image
   only when it is missing; Prool re-pulls the Zone image by that digest at each start. The lock
-  binds the image pair to the TIP-1091 runtime provenance and nine-field Zone ABI. Upgrade the L1
+  binds the image pair to TIP-1091, the Zone protocol revision, and its nine-field
+  `ZoneFactory.zones` metadata response. Upgrade the L1
   image, Zone image, runtime lock, and protocol ABI together, by editing the lock; a hosted image is
   not a drop-in local replacement.
-- To move the lock, pick a `ghcr.io/tempoxyz/tempo-zone` image built by `tempoxyz/tempo` and the
-  `ghcr.io/tempoxyz/tempo` L1 image built from the same Tempo revision; `sourceCommit` is that
-  revision. `tip1091-runtime.json` holds the Portal, Messenger, and Verifier runtimes the L1 image's
+- The current pair comes from two repositories: the L1 from `tempoxyz/tempo`, and the Zone from
+  `tempoxyz/zones`. Their separate observed source revisions live in
+  [`card-runtime-provenance.json`](../../localnet/fixtures/card-runtime-provenance.json).
+  `runtime-lock.json`'s `sourceCommit` identifies the L1 runtime constants, not the Zone binary.
+  A replacement pair needs its own reviewed protocol mapping and native regression results. `tip1091-runtime.json` holds the Portal, Messenger, and Verifier runtimes the L1 image's
   `dump-genesis --chain dev` installs at `0x5AD1…`, `0x5A4d…`, and `0x5A56…` (the constants in that
   revision's `crates/contracts/src/zones.rs`), and `runtimeFixtureSha256` is the file's SHA-256.
-- Card Foundry tests compile a different vendored Zone runtime from the locked Docker pair.
-  [`card-runtime-provenance.json`](../../localnet/fixtures/card-runtime-provenance.json) binds both
-  source and bytecode sets and records compatibility as unresolved. Passing those model tests is
-  not runtime-equivalent private-flow acceptance; both private legs still need native-runtime
-  evidence and a review of protocol differences.
+- Card Foundry and native-runtime evidence have different scope. The
+  [compatibility checks](#card-runtime-compatibility) bind their shared Portal sources to native
+  executable bytes without treating the simulated Zone side as equivalent.
 - The Zone token's local `transferPolicyId()` may report policy `1`, while the TIP-403 proxy mirrors
   and enforces the L1 compound policy by its registered ID.
 - The Zone starts with the freshly deployed base fixture token as its initial token. The pinned Zone
   runtime rejects pathUSD as the default when the L1 genesis has no transfer policy configured for
   that token.
+
+## Card runtime compatibility
+
+The [card project](../../cards/README.md) implements card payments through provider contracts.
+Its [compatibility record](../../localnet/fixtures/card-runtime-provenance.json) maps a tested native subset; `runtimeEquivalenceEstablished` stays
+`false`. Foundry models the Zone side in one EVM, while the Docker tests run the pinned Rust Inbox
+and Outbox. A model test cannot substitute for native private-flow acceptance.
+
+Run all three checks before changing the mapping:
+
+```sh
+pnpm --filter localnet exec tsx src/check-card-runtime.ts
+pnpm --filter localnet exec tsx src/check-card-runtime-native.ts
+pnpm e2e:bridge -- --earn
+```
+
+The third command runs Bridge payments funded privately by stablecoins and EarnShare, including return deposits.
+The first command checks the vendored Zone source hashes and installed `tempo-std` revision, then rebuilds
+in a disposable directory with solc 0.8.35, Osaka, via-IR and 200 optimizer runs. Portal, Messenger
+and Verifier executable bytes must exactly match the locked fixture. Only the standard solc 0.8.35
+IPFS metadata trailer may differ; no opcodes, immutables or library addresses are masked. This
+comparison does not change the card project's solc 0.8.36/Cancun settings.
+
+Every localnet startup checks the pulled image digest and recorded source labels. It also reads the
+three canonical L1 contracts and requires their full bytes to equal the fixture before exposing the
+client. A mismatch fails and stops any started container. Image labels describe the observed build;
+they are not signed attestations that independently prove its source.
+
+| Surface                     | Native evidence                                                                                                                         | Model boundary                                                                                                    |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Portal, Messenger, Verifier | Exact executable rebuild and deployed-byte checks                                                                                       | Foundry mocks signature recovery; dev-mode execution does not prove production attestation                        |
+| Inbox deposits              | Canonical Portal binding, real ECIES deposit, exact net credit and queue hash/count                                                     | The model substitutes XOR decryption and shadow-token credit for native validation                                |
+| Outbox withdrawals          | Native batch delivery and transaction-bound sender tag; zero fallback, zero amount and oversized payload rejection                      | The model omits those checks and native burning, derives a different sender tag and does not model sponsored fees |
+| Card callbacks and returns  | Bridge with `--earn` exercises private stablecoin and EarnShare spends, encrypted change, refunds, bounce-backs and closed-loop returns | Coverage is those cases on this pair, with synthetic venues, not all possible protocol behavior                   |
+
+The native negative tests intentionally demonstrate model differences. Do not remove those tests or
+promote the global equivalence flag because the supported paths pass. A pin change needs a new
+source review and rebuild, and both private Bridge legs must still pass on the replacement pair.
 
 ## Zone behavior
 
