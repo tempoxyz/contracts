@@ -137,6 +137,26 @@ file. Per-profile receipt isolation does not replace this event and onchain bind
 adopts the router its permissionless `ZoneRouterFactory` already deployed for the profile's mode,
 such as one Spend's script created, recording the transaction its `RouterDeployed` event names.
 Factory-provisioned engines also adopt their exact creation event rather than an unrelated receipt.
+For other creating steps, an interrupted broadcast's saved transaction hashes are confirmed against
+RPC receipts when Forge has not saved successful receipts. For hosted deployments, every recovered
+creation hash must also prove the expected direct creation or factory event before it is saved,
+even when Forge has saved a successful receipt. Direct creation also requires the expected deployer
+and the complete transaction input to match the step's compiled creation bytecode and constructor
+arguments. A matching deployed runtime alone does not prove constructor execution. Rejected evidence leaves the action unchanged, so
+correcting the artifact or RPC evidence permits another retry without rebroadcasting. Resume can repair an empty pending
+action's transaction list without rebroadcasting, preserving its completion metadata and any later
+step's saved outputs. A missing receipt does not hide another confirmed
+transaction in the same broadcast artifact; transport failures remain retryable. If every candidate
+receipt is missing, the error names the artifact that needs the original or replacement transaction
+evidence. Already-satisfied steps that create no contracts do not require old broadcast receipts.
+For a published record still marked source-verification `pending`, recovered creation hashes replace
+empty action transaction lists before verification. An earlier successful receipt moves
+`deploymentBlock` back to the earliest recorded receipt, never forward, preserving a conservative
+claim-scan boundary. Target creation, runtime, receipt, and applicable archive checks run before
+publication; canonical source verification remains a separate requirement. Recovery never rewrites
+nonempty committed creation history or verified records. An invalid nonempty action from an earlier
+run requires reviewed record correction, not automatic replacement or an advanced claim-scan boundary.
+Missing or ambiguous creation evidence still fails source verification.
 Before binding, predicted core addresses and reciprocal asset, engine, and fee-module bindings must
 match; an engine already bound elsewhere stops rather than producing an impossible handoff.
 
@@ -183,12 +203,30 @@ The record does not choose its own trust roots. `source.factoryDeploymentId` mus
 keccak-256 hash of `<profile-id>:v<version>`, and the recorded verifier must be the trusted Tempo
 verifier the tooling hard-codes before it is contacted. Every ordinary Solidity source match must
 identify the expected fully qualified contract. Initial verification requires the exact complete
-Forge compiler-input source set and matching checkout contents, not a selected subset. When a
-creation transaction is named, the verifier must return that same hash; an omitted hash is not
-evidence. Historical rechecks compare the recorded source-input hash and contract identity without
-requiring the original checkout or Git object, and allow `match` to strengthen to `exact_match`
-but never downgrade. The Git commit remains provenance, not a required local object. Changing the recorded deployment transaction or
+Forge compiler-input source set and matching checkout contents, not a selected subset. A Solidity
+source match for a profile-deployed contract requires one recorded creation transaction. Its
+successful RPC receipt must identify the contract directly or through the expected factory's
+creation event, and the verifier must return the same hash. Missing, ambiguous, or unrelated receipt
+evidence fails before source submissions. Direct creation additionally compares the mined transaction
+input with the verifier's canonical-source-bound compiled creation bytecode and the declared
+constructor arguments, checking the transaction hash and expected deployer. A partial source match
+may differ only in the digests inside a recognized terminal chain of Solidity IPFS metadata trailers,
+including adjacent child-initcode metadata. Compiler versions, executable bytes, arguments, and input
+length still match exactly. Unsupported metadata formats or missing compiled creation bytecode fail closed. Fresh checkout proof before caching or
+publication remains byte-for-byte exact. Existing engines selected by address retain their separate
+source-only check.
+Historical rechecks of recorded source identities compare the source-input hash and contract name without
+requiring the original checkout or Git object. Direct-creation rechecks use that historical
+verifier compilation rather than today's local bytecode. This also applies before republishing
+unchanged, already-verified direct creations when another optional component changes. Source matches may strengthen from `match`
+to `exact_match` but never downgrade. The Git commit remains provenance, not a required local object. Changing the recorded deployment transaction or
 Zone Factory identity requires a fresh successful verification before promotion.
+
+A profile-named Zone router factory must already have a source match against the canonical checkout
+before its event is trusted. The created contract records that factory's address, name, match
+strength and source-input hash. Historical rechecks use this independent factory identity, not
+the evolving checkout; changed verifier sources and weaker matches fail. A record without this
+factory evidence still requires the canonical factory checkout and is never silently rewritten.
 
 On a fresh checkout, the command seeds pending state from the committed record only after
 revalidating its runtime provenance, derived contract identity, and each completed action onchain;
@@ -199,6 +237,8 @@ When a record lacks a core-creation receipt, including one with receipts for oth
 `deploymentBlock` needs archival evidence that the vault had no code immediately before that
 block. With no deployment receipts at all, the vault must also match its current runtime at the
 claimed block. Present-day code verification alone does not establish the creation boundary.
+This archival check does not replace the creation receipt required to complete hosted source
+verification; recover the original creation transaction before verifying an adopted record.
 
 ### Source verification
 
@@ -206,9 +246,17 @@ For hosted deployments, `pnpm earn deploy` submits missing source to `https://co
 waits for a bytecode and source match, and saves the result in `deployment.json`. A verifier outage (unreachable, 429 or 5xx,
 on lookup or on forge's submission, a job that does not complete, or only transient compiler errors) leaves the record `pending` and
 the state `verification-pending`: rerunning resumes at verification after rechecking deployed
-state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
+state, and never rebroadcasts. When an optional component changes, an outage also leaves the replacement
+record published and allows activation. Unchanged contracts retain their admitted source identities
+in that pending record when their creating step's intent, action, and output address are unchanged;
+a changed consumer does not discard its factory's identity. Completion rechecks retained identities
+rather than replacing them with the current checkout.
+Any other failure, such as a new source that differs from the checkout,
 a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
 nonzero exit; the record stays `pending`, and rerunning after the fix resumes the same way.
+Verification errors redact configured RPC URLs and credentials, including encoded forms, HTTP Basic
+authentication tokens, and the credential-stripped transport URL, so path and query tokens stay hidden. Repeated redaction keeps
+masks stable. Errors do not retain subprocess error causes or fields that could expose credentials.
 For an invalid existing verifier entry, explicitly request canonical re-verification:
 
 ```sh
@@ -229,8 +277,9 @@ For contracts created by the profile, repair submits the recorded creation trans
 sources and the selected compiler settings. The returned address, contract, full source set, match
 strength, and creation hash must still satisfy the recorded evidence. Existing engines selected by
 address rather than deployed by this profile must already have matching source; the lifecycle does
-not own their creation inputs. Pending records have no completed source identity yet, so their
-sources must match the selected checkout.
+not own their creation inputs. New outputs in pending records must match the selected checkout.
+Retained identities from an earlier verified record keep their original source hashes and match
+strength through optional-component reconciliation and cache-free retries.
 `verify` without the flag never submits jobs; the flag authorizes verifier writes, not onchain writes.
 Only `deploy` upgrades a pending record to verified, so use it to finish an incomplete deployment.
 

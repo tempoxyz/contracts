@@ -34,6 +34,7 @@ import {
   foundryVerificationEnvironment,
   sourceVerificationCompilerArguments,
 } from '../chain/foundry.js'
+import { redactRpcCredentials } from '../chain/rpc-credentials.js'
 import { configuredRpcTransport, rpcConfiguration } from '../chain/runtime.js'
 import { hostedEnvironments, type HostedEnvironmentId } from '../chain/tempo.js'
 import { engineFactories } from '../modules/earn/engines/index.js'
@@ -396,40 +397,8 @@ export async function confirmReleaseCreations(
   )
 }
 
-/**
- * Replaces the authenticated RPC URL and its credentials, raw and percent-encoded, in text that is
- * written to the result, the job summary, or an artifact, where GitHub's secret masking does not
- * reach.
- */
-export function redactRpcCredentials(
-  text: string,
-  authenticatedUrl: string,
-  environment: Readonly<Record<string, string | undefined>>,
-) {
-  const url = new URL(authenticatedUrl)
-  const secrets = new Set<string>([authenticatedUrl, authenticatedUrl.replace(/\/+$/, '')])
-  for (const value of [
-    url.username,
-    url.password,
-    environment.TEMPO_RPC_URL,
-    environment.TEMPO_RPC_USERNAME,
-    environment.TEMPO_RPC_PASSWORD,
-  ]) {
-    if (!value) continue
-    secrets.add(value)
-    secrets.add(encodeURIComponent(value))
-    try {
-      secrets.add(decodeURIComponent(value))
-    } catch {
-      // Not percent-encoded.
-    }
-  }
-  // Longest first, so a URL is replaced whole before any credential inside it.
-  return [...secrets]
-    .filter((secret) => secret.length > 0)
-    .sort((left, right) => right.length - left.length)
-    .reduce((redacted, secret) => redacted.split(secret).join('***'), text)
-}
+// Preserve the release module's existing redaction API for its callers.
+export { redactRpcCredentials } from '../chain/rpc-credentials.js'
 
 export type ReleaseResult<Kind extends string = string> = {
   network: HostedEnvironmentId

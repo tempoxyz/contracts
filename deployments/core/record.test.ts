@@ -122,6 +122,91 @@ function record(overrides: Partial<EarnDeploymentRecord> = {}): EarnDeploymentRe
 }
 
 describe('deployment records', () => {
+  test('round-trips pending retained source identities without requiring new contract entries', () => {
+    const value = record()
+    value.source = {
+      ...value.source,
+      contractVerification: 'pending',
+      contracts: { engine: value.source.contracts.engine },
+    }
+    expect(parseEarnDeploymentRecord(value, profile)).toEqual(value)
+    value.source.contracts = {}
+    value.source.verifierUrl = null
+    expect(parseEarnDeploymentRecord(value, profile)).toEqual(value)
+  })
+
+  test('pending retained identities keep the verified entry and verifier-shape checks', () => {
+    const value = record()
+    const engine = value.source.contracts.engine
+    value.source.contractVerification = 'pending'
+    for (const patch of [
+      { contracts: { engine }, verifierUrl: null },
+      { contracts: {}, verifierUrl: 'https://contracts.tempo.xyz' },
+      { contracts: { asset: engine } },
+      { contracts: { earnRouter: engine } },
+      { contracts: { earnVault: engine } },
+      { contracts: { engine: { ...engine, sourceInputsHash: '0x1234' } } },
+      { contracts: { engine: { ...engine, match: 'partial' } } },
+      { contracts: { engine }, contractVerification: 'not-applicable' },
+    ]) {
+      expect(() =>
+        parseEarnDeploymentRecord({ ...value, source: { ...value.source, ...patch } }, profile),
+      ).toThrow('source')
+    }
+  })
+
+  test('verified records still require complete source evidence', () => {
+    const value = record()
+    value.source.contracts = { engine: value.source.contracts.engine }
+    expect(() => parseEarnDeploymentRecord(value, profile)).toThrow('source')
+  })
+
+  test('local records cannot carry retained hosted source evidence', () => {
+    const localProfile = { ...profile, chainId: 1337 }
+    const value = record({
+      deploymentIntentHash: deploymentIntentHash(localProfile),
+      componentDeploymentIntentHashes: componentDeploymentIntentHashes(localProfile),
+      target: { ...record().target, chainId: 1337 },
+    })
+    value.source.factoryDeploymentId = profileFactoryDeploymentId(localProfile)
+    value.source.contractVerification = 'not-applicable'
+    expect(() => parseEarnDeploymentRecord(value, localProfile)).toThrow('source')
+    value.source.contracts = {}
+    value.source.verifierUrl = null
+    expect(parseEarnDeploymentRecord(value, localProfile)).toEqual(value)
+    value.source.contractVerification = 'pending'
+    expect(() => parseEarnDeploymentRecord(value, localProfile)).toThrow('source')
+  })
+
+  test('round-trips admitted creation factory evidence and rejects malformed proof fields', () => {
+    const value = record()
+    const source = value.source.contracts.engine
+    if (source?.kind !== 'source') throw new Error('Missing source')
+    source.creationFactory = {
+      address: address('abc'),
+      name: 'Factory',
+      match: 'exact_match',
+      sourceInputsHash,
+    }
+    expect(parseEarnDeploymentRecord(value, profile)).toEqual(value)
+    for (const patch of [
+      { address: '0x1234' },
+      { sourceInputsHash: '0x1234' },
+      { match: 'partial' },
+      { name: '' },
+      { extra: true },
+    ]) {
+      source.creationFactory = {
+        address: address('abc'),
+        name: 'Factory',
+        match: 'exact_match',
+        sourceInputsHash,
+        ...patch,
+      } as never
+      expect(() => parseEarnDeploymentRecord(value, profile)).toThrow('creationFactory')
+    }
+  })
+
   test('rejects a Zone target that is not the profile Zone identity', () => {
     const deployed = record({
       deploymentId: zoneProfile.id,

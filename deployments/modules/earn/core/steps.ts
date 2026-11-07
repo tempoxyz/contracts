@@ -54,6 +54,12 @@ export const deployCore = defineFoundryStep({
   phase: 'deployment',
   intent: ['core'],
   creates: ['core'],
+  creationEvent: (profile) => ({
+    address: profile.factories.earn,
+    event: earnStackDeployed,
+    argument: 'earnVault',
+    output: 'earnVault',
+  }),
   script: 'script/deploy/DeployEarnCore.s.sol:DeployEarnCoreScript',
   rawGasEstimate: true,
   enabled: () => true,

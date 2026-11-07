@@ -1,4 +1,4 @@
-import type { Abi, Address, createPublicClient, Hex, PublicClient } from 'viem'
+import type { Abi, AbiEvent, Address, createPublicClient, Hex, PublicClient } from 'viem'
 
 import type { DeploymentAddressKey, IntentComponent } from '../core/components.js'
 import type { CoreProfile, EarnDeploymentProfile } from '../core/profile.js'
@@ -226,6 +226,19 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
   execution: 'foundry'
   /** Components whose creation transaction this step records, excluding later configuration. */
   creates?: readonly IntentComponent[]
+  /** The trusted factory event and address argument proving this step's contract creation. */
+  creationEvent?(
+    profile: EarnDeploymentProfile,
+    outputs: Record<string, Address>,
+  ): {
+    address: Address
+    event: AbiEvent
+    argument: string
+    /** Recorded output the factory event must prove was created. */
+    output: DeploymentAddressKey
+    /** Canonical source admission for an external factory not covered by the deployment's own source targets. */
+    source?: { project: string; contract: string }
+  }
   /**
    * The Foundry project beside `earn/` that compiles and runs the script and the contract it
    * creates, such as `zone-router`, which builds with solc; Earn's own project when omitted.

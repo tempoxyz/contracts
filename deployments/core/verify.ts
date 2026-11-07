@@ -27,11 +27,22 @@ import { isHostedDeploymentChain } from '../chain/tempo.js'
 import { deploysEngine, profileEngineFactory, type EarnDeploymentProfile } from './profile.js'
 import {
   type ContractSourceVerification,
+  type CreationFactoryVerification,
   type DeploymentSource,
   type EarnDeploymentRecord,
 } from './record.js'
 import { engineDefinitions } from '../modules/earn/engines/index.js'
-import { deploymentSteps } from '../../deployments/modules/index.js'
+import {
+  deploymentStep,
+  deploymentSteps,
+  type EarnDeploymentActionId,
+} from '../../deployments/modules/index.js'
+import {
+  assertCreationReceipt,
+  assertDirectCreationTransaction,
+  assertVerifiedCreationTransaction,
+} from '../chain/creation.js'
+import { redactRpcCredentials } from '../chain/rpc-credentials.js'
 import { requiredOutput } from '../../deployments/modules/module.js'
 
 export const tempoVerifierUrl = 'https://contracts.tempo.xyz'
@@ -50,6 +61,11 @@ type VerifiedContract = {
   fullyQualifiedName?: string | null
   sources?: Record<string, { content?: string }>
   transactionHash?: string | null
+  /** Compiler output, not a claim that the deployment executed this initcode. */
+  creationBytecode?: { bytecode?: string | null; cborAuxdata?: unknown } | null
+  compiler?: string | null
+  compilerVersion?: string | null
+  language?: string | null
 }
 
 export type VerificationDependencies = {
@@ -63,8 +79,15 @@ export type VerificationDependencies = {
   sourcePaths: (root: string, contract: string, environment: NodeJS.ProcessEnv) => readonly string[]
 }
 
-type SourceVerificationOptions<Record = Pick<EarnDeploymentRecord, 'actions' | 'addresses'>> = {
-  client: Pick<PublicClient, 'getCode' | 'getStorageAt' | 'readContract'>
+type SourceVerificationOptions<
+  Record = Pick<EarnDeploymentRecord, 'actions' | 'addresses'> & {
+    source?: DeploymentSource | undefined
+  },
+> = {
+  client: Pick<
+    PublicClient,
+    'getCode' | 'getStorageAt' | 'readContract' | 'getTransactionReceipt' | 'getTransaction'
+  >
   environment: NodeJS.ProcessEnv
   profile: EarnDeploymentProfile
   record: Record
@@ -79,7 +102,41 @@ export async function verifyDeploymentSources(
   options: SourceVerificationOptions,
   dependencies: Partial<VerificationDependencies> = {},
 ): Promise<Pick<DeploymentSource, 'contractVerification' | 'contracts' | 'verifierUrl'>> {
-  return inspectDeploymentSources(options, true, dependencies)
+  try {
+    const source = options.record.source
+    const retained =
+      source &&
+      (source.contractVerification === 'verified' || Object.keys(source.contracts).length > 0)
+        ? source.contracts
+        : undefined
+    if (retained && source?.verifierUrl?.replace(/\/+$/, '') !== tempoVerifierUrl)
+      throw new Error(
+        'Retained deployment requires recorded verification from the trusted verifier',
+      )
+    const observed = await inspectDeploymentSources(options, true, dependencies, retained)
+    // Pending retries can add evidence for new outputs, never replace an admitted historical identity.
+    for (const [key, previous] of Object.entries(retained ?? {})) {
+      const output = key as keyof typeof observed.contracts
+      const current = observed.contracts[output]
+      const compatible =
+        current &&
+        previous &&
+        'match' in current &&
+        'match' in previous &&
+        current.match === 'exact_match' &&
+        previous.match === 'match'
+          ? { ...current, match: 'match' }
+          : current
+      if (!isDeepStrictEqual(compatible, previous))
+        throw new Error(
+          `Recorded deployment source verification does not match current provenance for ${key}`,
+        )
+      observed.contracts[output] = previous
+    }
+    return observed
+  } catch (error) {
+    throw verificationError(error, options)
+  }
 }
 
 /** Rechecks recorded evidence; explicit resubmission repairs verifier entries, never the recorded source identity. */
@@ -87,48 +144,118 @@ export async function verifyRecordedDeploymentSources(
   options: SourceVerificationOptions<EarnDeploymentRecord>,
   dependencies: Partial<VerificationDependencies> = {},
 ) {
-  // A parsed record of a local chain is always `not-applicable`, with no verifier results.
-  if (!isHostedDeploymentChain(options.profile.chainId)) return
-  if (
-    options.record.source.contractVerification !== 'verified' ||
-    !options.record.source.verifierUrl
-  ) {
-    throw new Error(
-      'Hosted deployment source verification is incomplete; rerun the deployment command',
+  try {
+    // A parsed record of a local chain is always `not-applicable`, with no verifier results.
+    if (!isHostedDeploymentChain(options.profile.chainId)) return
+    if (
+      options.record.source.contractVerification !== 'verified' ||
+      !options.record.source.verifierUrl
+    ) {
+      throw new Error(
+        'Hosted deployment source verification is incomplete; rerun the deployment command',
+      )
+    }
+    const verifierUrl = tempoVerifierUrl
+    if (options.record.source.verifierUrl.replace(/\/+$/, '') !== verifierUrl) {
+      throw new Error(
+        `Recorded deployment verifier ${options.record.source.verifierUrl} does not match trusted verifier ${verifierUrl}`,
+      )
+    }
+    const observed = await inspectDeploymentSources(
+      options,
+      options.resubmit === true,
+      dependencies,
+      options.record.source.contracts,
     )
-  }
-  const verifierUrl = tempoVerifierUrl
-  if (options.record.source.verifierUrl.replace(/\/+$/, '') !== verifierUrl) {
-    throw new Error(
-      `Recorded deployment verifier ${options.record.source.verifierUrl} does not match trusted verifier ${verifierUrl}`,
+    const compatible = Object.fromEntries(
+      Object.entries(observed.contracts).map(([key, value]) => {
+        const previous =
+          options.record.source.contracts[key as keyof typeof options.record.source.contracts]
+        // A stricter verifier match strengthens the same source evidence; downgrades remain a failure.
+        return [
+          key,
+          value &&
+          previous &&
+          'match' in value &&
+          'match' in previous &&
+          value.match === 'exact_match' &&
+          previous.match === 'match'
+            ? { ...value, match: 'match' }
+            : value,
+        ]
+      }),
     )
+    if (!isDeepStrictEqual(compatible, options.record.source.contracts)) {
+      throw new Error('Recorded deployment source verification does not match current provenance')
+    }
+  } catch (error) {
+    throw verificationError(error, options)
   }
-  const observed = await inspectDeploymentSources(
-    options,
-    options.resubmit === true,
-    dependencies,
-    options.record.source.contracts,
-  )
-  const compatible = Object.fromEntries(
-    Object.entries(observed.contracts).map(([key, value]) => {
-      const previous =
-        options.record.source.contracts[key as keyof typeof options.record.source.contracts]
-      // A stricter verifier match strengthens the same source evidence; downgrades remain a failure.
-      return [
-        key,
-        value &&
-        previous &&
-        'match' in value &&
-        'match' in previous &&
-        value.match === 'exact_match' &&
-        previous.match === 'match'
-          ? { ...value, match: 'match' }
-          : value,
-      ]
-    }),
-  )
-  if (!isDeepStrictEqual(compatible, options.record.source.contracts)) {
-    throw new Error('Recorded deployment source verification does not match current provenance')
+}
+
+/** Rechecks one retained direct deployment against its recorded source identity and historical compilation. */
+export async function verifyRecordedStepCreation(
+  options: SourceVerificationOptions<EarnDeploymentRecord> & { action: EarnDeploymentActionId },
+  dependencies: Partial<VerificationDependencies> = {},
+) {
+  try {
+    const step = deploymentStep(options.action)
+    if (
+      step.execution !== 'foundry' ||
+      !step.source ||
+      step.creationEvent ||
+      !step.enabled(options.profile)
+    )
+      throw new Error(`No direct source deployment is declared for ${options.action}`)
+    if (
+      !['verified', 'pending'].includes(options.record.source.contractVerification) ||
+      options.record.source.verifierUrl?.replace(/\/+$/, '') !== tempoVerifierUrl
+    )
+      throw new Error(
+        'Retained deployment requires recorded verification from the trusted verifier',
+      )
+    const addresses = options.record.addresses as Record<string, Address>
+    const address = requiredOutput(addresses, step.source.output)
+    const previous = options.record.source.contracts[step.source.output]
+    if (previous?.kind !== 'source')
+      throw new Error(`Recorded source identity is missing for ${address}`)
+    const context: VerificationContext = {
+      ...options,
+      chainId: options.profile.chainId,
+      verifierUrl: tempoVerifierUrl,
+      runtime: verificationRuntime(dependencies),
+      submitMissing: false,
+      resubmit: false,
+      recordedSources: new Map([[address.toLowerCase(), previous]]),
+      compilerArguments: new Map(),
+      directCreation: {
+        client: options.client,
+        deployer: options.profile.deployer,
+        transactions: new Map(),
+      },
+    }
+    const observed = await verifySource(context, {
+      root: foundryProjectRoot(options.root, step.project),
+      address,
+      constructorArgs: step.source.constructorArgs(options.profile, addresses),
+      contract: step.source.contract,
+      creationTransactionHash: await creationTransactionFor(
+        options,
+        options.action,
+        address,
+        context,
+      ),
+      name: step.source.contract.slice(step.source.contract.lastIndexOf(':') + 1),
+    })
+    // A stronger match can preserve the record, but no source identity or creation evidence may change.
+    const compatible =
+      observed.match === 'exact_match' && previous.match === 'match'
+        ? { ...observed, match: 'match' }
+        : observed
+    if (!isDeepStrictEqual(compatible, previous))
+      throw new Error('Recorded deployment source verification does not match current provenance')
+  } catch (error) {
+    throw verificationError(error, options)
   }
 }
 
@@ -150,13 +277,25 @@ async function inspectDeploymentSources(
     submitMissing,
     recordedSources: recordedSources
       ? new Map(
-          Object.entries(addresses).map(([key, address]) => [
-            address.toLowerCase(),
-            recordedSources[key as keyof typeof recordedSources],
-          ]),
+          Object.entries(addresses)
+            .filter(
+              ([key]) =>
+                options.record.source?.contractVerification !== 'pending' ||
+                recordedSources[key as keyof typeof recordedSources] !== undefined,
+            )
+            .map(([key, address]) => [
+              address.toLowerCase(),
+              recordedSources[key as keyof typeof recordedSources],
+            ]),
         )
       : undefined,
     compilerArguments: new Map(),
+    creationFactories: new Map(),
+    directCreation: {
+      client: options.client,
+      deployer: options.profile.deployer,
+      transactions: new Map(),
+    },
   }
   const engine = requiredOutput(addresses, 'engine')
   const earnVault = requiredOutput(addresses, 'earnVault')
@@ -172,7 +311,12 @@ async function inspectDeploymentSources(
           owner: options.profile.deployer,
         }),
         contract: `${engineSource}:${engineContract}`,
-        creationTransactionHash: transactionFor(options.record, 'deploy-engine'),
+        creationTransactionHash: await creationTransactionFor(
+          options,
+          'deploy-engine',
+          engine,
+          context,
+        ),
         name: engineContract,
       })
     : await prepareExistingSource(context, engine, {
@@ -207,7 +351,12 @@ async function inspectDeploymentSources(
       '0x',
     ]),
     contract: 'lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy',
-    creationTransactionHash: transactionFor(options.record, 'deploy-core'),
+    creationTransactionHash: await creationTransactionFor(
+      options,
+      'deploy-core',
+      earnVault,
+      context,
+    ),
     name: 'ERC1967Proxy',
   })
 
@@ -237,7 +386,12 @@ async function inspectDeploymentSources(
       address: requiredOutput(addresses, output),
       constructorArgs: constructorArgs(options.profile, addresses),
       contract,
-      creationTransactionHash: transactionFor(options.record, id),
+      creationTransactionHash: await creationTransactionFor(
+        options,
+        id,
+        requiredOutput(addresses, output),
+        context,
+      ),
       name: contract.slice(contract.lastIndexOf(':') + 1),
     })
     prepared.push({ output, verify })
@@ -251,6 +405,7 @@ async function inspectDeploymentSources(
     name: 'ERC1967Proxy',
     match: proxySource.match,
     sourceInputsHash: proxySource.sourceInputsHash,
+    ...(proxySource.creationFactory ? { creationFactory: proxySource.creationFactory } : {}),
     implementation: vaultImplementation,
     implementationCodeHash: vaultImplementationCodeHash,
   }
@@ -278,23 +433,42 @@ export async function verifyContractSource(
   },
   dependencies: Partial<VerificationDependencies> = {},
 ) {
-  const { address, contract, constructorArgs, creationTransactionHash, ...target } = options
-  return verifySource(
-    {
-      ...target,
-      verifierUrl: tempoVerifierUrl,
-      runtime: verificationRuntime(dependencies),
-      submitMissing: true,
-      compilerArguments: new Map(),
-    },
-    {
-      address,
-      constructorArgs,
-      creationTransactionHash,
-      contract,
-      name: contract.slice(contract.lastIndexOf(':') + 1),
-    },
+  try {
+    const { address, contract, constructorArgs, creationTransactionHash, ...target } = options
+    return await verifySource(
+      {
+        ...target,
+        verifierUrl: tempoVerifierUrl,
+        runtime: verificationRuntime(dependencies),
+        submitMissing: true,
+        compilerArguments: new Map(),
+      },
+      {
+        address,
+        constructorArgs,
+        creationTransactionHash,
+        contract,
+        name: contract.slice(contract.lastIndexOf(':') + 1),
+      },
+    )
+  } catch (error) {
+    throw verificationError(error, options)
+  }
+}
+
+// Rebuild the error: subprocess causes, enumerable fields and old stacks can retain credentials.
+function verificationError(
+  error: unknown,
+  options: { rpcUrl: string; environment: NodeJS.ProcessEnv },
+) {
+  const message = redactRpcCredentials(
+    error instanceof Error ? error.message : String(error),
+    options.rpcUrl,
+    options.environment,
   )
+  return error instanceof VerifierUnavailableError
+    ? new VerifierUnavailableError(message)
+    : new Error(message)
 }
 
 function verificationRuntime(
@@ -364,10 +538,10 @@ async function verifySource(context: VerificationContext, target: SourceTarget) 
 async function prepareSource(context: VerificationContext, target: SourceTarget) {
   const existing = await lookupContract(context, target.address)
   if (existing?.match) {
+    let verified: ReturnType<typeof sourceMatch> | undefined
     try {
       // Even an explicit repair must leave good entries alone: exact matches cannot be replaced.
-      const verified = sourceMatch(context, existing, target)
-      return async () => verified
+      verified = sourceMatch(context, existing, target)
     } catch (error) {
       if (!context.submitMissing || !context.resubmit) {
         throw new Error(
@@ -375,6 +549,12 @@ async function prepareSource(context: VerificationContext, target: SourceTarget)
           { cause: error },
         )
       }
+    }
+    if (verified) {
+      // Source resubmission cannot change a mined constructor, so invalid initcode is never repairable here.
+      await assertSourceCreation(context, existing, target)
+      const source = verified
+      return async () => source
     }
   }
   if (!context.submitMissing) {
@@ -465,7 +645,9 @@ async function submitSource(
           `${target.name} ${target.address} verified, but the verifier does not list its source yet`,
         )
       }
-      return sourceMatch(context, verified, target)
+      const source = sourceMatch(context, verified, target)
+      await assertSourceCreation(context, verified, target)
+      return source
     }
     lastError = `${outcome.error?.customCode ?? 'unknown'}: ${outcome.error?.message ?? 'unknown error'}`
     lastTransient = transientVerifierErrors.has(outcome.error?.customCode ?? '')
@@ -601,11 +783,50 @@ function sourceMatch(
     name: target.name,
     match: contract.match,
     sourceInputsHash,
+    ...(context.creationFactories?.has(target.address.toLowerCase())
+      ? { creationFactory: context.creationFactories.get(target.address.toLowerCase())! }
+      : {}),
   }
 }
 
+async function assertSourceCreation(
+  context: VerificationContext,
+  contract: VerifiedContract,
+  target: SourceTarget,
+) {
+  const direct = context.directCreation
+  const transaction = direct?.transactions.get(target.address.toLowerCase())
+  if (!direct || !transaction) return
+  // The caller admits source identity first; this compilation also belongs to historical rechecks, not today's checkout.
+  const creationBytecode = contract.creationBytecode?.bytecode
+  if (typeof creationBytecode !== 'string' || !/^0x(?:[0-9a-fA-F]{2})+$/.test(creationBytecode))
+    throw new Error(`Verifier did not return compiled creation bytecode for ${target.name}`)
+  if (target.constructorArgs === undefined)
+    throw new Error(`Constructor arguments are not declared for ${target.name}`)
+  const options = {
+    address: target.address,
+    transaction,
+    deployer: direct.deployer,
+    creationBytecode: creationBytecode as Hex,
+    constructorArgs: target.constructorArgs,
+    minedTransaction: await direct.client.getTransaction({ hash: transaction }),
+  }
+  // Deployment separately proves fresh checkout initcode exactly; a verifier recompilation may differ only in metadata.
+  if (contract.match === 'match' || recordedSource(context, target)?.match === 'match')
+    assertVerifiedCreationTransaction({
+      ...options,
+      compiler: {
+        name: contract.compiler ?? null,
+        version: contract.compilerVersion ?? null,
+        language: contract.language ?? null,
+      },
+      cborAuxdata: contract.creationBytecode?.cborAuxdata,
+    })
+  else assertDirectCreationTransaction(options)
+}
+
 function recordedSource(context: VerificationContext, target: Pick<SourceTarget, 'address'>) {
-  if (!context.recordedSources) return undefined
+  if (!context.recordedSources?.has(target.address.toLowerCase())) return undefined
   const recorded = context.recordedSources.get(target.address.toLowerCase())
   if (!recorded || !('sourceInputsHash' in recorded))
     throw new Error(`Recorded source identity is missing for ${target.address}`)
@@ -669,7 +890,8 @@ function requireCanonicalSources(
   // Source paths are relative to the contract's Foundry project, and a sibling project may import
   // Earn's sources (`../earn/src/...`); every one must resolve inside this checkout.
   const entries = Object.entries(sources)
-  if (!context.recordedSources) {
+  const recorded = recordedSource(context, { address: getAddress(contract.address) })
+  if (!recorded) {
     const expected = context.runtime.sourcePaths(
       projectRoot,
       fullyQualifiedName,
@@ -684,7 +906,7 @@ function requireCanonicalSources(
     if (typeof source.content !== 'string')
       throw new Error(`Verifier did not return source content for ${relativePath}`)
     const localPath = checkedSourcePath(context, projectRoot, relativePath)
-    if (context.recordedSources) continue
+    if (recorded) continue
     let canonical: string
     try {
       canonical = context.runtime.readSource(localPath)
@@ -716,8 +938,60 @@ function storageAddress(value: Hex | undefined) {
   return getAddress(`0x${value.slice(-40)}`)
 }
 
-function transactionFor(record: Pick<EarnDeploymentRecord, 'actions'>, action: string) {
-  return record.actions[action as keyof typeof record.actions]?.transactions[0]
+async function creationTransactionFor(
+  options: SourceVerificationOptions,
+  action: EarnDeploymentActionId,
+  address: Address,
+  context: VerificationContext,
+) {
+  const transactions = options.record.actions[action]?.transactions
+  if (!transactions || transactions.length !== 1 || !/^0x[0-9a-fA-F]{64}$/.test(transactions[0]!))
+    throw new Error(
+      `Missing or ambiguous creation transaction for ${action}. Recover its original creation receipt before verifying; source matches cannot replace creation evidence.`,
+    )
+  const transaction = transactions[0]!
+  const step = deploymentStep(action)
+  const factory =
+    step.execution === 'foundry'
+      ? step.creationEvent?.(options.profile, options.record.addresses as Record<string, Address>)
+      : undefined
+  if (factory?.source) {
+    // Admit the factory canonically once, then recheck its own recorded identity, not the router's.
+    const previous = recordedSource(context, { address })?.creationFactory
+    if (previous && getAddress(previous.address) !== getAddress(factory.address))
+      throw new Error(`Recorded creation factory for ${address} does not match ${factory.address}`)
+    const verifyFactory = await prepareExistingSource(
+      {
+        ...context,
+        root: foundryProjectRoot(options.root, factory.source.project),
+        recordedSources: previous
+          ? new Map([[factory.address.toLowerCase(), { kind: 'source', ...previous }]])
+          : undefined,
+      },
+      factory.address,
+      {
+        contract: factory.source.contract,
+        name: factory.source.contract.slice(factory.source.contract.lastIndexOf(':') + 1),
+      },
+    )
+    const admitted = await verifyFactory()
+    // Records without factory evidence still require canonical admission, without silently rewriting history.
+    if (!recordedSource(context, { address }) || previous)
+      context.creationFactories!.set(address.toLowerCase(), {
+        address: getAddress(factory.address),
+        name: admitted.name,
+        match: previous?.match ?? admitted.match,
+        sourceInputsHash: admitted.sourceInputsHash,
+      })
+  }
+  assertCreationReceipt({
+    address,
+    transaction,
+    receipt: await options.client.getTransactionReceipt({ hash: transaction }),
+    factory,
+  })
+  if (!factory) context.directCreation!.transactions.set(address.toLowerCase(), transaction)
+  return transaction
 }
 
 type VerificationContext = {
@@ -731,6 +1005,14 @@ type VerificationContext = {
   /** Completed records trust their recorded inputs, independently of permission to submit repairs. */
   recordedSources?: Map<string, ContractSourceVerification | undefined> | undefined
   resubmit?: boolean | undefined
+  /** External factory identities admitted for each created target. */
+  creationFactories?: Map<string, CreationFactoryVerification>
+  /** Only profile-owned direct creations require mined constructor input; generic source verification may name factory transactions. */
+  directCreation?: {
+    client: Pick<PublicClient, 'getTransaction'>
+    deployer: Address
+    transactions: Map<string, Hex>
+  }
   /** Each project's compiler arguments, resolved on its first submission. */
   compilerArguments: Map<string, string[]>
 }

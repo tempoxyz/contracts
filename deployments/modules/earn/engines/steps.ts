@@ -25,6 +25,15 @@ export const deployEngine = defineFoundryStep({
   summary: "Deploy or resolve the deterministic engine through its kind's shared factory.",
   phase: 'deployment',
   intent: ['engine'],
+  creationEvent(profile) {
+    const factory = factoryOf(profile)
+    return {
+      address: factory.address,
+      event: factory.creationEvent,
+      argument: 'engine',
+      output: 'engine',
+    }
+  },
   script: (profile) => factoryOf(profile).deployScript,
   rawGasEstimate: true,
   enabled: deploysEngine,

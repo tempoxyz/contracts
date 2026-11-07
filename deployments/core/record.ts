@@ -90,13 +90,28 @@ export type DeploymentSource = {
   contracts: Partial<Record<DeploymentAddressKey, ContractSourceVerification>>
 }
 
+/** Canonical source identity admitted before trusting an external factory's creation event. */
+export type CreationFactoryVerification = {
+  address: Address
+  name: string
+  match: SourceMatch
+  sourceInputsHash: `0x${string}`
+}
+
 export type ContractSourceVerification =
-  | { kind: 'source'; name: string; match: SourceMatch; sourceInputsHash: `0x${string}` }
+  | {
+      kind: 'source'
+      name: string
+      match: SourceMatch
+      sourceInputsHash: `0x${string}`
+      creationFactory?: CreationFactoryVerification
+    }
   | {
       kind: 'erc1967-proxy'
       name: 'ERC1967Proxy'
       match: SourceMatch
       sourceInputsHash: `0x${string}`
+      creationFactory?: CreationFactoryVerification
       implementation: Address
       implementationCodeHash: `0x${string}`
     }
@@ -368,25 +383,26 @@ function parseDeploymentSource(
   }
   const hosted = isHostedDeploymentChain(profile.chainId)
   const contracts = parsed.contracts
-  if (parsed.contractVerification !== 'verified') {
-    if (
-      parsed.verifierUrl !== null ||
-      Object.keys(contracts).length > 0 ||
-      hosted !== (parsed.contractVerification === 'pending')
-    )
-      mismatch(path)
+  const keys = Object.keys(contracts) as DeploymentAddressKey[]
+  if (parsed.contractVerification === 'not-applicable') {
+    if (hosted || parsed.verifierUrl !== null || keys.length > 0) mismatch(path)
+    return parsed
+  }
+  if (!hosted) mismatch(path)
+  // Pending reconciliation retains admitted identities, but new outputs need not be verified yet.
+  if (parsed.contractVerification === 'pending' && keys.length === 0) {
+    if (parsed.verifierUrl !== null) mismatch(path)
     return parsed
   }
   const verified = (key: DeploymentAddressKey) => !externalAddressKeys.includes(key)
   const expected = deploymentAddressKeysForProfile(profile).filter(verified)
-  const keys = Object.keys(contracts) as DeploymentAddressKey[]
   if (
-    !hosted ||
     parsed.verifierUrl === null ||
     keys.some((key) => !verified(key) || (!expected.includes(key) && !changedAddress(key))) ||
-    expected.some((key) => !contracts[key] && !changedAddress(key)) ||
     keys.some((key) => contracts[key]!.kind !== (contractKinds[key] ?? 'source')) ||
-    Object.keys(contractKinds).some((key) => !contracts[key as DeploymentAddressKey])
+    (parsed.contractVerification === 'verified' &&
+      (expected.some((key) => !contracts[key] && !changedAddress(key)) ||
+        Object.keys(contractKinds).some((key) => !contracts[key as DeploymentAddressKey])))
   )
     mismatch(path)
   return parsed
@@ -410,23 +426,35 @@ function parseContractVerifications(value: unknown, path: string): DeploymentSou
     if (kind === 'source' || kind === 'erc1967-proxy') {
       literal(contract.match, `${contractPath}.match`, ['exact_match', 'match'] as const)
       hash('sourceInputsHash')
+      if (contract.creationFactory !== undefined) {
+        const factoryPath = `${contractPath}.creationFactory`
+        const factory = object(contract.creationFactory, factoryPath)
+        exactKeys(factory, factoryPath, ['address', 'name', 'match', 'sourceInputsHash'])
+        address(factory.address, `${factoryPath}.address`)
+        nonemptyString(factory.name, `${factoryPath}.name`)
+        literal(factory.match, `${factoryPath}.match`, ['exact_match', 'match'] as const)
+        if (!isBytes32(factory.sourceInputsHash)) mismatch(`${factoryPath}.sourceInputsHash`)
+      }
     }
     if (kind === 'erc1967-proxy' || kind === 'minimal-proxy') {
       address(contract.implementation, `${contractPath}.implementation`)
       hash('implementationCodeHash')
     }
     if (kind === 'source') {
-      exactKeys(contract, contractPath, ['kind', 'name', 'match', 'sourceInputsHash'])
+      exactKeys(
+        contract,
+        contractPath,
+        ['kind', 'name', 'match', 'sourceInputsHash'],
+        ['creationFactory'],
+      )
       nonemptyString(contract.name, `${contractPath}.name`)
     } else if (kind === 'erc1967-proxy') {
-      exactKeys(contract, contractPath, [
-        'kind',
-        'name',
-        'match',
-        'sourceInputsHash',
-        'implementation',
-        'implementationCodeHash',
-      ])
+      exactKeys(
+        contract,
+        contractPath,
+        ['kind', 'name', 'match', 'sourceInputsHash', 'implementation', 'implementationCodeHash'],
+        ['creationFactory'],
+      )
       literal(contract.name, `${contractPath}.name`, ['ERC1967Proxy'] as const)
     } else if (kind === 'minimal-proxy') {
       exactKeys(contract, contractPath, ['kind', 'implementation', 'implementationCodeHash'])

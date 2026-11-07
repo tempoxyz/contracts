@@ -106,6 +106,15 @@ export const deployZoneRouter = defineFoundryStep({
   phase: 'deployment',
   // A new factory deploys the same mode at a new address.
   intent: ['zoneRouterFactory', 'zoneRouter'],
+  creationEvent: (profile, outputs) => ({
+    address: zoneRouterFactory(profile, outputs),
+    event: routerDeployed,
+    argument: 'router',
+    output: 'zoneRouter',
+    ...(namesFactory(profile)
+      ? { source: { project: 'zone-router', contract: deployZoneRouterFactory.source!.contract } }
+      : {}),
+  }),
   script: 'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
   rawGasEstimate: true,
   enabled: hasZoneRouter,

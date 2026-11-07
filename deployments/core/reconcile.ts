@@ -5,8 +5,9 @@ import {
 } from '../modules/earn/engines/index.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { zeroAddress, type Address } from 'viem'
-import { object } from './parse.js'
+import { TransactionReceiptNotFoundError, zeroAddress, type Address, type PublicClient } from 'viem'
+import { assertStepCreation, type CreationDependencies } from './creation.js'
+import { isBytes32, object } from './parse.js'
 import { deploymentActions, planEarnDeployment, type EarnDeploymentAction } from './plan.js'
 import {
   configuredEngineAddress,
@@ -76,15 +77,18 @@ export type ReconciliationStep =
  * Reconciles one action at a time. Pending state is only a cache: external handoffs and recovered
  * Foundry outputs are accepted only after their desired state is observed onchain.
  */
-export async function prepareLifecycleStep(options: {
-  root: string
-  profilePath: string
-  profile: EarnDeploymentProfile
-  rpcUrl: string
-  environment: NodeJS.ProcessEnv
-  actions?: EarnDeploymentAction[] | undefined
-  discoveredOutputs?: Record<string, `0x${string}`> | undefined
-}): Promise<ReconciliationStep> {
+export async function prepareLifecycleStep(
+  options: {
+    root: string
+    profilePath: string
+    profile: EarnDeploymentProfile
+    rpcUrl: string
+    environment: NodeJS.ProcessEnv
+    actions?: EarnDeploymentAction[] | undefined
+    discoveredOutputs?: Record<string, `0x${string}`> | undefined
+  },
+  dependencies: Partial<CreationDependencies> = {},
+): Promise<ReconciliationStep> {
   const { profile, profilePath } = options
   const client = rpcClient(options.rpcUrl)
   syncFoundryOutputs(options.root, profilePath)
@@ -99,26 +103,77 @@ export async function prepareLifecycleStep(options: {
     pending = { ...pending, outputs: { ...retained, ...options.discoveredOutputs } }
     savePendingDeployment(profilePath, profile, pending)
   }
-  const complete = (action: EarnDeploymentAction, transactions: `0x${string}`[] = []) => {
+  const complete = async (action: EarnDeploymentAction, transactions: `0x${string}`[] = []) => {
+    const step = deploymentStep(action.id)
+    if (step.execution === 'foundry' && transactions.length > 0)
+      await assertStepCreation(
+        {
+          client,
+          root: options.root,
+          environment: options.environment,
+          outputs: pending.outputs,
+          profile,
+          step,
+          transactions,
+        },
+        dependencies,
+      )
     pending = completeAction(pending, action.id, 'chain', transactions)
     savePendingDeployment(profilePath, profile, pending)
   }
 
   for (const action of options.actions ?? planEarnDeployment(profile)) {
     const step = deploymentStep(action.id)
+    const createsContracts =
+      step.execution === 'foundry' &&
+      Boolean(step.source || step.creationEvent || step.creates?.length)
     // Each activation acts on a published deployment, so it is inspected again first.
     const inspection =
       step.execution === 'authority' && step.phase === 'activation'
         ? await inspectEarnDeployment(client, profile, pending.outputs)
         : undefined
     if (await step.satisfied(client, profile, pending.outputs)) {
-      if (!pending.actions[action.id]) {
+      const recorded = pending.actions[action.id]
+      // Earlier resumes may have cached the bindings before Forge saved a creation receipt.
+      const recoverCreation = createsContracts && recorded?.transactions.length === 0
+      if (!recorded || recoverCreation) {
         const adopted =
           step.execution === 'foundry' && step.adopt
             ? await step.adopt(client, profile, pending.outputs)
             : undefined
-        if (adopted) pending = { ...pending, outputs: adopted.outputs }
-        complete(action, adopted ? [adopted.transaction] : [])
+        if (adopted && !recorded) pending = { ...pending, outputs: adopted.outputs }
+        const transactions = adopted
+          ? [adopted.transaction]
+          : step.execution === 'foundry' && createsContracts
+            ? await successfulBroadcastTransactions(
+                client,
+                foundryBroadcastPath(options.root, profilePath),
+                foundryScript(step, profile),
+                step.input(profile, pending.outputs, foundryOutputPath(options.root, profilePath)),
+                profile.chainId,
+              )
+            : []
+        if (!recorded) await complete(action, transactions)
+        else if (transactions.length > 0 && step.execution === 'foundry') {
+          await assertStepCreation(
+            {
+              client,
+              root: options.root,
+              environment: options.environment,
+              outputs: pending.outputs,
+              profile,
+              step,
+              transactions,
+            },
+            dependencies,
+          )
+          // Receipt repair must preserve completion metadata and a later interrupted step's outputs.
+          pending = {
+            ...pending,
+            actions: { ...pending.actions, [action.id]: { ...recorded, transactions } },
+          }
+          savePendingDeployment(profilePath, profile, pending)
+        }
       }
       continue
     }
@@ -153,16 +208,19 @@ export async function prepareLifecycleStep(options: {
         pending = { ...pending, outputs }
         const adopted = step.adopt ? await step.adopt(client, profile, outputs) : undefined
         if (adopted) pending = { ...pending, outputs: adopted.outputs }
-        complete(
+        await complete(
           action,
           adopted
             ? [adopted.transaction]
-            : successfulBroadcastTransactions(
-                foundryBroadcastPath(options.root, profilePath),
-                foundryScript(step, profile),
-                step.input(profile, outputs, outputPath),
-                profile.chainId,
-              ),
+            : createsContracts
+              ? await successfulBroadcastTransactions(
+                  client,
+                  foundryBroadcastPath(options.root, profilePath),
+                  foundryScript(step, profile),
+                  step.input(profile, outputs, outputPath),
+                  profile.chainId,
+                )
+              : [],
         )
         continue
       }
@@ -172,7 +230,7 @@ export async function prepareLifecycleStep(options: {
     const adopted = step.adopt ? await step.adopt(client, profile, pending.outputs) : undefined
     if (adopted && (await step.satisfied(client, profile, adopted.outputs))) {
       pending = { ...pending, outputs: adopted.outputs }
-      complete(action, [adopted.transaction])
+      await complete(action, [adopted.transaction])
       continue
     }
 
@@ -210,13 +268,16 @@ export async function prepareLifecycleStep(options: {
   return { kind: 'complete', pending }
 }
 
-export async function recordFoundryAction(options: {
-  root: string
-  profilePath: string
-  profile: EarnDeploymentProfile
-  rpcUrl: string
-  step: Extract<ReconciliationStep, { kind: 'foundry' }>
-}) {
+export async function recordFoundryAction(
+  options: {
+    root: string
+    profilePath: string
+    profile: EarnDeploymentProfile
+    rpcUrl: string
+    step: Extract<ReconciliationStep, { kind: 'foundry' }>
+  },
+  dependencies: Partial<CreationDependencies> = {},
+) {
   syncFoundryOutputs(options.root, options.profilePath)
   const outputs = {
     ...options.step.pending.outputs,
@@ -232,13 +293,27 @@ export async function recordFoundryAction(options: {
       : undefined
   const transactions = created
     ? [created.transaction]
-    : successfulBroadcastTransactions(
+    : await successfulBroadcastTransactions(
+        rpcClient(options.rpcUrl),
         options.step.environment.FOUNDRY_BROADCAST ??
           foundryBroadcastPath(options.root, options.profilePath),
         required(options.step.arguments[1], 'Foundry target'),
         options.step.calldata,
         options.profile.chainId,
       )
+  if (step.execution === 'foundry' && transactions.length > 0)
+    await assertStepCreation(
+      {
+        client: rpcClient(options.rpcUrl),
+        root: options.root,
+        environment: options.step.environment,
+        outputs,
+        profile: options.profile,
+        step,
+        transactions,
+      },
+      dependencies,
+    )
   const pending = completeAction(
     { ...options.step.pending, outputs },
     options.step.action.id,
@@ -387,12 +462,13 @@ function readActionOutputs(path: string): Record<string, `0x${string}`> {
 }
 
 /** Forge names a calldata invocation's latest broadcast after the function selector. */
-function successfulBroadcastTransactions(
+async function successfulBroadcastTransactions(
+  client: Pick<PublicClient, 'getTransactionReceipt'>,
   root: string,
   target: string,
   calldata: `0x${string}`,
   chainId: number,
-): `0x${string}`[] {
+): Promise<`0x${string}`[]> {
   const script = basename(required(target.split(':')[0], 'Foundry script'))
   const latest = `${calldata.slice(2, 10)}-latest.json`
   const path = resolve(root, script, String(chainId), latest)
@@ -408,11 +484,33 @@ function successfulBroadcastTransactions(
         : [],
     ),
   )
-  return (raw.transactions ?? []).flatMap((transaction) =>
-    typeof transaction.hash === 'string' &&
-    /^0x[0-9a-fA-F]{64}$/.test(transaction.hash) &&
-    successful.has(transaction.hash.toLowerCase())
-      ? [transaction.hash as `0x${string}`]
-      : [],
-  )
+  const transactions: `0x${string}`[] = []
+  const missing: string[] = []
+  for (const { hash } of raw.transactions ?? []) {
+    if (!isBytes32(hash)) continue
+    if (!successful.has(hash.toLowerCase())) {
+      // Forge can save a broadcast hash before its receipt. Only the RPC can confirm it landed.
+      const receipt = await client.getTransactionReceipt({ hash }).catch((error: unknown) => {
+        // A dropped hash must not hide a later mined replacement in the same broadcast artifact.
+        if (error instanceof TransactionReceiptNotFoundError) {
+          missing.push(hash)
+          return undefined
+        }
+        // RPC errors can contain endpoint credentials; retain only the hash needed for recovery.
+        throw new Error(
+          `Cannot recover creation receipt for ${hash}; retry when the RPC receipt is available`,
+        )
+      })
+      if (!receipt) continue
+      if (receipt.transactionHash.toLowerCase() !== hash.toLowerCase())
+        throw new Error(`RPC returned a different transaction receipt for ${hash}`)
+      if (receipt.status !== 'success') continue
+    }
+    transactions.push(hash)
+  }
+  if (transactions.length === 0 && missing.length > 0)
+    throw new Error(
+      `Missing creation receipts for ${missing.join(', ')} in ${path}; wait for mining or recover the successful original/replacement transaction in this broadcast artifact`,
+    )
+  return transactions
 }
