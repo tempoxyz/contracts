@@ -1,5 +1,14 @@
 import { describe, expect, test, vi } from 'vitest'
-import { keccak256 } from 'viem'
+import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  getAbiItem,
+  keccak256,
+  type Abi,
+  type Address,
+  type Log,
+} from 'viem'
+import { earnFactoryAbi, erc4626EngineFactoryAbi, zoneRouterFactoryAbi } from '../abis/index.js'
 
 import { parseEarnDeploymentProfile } from './profile.js'
 import type { EarnDeploymentRecord } from './record.js'
@@ -90,8 +99,80 @@ function dependencies(engineName = 'VedaEngine') {
   } satisfies VerificationDependencies
 }
 
+function creationLog(
+  abi: Abi,
+  name: string,
+  emitter: Address,
+  args: Record<string, Address | string>,
+  values: unknown[],
+): Log {
+  const event = getAbiItem({ abi, name })
+  if (event?.type !== 'event') throw new Error('Expected event ABI')
+  return {
+    address: emitter,
+    topics: encodeEventTopics({ abi, eventName: name, args }) as Log['topics'],
+    data: encodeAbiParameters(
+      event.inputs.filter((input) => !input.indexed),
+      values,
+    ),
+    removed: false,
+  } as Log
+}
+
 function client() {
   return {
+    getTransactionReceipt: vi.fn(async () => ({
+      status: 'success' as const,
+      transactionHash: transaction,
+      contractAddress: null,
+      logs: [
+        creationLog(
+          earnFactoryAbi,
+          'EarnStackDeployed',
+          coreFactory,
+          { earnVault, earnShare, earnFees },
+          [
+            engine,
+            address('b'),
+            address('a'),
+            transaction,
+            address('0'),
+            address('0'),
+            0n,
+            0,
+            0n,
+            transaction,
+            transaction,
+            transaction,
+            transaction,
+          ],
+        ),
+        creationLog(
+          erc4626EngineFactoryAbi,
+          'ERC4626EngineDeployed',
+          address('c'),
+          { engine, vault: address('d'), owner: address('1') },
+          [address('b'), transaction, transaction],
+        ),
+        creationLog(
+          zoneRouterFactoryAbi,
+          'RouterDeployed',
+          address('fac'),
+          { router: address('70'), modeHash: transaction },
+          [
+            {
+              zoneId: 7,
+              enabledOps: 1,
+              earnVault,
+              privateAsset: address('b'),
+              pool: address('0'),
+              customerId: transaction,
+              spenders: [],
+            },
+          ],
+        ),
+      ],
+    })),
     getCode: vi.fn(async ({ address: requested }: { address: string }) =>
       requested.toLowerCase() === earnFees.toLowerCase()
         ? `0x363d3d373d3d3d363d73${feesImplementation.slice(2)}5af43d82803e903d91602b57fd5bf3`
@@ -552,6 +633,19 @@ describe('deployment source verification', () => {
             error: null,
           })
         }
+        if (url.toLowerCase().includes(address('fac').toLowerCase())) {
+          return Response.json({
+            address: address('fac'),
+            fullyQualifiedName: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+            name: 'ZoneRouterFactory',
+            match: 'exact_match',
+            sources: {
+              'src/ZoneRouterFactory.sol': {
+                content: 'canonical:zone-router/src/ZoneRouterFactory.sol',
+              },
+            },
+          })
+        }
         if (url.toLowerCase().includes(router.toLowerCase())) {
           return ++routerLookups === 1
             ? new Response('{}', { status: 404 })
@@ -612,6 +706,74 @@ describe('deployment source verification', () => {
       }).result,
     ).rejects.toThrow('Verifier source paths do not match the complete compiler input manifest')
   })
+
+  test.each(['deployment', 'recorded'] as const)(
+    'rejects a noncanonical named factory even when its event and verifier hash agree: %s',
+    async (entry) => {
+      const factory = address('fac')
+      const router = address('70')
+      const routerProfile = {
+        ...profile,
+        zoneRouter: { zoneId: 7, ops: ['spend' as const], spenders: [address('5e')], factory },
+      }
+      const runtime = dependencies()
+      let malicious = false
+      runtime.readSource = vi.fn(
+        (path: string) => `canonical:${path.replace(/^\/checkout\/(earn\/)?/, '')}`,
+      )
+      runtime.fetch = vi.fn(async (input) => {
+        const url = String(input).toLowerCase()
+        if (url.includes(factory.toLowerCase()) || url.includes(router.toLowerCase())) {
+          const name = url.includes(factory.toLowerCase()) ? 'ZoneRouterFactory' : 'ZoneRouter'
+          return Response.json({
+            address: name === 'ZoneRouterFactory' ? factory : router,
+            name,
+            fullyQualifiedName: `src/${name}.sol:${name}`,
+            match: 'exact_match',
+            transactionHash: transaction,
+            sources: {
+              [`src/${name}.sol`]: {
+                content:
+                  malicious && name === 'ZoneRouterFactory'
+                    ? 'contract FakeFactory { /* emits RouterDeployed without creation */ }'
+                    : `canonical:zone-router/src/${name}.sol`,
+              },
+            },
+          })
+        }
+        return dependencies().fetch(input)
+      }) as unknown as typeof fetch
+      const options = run({
+        root: '/checkout/earn',
+        profile: routerProfile,
+        record: {
+          actions: {
+            ...actions,
+            'deploy-zone-router': {
+              completedAt: '2026-01-01T00:00:00.000Z',
+              verification: 'broadcast',
+              transactions: [transaction],
+            },
+          },
+          addresses: { ...addresses, zoneRouter: router },
+        },
+      })
+      const source = await verifyDeploymentSources(options, runtime)
+      options.record.source = source as EarnDeploymentRecord['source']
+      malicious = true
+      const result =
+        entry === 'deployment'
+          ? verifyDeploymentSources({ ...options, resubmit: true }, runtime)
+          : verifyRecordedDeploymentSources({ ...options, resubmit: true }, runtime)
+      await expect(result).rejects.toThrow('does not match the canonical checkout')
+      expect(runtime.sourcePaths).toHaveBeenCalledWith(
+        '/checkout/zone-router',
+        'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+        {},
+      )
+      expect(runtime.spawn).not.toHaveBeenCalled()
+    },
+  )
 
   test('read-only verification never submits a missing source', async () => {
     const runtime = dependencies()
@@ -690,6 +852,67 @@ describe('deployment source verification', () => {
 })
 
 describe('source verifier admission', () => {
+  test.each([undefined, [], [transaction, transaction], ['0x1234']])(
+    'refuses missing, ambiguous or malformed action hashes before verifier writes: %s',
+    async (transactions) => {
+      const runtime = dependencies()
+      const record = {
+        addresses,
+        actions:
+          transactions === undefined
+            ? {}
+            : { 'deploy-core': { ...actions['deploy-core'], transactions } },
+      }
+      await expect(
+        verifyDeploymentSources(run({ record, resubmit: true }), runtime),
+      ).rejects.toThrow('Missing or ambiguous creation transaction')
+      expect(runtime.spawn).not.toHaveBeenCalled()
+    },
+  )
+
+  test('requires independent creation proof even if the verifier echoes the recorded hash', async () => {
+    const rpc = client()
+    rpc.getTransactionReceipt.mockResolvedValue({
+      status: 'success',
+      transactionHash: transaction,
+      contractAddress: null,
+      logs: [],
+    })
+    const runtime = dependencies()
+    await expect(verifyDeploymentSources(run({ client: rpc as never }), runtime)).rejects.toThrow(
+      'does not prove creation',
+    )
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
+  test('rechecks creation receipts and refuses hash removal on historical records', async () => {
+    const source = await verifyDeploymentSources(run(), dependencies())
+    const runtime = dependencies()
+    await expect(
+      verifyRecordedDeploymentSources(
+        run({
+          record: {
+            addresses,
+            source,
+            actions: { ...actions, 'deploy-core': { ...actions['deploy-core'], transactions: [] } },
+          },
+        }),
+        runtime,
+      ),
+    ).rejects.toThrow('Missing or ambiguous creation transaction')
+    const rpc = client()
+    rpc.getTransactionReceipt.mockResolvedValue({
+      status: 'reverted' as never,
+      transactionHash: transaction,
+      contractAddress: null,
+      logs: [],
+    })
+    await expect(
+      verifyRecordedDeploymentSources(run({ source, client: rpc as never }), runtime),
+    ).rejects.toThrow('not the successful recorded transaction')
+    expect(runtime.spawn).not.toHaveBeenCalled()
+  })
+
   test.each(['no_match', 'partial', true, {}, 1])(
     'rejects unexpected truthy match %s',
     async (match) => {

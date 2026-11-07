@@ -1,0 +1,72 @@
+/** Removes configured RPC URLs and credentials from diagnostics, including encoded forms. */
+export function redactRpcCredentials(
+  text: string,
+  authenticatedUrl: string,
+  environment: Readonly<Record<string, string | undefined>>,
+) {
+  const secrets = new Set<string>()
+  for (const value of [
+    environment.TEMPO_RPC_USERNAME,
+    environment.TEMPO_RPC_PASSWORD,
+    environment.ZONE_RPC_USERNAME,
+    environment.ZONE_RPC_PASSWORD,
+  ]) {
+    addCredentialForms(secrets, value)
+  }
+  for (const value of [
+    authenticatedUrl,
+    environment.TEMPO_RPC_URL,
+    environment.ZONE_RPC_URL,
+    environment.FOUNDRY_ETH_RPC_URL,
+  ]) {
+    if (!value) continue
+    addCredentialForms(secrets, value)
+    addCredentialForms(secrets, value.replace(/\/+$/, ''))
+    try {
+      const url = new URL(value)
+      addCredentialForms(secrets, url.href)
+      addCredentialForms(secrets, url.href.replace(/\/+$/, ''))
+      addCredentialForms(secrets, url.username)
+      addCredentialForms(secrets, url.password)
+    } catch {
+      // Invalid URLs still need redaction; a URL parser error would retain its input.
+    }
+  }
+  if (secrets.size === 0) return text
+  // Match once, longest first, so URLs are removed whole and credentials cannot rewrite the mask.
+  const pattern = [...secrets]
+    .sort((left, right) => right.length - left.length)
+    .map((secret) =>
+      secret
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        // Percent-encoding is case-insensitive; the credential's other characters are not.
+        .replace(/%[\da-f]{2}/gi, (encoded) =>
+          encoded.replace(
+            /[a-f]/gi,
+            (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`,
+          ),
+        ),
+    )
+    .join('|')
+  return text.replace(new RegExp(pattern, 'g'), '***')
+}
+
+function addCredentialForms(secrets: Set<string>, value: string | undefined) {
+  if (!value) return
+  const forms = new Set([value])
+  try {
+    forms.add(decodeURIComponent(value))
+  } catch {
+    // Literal percent signs in raw credentials are not necessarily an encoding.
+  }
+  for (const form of forms) {
+    secrets.add(form)
+    // Subprocess diagnostics can quote an environment value as JSON rather than print it raw.
+    secrets.add(JSON.stringify(form).slice(1, -1))
+    try {
+      secrets.add(encodeURIComponent(form))
+    } catch {
+      // Malformed Unicode must not replace the original failure with an encoding error.
+    }
+  }
+}

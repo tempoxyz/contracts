@@ -183,12 +183,19 @@ The record does not choose its own trust roots. `source.factoryDeploymentId` mus
 keccak-256 hash of `<profile-id>:v<version>`, and the recorded verifier must be the trusted Tempo
 verifier the tooling hard-codes before it is contacted. Every ordinary Solidity source match must
 identify the expected fully qualified contract. Initial verification requires the exact complete
-Forge compiler-input source set and matching checkout contents, not a selected subset. When a
-creation transaction is named, the verifier must return that same hash; an omitted hash is not
-evidence. Historical rechecks compare the recorded source-input hash and contract identity without
+Forge compiler-input source set and matching checkout contents, not a selected subset. A Solidity
+source match for a profile-deployed contract requires one recorded creation transaction. Its
+successful RPC receipt must identify the contract directly or through the expected factory's
+creation event, and the verifier must return the same hash. Missing, ambiguous, or unrelated creation evidence fails before
+source submissions. Existing engines selected by address retain their separate source-only check.
+Historical rechecks of recorded source identities compare the source-input hash and contract name without
 requiring the original checkout or Git object, and allow `match` to strengthen to `exact_match`
 but never downgrade. The Git commit remains provenance, not a required local object. Changing the recorded deployment transaction or
 Zone Factory identity requires a fresh successful verification before promotion.
+
+A profile-named Zone router factory must already have a source match against the canonical checkout
+before its event is trusted. These external factories are not covered by the record's source
+identities, so this read-only admission requires their canonical source checkout on every recheck.
 
 On a fresh checkout, the command seeds pending state from the committed record only after
 revalidating its runtime provenance, derived contract identity, and each completed action onchain;
@@ -199,6 +206,8 @@ When a record lacks a core-creation receipt, including one with receipts for oth
 `deploymentBlock` needs archival evidence that the vault had no code immediately before that
 block. With no deployment receipts at all, the vault must also match its current runtime at the
 claimed block. Present-day code verification alone does not establish the creation boundary.
+This archival check does not replace the creation receipt required to complete hosted source
+verification; recover the original creation transaction before verifying an adopted record.
 
 ### Source verification
 
@@ -209,6 +218,8 @@ the state `verification-pending`: rerunning resumes at verification after rechec
 state, and never rebroadcasts. Any other failure, such as a source that differs from the checkout,
 a wrong contract name or creation transaction, or a verifier refusal, fails the command with a
 nonzero exit; the record stays `pending`, and rerunning after the fix resumes the same way.
+Verification errors redact configured RPC URLs and credentials, including encoded forms, and do
+not retain subprocess error causes or fields that could expose them.
 For an invalid existing verifier entry, explicitly request canonical re-verification:
 
 ```sh
