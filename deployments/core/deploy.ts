@@ -202,10 +202,11 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
         (contract) => compiledRuntimeCode(options.root, contract, options.environment),
         deploysEngine(profile) ? profileEngineFactory(profile) : undefined,
       ))
-  // Adopted code must be identified before custody binds; committed records keep historical proof.
+  // A pending record may not have admitted its engine yet; retained source identity avoids recompiling verified history.
   const engine = engineDefinitions[profile.engine.kind]
   const expectedEngineRuntime =
-    !committed && configuredEngineAddress(profile)
+    configuredEngineAddress(profile) &&
+    (!committed || (isHostedDeploymentChain(profile.chainId) && !committed.source.contracts.engine))
       ? compiledRuntimeCode(
           options.root,
           `${engine.engineSource}:${engine.engineContract}`,
@@ -753,8 +754,6 @@ function compiledRuntimeCode(
       immutableReferences?: Record<string, { start: number; length: number }[]>
     }
   }
-  return {
-    bytecode,
-    references: Object.values(artifact.deployedBytecode?.immutableReferences ?? {}).flat(),
-  }
+  const referenceGroups = Object.values(artifact.deployedBytecode?.immutableReferences ?? {})
+  return { bytecode, references: referenceGroups.flat(), referenceGroups }
 }

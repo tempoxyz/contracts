@@ -391,8 +391,14 @@ export async function preflightEarnDeployment(
   const existingEngine = configuredEngineAddress(profile)
   if (existingEngine) {
     if (expectedEngineRuntime) {
-      const { bytecode, references } = expectedEngineRuntime
-      const actual = await runtimeCodeHash(client, existingEngine, 'existing engine', references)
+      const { bytecode, references, referenceGroups } = expectedEngineRuntime
+      const actual = await runtimeCodeHash(
+        client,
+        existingEngine,
+        'existing engine',
+        references,
+        referenceGroups,
+      )
       if (actual !== keccak256(normalizeImmutableReferences(bytecode, references)))
         throw new Error(
           'Existing engine runtime does not match this checkout; review the engine address and sources before binding custody',

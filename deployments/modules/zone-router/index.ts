@@ -20,6 +20,7 @@ import { requiredOutput, type CapabilityModule, type CapabilityReadiness } from 
 import {
   inspectZoneRouterBinding,
   nonMemberSpenders,
+  readZoneRouterSpenders,
   spenderProvenanceBlockers,
   spenderRouterFactory,
 } from './inspection.js'
@@ -63,7 +64,7 @@ export const zoneRouterModeModule: CapabilityModule = {
     if (!router) return []
     const [zoneId, spenders, enabledOps] = await Promise.all([
       client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'allowedZoneId' }),
-      client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'spenders' }),
+      readZoneRouterSpenders(client, router),
       client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'enabledOps' }),
     ])
     const zone = await registeredZone(client, Number(zoneId))

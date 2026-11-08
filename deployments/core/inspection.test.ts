@@ -36,6 +36,11 @@ type Overrides = Partial<Record<string, unknown>>
 function client(overrides: Overrides = {}) {
   const values: Record<string, unknown> = {
     [`${address('1')}.asset`]: outputs.asset,
+    [`${address('1')}.baseAsset`]: outputs.asset,
+    [`${address('1')}.vault`]: address('10'),
+    [`${address('1')}.shareScale`]: 1_000_000n,
+    [`${address('10')}.asset`]: outputs.asset,
+    [`${address('10')}.decimals`]: 6,
     [`${address('1')}.owner`]: profile.owner,
     [`${address('1')}.earnVault`]: outputs.earnVault,
     [`${outputs.earnVault}.asset`]: outputs.asset,
@@ -183,6 +188,10 @@ test('inspects current custody after migration while retaining creation-engine p
     [`${outputs.earnVault}.engine`]: migrated,
     [`${outputs.earnVault}.engineMigrationMode`]: 1,
     [`${migrated}.asset`]: outputs.asset,
+    [`${migrated}.baseAsset`]: outputs.asset,
+    [`${migrated}.shareScale`]: 1_000_000n,
+    [`${address('98')}.asset`]: outputs.asset,
+    [`${address('98')}.decimals`]: 6,
     [`${migrated}.earnVault`]: outputs.earnVault,
     [`${migrated}.owner`]: profile.owner,
     [`${migrated}.supportsInterface`]: true,

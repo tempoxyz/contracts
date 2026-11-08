@@ -62,11 +62,12 @@ The program's clone exists already: Bridge's manager created it with `createSpen
 destinations)`, with the settlement wallet as a destination.
 
 ```bash
-FACTORY=0x... SPENDER_ID=0x... OUT=reports/bridge-program.json \
+FACTORY=0x... SPENDER_ID=0x... ROUTER_FACTORY=0x... OUT=reports/bridge-program.json \
   forge script script/bridge/deploy/DeployBridgeProgram.s.sol --rpc-url $TEMPO_RPC --broadcast --account deployer
 ```
 
-The script checks that the program's clone was created for its ID. It creates `CardFactory` and the
+The script checks that the program's clone was created for its ID and authenticates `ROUTER_FACTORY`
+before broadcasting, including when the program already exists. It creates `CardFactory` and the
 program's `BridgeProvider(factory, spenderId)` through the CREATE2 deployer with the release salt, as
 the handler, reusing either one already there, then calls `cardFactory.deploy(spenderId, provider)`,
 which returns the program if it exists. Only the factory's own pause stops the program. A program's
@@ -105,7 +106,18 @@ FOUNDRY_HARDFORK=tempo:T12 FACTORY=0x... SPENDER_ID=0x... ZONE_ID=7 ROUTER_FACTO
 ```
 
 The script checks that the program's clone was created for its ID, that `ZONE_ID` is a valid Zone
-ID with a registered portal, and that `ROUTER_FACTORY` is set and has code. It deploys the program as in
+ID with a registered portal, and authenticates `ROUTER_FACTORY` before broadcasting. Its runtime must
+match the current locally compiled factory, including the embedded router creation code. Only the
+32-byte IPFS digests in the two recognized terminal Solidity metadata trailers may differ, so the
+canonical Zone router project build is accepted despite its different remappings. Every executable
+byte, compiler version, metadata header and length remains checked; old factories and contracts
+that merely imitate the interface are refused. The same check applies to step 2 and reused programs.
+On refusal, preserve the old deployment records and immutable programs. Use the original tooling to
+inspect an old deployment, or separately review a new compatible factory, program and router,
+including updated Zone admissions and caller configuration. These scripts neither migrate old
+programs nor relabel their source evidence.
+
+It deploys the program as in
 [step 2](#2-deploy-the-program-once-per-program), or reuses it, then, through the
 `ZoneRouterFactory`, a [`ZoneRouter`](../../zone-router/zone-router.md) whose mode allows only Spend,
 only from `ZONE_ID`, with the program as its only spender. `ROUTER_FACTORY` is the release
@@ -254,6 +266,8 @@ release's `ZoneRouterFactory`, whose routers alone may call it), and whether to 
 
 - refuses an RPC serving another chain, and runs Forge at the chain's hardfork from
   `tempo_forkSchedule`;
+- authenticates the router factory through the deployment script even when all release addresses
+  already exist, before any broadcast or source verification;
 - predicts each address from the locally compiled creation code and attributes creation only
   from matching successful receipts. `CardFactory` and `BridgeProvider` come from the CREATE2
   deployer; a program requires the matching `ProgramDeployed` event from `CardFactory.deploy`.
@@ -287,3 +301,15 @@ it writes with the matching role, and settles a spend through the new handler.
 `test/bridge/unit/DeterministicDeploy.t.sol` checks that the handler, `CardFactory`, `BridgeProvider` and
 program land at their predicted addresses for any deployer, and that deploying again reuses them
 without sending anything.
+
+`test/bridge/unit/RouterFactoryAdmission.t.sol` refuses legacy and interface-spoofing factories before
+creating a program, checks reused programs, and verifies the narrow metadata allowance. Its
+cross-project case skips unless supplied a freshly compiled canonical runtime. From the repository
+root, run it without changing either project's build settings:
+
+```bash
+ZONE_ROUTER_FACTORY_RUNTIME=$(cd zone-router && forge inspect src/ZoneRouterFactory.sol:ZoneRouterFactory deployedBytecode)
+(cd cards && ZONE_ROUTER_FACTORY_RUNTIME="$ZONE_ROUTER_FACTORY_RUNTIME" \
+  forge test --match-path test/bridge/unit/RouterFactoryAdmission.t.sol)
+python3 cards/script/bridge/deploy/test_release_receipts.py
+```

@@ -220,12 +220,19 @@ may differ only in the digests inside a recognized terminal chain of Solidity IP
 including adjacent child-initcode metadata. Compiler versions, executable bytes, arguments, and input
 length still match exactly. Unsupported metadata formats or missing compiled creation bytecode fail closed. Fresh checkout proof before caching or
 publication remains byte-for-byte exact. Before an unpublished deployment can bind an engine selected
-by address, preflight also compares its runtime with the engine kind's local compilation, zeroing only
-compiler-declared immutable slots on both sides. This runs again on resume even when factory hashes
-are pinned; mismatches fail before deployment or authority broadcasts. Binding and venue checks still
-validate constructor-specific configuration. Committed records retain their historical runtime and
-source evidence instead of requiring today's engine compilation. Adopted engines still require their
-separate source-only verifier check because the profile does not own their creation inputs.
+by address, preflight also compares its runtime with the engine kind's local compilation. Every
+occurrence of one compiler-declared immutable must contain the same value before those slots are
+normalized on both sides. This runs again on resume even when factory hashes are pinned; mismatches
+fail before deployment or authority broadcasts. ERC-4626 inspection also requires deployed nonzero
+venue and asset addresses, agreement between the venue asset and the engine's `asset` and `baseAsset`,
+and `shareScale()` equal to `10 ** venue.decimals()` with at most 77 decimals. Address-selected
+profiles derive the venue from the authenticated engine; this is not an independently authored venue
+allowlist. A published hosted record without admitted engine source
+identity receives the same local runtime check before retrying any activation. Records retaining
+admitted engine identity, including partial pending records for unrelated component changes, keep
+their historical runtime and source evidence instead of requiring today's engine compilation. Adopted
+engines still require their separate source-only verifier check because the profile does not own their
+creation inputs.
 Historical rechecks of recorded source identities compare the source-input hash and contract name without
 requiring the original checkout or Git object. Direct-creation rechecks use that historical
 verifier compilation rather than today's local bytecode. This also applies before republishing
@@ -239,10 +246,20 @@ strength and source-input hash. Historical rechecks use this independent factory
 the evolving checkout; changed verifier sources and weaker matches fail. A record without this
 factory evidence still requires the canonical factory checkout and is never silently rewritten.
 
+Recorded source verification proves the originally admitted contract, not compatibility with the
+current router ABI. Unchanged release-1 profiles retain their factory and router addresses; a router
+with only `settlers()` and no readable `spenders()` is explicitly refused during inspection or resume,
+including Earn-only modes. Preserve recorded addresses, hashes, and source evidence;
+`--resubmit-verification` cannot upgrade an immutable contract. Inspect or manage that router with its
+original tooling, or review a separate migration to a source-verified compatible factory and new
+router, including pool and Portal admissions and caller updates. This command never automatically
+replaces the historical router to resolve an ABI mismatch.
+
 On a fresh checkout, the command seeds pending state from the committed record only after
 revalidating its runtime provenance, derived contract identity, and each completed action onchain;
 a stale or edited record is rejected before it can drive an authority transaction. A record marked
-`pending` resumes source verification without repeating deployment or activation.
+`pending` resumes without redeploying completed steps; activation state is read again before source
+verification completes.
 
 When a record lacks a core-creation receipt, including one with receipts for other actions, its
 `deploymentBlock` needs archival evidence that the vault had no code immediately before that

@@ -121,7 +121,12 @@ export type SharedFactoryRuntimeCodeHashes = {
 type ImmutableReference = { start: number; length: number }
 
 /** A compiled contract's deployed bytecode and the compiler-declared immutable slots in it. */
-export type CompiledRuntimeCode = { bytecode: Hex; references: ImmutableReference[] }
+export type CompiledRuntimeCode = {
+  bytecode: Hex
+  references: ImmutableReference[]
+  /** Every occurrence of one immutable declaration, as grouped by the compiler. */
+  referenceGroups: ImmutableReference[][]
+}
 
 /** The serialized runtime-hash key of an engine factory, `<releaseKey>Factory`. */
 const factoryHashKey = <const Key extends string>(factory: { releaseKey: Key }) =>
@@ -214,15 +219,40 @@ export function normalizeImmutableReferences(
   return `0x${normalized.join('')}`
 }
 
+/** Rejects inconsistent copies of one constructor value before those bytes are normalized away. */
+export function assertConsistentImmutableReferences(
+  bytecode: Hex,
+  groups: readonly (readonly ImmutableReference[])[],
+) {
+  for (const references of groups) {
+    const values = references.map(({ start, length }) => {
+      if (
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(length) ||
+        start < 0 ||
+        length < 1 ||
+        start + length > (bytecode.length - 2) / 2
+      )
+        throw new Error('Compiler immutable reference is outside the runtime bytecode')
+      // Solar can use PUSH20 for addresses; compare values without assuming a 32-byte encoding.
+      return BigInt(`0x${bytecode.slice(2 + start * 2, 2 + (start + length) * 2)}`)
+    })
+    if (values.some((value) => value !== values[0]))
+      throw new Error('Existing engine runtime has inconsistent immutable values')
+  }
+}
+
 /** The keccak256 of the runtime code at `address`, which must have some. */
 export async function runtimeCodeHash(
   client: Pick<PublicClient, 'getCode'>,
   address: Address,
   label: string,
   immutableReferences: readonly ImmutableReference[] = [],
+  immutableReferenceGroups: readonly (readonly ImmutableReference[])[] = [],
 ) {
   const code = await client.getCode({ address })
   if (!code || code === '0x') throw new Error(`No runtime code at ${label} ${address}`)
+  assertConsistentImmutableReferences(code, immutableReferenceGroups)
   return keccak256(normalizeImmutableReferences(code, immutableReferences))
 }
 

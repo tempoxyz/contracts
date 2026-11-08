@@ -144,9 +144,14 @@ exit 0
 })
 
 describe('deployEarnProfile adopted engine admission', () => {
-  test.each([false, true])(
-    'checks adopted runtime before any broadcast with pinned release hashes: %s',
-    async (pinned) => {
+  test.each([
+    { pinned: false, split: false },
+    { pinned: true, split: false },
+    { pinned: false, split: true },
+    { pinned: true, split: true },
+  ])(
+    'checks adopted runtime before broadcast (pinned: $pinned, split immutable: $split)',
+    async ({ pinned, split }) => {
       const directory = mkdtempSync(join(tmpdir(), 'earn-adopted-runtime-'))
       const engine = getAddress(`0x${'ab'.repeat(20)}`)
       const implementation = getAddress(`0x${'cd'.repeat(20)}`)
@@ -171,6 +176,7 @@ describe('deployEarnProfile adopted engine admission', () => {
               factoryRuntimeCodeHashes: sharedFactoryRuntimeCodeHashes(() => ({
                 bytecode: '0x60',
                 references: [],
+                referenceGroups: [],
               })),
             }
           : {}),
@@ -179,7 +185,7 @@ describe('deployEarnProfile adopted engine admission', () => {
       const chain = {
         getChainId: vi.fn(async () => 4217),
         getCode: vi.fn(async ({ address }: { address: string }) =>
-          address === engine ? '0x60ff00' : '0x60',
+          address === engine ? (split ? '0x61fffe' : '0x60ff00') : '0x60',
         ),
         readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
           if (functionName === 'tip20Factory') return Addresses.tip20Factory
@@ -202,7 +208,16 @@ describe('deployEarnProfile adopted engine admission', () => {
               JSON.stringify({
                 deployedBytecode: {
                   immutableReferences:
-                    name === 'ERC4626Engine' ? { slot: [{ start: 1, length: 1 }] } : {},
+                    name === 'ERC4626Engine'
+                      ? {
+                          slot: split
+                            ? [
+                                { start: 1, length: 1 },
+                                { start: 2, length: 1 },
+                              ]
+                            : [{ start: 1, length: 1 }],
+                        }
+                      : {},
                 },
               }),
             )
@@ -216,7 +231,11 @@ describe('deployEarnProfile adopted engine admission', () => {
             environment: {},
             rpcUrl: 'https://chain.test',
           }),
-        ).rejects.toThrow('Existing engine runtime does not match this checkout')
+        ).rejects.toThrow(
+          split
+            ? 'inconsistent immutable values'
+            : 'Existing engine runtime does not match this checkout',
+        )
         expect(compiler.mock.calls.map(([, parameters]) => parameters?.[1])).toContain(
           'src/engines/ERC4626Engine.sol:ERC4626Engine',
         )
@@ -233,6 +252,84 @@ describe('deployEarnProfile adopted engine admission', () => {
 })
 
 describe('deployEarnProfile committed source recovery', () => {
+  test.each([false, true])(
+    'rejects an unverified adopted engine before activation (consumer source retained: %s)',
+    async (otherSource) => {
+      const preflight = Reconcile.preflightEarnDeployment
+      const fixture = pendingSourceDeployment()
+      try {
+        if (otherSource) {
+          const record = structuredClone(fixture.record)
+          record.actions['deploy-core']!.transactions = [fixture.creation]
+          const source = await fixture.verifySources({
+            ...fixture.options,
+            client: fixture.chain as never,
+            record,
+          })
+          publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, {
+            ...record,
+            source: {
+              ...record.source,
+              verifierUrl: source.verifierUrl,
+              contracts: { earnVault: source.contracts.earnVault! },
+            },
+          })
+        }
+        const published = readFileSync(fixture.recordPath, 'utf8')
+        vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6001')
+        vi.mocked(Reconcile.preflightEarnDeployment).mockImplementation((...parameters) =>
+          parameters[6] ? preflight(...parameters) : Promise.resolve(),
+        )
+        const activation = vi.spyOn(Plan, 'activationActions')
+        await expect(deployEarnProfile(fixture.options)).rejects.toThrow(
+          'Existing engine runtime does not match this checkout',
+        )
+        expect(activation).not.toHaveBeenCalled()
+        expect(fixture.verification).not.toHaveBeenCalled()
+        expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
+        fixture.assertNoBroadcast()
+      } finally {
+        fixture.cleanup()
+      }
+    },
+  )
+
+  test('preserves an admitted engine in a partial pending record after checkout drift', async () => {
+    const fixture = pendingSourceDeployment()
+    try {
+      const record = structuredClone(fixture.record)
+      record.actions['deploy-core']!.transactions = [fixture.creation]
+      const source = await fixture.verifySources({
+        ...fixture.options,
+        client: fixture.chain as never,
+        record,
+      })
+      publishProfileDeploymentRecord(fixture.options.profilePath, fixture.options.profile, {
+        ...record,
+        source: {
+          ...record.source,
+          verifierUrl: source.verifierUrl,
+          contracts: { engine: source.contracts.engine! },
+        },
+      })
+      const readSource = fixture.dependencies.readSource.getMockImplementation()!
+      fixture.dependencies.readSource.mockImplementation((path) =>
+        path.endsWith('VedaEngine.sol') ? 'different checkout engine' : readSource(path),
+      )
+      const compiler = vi.mocked(ChildProcess.execFileSync)
+      compiler.mockImplementation(() => {
+        throw new Error('Historical engine must not compile')
+      })
+      expect((await deployEarnProfile(fixture.options)).state).toBe('complete')
+      expect(fixture.read().source.contracts.engine).toEqual(source.contracts.engine)
+      expect(fixture.read().actions).toEqual(record.actions)
+      expect(compiler).not.toHaveBeenCalled()
+      fixture.assertNoBroadcast()
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
   test('publishes recovered creation evidence before verification without rebroadcasting or changing identity', async () => {
     const fixture = pendingSourceDeployment()
     try {
@@ -682,7 +779,7 @@ describe('retained historical direct creation', () => {
       const compiler = vi.spyOn(ChildProcess, 'execFileSync').mockReturnValue('0x6002' as never)
       fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
       await expect(deployEarnProfile(fixture.options)).rejects.toThrow(/unexpected creation input/)
-      expect(compiler).toHaveBeenCalledOnce()
+      expect(compiler).toHaveBeenCalledTimes(2)
       expect(Verify.verifyRecordedStepCreation).not.toHaveBeenCalled()
       expect(readFileSync(fixture.recordPath, 'utf8')).toBe(published)
       fixture.assertNoBroadcast()
@@ -1054,6 +1151,21 @@ function pendingSourceDeployment({
   }
   mkdirSync(join(directory, 'profiles', profile.id), { recursive: true })
   writeFileSync(options.profilePath, JSON.stringify(authored))
+  const artifact = join(options.root, 'out', 'deploy', 'VedaEngine.sol')
+  mkdirSync(artifact, { recursive: true })
+  writeFileSync(
+    join(artifact, 'VedaEngine.json'),
+    JSON.stringify({ deployedBytecode: { immutableReferences: {} } }),
+  )
+  vi.spyOn(ChildProcess, 'execFileSync').mockImplementation((command, parameters) => {
+    if (
+      command !== 'forge' ||
+      parameters?.[1] !== 'src/engines/veda/VedaEngine.sol:VedaEngine' ||
+      parameters?.[2] !== 'deployedBytecode'
+    )
+      throw new Error('Unexpected compiler invocation')
+    return runtime
+  })
   const recordPath = profileDeploymentPath(options.profilePath)
   const read = () => loadProfileDeploymentRecord(options.profilePath, profile)
   const feesRuntime: Hex = `0x363d3d373d3d3d363d73${feesImplementation.slice(2)}5af43d82803e903d91602b57fd5bf3`
@@ -1237,6 +1349,7 @@ function pendingSourceDeployment({
           `${historicalBytecode}${step.source.constructorArgs(profile, addresses as never).slice(2)}` as Hex,
       }
     }),
+    getChainId: vi.fn(async () => profile.chainId),
     getBlock: vi.fn(async () => ({ hash: genesis })),
     getBlockNumber: vi.fn(async () => 10n),
     getLogs: vi.fn(

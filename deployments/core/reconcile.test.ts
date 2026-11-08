@@ -360,7 +360,15 @@ describe('Earn deployment lifecycle', () => {
     chain.getCode.mockResolvedValue('0x60')
     chain.readContract.mockImplementation(
       async ({ functionName }: { functionName: string }) =>
-        ({ asset: address('a'), owner, earnVault: zeroAddress })[functionName],
+        ({
+          asset: address('a'),
+          owner,
+          earnVault: zeroAddress,
+          vault: address('b'),
+          baseAsset: address('a'),
+          shareScale: 1_000_000n,
+          decimals: 6,
+        })[functionName],
     )
     await expect(preflightEarnDeployment(configured, 'http://chain.test')).rejects.toThrow(
       'has no owner',
@@ -372,13 +380,23 @@ describe('Earn deployment lifecycle', () => {
   test('rejects an adopted engine with different executable bytes before behavioral binding checks', async () => {
     const configured = { ...profile, engine: { kind: 'erc4626' as const, address: address('1') } }
     chain.getCode.mockResolvedValue('0x60ff00')
-    chain.readContract
-      .mockReset()
-      .mockImplementation(
-        async ({ functionName }: { functionName: string }) =>
-          ({ asset: address('a'), owner: address('f'), earnVault: zeroAddress })[functionName],
-      )
-    const expected = { bytecode: '0x610000' as const, references: [{ start: 1, length: 1 }] }
+    chain.readContract.mockReset().mockImplementation(
+      async ({ functionName }: { functionName: string }) =>
+        ({
+          asset: address('a'),
+          owner: address('f'),
+          earnVault: zeroAddress,
+          vault: address('b'),
+          baseAsset: address('a'),
+          shareScale: 1_000_000n,
+          decimals: 6,
+        })[functionName],
+    )
+    const expected = {
+      bytecode: '0x610000' as const,
+      references: [{ start: 1, length: 1 }],
+      referenceGroups: [[{ start: 1, length: 1 }]],
+    }
     await expect(
       preflightEarnDeployment(
         configured,
@@ -437,7 +455,10 @@ describe('Earn deployment lifecycle', () => {
         earnVault: vault,
         supportsInterface: true,
         vault: venue,
+        baseAsset: asset,
+        shareScale: 1_000_000n,
       },
+      [venue]: { asset, decimals: 6 },
     }
     chain.getCode.mockResolvedValue('0x60')
     chain.readContract.mockImplementation(
@@ -469,7 +490,10 @@ describe('Earn deployment lifecycle', () => {
         owner: configured.owner,
         earnVault: core.earnVault,
         vault: address('f'),
+        baseAsset: address('e'),
+        shareScale: 1_000_000n,
       },
+      [address('f')]: { asset: address('e'), decimals: 6 },
       [core.earnVault]: {
         ...core,
         engine: address('1'),
@@ -824,7 +848,11 @@ describe('broadcast receipt recovery', () => {
     const fixture = await interruptedFactoryBroadcast()
     try {
       syncFoundryOutputs(fixture.options.root, fixture.options.profilePath)
-      const pinned = sharedFactoryRuntimeCodeHashes(() => ({ bytecode: '0x60', references: [] }))
+      const pinned = sharedFactoryRuntimeCodeHashes(() => ({
+        bytecode: '0x60',
+        references: [],
+        referenceGroups: [],
+      }))
       savePendingDeployment(fixture.options.profilePath, fixture.options.profile, {
         ...loadPendingDeployment(fixture.options.profilePath, fixture.options.profile),
         factoryRuntimeCodeHashes: pinned,

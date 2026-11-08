@@ -2,7 +2,10 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   getAbiItem,
+  getAddress,
+  zeroAddress,
   erc4626Abi,
+  erc20Abi,
   parseAbiParameters,
   toFunctionSelector,
 } from 'viem'
@@ -78,6 +81,34 @@ export const erc4626 = defineEngine({
     }),
   readVenue: (client, engine) =>
     client.readContract({ address: engine, abi: erc4626EngineAbi, functionName: 'vault' }),
+  async inspectBindings(client, engine) {
+    const contract = { address: engine, abi: erc4626EngineAbi } as const
+    const [vault, baseAsset, asset, shareScale] = await Promise.all([
+      client.readContract({ ...contract, functionName: 'vault' }),
+      client.readContract({ ...contract, functionName: 'baseAsset' }),
+      client.readContract({ ...contract, functionName: 'asset' }),
+      client.readContract({ ...contract, functionName: 'shareScale' }),
+    ])
+    if (getAddress(vault) === zeroAddress) throw new Error('ERC-4626 vault is zero')
+    if (getAddress(baseAsset) === zeroAddress) throw new Error('ERC-4626 asset is zero')
+    if (getAddress(asset) !== getAddress(baseAsset))
+      throw new Error('ERC-4626 engine asset binding differs from baseAsset')
+    for (const [label, address] of Object.entries({ vault, asset: baseAsset })) {
+      const code = await client.getCode({ address })
+      if (!code || code === '0x') throw new Error(`ERC-4626 ${label} has no runtime code`)
+    }
+    const [venueAsset, decimals] = await Promise.all([
+      client.readContract({ address: vault, abi: erc4626Abi, functionName: 'asset' }),
+      client.readContract({ address: vault, abi: erc20Abi, functionName: 'decimals' }),
+    ])
+    if (getAddress(venueAsset) !== getAddress(baseAsset))
+      throw new Error('ERC-4626 venue asset differs from immutable engine baseAsset')
+    if (decimals > 77) throw new Error('ERC-4626 venue share decimals exceed 77')
+    // shareScale() returns the private constructor-derived _shareScale, not a live venue calculation.
+    if (shareScale !== 10n ** BigInt(decimals))
+      throw new Error('ERC-4626 immutable share scale differs from venue share decimals')
+    return undefined
+  },
   // The engine deposits into the venue and holds exactly the venue shares it mints.
   quoteDeposit: (client, { venue }, assets) =>
     client.readContract({
