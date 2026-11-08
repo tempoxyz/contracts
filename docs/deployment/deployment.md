@@ -225,7 +225,10 @@ occurrence of one compiler-declared immutable must contain the same value before
 normalized on both sides. This runs again on resume even when factory hashes are pinned; mismatches
 fail before deployment or authority broadcasts. ERC-4626 inspection also requires deployed nonzero
 venue and asset addresses, agreement between the venue asset and the engine's `asset` and `baseAsset`,
-and `shareScale()` equal to `10 ** venue.decimals()` with at most 77 decimals. Address-selected
+and `shareScale()` equal to `10 ** venue.decimals()` with at most 77 decimals. Veda inspection likewise
+requires `shareScale()` equal to `10 ** vault.decimals()` with at most 77 decimals, in both readiness
+and bindings-only rechecks. Grouped immutable consistency alone cannot authenticate this
+constructor-derived value. Address-selected
 profiles derive the venue from the authenticated engine; this is not an independently authored venue
 allowlist. A published hosted record without admitted engine source
 identity receives the same local runtime check before retrying any activation. Records retaining
