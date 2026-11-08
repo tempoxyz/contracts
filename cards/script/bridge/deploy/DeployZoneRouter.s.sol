@@ -15,6 +15,7 @@ import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/
 import { BridgeProgramRelease } from "./BridgeRelease.sol";
 import { checkProgram, requireProgram, requireRouterFactory } from "./DeployBridgeProgram.s.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
+import { RouterFactoryChecks } from "./RouterFactoryChecks.sol";
 
 /// @notice A card program's router mode: Spend only on `zoneId`, through `spender` alone, with no Earn
 ///         bindings.
@@ -87,8 +88,7 @@ contract DeployZoneRouter is BridgeProgramRelease {
             zone.portal != address(0) && IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zone.portal),
             "ZONE_ID has no portal"
         );
-        require(address(routerFactory) != address(0), "ROUTER_FACTORY unset");
-        require(address(routerFactory).code.length != 0, "ROUTER_FACTORY has no code");
+        RouterFactoryChecks.check(address(routerFactory));
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
         Created memory c = _bridgeProgram(factory, spenderId, address(routerFactory));

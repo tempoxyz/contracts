@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { erc20Abi, getAddress, isHex, type Address, type Hex, type PublicClient } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import { inspectEngineBindings } from '../modules/earn/engines/index.js'
+import { engineDefinitions, inspectEngineBindings } from '../modules/earn/engines/index.js'
 import {
   capabilityModules,
   deploymentStep,
@@ -61,6 +61,7 @@ import { rpcClient } from '../chain/runtime.js'
 import { isHostedDeploymentChain } from '../chain/tempo.js'
 import {
   componentDeploymentIntentHashes,
+  configuredEngineAddress,
   deploysEngine,
   deploymentIntentHash,
   privilegedPrincipals,
@@ -201,6 +202,17 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
         (contract) => compiledRuntimeCode(options.root, contract, options.environment),
         deploysEngine(profile) ? profileEngineFactory(profile) : undefined,
       ))
+  // A pending record may not have admitted its engine yet; retained source identity avoids recompiling verified history.
+  const engine = engineDefinitions[profile.engine.kind]
+  const expectedEngineRuntime =
+    configuredEngineAddress(profile) &&
+    (!committed || (isHostedDeploymentChain(profile.chainId) && !committed.source.contracts.engine))
+      ? compiledRuntimeCode(
+          options.root,
+          `${engine.engineSource}:${engine.engineContract}`,
+          options.environment,
+        )
+      : undefined
   await preflightEarnDeployment(
     profile,
     options.rpcUrl,
@@ -208,6 +220,7 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
     expectedFactoryRuntimeCodeHashes,
     'ready',
     { ...pending.outputs, ...pending.latestOutputs },
+    expectedEngineRuntime,
   )
   if (expectedFactoryRuntimeCodeHashes && !pending.factoryRuntimeCodeHashes) {
     pending = { ...pending, factoryRuntimeCodeHashes: expectedFactoryRuntimeCodeHashes }
@@ -741,8 +754,6 @@ function compiledRuntimeCode(
       immutableReferences?: Record<string, { start: number; length: number }[]>
     }
   }
-  return {
-    bytecode,
-    references: Object.values(artifact.deployedBytecode?.immutableReferences ?? {}).flat(),
-  }
+  const referenceGroups = Object.values(artifact.deployedBytecode?.immutableReferences ?? {})
+  return { bytecode, references: referenceGroups.flat(), referenceGroups }
 }

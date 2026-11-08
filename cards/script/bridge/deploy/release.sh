@@ -205,6 +205,7 @@ sequence=broadcast/$(basename "$script")/$chain_id/$([[ "$broadcast" == true ]] 
 rm -f "$sequence"
 # A verification failure after the broadcast is handled below, so the status is kept rather than fatal.
 forge_status=0
+# Never skip this simulation when every address exists: it still authenticates ROUTER_FACTORY.
 # The scripts read the key from DEPLOYER_PK; it goes through the environment, never the command line.
 DEPLOYER_PK=$DEPLOYER_PRIVATE_KEY OUT=$out forge "${forge_args[@]}" || forge_status=$?
 record --json forgeStatus "$forge_status"

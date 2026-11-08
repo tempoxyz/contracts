@@ -79,11 +79,12 @@ contract ProgramAdmissionTest is Test {
 
     /// @notice A current canonical registry cannot legitimize artifacts created under an earlier wrong binding.
     function test_rejectsHistoricalArtifactsAfterCanonicalRegistryRestored() public {
+        address routerFactory = deployCode("ZoneRouterFactory.sol:ZoneRouterFactory");
         factory.restoreRegistry(PROGRAM_ID, foreignClone);
         UncheckedProgramRelease uncheckedRelease =
             UncheckedProgramRelease(deployCode("ProgramAdmission.t.sol:UncheckedProgramRelease"));
         BridgeProgramRelease.Created memory historical =
-            uncheckedRelease.deploy(IBridgeSpenderFactory(address(factory)), PROGRAM_ID, address(this));
+            uncheckedRelease.deploy(IBridgeSpenderFactory(address(factory)), PROGRAM_ID, routerFactory);
         assertEq(address(historical.provider.FACTORY()), address(factory));
         assertEq(historical.provider.SPENDER_ID(), PROGRAM_ID);
         assertEq(historical.provider.CLONE(), foreignClone);
@@ -93,10 +94,10 @@ contract ProgramAdmissionTest is Test {
 
         DeployBridgeProgram script = DeployBridgeProgram(deployCode("DeployBridgeProgram.s.sol:DeployBridgeProgram"));
         assertEq(address(historical.provider), script.bridgeProviderAddress(address(factory), PROGRAM_ID));
-        assertEq(address(historical.program), script.bridgeProgramAddress(address(factory), PROGRAM_ID, address(this)));
+        assertEq(address(historical.program), script.bridgeProgramAddress(address(factory), PROGRAM_ID, routerFactory));
         vm.expectRevert(bytes("program is bound to another Bridge program"));
         script.deploy(
-            IBridgeSpenderFactory(address(factory)), PROGRAM_ID, address(this), uint256(keccak256("adoption.deployer"))
+            IBridgeSpenderFactory(address(factory)), PROGRAM_ID, routerFactory, uint256(keccak256("adoption.deployer"))
         );
     }
 

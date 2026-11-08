@@ -78,7 +78,7 @@ profile and vault permit operator migration.
 profile.json + .env.<profile-id>
   -> refuse privileged roles held by a public fixture identity
   -> with a committed record: recheck its provenance and source verification onchain
-     without one: match the locally compiled shared factories to the reviewed release
+     without one: match shared factories to the reviewed release and adopted engine runtime to this checkout
   -> discover L1 genesis and each capability's external identity (such as the Zone Portal)
   -> reconcile the deployment steps, stopping at an external authority it cannot act as
   -> verify deployed state and publish deployment.json with source verification pending
@@ -118,6 +118,12 @@ before the record is published it discards the transaction provenance a clean re
 Pending state resumes only under the identity that wrote it: a different deployer, factory
 release, or intent hash (including a checkout that hashes intent differently) is refused, so
 finish an unpublished deployment before moving to a newer checkout of this repository.
+Pinned factory hashes identify the selected shared release, not every local contract or the Git
+checkout. A resume does not recompile that release or enforce Git-commit equality. Hosted direct
+creations still require mined input matching the selected checkout before their completion is cached
+or published; incompatible earlier creations fail without replacing their transactions. The record's
+Git commit identifies the checkout capturing the record, not every step's original checkout;
+per-contract runtime, creation-transaction, and source-input evidence establish contract identity.
 
 Deployment subprocesses use the repository's `deploy` Foundry profile, which compiles for Cancun
 like Tempo's deployment runtime and writes separate artifacts. A hosted broadcast requires the
@@ -213,8 +219,23 @@ constructor arguments, checking the transaction hash and expected deployer. A pa
 may differ only in the digests inside a recognized terminal chain of Solidity IPFS metadata trailers,
 including adjacent child-initcode metadata. Compiler versions, executable bytes, arguments, and input
 length still match exactly. Unsupported metadata formats or missing compiled creation bytecode fail closed. Fresh checkout proof before caching or
-publication remains byte-for-byte exact. Existing engines selected by address retain their separate
-source-only check.
+publication remains byte-for-byte exact. Before an unpublished deployment can bind an engine selected
+by address, preflight also compares its runtime with the engine kind's local compilation. Every
+occurrence of one compiler-declared immutable must contain the same value before those slots are
+normalized on both sides. This runs again on resume even when factory hashes are pinned; mismatches
+fail before deployment or authority broadcasts. ERC-4626 inspection also requires deployed nonzero
+venue and asset addresses, agreement between the venue asset and the engine's `asset` and `baseAsset`,
+and `shareScale()` equal to `10 ** venue.decimals()` with at most 77 decimals. Veda inspection likewise
+requires `shareScale()` equal to `10 ** vault.decimals()` with at most 77 decimals, in both readiness
+and bindings-only rechecks. Grouped immutable consistency alone cannot authenticate this
+constructor-derived value. Address-selected
+profiles derive the venue from the authenticated engine; this is not an independently authored venue
+allowlist. A published hosted record without admitted engine source
+identity receives the same local runtime check before retrying any activation. Records retaining
+admitted engine identity, including partial pending records for unrelated component changes, keep
+their historical runtime and source evidence instead of requiring today's engine compilation. Adopted
+engines still require their separate source-only verifier check because the profile does not own their
+creation inputs.
 Historical rechecks of recorded source identities compare the source-input hash and contract name without
 requiring the original checkout or Git object. Direct-creation rechecks use that historical
 verifier compilation rather than today's local bytecode. This also applies before republishing
@@ -228,10 +249,20 @@ strength and source-input hash. Historical rechecks use this independent factory
 the evolving checkout; changed verifier sources and weaker matches fail. A record without this
 factory evidence still requires the canonical factory checkout and is never silently rewritten.
 
+Recorded source verification proves the originally admitted contract, not compatibility with the
+current router ABI. Unchanged release-1 profiles retain their factory and router addresses; a router
+with only `settlers()` and no readable `spenders()` is explicitly refused during inspection or resume,
+including Earn-only modes. Preserve recorded addresses, hashes, and source evidence;
+`--resubmit-verification` cannot upgrade an immutable contract. Inspect or manage that router with its
+original tooling, or review a separate migration to a source-verified compatible factory and new
+router, including pool and Portal admissions and caller updates. This command never automatically
+replaces the historical router to resolve an ABI mismatch.
+
 On a fresh checkout, the command seeds pending state from the committed record only after
 revalidating its runtime provenance, derived contract identity, and each completed action onchain;
 a stale or edited record is rejected before it can drive an authority transaction. A record marked
-`pending` resumes source verification without repeating deployment or activation.
+`pending` resumes without redeploying completed steps; activation state is read again before source
+verification completes.
 
 When a record lacks a core-creation receipt, including one with receipts for other actions, its
 `deploymentBlock` needs archival evidence that the vault had no code immediately before that

@@ -5,7 +5,13 @@ import {
 } from '../modules/earn/engines/index.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { TransactionReceiptNotFoundError, zeroAddress, type Address, type PublicClient } from 'viem'
+import {
+  TransactionReceiptNotFoundError,
+  keccak256,
+  zeroAddress,
+  type Address,
+  type PublicClient,
+} from 'viem'
 import { assertStepCreation, type CreationDependencies } from './creation.js'
 import { isBytes32, object } from './parse.js'
 import { deploymentActions, planEarnDeployment, type EarnDeploymentAction } from './plan.js'
@@ -18,6 +24,8 @@ import {
 } from './profile.js'
 import {
   runtimeCodeHash,
+  normalizeImmutableReferences,
+  type CompiledRuntimeCode,
   validateSharedFactoryRelease,
   type SharedFactoryRuntimeCodeHashes,
 } from './releases.js'
@@ -367,6 +375,7 @@ export async function preflightEarnDeployment(
   expectedFactoryRuntimeCodeHashes?: SharedFactoryRuntimeCodeHashes,
   poolInspectionMode: 'ready' | 'bindings' = 'ready',
   outputs: Record<string, Address> = {},
+  expectedEngineRuntime?: CompiledRuntimeCode,
 ) {
   const client = rpcClient(rpcUrl)
   const chainId = await client.getChainId()
@@ -381,6 +390,20 @@ export async function preflightEarnDeployment(
   for (const module of capabilityModules) await module.preflight?.(client, profile, outputs)
   const existingEngine = configuredEngineAddress(profile)
   if (existingEngine) {
+    if (expectedEngineRuntime) {
+      const { bytecode, references, referenceGroups } = expectedEngineRuntime
+      const actual = await runtimeCodeHash(
+        client,
+        existingEngine,
+        'existing engine',
+        references,
+        referenceGroups,
+      )
+      if (actual !== keccak256(normalizeImmutableReferences(bytecode, references)))
+        throw new Error(
+          'Existing engine runtime does not match this checkout; review the engine address and sources before binding custody',
+        )
+    }
     const { asset, owner, earnVault, vaultOperator } = await readEngineBinding(
       client,
       existingEngine,

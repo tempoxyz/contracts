@@ -1,4 +1,5 @@
 import {
+  erc20Abi,
   getAddress,
   toFunctionSelector,
   zeroAddress,
@@ -28,7 +29,8 @@ const cancelOnChainWithdraw = toFunctionSelector('cancelOnChainWithdrawUsingRequ
 
 /**
  * The "Veda engine verified" gate, read from the engine alone: the periphery wiring and Teller
- * capabilities `inspectVedaPeriphery` checks, plus, in queued mode, a tracked Queue whose authority
+ * capabilities `inspectVedaPeriphery` checks, the constructor-derived share scale, and, in queued
+ * mode, a tracked Queue whose authority
  * grants the engine its request and ID-based cancellation capabilities. `ready` adds a fresh,
  * nonzero rate and open base-asset deposits.
  */
@@ -37,7 +39,17 @@ export async function inspectVedaEngine(
   engine: Address,
   mode: 'ready' | 'bindings' = 'ready',
 ) {
-  const { asset, queue, teller } = await inspectVedaPeriphery(client, engine)
+  const { asset, queue, teller, vault } = await inspectVedaPeriphery(client, engine)
+  const [shareScale, decimals] = await Promise.all([
+    client.readContract({ address: engine, abi: vedaEngineAbi, functionName: 'shareScale' }),
+    client.readContract({ address: vault, abi: erc20Abi, functionName: 'decimals' }),
+  ])
+  if (decimals > 77) throw new InspectionMismatchError('Veda vault share decimals exceed 77')
+  // Runtime admission masks this immutable; authenticate its value against the constructor's rule.
+  if (shareScale !== 10n ** BigInt(decimals))
+    throw new InspectionMismatchError(
+      'Veda immutable share scale differs from vault share decimals',
+    )
   if (queue !== zeroAddress) {
     const [queueAuthority, tracking] = await Promise.all([
       client.readContract({ address: queue, abi: vedaBoringVaultAbi, functionName: 'authority' }),

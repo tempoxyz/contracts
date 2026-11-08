@@ -55,7 +55,7 @@ export async function inspectZoneRouterBinding(
       args: [mode],
     }),
     client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'enabledOps' }),
-    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'spenders' }),
+    readZoneRouterSpenders(client, router),
     client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'portal' }),
   ])
   if (!deployed) {
@@ -87,6 +87,25 @@ export async function inspectZoneRouterBinding(
     privateAsset: mode.privateAsset,
     route: { pool: mode.pool, customerId: mode.customerId },
   })
+}
+
+/** Reads the current router ABI, refusing legacy getters rather than silently accepting an empty list. */
+export async function readZoneRouterSpenders(
+  client: Pick<PublicClient, 'readContract'>,
+  router: Address,
+) {
+  return client
+    .readContract({ address: router, abi: zoneRouterAbi, functionName: 'spenders' })
+    .catch((cause: unknown) => {
+      missingGetter(cause)
+      // A compatibility failure must stop reconciliation, not request redeployment through the same factory.
+      throw new Error(
+        `ZoneRouter ${router} does not expose a readable spenders() list; this tooling cannot inspect or resume it. ` +
+          'A legacy settlers()-only router requires its original tooling or an explicitly reviewed migration to a compatible factory and router. ' +
+          'Keep the recorded addresses and source evidence unchanged; source re-verification cannot upgrade an immutable router.',
+        { cause },
+      )
+    })
 }
 
 /**

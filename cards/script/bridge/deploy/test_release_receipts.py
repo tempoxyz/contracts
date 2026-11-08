@@ -65,6 +65,8 @@ if command == "cast":
 elif command == "forge" and args[0] == "inspect":
     print("0x6000")
 elif command == "forge" and args[0] == "script":
+    if fixture.get("scriptError"):
+        sys.exit(fixture["scriptError"])
     if "--verify" in args:
         sys.exit("program verification must wait for receipt evidence")
     path = Path("broadcast/DeployBridgeProgram.s.sol/42431")
@@ -207,6 +209,19 @@ class ReleaseReceipts(unittest.TestCase):
                 if verify.exists() else []
             )
             return run, state, calls
+
+    def test_all_present_still_runs_script_admission_before_verification(self):
+        fixture = self.fixture()
+        fixture["missing"] = []
+        fixture["sequence"] = {"transactions": [], "receipts": []}
+        fixture["scriptError"] = "ROUTER_FACTORY runtime mismatch"
+        for broadcast in (False, True):
+            with self.subTest(broadcast=broadcast):
+                run, state, calls = self.release(fixture, broadcast=broadcast)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn("ROUTER_FACTORY runtime mismatch", run.stderr)
+                self.assertIn("forge script failed", state["error"])
+                self.assertEqual(calls, [])
 
     def test_exact_event_is_creation_evidence(self):
         receipt = self.receipt([self.event()])

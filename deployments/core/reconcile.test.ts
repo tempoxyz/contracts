@@ -28,7 +28,7 @@ import {
   savePendingDeployment,
   syncFoundryOutputs,
 } from './pending.js'
-import { validateSharedFactoryRelease } from './releases.js'
+import { sharedFactoryRuntimeCodeHashes, validateSharedFactoryRelease } from './releases.js'
 import { resolvedEngineStateSatisfied } from '../modules/earn/engines/steps.js'
 import { componentDeploymentIntentHashes, engineOwnerAccepted } from './profile.js'
 import { planEarnDeployment } from './plan.js'
@@ -360,13 +360,81 @@ describe('Earn deployment lifecycle', () => {
     chain.getCode.mockResolvedValue('0x60')
     chain.readContract.mockImplementation(
       async ({ functionName }: { functionName: string }) =>
-        ({ asset: address('a'), owner, earnVault: zeroAddress })[functionName],
+        ({
+          asset: address('a'),
+          owner,
+          earnVault: zeroAddress,
+          vault: address('b'),
+          baseAsset: address('a'),
+          shareScale: 1_000_000n,
+          decimals: 6,
+        })[functionName],
     )
     await expect(preflightEarnDeployment(configured, 'http://chain.test')).rejects.toThrow(
       'has no owner',
     )
     owner = address('f')
     await expect(preflightEarnDeployment(configured, 'http://chain.test')).resolves.toBeUndefined()
+  })
+
+  test('rejects an adopted engine with different executable bytes before behavioral binding checks', async () => {
+    const configured = { ...profile, engine: { kind: 'erc4626' as const, address: address('1') } }
+    chain.getCode.mockResolvedValue('0x60ff00')
+    chain.readContract.mockReset().mockImplementation(
+      async ({ functionName }: { functionName: string }) =>
+        ({
+          asset: address('a'),
+          owner: address('f'),
+          earnVault: zeroAddress,
+          vault: address('b'),
+          baseAsset: address('a'),
+          shareScale: 1_000_000n,
+          decimals: 6,
+        })[functionName],
+    )
+    const expected = {
+      bytecode: '0x610000' as const,
+      references: [{ start: 1, length: 1 }],
+      referenceGroups: [[{ start: 1, length: 1 }]],
+    }
+    await expect(
+      preflightEarnDeployment(
+        configured,
+        'http://chain.test',
+        undefined,
+        undefined,
+        'ready',
+        {},
+        expected,
+      ),
+    ).rejects.toThrow('Existing engine runtime does not match this checkout')
+    expect(chain.readContract).not.toHaveBeenCalled()
+
+    // Constructor immutables may differ, but executable bytes and bytecode length must not.
+    chain.getCode.mockResolvedValue('0x61ff00')
+    await expect(
+      preflightEarnDeployment(
+        configured,
+        'http://chain.test',
+        undefined,
+        undefined,
+        'ready',
+        {},
+        expected,
+      ),
+    ).resolves.toBeUndefined()
+    chain.getCode.mockResolvedValue('0x61ff0000')
+    await expect(
+      preflightEarnDeployment(
+        configured,
+        'http://chain.test',
+        undefined,
+        undefined,
+        'ready',
+        {},
+        expected,
+      ),
+    ).rejects.toThrow('Existing engine runtime does not match this checkout')
   })
 
   test('preflight inspects the active migrated engine instead of a retired Veda venue', async () => {
@@ -387,7 +455,10 @@ describe('Earn deployment lifecycle', () => {
         earnVault: vault,
         supportsInterface: true,
         vault: venue,
+        baseAsset: asset,
+        shareScale: 1_000_000n,
       },
+      [venue]: { asset, decimals: 6 },
     }
     chain.getCode.mockResolvedValue('0x60')
     chain.readContract.mockImplementation(
@@ -419,7 +490,10 @@ describe('Earn deployment lifecycle', () => {
         owner: configured.owner,
         earnVault: core.earnVault,
         vault: address('f'),
+        baseAsset: address('e'),
+        shareScale: 1_000_000n,
       },
+      [address('f')]: { asset: address('e'), decimals: 6 },
       [core.earnVault]: {
         ...core,
         engine: address('1'),
@@ -770,6 +844,53 @@ describe('Earn deployment lifecycle', () => {
 })
 
 describe('broadcast receipt recovery', () => {
+  test('pinned shared release hashes do not admit a direct creation from a different checkout', async () => {
+    const fixture = await interruptedFactoryBroadcast()
+    try {
+      syncFoundryOutputs(fixture.options.root, fixture.options.profilePath)
+      const pinned = sharedFactoryRuntimeCodeHashes(() => ({
+        bytecode: '0x60',
+        references: [],
+        referenceGroups: [],
+      }))
+      savePendingDeployment(fixture.options.profilePath, fixture.options.profile, {
+        ...loadPendingDeployment(fixture.options.profilePath, fixture.options.profile),
+        factoryRuntimeCodeHashes: pinned,
+      })
+      const before = readFileSync(pendingDeploymentPath(fixture.options.profilePath), 'utf8')
+      chain.getTransactionReceipt.mockResolvedValue({
+        transactionHash: fixture.hash,
+        status: 'success',
+        contractAddress: fixture.factory,
+        logs: [],
+      })
+      const transaction = {
+        hash: fixture.hash,
+        from: fixture.options.profile.deployer,
+        to: null,
+        input: '0x6001600055',
+      }
+      chain.getTransaction.mockResolvedValue(transaction)
+      await expect(
+        prepareLifecycleStep(fixture.options, { creationBytecode: () => '0x6002600055' }),
+      ).rejects.toThrow('creation input')
+      expect(readFileSync(pendingDeploymentPath(fixture.options.profilePath), 'utf8')).toBe(before)
+
+      // Retrying the original compilation admits the same transaction, never a rewritten historical proof.
+      const resumed = await prepareLifecycleStep(fixture.options, {
+        creationBytecode: () => '0x6001600055',
+      })
+      expect(resumed.kind).toBe('complete')
+      expect(resumed.pending.factoryRuntimeCodeHashes).toEqual(pinned)
+      expect(resumed.pending.actions[fixture.deploy.action.id]?.transactions).toEqual([
+        fixture.hash,
+      ])
+      expect(chain.getTransaction).toHaveBeenCalledWith({ hash: transaction.hash })
+    } finally {
+      fixture.cleanup()
+    }
+  })
+
   test.each(['recovery', 'post-Forge'])(
     'rejects custom initcode before caching during %s and permits a corrected retry',
     async (path) => {

@@ -10,6 +10,7 @@ import { BridgeProvider } from "../../../src/providers/bridge/BridgeProvider.sol
 import { IBridgeSpenderFactory } from "../../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
 import { BridgeProgramRelease } from "./BridgeRelease.sol";
 import { ProgramChecks } from "./ProgramChecks.sol";
+import { RouterFactoryChecks } from "./RouterFactoryChecks.sol";
 
 /// @notice Deploys one Bridge card program's `CardSpender`, after checking the program's clone was created
 ///         for its ID: the release `CardFactory` and the program's `BridgeProvider` at their deterministic
@@ -55,7 +56,7 @@ contract DeployBridgeProgram is BridgeProgramRelease {
         returns (Output memory o)
     {
         o.clone = checkProgram(factory, spenderId);
-        require(routerFactory.code.length != 0, "ROUTER_FACTORY has no code");
+        RouterFactoryChecks.check(routerFactory);
         if (deployerPk == 0) vm.startBroadcast();
         else vm.startBroadcast(deployerPk);
         Created memory c = _bridgeProgram(factory, spenderId, routerFactory);
