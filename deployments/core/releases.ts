@@ -203,7 +203,7 @@ export function parseFactoryRuntimeCodeHashes(
 }
 
 /** Zeros only compiler-declared immutable slots so constructor-bound runtimes remain comparable. */
-function normalizeImmutableReferences(
+export function normalizeImmutableReferences(
   bytecode: Hex,
   references: readonly ImmutableReference[],
 ): Hex {

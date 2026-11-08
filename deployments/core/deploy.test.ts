@@ -9,7 +9,7 @@ import {
   existsSync,
 } from 'node:fs'
 import * as ChildProcess from 'node:child_process'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { describe, expect, test, vi } from 'vitest'
@@ -39,7 +39,9 @@ import * as Inspection from './inspection.js'
 import * as Provenance from './provenance.js'
 import * as Reconcile from './reconcile.js'
 import * as Verify from './verify.js'
-import { loadPendingDeployment } from './pending.js'
+import { loadPendingDeployment, savePendingDeployment } from './pending.js'
+import { resolveEarnFactoryRelease, sharedFactoryRuntimeCodeHashes } from './releases.js'
+import { Addresses } from 'viem/tempo'
 import { deploymentActions } from './plan.js'
 import * as Plan from './plan.js'
 import { deploymentStep } from '../modules/index.js'
@@ -139,6 +141,95 @@ exit 0
       rmSync(directory, { recursive: true, force: true })
     }
   })
+})
+
+describe('deployEarnProfile adopted engine admission', () => {
+  test.each([false, true])(
+    'checks adopted runtime before any broadcast with pinned release hashes: %s',
+    async (pinned) => {
+      const directory = mkdtempSync(join(tmpdir(), 'earn-adopted-runtime-'))
+      const engine = getAddress(`0x${'ab'.repeat(20)}`)
+      const implementation = getAddress(`0x${'cd'.repeat(20)}`)
+      const authored = {
+        version: 1,
+        id: 'adopted-runtime',
+        chainId: 4217,
+        owner: getAddress(`0x${'ef'.repeat(20)}`),
+        engine: { kind: 'erc4626', address: engine },
+      }
+      const profile = parseEarnDeploymentProfile(authored, {
+        deployer: implementation,
+        factories: resolveEarnFactoryRelease(4217),
+      })
+      const profilePath = join(directory, authored.id, 'profile.json')
+      mkdirSync(join(directory, authored.id))
+      writeFileSync(profilePath, JSON.stringify(authored))
+      savePendingDeployment(profilePath, profile, {
+        ...loadPendingDeployment(profilePath, profile),
+        ...(pinned
+          ? {
+              factoryRuntimeCodeHashes: sharedFactoryRuntimeCodeHashes(() => ({
+                bytecode: '0x60',
+                references: [],
+              })),
+            }
+          : {}),
+      })
+      const pending = readFileSync(pendingDeploymentPath(profilePath), 'utf8')
+      const chain = {
+        getChainId: vi.fn(async () => 4217),
+        getCode: vi.fn(async ({ address }: { address: string }) =>
+          address === engine ? '0x60ff00' : '0x60',
+        ),
+        readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
+          if (functionName === 'tip20Factory') return Addresses.tip20Factory
+          if (functionName.endsWith('Implementation')) return implementation
+          throw new Error(`Unexpected behavioral read ${functionName}`)
+        }),
+      }
+      try {
+        vi.spyOn(Runtime, 'rpcClient').mockReturnValue(chain as never)
+        const compiler = vi
+          .spyOn(ChildProcess, 'execFileSync')
+          .mockImplementation((command, arguments_) => {
+            if (command !== 'forge' || arguments_?.[0] !== 'inspect')
+              throw new Error('Unexpected compiler command')
+            const [source, name] = arguments_[1]!.split(':')
+            const output = join(directory, 'out', 'deploy', basename(source!))
+            mkdirSync(output, { recursive: true })
+            writeFileSync(
+              join(output, `${name}.json`),
+              JSON.stringify({
+                deployedBytecode: {
+                  immutableReferences:
+                    name === 'ERC4626Engine' ? { slot: [{ start: 1, length: 1 }] } : {},
+                },
+              }),
+            )
+            return name === 'ERC4626Engine' ? '0x610000' : '0x60'
+          })
+        const broadcast = vi.spyOn(ChildProcess, 'spawnSync')
+        await expect(
+          deployEarnProfile({
+            root: directory,
+            profilePath,
+            environment: {},
+            rpcUrl: 'https://chain.test',
+          }),
+        ).rejects.toThrow('Existing engine runtime does not match this checkout')
+        expect(compiler.mock.calls.map(([, parameters]) => parameters?.[1])).toContain(
+          'src/engines/ERC4626Engine.sol:ERC4626Engine',
+        )
+        expect(compiler).toHaveBeenCalledTimes(pinned ? 1 : 4)
+        expect(broadcast).not.toHaveBeenCalled()
+        expect(readFileSync(pendingDeploymentPath(profilePath), 'utf8')).toBe(pending)
+        expect(existsSync(profileDeploymentPath(profilePath))).toBe(false)
+      } finally {
+        vi.restoreAllMocks()
+        rmSync(directory, { recursive: true, force: true })
+      }
+    },
+  )
 })
 
 describe('deployEarnProfile committed source recovery', () => {
