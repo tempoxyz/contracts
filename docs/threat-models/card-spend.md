@@ -104,21 +104,22 @@ events.
 
 ## Actors
 
-| Actor              | Capabilities                                                                                                    | Authority                                                                                                                                                                                             |
-| :----------------- | :-------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cardholder         | Owns the funds. Grants the provider access keys and can revoke them.                                            | Tempo's access-key rules, outside this repository                                                                                                                                                     |
-| Provider backend   | Holds the keys, sends every spend, pays gas, removes duplicates, sizes the change.                              | Each key's scope and limit, outside this repository                                                                                                                                                   |
-| Bridge admin       | Sets the handler for any prefix, which runs in every clone. Upgrades the factory. Grants governance and pauser. | `cards/vendor/bridge/src/SpenderFactory.sol`: `setSpenderHandler`, `_authorizeUpgrade`, `initialize`                                                                                                  |
-| Bridge governance  | Adds and removes destinations, allows Earn vaults, enables or gates handlers, unpauses, grants manager.         | `cards/vendor/bridge/src/SpenderFactory.sol`: `updateSpenderDestination`, `governorCall`, `updateSpenderHandlerStatus`, `unpause`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `governorCall` |
-| Bridge manager     | Creates programs, registers spender IDs on new or existing clones, grants debitor.                              | `cards/vendor/bridge/src/SpenderFactory.sol`: `createSpender`, `createSpenderWithExistingContract`                                                                                                    |
-| Bridge debitor     | Runs the pull pipeline through a handler that supports it, with a `from` it names. TS refuses it.               | `cards/vendor/bridge/src/SpenderFactory.sol`: `transferToDestination`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `transferToDestination`                                                    |
-| Rain factory owner | Creates collateral and changes its controller.                                                                  | `cards/vendor/rain/contracts/RainCollateralFactory.sol`: `createCollateralContract`, `updateController`                                                                                               |
-| Rain beacon owner  | Upgrades every collateral contract using that beacon.                                                           | `cards/vendor/rain/contracts/RainCollateralBeacon.sol`: `updateImplementation`                                                                                                                        |
-| Earn vault         | Prices and redeems shares for a spend. The provider must allow it.                                              | `cards/src/core/CardSpender.sol`: `_redeem`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`                                                                                  |
-| Zone operator      | Posts batches and processes queued withdrawals.                                                                 | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `submitBatch`, `processWithdrawals`                                                                                                      |
-| Zone admin         | Admits gateways and accounts, sets portal fees and pauses token deposits.                                       | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `setGateway`, `setAllowedAccount`, `setZoneGasRate`, `setBouncebackGas`, `pauseDeposits`                                                 |
-| Any Zone user      | Sends a withdrawal to a router with any callback data.                                                          | `zone-router/src/ZoneRouter.sol`: `onWithdrawalReceived`                                                                                                                                              |
-| Any L1 account     | Calls `spend`, `warm` and `warmVault` on a program, `deploy` on both factories, and `warm` on a router.         | `cards/src/core/CardSpender.sol`: `spend`, `warm`, `warmVault`, `cards/src/core/CardFactory.sol`: `deploy`, `zone-router/src/ZoneRouterFactory.sol`: `deploy`                                         |
+| Actor               | Capabilities                                                                                                            | Authority                                                                                                                                                                                             |
+| :------------------ | :---------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cardholder          | Owns the funds. Grants the provider access keys and can revoke them.                                                    | Tempo's access-key rules, outside this repository                                                                                                                                                     |
+| Provider backend    | Holds the keys, sends every spend, pays gas, removes duplicates, sizes the change.                                      | Each key's scope and limit, outside this repository                                                                                                                                                   |
+| Bridge admin        | Sets the handler for any prefix, which runs in every clone. Upgrades the factory. Grants governance and pauser.         | `cards/vendor/bridge/src/SpenderFactory.sol`: `setSpenderHandler`, `_authorizeUpgrade`, `initialize`                                                                                                  |
+| Bridge governance   | Adds and removes destinations, allows Earn vaults, enables or gates handlers, unpauses, grants manager.                 | `cards/vendor/bridge/src/SpenderFactory.sol`: `updateSpenderDestination`, `governorCall`, `updateSpenderHandlerStatus`, `unpause`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `governorCall` |
+| Bridge manager      | Creates programs, registers spender IDs on new or existing clones, grants debitor.                                      | `cards/vendor/bridge/src/SpenderFactory.sol`: `createSpender`, `createSpenderWithExistingContract`                                                                                                    |
+| Bridge debitor      | Runs the pull pipeline through a handler that supports it, with a `from` it names. TS refuses it.                       | `cards/vendor/bridge/src/SpenderFactory.sol`: `transferToDestination`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `transferToDestination`                                                    |
+| Rain factory owner  | Creates collateral and changes its controller.                                                                          | `cards/vendor/rain/contracts/RainCollateralFactory.sol`: `createCollateralContract`, `updateController`                                                                                               |
+| Rain beacon owner   | Upgrades every collateral contract using that beacon.                                                                   | `cards/vendor/rain/contracts/RainCollateralBeacon.sol`: `updateImplementation`                                                                                                                        |
+| Earn vault          | Prices and redeems shares for a spend. The provider must allow it.                                                      | `cards/src/core/CardSpender.sol`: `_redeem`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`                                                                                  |
+| Zone operator       | Posts batches, processes queued withdrawals and pauses the portal.                                                      | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `submitBatch`, `processWithdrawals`, `pause`                                                                                             |
+| Zone admin          | Admits gateways and accounts, sets fees, pauses token deposits, manages pause guardians, pauses and resumes the portal. | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `setGateway`, `setAllowedAccount`, `setZoneGasRate`, `setBouncebackGas`, `pauseDeposits`, `setPauseGuardian`, `pause`, `resume`          |
+| Zone pause guardian | Pauses the portal while its pause capability remains active.                                                            | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `_requireCapabilityActive`                                                                                                      |
+| Any Zone user       | Sends a withdrawal to a router with any callback data.                                                                  | `zone-router/src/ZoneRouter.sol`: `onWithdrawalReceived`                                                                                                                                              |
+| Any L1 account      | Calls `spend`, `warm` and `warmVault` on a program, `deploy` on both factories, and `warm` on a router.                 | `cards/src/core/CardSpender.sol`: `spend`, `warm`, `warmVault`, `cards/src/core/CardFactory.sol`: `deploy`, `zone-router/src/ZoneRouterFactory.sol`: `deploy`                                         |
 
 ## Trust domains and boundaries
 
@@ -136,7 +137,7 @@ flowchart LR
     PV["Provider contracts and roles"]
     PB["Provider backend"]
     EV["Allowed Earn vaults"]
-    ZO["Zone operator and admin"]
+    ZO["Zone operator, admin and pause guardians"]
   end
   subgraph T3["Trusted for nothing"]
     ZU["Any Zone user"]
@@ -147,14 +148,14 @@ flowchart LR
   T2 --> T1
 ```
 
-| Domain                  | Components                                                                        | Trusted to                                                                                            |
-| :---------------------- | :-------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
-| Covered contracts       | Program, `CardFactory`, `ZoneRouter`, `ZoneRouterFactory`, provider contracts     | Enforce the invariants that cite them                                                                 |
-| Tempo and Zones runtime | Access-key limits, Zone messenger, Zone portal, TIP-1022 registry                 | Deliver only real withdrawals from their Zone's portal, enforce key limits, resolve virtual addresses |
-| Provider                | Bridge's factory and roles, Rain's factories, the provider backend                | Authorize only the provider's own destinations and vaults, and send only authorized spends            |
-| Allowed Earn vaults     | Vaults a provider allows                                                          | Burn no more than the shares asked and send exactly the assets asked                                  |
-| Zone operator and admin | Sequencer, fees, admissions                                                       | Post batches, and admit only routers whose spenders are released programs                             |
-| Untrusted               | Any Zone user or L1 account, `CardSpend`, callback data, `ref`, `destinationHint` | Nothing                                                                                               |
+| Domain                                   | Components                                                                        | Trusted to                                                                                            |
+| :--------------------------------------- | :-------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
+| Covered contracts                        | Program, `CardFactory`, `ZoneRouter`, `ZoneRouterFactory`, provider contracts     | Enforce the invariants that cite them                                                                 |
+| Tempo and Zones runtime                  | Access-key limits, Zone messenger, Zone portal, TIP-1022 registry                 | Deliver only real withdrawals from their Zone's portal, enforce key limits, resolve virtual addresses |
+| Provider                                 | Bridge's factory and roles, Rain's factories, the provider backend                | Authorize only the provider's own destinations and vaults, and send only authorized spends            |
+| Allowed Earn vaults                      | Vaults a provider allows                                                          | Burn no more than the shares asked and send exactly the assets asked                                  |
+| Zone operator, admin and pause guardians | Sequencer, pause guardians, fees, admissions                                      | Post batches, keep the portal available, and admit only routers whose spenders are released programs  |
+| Untrusted                                | Any Zone user or L1 account, `CardSpend`, callback data, `ref`, `destinationHint` | Nothing                                                                                               |
 
 ### Trust boundaries
 
@@ -459,6 +460,13 @@ operator delays batches or withdrawal processing, or the admin raises fees or pa
 
 **How it can happen**
 
+- The admin, a sequencer or a pause guardian pauses the portal. This stops deposits and withdrawal
+  processing, including zero-change spends and queued bounce-backs
+  (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `areDepositsActive`,
+  `processWithdrawals`). Each pause expires after 30 days, or the admin resumes earlier. Effective
+  abdication of the pause capability prevents new pauses
+  (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `paused`, `resume`,
+  `_requireCapabilityActive`).
 - When a spend leaves nonzero change, a deposit fee above `maxDepositFee`, deposits turned off, or
   change below the fee plus the bounce-back reserve reverts the callback
   (`zone-router/src/ZoneRouter.sol`: `_handleSpend`, `_checkChangeReturn`, `_checkDepositFee`).
