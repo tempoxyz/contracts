@@ -107,6 +107,11 @@ program holds as its baseline and leaves it there, so a spend never creates the 
   (`ICardProviderPayout`); asking the provider first would only repeat them. Either way a spend burns at
   most `maxShares` (`ShareCostExceeded`; zero accepts the live price).
 - The destination's balance of `token` rises by exactly `amount` (`DestinationNotCredited`).
+- A private destination may be neither the calling router nor an alias resolving to it
+  (`DestinationNotAuthorized`): the router returns only unused input, not the redeemed asset.
+- A public Earn refund increases the payer's share balance by exactly the unused amount
+  (`RefundNotCredited`). A receive policy that redirects the refund reverts the entire spend, including
+  the redemption and provider payment; allowing the program to refund shares permits a retry.
 - A virtual destination (TIP-1022) is credited through its master, so the program checks the master's
   balance, and redeems Earn shares for one to itself first and transfers them on, since Earn's engines
   check the literal receiver.
