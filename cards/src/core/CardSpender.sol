@@ -51,6 +51,7 @@ contract CardSpender is ISpender {
     error NothingSpent();
     error ProgramPaused();
     error Reentrancy();
+    error RefundNotCredited();
     error ResidualBalance(address token);
     error ShareCostExceeded(uint256 required, uint256 maxShares);
     error UnresolvedRecipient();
@@ -226,6 +227,10 @@ contract CardSpender is ISpender {
         payee = _payee(s.destination);
         // The program's own balance is the baseline it measures input against, so it never pays itself.
         if (payee == address(0) || payee == address(this)) revert DestinationNotAuthorized(s.destination);
+        // The router returns only unused input, so paying it the redeemed asset would strand that asset.
+        if (isPrivate && (s.destination == msg.sender || payee == msg.sender)) {
+            revert DestinationNotAuthorized(s.destination);
+        }
         // A payout target enforces the provider's pause, destination and vault rules in the same call
         // (ICardProviderPayout), so asking the provider first would only repeat them.
         if (PAYOUT_TARGET != address(0)) return payee;
@@ -251,7 +256,7 @@ contract CardSpender is ISpender {
         address share = v.earnShare();
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
         sharesUsed = _redeem(v, share, s, payee, required);
-        if (sharesUsed < required) SafeTransferLib.safeTransfer(share, msg.sender, required - sharesUsed);
+        if (sharesUsed < required) _refund(share, required - sharesUsed);
     }
 
     /// @dev A direct private spend, from the `maxInput` the router sent. The vault prices shares itself and
@@ -314,8 +319,15 @@ contract CardSpender is ISpender {
         if (share != address(0)) {
             uint256 shareLeft = IERC20Like(share).balanceOf(address(this)) - shareBase;
             sharesUsed = shareIn - shareLeft;
-            if (shareLeft != 0) SafeTransferLib.safeTransfer(share, msg.sender, shareLeft);
+            if (shareLeft != 0) _refund(share, shareLeft);
         }
+    }
+
+    /// @dev Receive policies can redirect successful transfers, so a public refund must credit the payer.
+    function _refund(address share, uint256 amount) private {
+        uint256 before = IERC20Like(share).balanceOf(msg.sender);
+        SafeTransferLib.safeTransfer(share, msg.sender, amount);
+        if (IERC20Like(share).balanceOf(msg.sender) != before + amount) revert RefundNotCredited();
     }
 
     /// @dev Approves the payout target for the input tokens (standing maxima, TIP-1000) and calls it with the
