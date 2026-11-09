@@ -15,8 +15,10 @@ import { IReservations, RESERVATIONS_ADDRESS } from "./interfaces/IReservations.
 /// @dev Deployed per program with a fixed vault, issuer, settlement account and funder, and never changed. The
 ///      funder supplies the float and owns what is left in it. Shares are settled once per hold, for what the
 ///      precompile records as captured; share holds take no refunds (refunds go through the cash path).
-///      Redemption is best effort: a venue that cannot redeem at once leaves the shares here, and the float
-///      pays the issuer meanwhile (as it does when redemption would return less than the issuer is paid); the funder redeems them later with `redeemHeld`.
+///      Settlement prices shares with `previewRedeem`, so it needs a vault that can quote one; while it cannot (an
+///      async-only engine, a paused or stale price), `settle` reverts and the shares wait here. Redemption is best
+///      effort: when the vault quotes but cannot redeem at once, or would return less than the issuer is paid,
+///      the shares stay here, the float pays the issuer, and the funder redeems them later with `redeemHeld`.
 contract SavingsFacility {
     IReservations internal constant RESERVATIONS = IReservations(RESERVATIONS_ADDRESS);
 
@@ -93,6 +95,7 @@ contract SavingsFacility {
         shares = captured - done;
         settled[owner][id] = captured;
 
+        // Without a quote there is no safe price to pay, so this reverts rather than trusting a caller value.
         assets = VAULT.previewRedeem(shares);
         if (assets < minAssets) revert AssetsBelowMinimum(assets, minAssets);
         // Redeem for at least what the issuer is paid, so a settlement never shrinks the float.

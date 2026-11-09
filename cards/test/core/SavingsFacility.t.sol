@@ -121,6 +121,17 @@ contract SavingsFacilityTest is CoreEnv {
         assertApproxEqAbs(facility.float(), FLOAT, 1);
     }
 
+    function test_settle_revertsWithoutQuote() public {
+        uint256 shares = _captureShares(alice, ID, 200e6);
+        vm.mockCallRevert(address(earnVault), abi.encodeWithSignature("previewRedeem(uint256)", shares), "no quote");
+        vm.prank(issuer);
+        vm.expectRevert(bytes("no quote"));
+        facility.settle(alice, ID, 0);
+        assertEq(facility.settled(alice, ID), 0);
+        assertEq(earnShare.balanceOf(address(facility)), shares);
+        assertEq(facility.float(), FLOAT);
+    }
+
     function test_settle_revertsWithoutFloatWhenDeferred() public {
         vm.prank(funder);
         facility.withdraw(address(usd), funder, FLOAT);

@@ -109,8 +109,10 @@ and shares only for the shortfall, so the facility receives the shares, and the 
 - The hold must be on the vault's share with the facility as payee; it settles once, for what the
   precompile records as captured.
 - The facility pays the settlement account `previewRedeem(shares)` in the base asset at once, then redeems
-  the shares for at least that amount. A venue that cannot (an async or illiquid one) leaves the shares
-  in the facility, the float pays meanwhile, and the funder redeems them later with `redeemHeld`.
+  the shares for at least that amount. When the vault quotes but cannot redeem at once (an illiquid
+  venue), the shares stay in the facility, the float pays meanwhile, and the funder redeems them later
+  with `redeemHeld`. Pricing needs a quote: while the vault cannot give one (an async-only engine, a
+  paused or stale price), `settle` reverts and the captured shares wait in the facility until it can.
 - A capture beyond the hold may be partly debt to the facility, which the precompile still counts as
   captured, so no hold of an owner in share debt to the facility settles until it is repaid.
 - Share holds take no refunds; refunds go through the cash path.
