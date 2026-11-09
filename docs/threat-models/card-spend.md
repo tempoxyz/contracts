@@ -17,8 +17,11 @@ invariants and accepted risks, and the design pages link here for them.
 
 A card spend moves a cardholder's money to a provider's destination with no signature from the
 cardholder. The provider holds an access key for each cardholder and sends every spend. A private spend
-reaches the L1 as a Zone withdrawal whose callback data any Zone user can write. And every program asks
-a provider contract which destinations and vaults it may use.
+reaches the L1 as a Zone withdrawal whose callback data any Zone user can write. On the direct path the program moves funds
+itself and asks the provider about destinations, vaults and pause. On the payout path the program calls
+a target that checks those rules (`cards/src/core/CardSpender.sol`: `_check`, `_payout`,
+`cards/src/providers/bridge/SpenderTempoSpend.sol`: `_spend`,
+`cards/vendor/bridge/src/SpenderDelegator.sol`: `publicCall`).
 
 So the contracts must keep three properties on their own: money goes only where the provider allows,
 only from the payer's own funds, and only up to what the payer allowed. The provider approves the card
@@ -90,31 +93,33 @@ events.
 
 [Design](../cards/design.md#components) lists the components. This model adds the parts they trust:
 
-| Component                     | Role in this model                                                                          | Code                                                                                                                                                             |
-| :---------------------------- | :------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Program (`CardSpender`)       | Enforces every program invariant. Holds only a seed between spends.                         | `cards/src/core/CardSpender.sol`: `spend`, `spendFrom`, `_check`                                                                                                 |
-| `CardFactory`                 | Deploys programs at addresses fixed by ID, provider and router factory. Anyone can call it. | `cards/src/core/CardFactory.sol`: `deploy`, `predict`                                                                                                            |
-| Provider contract             | Answers destination, vault and pause questions. Bridge's also names a payout target.        | `cards/src/providers/bridge/BridgeProvider.sol`: `isAuthorizedDestination`, `payoutData`, `cards/src/providers/rain/RainProvider.sol`: `isAuthorizedDestination` |
-| Bridge clone and "TS" handler | The payout target for Bridge programs. Enforces Bridge's destinations, vaults and pause.    | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_spend`, `cards/vendor/bridge/src/SpenderDelegator.sol`: `publicCall`                                       |
-| `ZoneRouter`                  | Takes one Zone's withdrawals, sends `maxInput` to a listed spender, returns the change.     | `zone-router/src/ZoneRouter.sol`: `onWithdrawalReceived`, `_handleSpend`                                                                                         |
-| Vendored provider contracts   | Bridge's `SpenderFactory` and Rain's collateral factory, both upgradeable by their owners.  | `cards/vendor/bridge/src/SpenderFactory.sol`, `cards/vendor/rain/contracts/RainCollateralFactory.sol`                                                            |
+| Component                     | Role in this model                                                                          | Code                                                                                                                                                                |
+| :---------------------------- | :------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Program (`CardSpender`)       | Checks spends and input balances. Can retain a seed or stray tokens.                        | `cards/src/core/CardSpender.sol`: `spend`, `spendFrom`, `_check`, `warm`                                                                                            |
+| `CardFactory`                 | Deploys programs at addresses fixed by ID, provider and router factory. Anyone can call it. | `cards/src/core/CardFactory.sol`: `deploy`, `predict`                                                                                                               |
+| Provider contract             | Answers destination, vault and pause questions. Bridge's also names a payout target.        | `cards/src/providers/bridge/BridgeProvider.sol`: `isAuthorizedDestination`, `payoutData`, `cards/src/providers/rain/RainProvider.sol`: `isAuthorizedDestination`    |
+| Bridge clone and "TS" handler | The payout target for Bridge programs. Enforces Bridge's destinations, vaults and pause.    | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_spend`, `cards/vendor/bridge/src/SpenderDelegator.sol`: `publicCall`                                          |
+| `ZoneRouter`                  | Takes one Zone's withdrawals, sends `maxInput` to a listed spender, returns the change.     | `zone-router/src/ZoneRouter.sol`: `onWithdrawalReceived`, `_handleSpend`                                                                                            |
+| Vendored provider contracts   | Bridge's factory controls clone logic. Rain's beacon owner controls collateral logic.       | `cards/vendor/bridge/src/SpenderFactory.sol`: `implementation`, `_authorizeUpgrade`, `cards/vendor/rain/contracts/RainCollateralBeacon.sol`: `updateImplementation` |
 
 ## Actors
 
-| Actor              | Capabilities                                                                                                    | Authority                                                                                                                                                                                             |
-| :----------------- | :-------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cardholder         | Owns the funds. Grants the provider access keys and can revoke them.                                            | Tempo's access-key rules, outside this repository                                                                                                                                                     |
-| Provider backend   | Holds the keys, sends every spend, pays gas, removes duplicates, sizes the change.                              | Each key's scope and limit, outside this repository                                                                                                                                                   |
-| Bridge admin       | Sets the handler for any prefix, which runs in every clone. Upgrades the factory. Grants governance and pauser. | `cards/vendor/bridge/src/SpenderFactory.sol`: `setSpenderHandler`, `_authorizeUpgrade`, `initialize`                                                                                                  |
-| Bridge governance  | Adds and removes destinations, allows Earn vaults, enables or gates handlers, unpauses, grants manager.         | `cards/vendor/bridge/src/SpenderFactory.sol`: `updateSpenderDestination`, `governorCall`, `updateSpenderHandlerStatus`, `unpause`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `governorCall` |
-| Bridge manager     | Creates programs, registers spender IDs on new or existing clones, grants debitor.                              | `cards/vendor/bridge/src/SpenderFactory.sol`: `createSpender`, `createSpenderWithExistingContract`                                                                                                    |
-| Bridge debitor     | Runs the pull pipeline through a handler that supports it, with a `from` it names. TS refuses it.               | `cards/vendor/bridge/src/SpenderFactory.sol`: `transferToDestination`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `transferToDestination`                                                    |
-| Rain factory owner | Upgrades every Rain collateral contract through the beacon.                                                     | `cards/vendor/rain/contracts/RainCollateralFactory.sol`: `beacon`                                                                                                                                     |
-| Earn vault         | Prices and redeems shares for a spend. The provider must allow it.                                              | `cards/src/core/CardSpender.sol`: `_redeem`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`                                                                                  |
-| Zone operator      | Orders Zone transactions, posts batches, sets portal fees, can move or freeze Zone balances.                    | The Zone, outside this repository                                                                                                                                                                     |
-| Zone admin         | Admits a router and the accounts a closed-loop Zone allows.                                                     | The Zone, outside this repository                                                                                                                                                                     |
-| Any Zone user      | Sends a withdrawal to a router with any callback data.                                                          | `zone-router/src/ZoneRouter.sol`: `onWithdrawalReceived`                                                                                                                                              |
-| Any L1 account     | Calls `spend`, `warm` and `warmVault` on a program, `deploy` on both factories, and `warm` on a router.         | `cards/src/core/CardSpender.sol`: `spend`, `warm`, `warmVault`, `cards/src/core/CardFactory.sol`: `deploy`, `zone-router/src/ZoneRouterFactory.sol`: `deploy`                                         |
+| Actor               | Capabilities                                                                                                            | Authority                                                                                                                                                                                             |
+| :------------------ | :---------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cardholder          | Owns the funds. Grants the provider access keys and can revoke them.                                                    | Tempo's access-key rules, outside this repository                                                                                                                                                     |
+| Provider backend    | Holds the keys, sends every spend, pays gas, removes duplicates, sizes the change.                                      | Each key's scope and limit, outside this repository                                                                                                                                                   |
+| Bridge admin        | Sets the handler for any prefix, which runs in every clone. Upgrades the factory. Grants governance and pauser.         | `cards/vendor/bridge/src/SpenderFactory.sol`: `setSpenderHandler`, `_authorizeUpgrade`, `initialize`                                                                                                  |
+| Bridge governance   | Adds and removes destinations, allows Earn vaults, enables or gates handlers, unpauses, grants manager.                 | `cards/vendor/bridge/src/SpenderFactory.sol`: `updateSpenderDestination`, `governorCall`, `updateSpenderHandlerStatus`, `unpause`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `governorCall` |
+| Bridge manager      | Creates programs, registers spender IDs on new or existing clones, grants debitor.                                      | `cards/vendor/bridge/src/SpenderFactory.sol`: `createSpender`, `createSpenderWithExistingContract`                                                                                                    |
+| Bridge debitor      | Runs the pull pipeline through a handler that supports it, with a `from` it names. TS refuses it.                       | `cards/vendor/bridge/src/SpenderFactory.sol`: `transferToDestination`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `transferToDestination`                                                    |
+| Rain factory owner  | Creates collateral and changes its controller.                                                                          | `cards/vendor/rain/contracts/RainCollateralFactory.sol`: `createCollateralContract`, `updateController`                                                                                               |
+| Rain beacon owner   | Upgrades every collateral contract using that beacon.                                                                   | `cards/vendor/rain/contracts/RainCollateralBeacon.sol`: `updateImplementation`                                                                                                                        |
+| Earn vault          | Prices and redeems shares for a spend. The provider must allow it.                                                      | `cards/src/core/CardSpender.sol`: `_redeem`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`                                                                                  |
+| Zone operator       | Posts batches, processes queued withdrawals and pauses the portal.                                                      | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `submitBatch`, `processWithdrawals`, `pause`                                                                                             |
+| Zone admin          | Admits gateways and accounts, sets fees, pauses token deposits, manages pause guardians, pauses and resumes the portal. | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `setGateway`, `setAllowedAccount`, `setZoneGasRate`, `setBouncebackGas`, `pauseDeposits`, `setPauseGuardian`, `pause`, `resume`          |
+| Zone pause guardian | Pauses the portal while its pause capability remains active.                                                            | `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `_requireCapabilityActive`                                                                                                      |
+| Any Zone user       | Sends a withdrawal to a router with any callback data.                                                                  | `zone-router/src/ZoneRouter.sol`: `onWithdrawalReceived`                                                                                                                                              |
+| Any L1 account      | Calls `spend`, `warm` and `warmVault` on a program, `deploy` on both factories, and `warm` on a router.                 | `cards/src/core/CardSpender.sol`: `spend`, `warm`, `warmVault`, `cards/src/core/CardFactory.sol`: `deploy`, `zone-router/src/ZoneRouterFactory.sol`: `deploy`                                         |
 
 ## Trust domains and boundaries
 
@@ -132,7 +137,7 @@ flowchart LR
     PV["Provider contracts and roles"]
     PB["Provider backend"]
     EV["Allowed Earn vaults"]
-    ZO["Zone operator and admin"]
+    ZO["Zone operator, admin and pause guardians"]
   end
   subgraph T3["Trusted for nothing"]
     ZU["Any Zone user"]
@@ -143,14 +148,14 @@ flowchart LR
   T2 --> T1
 ```
 
-| Domain                  | Components                                                                        | Trusted to                                                                                            |
-| :---------------------- | :-------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
-| Covered contracts       | Program, `CardFactory`, `ZoneRouter`, `ZoneRouterFactory`, provider contracts     | Enforce the invariants that cite them                                                                 |
-| Tempo and Zones runtime | Access-key limits, Zone messenger, Zone portal, TIP-1022 registry                 | Deliver only real withdrawals from their Zone's portal, enforce key limits, resolve virtual addresses |
-| Provider                | Bridge's factory and roles, Rain's factories, the provider backend                | Authorize only the provider's own destinations and vaults, and send only authorized spends            |
-| Allowed Earn vaults     | Vaults a provider allows                                                          | Burn no more than the shares asked and send exactly the assets asked                                  |
-| Zone operator and admin | Sequencer, fees, admissions                                                       | Post batches, and admit only routers whose spenders are released programs                             |
-| Untrusted               | Any Zone user or L1 account, `CardSpend`, callback data, `ref`, `destinationHint` | Nothing                                                                                               |
+| Domain                                   | Components                                                                        | Trusted to                                                                                            |
+| :--------------------------------------- | :-------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
+| Covered contracts                        | Program, `CardFactory`, `ZoneRouter`, `ZoneRouterFactory`, provider contracts     | Enforce the invariants that cite them                                                                 |
+| Tempo and Zones runtime                  | Access-key limits, Zone messenger, Zone portal, TIP-1022 registry                 | Deliver only real withdrawals from their Zone's portal, enforce key limits, resolve virtual addresses |
+| Provider                                 | Bridge's factory and roles, Rain's factories, the provider backend                | Authorize only the provider's own destinations and vaults, and send only authorized spends            |
+| Allowed Earn vaults                      | Vaults a provider allows                                                          | Burn no more than the shares asked and send exactly the assets asked                                  |
+| Zone operator, admin and pause guardians | Sequencer, pause guardians, fees, admissions                                      | Post batches, keep the portal available, and admit only routers whose spenders are released programs  |
+| Untrusted                                | Any Zone user or L1 account, `CardSpend`, callback data, `ref`, `destinationHint` | Nothing                                                                                               |
 
 ### Trust boundaries
 
@@ -160,7 +165,7 @@ flowchart LR
   MS["Zone messenger"] -->|"onWithdrawalReceived"| RT
   RT -->|"maxInput, spendFrom"| CS["Program"]
   CA["Cardholder account"] -->|"approve, spend"| CS
-  CS -->|"isAuthorizedDestination, paused"| PV["Provider contract"]
+  CS -->|"direct authorization, vault, pause"| PV["Provider contract"]
   CS -->|"payout"| PT["Bridge clone"]
   CS -->|"withdrawExact"| EV["Earn vault"]
   CS -->|"amount"| DS["Destination"]
@@ -170,17 +175,17 @@ flowchart LR
 
 A solid arrow is a crossing the covered code checks. The dotted one only the provider's backend checks.
 
-| Boundary                     | What happens                                                                                                      | Enforced by                                                                                  | Consequences                                                                           |
-| :--------------------------- | :---------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------- |
-| Messenger to router          | The messenger delivers a withdrawal and its callback.                                                             | `CARDSPEND-ROUTER-MESSENGER-ONLY`, `CARDSPEND-ROUTER-SOURCE-ZONE`                            | A forged callback pays out tokens no Zone sent.                                        |
-| Zone user to router          | Any Zone user picks the spender, `maxInput`, the spend and the change return.                                     | `CARDSPEND-ROUTER-LISTED-SPENDER`, `CARDSPEND-PRIVATE-MAX-INPUT`                             | An unlisted spender or uncapped input takes the whole withdrawal.                      |
-| Router to program            | The router transfers `maxInput` and calls `spendFrom`.                                                            | `CARDSPEND-PRIVATE-ROUTER-ONLY`, `CARDSPEND-PRIVATE-BASELINE`, `CARDSPEND-PRIVATE-ONE-INPUT` | A caller that is not a router spends the program's seed or claims input it never sent. |
-| Cardholder to program        | The cardholder's account approves and calls `spend`.                                                              | `CARDSPEND-PAY-PAYER-FUNDS`, `CARDSPEND-PROGRAM-OWN-SPEND`                                   | A spend draws on funds that are not the caller's.                                      |
-| Program to provider contract | The program asks about the destination, vault and pause.                                                          | `CARDSPEND-PROGRAM-DESTINATION`, `CARDSPEND-PROGRAM-VAULT`, `CARDSPEND-PROGRAM-PAUSE`        | A wrong answer pays a destination the provider never meant.                            |
-| Program to payout target     | The program approves the clone and calls it as the payer.                                                         | `CARDSPEND-PAYOUT-EXACT-INPUT`, `CARDSPEND-PAY-EXACT-AMOUNT`                                 | A replaced target keeps input or pays short.                                           |
-| Program to vault             | The program, or the TS handler, redeems shares with `withdrawExact`.                                              | `CARDSPEND-EARN-MAX-SHARES`, `CARDSPEND-EARN-UNUSED-SHARES`                                  | The payer loses more shares than they allowed.                                         |
-| Router to portal             | The router returns the change as an encrypted deposit.                                                            | `CARDSPEND-ROUTER-CHANGE-TO-ZONE`, `CARDSPEND-ROUTER-FEE-CAP`                                | Change leaves the Zone or a raised fee eats it.                                        |
-| Vault to provider backend    | `availableBalance` adds the vault's `previewRedeem` quote (`cards/src/core/CardSpender.sol`: `availableBalance`). | No code checks the quote                                                                     | An overstated value makes the provider approve spends the funds cannot cover.          |
+| Boundary                     | What happens                                                                                                                                       | Enforced by                                                                                  | Consequences                                                                           |
+| :--------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------- |
+| Messenger to router          | The messenger delivers a withdrawal and its callback.                                                                                              | `CARDSPEND-ROUTER-MESSENGER-ONLY`, `CARDSPEND-ROUTER-SOURCE-ZONE`                            | A forged callback pays out tokens no Zone sent.                                        |
+| Zone user to router          | Any Zone user picks the spender, `maxInput`, the spend and the change return.                                                                      | `CARDSPEND-ROUTER-LISTED-SPENDER`, `CARDSPEND-PRIVATE-MAX-INPUT`                             | An unlisted spender or uncapped input takes the whole withdrawal.                      |
+| Router to program            | The router transfers `maxInput` and calls `spendFrom`.                                                                                             | `CARDSPEND-PRIVATE-ROUTER-ONLY`, `CARDSPEND-PRIVATE-BASELINE`, `CARDSPEND-PRIVATE-ONE-INPUT` | A caller that is not a router spends the program's seed or claims input it never sent. |
+| Cardholder to program        | The cardholder's account approves and calls `spend`.                                                                                               | `CARDSPEND-PAY-PAYER-FUNDS`, `CARDSPEND-PROGRAM-OWN-SPEND`                                   | A spend draws on funds that are not the caller's.                                      |
+| Program to provider contract | Direct spends ask about destination, vault and pause. Payout spends leave these checks to the target (`cards/src/core/CardSpender.sol`: `_check`). | `CARDSPEND-PROGRAM-DESTINATION`, `CARDSPEND-PROGRAM-VAULT`, `CARDSPEND-PROGRAM-PAUSE`        | A wrong answer pays a destination the provider never meant.                            |
+| Program to payout target     | The program approves the clone and calls it as the payer.                                                                                          | `CARDSPEND-PAYOUT-EXACT-INPUT`, `CARDSPEND-PAY-EXACT-AMOUNT`                                 | A replaced target keeps input or pays short.                                           |
+| Program to vault             | The program, or the TS handler, redeems shares with `withdrawExact`.                                                                               | `CARDSPEND-EARN-MAX-SHARES`, `CARDSPEND-EARN-UNUSED-SHARES`                                  | The payer loses more shares than they allowed.                                         |
+| Router to portal             | The router returns the change as an encrypted deposit.                                                                                             | `CARDSPEND-ROUTER-CHANGE-TO-ZONE`, `CARDSPEND-ROUTER-FEE-CAP`                                | Change leaves the Zone or a raised fee eats it.                                        |
+| Vault to provider backend    | `availableBalance` adds the vault's `previewRedeem` quote (`cards/src/core/CardSpender.sol`: `availableBalance`).                                  | No code checks the quote                                                                     | An overstated value makes the provider approve spends the funds cannot cover.          |
 
 ### Some dangerous assumptions
 
@@ -222,15 +227,15 @@ enforces each invariant, or where it must. It describes the control, not whether
 
 ### Providers
 
-| ID                                  | Assertion                                                                                           | Crit | Enforced at                                                                                                                           | Impact                                                                  |
-| :---------------------------------- | :-------------------------------------------------------------------------------------------------- | :--- | :------------------------------------------------------------------------------------------------------------------------------------ | :---------------------------------------------------------------------- |
-| `CARDSPEND-BRIDGE-CANONICAL-ID`     | The TS handler pays only for the spender ID its clone was created with.                             | 🔴   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_isCanonical`, `_spend`                                                          | A manager adds destinations to a live program with a second ID.         |
-| `CARDSPEND-BRIDGE-VAULT-GOVERNANCE` | Only Bridge governance allows a vault for TS.                                                       | 🔴   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `governorCall`, `cards/vendor/bridge/src/spenders/SpenderBase.sol`: `managerCall` | A manager routes redeemed value through any vault.                      |
-| `CARDSPEND-BRIDGE-PIPELINE-OFF`     | TS moves nothing through Bridge's pull pipeline.                                                    | 🟡   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `transferToDestination`, `transferToDestinationStrict`                            | A debitor pulls without a per-spend approval.                           |
-| `CARDSPEND-BRIDGE-STORAGE-ISOLATED` | The TS handler's storage cannot collide with the clone's storage.                                   | 🟡   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `SpenderTempoSpendStorageLib`                                                     | A handler write corrupts the clone's beacon or another handler's state. |
-| `CARDSPEND-RAIN-COLLATERAL`         | A Rain spend pays only a collateral contract Rain's factory created.                                | 🔴   | `cards/src/providers/rain/RainProvider.sol`: `isRainCollateral`                                                                       | A spend pays a contract that only looks like collateral.                |
-| `CARDSPEND-RAIN-OWN-COLLATERAL`     | A public Rain spend to a non-pooled collateral pays only one the payer owns and solely administers. | 🟡   | `cards/src/providers/rain/RainProvider.sol`: `isAuthorizedDestination`, `_isSoleAdmin`                                                | A cardholder funds collateral someone else can withdraw.                |
-| `CARDSPEND-RAIN-PRIVATE-POOLED`     | A private Rain spend pays only the program's pooled collateral.                                     | 🟡   | `cards/src/providers/rain/RainProvider.sol`: `isAuthorizedDestination`                                                                | A private spend funds, and names, one cardholder's collateral.          |
+| ID                                  | Assertion                                                                                           | Crit | Enforced at                                                                                                                                                                                         | Impact                                                                  |
+| :---------------------------------- | :-------------------------------------------------------------------------------------------------- | :--- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------- |
+| `CARDSPEND-BRIDGE-CANONICAL-ID`     | The TS handler pays only for the spender ID its clone was created with.                             | 🔴   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_isCanonical`, `_spend`                                                                                                                        | A manager adds destinations to a live program with a second ID.         |
+| `CARDSPEND-BRIDGE-VAULT-GOVERNANCE` | Only Bridge governance allows a vault for TS.                                                       | 🔴   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `governorCall`, `cards/vendor/bridge/src/spenders/SpenderBase.sol`: `managerCall`, `cards/vendor/bridge/src/SpenderFactory.sol`: `governorCall` | A manager routes redeemed value through any vault.                      |
+| `CARDSPEND-BRIDGE-PIPELINE-OFF`     | TS moves nothing through Bridge's pull pipeline.                                                    | 🟡   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `transferToDestination`, `transferToDestinationStrict`                                                                                          | A debitor pulls without a per-spend approval.                           |
+| `CARDSPEND-BRIDGE-STORAGE-ISOLATED` | The TS handler's storage cannot collide with the clone's storage.                                   | 🟡   | `cards/src/providers/bridge/SpenderTempoSpend.sol`: `SpenderTempoSpendStorageLib`                                                                                                                   | A handler write corrupts the clone's beacon or another handler's state. |
+| `CARDSPEND-RAIN-COLLATERAL`         | A Rain spend pays only a collateral contract Rain's factory created.                                | 🔴   | `cards/src/providers/rain/RainProvider.sol`: `isRainCollateral`                                                                                                                                     | A spend pays a contract that only looks like collateral.                |
+| `CARDSPEND-RAIN-OWN-COLLATERAL`     | A public Rain spend to a non-pooled collateral pays only one the payer owns and solely administers. | 🟡   | `cards/src/providers/rain/RainProvider.sol`: `isAuthorizedDestination`, `_isSoleAdmin`                                                                                                              | A cardholder funds collateral someone else can withdraw.                |
+| `CARDSPEND-RAIN-PRIVATE-POOLED`     | A private Rain spend pays only the program's pooled collateral.                                     | 🟡   | `cards/src/providers/rain/RainProvider.sol`: `isAuthorizedDestination`                                                                                                                              | A private spend funds, and names, one cardholder's collateral.          |
 
 ### Payment
 
@@ -295,15 +300,17 @@ The design accepts these risks. They are decisions, not gaps.
   the provider's own pause stops spends where it has one (Bridge), and a private spend while paused
   bounces back into the Zone in full.
 - **Providers are trusted for what they decide.** A provider contract decides every destination, so a
-  provider whose own contracts can be upgraded (Bridge's spender factory, Rain's factory and collateral
-  beacon) is trusted for that. Rain's controller admin can liquidate any collateral. A payout target is
+  provider whose own contracts can be upgraded (Bridge's spender factory and Rain's collateral beacon:
+  `cards/vendor/bridge/src/SpenderFactory.sol`: `_authorizeUpgrade`,
+  `cards/vendor/rain/contracts/RainCollateralBeacon.sol`: `updateImplementation`) is trusted for that. Rain's controller admin can liquidate any collateral. A payout target is
   trusted to pay the spend it is handed, and the program bounds what it can take.
 - **Bridge privacy rests on governance.** `BridgeProvider` ignores `isPrivate`, so Bridge governance
   must authorize only settlement wallets every cardholder shares.
 - **Rain public spends.** A public spend into a cardholder's own collateral names the cardholder, as any
   public spend does. With `POOLED_ACCEPTS_PUBLIC` set, anyone may fund pooled collateral, which costs
   them and credits nobody until Rain or the partner attributes it off chain.
-- **No Rain pause.** Rain stops a program by revoking its access keys and Zone keys.
+- **No Rain pause.** Rain reports no pause (`cards/src/providers/rain/RainProvider.sol`: `paused`).
+  Its key-revocation process is outside this repository.
 - **Unreadable vaults.** A vault that cannot report its asset, shares or redemption value makes
   `availableBalance` report the stablecoin alone.
 
@@ -327,8 +334,11 @@ Zone user writes callback data
   a vault the provider does not allow, or `maxInput` above the amount (`zone-router/src/ZoneRouter.sol`: `_handleSpend`).
 - The user names `SendSpender` where a router lists it. It pays any address, from the user's own
   withdrawal (`zone-router/src/spenders/SendSpender.sol`: `spendFrom`).
-- The user sets `refundRecipient` to any nonzero L1 address. The portal sends change the Zone rejects
-  there (`zone-router/src/ZoneRouter.sol`: `_handleSpend`, `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `_processDepositBounceBack`).
+- The user chooses a nonzero `refundRecipient`. The portal checks Zone admission and token recipient
+  policy before accepting change. If the Zone rejects the deposit, the portal refunds that address
+  after any collected bounce-back fee, or records a pending refund if delivery fails
+  (`zone-router/src/ZoneRouter.sol`: `_handleSpend`,
+  `cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `_deposit`, `_processDepositBounceBack`).
 
 ```mermaid
 sequenceDiagram
@@ -342,9 +352,13 @@ sequenceDiagram
   R->>R: listed spender, maxInput within amount
   R->>C: transfer maxInput, spendFrom
   C->>C: listed router, own program, one input token
-  C->>P: isAuthorizedDestination
+  C->>P: direct authorization, or payout through target
   C-->>R: revert, or pay exactly amount and return the rest
 ```
+
+The direct path checks the provider's destination view. Bridge checks authorization in its TS handler
+(`cards/src/core/CardSpender.sol`: `_check`, `_payout`,
+`cards/src/providers/bridge/SpenderTempoSpend.sol`: `_spend`).
 
 **What limits it today.** The router takes callbacks only from the messenger for its own Zone and only to
 listed spenders, and caps input by balance. The program accepts only its own routers, pays only what its
@@ -368,11 +382,14 @@ cardholder who granted it.
 - Bridge uses one key per program, so one leak reaches every cardholder of that program.
 
 **What limits it today.** Tempo enforces each key's limit and expiry, and cardholders can revoke keys.
-Public spends pay only provider destinations. Bridge can pause its programs. Rain has no pause and
-revokes keys instead.
+Public spends pay only provider destinations. Bridge can pause its programs. Rain reports no pause (`cards/src/providers/rain/RainProvider.sol`: `paused`). Its key-revocation
+process is outside this repository.
 
-**Key insight.** A leaked Zone key bypasses every contract in this model, so the key's limit is the only
-bound. A leaked public key is bounded by the provider's destination list.
+**Key insight.** A leaked Zone key can bypass the program by requesting a plain withdrawal. The portal
+still checks its pause and recipient policy (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`:
+`processWithdrawals`, `_processWithdrawal`, `_isAllowed`). A leaked public key remains subject to
+provider-authorized destinations (`cards/src/core/CardSpender.sol`: `_check`,
+`cards/src/providers/bridge/SpenderTempoSpend.sol`: `_spend`).
 
 ### 3. A provider's own contracts turn hostile
 
@@ -381,25 +398,32 @@ or where.
 
 **How it can happen**
 
-- **Bridge admin.** Replaces the "TS" handler or registers another prefix. The new code runs in the clone
+- **Bridge admin.** Replaces the "TS" handler, or registers another prefix that governance permits for the clone (`cards/vendor/bridge/src/SpenderFactory.sol`: `updateSpenderHandlerStatus`,
+  `updateSpenderHandlerAllowlist`). The new code runs in the clone
   with the program's standing approval to it (`cards/vendor/bridge/src/SpenderFactory.sol`: `setSpenderHandler`, `cards/src/core/CardSpender.sol`: `_payout`).
 - **Bridge governance.** Authorizes a destination it controls, or allows a vault whose `withdrawExact`
   sends value elsewhere (`cards/vendor/bridge/src/SpenderFactory.sol`: `updateSpenderDestination`, `cards/src/providers/bridge/SpenderTempoSpend.sol`: `governorCall`).
 - **Bridge manager.** Registers a second spender ID on a live clone, or grants a debitor that pulls
   through a sibling handler from any account that approved the clone, the program's seed included
   (`cards/vendor/bridge/src/SpenderFactory.sol`: `createSpenderWithExistingContract`, `cards/vendor/bridge/src/spenders/SpenderTempoEarnWithFallback.sol`: `transferToDestination`).
-- **Rain factory owner.** Upgrades every collateral contract through the beacon, including pooled
-  collateral and its admin and owner answers.
+- **Rain beacon owner.** Replaces collateral logic, including its admin and owner answers
+  (`cards/vendor/rain/contracts/RainCollateralBeacon.sol`: `updateImplementation`).
+- **Rain factory owner.** Replaces the controller authorized to withdraw from collateral
+  (`cards/vendor/rain/contracts/RainCollateralFactory.sol`: `updateController`,
+  `cards/vendor/rain/contracts/RainCollateral.sol`: `_getController`, `withdrawAsset`).
 
 **What limits it today.** The program checks the outcome of every payout: the destination got exactly
-the amount, and the target used exactly the stablecoin and at most the quoted share cost. So a replaced
-target can make a spend revert but cannot keep input. TS pays only its clone's own ID, and only Bridge
+the amount, and the target used exactly the stablecoin and at most the quoted share cost
+(`cards/src/core/CardSpender.sol`: `spend`, `spendFrom`, `_payThroughPublic`). TS pays only its clone's own ID, and only Bridge
 governance allows vaults. The program's provider never changes. Who holds each role, and whether a
 timelock guards it, is outside this repository.
 
 **Key insight.** The program bounds what a provider can take, not where the provider sends it. Bridge
-governance and Rain's factory owner can each redirect future spends to a destination they choose, and the
-program pays it because the provider says so.
+governance controls its destination list. Rain's factory owner controls which collateral
+contracts the factory creates, and the beacon owner controls their logic
+(`cards/vendor/bridge/src/SpenderFactory.sol`: `updateSpenderDestination`,
+`cards/vendor/rain/contracts/RainCollateralFactory.sol`: `createCollateralContract`,
+`cards/vendor/rain/contracts/RainCollateralBeacon.sol`: `updateImplementation`).
 
 ### 4. A hostile or broken Earn vault
 
@@ -412,33 +436,53 @@ a balance.
 - On a direct public spend, the vault reports burning more than it did. The program returns
   `required - burned` from that report, and the rest stays in the program under the vault's standing
   approval (`cards/src/core/CardSpender.sol`: `_payDirect`, `_redeem`).
-- The vault overstates `previewRedeem`, so `availableBalance` overstates what a cardholder can spend.
+- The vault overstates `previewRedeem`, so `availableBalance` overstates what a cardholder can spend
+  (`cards/src/core/CardSpender.sol`: `availableBalance`).
 
-**What limits it today.** `maxShares` caps the share cost when the provider sets it. The destination
-balance check catches a vault that pays short or elsewhere. A private spend measures its input by balance,
-so a misreport there reverts. Bridge's deploy scripts check that a vault's engine supports exact
-withdrawals and redeem previews (`cards/script/bridge/deploy/ProgramCalls.s.sol`: `run`).
+**What limits it today.** Public spends check the share quote against a nonzero `maxShares`
+(`cards/src/core/CardSpender.sol`: `_payDirect`, `_payThroughPublic`). Direct private spends pass the
+lower of `maxInput` and a nonzero `maxShares` to the vault (`cards/src/core/CardSpender.sol`:
+`_spendDirect`, `_redeem`). The destination balance check requires exact payment, and private spends
+measure input consumed by balance (`cards/src/core/CardSpender.sol`: `spend`, `spendFrom`). Bridge's
+deploy script checks that the vault's engine advertises exact withdrawals and redeem previews
+(`cards/script/bridge/deploy/ProgramCalls.s.sol`: `calls`,
+`cards/script/bridge/deploy/ProgramChecks.sol`: `supportsEarnSpend`).
 
 **Key insight.** The covered code bounds what the destination gets by balance. On the public path it bounds
 what the payer loses by the vault's own quote and report.
 
 ### 5. The Zone operator withholds or bounces settlement
 
-**What it means.** After the provider approves cards on Zone receipts, the operator delays batches, raises
-fees or turns off deposits.
+**What it means.** After the provider approves cards on Zone receipts, an off-chain assumption, the
+operator delays batches or withdrawal processing, or the admin raises fees or pauses deposits
+(`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `submitBatch`, `processWithdrawals`,
+`setZoneGasRate`, `setBouncebackGas`, `pauseDeposits`).
 
 **How it can happen**
 
-- A deposit fee above `maxDepositFee`, deposits turned off, or change below the fee plus the bounce-back
-  reserve reverts the callback (`zone-router/src/ZoneRouter.sol`: `_handleSpend`, `_checkChangeReturn`).
-- The operator moves or freezes Zone balances before the batch.
+- The admin, a sequencer or a pause guardian pauses the portal. This stops deposits and withdrawal
+  processing, including zero-change spends and queued bounce-backs
+  (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `areDepositsActive`,
+  `processWithdrawals`). Each pause expires after 30 days, or the admin resumes earlier. Effective
+  abdication of the pause capability prevents new pauses
+  (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `paused`, `resume`,
+  `_requireCapabilityActive`).
+- When a spend leaves nonzero change, a deposit fee above `maxDepositFee`, deposits turned off, or
+  change below the fee plus the bounce-back reserve reverts the callback
+  (`zone-router/src/ZoneRouter.sol`: `_handleSpend`, `_checkChangeReturn`, `_checkDepositFee`).
 
-**What limits it today.** The router accepts only its Zone's portal, caps the fee, and returns change only
-to that portal. A bounce returns the whole withdrawal to the cardholder in the Zone. The provider's change
-margin and reserve are outside this repository.
+**What limits it today.** The router accepts only its Zone's portal, caps the deposit fee on nonzero
+change and returns change through that portal (`zone-router/src/ZoneRouter.sol`:
+`onWithdrawalReceived`, `_validateWithdrawal`, `_handleSpend`, `_checkDepositFee`). A failed callback
+rolls back payment, and the portal queues the full withdrawal amount for the Zone recipient identified
+by `fallbackNonce` (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `deliverWithdrawal`,
+`_processWithdrawal`, `_enqueueBounceBack`). The provider's change margin and reserve, and continued
+Zone processing, are outside this repository.
 
 **Key insight.** Approval on the Zone receipt makes the operator part of the provider's credit risk. The
-contracts return the cardholder's funds in a bounce but cannot make a bounced spend pay.
+portal queues a refund after a failed callback, but cannot make the spend settle or ensure the Zone processes
+the refund (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `_processWithdrawal`,
+`_enqueueBounceBack`, `submitBatch`).
 
 ### 6. A rogue program or router reaches a Zone
 
@@ -449,11 +493,19 @@ spender, and gets a Zone to admit it.
 
 - `CardFactory.deploy` and `ZoneRouterFactory.deploy` are permissionless (`cards/src/core/CardFactory.sol`: `deploy`,
   `zone-router/src/ZoneRouterFactory.sol`: `deploy`).
-- A program over a provider that authorizes everything pays any address from the input it gets.
+- A direct-pay program over a provider that authorizes arbitrary destinations can pay an attacker
+  (`cards/src/core/CardSpender.sol`: `_check`, `_spendDirect`).
 
-**What limits it today.** A program's address commits to its provider, so the address a key or router
-names fixes its rules. A program accepts `spendFrom` only from routers that list it. A router serves
-only the Zone that admits it. Which routers a Zone admits is outside this repository.
+**What limits it today.** A program's address commits to its ID, provider and router factory
+(`cards/src/core/CardFactory.sol`: `predict`, `deploy`). A program accepts `spendFrom` only from its
+router factory's routers that list it (`cards/src/core/CardSpender.sol`: `spendFrom`,
+`zone-router/src/spenders/SpenderAuth.sol`: `isListedRouter`). A router serves only its configured Zone
+and portal (`zone-router/src/ZoneRouter.sol`: `constructor`,
+`onWithdrawalReceived`, `_validateWithdrawal`). Bridge's deploy scripts check the router factory's
+runtime against the expected build (`cards/script/bridge/deploy/RouterFactoryChecks.sol`: `check`,
+`matches`, `cards/script/bridge/deploy/DeployBridgeProgram.s.sol`: `deploy`,
+`cards/script/bridge/deploy/DeployZoneRouter.s.sol`: `deploy`). Which routers a Zone admits is outside
+this repository.
 
 **Key insight.** The factories prove provenance, not legitimacy. The Zone admin's check of each router's
 spenders, and of each program's provider, is the gate.
@@ -466,15 +518,24 @@ spenders, and of each program's provider, is the gate.
 
 - A provider authorizes a cardholder-specific destination for a private spend. `BridgeProvider` ignores
   `isPrivate` (`cards/src/providers/bridge/BridgeProvider.sol`: `isAuthorizedDestination`).
-- The callback's `refundRecipient` and the spend's `ref` are public on the L1.
+- The callback's `refundRecipient` and the spend's `ref` are public on the L1
+  (`zone-router/src/ZoneRouter.sol`: `SpendReturn`, `_handleSpend`,
+  `cards/src/core/CardSpender.sol`: `spendFrom`).
 - The portal's `WithdrawalProcessed` event carries the `senderTag` (`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `_processWithdrawal`).
 
-**What limits it today.** The program and the router never emit or store the cardholder or the
-`senderTag`, and a private spend's payer is the router. Rain authorizes only pooled collateral for a
-private spend. The change goes back encrypted.
+**What limits it today.** The router ignores its `senderTag` argument (`zone-router/src/ZoneRouter.sol`:
+`onWithdrawalReceived`). The program records the router as `payer` and passes zero as the direct
+provider's payer (`cards/src/core/CardSpender.sol`: `spendFrom`). Rain allows only factory-created
+destinations in its fixed pooled-collateral set for private spends (`cards/src/providers/rain/RainProvider.sol`:
+`constructor`, `isAuthorizedDestination`, `isRainCollateral`). Change returns through `depositEncrypted`
+(`zone-router/src/ZoneRouter.sol`: `_handleSpend`).
 
-**Key insight.** The covered contracts hide who paid, not what was paid. Privacy also depends on the
-provider choosing pooled destinations, unlinkable references and its own refund recipient.
+**Key insight.** Privacy concerns L1 observers, not the sequencer that decrypts change recipients
+(`cards/vendor/tempo-zones/src/runtime/interfaces/IZone.sol`: `DepositPayload`). Payment amounts and
+settlement timing remain public on the L1 (`cards/src/core/CardSpender.sol`: `CardSpent`,
+`cards/vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `_processWithdrawal`). Privacy also assumes
+the provider chooses shared destinations, unlinkable references and its own refund recipient, as listed
+in [Outside this repository](#outside-this-repository).
 
 ## Outside this repository
 
