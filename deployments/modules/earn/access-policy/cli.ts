@@ -1,5 +1,5 @@
 import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { getAddress } from 'viem'
@@ -96,18 +96,21 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
 }
 
 /**
- * Every other deployed profile beside `profilePath` on the same chain that attaches the same
- * TIP-403 policy, loaded live with its own `.env.<id>`. A profile without a generated record has
- * nothing deployed to protect; any other load failure stops the removal rather than skipping it.
+ * Every other deployed profile beside `profilePath` (the other `<id>/profile.json` entries in its
+ * parent directory) on the same chain that attaches the same TIP-403 policy, loaded live with its
+ * own `.env.<id>`. A sibling's reviewed identity comes only from its own `.env.<id>`, never from
+ * the shell, which names the selected profile's. A profile without a generated record has nothing
+ * deployed to protect; any other load failure stops the removal rather than skipping it.
  */
 async function policySiblingStacks(profilePath: string, stack: EarnStack) {
   if (stack.access.kind !== 'tip403-whitelist') return []
   const root = profileRepositoryRoot(profilePath)
+  const profilesDirectory = dirname(dirname(profilePath))
   const policyId = BigInt(stack.access.transferPolicyId)
   const siblings: EarnStack[] = []
-  for (const entry of readdirSync(join(root, 'profiles'), { withFileTypes: true })) {
+  for (const entry of readdirSync(profilesDirectory, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
-    const path = join(root, 'profiles', entry.name, 'profile.json')
+    const path = join(profilesDirectory, entry.name, 'profile.json')
     if (path === profilePath || !existsSync(path) || !existsSync(profileDeploymentPath(path))) {
       continue
     }
@@ -116,7 +119,12 @@ async function policySiblingStacks(profilePath: string, stack: EarnStack) {
     if (transferPolicyId(profile) !== policyId) continue
     try {
       const values = loadDeploymentEnvironment(root, profile.id, process.env)
-      siblings.push((await loadHostedProfileStack(path, values)).stack)
+      const own = loadDeploymentEnvironment(root, profile.id, {})
+      const siblingValues = {
+        ...values,
+        EARN_TRUSTED_DEPLOYMENT_IDENTITY: own.EARN_TRUSTED_DEPLOYMENT_IDENTITY,
+      }
+      siblings.push((await loadHostedProfileStack(path, siblingValues)).stack)
     } catch (error) {
       throw new Error(
         `Cannot check removal safety for ${profile.id}, which shares policy ${policyId}`,
