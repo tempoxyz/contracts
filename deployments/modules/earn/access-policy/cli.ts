@@ -201,7 +201,8 @@ const rpcKeys = ['TEMPO_RPC_URL', 'TEMPO_RPC_USERNAME', 'TEMPO_RPC_PASSWORD'] as
 /**
  * A neighbour's runtime values: its own `.env.<id>` wins over the shell. Its reviewed identity
  * comes only from that file, and RPC settings move as a group: all from the file when it names any
- * of them, even blank, else all from the shell, so credentials never reach another endpoint.
+ * of them, even blank, else all from the shell, so credentials never reach another endpoint. File
+ * credentials without a file URL are refused rather than sent to the public fallback.
  */
 export function siblingEnvironment(root: string, profileId: string) {
   const own = loadDeploymentEnvironment(root, profileId, {})
@@ -212,6 +213,16 @@ export function siblingEnvironment(root: string, profileId: string) {
     EARN_TRUSTED_DEPLOYMENT_IDENTITY: own.EARN_TRUSTED_DEPLOYMENT_IDENTITY,
   }
   const fromFile = rpcKeys.some((key) => key in own)
+  if (
+    fromFile &&
+    !own.TEMPO_RPC_URL?.trim() &&
+    (own.TEMPO_RPC_USERNAME || own.TEMPO_RPC_PASSWORD)
+  ) {
+    // Without its own URL the hosted public endpoint would receive these private credentials.
+    throw new Error(
+      `.env.${profileId} sets TEMPO_RPC credentials without TEMPO_RPC_URL; set the URL there too`,
+    )
+  }
   for (const key of rpcKeys) values[key] = fromFile ? own[key] : shell[key]
   return values
 }

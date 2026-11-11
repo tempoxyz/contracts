@@ -157,6 +157,21 @@ describe('sibling environment', () => {
     expect(values.TEMPO_RPC_URL).not.toBe('https://shell.example')
   })
 
+  it.each([
+    ['credentials only', 'TEMPO_RPC_USERNAME=u\nTEMPO_RPC_PASSWORD=p\n'],
+    [
+      'a blank URL with credentials',
+      'TEMPO_RPC_URL=\nTEMPO_RPC_USERNAME=u\nTEMPO_RPC_PASSWORD=p\n',
+    ],
+  ])('refuses a file with %s', (_, file) => {
+    const { root } = repository({})
+    writeFileSync(join(root, '.env.other-moderato'), file)
+    vi.stubEnv('TEMPO_RPC_URL', 'https://private.example')
+    expect(() => siblingEnvironment(root, 'other-moderato')).toThrow(
+      'sets TEMPO_RPC credentials without TEMPO_RPC_URL',
+    )
+  })
+
   it('keeps the shell RPC group when the file names none of it', () => {
     const { root } = repository({})
     writeFileSync(join(root, '.env.other-moderato'), 'OTHER=1\n')
