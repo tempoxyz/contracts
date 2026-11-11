@@ -271,6 +271,19 @@ describe('neighbour failure messages', () => {
     ).toBe('failed: https://rpc.example/[redacted].')
   })
 
+  it('redact a whole URL whose credentials contain quotes or angle brackets', () => {
+    for (const secret of ["pa'ss", 'pa"ss', 'pa<ss', 'pa>ss']) {
+      const out = redactUrls(`failed: https://user:${secret}@rpc.example/v2 next`)
+      expect(out).toBe('failed: https://rpc.example/[redacted] next')
+    }
+  })
+
+  it('keep quotes and angle brackets around a URL outside it', () => {
+    expect(redactUrls('url "https://rpc.example/v2/key" or <https://rpc.example>.')).toBe(
+      'url "https://rpc.example/[redacted]" or <https://rpc.example>.',
+    )
+  })
+
   it('handle a long punctuation run in linear time', () => {
     const run = '.'.repeat(200_000)
     const started = performance.now()
