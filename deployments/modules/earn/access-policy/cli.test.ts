@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { EarnStack } from '../../../core/stack.js'
-import { policySiblingStacks, siblingEnvironment } from './cli.js'
+import { policySiblingStacks, redactUrls, siblingEnvironment } from './cli.js'
 
 const venue = '0x0d136e26b4d9e4836fc5cb202baeb49cb6f5df48'
 
@@ -47,15 +47,17 @@ describe('policy sibling discovery', () => {
       'other-moderato': { profile: authored('other-moderato'), pending: true },
     })
     await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
-      /profile other-moderato: it has an unpublished deployment on policy 469/,
+      /profile other-moderato: it has an unpublished deployment/,
     )
   })
 
-  it('ignores an unpublished deployment on another policy', async () => {
+  it('stops on any unpublished deployment, whatever its authored policy', async () => {
     const { selected: path } = repository({
       'other-moderato': { profile: authored('other-moderato', '470'), pending: true },
     })
-    await expect(policySiblingStacks(path, selected, genesis)).resolves.toEqual([])
+    await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
+      /profile other-moderato: it has an unpublished deployment/,
+    )
   })
 
   it('names an unparseable neighbour instead of failing anonymously', async () => {
@@ -125,6 +127,44 @@ describe('policy sibling discovery', () => {
     )
   })
 
+  describe('a recorded neighbour naming another genesis of this chain', () => {
+    const earnShare = '0x00000000000000000000000000000000000000E5'
+    const setup = () => {
+      const { profiles, selected: path } = repository({
+        'other-moderato': { profile: authored('other-moderato') },
+      })
+      writeFileSync(
+        join(profiles, 'other-moderato', 'deployment.json'),
+        JSON.stringify({
+          target: { chainId: 42431, genesisHash: '0x' + '33'.repeat(32) },
+          addresses: { earnShare },
+        }),
+      )
+      return path
+    }
+
+    it('is skipped when its EarnShare has no code here', async () => {
+      const getCode = vi.fn(async () => undefined)
+      await expect(policySiblingStacks(setup(), selected, genesis, { getCode })).resolves.toEqual(
+        [],
+      )
+      expect(getCode).toHaveBeenCalledWith({ address: earnShare })
+    })
+
+    it('stops the removal when its EarnShare has code here', async () => {
+      const getCode = vi.fn(async () => '0x6080' as const)
+      await expect(policySiblingStacks(setup(), selected, genesis, { getCode })).rejects.toThrow(
+        /profile other-moderato: its record names genesis 0x3333.*may be live on this chain/,
+      )
+    })
+
+    it('stops the removal when liveness cannot be checked', async () => {
+      await expect(policySiblingStacks(setup(), selected, genesis)).rejects.toThrow(
+        /may be live on this chain/,
+      )
+    })
+  })
+
   it('strictly loads a recorded neighbour on the same chain and genesis', async () => {
     const { profiles, selected: path } = repository({
       'other-moderato': { profile: authored('other-moderato', '470') },
@@ -183,5 +223,17 @@ describe('sibling environment', () => {
       TEMPO_RPC_USERNAME: 'shell-user',
       TEMPO_RPC_PASSWORD: 'shell-pass',
     })
+  })
+})
+
+describe('neighbour failure messages', () => {
+  it('keep only the origin of each URL', () => {
+    expect(
+      redactUrls(
+        'HTTP request failed. URL: https://rpc.example/v2/sk_live_123?key=abc Details: x (https://rpc.example)',
+      ),
+    ).toBe(
+      'HTTP request failed. URL: https://rpc.example/[redacted] Details: x (https://rpc.example)',
+    )
   })
 })
