@@ -81,8 +81,7 @@ another genesis of the same chain is skipped only when its EarnShare has no code
 chain. Each runs with its own `.env.<id>`, which wins over the shell, alone supplies its
 `EARN_TRUSTED_DEPLOYMENT_IDENTITY`, and supplies its RPC settings as a group when it names any of
 them; credentials without a URL there are refused. A refusal names the stack that needs the target.
-Any neighbour with a record that fails to load, and any neighbour with only an unpublished
-deployment, stops the command and is named; failure messages keep only each URL's origin. Stacks
+Any neighbour with a record that fails to load, and any neighbour with only an unpublished deployment that, bound to its profile through its pending intent hash, targets this chain and policy (or cannot be bound), stops the command and is named; failure messages keep only each URL's origin. Stacks
 without a record beside a profile (one kept elsewhere, or an earlier version superseded by a
 redeployment that is still bound to the policy) are not discovered; check them before removing a
 member they may need.

@@ -11,6 +11,7 @@ import {
   loadDeploymentEnvironment,
   loadEarnProfile,
   loadEarnProfileBundle,
+  loadEarnProfileForRead,
   loadReviewedDeploymentIdentity,
   pendingDeploymentPath,
   profileDeploymentPath,
@@ -106,8 +107,9 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
  * directory, symlinked or not) on the same chain and genesis that attaches the same TIP-403 policy,
  * loaded live. Sharing is decided from each neighbour's verified authored/generated pair, so a
  * neighbour whose profile no longer matches its record, or that fails to load, stops the removal
- * and is named. Any neighbour with only an unpublished deployment also stops it: its contracts
- * may already be bound to the policy, and its pending state cannot confirm which. A record naming
+ * and is named. A neighbour with only an unpublished deployment stops it when that deployment,
+ * bound to its authored profile through the pending intent hash, targets this chain and policy, or
+ * when that binding fails: its contracts may already be bound to the policy. A record naming
  * another genesis excludes a neighbour only when its EarnShare has no code on this chain. Each
  * neighbour runs with its own `.env.<id>`, which alone supplies its reviewed identity and, when it
  * names any, its RPC settings.
@@ -144,9 +146,12 @@ export async function policySiblingStacks(
       const authored = loadEarnProfile(path)
       if (authored.id === stack.id) continue
       if (!recorded) {
-        fail(
-          'it has an unpublished deployment; publish its record or remove its pending state first',
-        )
+        // Bind the authored profile to its pending intent first, so an edited profile cannot hide it.
+        const pending = loadEarnProfileForRead(path)
+        if (pending.chainId === stack.network.chainId && transferPolicyId(pending) === policyId) {
+          fail(`it has an unpublished deployment on policy ${policyId}; publish its record first`)
+        }
+        continue
       }
       // Only a record that may target this chain can share the policy; others need no strict load.
       const target = recordTarget(path, authored.chainId, stack.network.chainId, genesisHash)

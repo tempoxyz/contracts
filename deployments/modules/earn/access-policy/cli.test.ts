@@ -1,8 +1,11 @@
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { loadEarnProfile } from '../../../core/bundle.js'
+import { deploymentIntentHash } from '../../../core/profile.js'
+import { resolveEarnFactoryRelease } from '../../../core/releases.js'
 import type { EarnStack } from '../../../core/stack.js'
 import { policySiblingStacks, redactUrls, siblingEnvironment } from './cli.js'
 
@@ -14,7 +17,7 @@ function repository(neighbours: Record<string, { profile: unknown; pending?: boo
   const write = (directory: string, id: string, profile: unknown, pending = false) => {
     mkdirSync(join(directory, id), { recursive: true })
     writeFileSync(join(directory, id, 'profile.json'), JSON.stringify(profile))
-    if (pending) writeFileSync(join(directory, id, 'deployment.pending.json'), '{}')
+    if (pending) writePending(join(directory, id))
   }
   const profiles = join(root, 'profiles')
   write(profiles, 'selected-moderato', authored('selected-moderato'))
@@ -22,6 +25,29 @@ function repository(neighbours: Record<string, { profile: unknown; pending?: boo
     write(profiles, id, profile, pending)
   }
   return { root, profiles, selected: join(profiles, 'selected-moderato', 'profile.json') }
+}
+
+const deployer = '0x00000000000000000000000000000000000000D1'
+
+/** A pending deployment bound to the authored profile in `directory`, as `pnpm earn deploy` writes. */
+function writePending(directory: string) {
+  const path = join(directory, 'profile.json')
+  const preliminary = loadEarnProfile(path)
+  const factories = resolveEarnFactoryRelease(preliminary.chainId)
+  const profile = loadEarnProfile(path, { deployer, factories })
+  writeFileSync(
+    join(directory, 'deployment.pending.json'),
+    JSON.stringify({
+      version: 3,
+      profileId: profile.id,
+      deployer: profile.deployer,
+      owner: profile.owner,
+      factories: profile.factories,
+      deploymentIntentHash: deploymentIntentHash(profile),
+      outputs: {},
+      actions: {},
+    }),
+  )
 }
 
 function authored(id: string, policy = '469') {
@@ -51,19 +77,31 @@ describe('policy sibling discovery', () => {
     )
   })
 
-  it('stops on any unpublished deployment, whatever its authored policy', async () => {
+  it('ignores a pending deployment bound to another policy', async () => {
     const { selected: path } = repository({
       'other-moderato': { profile: authored('other-moderato', '470'), pending: true },
     })
+    await expect(policySiblingStacks(path, selected, genesis)).resolves.toEqual([])
+  })
+
+  it('stops when a pending deployment no longer matches its edited profile', async () => {
+    const { profiles, selected: path } = repository({
+      'other-moderato': { profile: authored('other-moderato', '470'), pending: true },
+    })
+    writeFileSync(
+      join(profiles, 'other-moderato', 'profile.json'),
+      JSON.stringify(authored('other-moderato', '471')),
+    )
     await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
-      /profile other-moderato: it has an unpublished deployment/,
+      /profile other-moderato: Pending deployment .* does not match this profile/,
     )
   })
 
   it('names an unparseable neighbour instead of failing anonymously', async () => {
     const { selected: path } = repository({
-      'broken-moderato': { profile: { id: 'broken-moderato' }, pending: true },
+      'broken-moderato': { profile: { id: 'broken-moderato' } },
     })
+    writeFileSync(join(dirname(path), '..', 'broken-moderato', 'deployment.pending.json'), '{}')
     await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
       /profile broken-moderato:/,
     )
@@ -77,7 +115,7 @@ describe('policy sibling discovery', () => {
       join(elsewhere, 'linked-moderato', 'profile.json'),
       JSON.stringify(authored('linked-moderato')),
     )
-    writeFileSync(join(elsewhere, 'linked-moderato', 'deployment.pending.json'), '{}')
+    writePending(join(elsewhere, 'linked-moderato'))
     symlinkSync(join(elsewhere, 'linked-moderato'), join(profiles, 'linked-moderato'))
     await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
       /profile linked-moderato: it has an unpublished deployment/,
