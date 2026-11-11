@@ -127,8 +127,11 @@ deductive verifier ([paradigmxyz/solar#2530](https://github.com/paradigmxyz/sola
 specs are NatSpec in the contracts themselves: `@custom:ensures`, `@custom:requires`,
 `@custom:invariant`, `@custom:ghost`, `@custom:trusted` and the rest, with loop invariants, asserts
 and ghost updates as `///` comments inside function bodies, written against the contracts' own
-constants and expressions. They change no executable code, only each contract's metadata hash, and
-there is nothing else to maintain: the verifier reads the flattened source as it is.
+constants and expressions. Spec-only helper functions are never called, so the specs change no
+behavior, but like any source edit they change a contract's compiled output (its metadata hash at
+least) and so the release addresses derived from it. Keep spec-only helpers inside the contract
+that uses them, not in a library or another file. The verifier reads the flattened source as it
+is, with no patches or generated files.
 
 ```bash
 cd earn

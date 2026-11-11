@@ -28,6 +28,8 @@ import {
 ///      the spender hands back the rest, and returns the change to the source Zone, so no spender can take
 ///      more than the sender allowed.
 /// @custom:reentrancy-guard locked
+/// gAllowance tracks the temporary allowances this router grants to the EarnVault, pools and spenders; it
+/// excludes the Portal's standing allowance from _approvePortal, which is not reset after a call.
 /// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance
 /// @custom:ghost address gTransferToken
 /// @custom:ghost address gTransferTo
@@ -307,6 +309,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         redeemLiquidity = IERC20Like(privateAsset).balanceOf(address(pool));
     }
 
+    /// No temporary allowance outlives the call; the Portal's standing allowance is outside gAllowance.
     /// @custom:requires forall address t, address s :: gAllowance[t][s] == 0
     /// @custom:ensures forall address t, address s :: gAllowance[t][s] == 0
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS

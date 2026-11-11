@@ -72,6 +72,19 @@ interface IEarnVaultPause {
 /// The registry, BoringVault and base asset are fixed and nonzero; the rate age bound is never zero.
 /// @custom:invariant address(peripheryRegistry) != address(0) && address(vault) != address(0) && baseAsset != address(0)
 /// @custom:invariant maxRateAge > 0 && !authorizedForwarder[address(0)]
+/// Ghost records of the last measured venue-share movements, the holder's queued-asset floor and the
+/// exact-withdraw receiver's measured increase.
+/// @custom:ghost uint256 burnedShares
+/// @custom:ghost uint256 queuedShares
+/// @custom:ghost uint256 minQueued
+/// @custom:ghost uint256 measuredReceived
+/// Solvency: an earmark is credited only within the measured base-asset balance (see _creditAndFinalize), a
+/// claim is paid only out of an earmark that covers it (claimRedeem), and a sweep never takes earmarked assets.
+/// Not proved: that settled[baseAsset] stays within the engine's base-asset balance across payouts, which
+/// are not measured, and that it covers the sum of every Claimable claim's amountOfAssets; a solved batch's
+/// finalization runs in self-calls the proof cannot follow.
+/// Not proved: that the venue shares the engine holds cover the engine shares the EarnVault records; shares
+/// can move outside these calls.
 contract VedaEngine is
     IEarnEngine,
     IEarnEngineRedeem,
@@ -424,6 +437,8 @@ contract VedaEngine is
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
     /// A deposit credits a positive measured venue-share delta.
     /// @custom:ensures engineShares > 0
+    /// Not proved: liveness. A deposit also needs a fresh Accountant rate, the token pull and the Teller's
+    /// deposit, all outside this contract.
     function deposit(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         _requireFreshAccountantRate(accountant, maxRateAge);
         _checkpointRate();
@@ -447,6 +462,8 @@ contract VedaEngine is
     /// Only the bound EarnVault calls it.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
     /// @custom:ensures receiver != address(0) && assets >= minAssets
+    /// The venue burned exactly the requested engine shares, measured on the engine's balance.
+    /// @custom:ensures burnedShares == engineShares
     function redeem(uint256 engineShares, address receiver, uint256 minAssets)
         external
         onlyEarnVault
@@ -470,6 +487,12 @@ contract VedaEngine is
     /// Only the bound EarnVault calls it.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
     /// @custom:ensures receiver != address(0)
+    /// The venue burned exactly the engine shares charged, which round up in the vault's favour at the
+    /// transaction's rate, and the receiver's measured increase is exactly the requested assets.
+    /// @custom:ensures burnedShares == engineShares && measuredReceived == assets
+    /// @custom:ensures _rateAtTransaction == 0 || engineShares * _rateAtTransaction >= assets * _shareScale
+    /// Not proved: liveness. An exit also needs the Teller's withdrawal and the transfers to succeed, all
+    /// outside this contract; no rate-age check applies to exits.
     function withdraw(uint256 assets, address receiver)
         external
         onlyEarnVault
@@ -492,6 +515,7 @@ contract VedaEngine is
         uint256 receiverAssetsBefore = IERC20Like(baseAsset).balanceOf(receiver);
         _push(baseAsset, receiver, assets);
         uint256 receivedAssets = _balanceIncrease(baseAsset, receiver, receiverAssetsBefore);
+        /// @custom:ghost measuredReceived = receivedAssets
         if (receivedAssets != assets) revert UnexpectedAssetsReceived(assets, receivedAssets);
         emit WithdrewExact(receiver, assets, engineShares);
     }
@@ -525,6 +549,11 @@ contract VedaEngine is
     /// @custom:ensures address(old(_claims[requestId].requestQueue)) == address(0)
     /// @custom:ensures _claims[requestId].status == ClaimStatus.Open && _claims[requestId].requestQueue == old(queue)
     /// @custom:ensures address(old(queue)) != address(0) && _claims[requestId].amountOfShares == engineShares
+    /// The Queue took exactly the requested shares from the engine, and the assets it committed meet the
+    /// holder's nonzero floor.
+    /// @custom:ensures queuedShares == engineShares
+    /// @custom:ensures minQueued > 0 && _claims[requestId].amountOfAssets >= minQueued
+    /// Not proved: the verifier does not finish this function within its time limit.
     function requestRedeem(uint256 engineShares, bytes calldata requestData)
         external
         onlyEarnVault
@@ -535,6 +564,7 @@ contract VedaEngine is
         VedaRedeemRequest memory request = abi.decode(requestData, (VedaRedeemRequest));
         if (request.assetOut != baseAsset) revert InvalidAsset(baseAsset, request.assetOut);
         if (request.minQueuedAssets == 0) revert ZeroMinimumQueuedAssets();
+        /// @custom:ghost minQueued = request.minQueuedAssets
         // Bounded above, so the downcast cannot truncate.
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 queueShares = uint128(engineShares);
@@ -583,6 +613,7 @@ contract VedaEngine is
     /// Only an Open claim is cancelled, returning its recorded shares.
     /// @custom:ensures old(_claims[requestId].status) == ClaimStatus.Open && _claims[requestId].status == ClaimStatus.Cancelled
     /// @custom:ensures engineShares == old(_claims[requestId].amountOfShares)
+    /// Not proved: the verifier does not finish this function within its time limit.
     function cancelRedeem(bytes32 requestId) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         QueueClaim storage c = _claims[requestId];
         ClaimStatus status = c.status;
@@ -612,6 +643,7 @@ contract VedaEngine is
     /// Only an authorized forwarder credits and forwards; a non-base asset is never earmarked or claimed.
     /// @custom:ensures old(authorizedForwarder[msg.sender])
     /// @custom:ensures asset_ != baseAsset ==> claimed == 0
+    /// Not proved: the verifier does not finish this function within its time limit.
     function forwardSolved(bytes32[] calldata requestIds, address asset_, uint256 delta)
         external
         onlyForwarder
@@ -644,6 +676,7 @@ contract VedaEngine is
     ///      verify the Queue's solve event before calling; this adds no authority beyond the owner's
     ///      existing ability to authorize a forwarder, but makes the exceptional recovery explicit.
     /// @custom:ensures old(owner()) == msg.sender
+    /// Not proved: the verifier does not finish this function within its time limit.
     function recoverExternalSettlement(bytes32[] calldata requestIds)
         external
         onlyOwner
@@ -665,6 +698,8 @@ contract VedaEngine is
             uint256 want = settled[asset_] + delta;
             if (have < want) revert CreditExceedsBalance(asset_, have, want);
             settled[asset_] = want;
+            /// Solvency: the earmark never exceeds the base-asset balance measured at credit.
+            /// @custom:assert settled[asset_] <= have
             emit Settled(asset_, delta, want);
         }
         uint256 consumed;
@@ -711,6 +746,11 @@ contract VedaEngine is
     ///         pays the stored receiver the tracked amount out of already-earmarked funds, so a caller
     ///         gains nothing. HARD-reverts (unlike the batch path's skip) so a single-claim caller learns
     ///         why it is not yet claimable.
+    /// No double claim: only a Claimable claim is paid, exactly its tracked amount, out of an earmark that covers it.
+    /// @custom:ensures old(_claims[requestId].status) == ClaimStatus.Claimable
+    /// @custom:ensures amount == old(_claims[requestId].amountOfAssets) && old(settled[baseAsset]) >= amount
+    /// Not proved: liveness. A Claimable, covered claim also needs the transfer to the EarnVault and its
+    /// finalizeRedeem to succeed, outside this contract.
     function claimRedeem(bytes32 requestId) external nonReentrant returns (uint256 amount) {
         QueueClaim storage c = _claims[requestId];
         if (c.status == ClaimStatus.Open) revert ClaimNotClaimable(requestId);
@@ -838,17 +878,21 @@ contract VedaEngine is
         }
     }
 
+    /// @custom:ensures burnedShares == expectedShares
     function _requireVenueSharesBurned(uint256 sharesBefore, uint256 expectedShares) private view {
         uint256 sharesAfter = vault.balanceOf(address(this));
         uint256 actualShares = sharesBefore >= sharesAfter ? sharesBefore - sharesAfter : 0;
+        /// @custom:ghost burnedShares = actualShares
         if (sharesAfter > sharesBefore || actualShares != expectedShares) {
             revert UnexpectedVenueSharesBurned(expectedShares, actualShares);
         }
     }
 
+    /// @custom:ensures queuedShares == expectedShares
     function _requireVenueSharesQueued(uint256 sharesBefore, uint256 expectedShares) private view {
         uint256 sharesAfter = vault.balanceOf(address(this));
         uint256 actualShares = sharesBefore >= sharesAfter ? sharesBefore - sharesAfter : 0;
+        /// @custom:ghost queuedShares = actualShares
         if (sharesAfter > sharesBefore || actualShares != expectedShares) {
             revert UnexpectedVenueSharesQueued(expectedShares, actualShares);
         }
