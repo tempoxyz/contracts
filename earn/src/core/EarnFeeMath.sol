@@ -66,7 +66,7 @@ library EarnFeeMath {
     }
 
     /// @notice Fees never exceed gross positive accrual, and the recipients' fee EarnShare sum exactly to the
-    ///         total the vault mints (fees.md, "Fee calculation" and "Allocation").
+    ///         total the vault mints (fees.md, "Waterfall" and "Fee-share accounting").
     /// @custom:ensures result.activeAssets == input.activeAssets
     /// @custom:ensures result.allocationCount <= MAX_FIXED_FEE_RECIPIENTS + 1
     /// @custom:ensures result.totalFeeEarnShares == allocatedFeeEarnShares(result)
@@ -177,7 +177,7 @@ library EarnFeeMath {
     }
 
     /// @notice Scales fixed fees above the accrual down to it by largest remainder; each unpaid whole unit
-    ///         returns to its recipient's remainder (fees.md, "Fee calculation", step 3).
+    ///         returns to its recipient's remainder (fees.md, "Waterfall", step 3).
     /// @custom:requires result.allocationCount <= MAX_FIXED_FEE_RECIPIENTS
     /// @custom:requires result.fixedFeeAssets == allocatedFeeAssets(result)
     /// @custom:requires result.totalFeeEarnShares == 0 && noFeeEarnShares(result)
@@ -266,7 +266,7 @@ library EarnFeeMath {
     }
 
     /// @notice Converts the aggregate fee EarnShare once: each nonzero allocation gets its proportional share
-    ///         rounded down, and the last nonzero one the rest (fees.md, "Allocation").
+    ///         rounded down, and the last nonzero one the rest (fees.md, "Fee-share accounting").
     /// @custom:requires result.allocationCount <= MAX_FIXED_FEE_RECIPIENTS + 1 && noFeeEarnShares(result)
     /// @custom:requires result.totalFeeAssets != 0 && result.totalFeeAssets <= allocatedFeeAssets(result)
     /// @custom:ensures result.totalFeeEarnShares == allocatedFeeEarnShares(result)
@@ -335,12 +335,12 @@ library EarnFeeMath {
         returns (uint256)
     {
         return EarnFeeMath.targetGrows(base, annualRateBps, startedAt, timestamp)
-            ? base + EarnFeeMath.annualGrowth(base, annualRateBps) * (timestamp - startedAt) / EarnFeeMath.YEAR
+            ? base + EarnFeeMath.yearlyGrowth(base, annualRateBps) * (timestamp - startedAt) / EarnFeeMath.YEAR
             : base;
     }
 
     /// @custom:spec One year of simple growth at `annualRateBps`, rounded down.
-    function annualGrowth(uint256 base, uint256 annualRateBps) internal pure returns (uint256) {
+    function yearlyGrowth(uint256 base, uint256 annualRateBps) internal pure returns (uint256) {
         return base * annualRateBps / BPS_DENOMINATOR;
     }
 

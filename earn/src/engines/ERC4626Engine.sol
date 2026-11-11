@@ -36,6 +36,14 @@ interface IERC4626Vault {
 /// @custom:invariant address(vault) != address(0) && baseAsset != address(0)
 /// The effective name and symbol are never empty.
 /// @custom:invariant bytes(_name).length > 0 && bytes(_symbol).length > 0
+/// Ghost records of the last redemption's measured venue-share burn and the last exact withdrawal's measured
+/// receiver increase.
+/// @custom:ghost uint256 burnedShares
+/// @custom:ghost uint256 measuredReceived
+/// Solvency: deposits credit the measured venue-share increase, and every exit reports the measured decrease,
+/// so the EarnVault's engine-share ledger moves with the shares this engine holds (see their ensures).
+/// Not proved: that the venue shares held cover the engine shares the EarnVault records; shares can move
+/// outside these calls.
 contract ERC4626Engine is
     IEarnEngine,
     IEarnEngineRedeem,
@@ -160,6 +168,8 @@ contract ERC4626Engine is
     // verifier havocs all storage across a call on the right of && under the lock (_forceApprove).
     /// A deposit credits a positive measured venue-share delta.
     /// @custom:ensures engineShares > 0
+    /// Not proved: liveness. A deposit also needs the token pull and the venue's deposit to mint shares,
+    /// outside this contract.
     function deposit(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         _pull(baseAsset, msg.sender, assets);
         _forceApprove(baseAsset, address(vault), assets);
@@ -201,6 +211,10 @@ contract ERC4626Engine is
     /// @custom:ensures earnVault != address(0) && locked == 1
     /// The receiver is nonzero and its measured increase meets the caller's minimum.
     /// @custom:ensures receiver != address(0) && assets >= minAssets
+    /// The venue burned exactly the requested shares, measured on the engine's balance.
+    /// @custom:ensures burnedShares == engineShares
+    /// Not proved: liveness. A redemption also needs the venue's redeem to succeed and pay at least
+    /// minAssets, outside this contract.
     function redeem(uint256 engineShares, address receiver, uint256 minAssets)
         external
         onlyEarnVault
@@ -213,6 +227,7 @@ contract ERC4626Engine is
         vault.redeem(engineShares, receiver, address(this));
 
         uint256 sharesBurned = _balanceDecrease(address(vault), address(this), sharesBefore);
+        /// @custom:ghost burnedShares = sharesBurned
         if (sharesBurned != engineShares) revert UnexpectedVenueSharesBurned(engineShares, sharesBurned);
         /// The venue burned exactly the requested shares.
         /// @custom:assert sharesBurned == engineShares
@@ -225,6 +240,9 @@ contract ERC4626Engine is
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
     /// @custom:ensures earnVault != address(0) && locked == 1
     /// @custom:ensures receiver != address(0)
+    /// The receiver's measured increase is exactly the requested assets.
+    /// @custom:ensures measuredReceived == assets
+    /// Not proved: liveness. An exact withdrawal also needs the venue's withdraw to succeed, outside this contract.
     function withdraw(uint256 assets, address receiver)
         external
         onlyEarnVault
@@ -238,6 +256,7 @@ contract ERC4626Engine is
 
         engineShares = _balanceDecrease(address(vault), address(this), sharesBefore);
         uint256 receivedAssets = _balanceIncrease(baseAsset, receiver, receiverAssetsBefore);
+        /// @custom:ghost measuredReceived = receivedAssets
         if (receivedAssets != assets) revert UnexpectedAssetsReceived(assets, receivedAssets);
         /// The receiver's measured increase is exactly the requested assets.
         /// @custom:assert receivedAssets == assets

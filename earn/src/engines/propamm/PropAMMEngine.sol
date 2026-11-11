@@ -30,6 +30,18 @@ import { IEarnVault } from "../../interfaces/core/IEarnVault.sol";
 /// Ghost record of the last oracle observation _price accepted.
 /// @custom:ghost uint256 lastPrice
 /// @custom:ghost uint256 lastObservedAt
+/// Ghost record of the engine's base-token holding (its engine shares) measured before and after each trade.
+/// @custom:ghost uint256 heldBefore
+/// @custom:ghost uint256 heldAfter
+/// Solvency: every deposit, redemption and exact withdrawal reports exactly the measured change in the base
+/// tokens the engine holds, so the EarnVault's engine-share ledger moves with the holding (see their ensures).
+/// Not proved: that the holding never falls below the engine shares the EarnVault records; tokens can leave or
+/// arrive outside these calls, which the vault ledger does not see.
+/// Not proved: an upper bound on maxOracleAge. The constructor accepts any nonzero age; no named maximum
+/// limits how old an observation deposits may price against.
+/// Not proved: a bound on the oracle price's deviation. The engine requires the pool's quote and the
+/// execution to use the observation it read, but bounds neither the price's move between observations nor
+/// its distance from any reference; any deviation limit is the pool's.
 contract PropAMMEngine is
     IEarnEngine,
     IEarnEngineExactWithdraw,
@@ -187,6 +199,10 @@ contract PropAMMEngine is
     /// A deposit of positive assets credits positive shares, admitted only with a fresh oracle observation.
     /// @custom:ensures assets > 0 && shares > 0
     /// @custom:ensures 0 < lastObservedAt && lastObservedAt <= block.timestamp && block.timestamp - lastObservedAt <= maxOracleAge
+    /// The shares credited are exactly the measured increase in the base tokens the engine holds.
+    /// @custom:ensures heldAfter == heldBefore + shares
+    /// Not proved: liveness. A deposit also needs the token pull, the pool's quote and swap, and a fresh
+    /// oracle observation, all outside this contract.
     function deposit(uint256 assets) external nonReentrant onlyEarnVault returns (uint256 shares) {
         if (assets == 0) revert InvalidAmount();
         (uint256 price, uint256 observedAt) = _price();
@@ -195,11 +211,13 @@ contract PropAMMEngine is
         if (block.timestamp - observedAt > maxOracleAge) revert InvalidOracle();
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
         uint256 baseBefore = totalShares();
+        /// @custom:ghost heldBefore = baseBefore
         IERC20(asset).safeTransferFrom(msg.sender, address(this), assets);
         if (IERC20(asset).balanceOf(address(this)) != cashBefore + assets) revert InexactTransfer();
         _buy(assets, price, observedAt);
         _samePrice(price, observedAt);
         shares = totalShares() - baseBefore;
+        /// @custom:ghost heldAfter = baseBefore + shares
         if (shares == 0) revert InvalidAmount();
         emit Deposited(msg.sender, assets, shares);
     }
@@ -209,6 +227,8 @@ contract PropAMMEngine is
     /// @custom:ensures tradeNonce == old(tradeNonce) + 1
     /// A redemption burns positive shares and pays positive assets, at least the minimum, to a valid receiver.
     /// @custom:ensures shares > 0 && assets > 0 && assets >= minAssets
+    /// The shares redeemed are exactly the measured decrease in the base tokens the engine holds.
+    /// @custom:ensures heldAfter + shares == heldBefore
     /// @custom:ensures receiver != address(0) && receiver != address(this) && receiver != address(pool)
     function redeem(uint256 shares, address receiver, uint256 minAssets)
         external
@@ -220,6 +240,7 @@ contract PropAMMEngine is
         _route();
         (uint256 price, uint256 observedAt) = _price();
         uint256 baseBefore = totalShares();
+        /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
         IERC20(baseToken).forceApprove(address(pool), shares);
         pool.swapExactInput(
@@ -235,6 +256,7 @@ contract PropAMMEngine is
             observedAt
         );
         IERC20(baseToken).forceApprove(address(pool), 0);
+        /// @custom:ghost heldAfter = totalShares()
         if (totalShares() != baseBefore - shares) revert InexactTransfer();
         assets = IERC20(asset).balanceOf(address(this)) - cashBefore;
         if (assets == 0 || assets < minAssets) revert InsufficientBacking();
@@ -249,6 +271,8 @@ contract PropAMMEngine is
     /// An exact withdrawal pays positive assets to a valid receiver for positive shares.
     /// @custom:ensures assets > 0 && shares > 0
     /// @custom:ensures receiver != address(0) && receiver != address(this) && receiver != address(pool)
+    /// The shares burned are exactly the measured decrease in the base tokens the engine holds.
+    /// @custom:ensures heldAfter + shares == heldBefore
     function withdraw(uint256 assets, address receiver) external nonReentrant onlyEarnVault returns (uint256 shares) {
         if (assets == 0) revert InvalidAmount();
         _route();
@@ -258,11 +282,13 @@ contract PropAMMEngine is
         if (maximum == 0) revert InvalidAmount();
         if (quotedPrice != price || quotedAt != observedAt) revert QuoteMismatch();
         uint256 baseBefore = totalShares();
+        /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
         IERC20(baseToken).forceApprove(address(pool), maximum);
         _executeSell(assets, maximum, price, observedAt);
         IERC20(baseToken).forceApprove(address(pool), 0);
         shares = baseBefore - totalShares();
+        /// @custom:ghost heldAfter = baseBefore - shares
         if (shares == 0 || shares > maximum || IERC20(asset).balanceOf(address(this)) != cashBefore + assets) {
             revert InexactTransfer();
         }

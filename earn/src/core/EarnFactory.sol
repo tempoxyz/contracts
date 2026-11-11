@@ -132,6 +132,7 @@ contract EarnFactory {
     /// @custom:ensures deployedEarnShareSalt == computeEarnShareSalt(params)
     /// @custom:ensures deployedTransferPolicyId == _effectiveTransferPolicyId(params.transferPolicyId)
     /// @custom:ensures deployedTransferPolicyId != 0
+    /// Not proved: the verifier does not finish this function within its time limit.
     function deploy(DeployParams calldata params)
         external
         returns (address earnShare, EarnVault earnVault, EarnFees earnFees)
@@ -205,6 +206,7 @@ contract EarnFactory {
 
     /// @notice Computes the EarnShare salt for `params`.
     /// @custom:ensures result == _earnShareSalt(params.deploymentId, params.engine, params.owner, _specControlConfigHash(params), _specFeeConfigHash(params), _effectiveTransferPolicyId(params.transferPolicyId))
+    /// Not proved: the solver gives no answer for this function.
     function computeEarnShareSalt(DeployParams calldata params) external pure returns (bytes32) {
         return _earnShareSalt(
             params.deploymentId,

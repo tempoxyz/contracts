@@ -34,6 +34,10 @@ interface IContributionTarget {
 /// @custom:ghost uint256 vaultApproval
 /// Ghost record of the supply the last supply check accepted.
 /// @custom:ghost uint256 checkedSupply
+/// Solvency: the controller never holds what it contributes. Every successful leg pulls exactly the requested
+/// assets and leaves no approval behind (see _contributeExact).
+/// Not proved: that the controller's asset balance returns to its prior value after each leg; the vault's
+/// contribute pull is not measured here.
 contract EarnContributionController is Ownable2Step {
     IContributionTarget public immutable earnVault;
     address public immutable asset;
@@ -85,6 +89,9 @@ contract EarnContributionController is Ownable2Step {
     /// @custom:ensures old(owner()) == msg.sender && old(active) && funder != address(0)
     /// @custom:ensures requestedAssets == 0 ==> fundedAssets == 0
     /// @custom:ensures locked == 1
+    /// Liveness: the owner's call while active, unlocked and for a nonzero funder always returns; a failed
+    /// pull, supply check or contribution records zero funding instead of reverting.
+    /// @custom:succeeds-if msg.sender == owner() && active && locked == 1 && funder != address(0)
     function fund(address funder, uint256 requestedAssets, uint256 maxEarnShareSupply)
         external
         onlyOwner
@@ -117,6 +124,8 @@ contract EarnContributionController is Ownable2Step {
     /// @custom:ensures forall uint256 j :: j < funders.length ==> funders[j] != address(0) && requestedAssets[j] > 0
     /// @custom:ensures totalFundedAssets >= funders.length
     /// @custom:ensures locked == 1 && vaultApproval == 0
+    /// Not proved: liveness. The batch is all-or-nothing by design, so it also needs every funder's pull, the
+    /// vault's fee accrual and every contribution to succeed, which depend on calls outside this contract.
     function fundBatchExact(address[] calldata funders, uint256[] calldata requestedAssets, uint256 maxEarnShareSupply)
         external
         onlyOwner
@@ -186,6 +195,7 @@ contract EarnContributionController is Ownable2Step {
 
     /// @notice Stops or restarts future funding calls without touching the vault or existing rewards.
     /// @custom:ensures old(owner()) == msg.sender && active == active_
+    /// @custom:succeeds-if msg.sender == owner()
     function setActive(bool active_) external onlyOwner {
         if (active == active_) return;
         active = active_;
