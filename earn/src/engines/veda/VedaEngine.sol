@@ -59,6 +59,19 @@ interface IEarnVaultPause {
 ///      earnVault.finalizeRedeem, with the no-cross-solve-residue un-earmark and the
 ///      degrade-to-skip-on-unpayable-receiver guard. Owner recovery handles a
 ///      Queue payout delivered by another authorized Veda solver without making that balance sweepable.
+/// Specs for solar-verify (docs/earn/modules/veda.md, docs/earn/integrations/engines.md):
+/// Fund flows are nonReentrant through the transient `_entered` flag.
+/// @custom:reentrancy-guard _entered
+/// Owner calls that stay open under the lock cannot unbind or rebind the EarnVault.
+/// @custom:lock-stable earnVault != address(0)
+/// Only the base asset is ever earmarked; other assets are never settled.
+/// @custom:invariant forall address a :: a != baseAsset ==> settled[a] == 0
+/// Every claim is bound to a nonzero Queue exactly when it exists; the reserved legacy status is never used.
+/// @custom:invariant forall bytes32 id :: _claims[id].status == ClaimStatus.None <==> address(_claims[id].requestQueue) == address(0)
+/// @custom:invariant forall bytes32 id :: _claims[id].status != ClaimStatus.LegacyAwaitingDetails
+/// The registry, BoringVault and base asset are fixed and nonzero; the rate age bound is never zero.
+/// @custom:invariant address(peripheryRegistry) != address(0) && address(vault) != address(0) && baseAsset != address(0)
+/// @custom:invariant maxRateAge > 0 && !authorizedForwarder[address(0)]
 contract VedaEngine is
     IEarnEngine,
     IEarnEngineRedeem,
@@ -274,12 +287,18 @@ contract VedaEngine is
 
     /// @notice One-time binding of the sole client earnVault (the factory deploys the EarnVault after the
     ///         engine). Owner-gated, set-once.
+    /// Only the owner binds, once, to a nonzero EarnVault; ownership is unchanged.
+    /// @custom:ensures old(owner()) == msg.sender && old(earnVault) == address(0) && earnVault == earnVault_
+    /// @custom:ensures earnVault_ != address(0) && owner() == old(owner())
     function initializeEarnVault(address earnVault_) external onlyOwner {
         _initializeEarnVault(earnVault_);
     }
 
     /// @notice One-time binding followed by an immediate ownership transfer during setup.
     /// @dev The atomic setup path intentionally bypasses the pending-owner acceptance step.
+    /// Only the owner binds, once, to a nonzero EarnVault, and hands ownership to a nonzero final owner.
+    /// @custom:ensures old(owner()) == msg.sender && old(earnVault) == address(0) && earnVault == earnVault_
+    /// @custom:ensures earnVault_ != address(0) && owner() == finalOwner_ && finalOwner_ != address(0)
     function initializeEarnVault(address earnVault_, address finalOwner_) external onlyOwner {
         if (finalOwner_ == address(0)) revert ZeroAddress();
         _initializeEarnVault(earnVault_);
@@ -301,6 +320,7 @@ contract VedaEngine is
     /// @dev The BoringVault owner chooses the tuple in the dedicated registry. The wrapper owner can only
     ///      coordinate activation after pausing deposits and applying wrapper-specific safe-rate bounds.
     ///      Existing claims remain bound to their originating Queue.
+    /// @custom:ensures old(owner()) == msg.sender
     function syncVedaPeriphery(uint256 minRate, uint256 maxRate) external onlyOwner nonReentrant {
         _requireDepositsPaused();
         uint64 newVersion = peripheryRegistry.version();
@@ -338,6 +358,8 @@ contract VedaEngine is
 
     /// @notice Updates the maximum age accepted for the Accountant's latest rate report.
     /// @dev The wrapper owner may change this policy only while new exposure is paused.
+    /// Only the owner sets the rate age bound, never to zero.
+    /// @custom:ensures old(owner()) == msg.sender && maxRateAge == newMaxRateAge && newMaxRateAge != 0
     function setMaxRateAge(uint64 newMaxRateAge) external onlyOwner {
         if (newMaxRateAge == 0) revert InvalidMaxRateAge();
         _requireDepositsPaused();
@@ -359,6 +381,9 @@ contract VedaEngine is
     ///      payout from a real solve) is exactly why `owner` MUST be a timelock/multisig. Keep this seat,
     ///      {cancelRedeem} on the EarnVault, the forwarding solver owner, and the Veda RolesAuthority
     ///      admin under the SAME owner-managed key set.
+    /// Only the owner edits the forwarder set, one nonzero account at a time.
+    /// @custom:ensures old(owner()) == msg.sender && account != address(0) && authorizedForwarder[account] == authorized
+    /// @custom:ensures forall address a :: a != account ==> authorizedForwarder[a] == old(authorizedForwarder[a])
     function setAuthorizedForwarder(address account, bool authorized) external onlyOwner {
         if (account == address(0)) revert ZeroAddress();
         authorizedForwarder[account] = authorized;
@@ -395,6 +420,10 @@ contract VedaEngine is
     ///         bulk-deposit path so RAW SHARES mint to THIS engine without a holder share lock, and
     ///         return the measured raw-share delta. The earnVault converts that delta through its normalized
     ///         anchor rather than treating raw share units as EarnShare units.
+    /// Only the bound EarnVault calls it.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// A deposit credits a positive measured venue-share delta.
+    /// @custom:ensures engineShares > 0
     function deposit(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         _requireFreshAccountantRate(accountant, maxRateAge);
         _checkpointRate();
@@ -415,6 +444,9 @@ contract VedaEngine is
     /// @notice Immediate buffer exit through Veda's permissioned bulk path. Burns `engineShares` raw
     ///         venue shares from the engine and pushes base asset STRAIGHT to `receiver`.
     ///         Hard-reverts when the buffer is dry (no partial fill).
+    /// Only the bound EarnVault calls it.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// @custom:ensures receiver != address(0) && assets >= minAssets
     function redeem(uint256 engineShares, address receiver, uint256 minAssets)
         external
         onlyEarnVault
@@ -435,6 +467,9 @@ contract VedaEngine is
     /// @notice Exact-asset synthesized exit. Computes engine shares needed for exactly `assets`, exits to
     ///         the engine with `minimumAssets = assets` as an underpay-impossible backstop, then
     ///         forwards EXACTLY `assets` to `receiver` (sub-1-share dust stays on the engine, sweepable).
+    /// Only the bound EarnVault calls it.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// @custom:ensures receiver != address(0)
     function withdraw(uint256 assets, address receiver)
         external
         onlyEarnVault
@@ -444,6 +479,8 @@ contract VedaEngine is
         if (receiver == address(0)) revert ZeroAddress();
         uint256 currentRate = _checkpointRate();
         engineShares = _engineSharesForAssets(assets, currentRate);
+        /// The share burn rounds up, in the protocol's favour: engineShares * rate >= assets * shareScale.
+        /// @custom:assert currentRate == 0 || engineShares * currentRate >= assets * _shareScale
         uint256 sharesBefore = vault.balanceOf(address(this));
         uint256 engineAssetsBefore = IERC20Like(baseAsset).balanceOf(address(this));
         // to == engine so any over-delivery (dust) rests here; receiver gets exactly `assets`.
@@ -482,6 +519,12 @@ contract VedaEngine is
     /// @notice File a queued exit AS THE ENGINE (request.user == engine). Approves the tracking queue on
     ///         the raw vault, requests the withdrawal, reads the canonical request back by ID, and stores
     ///         only the amounts Tempo needs for cancellation and settlement accounting.
+    /// Only the bound EarnVault calls it.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// The new claim was unused, is Open, bound to the Queue active at request time, for the requested shares.
+    /// @custom:ensures address(old(_claims[requestId].requestQueue)) == address(0)
+    /// @custom:ensures _claims[requestId].status == ClaimStatus.Open && _claims[requestId].requestQueue == old(queue)
+    /// @custom:ensures address(old(queue)) != address(0) && _claims[requestId].amountOfShares == engineShares
     function requestRedeem(uint256 engineShares, bytes calldata requestData)
         external
         onlyEarnVault
@@ -535,6 +578,11 @@ contract VedaEngine is
 
     /// @notice Cancel by request ID through the tracking queue so raw shares return to the engine. The
     ///         EarnVault mints a measured current-value re-entry to the request's stored receiver.
+    /// Only the bound EarnVault calls it.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// Only an Open claim is cancelled, returning its recorded shares.
+    /// @custom:ensures old(_claims[requestId].status) == ClaimStatus.Open && _claims[requestId].status == ClaimStatus.Cancelled
+    /// @custom:ensures engineShares == old(_claims[requestId].amountOfShares)
     function cancelRedeem(bytes32 requestId) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         QueueClaim storage c = _claims[requestId];
         ClaimStatus status = c.status;
@@ -561,6 +609,9 @@ contract VedaEngine is
     ///      claim OPEN with its funds still earmarked and only that id skipped (FinalizeFailed), instead
     ///      of reverting the whole batch and un-doing the solve for every honest user. The stuck claim is
     ///      later recoverable via {claimRedeem} once payable.
+    /// Only an authorized forwarder credits and forwards; a non-base asset is never earmarked or claimed.
+    /// @custom:ensures old(authorizedForwarder[msg.sender])
+    /// @custom:ensures asset_ != baseAsset ==> claimed == 0
     function forwardSolved(bytes32[] calldata requestIds, address asset_, uint256 delta)
         external
         onlyForwarder
@@ -592,6 +643,7 @@ contract VedaEngine is
     /// @dev The stock Queue does not expose a request-specific active-state proof. The owner must
     ///      verify the Queue's solve event before calling; this adds no authority beyond the owner's
     ///      existing ability to authorize a forwarder, but makes the exceptional recovery explicit.
+    /// @custom:ensures old(owner()) == msg.sender
     function recoverExternalSettlement(bytes32[] calldata requestIds)
         external
         onlyOwner
@@ -647,6 +699,7 @@ contract VedaEngine is
     /// @notice Self-only finalize shim: performs the asset push + earnVault.finalizeRedeem for ONE
     ///         tracked and funded request in a distinct call frame so {forwardSolved} can try/catch a
     ///         reverting payout without committing any partial state. Not callable externally.
+    /// @custom:ensures msg.sender == address(this)
     function finalizeOneExternal(bytes32 requestId) external {
         if (msg.sender != address(this)) revert NotSelf();
         _commitFinalize(requestId);
@@ -663,6 +716,8 @@ contract VedaEngine is
         if (c.status == ClaimStatus.Open) revert ClaimNotClaimable(requestId);
         if (c.status != ClaimStatus.Claimable) revert ClaimNotOpen(requestId);
         if (settled[baseAsset] < c.amountOfAssets) revert AssetsNotArrived(requestId);
+        /// No double claim: only a Claimable claim is paid, from earmarked assets, exactly its tracked amount.
+        /// @custom:assert c.status == ClaimStatus.Claimable && settled[baseAsset] >= c.amountOfAssets
         amount = c.amountOfAssets;
         _commitFinalize(requestId);
         emit RedeemClaimed(requestId, baseAsset, amount);
@@ -676,6 +731,9 @@ contract VedaEngine is
     ///         stray token. Three bounds: (1) the engine's BACKING — the BoringVault share token — can
     ///         NEVER be swept; (2) the base asset cannot be swept while any claim is unresolved; and
     ///         (3) every other token remains bounded by funds earmarked in {settled}.
+    /// Only the owner sweeps, never the BoringVault share backing, never the base asset while claims are open.
+    /// @custom:ensures old(owner()) == msg.sender && to != address(0) && token != address(vault)
+    /// @custom:ensures token == baseAsset ==> old(unresolvedClaimCount) == 0
     function sweepDust(address token, address to, uint256 amount) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         // Backing custody: raw BoringVault shares are the engine's entire backing and are NEVER dust.
@@ -689,6 +747,8 @@ contract VedaEngine is
         uint256 reserved = settled[token];
         uint256 available = have > reserved ? have - reserved : 0;
         if (amount > available) revert SweepExceedsAvailableBalance(token, available, amount);
+        /// A nonzero sweep leaves at least the earmarked amount on the engine.
+        /// @custom:assert amount == 0 || have - amount >= reserved
         _push(token, to, amount);
         emit DustSwept(token, to, amount);
     }
@@ -746,6 +806,8 @@ contract VedaEngine is
         return _engineSharesForAssets(assets, r);
     }
 
+    /// @custom:ensures r == 0 ==> result == 0
+    /// @custom:ensures r > 0 ==> result * r >= assets * _shareScale
     function _engineSharesForAssets(uint256 assets, uint256 r) private view returns (uint256) {
         if (r == 0) return 0;
         return Math.mulDiv(assets, _shareScale, r, Math.Rounding.Ceil);
@@ -762,6 +824,9 @@ contract VedaEngine is
         _checkpointRate(currentRate);
     }
 
+    /// The first rate seen in a transaction is kept; any later different rate reverts.
+    /// @custom:ensures _rateCheckpointed && _rateAtTransaction == currentRate
+    /// @custom:ensures old(_rateCheckpointed) ==> old(_rateAtTransaction) == currentRate
     function _checkpointRate(uint256 currentRate) private {
         if (_rateCheckpointed) {
             if (_rateAtTransaction != currentRate) {
@@ -812,6 +877,8 @@ contract VedaEngine is
         settled[assetOut] -= amount;
         c.status = ClaimStatus.Paid;
         _closeClaim(c);
+        /// The claim is latched Paid and its earmark consumed before any external payout call.
+        /// @custom:assert _claims[requestId].status == ClaimStatus.Paid && settled[baseAsset] == old(settled[baseAsset]) - amount
 
         // Hand solved assets to the EarnVault, which pays the stored receiver and closes the claim.
         _push(assetOut, earnVault, amount);

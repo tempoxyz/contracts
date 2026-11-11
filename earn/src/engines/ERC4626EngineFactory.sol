@@ -23,6 +23,8 @@ contract ERC4626EngineFactory {
     error EngineAlreadyExists(address engine);
     error FactoryCannotBeFinalOwner();
 
+    /// The factory never takes authority: a zero deployment ID and the factory itself as owner are refused.
+    /// @custom:ensures deploymentId != bytes32(0) && owner != address(this)
     function deploy(
         bytes32 deploymentId,
         IERC4626Vault vault,
@@ -41,6 +43,9 @@ contract ERC4626EngineFactory {
         emit ERC4626EngineDeployed(address(engine), address(vault), owner, engine.asset(), deploymentId, engineSalt);
     }
 
+    // Not proved: the salt binding (the hash of ENGINE_SALT_DOMAIN, deploymentId, vault, owner and
+    // both override hashes) is not stated as a spec: the solver answers unknown on a keccak256 constant
+    // inside abi.encode.
     function computeEngineSalt(
         bytes32 deploymentId,
         IERC4626Vault vault,

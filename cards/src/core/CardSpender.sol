@@ -27,6 +27,8 @@ import { ITempoEarnVault } from "./interfaces/ITempoEarnVault.sol";
 ///        payer (Bridge, through its spender clone and "TS" handler, so Bridge's factory governs the spend).
 ///      Either way it checks the destination (its TIP-1022 master, for a virtual address) got exactly the
 ///      amount, and a payout uses exactly the spend's input, no more than the share cost it quoted.
+/// @custom:reentrancy-guard _locked
+/// @custom:invariant address(PROVIDER) != address(0) && ROUTER_FACTORY != address(0)
 contract CardSpender is ISpender {
     /// @dev Solady's `TransferFailed()` and `ApproveFailed()`.
     bytes4 private constant TRANSFER_FAILED = 0x90b8ec18;
@@ -82,6 +84,7 @@ contract CardSpender is ISpender {
         _locked = false;
     }
 
+    /// @custom:ensures PROVIDER == provider_ && ROUTER_FACTORY == routerFactory_
     constructor(ICardProvider provider_, address routerFactory_) {
         if (address(provider_) == address(0) || routerFactory_ == address(0)) revert ZeroAddress();
         if (!ERC165Checker.supportsInterface(address(provider_), type(ICardProvider).interfaceId)) {
@@ -92,6 +95,7 @@ contract CardSpender is ISpender {
         if (ERC165Checker.supportsInterface(address(provider_), type(ICardProviderPayout).interfaceId)) {
             address target = ICardProviderPayout(address(provider_)).payoutTarget();
             if (target == address(0)) revert ZeroAddress();
+            /// @custom:assert target != address(0)
             PAYOUT_TARGET = target;
         }
     }
@@ -119,6 +123,7 @@ contract CardSpender is ISpender {
     ///      lets a program keep a seed (one unit of each token it handles, sent by anyone) as the baseline
     ///      every spend leaves untouched, so a spend never creates the program's balance slot (TIP-1000). One
     ///      withdrawal carries one token: the stablecoin, or the shares of the vault that funds all of it.
+    /// @custom:ensures 0 < maxInput && maxInput <= type(uint128).max
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
         if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
         CardSpend memory s = abi.decode(data, (CardSpend));
@@ -130,6 +135,8 @@ contract CardSpender is ISpender {
             input = ITempoEarnVault(s.vault).earnShare();
         }
         if (input == address(0) || input != token) revert WrongInputToken(token);
+        /// @custom:assert 0 < maxInput && maxInput <= type(uint128).max && input == token && token != address(0)
+        /// @custom:assert s.fromVault == 0 ? token == s.token : s.fromVault == s.amount && s.vault != address(0)
         // A private spend names no cardholder, so the provider gets no payer.
         address payee = _check(s, address(0), true);
 
@@ -137,6 +144,7 @@ contract CardSpender is ISpender {
         uint256 balance = IERC20Like(token).balanceOf(address(this));
         if (balance < maxInput) revert InsufficientInput();
         uint256 baseline = balance - maxInput;
+        /// @custom:assert balance >= maxInput && baseline == balance - maxInput
         uint256 destinationBefore = IERC20Like(s.token).balanceOf(payee);
 
         uint256 expected;
@@ -160,6 +168,9 @@ contract CardSpender is ISpender {
         if (PAYOUT_TARGET != address(0) && (s.fromVault == 0 ? consumed != expected : consumed > expected)) {
             revert InputNotConsumed(consumed, expected);
         }
+        /// @custom:assert 0 < consumed && consumed <= maxInput && consumed + unused == maxInput
+        /// @custom:assert PAYOUT_TARGET != address(0) && s.fromVault == 0 ==> consumed == s.amount
+        /// @custom:assert PAYOUT_TARGET != address(0) && s.fromVault != 0 ==> consumed <= expected
         if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
         if (unused != 0) _tokenCall(token, IERC20Like.transfer.selector, msg.sender, unused, TRANSFER_FAILED);
         if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
@@ -231,6 +242,9 @@ contract CardSpender is ISpender {
         if (isPrivate && (s.destination == msg.sender || payee == msg.sender)) {
             revert DestinationNotAuthorized(s.destination);
         }
+        /// @custom:assert s.program == address(this) && 0 < s.amount && s.fromVault <= s.amount
+        /// @custom:assert payee != address(0) && payee != address(this)
+        /// @custom:assert isPrivate ==> s.destination != msg.sender && payee != msg.sender
         // A payout target enforces the provider's pause, destination and vault rules in the same call
         // (ICardProviderPayout), so asking the provider first would only repeat them.
         if (PAYOUT_TARGET != address(0)) return payee;
@@ -253,6 +267,8 @@ contract CardSpender is ISpender {
         ITempoEarnVault v = ITempoEarnVault(s.vault);
         uint256 required = v.previewWithdraw(s.fromVault);
         if (s.maxShares != 0 && required > s.maxShares) revert ShareCostExceeded(required, s.maxShares);
+        /// @custom:assert s.maxShares == 0 || required <= s.maxShares
+        /// @custom:assert fromStable + s.fromVault == s.amount && s.fromVault != 0
         address share = v.earnShare();
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
         sharesUsed = _redeem(v, share, s, payee, required);
@@ -264,11 +280,14 @@ contract CardSpender is ISpender {
     function _spendDirect(CardSpend memory s, uint256 maxInput, address payee) private {
         if (s.fromVault == 0) {
             if (s.amount > maxInput) revert InsufficientInput();
+            /// @custom:assert s.amount <= maxInput
             SafeTransferLib.safeTransfer(s.token, s.destination, s.amount);
             return;
         }
         ITempoEarnVault v = ITempoEarnVault(s.vault);
         uint256 cap = s.maxShares != 0 && s.maxShares < maxInput ? s.maxShares : maxInput;
+        /// @custom:assert cap <= maxInput && (s.maxShares == 0 || cap <= s.maxShares)
+        /// @custom:assert cap == maxInput || cap == s.maxShares
         _redeem(v, v.earnShare(), s, payee, cap);
     }
 
@@ -305,7 +324,10 @@ contract CardSpender is ISpender {
             // would decline a payer whose shares cover the cost but not the cap.
             shareIn = v.previewWithdraw(s.fromVault);
             if (s.maxShares != 0 && shareIn > s.maxShares) revert ShareCostExceeded(shareIn, s.maxShares);
+            /// @custom:assert s.maxShares == 0 || shareIn <= s.maxShares
         }
+        /// @custom:assert fromStable + s.fromVault == s.amount
+        /// @custom:assert s.fromVault == 0 ==> share == address(0) && shareIn == 0
         uint256 stableBase = IERC20Like(s.token).balanceOf(address(this));
         uint256 shareBase = share == address(0) ? 0 : IERC20Like(share).balanceOf(address(this));
         if (fromStable != 0) SafeTransferLib.safeTransferFrom(s.token, msg.sender, address(this), fromStable);
@@ -316,10 +338,12 @@ contract CardSpender is ISpender {
         // Each reverts if the target took more than the payer put in.
         uint256 stableLeft = IERC20Like(s.token).balanceOf(address(this)) - stableBase;
         if (stableLeft != 0) revert InputNotConsumed(fromStable - stableLeft, fromStable);
+        /// @custom:assert stableLeft == 0
         if (share != address(0)) {
             uint256 shareLeft = IERC20Like(share).balanceOf(address(this)) - shareBase;
             sharesUsed = shareIn - shareLeft;
             if (shareLeft != 0) _refund(share, shareLeft);
+            /// @custom:assert sharesUsed + shareLeft == shareIn
         }
     }
 
@@ -359,6 +383,7 @@ contract CardSpender is ISpender {
         }
         if (ret.length == 0) return to;
         if (ret.length != 32) revert UnresolvedRecipient();
+        /// @custom:assert ret.length == 32
         return abi.decode(ret, (address));
     }
 

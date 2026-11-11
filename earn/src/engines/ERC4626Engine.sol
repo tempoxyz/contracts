@@ -26,6 +26,16 @@ interface IERC4626Vault {
 /// @title ERC4626Engine
 /// @notice Single-EarnVault engine for an immediate-execution ERC-4626 venue.
 /// @dev The engine is the sole holder of venue shares backing its paired `EarnVault`.
+/// Specs for solar-verify (docs/earn/modules/erc4626-engine.md, docs/earn/integrations/engines.md):
+/// Every venue entry point is nonReentrant (`locked` is 1 when free and 2 while held).
+/// @custom:reentrancy-guard locked != 1
+/// @custom:invariant locked == 1 || locked == 2
+/// Owner calls that stay open under the lock cannot unbind or rebind the EarnVault.
+/// @custom:lock-stable earnVault != address(0)
+/// The venue and its base asset are fixed and nonzero.
+/// @custom:invariant address(vault) != address(0) && baseAsset != address(0)
+/// The effective name and symbol are never empty.
+/// @custom:invariant bytes(_name).length > 0 && bytes(_symbol).length > 0
 contract ERC4626Engine is
     IEarnEngine,
     IEarnEngineRedeem,
@@ -74,6 +84,10 @@ contract ERC4626Engine is
         locked = 1;
     }
 
+    /// A nonempty override wins; otherwise the vault's own name and symbol are used.
+    /// @custom:ensures bytes(nameOverride_).length > 0 ==> keccak256(bytes(_name)) == keccak256(bytes(nameOverride_))
+    /// @custom:ensures bytes(symbolOverride_).length > 0 ==> keccak256(bytes(_symbol)) == keccak256(bytes(symbolOverride_))
+    /// @custom:ensures vault == vault_ && earnVault == address(0) && owner() == owner_
     constructor(IERC4626Vault vault_, address owner_, string memory nameOverride_, string memory symbolOverride_)
         Ownable(owner_)
     {
@@ -90,18 +104,27 @@ contract ERC4626Engine is
         if (bytes(_name).length == 0 || bytes(_symbol).length == 0) revert EmptyMetadata();
     }
 
+    /// Only the owner binds, once, to a nonzero EarnVault; ownership is unchanged.
+    /// @custom:ensures old(owner()) == msg.sender && old(earnVault) == address(0)
+    /// @custom:ensures earnVault == earnVault_ && earnVault_ != address(0)
+    /// @custom:ensures owner() == old(owner()) && pendingOwner() == old(pendingOwner())
     function initializeEarnVault(address earnVault_) external onlyOwner {
         _initializeEarnVault(earnVault_);
     }
 
     /// @notice One-time binding followed by an immediate ownership transfer during setup.
     /// @dev The atomic setup path intentionally bypasses the pending-owner acceptance step.
+    /// Only the owner binds, once, to a nonzero EarnVault, and hands ownership to a nonzero final owner.
+    /// @custom:ensures old(owner()) == msg.sender && old(earnVault) == address(0)
+    /// @custom:ensures earnVault == earnVault_ && earnVault_ != address(0)
+    /// @custom:ensures owner() == finalOwner_ && finalOwner_ != address(0) && pendingOwner() == address(0)
     function initializeEarnVault(address earnVault_, address finalOwner_) external onlyOwner {
         if (finalOwner_ == address(0)) revert ZeroAddress();
         _initializeEarnVault(earnVault_);
         _transferOwnership(finalOwner_);
     }
 
+    /// @custom:ensures old(earnVault) == address(0) && earnVault_ != address(0) && earnVault == earnVault_
     function _initializeEarnVault(address earnVault_) internal {
         if (earnVault != address(0)) revert AlreadyInitialized();
         if (earnVault_ == address(0)) revert ZeroAddress();
@@ -109,6 +132,7 @@ contract ERC4626Engine is
         emit EarnVaultInitialized(earnVault_);
     }
 
+    /// @custom:ensures result == baseAsset
     function asset() external view returns (address) {
         return baseAsset;
     }
@@ -121,6 +145,7 @@ contract ERC4626Engine is
         return _symbol;
     }
 
+    /// @custom:ensures result == _shareScale
     function shareScale() external view returns (uint256) {
         return _shareScale;
     }
@@ -129,6 +154,12 @@ contract ERC4626Engine is
         return vault.balanceOf(address(this));
     }
 
+    /// Only the bound EarnVault calls it.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    // Not proved: the binding and lock release after deposit are not stated here, because the
+    // verifier havocs all storage across a call on the right of && under the lock (_forceApprove).
+    /// A deposit credits a positive measured venue-share delta.
+    /// @custom:ensures engineShares > 0
     function deposit(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         _pull(baseAsset, msg.sender, assets);
         _forceApprove(baseAsset, address(vault), assets);
@@ -137,11 +168,18 @@ contract ERC4626Engine is
         vault.deposit(assets, address(this));
         engineShares = vault.balanceOf(address(this)) - beforeBalance;
 
+        /// The measured delta on top of the balance before is the balance after, a uint256.
+        /// @custom:assert beforeBalance + engineShares <= type(uint256).max
         _forceApprove(baseAsset, address(vault), 0);
         if (engineShares == 0) revert NoVenueSharesReceived();
         emit Deposited(msg.sender, assets, engineShares);
     }
 
+    /// Only the bound EarnVault calls it; the binding and the lock survive the call.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// @custom:ensures earnVault != address(0) && locked == 1
+    /// In-kind entry pulls from a nonzero holder and credits a positive measured venue-share delta.
+    /// @custom:ensures from != address(0) && engineSharesReceived > 0
     function depositInKind(uint256 venueShares, address from)
         external
         onlyEarnVault
@@ -152,10 +190,17 @@ contract ERC4626Engine is
         uint256 beforeBalance = vault.balanceOf(address(this));
         _pull(address(vault), from, venueShares);
         engineSharesReceived = vault.balanceOf(address(this)) - beforeBalance;
+        /// The measured delta on top of the balance before is the balance after, a uint256.
+        /// @custom:assert beforeBalance + engineSharesReceived <= type(uint256).max
         if (engineSharesReceived == 0) revert NoVenueSharesReceived();
         emit VenueSharesDeposited(from, venueShares, engineSharesReceived);
     }
 
+    /// Only the bound EarnVault calls it; the binding and the lock survive the call.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// @custom:ensures earnVault != address(0) && locked == 1
+    /// The receiver is nonzero and its measured increase meets the caller's minimum.
+    /// @custom:ensures receiver != address(0) && assets >= minAssets
     function redeem(uint256 engineShares, address receiver, uint256 minAssets)
         external
         onlyEarnVault
@@ -169,11 +214,17 @@ contract ERC4626Engine is
 
         uint256 sharesBurned = _balanceDecrease(address(vault), address(this), sharesBefore);
         if (sharesBurned != engineShares) revert UnexpectedVenueSharesBurned(engineShares, sharesBurned);
+        /// The venue burned exactly the requested shares.
+        /// @custom:assert sharesBurned == engineShares
         assets = _balanceIncrease(baseAsset, receiver, receiverAssetsBefore);
         if (assets < minAssets) revert InsufficientAssetsReceived(minAssets, assets);
         emit Redeemed(receiver, engineShares, assets);
     }
 
+    /// Only the bound EarnVault calls it; the binding and the lock survive the call.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// @custom:ensures earnVault != address(0) && locked == 1
+    /// @custom:ensures receiver != address(0)
     function withdraw(uint256 assets, address receiver)
         external
         onlyEarnVault
@@ -188,6 +239,8 @@ contract ERC4626Engine is
         engineShares = _balanceDecrease(address(vault), address(this), sharesBefore);
         uint256 receivedAssets = _balanceIncrease(baseAsset, receiver, receiverAssetsBefore);
         if (receivedAssets != assets) revert UnexpectedAssetsReceived(assets, receivedAssets);
+        /// The receiver's measured increase is exactly the requested assets.
+        /// @custom:assert receivedAssets == assets
         emit WithdrewExact(receiver, assets, engineShares);
     }
 
@@ -207,7 +260,22 @@ contract ERC4626Engine is
         return vault.previewRedeem(totalShares());
     }
 
+    /// Advertises ERC-165, the engine, redeem, exact withdraw and in-kind entry, and nothing else.
+    /// @custom:ensures interfaceId == type(IERC165).interfaceId ==> result
+    /// @custom:ensures interfaceId == type(IEarnEngine).interfaceId ==> result
+    /// @custom:ensures interfaceId == type(IEarnEngineRedeem).interfaceId ==> result
+    /// @custom:ensures interfaceId == type(IEarnEngineExactWithdraw).interfaceId ==> result
+    /// @custom:ensures interfaceId == type(IEarnEngineInKindDeposit).interfaceId ==> result
+    /// @custom:ensures result ==> _isAdvertised(interfaceId)
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId
+            || interfaceId == type(IEarnEngineRedeem).interfaceId
+            || interfaceId == type(IEarnEngineExactWithdraw).interfaceId
+            || interfaceId == type(IEarnEngineInKindDeposit).interfaceId;
+    }
+
+    /// @custom:spec
+    function _isAdvertised(bytes4 interfaceId) internal pure returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId
             || interfaceId == type(IEarnEngineRedeem).interfaceId
             || interfaceId == type(IEarnEngineExactWithdraw).interfaceId
@@ -223,6 +291,8 @@ contract ERC4626Engine is
         if (amount != 0 && !IERC20Like(token).approve(spender, amount)) revert TransferFailed();
     }
 
+    /// The increase is zero or a real increase over `balanceBefore`: before plus increase is the balance after.
+    /// @custom:ensures balanceBefore + increase <= type(uint256).max
     function _balanceIncrease(address token, address account, uint256 balanceBefore)
         private
         view
@@ -232,6 +302,8 @@ contract ERC4626Engine is
         if (balanceAfter > balanceBefore) increase = balanceAfter - balanceBefore;
     }
 
+    /// The decrease is zero or a real decrease from `balanceBefore`.
+    /// @custom:ensures decrease <= balanceBefore
     function _balanceDecrease(address token, address account, uint256 balanceBefore)
         private
         view

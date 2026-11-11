@@ -30,6 +30,8 @@ library SpenderTempoSpendStorageLib {
     }
 }
 
+// No specs yet: the verifier does not support its ERC-7201 storage pointer (assembly "$.slot := SLOT"), and
+// every entry point but the disabled pipeline reads that storage.
 /// @title SpenderTempoSpend
 /// @notice Bridge spender handler (prefix "TS") that settles Tempo card spend from stablecoin,
 ///         Tempo Earn shares, or both, publicly or from a Zone.

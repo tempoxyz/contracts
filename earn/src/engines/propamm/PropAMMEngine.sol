@@ -20,6 +20,16 @@ import { IEarnVault } from "../../interfaces/core/IEarnVault.sol";
 
 /// @notice Single-position PropAMM engine denominated in its immutable quote asset.
 /// @dev Pool and oracle are immutable. Only the bound EarnVault can move collateral.
+/// Specs for solar-verify (docs/earn/modules/propamm.md, docs/earn/integrations/engines.md):
+/// The OpenZeppelin ReentrancyGuard lock (`_status` is 2 while entered) guards every fund flow.
+/// @custom:reentrancy-guard _status == 2
+/// Owner calls that stay open under the lock cannot unbind or rebind the EarnVault.
+/// @custom:lock-stable earnVault != address(0)
+/// The pool trades two distinct tokens; the oracle age bound and route are nonzero.
+/// @custom:invariant baseToken != asset && maxOracleAge > 0 && customerId != bytes32(0)
+/// Ghost record of the last oracle observation _price accepted.
+/// @custom:ghost uint256 lastPrice
+/// @custom:ghost uint256 lastObservedAt
 contract PropAMMEngine is
     IEarnEngine,
     IEarnEngineExactWithdraw,
@@ -65,6 +75,7 @@ contract PropAMMEngine is
         _;
     }
 
+    /// @custom:ensures address(pool) == pool_ && maxOracleAge == maxAge_ && customerId == route_ && earnVault == address(0)
     constructor(address pool_, address owner_, uint256 maxAge_, bytes32 route_) Ownable(owner_) {
         if (pool_.code.length == 0 || maxAge_ == 0 || route_ == bytes32(0)) revert InvalidConfiguration();
         IPropAMMVenue venue = IPropAMMVenue(pool_);
@@ -91,16 +102,23 @@ contract PropAMMEngine is
         customerId = route_;
     }
 
+    /// Only the owner binds, once, to an EarnVault with code and the same asset; ownership is unchanged.
+    /// @custom:ensures old(owner()) == msg.sender && old(earnVault) == address(0) && earnVault == vault_
+    /// @custom:ensures owner() == old(owner()) && pendingOwner() == old(pendingOwner())
     function initializeEarnVault(address vault_) external onlyOwner {
         _bind(vault_);
     }
 
+    /// Only the owner binds, once, to an EarnVault with code, and hands ownership to a nonzero final owner.
+    /// @custom:ensures old(owner()) == msg.sender && old(earnVault) == address(0) && earnVault == vault_
+    /// @custom:ensures owner() == finalOwner_ && finalOwner_ != address(0) && pendingOwner() == address(0)
     function initializeEarnVault(address vault_, address finalOwner_) external onlyOwner {
         if (finalOwner_ == address(0)) revert InvalidConfiguration();
         _bind(vault_);
         _transferOwnership(finalOwner_);
     }
 
+    /// @custom:ensures old(earnVault) == address(0) && earnVault == vault_
     function _bind(address vault_) private {
         if (earnVault != address(0)) revert AlreadyBound();
         if (vault_.code.length == 0 || IEarnVault(vault_).asset() != asset) revert InvalidConfiguration();
@@ -108,6 +126,13 @@ contract PropAMMEngine is
         emit EarnVaultInitialized(vault_);
     }
 
+    /// Advertises ERC-165, the engine, exact withdraw, redeem and fee valuation, and nothing else.
+    /// @custom:ensures id == type(IERC165).interfaceId ==> result
+    /// @custom:ensures id == type(IEarnEngine).interfaceId ==> result
+    /// @custom:ensures id == type(IEarnEngineExactWithdraw).interfaceId ==> result
+    /// @custom:ensures id == type(IEarnEngineRedeem).interfaceId ==> result
+    /// @custom:ensures id == type(IEarnEngineFeeValuation).interfaceId ==> result
+    /// @custom:ensures result ==> _isAdvertised(id)
     function supportsInterface(bytes4 id) external pure returns (bool) {
         return id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId
             || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId
@@ -122,6 +147,9 @@ contract PropAMMEngine is
         return valueOf(totalShares());
     }
 
+    /// Valuation reverts mid-settlement and rounds down, in the vault's favour: shares * price / priceScale.
+    /// @custom:ensures _status != 2 && lastPrice > 0
+    /// @custom:ensures result * priceScale <= shares * lastPrice && shares * lastPrice < (result + 1) * priceScale
     function valueOf(uint256 shares) public view returns (uint256) {
         if (_reentrancyGuardEntered()) revert ReadDuringSettlement();
         (uint256 price,) = _price();
@@ -132,6 +160,7 @@ contract PropAMMEngine is
         return valueOf(shares);
     }
 
+    /// @custom:ensures _status != 2 && assets > 0 && shares > 0
     function previewWithdraw(uint256 assets) public view returns (uint256 shares) {
         if (_reentrancyGuardEntered()) revert ReadDuringSettlement();
         if (assets == 0) revert InvalidAmount();
@@ -147,10 +176,17 @@ contract PropAMMEngine is
         }
     }
 
+    /// @custom:ensures 0 < observedAt && observedAt <= block.timestamp
     function oracleObservationTime() external view returns (uint256 observedAt) {
         (, observedAt) = _price();
     }
 
+    /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
+    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// A deposit of positive assets credits positive shares, admitted only with a fresh oracle observation.
+    /// @custom:ensures assets > 0 && shares > 0
+    /// @custom:ensures 0 < lastObservedAt && lastObservedAt <= block.timestamp && block.timestamp - lastObservedAt <= maxOracleAge
     function deposit(uint256 assets) external nonReentrant onlyEarnVault returns (uint256 shares) {
         if (assets == 0) revert InvalidAmount();
         (uint256 price, uint256 observedAt) = _price();
@@ -168,6 +204,12 @@ contract PropAMMEngine is
         emit Deposited(msg.sender, assets, shares);
     }
 
+    /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
+    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// A redemption burns positive shares and pays positive assets, at least the minimum, to a valid receiver.
+    /// @custom:ensures shares > 0 && assets > 0 && assets >= minAssets
+    /// @custom:ensures receiver != address(0) && receiver != address(this) && receiver != address(pool)
     function redeem(uint256 shares, address receiver, uint256 minAssets)
         external
         nonReentrant
@@ -201,6 +243,12 @@ contract PropAMMEngine is
         emit Redeemed(receiver, shares, assets);
     }
 
+    /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
+    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// An exact withdrawal pays positive assets to a valid receiver for positive shares.
+    /// @custom:ensures assets > 0 && shares > 0
+    /// @custom:ensures receiver != address(0) && receiver != address(this) && receiver != address(pool)
     function withdraw(uint256 assets, address receiver) external nonReentrant onlyEarnVault returns (uint256 shares) {
         if (assets == 0) revert InvalidAmount();
         _route();
@@ -238,14 +286,22 @@ contract PropAMMEngine is
         venueBase = IERC20(baseToken).balanceOf(address(pool));
     }
 
+    /// The oracle is the pool's current one with the recorded decimals, and its observation is nonzero
+    /// and not in the future.
+    /// @custom:ensures price > 0 && 0 < observedAt && observedAt <= block.timestamp
+    /// @custom:ensures price == lastPrice && observedAt == lastObservedAt
     function _price() private view returns (uint256 price, uint256 observedAt) {
         if (pool.oracle() != address(priceOracle) || priceOracle.decimals() != oracleDecimals) revert InvalidOracle();
         (price, observedAt) = priceOracle.latestPrice();
+        /// @custom:ghost lastPrice = price
+        /// @custom:ghost lastObservedAt = observedAt
         if (price == 0 || observedAt == 0 || observedAt > block.timestamp) {
             revert InvalidOracle();
         }
     }
 
+    /// The oracle observation has not moved since the trade was priced.
+    /// @custom:ensures lastPrice == price && lastObservedAt == observedAt
     function _samePrice(uint256 price, uint256 observedAt) private view {
         (uint256 currentPrice, uint256 currentObservedAt) = _price();
         if (price != currentPrice || observedAt != currentObservedAt) revert QuoteMismatch();
@@ -311,6 +367,13 @@ contract PropAMMEngine is
             0,
             observedAt
         );
+    }
+
+    /// @custom:spec
+    function _isAdvertised(bytes4 id) internal pure returns (bool) {
+        return id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId
+            || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId
+            || id == type(IEarnEngineFeeValuation).interfaceId;
     }
 
     function _route() private view {

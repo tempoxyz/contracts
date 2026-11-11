@@ -23,6 +23,8 @@ import { IRainCollateral, IRainCollateralFactory } from "./IRain.sol";
 ///      pooled collateral are fixed at deployment (`Configured` lists them): there is no owner. Rain's
 ///      contracts have no pause, so this provider reports none: Rain stops a program by revoking its access
 ///      keys and Zone keys, the only senders of its spends, which can pay only collateral Rain controls.
+/// @custom:invariant FACTORY != address(0)
+/// @custom:invariant !isAcceptedToken[address(0)] && !isAllowedVault[address(0)] && !isProgramCollateral[address(0)]
 contract RainProvider is ICardProvider {
     /// @notice Rain's `RainCollateralFactory` (its proxy, where it is behind one).
     address public immutable FACTORY;
@@ -44,6 +46,11 @@ contract RainProvider is ICardProvider {
 
     error ZeroAddress();
 
+    /// @custom:succeeds-if factory_ != address(0) && (forall uint256 i :: i < tokens_.length ==> tokens_[i] != address(0)) && (forall uint256 i :: i < vaults_.length ==> vaults_[i] != address(0)) && (forall uint256 i :: i < programCollaterals_.length ==> programCollaterals_[i] != address(0))
+    /// @custom:ensures FACTORY == factory_ && POOLED_ACCEPTS_PUBLIC == pooledAcceptsPublic_
+    /// @custom:ensures forall uint256 i :: i < tokens_.length ==> isAcceptedToken[tokens_[i]]
+    /// @custom:ensures forall uint256 i :: i < vaults_.length ==> isAllowedVault[vaults_[i]]
+    /// @custom:ensures forall uint256 i :: i < programCollaterals_.length ==> isProgramCollateral[programCollaterals_[i]]
     constructor(
         address factory_,
         address[] memory tokens_,
@@ -54,14 +61,26 @@ contract RainProvider is ICardProvider {
         if (factory_ == address(0)) revert ZeroAddress();
         FACTORY = factory_;
         POOLED_ACCEPTS_PUBLIC = pooledAcceptsPublic_;
+        /// @custom:invariant i <= tokens_.length && FACTORY != address(0)
+        /// @custom:invariant !isAcceptedToken[address(0)] && !isAllowedVault[address(0)] && !isProgramCollateral[address(0)]
+        /// @custom:invariant forall uint256 j :: j < i ==> isAcceptedToken[tokens_[j]]
         for (uint256 i; i < tokens_.length; ++i) {
             if (tokens_[i] == address(0)) revert ZeroAddress();
             isAcceptedToken[tokens_[i]] = true;
         }
+        /// @custom:invariant i <= vaults_.length && FACTORY != address(0)
+        /// @custom:invariant !isAcceptedToken[address(0)] && !isAllowedVault[address(0)] && !isProgramCollateral[address(0)]
+        /// @custom:invariant forall uint256 j :: j < tokens_.length ==> isAcceptedToken[tokens_[j]]
+        /// @custom:invariant forall uint256 j :: j < i ==> isAllowedVault[vaults_[j]]
         for (uint256 i; i < vaults_.length; ++i) {
             if (vaults_[i] == address(0)) revert ZeroAddress();
             isAllowedVault[vaults_[i]] = true;
         }
+        /// @custom:invariant i <= programCollaterals_.length && FACTORY != address(0)
+        /// @custom:invariant !isAcceptedToken[address(0)] && !isAllowedVault[address(0)] && !isProgramCollateral[address(0)]
+        /// @custom:invariant forall uint256 j :: j < tokens_.length ==> isAcceptedToken[tokens_[j]]
+        /// @custom:invariant forall uint256 j :: j < vaults_.length ==> isAllowedVault[vaults_[j]]
+        /// @custom:invariant forall uint256 j :: j < i ==> isProgramCollateral[programCollaterals_[j]]
         for (uint256 i; i < programCollaterals_.length; ++i) {
             if (programCollaterals_[i] == address(0)) revert ZeroAddress();
             isProgramCollateral[programCollaterals_[i]] = true;
@@ -71,6 +90,9 @@ contract RainProvider is ICardProvider {
 
     /// @inheritdoc ICardProvider
     /// @dev `hint` is `destination`'s index in the factory's `collateralProxies`.
+    /// @custom:ensures result ==> isAcceptedToken[token] && destination != address(0)
+    /// @custom:ensures result && isPrivate ==> isProgramCollateral[destination]
+    /// @custom:ensures result && isProgramCollateral[destination] ==> isPrivate || POOLED_ACCEPTS_PUBLIC
     function isAuthorizedDestination(address payer, address destination, address token, uint256 hint, bool isPrivate)
         external
         view
@@ -86,16 +108,21 @@ contract RainProvider is ICardProvider {
     }
 
     /// @inheritdoc ICardProvider
+    /// @custom:ensures !result
     function paused() external pure returns (bool) {
         return false;
     }
 
+    /// @custom:ensures interfaceId == type(ICardProvider).interfaceId ==> result
+    /// @custom:ensures interfaceId == type(IERC165).interfaceId ==> result
+    /// @custom:ensures result ==> interfaceId == type(ICardProvider).interfaceId || interfaceId == type(IERC165).interfaceId
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
         return interfaceId == type(ICardProvider).interfaceId || interfaceId == type(IERC165).interfaceId;
     }
 
     /// @notice Whether `collateral` is the collateral contract Rain's factory recorded at `index` of its
     ///         `collateralProxies`. An index past the end reverts in the factory and reads as false.
+    /// @custom:ensures collateral == address(0) ==> !result
     function isRainCollateral(address collateral, uint256 index) public view returns (bool) {
         if (collateral == address(0)) return false;
         (bool ok, bytes memory ret) =

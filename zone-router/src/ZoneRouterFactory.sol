@@ -18,6 +18,7 @@ contract ZoneRouterFactory {
     error UnexpectedRouterAddress(address deployed, address predicted);
 
     /// @notice Deploys the router for `mode`, or returns it if it already exists.
+    /// @custom:ensures isRouter[router]
     function deploy(ZoneRouter.Mode calldata mode) external returns (address router) {
         bytes memory modeArgs = abi.encode(mode);
         bytes32 modeHash = keccak256(modeArgs);
@@ -26,6 +27,7 @@ contract ZoneRouterFactory {
         address deployed = address(new ZoneRouter{ salt: modeHash }(mode));
         // CREATE2 makes this an invariant; checked so a compiler or EVM change cannot silently diverge.
         if (deployed != router) revert UnexpectedRouterAddress(deployed, router);
+        /// @custom:assert deployed == router
         isRouter[router] = true;
         emit RouterDeployed(router, modeHash, mode);
     }
