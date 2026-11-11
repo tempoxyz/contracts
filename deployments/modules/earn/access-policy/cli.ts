@@ -147,7 +147,7 @@ export async function policySiblingStacks(
         continue
       }
       // Only a record on this chain and genesis can share the policy; others need no strict load.
-      if (!sameTarget(path, stack.network.chainId, genesisHash)) continue
+      if (!sameTarget(path, authored.chainId, stack.network.chainId, genesisHash)) continue
       const values = siblingEnvironment(root, authored.id)
       const identityPath = values.EARN_TRUSTED_DEPLOYMENT_IDENTITY?.trim()
       const identity = identityPath
@@ -169,15 +169,25 @@ export async function policySiblingStacks(
 }
 
 /**
- * Whether a generated record targets this chain and genesis, read before the strict load so an
- * unrelated neighbour never blocks a removal. An unreadable target counts as possibly the same.
+ * Whether a generated record may target this chain and genesis, read before the strict load so an
+ * unrelated neighbour never blocks a removal. Only a well-formed target that agrees with its
+ * authored chain excludes a neighbour; anything malformed or inconsistent counts as possibly the
+ * same, so the strict load rejects it.
  */
-function sameTarget(profilePath: string, chainId: number, genesisHash: string) {
+function sameTarget(
+  profilePath: string,
+  authoredChainId: number,
+  chainId: number,
+  genesisHash: string,
+) {
   try {
     const { target } = JSON.parse(readFileSync(profileDeploymentPath(profilePath), 'utf8')) as {
       target?: { chainId?: unknown; genesisHash?: unknown }
     }
-    if (typeof target?.chainId !== 'number' || typeof target.genesisHash !== 'string') return true
+    if (typeof target?.chainId !== 'number' || target.chainId !== authoredChainId) return true
+    if (typeof target.genesisHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(target.genesisHash)) {
+      return true
+    }
     return (
       target.chainId === chainId && target.genesisHash.toLowerCase() === genesisHash.toLowerCase()
     )

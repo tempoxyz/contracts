@@ -104,6 +104,27 @@ describe('policy sibling discovery', () => {
     await expect(policySiblingStacks(path, selected, genesis)).resolves.toEqual([])
   })
 
+  it.each([
+    ['an empty genesis hash', { chainId: 42431, genesisHash: '' }, 42431],
+    ['a truncated genesis hash', { chainId: 42431, genesisHash: '0x1234' }, 42431],
+    ['a chain that disagrees with its profile', { chainId: 4217, genesisHash: 'G' }, 42431],
+  ])('strictly loads a neighbour whose record has %s', async (_, target, authoredChain) => {
+    const { profiles, selected: path } = repository({
+      'other-moderato': { profile: { ...authored('other-moderato'), chainId: authoredChain } },
+    })
+    const record = {
+      ...target,
+      genesisHash: target.genesisHash === 'G' ? '0x' + '22'.repeat(32) : target.genesisHash,
+    }
+    writeFileSync(
+      join(profiles, 'other-moderato', 'deployment.json'),
+      JSON.stringify({ target: record }),
+    )
+    await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
+      /profile other-moderato:/,
+    )
+  })
+
   it('strictly loads a recorded neighbour on the same chain and genesis', async () => {
     const { profiles, selected: path } = repository({
       'other-moderato': { profile: authored('other-moderato', '470') },
