@@ -271,6 +271,15 @@ describe('neighbour failure messages', () => {
     ).toBe('failed: https://rpc.example/[redacted].')
   })
 
+  it('handle a long punctuation run in linear time', () => {
+    const run = '.'.repeat(200_000)
+    const started = performance.now()
+    expect(redactUrls(`https://rpc.example/${run}x${run}`)).toBe(
+      `https://rpc.example/[redacted]${run}`,
+    )
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
+
   it('keep only the origin of each URL', () => {
     expect(
       redactUrls(

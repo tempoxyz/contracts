@@ -231,8 +231,11 @@ export function redactUrls(message: string) {
   // Take the whole token, since parentheses and other punctuation are valid in paths, and keep
   // only trailing sentence punctuation outside the redacted URL.
   return message.replace(/https?:\/\/[^\s"'<>]+/g, (token) => {
-    const trailing = /[).,;:!?]+$/.exec(token)?.[0] ?? ''
-    const candidate = token.slice(0, token.length - trailing.length)
+    // Scan back from the end: linear, unlike an unanchored trailing-run regex.
+    let end = token.length
+    while (end > 0 && ').,;:!?'.includes(token[end - 1]!)) end--
+    const trailing = token.slice(end)
+    const candidate = token.slice(0, end)
     try {
       const url = new URL(candidate)
       const kept = candidate === url.origin || candidate === `${url.origin}/`
