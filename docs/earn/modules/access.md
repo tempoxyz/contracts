@@ -75,13 +75,15 @@ virtual aliases for both required members and receivers. An unregistered claim r
 policy identity and does not block unrelated removals; registry failures still stop the command.
 A TIP-403 policy can be shared: several stacks may attach the same policy on one chain, and a
 removal applies to all of them. `remove` therefore runs these checks for every deployed profile in
-the same profiles directory (each `<id>/profile.json` beside the selected one with a generated
-`deployment.json`) whose chain and `tip403PolicyId` match, each loaded with its own `.env.<id>`,
-which alone supplies its `EARN_TRUSTED_DEPLOYMENT_IDENTITY`; a sibling that fails to load stops
-the command. Stacks attaching the policy from profiles kept elsewhere are not discovered.
-The scan requires a valid deployment-block anchor, reads request and closure events in bounded
-block ranges, and checks only outstanding claims, with at most 16 concurrent reads. Each change is
-simulated, sent, and read back against the verified stack and policy bindings.
+the same profiles directory (each `<id>/profile.json` beside the selected one, symlinked or not)
+whose verified profile and record match the selected chain, genesis, and `tip403PolicyId`. Each
+runs with its own `.env.<id>`, which wins over the shell, alone supplies its
+`EARN_TRUSTED_DEPLOYMENT_IDENTITY`, and supplies its RPC settings as a group when it names any of them. A
+refusal names the stack that needs the target. Any neighbour with a record that fails to load, and
+any neighbour with an unpublished deployment on the same policy, stops the command and is named.
+Stacks without a record beside a profile (one kept elsewhere, or an earlier version superseded by a
+redeployment that is still bound to the policy) are not discovered; check them before removing a
+member they may need.
 
 ## Tests
 

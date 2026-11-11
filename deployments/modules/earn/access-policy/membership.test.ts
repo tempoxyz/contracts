@@ -240,6 +240,15 @@ describe('access removal across stacks sharing a policy', () => {
     expect(client.getLogs).toHaveBeenCalledTimes(1)
   })
 
+  it('names the sibling stack that blocks a removal', async () => {
+    const sibling = siblingDeployment()
+    await expect(
+      assertAccessRemovalSafe(removalClient(), protectedDeployment(), sibling.contracts.earnVault, [
+        sibling,
+      ]),
+    ).rejects.toThrow(/for stack sibling, EarnVault 0x0+13, which shares policy 469/)
+  })
+
   it('refuses before signing when only the sibling needs the target', async () => {
     const sibling = siblingDeployment()
     const request = vi.fn(async () => {
