@@ -10,6 +10,9 @@ import { configuredTempoChain } from '../../../chain/tempo.js'
 import {
   loadDeploymentEnvironment,
   loadEarnProfile,
+  loadEarnProfileBundle,
+  loadReviewedDeploymentIdentity,
+  pendingDeploymentPath,
   profileDeploymentPath,
   profileRepositoryRoot,
   resolveProfilePath,
@@ -82,7 +85,10 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
     chain: configuredTempoChain(stack),
     transport,
   })
-  const siblings = command === 'remove' ? await policySiblingStacks(path, stack) : []
+  const siblings =
+    command === 'remove'
+      ? await policySiblingStacks(path, stack, bundle.record.target.genesisHash)
+      : []
   print(
     await setAccessEligibility({
       client: publicClient,
@@ -96,43 +102,80 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
 }
 
 /**
- * Every other deployed profile beside `profilePath` (the other `<id>/profile.json` entries in its
- * parent directory) on the same chain that attaches the same TIP-403 policy, loaded live with its
- * own `.env.<id>`. A sibling's reviewed identity comes only from its own `.env.<id>`, never from
- * the shell, which names the selected profile's. A profile without a generated record has nothing
- * deployed to protect; any other load failure stops the removal rather than skipping it.
+ * Every other deployed stack beside `profilePath` (each `<id>/profile.json` in its parent
+ * directory, symlinked or not) on the same chain and genesis that attaches the same TIP-403 policy,
+ * loaded live. Sharing is decided from each neighbour's verified authored/generated pair, so a
+ * neighbour whose profile no longer matches its record, or that fails to load, stops the removal
+ * and is named. A neighbour with an unpublished deployment on this policy also stops it: its
+ * contracts may already be bound to the policy. Each neighbour runs with its own `.env.<id>`,
+ * which alone supplies its reviewed identity and, when it sets any, its RPC settings.
  */
-async function policySiblingStacks(profilePath: string, stack: EarnStack) {
+export async function policySiblingStacks(
+  profilePath: string,
+  stack: EarnStack,
+  genesisHash: string,
+) {
   if (stack.access.kind !== 'tip403-whitelist') return []
   const root = profileRepositoryRoot(profilePath)
-  const profilesDirectory = dirname(dirname(profilePath))
+  const directory = dirname(dirname(profilePath))
   const policyId = BigInt(stack.access.transferPolicyId)
   const siblings: EarnStack[] = []
-  for (const entry of readdirSync(profilesDirectory, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const path = join(profilesDirectory, entry.name, 'profile.json')
-    if (path === profilePath || !existsSync(path) || !existsSync(profileDeploymentPath(path))) {
-      continue
+  for (const name of readdirSync(directory).sort()) {
+    const path = join(directory, name, 'profile.json')
+    if (path === profilePath || !existsSync(path)) continue
+    const recorded = existsSync(profileDeploymentPath(path))
+    if (!recorded && !existsSync(pendingDeploymentPath(path))) continue
+    const fail = (reason: unknown): never => {
+      const detail = reason instanceof Error ? reason.message : String(reason)
+      throw new Error(`Cannot check removal safety against profile ${name}: ${detail}`, {
+        cause: reason,
+      })
     }
-    const profile = loadEarnProfile(path)
-    if (profile.id === stack.id || profile.chainId !== stack.network.chainId) continue
-    if (transferPolicyId(profile) !== policyId) continue
     try {
-      const values = loadDeploymentEnvironment(root, profile.id, process.env)
-      const own = loadDeploymentEnvironment(root, profile.id, {})
-      const siblingValues = {
-        ...values,
-        EARN_TRUSTED_DEPLOYMENT_IDENTITY: own.EARN_TRUSTED_DEPLOYMENT_IDENTITY,
+      const authored = loadEarnProfile(path)
+      if (authored.id === stack.id) continue
+      if (!recorded) {
+        if (authored.chainId === stack.network.chainId && transferPolicyId(authored) === policyId) {
+          fail(`it has an unpublished deployment on policy ${policyId}; publish its record first`)
+        }
+        continue
       }
-      siblings.push((await loadHostedProfileStack(path, siblingValues)).stack)
+      const values = siblingEnvironment(root, authored.id)
+      const identityPath = values.EARN_TRUSTED_DEPLOYMENT_IDENTITY?.trim()
+      const identity = identityPath
+        ? loadReviewedDeploymentIdentity(resolveProfilePath(identityPath))
+        : undefined
+      const { profile, record } = loadEarnProfileBundle(path, identity)
+      if (record.target.chainId !== stack.network.chainId) continue
+      if (record.target.genesisHash.toLowerCase() !== genesisHash.toLowerCase()) continue
+      if (transferPolicyId(profile) !== policyId) continue
+      siblings.push((await loadHostedProfileStack(path, values, identity)).stack)
     } catch (error) {
-      throw new Error(
-        `Cannot check removal safety for ${profile.id}, which shares policy ${policyId}`,
-        { cause: error },
-      )
+      if (error instanceof Error && error.message.startsWith('Cannot check removal safety')) {
+        throw error
+      }
+      fail(error)
     }
   }
   return siblings
+}
+
+const rpcKeys = ['TEMPO_RPC_URL', 'TEMPO_RPC_USERNAME', 'TEMPO_RPC_PASSWORD'] as const
+
+/**
+ * A neighbour's runtime values: its own `.env.<id>` wins over the shell. Its reviewed identity
+ * comes only from that file, and RPC settings move as a group, so the shell's endpoint never
+ * receives the neighbour's credentials.
+ */
+function siblingEnvironment(root: string, profileId: string) {
+  const own = loadDeploymentEnvironment(root, profileId, {})
+  const values: Record<string, string | undefined> = {
+    ...loadDeploymentEnvironment(root, profileId, process.env),
+    ...own,
+    EARN_TRUSTED_DEPLOYMENT_IDENTITY: own.EARN_TRUSTED_DEPLOYMENT_IDENTITY,
+  }
+  if (rpcKeys.some((key) => own[key])) for (const key of rpcKeys) values[key] = own[key]
+  return values
 }
 
 /**

@@ -156,8 +156,17 @@ export async function assertAccessRemovalSafe(
   siblings: readonly EarnStack[] = [],
 ) {
   const { access } = requireProtectedAccess(deployment)
-  for (const stack of [deployment, ...sharingPolicy(deployment, access, siblings)]) {
-    await assertStackRemovalSafe(client, stack, target)
+  await assertStackRemovalSafe(client, deployment, target)
+  for (const stack of sharingPolicy(deployment, access, siblings)) {
+    try {
+      await assertStackRemovalSafe(client, stack, target)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `${detail} (for stack ${stack.id}, EarnVault ${stack.contracts.earnVault}, which shares policy ${access.transferPolicyId})`,
+        { cause: error },
+      )
+    }
   }
 }
 
