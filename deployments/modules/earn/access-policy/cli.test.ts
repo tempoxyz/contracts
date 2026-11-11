@@ -1,10 +1,10 @@
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { EarnStack } from '../../../core/stack.js'
-import { policySiblingStacks } from './cli.js'
+import { policySiblingStacks, siblingEnvironment } from './cli.js'
 
 const venue = '0x0d136e26b4d9e4836fc5cb202baeb49cb6f5df48'
 
@@ -80,5 +80,72 @@ describe('policy sibling discovery', () => {
     await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
       /profile linked-moderato: it has an unpublished deployment/,
     )
+  })
+
+  it('counts a symlink alias of the selected profile or a neighbour once', async () => {
+    const { profiles, selected: path } = repository({
+      'other-moderato': { profile: authored('other-moderato'), pending: true },
+    })
+    symlinkSync(join(profiles, 'selected-moderato'), join(profiles, 'latest'))
+    symlinkSync(join(profiles, 'other-moderato'), join(profiles, 'zz-alias'))
+    await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
+      /profile other-moderato: it has an unpublished deployment/,
+    )
+  })
+
+  it('skips a recorded neighbour on another chain without loading it strictly', async () => {
+    const { profiles, selected: path } = repository({
+      'other-mainnet': { profile: { ...authored('other-mainnet'), chainId: 4217 } },
+    })
+    writeFileSync(
+      join(profiles, 'other-mainnet', 'deployment.json'),
+      JSON.stringify({ target: { chainId: 4217, genesisHash: `0x${'22'.repeat(32)}` } }),
+    )
+    await expect(policySiblingStacks(path, selected, genesis)).resolves.toEqual([])
+  })
+
+  it('strictly loads a recorded neighbour on the same chain and genesis', async () => {
+    const { profiles, selected: path } = repository({
+      'other-moderato': { profile: authored('other-moderato', '470') },
+    })
+    writeFileSync(
+      join(profiles, 'other-moderato', 'deployment.json'),
+      JSON.stringify({ target: { chainId: 42431, genesisHash: genesis } }),
+    )
+    await expect(policySiblingStacks(path, selected, genesis)).rejects.toThrow(
+      /profile other-moderato:/,
+    )
+  })
+})
+
+describe('sibling environment', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it.each([
+    ['a blank URL', 'TEMPO_RPC_URL=\n'],
+    ['only a URL', 'TEMPO_RPC_URL=https://sibling.example\n'],
+  ])('takes the whole RPC group from a file naming %s', (_, file) => {
+    const { root } = repository({})
+    writeFileSync(join(root, '.env.other-moderato'), file)
+    vi.stubEnv('TEMPO_RPC_URL', 'https://shell.example')
+    vi.stubEnv('TEMPO_RPC_USERNAME', 'shell-user')
+    vi.stubEnv('TEMPO_RPC_PASSWORD', 'shell-pass')
+    const values = siblingEnvironment(root, 'other-moderato')
+    expect(values.TEMPO_RPC_USERNAME).toBeUndefined()
+    expect(values.TEMPO_RPC_PASSWORD).toBeUndefined()
+    expect(values.TEMPO_RPC_URL).not.toBe('https://shell.example')
+  })
+
+  it('keeps the shell RPC group when the file names none of it', () => {
+    const { root } = repository({})
+    writeFileSync(join(root, '.env.other-moderato'), 'OTHER=1\n')
+    vi.stubEnv('TEMPO_RPC_URL', 'https://shell.example')
+    vi.stubEnv('TEMPO_RPC_USERNAME', 'shell-user')
+    vi.stubEnv('TEMPO_RPC_PASSWORD', 'shell-pass')
+    expect(siblingEnvironment(root, 'other-moderato')).toMatchObject({
+      TEMPO_RPC_URL: 'https://shell.example',
+      TEMPO_RPC_USERNAME: 'shell-user',
+      TEMPO_RPC_PASSWORD: 'shell-pass',
+    })
   })
 })

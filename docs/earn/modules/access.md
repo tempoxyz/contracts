@@ -78,7 +78,7 @@ removal applies to all of them. `remove` therefore runs these checks for every d
 the same profiles directory (each `<id>/profile.json` beside the selected one, symlinked or not)
 whose verified profile and record match the selected chain, genesis, and `tip403PolicyId`. Each
 runs with its own `.env.<id>`, which wins over the shell, alone supplies its
-`EARN_TRUSTED_DEPLOYMENT_IDENTITY`, and supplies its RPC settings as a group when it sets any. A
+`EARN_TRUSTED_DEPLOYMENT_IDENTITY`, and supplies its RPC settings as a group when it names any of them. A
 refusal names the stack that needs the target. Any neighbour with a record that fails to load, and
 any neighbour with an unpublished deployment on the same policy, stops the command and is named.
 Stacks without a record beside a profile (one kept elsewhere, or an earlier version superseded by a

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 
@@ -120,9 +120,15 @@ export async function policySiblingStacks(
   const directory = dirname(dirname(profilePath))
   const policyId = BigInt(stack.access.transferPolicyId)
   const siblings: EarnStack[] = []
+  // Entries resolve through symlinks; aliases of a stack, including the selected one, count once.
+  const seen = new Set([realpathSync(dirname(profilePath))])
   for (const name of readdirSync(directory).sort()) {
-    const path = join(directory, name, 'profile.json')
-    if (path === profilePath || !existsSync(path)) continue
+    const entry = join(directory, name)
+    if (!existsSync(join(entry, 'profile.json'))) continue
+    const real = realpathSync(entry)
+    if (seen.has(real)) continue
+    seen.add(real)
+    const path = join(real, 'profile.json')
     const recorded = existsSync(profileDeploymentPath(path))
     if (!recorded && !existsSync(pendingDeploymentPath(path))) continue
     const fail = (reason: unknown): never => {
@@ -140,6 +146,8 @@ export async function policySiblingStacks(
         }
         continue
       }
+      // Only a record on this chain and genesis can share the policy; others need no strict load.
+      if (!sameTarget(path, stack.network.chainId, genesisHash)) continue
       const values = siblingEnvironment(root, authored.id)
       const identityPath = values.EARN_TRUSTED_DEPLOYMENT_IDENTITY?.trim()
       const identity = identityPath
@@ -160,21 +168,41 @@ export async function policySiblingStacks(
   return siblings
 }
 
+/**
+ * Whether a generated record targets this chain and genesis, read before the strict load so an
+ * unrelated neighbour never blocks a removal. An unreadable target counts as possibly the same.
+ */
+function sameTarget(profilePath: string, chainId: number, genesisHash: string) {
+  try {
+    const { target } = JSON.parse(readFileSync(profileDeploymentPath(profilePath), 'utf8')) as {
+      target?: { chainId?: unknown; genesisHash?: unknown }
+    }
+    if (typeof target?.chainId !== 'number' || typeof target.genesisHash !== 'string') return true
+    return (
+      target.chainId === chainId && target.genesisHash.toLowerCase() === genesisHash.toLowerCase()
+    )
+  } catch {
+    return true
+  }
+}
+
 const rpcKeys = ['TEMPO_RPC_URL', 'TEMPO_RPC_USERNAME', 'TEMPO_RPC_PASSWORD'] as const
 
 /**
  * A neighbour's runtime values: its own `.env.<id>` wins over the shell. Its reviewed identity
- * comes only from that file, and RPC settings move as a group, so the shell's endpoint never
- * receives the neighbour's credentials.
+ * comes only from that file, and RPC settings move as a group: all from the file when it names any
+ * of them, even blank, else all from the shell, so credentials never reach another endpoint.
  */
-function siblingEnvironment(root: string, profileId: string) {
+export function siblingEnvironment(root: string, profileId: string) {
   const own = loadDeploymentEnvironment(root, profileId, {})
+  const shell = loadDeploymentEnvironment(root, profileId, process.env)
   const values: Record<string, string | undefined> = {
-    ...loadDeploymentEnvironment(root, profileId, process.env),
+    ...shell,
     ...own,
     EARN_TRUSTED_DEPLOYMENT_IDENTITY: own.EARN_TRUSTED_DEPLOYMENT_IDENTITY,
   }
-  if (rpcKeys.some((key) => own[key])) for (const key of rpcKeys) values[key] = own[key]
+  const fromFile = rpcKeys.some((key) => key in own)
+  for (const key of rpcKeys) values[key] = fromFile ? own[key] : shell[key]
   return values
 }
 
