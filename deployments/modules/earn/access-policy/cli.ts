@@ -228,12 +228,17 @@ function recordTarget(
 
 /** Keeps only each URL's origin, so RPC paths and query tokens never reach the terminal. */
 export function redactUrls(message: string) {
-  return message.replace(/https?:\/\/[^\s"'<>)]+/g, (match) => {
+  // Take the whole token, since parentheses and other punctuation are valid in paths, and keep
+  // only trailing sentence punctuation outside the redacted URL.
+  return message.replace(/https?:\/\/[^\s"'<>]+/g, (token) => {
+    const trailing = /[).,;:!?]+$/.exec(token)?.[0] ?? ''
+    const candidate = token.slice(0, token.length - trailing.length)
     try {
-      const url = new URL(match)
-      return url.pathname === '/' && !url.search ? url.origin : `${url.origin}/[redacted]`
+      const url = new URL(candidate)
+      const kept = candidate === url.origin || candidate === `${url.origin}/`
+      return (kept ? url.origin : `${url.origin}/[redacted]`) + trailing
     } catch {
-      return '[redacted URL]'
+      return '[redacted URL]' + trailing
     }
   })
 }

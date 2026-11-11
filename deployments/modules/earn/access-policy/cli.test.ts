@@ -265,6 +265,12 @@ describe('sibling environment', () => {
 })
 
 describe('neighbour failure messages', () => {
+  it('redact a whole URL whose path contains parentheses', () => {
+    expect(
+      redactUrls('failed: https://rpc.example/(v2)/fake-api-secret?key=fake-query-secret.'),
+    ).toBe('failed: https://rpc.example/[redacted].')
+  })
+
   it('keep only the origin of each URL', () => {
     expect(
       redactUrls(
