@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { getAddress } from 'viem'
@@ -8,6 +10,7 @@ import { configuredTempoChain } from '../../../chain/tempo.js'
 import {
   loadDeploymentEnvironment,
   loadEarnProfile,
+  profileDeploymentPath,
   profileRepositoryRoot,
   resolveProfilePath,
 } from '../../../core/bundle.js'
@@ -19,14 +22,17 @@ import {
   resolveAccessAddress,
   setAccessEligibility,
 } from './membership.js'
+import type { EarnStack } from '../../../core/stack.js'
 import type { CapabilityCommand } from '../../../../deployments/modules/module.js'
+import { transferPolicyId } from './profile.js'
 
 const usage = 'Usage: pnpm earn access --earn-file <profile.json> <status|add|remove> <address>'
 
 /**
  * `pnpm earn access`: reads, adds, or removes one member of a deployed profile's TIP-403
  * whitelist. Every target resolves through its virtual-address master; status is read-only, and a
- * change signs as the registered access administrator after the removal-safety checks.
+ * change signs as the registered access administrator after the removal-safety checks, which cover
+ * every deployed profile in the same repository that attaches the same policy.
  */
 export const accessCommand: CapabilityCommand = { name: 'access', usage, run: access }
 
@@ -76,6 +82,7 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
     chain: configuredTempoChain(stack),
     transport,
   })
+  const siblings = command === 'remove' ? await policySiblingStacks(path, stack) : []
   print(
     await setAccessEligibility({
       client: publicClient,
@@ -83,8 +90,49 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
       target: resolvedAddress,
       allowed: command === 'add',
       wallet,
+      siblings,
     }),
   )
+}
+
+/**
+ * Every other deployed profile beside `profilePath` (the other `<id>/profile.json` entries in its
+ * parent directory) on the same chain that attaches the same TIP-403 policy, loaded live with its
+ * own `.env.<id>`. A sibling's reviewed identity comes only from its own `.env.<id>`, never from
+ * the shell, which names the selected profile's. A profile without a generated record has nothing
+ * deployed to protect; any other load failure stops the removal rather than skipping it.
+ */
+async function policySiblingStacks(profilePath: string, stack: EarnStack) {
+  if (stack.access.kind !== 'tip403-whitelist') return []
+  const root = profileRepositoryRoot(profilePath)
+  const profilesDirectory = dirname(dirname(profilePath))
+  const policyId = BigInt(stack.access.transferPolicyId)
+  const siblings: EarnStack[] = []
+  for (const entry of readdirSync(profilesDirectory, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const path = join(profilesDirectory, entry.name, 'profile.json')
+    if (path === profilePath || !existsSync(path) || !existsSync(profileDeploymentPath(path))) {
+      continue
+    }
+    const profile = loadEarnProfile(path)
+    if (profile.id === stack.id || profile.chainId !== stack.network.chainId) continue
+    if (transferPolicyId(profile) !== policyId) continue
+    try {
+      const values = loadDeploymentEnvironment(root, profile.id, process.env)
+      const own = loadDeploymentEnvironment(root, profile.id, {})
+      const siblingValues = {
+        ...values,
+        EARN_TRUSTED_DEPLOYMENT_IDENTITY: own.EARN_TRUSTED_DEPLOYMENT_IDENTITY,
+      }
+      siblings.push((await loadHostedProfileStack(path, siblingValues)).stack)
+    } catch (error) {
+      throw new Error(
+        `Cannot check removal safety for ${profile.id}, which shares policy ${policyId}`,
+        { cause: error },
+      )
+    }
+  }
+  return siblings
 }
 
 /**
