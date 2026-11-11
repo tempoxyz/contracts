@@ -73,6 +73,11 @@ required protocol identity, reading fee recipients live from `EarnFees`, or any 
 async claim resolves to that same identity, which could otherwise never be paid. The check resolves
 virtual aliases for both required members and receivers. An unregistered claim receiver has no
 policy identity and does not block unrelated removals; registry failures still stop the command.
+A TIP-403 policy can be shared: several stacks may attach the same policy on one chain, and a
+removal applies to all of them. `remove` therefore runs these checks for every deployed profile in
+the same profile repository (`profiles/<id>/` with a generated `deployment.json`) whose chain and
+`tip403PolicyId` match, each loaded with its own `.env.<id>`; a sibling that fails to load stops
+the command. Stacks attaching the policy from profiles kept elsewhere are not discovered.
 The scan requires a valid deployment-block anchor, reads request and closure events in bounded
 block ranges, and checks only outstanding claims, with at most 16 concurrent reads. Each change is
 simulated, sent, and read back against the verified stack and policy bindings.

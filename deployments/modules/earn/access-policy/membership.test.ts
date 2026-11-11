@@ -188,6 +188,77 @@ describe('access removal policy identities', () => {
   })
 })
 
+/** A second stack attaching the same policy on the same chain, with its own core contracts. */
+function siblingDeployment(overrides: { chainId?: number; policyId?: string } = {}) {
+  const deployment = protectedDeployment()
+  return {
+    ...deployment,
+    id: 'sibling',
+    network: { ...deployment.network, chainId: overrides.chainId ?? deployment.network.chainId },
+    contracts: { ...deployment.contracts, earnVault: address(0x13), earnFees: address(0x14) },
+    access: { kind: 'tip403-whitelist', transferPolicyId: overrides.policyId ?? '469' },
+  } as unknown as EarnStack
+}
+
+describe('access removal across stacks sharing a policy', () => {
+  it.each(['earnVault', 'earnFees'] as const)(
+    "rejects removing the sibling's %s through the selected stack",
+    async (key) => {
+      const sibling = siblingDeployment()
+      const client = removalClient()
+      await expect(
+        assertAccessRemovalSafe(client, protectedDeployment(), sibling.contracts[key], [sibling]),
+      ).rejects.toThrow('Refusing to remove required protocol address')
+    },
+  )
+
+  it('rejects removing a receiver whose claim is open only on the sibling', async () => {
+    const sibling = siblingDeployment()
+    const client = removalClient({ receiver: master })
+    client.pendingRedeem.mockImplementation(async (_id, vault) => ({
+      open: vault === sibling.contracts.earnVault,
+      receiver: master,
+    }))
+    await expect(
+      assertAccessRemovalSafe(client, protectedDeployment(), master, [sibling]),
+    ).rejects.toThrow(`open async claim ${requestId}`)
+    expect(client.getLogs.mock.calls.map(([query]) => query.address)).toEqual([
+      protectedDeployment().contracts.earnVault,
+      sibling.contracts.earnVault,
+    ])
+  })
+
+  it.each([
+    ['another policy', { policyId: '470' }],
+    ['another chain', { chainId: 4217 }],
+  ])('ignores a stack on %s', async (_, overrides) => {
+    const other = siblingDeployment(overrides)
+    const client = removalClient()
+    await expect(
+      assertAccessRemovalSafe(client, protectedDeployment(), other.contracts.earnVault, [other]),
+    ).resolves.toBeUndefined()
+    expect(client.getLogs).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses before signing when only the sibling needs the target', async () => {
+    const sibling = siblingDeployment()
+    const request = vi.fn(async () => {
+      throw new Error('Unexpected signing request')
+    })
+    await expect(
+      setAccessEligibility({
+        allowed: false,
+        client: removalClient(),
+        deployment: protectedDeployment(),
+        target: sibling.contracts.earnFees,
+        wallet: { request } as unknown as Parameters<typeof setAccessEligibility>[0]['wallet'],
+        siblings: [sibling],
+      }),
+    ).rejects.toThrow('Refusing to remove required protocol address')
+    expect(request).not.toHaveBeenCalled()
+  })
+})
+
 describe('setAccessEligibility removal', () => {
   it.each(['alias claim', 'missing anchor'])(
     'rejects %s before asking the wallet to sign',
@@ -313,7 +384,10 @@ describe('access removal outstanding claim scan', () => {
       await expect(assertAccessRemovalSafe(client, protectedDeployment(), master)).rejects.toThrow(
         `open async claim ${requestId}`,
       )
-      expect(client.pendingRedeem).toHaveBeenCalledExactlyOnceWith(requestId)
+      expect(client.pendingRedeem).toHaveBeenCalledExactlyOnceWith(
+        requestId,
+        protectedDeployment().contracts.earnVault,
+      )
     },
   )
 
@@ -324,7 +398,10 @@ describe('access removal outstanding claim scan', () => {
       claimEvent('RedeemRequested', requestId),
     ])
     await assertAccessRemovalSafe(client, protectedDeployment(), master)
-    expect(client.pendingRedeem).toHaveBeenCalledExactlyOnceWith(requestId)
+    expect(client.pendingRedeem).toHaveBeenCalledExactlyOnceWith(
+      requestId,
+      protectedDeployment().contracts.earnVault,
+    )
   })
 
   it('reads outstanding claims in bounded parallel batches, not serially or all at once', async () => {
@@ -405,7 +482,7 @@ function removalClient(
       })
     },
   )
-  const pendingRedeem = vi.fn(async (_requestId: Hex) => ({
+  const pendingRedeem = vi.fn(async (_requestId: Hex, _vault?: Address) => ({
     open: options.open ?? true,
     receiver: options.receiver ?? master,
   }))
@@ -416,11 +493,19 @@ function removalClient(
     getBlockNumber: vi
       .fn()
       .mockResolvedValue(options.head ?? BigInt(protectedDeployment().metadata.deployedAtBlock)),
-    getLogs: vi.fn(async (_range: { fromBlock: bigint; toBlock: bigint }) =>
+    getLogs: vi.fn(async (_range: { address?: Address; fromBlock: bigint; toBlock: bigint }) =>
       options.receiver ? [claimEvent('RedeemRequested', requestId)] : [],
     ),
     readContract: vi.fn(
-      async ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
+      async ({
+        address: contract,
+        functionName,
+        args,
+      }: {
+        address?: Address
+        functionName: string
+        args?: readonly unknown[]
+      }) => {
         if (functionName === 'currentFeeConfigId') return 1n
         if (functionName === 'feeConfig') {
           return {
@@ -431,7 +516,7 @@ function removalClient(
             excess: { enabled: false },
           }
         }
-        if (functionName === 'pendingRedeem') return pendingRedeem(args![0] as Hex)
+        if (functionName === 'pendingRedeem') return pendingRedeem(args![0] as Hex, contract)
         throw new Error(`Unexpected read ${functionName}`)
       },
     ),
@@ -439,7 +524,9 @@ function removalClient(
     registry: typeof registry
     pendingRedeem: typeof pendingRedeem
     getLogs: ReturnType<
-      typeof vi.fn<(range: { fromBlock: bigint; toBlock: bigint }) => Promise<unknown[]>>
+      typeof vi.fn<
+        (range: { address?: Address; fromBlock: bigint; toBlock: bigint }) => Promise<unknown[]>
+      >
     >
   }
 }
