@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { getAddress } from 'viem'
+import { getAddress, isAddress, type Address, type PublicClient } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { createClient } from 'viem/tempo'
 
@@ -11,6 +11,7 @@ import {
   loadDeploymentEnvironment,
   loadEarnProfile,
   loadEarnProfileBundle,
+  loadEarnProfileForRead,
   loadReviewedDeploymentIdentity,
   pendingDeploymentPath,
   profileDeploymentPath,
@@ -87,7 +88,7 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
   })
   const siblings =
     command === 'remove'
-      ? await policySiblingStacks(path, stack, bundle.record.target.genesisHash)
+      ? await policySiblingStacks(path, stack, bundle.record.target.genesisHash, publicClient)
       : []
   print(
     await setAccessEligibility({
@@ -106,14 +107,18 @@ async function access(argv: readonly string[], output: Pick<Console, 'log' | 'wa
  * directory, symlinked or not) on the same chain and genesis that attaches the same TIP-403 policy,
  * loaded live. Sharing is decided from each neighbour's verified authored/generated pair, so a
  * neighbour whose profile no longer matches its record, or that fails to load, stops the removal
- * and is named. A neighbour with an unpublished deployment on this policy also stops it: its
- * contracts may already be bound to the policy. Each neighbour runs with its own `.env.<id>`,
- * which alone supplies its reviewed identity and, when it sets any, its RPC settings.
+ * and is named. A neighbour with only an unpublished deployment stops it when that deployment,
+ * bound to its authored profile through the pending intent hash, targets this chain and policy, or
+ * when that binding fails: its contracts may already be bound to the policy. A record naming
+ * another genesis excludes a neighbour only when its EarnShare has no code on this chain. Each
+ * neighbour runs with its own `.env.<id>`, which alone supplies its reviewed identity and, when it
+ * names any, its RPC settings.
  */
 export async function policySiblingStacks(
   profilePath: string,
   stack: EarnStack,
   genesisHash: string,
+  client?: Pick<PublicClient, 'getCode'>,
 ) {
   if (stack.access.kind !== 'tip403-whitelist') return []
   const root = profileRepositoryRoot(profilePath)
@@ -132,7 +137,7 @@ export async function policySiblingStacks(
     const recorded = existsSync(profileDeploymentPath(path))
     if (!recorded && !existsSync(pendingDeploymentPath(path))) continue
     const fail = (reason: unknown): never => {
-      const detail = reason instanceof Error ? reason.message : String(reason)
+      const detail = redactUrls(reason instanceof Error ? reason.message : String(reason))
       throw new Error(`Cannot check removal safety against profile ${name}: ${detail}`, {
         cause: reason,
       })
@@ -141,13 +146,24 @@ export async function policySiblingStacks(
       const authored = loadEarnProfile(path)
       if (authored.id === stack.id) continue
       if (!recorded) {
-        if (authored.chainId === stack.network.chainId && transferPolicyId(authored) === policyId) {
+        // Bind the authored profile to its pending intent first, so an edited profile cannot hide it.
+        const pending = loadEarnProfileForRead(path)
+        if (pending.chainId === stack.network.chainId && transferPolicyId(pending) === policyId) {
           fail(`it has an unpublished deployment on policy ${policyId}; publish its record first`)
         }
         continue
       }
-      // Only a record on this chain and genesis can share the policy; others need no strict load.
-      if (!sameTarget(path, authored.chainId, stack.network.chainId, genesisHash)) continue
+      // Only a record that may target this chain can share the policy; others need no strict load.
+      const target = recordTarget(path, authored.chainId, stack.network.chainId, genesisHash)
+      if (target.kind === 'other-chain') continue
+      if (target.kind === 'other-genesis') {
+        // A wrong genesis must not hide a live stack: skip only when its EarnShare is not here.
+        const code = client && (await client.getCode({ address: target.earnShare }))
+        if (client && (!code || code === '0x')) continue
+        fail(
+          `its record names genesis ${target.genesisHash}, but its EarnShare may be live on this chain`,
+        )
+      }
       const values = siblingEnvironment(root, authored.id)
       const identityPath = values.EARN_TRUSTED_DEPLOYMENT_IDENTITY?.trim()
       const identity = identityPath
@@ -155,7 +171,6 @@ export async function policySiblingStacks(
         : undefined
       const { profile, record } = loadEarnProfileBundle(path, identity)
       if (record.target.chainId !== stack.network.chainId) continue
-      if (record.target.genesisHash.toLowerCase() !== genesisHash.toLowerCase()) continue
       if (transferPolicyId(profile) !== policyId) continue
       siblings.push((await loadHostedProfileStack(path, values, identity)).stack)
     } catch (error) {
@@ -169,31 +184,66 @@ export async function policySiblingStacks(
 }
 
 /**
- * Whether a generated record may target this chain and genesis, read before the strict load so an
- * unrelated neighbour never blocks a removal. Only a well-formed target that agrees with its
- * authored chain excludes a neighbour; anything malformed or inconsistent counts as possibly the
- * same, so the strict load rejects it.
+ * Classifies a generated record's target before the strict load, so a neighbour on another chain
+ * never blocks a removal. Only a well-formed target that agrees with its authored chain is trusted
+ * to differ; anything malformed or inconsistent counts as possibly the same, so the strict load
+ * rejects it.
  */
-function sameTarget(
+function recordTarget(
   profilePath: string,
   authoredChainId: number,
   chainId: number,
   genesisHash: string,
-) {
+):
+  | { kind: 'possibly-same' }
+  | { kind: 'other-chain' }
+  | { kind: 'other-genesis'; genesisHash: string; earnShare: Address } {
   try {
-    const { target } = JSON.parse(readFileSync(profileDeploymentPath(profilePath), 'utf8')) as {
+    const record = JSON.parse(readFileSync(profileDeploymentPath(profilePath), 'utf8')) as {
       target?: { chainId?: unknown; genesisHash?: unknown }
+      addresses?: { earnShare?: unknown }
     }
-    if (typeof target?.chainId !== 'number' || target.chainId !== authoredChainId) return true
+    const target = record.target
+    if (typeof target?.chainId !== 'number' || target.chainId !== authoredChainId) {
+      return { kind: 'possibly-same' }
+    }
     if (typeof target.genesisHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(target.genesisHash)) {
-      return true
+      return { kind: 'possibly-same' }
     }
-    return (
-      target.chainId === chainId && target.genesisHash.toLowerCase() === genesisHash.toLowerCase()
-    )
+    if (target.chainId !== chainId) return { kind: 'other-chain' }
+    if (target.genesisHash.toLowerCase() === genesisHash.toLowerCase()) {
+      return { kind: 'possibly-same' }
+    }
+    const earnShare = record.addresses?.earnShare
+    if (typeof earnShare !== 'string' || !isAddress(earnShare)) return { kind: 'possibly-same' }
+    return {
+      kind: 'other-genesis',
+      genesisHash: target.genesisHash,
+      earnShare: getAddress(earnShare),
+    }
   } catch {
-    return true
+    return { kind: 'possibly-same' }
   }
+}
+
+/** Keeps only each URL's origin, so RPC paths and query tokens never reach the terminal. */
+export function redactUrls(message: string) {
+  // Take the whole non-space token, since quotes, brackets and other punctuation are valid in
+  // paths and credentials, and keep only trailing punctuation outside the redacted URL.
+  return message.replace(/https?:\/\/\S+/g, (token) => {
+    // Scan back from the end: linear, unlike an unanchored trailing-run regex.
+    let end = token.length
+    while (end > 0 && `).,;:!?'"<>`.includes(token[end - 1]!)) end--
+    const trailing = token.slice(end)
+    const candidate = token.slice(0, end)
+    try {
+      const url = new URL(candidate)
+      const kept = candidate === url.origin || candidate === `${url.origin}/`
+      return (kept ? url.origin : `${url.origin}/[redacted]`) + trailing
+    } catch {
+      return '[redacted URL]' + trailing
+    }
+  })
 }
 
 const rpcKeys = ['TEMPO_RPC_URL', 'TEMPO_RPC_USERNAME', 'TEMPO_RPC_PASSWORD'] as const
