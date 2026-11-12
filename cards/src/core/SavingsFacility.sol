@@ -5,12 +5,14 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
+import { CARDS_ADDRESS, ICards } from "./interfaces/ICards.sol";
 import { IReservations, RESERVATIONS_ADDRESS } from "./interfaces/IReservations.sol";
 
 /// @title SavingsFacility
 /// @notice Pays a card issuer at once, in cash, for Tempo Earn shares a cardholder's hold captured, and redeems
 ///         those shares to refill its float. It is the payee of every share hold its program places, so a hold
-///         that spans cash and savings settles as a cash capture to the issuer plus a share capture here.
+///         that spans cash and savings settles as a cash capture to the issuer plus a share capture here. It
+///         also pays out, in cash, shares an account's sweep (closure, estate or unclaimed property) paid in.
 ///         Specified in docs/cards/design.md (Spend from savings).
 /// @dev Deployed per program with a fixed vault, issuer, settlement account and funder, and never changed. The
 ///      funder supplies the float and owns what is left in it. Shares are settled once per hold, for what the
@@ -19,8 +21,11 @@ import { IReservations, RESERVATIONS_ADDRESS } from "./interfaces/IReservations.
 ///      async-only engine, a paused or stale price), `settle` reverts and the shares wait here. Redemption is best
 ///      effort: when the vault quotes but cannot redeem at once, or would return less than the issuer is paid,
 ///      the shares stay here, the float pays the issuer, and the funder redeems them later with `redeemHeld`.
+///      Payouts never touch the float: they redeem straight to the recipient or revert, and swept shares waiting
+///      for a payout are not the funder's to redeem or withdraw.
 contract SavingsFacility {
     IReservations internal constant RESERVATIONS = IReservations(RESERVATIONS_ADDRESS);
+    ICards internal constant CARDS = ICards(CARDS_ADDRESS);
 
     IEarnVault public immutable VAULT;
     /// @notice The vault's Earn share, the token of the holds this facility settles.
@@ -36,14 +41,21 @@ contract SavingsFacility {
 
     /// @notice Captured shares already settled, per owner and hold id.
     mapping(address owner => mapping(bytes32 id => uint256 shares)) public settled;
+    /// @notice Swept shares already paid out, per owner.
+    mapping(address owner => uint256 shares) public paidOut;
+    /// @notice Shares deferred settlements left here, the only shares the funder may redeem or withdraw.
+    uint256 public heldShares;
 
     bool private transient _locked;
 
     event Settled(address indexed owner, bytes32 indexed id, uint256 shares, uint256 assets);
+    event PaidOut(address indexed owner, address indexed to, uint256 shares, uint256 assets);
     event Redeemed(uint256 shares, uint256 assets);
     event RedemptionDeferred(uint256 shares);
 
     error AssetsBelowMinimum(uint256 assets, uint256 minAssets);
+    error ExceedsHeldShares(uint256 shares, uint256 held);
+    error NoQuote();
     error NotFacilityHold();
     error NotFunder();
     error NotIssuer();
@@ -104,9 +116,32 @@ contract SavingsFacility {
         emit Settled(owner, id, shares, assets);
     }
 
+    /// @notice Pays out shares that sweeps of `owner`'s account paid in since the last payout, redeeming them straight
+    ///         to the recipient the card records name. Anyone may call it, since the records alone decide who is paid;
+    ///         while the vault cannot quote or redeem them it reverts, and the shares wait here for a later call.
+    /// @return shares The shares paid out.
+    /// @return assets What the recipient was paid.
+    function payOut(address owner) external nonReentrant returns (uint256 shares, uint256 assets) {
+        (address to, uint128 swept) = CARDS.payoutOf(owner, SHARE, address(this));
+        if (to == address(0)) revert ZeroAddress();
+        uint256 done = paidOut[owner];
+        if (swept <= done) revert NothingToSettle();
+        shares = swept - done;
+        paidOut[owner] = swept;
+        // The quote is the floor: a redemption returning less, or no quote at all, reverts and nothing is paid.
+        uint256 quote = VAULT.previewRedeem(shares);
+        if (quote == 0) revert NoQuote();
+        SafeTransferLib.safeApprove(SHARE, address(VAULT), shares);
+        // Every entry point holds the transient lock for this whole call.
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        assets = VAULT.redeem(shares, to, quote);
+        emit PaidOut(owner, to, shares, assets);
+    }
+
     /// @notice Redeems shares a deferred redemption left here, into the float.
     function redeemHeld(uint256 shares, uint256 minAssets) external nonReentrant returns (uint256 assets) {
         if (msg.sender != FUNDER) revert NotFunder();
+        _takeHeld(shares);
         SafeTransferLib.safeApprove(SHARE, address(VAULT), shares);
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
@@ -114,9 +149,10 @@ contract SavingsFacility {
         emit Redeemed(shares, assets);
     }
 
-    /// @notice Withdraws float or held shares to `to`.
+    /// @notice Withdraws float or held shares to `to`; swept shares awaiting a payout stay.
     function withdraw(address token, address to, uint256 amount) external nonReentrant {
         if (msg.sender != FUNDER) revert NotFunder();
+        if (token == SHARE) _takeHeld(amount);
         SafeTransferLib.safeTransfer(token, to, amount);
     }
 
@@ -135,7 +171,15 @@ contract SavingsFacility {
             emit Redeemed(shares, assets);
         } catch {
             SafeTransferLib.safeApprove(SHARE, address(VAULT), 0);
+            heldShares += shares;
             emit RedemptionDeferred(shares);
         }
+    }
+
+    /// @dev Releases deferred shares to the funder, reverting past what deferred settlements left.
+    function _takeHeld(uint256 shares) private {
+        uint256 held = heldShares;
+        if (shares > held) revert ExceedsHeldShares(shares, held);
+        heldShares = held - shares;
     }
 }

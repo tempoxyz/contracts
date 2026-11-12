@@ -4,14 +4,17 @@ pragma solidity ^0.8.36;
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { SavingsFacility } from "../../src/core/SavingsFacility.sol";
+import { CARDS_ADDRESS } from "../../src/core/interfaces/ICards.sol";
 import { IReservations, RESERVATIONS_ADDRESS } from "../../src/core/interfaces/IReservations.sol";
 import { CoreEnv } from "./harness/CoreEnv.sol";
+import { MockCards } from "./harness/MockCards.sol";
 import { MockReservations } from "./harness/MockReservations.sol";
 
 /// @notice `SavingsFacility` over a real EarnVault and TIP-20 precompiles, with reservations state written
 ///         directly: a share hold captured to the facility, settled by the issuer.
 contract SavingsFacilityTest is CoreEnv {
     MockReservations internal reservations = MockReservations(RESERVATIONS_ADDRESS);
+    MockCards internal cards = MockCards(CARDS_ADDRESS);
     SavingsFacility internal facility;
 
     address internal issuer = makeAddr("issuer");
@@ -24,6 +27,7 @@ contract SavingsFacilityTest is CoreEnv {
     function setUp() public {
         _deployCore();
         vm.etch(RESERVATIONS_ADDRESS, address(new MockReservations()).code);
+        vm.etch(CARDS_ADDRESS, address(new MockCards()).code);
         facility = new SavingsFacility(IEarnVault(address(earnVault)), issuer, settlement, funder);
         usd.mint(address(facility), FLOAT);
         usd.mint(alice, 1000e6);
@@ -44,6 +48,84 @@ contract SavingsFacilityTest is CoreEnv {
         // Redemption returns what the issuer was paid, so the float is whole again (to rounding).
         assertApproxEqAbs(facility.float(), FLOAT, 1);
         assertEq(facility.settled(alice, ID), shares);
+    }
+
+    function test_payOut_paysSweptSharesToTheRecipient() public {
+        address state = makeAddr("state");
+        uint256 shares = earnShare.balanceOf(alice);
+        _sweepShares(alice, state, shares);
+        uint256 value = earnVault.previewRedeem(shares);
+
+        (uint256 paidShares, uint256 assets) = facility.payOut(alice);
+
+        assertEq(paidShares, shares);
+        assertEq(assets, value);
+        assertEq(usd.balanceOf(state), value);
+        assertEq(earnShare.balanceOf(address(facility)), 0);
+        assertApproxEqAbs(facility.float(), FLOAT, 1);
+        assertEq(facility.paidOut(alice), shares);
+    }
+
+    function test_payOut_onlyNewSweeps() public {
+        address state = makeAddr("state");
+        _sweepShares(alice, state, 100e6);
+        facility.payOut(alice);
+        vm.expectRevert(SavingsFacility.NothingToSettle.selector);
+        facility.payOut(alice);
+        // A later sweep pays only its own shares.
+        _sweepShares(alice, state, 50e6);
+        (uint256 paidShares,) = facility.payOut(alice);
+        assertEq(paidShares, 50e6);
+    }
+
+    function test_payOut_needsARecipient() public {
+        vm.expectRevert(SavingsFacility.ZeroAddress.selector);
+        facility.payOut(alice);
+    }
+
+    function test_payOut_revertsWhenVaultCannotRedeem() public {
+        address state = makeAddr("state");
+        uint256 shares = 200e6;
+        _sweepShares(alice, state, shares);
+        uint256 value = earnVault.previewRedeem(shares);
+        bytes memory redeemCall = abi.encodeWithSignature("redeem(uint256,address,uint256)", shares, state, value);
+        vm.mockCallRevert(address(earnVault), redeemCall, "illiquid");
+
+        vm.expectRevert(bytes("illiquid"));
+        facility.payOut(alice);
+        // Nothing moved: the float is untouched and the payout can run once the vault redeems.
+        assertEq(facility.float(), FLOAT);
+        assertEq(facility.paidOut(alice), 0);
+        assertEq(earnShare.balanceOf(address(facility)), shares);
+
+        vm.clearMockedCalls();
+        (, uint256 assets) = facility.payOut(alice);
+        assertEq(usd.balanceOf(state), assets);
+        assertGe(assets, value);
+        assertEq(facility.float(), FLOAT);
+    }
+
+    function test_payOut_revertsWithoutQuote() public {
+        uint256 shares = 100e6;
+        _sweepShares(alice, makeAddr("state"), shares);
+        vm.mockCall(address(earnVault), abi.encodeWithSignature("previewRedeem(uint256)", shares), abi.encode(0));
+        vm.expectRevert(SavingsFacility.NoQuote.selector);
+        facility.payOut(alice);
+        assertEq(facility.paidOut(alice), 0);
+    }
+
+    function test_funderCannotTakeSweptShares() public {
+        uint256 shares = 100e6;
+        _sweepShares(alice, makeAddr("state"), shares);
+        vm.startPrank(funder);
+        vm.expectRevert(abi.encodeWithSelector(SavingsFacility.ExceedsHeldShares.selector, shares, 0));
+        facility.withdraw(address(earnShare), funder, shares);
+        vm.expectRevert(abi.encodeWithSelector(SavingsFacility.ExceedsHeldShares.selector, shares, 0));
+        facility.redeemHeld(shares, 1);
+        vm.stopPrank();
+        // The float itself stays the funder's.
+        vm.prank(funder);
+        facility.withdraw(address(usd), funder, 1);
     }
 
     function test_settle_onlyNewCaptures() public {
@@ -113,10 +195,12 @@ contract SavingsFacilityTest is CoreEnv {
         assertEq(earnShare.balanceOf(address(facility)), shares);
         assertEq(earnShare.allowance(address(facility), address(earnVault)), 0);
         assertEq(facility.float(), FLOAT - value);
+        assertEq(facility.heldShares(), shares);
 
         vm.clearMockedCalls();
         vm.prank(funder);
         facility.redeemHeld(shares, 1);
+        assertEq(facility.heldShares(), 0);
         assertEq(earnShare.balanceOf(address(facility)), 0);
         assertApproxEqAbs(facility.float(), FLOAT, 1);
     }
@@ -168,5 +252,13 @@ contract SavingsFacilityTest is CoreEnv {
         vm.prank(owner);
         earnShare.transfer(address(facility), shares);
         return shares;
+    }
+
+    /// @dev Moves `shares` of `owner`'s into the facility and adds them to the payout record, as a sweep does.
+    function _sweepShares(address owner, address to, uint256 shares) internal {
+        (, uint128 swept) = cards.payoutOf(owner, address(earnShare), address(facility));
+        vm.prank(owner);
+        earnShare.transfer(address(facility), shares);
+        cards.setPayout(owner, address(earnShare), address(facility), to, swept + uint128(shares));
     }
 }
