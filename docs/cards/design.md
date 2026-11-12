@@ -116,6 +116,10 @@ and shares only for the shortfall, so the facility receives the shares, and the 
 - A capture beyond the hold may be partly debt to the facility, which the precompile still counts as
   captured, so no hold of an owner in share debt to the facility settles until it is repaid.
 - Share holds take no refunds; refunds go through the cash path.
+- **Payouts.** A sweep of an account by the card records precompile (TIP-1169: closure, an estate or
+  unclaimed property) may pay its shares into the facility and record the recipient. Anyone may then call
+  `payOut(owner)`, which pays the recipient the swept shares' `previewRedeem` value in the base asset, once
+  per share, and redeems them as `settle` does.
 
 The facility has no setter: its vault, issuer, settlement account and funder are fixed at deployment.
 The funder supplies the float, bears redemption fees and price moves between capture and redemption, and

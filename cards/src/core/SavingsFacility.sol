@@ -5,12 +5,14 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
+import { CARDS_ADDRESS, ICards } from "./interfaces/ICards.sol";
 import { IReservations, RESERVATIONS_ADDRESS } from "./interfaces/IReservations.sol";
 
 /// @title SavingsFacility
 /// @notice Pays a card issuer at once, in cash, for Tempo Earn shares a cardholder's hold captured, and redeems
 ///         those shares to refill its float. It is the payee of every share hold its program places, so a hold
-///         that spans cash and savings settles as a cash capture to the issuer plus a share capture here.
+///         that spans cash and savings settles as a cash capture to the issuer plus a share capture here. It
+///         also pays out, in cash, shares an account's sweep (closure, estate or unclaimed property) paid in.
 ///         Specified in docs/cards/design.md (Spend from savings).
 /// @dev Deployed per program with a fixed vault, issuer, settlement account and funder, and never changed. The
 ///      funder supplies the float and owns what is left in it. Shares are settled once per hold, for what the
@@ -21,6 +23,7 @@ import { IReservations, RESERVATIONS_ADDRESS } from "./interfaces/IReservations.
 ///      the shares stay here, the float pays the issuer, and the funder redeems them later with `redeemHeld`.
 contract SavingsFacility {
     IReservations internal constant RESERVATIONS = IReservations(RESERVATIONS_ADDRESS);
+    ICards internal constant CARDS = ICards(CARDS_ADDRESS);
 
     IEarnVault public immutable VAULT;
     /// @notice The vault's Earn share, the token of the holds this facility settles.
@@ -36,10 +39,13 @@ contract SavingsFacility {
 
     /// @notice Captured shares already settled, per owner and hold id.
     mapping(address owner => mapping(bytes32 id => uint256 shares)) public settled;
+    /// @notice Swept shares already paid out, per owner.
+    mapping(address owner => uint256 shares) public paidOut;
 
     bool private transient _locked;
 
     event Settled(address indexed owner, bytes32 indexed id, uint256 shares, uint256 assets);
+    event PaidOut(address indexed owner, address indexed to, uint256 shares, uint256 assets);
     event Redeemed(uint256 shares, uint256 assets);
     event RedemptionDeferred(uint256 shares);
 
@@ -102,6 +108,25 @@ contract SavingsFacility {
         _redeem(shares, assets);
         SafeTransferLib.safeTransfer(ASSET, SETTLEMENT_ACCOUNT, assets);
         emit Settled(owner, id, shares, assets);
+    }
+
+    /// @notice Pays out shares that sweeps of `owner`'s account paid in since the last payout: their current value
+    ///         in the base asset goes to the recipient the card records name, and the shares are redeemed. Anyone
+    ///         may call it, since the records alone decide who is paid.
+    /// @return shares The shares paid out.
+    /// @return assets What the recipient was paid.
+    function payOut(address owner) external nonReentrant returns (uint256 shares, uint256 assets) {
+        (address to, uint128 swept) = CARDS.payoutOf(owner, SHARE, address(this));
+        if (to == address(0)) revert ZeroAddress();
+        uint256 done = paidOut[owner];
+        if (swept <= done) revert NothingToSettle();
+        shares = swept - done;
+        paidOut[owner] = swept;
+        // As in `settle`: priced by the vault's quote, and redeemed for at least what is paid.
+        assets = VAULT.previewRedeem(shares);
+        _redeem(shares, assets);
+        SafeTransferLib.safeTransfer(ASSET, to, assets);
+        emit PaidOut(owner, to, shares, assets);
     }
 
     /// @notice Redeems shares a deferred redemption left here, into the float.
