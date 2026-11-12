@@ -83,6 +83,51 @@ contract SavingsFacilityTest is CoreEnv {
         facility.payOut(alice);
     }
 
+    function test_payOut_revertsWhenVaultCannotRedeem() public {
+        address state = makeAddr("state");
+        uint256 shares = 200e6;
+        _sweepShares(alice, state, shares);
+        uint256 value = earnVault.previewRedeem(shares);
+        bytes memory redeemCall = abi.encodeWithSignature("redeem(uint256,address,uint256)", shares, state, value);
+        vm.mockCallRevert(address(earnVault), redeemCall, "illiquid");
+
+        vm.expectRevert(bytes("illiquid"));
+        facility.payOut(alice);
+        // Nothing moved: the float is untouched and the payout can run once the vault redeems.
+        assertEq(facility.float(), FLOAT);
+        assertEq(facility.paidOut(alice), 0);
+        assertEq(earnShare.balanceOf(address(facility)), shares);
+
+        vm.clearMockedCalls();
+        (, uint256 assets) = facility.payOut(alice);
+        assertEq(usd.balanceOf(state), assets);
+        assertGe(assets, value);
+        assertEq(facility.float(), FLOAT);
+    }
+
+    function test_payOut_revertsWithoutQuote() public {
+        uint256 shares = 100e6;
+        _sweepShares(alice, makeAddr("state"), shares);
+        vm.mockCall(address(earnVault), abi.encodeWithSignature("previewRedeem(uint256)", shares), abi.encode(0));
+        vm.expectRevert(SavingsFacility.NoQuote.selector);
+        facility.payOut(alice);
+        assertEq(facility.paidOut(alice), 0);
+    }
+
+    function test_funderCannotTakeSweptShares() public {
+        uint256 shares = 100e6;
+        _sweepShares(alice, makeAddr("state"), shares);
+        vm.startPrank(funder);
+        vm.expectRevert(abi.encodeWithSelector(SavingsFacility.ExceedsHeldShares.selector, shares, 0));
+        facility.withdraw(address(earnShare), funder, shares);
+        vm.expectRevert(abi.encodeWithSelector(SavingsFacility.ExceedsHeldShares.selector, shares, 0));
+        facility.redeemHeld(shares, 1);
+        vm.stopPrank();
+        // The float itself stays the funder's.
+        vm.prank(funder);
+        facility.withdraw(address(usd), funder, 1);
+    }
+
     function test_settle_onlyNewCaptures() public {
         _captureShares(alice, ID, 100e6);
         vm.startPrank(issuer);
@@ -150,10 +195,12 @@ contract SavingsFacilityTest is CoreEnv {
         assertEq(earnShare.balanceOf(address(facility)), shares);
         assertEq(earnShare.allowance(address(facility), address(earnVault)), 0);
         assertEq(facility.float(), FLOAT - value);
+        assertEq(facility.heldShares(), shares);
 
         vm.clearMockedCalls();
         vm.prank(funder);
         facility.redeemHeld(shares, 1);
+        assertEq(facility.heldShares(), 0);
         assertEq(earnShare.balanceOf(address(facility)), 0);
         assertApproxEqAbs(facility.float(), FLOAT, 1);
     }
