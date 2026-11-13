@@ -25,7 +25,10 @@ export async function discoverZoneOutputs(options: {
     ? zoneRpcConfiguration(zone.chainId, options.environment)
     : undefined
   if (requireLiveZone && !zoneRpc?.url) {
-    throw missingZoneRpcError(zone, 'pnpm earn verify --skip-zone checks everything else.')
+    throw missingZoneRpcError(
+      zone,
+      'Pass --skip-zone to verify or deposit --broadcast to check everything else.',
+    )
   }
   const identity = await inspectZone({
     id: zone.id,

@@ -45,7 +45,7 @@ neither supplies a value it needs:
   `plan` and `status` use the identity in `deployment.json` or `deployment.pending.json` without a key;
 - `TEMPO_RPC_URL` (or `--rpc-url`), for `deploy`, `verify`, and `deposit`.
 
-`verify` of a Zone profile also needs `TEMPO_API_KEY` or `ZONE_RPC_URL` unless `--skip-zone` is
+`verify` and `deposit --broadcast` of a Zone profile also need `TEMPO_API_KEY` or `ZONE_RPC_URL` unless `--skip-zone` is
 passed.
 
 `ZONE_ADMIN_PRIVATE_KEY` is optional: when set, `deploy` performs the Zone administrator's steps
@@ -65,7 +65,10 @@ pnpm earn deposit profiles/e2e-moderato/profile.json --assets 1 --broadcast
 `--account <address>` quotes for another account without that key, and `--receiver <address>`
 mints elsewhere. The minimum output defaults to 50 bps below the quote (`--slippage-bps`, 0 to
 9999). The quote uses one block snapshot and includes pending fee dilution; a zero-share minimum
-is refused. It refuses an RPC whose chain or genesis differs from the record. Nothing is sent
+is refused. With `--broadcast`, it first runs the same checks as `verify` (record provenance,
+source verification, and the stack the reviewed factories predict) and refuses to sign for a
+record that fails them; `--skip-zone` applies as it does for `verify`. It refuses an RPC whose
+chain or genesis differs from the record. Nothing is sent
 without `--broadcast`, and approval and deposit are one Tempo transaction. A hosted record with
 pending source verification may be quoted but cannot be funded until verification completes; local
 records whose verification is not applicable remain usable. The creation engine must match the
