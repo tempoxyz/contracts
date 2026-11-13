@@ -62,6 +62,13 @@ test('broadcast funds only the verified record', async () => {
   )
 })
 
+test('a preview rejects live-check skips it would ignore', async () => {
+  await expect(main([...deposit, '--skip-zone'], output, '/')).rejects.toThrow(
+    '--skip-zone is supported only by verify or deposit --broadcast',
+  )
+  expect(depositEarnProfile).not.toHaveBeenCalled()
+})
+
 test('a preview quotes the recorded stack without verification', async () => {
   await main(deposit, output, '/')
   expect(verifyEarnProfile).not.toHaveBeenCalled()

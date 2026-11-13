@@ -45,7 +45,7 @@ neither supplies a value it needs:
   `plan` and `status` use the identity in `deployment.json` or `deployment.pending.json` without a key;
 - `TEMPO_RPC_URL` (or `--rpc-url`), for `deploy`, `verify`, and `deposit`.
 
-`verify` of a Zone profile also needs `TEMPO_API_KEY` or `ZONE_RPC_URL` unless `--skip-zone` is
+`verify` and `deposit --broadcast` of a Zone profile also need `TEMPO_API_KEY` or `ZONE_RPC_URL` unless `--skip-zone` is
 passed.
 
 `ZONE_ADMIN_PRIVATE_KEY` is optional: when set, `deploy` performs the Zone administrator's steps

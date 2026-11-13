@@ -317,8 +317,8 @@ function parseArguments(command: Command, args: string[]) {
   const skipLive = skipLiveFlags.filter(
     (flag) => (values as Record<string, unknown>)[`skip-${flag}`],
   )
-  if (command !== 'verify' && command !== 'deposit' && skipLive.length > 0)
-    throw new Error(`--skip-${skipLive[0]} is supported only by verify or deposit`)
+  if (skipLive.length > 0 && command !== 'verify' && !(command === 'deposit' && broadcast))
+    throw new Error(`--skip-${skipLive[0]} is supported only by verify or deposit --broadcast`)
   return {
     account,
     assets,
