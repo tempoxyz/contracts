@@ -39,7 +39,7 @@ overrides:
   # Prool still pins tar 7.2.0; remove when upstream upgrades.
   'prool>tar': 7.5.22
   # testcontainers -> archiver 7 -> archiver-utils 5 still pins glob ^10; remove when upstream upgrades.
-  'archiver-utils>glob': 14.0.2
+  'archiver-utils>glob': 14.0.3
   viem: 'catalog:'
 
 shellEmulator: true
