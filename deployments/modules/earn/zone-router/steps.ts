@@ -144,7 +144,7 @@ export const authorizeRouter = defineAuthorityStep({
     return taker && recipient && getAddress(resolved) === router
   },
   handoff: (profile, outputs) =>
-    `The owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(${requiredOutput(outputs, 'earnRouter')}, true) and setRecipientAllowed(${requiredOutput(outputs, 'earnRouter')}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`,
+    `First verify the router's canonical implementation and immutable bindings. Then the owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(${requiredOutput(outputs, 'earnRouter')}, true) and setRecipientAllowed(${requiredOutput(outputs, 'earnRouter')}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`,
   signerAvailable: (_profile, environment, proven) =>
     Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) => canAuthorizeRouter(options),

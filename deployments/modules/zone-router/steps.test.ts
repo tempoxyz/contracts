@@ -19,7 +19,7 @@ import { accessMemberContracts, deploymentStep, executeAvailableAuthority } from
 import type { ChainClient, FoundryStep } from '../module.js'
 import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { zoneRouterModeModule } from './index.js'
-import { zoneRouterConstructorArgs, zoneRouterMode } from './profile.js'
+import { zoneRouterConstructorArgs, zoneRouterFactory, zoneRouterMode } from './profile.js'
 
 vi.mock(import('../earn/zone-router/provenance.js'), () => ({ requireRouterProvenance: vi.fn() }))
 
@@ -439,6 +439,10 @@ describe('Zone router steps', () => {
       `ZoneRouterFactory ${address('fac')} is source verified as zone-router/src/ZoneRouterFactory.sol`,
     )
     expect(step.handoff(cardAndEarn, outputs)).not.toContain('source verified')
+    for (const profile of [named, cardAndEarn])
+      expect(step.handoff(profile, outputs)).toContain(
+        `Confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${outputs.zoneRouter}) and the mode in its RouterDeployed event, and verify the router's canonical implementation`,
+      )
     const authorityClient = vi.fn()
     const result = await executeAvailableAuthority(
       {

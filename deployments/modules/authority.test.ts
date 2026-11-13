@@ -8,7 +8,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test, vi } from 'vitest'
 
 import { executeAvailableAuthority } from '../../deployments/modules/index.js'
-import { canAuthorizeRouter } from './earn/zone-router/steps.js'
+import { authorizeRouter, canAuthorizeRouter } from './earn/zone-router/steps.js'
 import { requireRouterProvenance } from './earn/zone-router/provenance.js'
 import {
   earnEngineBindingAbi,
@@ -384,6 +384,12 @@ describe('deployment authority adapters', () => {
       contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
     })
     expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
+  })
+
+  test('asks the pool owner to verify the router before admitting it', () => {
+    expect(authorizeRouter.handoff(profile, { ...outputs, earnRouter: address('d') })).toMatch(
+      /^First verify the router's canonical implementation and immutable bindings\. Then the owner of PropAMM pool/,
+    )
   })
 
   test('refuses to admit a router whose pool recipient is redirected', async () => {
