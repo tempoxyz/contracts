@@ -42,7 +42,8 @@ const usage =
   'Usage: pnpm earn <plan|deploy|status|verify|deposit> <profile.json> [--trusted-identity <path>] [--rpc-url <url>] [--watch] [--json]\n' +
   '       pnpm earn deploy <profile.json> [--resubmit-verification] [--rpc-url <url>] [--json]\n' +
   `       pnpm earn verify <profile.json> ${skipLiveFlags.map((flag) => `[--skip-${flag}]`).join(' ')} [--resubmit-verification] [--rpc-url <url>] [--json]\n` +
-  '       pnpm earn deposit <profile.json> --assets <amount> [--account <address>] [--receiver <address>] [--slippage-bps <bps>] [--broadcast] [--rpc-url <url>] [--json]\n' +
+  `       pnpm earn deposit <profile.json> --assets <amount> ${skipLiveFlags.map((flag) => `[--skip-${flag}]`).join(' ')}` +
+  ' [--account <address>] [--receiver <address>] [--slippage-bps <bps>] [--broadcast] [--rpc-url <url>] [--json]\n' +
   capabilityCommands.map((command) => `       ${command.usage.replace('Usage: ', '')}`).join('\n')
 
 type Command = 'deploy' | 'deposit' | 'plan' | 'status' | 'verify'
@@ -191,7 +192,21 @@ export async function main(
   }
 
   if (command === 'deposit') {
-    const record = loadProfileDeploymentRecord(profilePath, profile)
+    // Funding signs against the recorded stack, so authenticate it as verify does first: live
+    // provenance, source verification, and the stack the reviewed factories predict. A preview
+    // signs nothing and may quote a record whose source verification is still pending.
+    const record = options.broadcast
+      ? (
+          await verifyEarnProfile({
+            environment,
+            profilePath,
+            root: repositoryRoot,
+            rpcUrl,
+            trustedIdentity,
+            skipLive: options.skipLive,
+          })
+        ).record
+      : loadProfileDeploymentRecord(profilePath, profile)
     const result = await depositEarnProfile({
       account: options.account,
       assets: options.assets!,
@@ -302,8 +317,8 @@ function parseArguments(command: Command, args: string[]) {
   const skipLive = skipLiveFlags.filter(
     (flag) => (values as Record<string, unknown>)[`skip-${flag}`],
   )
-  if (command !== 'verify' && skipLive.length > 0)
-    throw new Error(`--skip-${skipLive[0]} is supported only by verify`)
+  if (command !== 'verify' && command !== 'deposit' && skipLive.length > 0)
+    throw new Error(`--skip-${skipLive[0]} is supported only by verify or deposit`)
   return {
     account,
     assets,
