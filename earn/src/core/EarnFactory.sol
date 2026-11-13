@@ -39,6 +39,10 @@ import { EarnVault } from "./EarnVault.sol";
 ///      logical stack a stable deterministic namespace. The initial engine, owner, and fees also bind
 ///      the salt so an unrelated configuration cannot squat that namespace, while separately
 ///      deployed, replaceable periphery does not affect the EarnShare address.
+/// @dev The `@custom:` specs are checked by solar-verify. The ghosts record what the last `deploy` used.
+/// @custom:ghost bytes32 deployedEarnShareSalt
+/// @custom:ghost address deployedAsset
+/// @custom:ghost uint64 deployedTransferPolicyId
 contract EarnFactory {
     struct DeployParams {
         bytes32 deploymentId;
@@ -99,6 +103,9 @@ contract EarnFactory {
     error EarnShareSupplyNotZero();
     error ZeroAddress();
 
+    /// @custom:ensures tip20Factory == tip20Factory_ && tip20Factory != address(0)
+    /// @custom:ensures earnVaultImplementation == earnVaultImplementation_ && earnVaultImplementation != address(0)
+    /// @custom:ensures earnFeesImplementation == earnFeesImplementation_ && earnFeesImplementation != address(0)
     constructor(address tip20Factory_, address earnVaultImplementation_, address earnFeesImplementation_) {
         if (
             tip20Factory_ == address(0) || earnVaultImplementation_ == address(0)
@@ -121,6 +128,11 @@ contract EarnFactory {
     ///      separately bounded by `params.controls`. A nonzero transfer policy must be an existing
     ///      simple whitelist. Its external administrator remains responsible for authorizing the
     ///      generated core, later router, and eligible holders before activation.
+    /// @custom:ensures _specValidParams(params) && earnShare != address(0) && deployedAsset != address(0)
+    /// @custom:ensures deployedEarnShareSalt == computeEarnShareSalt(params)
+    /// @custom:ensures deployedTransferPolicyId == _effectiveTransferPolicyId(params.transferPolicyId)
+    /// @custom:ensures deployedTransferPolicyId != 0
+    /// Not proved: the verifier does not finish this function within its time limit.
     function deploy(DeployParams calldata params)
         external
         returns (address earnShare, EarnVault earnVault, EarnFees earnFees)
@@ -128,6 +140,7 @@ contract EarnFactory {
         _validateParams(params);
 
         address asset = IEarnEngine(params.engine).asset();
+        /// @custom:ghost deployedAsset = asset
         if (asset == address(0)) revert ZeroAddress();
         string memory engineName = IEarnEngine(params.engine).name();
         string memory engineSymbol = IEarnEngine(params.engine).symbol();
@@ -142,6 +155,8 @@ contract EarnFactory {
         bytes32 earnShareSalt = _earnShareSalt(
             params.deploymentId, params.engine, params.owner, controlConfigHash, feeConfigHash, transferPolicyId
         );
+        /// @custom:ghost deployedEarnShareSalt = earnShareSalt
+        /// @custom:ghost deployedTransferPolicyId = transferPolicyId
         address predictedEarnShare = ITIP20Factory(tip20Factory).getTokenAddress(address(this), earnShareSalt);
         if (predictedEarnShare.code.length != 0) revert EarnShareAlreadyExists(predictedEarnShare);
 
@@ -190,6 +205,8 @@ contract EarnFactory {
     }
 
     /// @notice Computes the EarnShare salt for `params`.
+    /// @custom:ensures result == _earnShareSalt(params.deploymentId, params.engine, params.owner, _specControlConfigHash(params), _specFeeConfigHash(params), _effectiveTransferPolicyId(params.transferPolicyId))
+    /// Not proved: the solver gives no answer for this function.
     function computeEarnShareSalt(DeployParams calldata params) external pure returns (bytes32) {
         return _earnShareSalt(
             params.deploymentId,
@@ -229,6 +246,9 @@ contract EarnFactory {
         return Clones.predictDeterministicAddress(earnFeesImplementation, _earnFeesSalt(earnShareSalt), address(this));
     }
 
+    /// @notice A stack needs a deployment id, an engine with code that no vault has bound, a final owner other than
+    ///         this factory, and a distributor exactly when it has an update delay.
+    /// @custom:ensures _specValidParams(params)
     function _validateParams(DeployParams calldata params) internal view {
         if (params.deploymentId == bytes32(0)) revert EmptyDeploymentId();
         if (params.engine == address(0) || params.owner == address(0)) revert ZeroAddress();
@@ -284,10 +304,13 @@ contract EarnFactory {
         );
     }
 
+    /// @custom:ensures result == (requestedPolicyId == 0 ? ALWAYS_ALLOW_POLICY_ID : requestedPolicyId)
+    /// @custom:ensures result != 0
     function _effectiveTransferPolicyId(uint64 requestedPolicyId) internal pure returns (uint64) {
         return requestedPolicyId == 0 ? ALWAYS_ALLOW_POLICY_ID : requestedPolicyId;
     }
 
+    /// @custom:succeeds-if transferPolicyId == ALWAYS_ALLOW_POLICY_ID
     function _validateTransferPolicy(uint64 transferPolicyId) internal view {
         if (transferPolicyId == ALWAYS_ALLOW_POLICY_ID) return;
         if (TIP403_REGISTRY_ADDRESS.code.length == 0) revert InvalidTransferPolicy(transferPolicyId);
@@ -301,5 +324,24 @@ contract EarnFactory {
 
     function _earnFeesSalt(bytes32 earnShareSalt) internal pure returns (bytes32) {
         return keccak256(abi.encode(FEES_SALT_DOMAIN, earnShareSalt));
+    }
+
+    // ---------------------------------------------------------------- spec helpers, never executed
+
+    /// @custom:spec The deployment parameters `deploy` accepts (see `_validateParams`).
+    function _specValidParams(DeployParams calldata params) internal view returns (bool) {
+        return params.deploymentId != bytes32(0) && params.engine != address(0) && params.owner != address(0)
+            && params.owner != address(this)
+            && (params.distributorConfig.distributor == address(0)) == (params.distributorConfig.updateDelay == 0);
+    }
+
+    /// @custom:spec The hash of the stack's control configuration that binds its salt.
+    function _specControlConfigHash(DeployParams calldata params) internal pure returns (bytes32) {
+        return keccak256(abi.encode(params.controls));
+    }
+
+    /// @custom:spec The hash of the stack's distributor and fee configuration that binds its salt.
+    function _specFeeConfigHash(DeployParams calldata params) internal pure returns (bytes32) {
+        return keccak256(abi.encode(params.distributorConfig, params.fees));
     }
 }

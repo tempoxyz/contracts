@@ -120,6 +120,32 @@ production receipts.
 optimizer; the router stays covered by its other suites. Tests and deployment scripts are excluded
 from the report. Coverage is informational and not a required check.
 
+## Formal specifications
+
+Earn, the Zone router and the card contracts carry formal specifications for `solar-verify`, Solar's
+deductive verifier ([paradigmxyz/solar#2530](https://github.com/paradigmxyz/solar/pull/2530)). The
+specs are NatSpec in the contracts themselves: `@custom:ensures`, `@custom:requires`,
+`@custom:invariant`, `@custom:ghost`, `@custom:trusted` and the rest, with loop invariants, asserts
+and ghost updates as `///` comments inside function bodies, written against the contracts' own
+constants and expressions. Spec-only helper functions are never called, so the specs change no
+behavior, but like any source edit they change a contract's compiled output (its metadata hash at
+least) and so the release addresses derived from it. Keep spec-only helpers inside the contract
+that uses them, not in a library or another file. The verifier reads the flattened source as it
+is, with no patches or generated files.
+
+```bash
+cd earn
+forge flatten src/core/EarnVault.sol -o /tmp/EarnVault.sol
+solar-verify --jobs 8 --timeout 120000 /tmp/EarnVault.sol                         # every function
+solar-verify --timeout 120000 --only EarnVault.contribute /tmp/EarnVault.sol      # one function
+```
+
+Build `solar-verify` from that pull request (`cargo build --release -p solar-verify`) and put Z3 on
+`PATH`; its README documents the spec language. A proof covers the flattened source under the
+trusted base the verifier documents (trusted library summaries, interfaces on external calls), not
+deployed bytecode. A function or property the verifier can't prove says so in its NatSpec
+("Not proved:"). When a change breaks a spec, fix the code or the spec in the same change.
+
 ## Test map
 
 Solidity tests mirror the `src/` domains under `test/`: `core/`, `engines/<kind>/`, `router/`,

@@ -42,6 +42,18 @@ interface IERC20SolverFunding is IERC20Balance {
 ///      owner-managed `onlyAuthorizedSolver` allowlist (the wallet solver seat) gates WHO may trigger;
 ///      (2) this contract must hold the Veda solver role on the shared RolesAuthority to call the stock
 ///      solver (granted at deploy, not managed here). Needs NO raw-share hook entry.
+/// Specs for solar-verify (docs/earn/modules/veda.md):
+/// solveAndForward is nonReentrant through the transient `_entered` flag.
+/// @custom:reentrancy-guard _entered
+/// The solver, queue, teller and engine are fixed and nonzero; the treasury is never zero.
+/// @custom:invariant address(boringSolver) != address(0) && address(queue) != address(0)
+/// @custom:invariant teller != address(0) && address(engine) != address(0) && treasury != address(0)
+/// The zero address is never an authorized solver.
+/// @custom:invariant !isAuthorizedSolver[address(0)]
+/// Ghost mirror of the stock solver's allowance from this forwarder (set in _approveFromZero).
+/// @custom:ghost uint256 solverApproval
+/// Owner calls that stay open under the lock keep the treasury nonzero and the zero address unauthorized.
+/// @custom:lock-stable treasury != address(0) && !isAuthorizedSolver[address(0)]
 contract VedaForwardingSolver is Ownable2Step {
     IBoringSolver public immutable boringSolver;
     IBoringQueue public immutable queue;
@@ -94,6 +106,7 @@ contract VedaForwardingSolver is Ownable2Step {
         address owner_,
         address treasury_
     ) Ownable(owner_) {
+        /// @custom:ghost solverApproval = 0
         if (
             address(boringSolver_) == address(0) || address(queue_) == address(0) || teller_ == address(0)
                 || address(engine_) == address(0) || treasury_ == address(0)
@@ -112,6 +125,9 @@ contract VedaForwardingSolver is Ownable2Step {
     /// @notice Solve a batch of matured tracked requests by ID and forward proceeds to end receivers,
     ///         ALL in one tx. Complete structs are read from the immutable tracking Queue and verified
     ///         against both their IDs and the originating Queue stored by the engine.
+    /// Only an authorized solver triggers a non-empty batch; no allowance to the stock solver is left.
+    /// @custom:ensures old(isAuthorizedSolver[msg.sender]) && requestIds.length > 0
+    /// @custom:ensures old(solverApproval) == 0 ==> solverApproval == 0
     function solveAndForward(bytes32[] calldata requestIds, bool coverDeficit)
         external
         onlyAuthorizedSolver
@@ -168,6 +184,9 @@ contract VedaForwardingSolver is Ownable2Step {
             uint256 availableRefund =
                 forwarderBalanceAfter > forwarderBalanceBefore ? forwarderBalanceAfter - forwarderBalanceBefore : 0;
             uint256 refunded = availableRefund < funding ? availableRefund : funding;
+            /// The refund is at most the caller's funding and at most this solve's balance gain.
+            /// @custom:assert refunded <= funding && refunded <= availableRefund
+            /// @custom:assert availableRefund == 0 || forwarderBalanceAfter - forwarderBalanceBefore == availableRefund
             if (refunded != 0) _push(token, msg.sender, refunded);
             emit DeficitFundingSettled(msg.sender, asset, funding, funding - refunded, refunded);
         }
@@ -177,12 +196,19 @@ contract VedaForwardingSolver is Ownable2Step {
         emit SolvedAndForwarded(n, forwarded, msg.sender);
     }
 
+    /// Only the owner edits the allowlist, one nonzero account at a time.
+    /// @custom:ensures old(owner()) == msg.sender && account != address(0) && isAuthorizedSolver[account] == authorized
+    /// @custom:ensures forall address a :: a != account ==> isAuthorizedSolver[a] == old(isAuthorizedSolver[a])
+    /// @custom:ensures treasury == old(treasury)
     function setAuthorizedSolver(address account, bool authorized) external onlyOwner {
         if (account == address(0)) revert ZeroAddress();
         isAuthorizedSolver[account] = authorized;
         emit AuthorizedSolverChanged(account, authorized);
     }
 
+    /// Only the owner sets the treasury, never to zero.
+    /// @custom:ensures old(owner()) == msg.sender && treasury == newTreasury && newTreasury != address(0)
+    /// @custom:ensures forall address a :: isAuthorizedSolver[a] == old(isAuthorizedSolver[a])
     function setTreasury(address newTreasury) external onlyOwner {
         if (newTreasury == address(0)) revert ZeroAddress();
         emit TreasuryChanged(treasury, newTreasury);
@@ -191,6 +217,8 @@ contract VedaForwardingSolver is Ownable2Step {
 
     /// @notice Owner-only rescue for the only value that can accumulate here: Veda's non-self-solve
     ///         excess/discount surplus (rounding dust). Constrained to the pre-set treasury.
+    /// Only the owner rescues (the recipient is the treasury read at entry).
+    /// @custom:ensures old(owner()) == msg.sender
     function rescue(address token, uint256 amount) external onlyOwner {
         address to = treasury;
         if (to == address(0)) revert TreasuryNotSet();
@@ -209,6 +237,7 @@ contract VedaForwardingSolver is Ownable2Step {
     /// @dev Every downstream approval is zero at rest. A reverted frame also rolls the temporary
     ///      allowance back, so direct set/clear calls are sufficient and preserve bool-return checks.
     function _approveFromZero(IERC20SolverFunding token, address spender, uint256 amount) private {
+        /// @custom:ghost solverApproval = amount
         if (!token.approve(spender, amount)) revert TokenCallFailed();
     }
 }

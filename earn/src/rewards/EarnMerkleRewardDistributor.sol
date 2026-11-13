@@ -13,6 +13,44 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 /// @dev The owner may pull an approved base-asset budget from a selected funder and deposit it through
 ///      the immutable EarnVault. Only that EarnVault mints the fully backed EarnShare held here. Root-valid
 ///      pushes and claims are permissionless because every transfer is fixed to its committed recipient.
+/// Specs for solar-verify (docs/earn/modules/rewards.md, earn/src/AGENTS.md "Reward periphery"):
+/// The OpenZeppelin ReentrancyGuard lock (`_status` is 2 while entered) guards funding, pushes, claims and returns.
+/// @custom:reentrancy-guard _status == 2
+/// Ghost sum of every recipient's cumulativePaid, updated at each cumulativePaid write.
+/// @custom:ghost uint256 sumPaid
+/// Ghost record of the EarnShare balance _publishRoot measured.
+/// @custom:ghost uint256 measuredBalance
+/// Ghost snapshots of the root total and version taken by fundAndPublishRoot and pushBatch.
+/// @custom:ghost uint256 minTotal
+/// @custom:ghost uint256 minVersion
+/// Owner calls that stay open under the lock (publishRoot) never lower the root total or version.
+/// @custom:lock-stable rootTotalEntitlement >= minTotal
+/// @custom:lock-stable rootVersion >= minVersion
+/// Measured solvency against entitlement: paid never exceeds the published cumulative root total.
+/// @custom:invariant totalPaid <= rootTotalEntitlement
+/// Conservation: totalPaid is the sum of every recipient's cumulativePaid, so no recipient has more.
+/// @custom:invariant sumPaid == totalPaid
+/// @custom:invariant forall address a :: cumulativePaid[a] <= totalPaid
+/// A root exists exactly when a version was published; before any root nothing is owed.
+/// @custom:invariant rootVersion == 0 <==> merkleRoot == bytes32(0)
+/// @custom:invariant rootVersion == 0 <==> statementHash == bytes32(0)
+/// @custom:invariant rootVersion == 0 ==> rootTotalEntitlement == 0
+/// The zero settlement ID is never consumed.
+/// @custom:invariant !consumedSettlements[bytes32(0)]
+/// The vault, its asset and EarnShare, the treasury and the campaign are fixed and nonzero.
+/// @custom:invariant address(earnVault) != address(0) && asset != address(0) && earnShare != address(0)
+/// @custom:invariant treasury != address(0) && campaignId != bytes32(0)
+/// Ghost model of the EarnShare inventory: the balance _publishRoot measured, less every payout since.
+/// @custom:ghost uint256 heldShares
+/// Ghost flag set once returnUnspent ends the campaign and sends the remaining inventory to the treasury.
+/// @custom:ghost bool unspentReturned
+/// Solvency: until the campaign's inventory is returned, the modelled inventory covers everything the
+/// published root still owes (rootTotalEntitlement - totalPaid).
+/// @custom:invariant !unspentReturned ==> rootTotalEntitlement - totalPaid <= heldShares
+/// Not proved: that the distributor's actual EarnShare balance follows heldShares. Payouts trust the
+/// transfer's return value and do not measure the distributor's or the recipient's balance change.
+/// Not proved: the per-holder principal cap on EarnShare eligibility. It is applied offchain when the
+/// cumulative root is computed; onchain, only the root total bounds what is paid.
 contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
     error OwnershipRenunciationDisabled();
     enum SkipReason {
@@ -83,6 +121,9 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
     error ZeroRoot();
     error ZeroStatementHash();
 
+    /// The claim window ends in the future.
+    /// @custom:ensures claimDeadline == claimDeadline_ && claimDeadline_ > block.timestamp
+    /// @custom:ensures earnVault == earnVault_ && treasury == treasury_ && campaignId == campaignId_
     constructor(IEarnVault earnVault_, address treasury_, bytes32 campaignId_, uint40 claimDeadline_, address owner_)
         Ownable(owner_)
     {
@@ -109,6 +150,22 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
     /// @dev `minEarnShares` is a lower bound, not an exact quote. Any excess mint remains available
     ///      to fund later cumulative roots. The final solvency check accounts for both that inventory
     ///      and the shares minted by this call.
+    /// Only the owner funds and publishes, with a positive measured mint, while claims are active.
+    /// @custom:ensures old(owner()) == msg.sender && !old(paused) && earnShares > 0
+    /// Settlement replay protection: the ID was unused and nonzero, and is now consumed; none is released.
+    /// @custom:ensures settlementId != bytes32(0) && !old(consumedSettlements[settlementId])
+    /// @custom:ensures consumedSettlements[settlementId]
+    /// @custom:ensures forall bytes32 x :: old(consumedSettlements[x]) ==> consumedSettlements[x]
+    /// The expected version matched and the version strictly increased.
+    /// @custom:ensures old(rootVersion) == expectedRootVersion && rootVersion > old(rootVersion) && version == rootVersion
+    /// The published root, statement and total are the arguments; the total never decreases.
+    /// @custom:ensures merkleRoot == root && statementHash == statementHash_ && rootTotalEntitlement == totalEntitlement
+    /// @custom:ensures rootTotalEntitlement >= old(rootTotalEntitlement)
+    /// Measured solvency: the outstanding liability is covered by the EarnShare balance measured at publication.
+    /// @custom:ensures rootTotalEntitlement - totalPaid <= measuredBalance
+    /// Funding never touches payout bookkeeping.
+    /// @custom:ensures totalPaid == old(totalPaid)
+    /// @custom:ensures forall address a :: cumulativePaid[a] == old(cumulativePaid[a])
     function fundAndPublishRoot(
         bytes32 settlementId,
         uint64 expectedRootVersion,
@@ -122,6 +179,8 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
         if (settlementId == bytes32(0)) revert ZeroSettlementId();
         if (consumedSettlements[settlementId]) revert SettlementAlreadyConsumed(settlementId);
         _requireRootVersion(expectedRootVersion);
+        /// @custom:ghost minTotal = rootTotalEntitlement
+        /// @custom:ghost minVersion = rootVersion
         consumedSettlements[settlementId] = true;
         earnShares = _fundWithAssets(funder, assets, minEarnShares);
         version = _publishRoot(root, totalEntitlement, statementHash_);
@@ -157,6 +216,19 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
 
     /// @notice Publishes a cumulative EarnShare entitlement root whose outstanding liability is funded.
     /// @dev While paused, only a same-total corrective statement may replace the current root.
+    /// Only the owner publishes; the expected version matched and the version rose by one.
+    /// @custom:ensures old(owner()) == msg.sender
+    /// @custom:ensures old(rootVersion) == expectedRootVersion && rootVersion == old(rootVersion) + 1
+    /// The total never decreases, and while paused it stays the same.
+    /// @custom:ensures rootTotalEntitlement >= old(rootTotalEntitlement)
+    /// @custom:ensures paused ==> rootTotalEntitlement == old(rootTotalEntitlement)
+    /// @custom:ensures merkleRoot == root && root != bytes32(0) && rootTotalEntitlement == totalEntitlement
+    /// @custom:ensures statementHash == statementHash_ && statementHash_ != bytes32(0)
+    /// @custom:ensures rootTotalEntitlement - totalPaid <= measuredBalance
+    /// Payout bookkeeping and settlements are untouched.
+    /// @custom:ensures totalPaid == old(totalPaid)
+    /// @custom:ensures forall address a :: cumulativePaid[a] == old(cumulativePaid[a])
+    /// @custom:ensures forall bytes32 x :: consumedSettlements[x] == old(consumedSettlements[x])
     function publishRoot(uint64 expectedRootVersion, bytes32 root, uint256 totalEntitlement, bytes32 statementHash_)
         external
         onlyOwner
@@ -181,6 +253,8 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
         uint256 balance = IERC20Like(earnShare).balanceOf(address(this));
         if (balance < outstanding) revert InsufficientFunding(outstanding, balance);
 
+        /// @custom:ghost measuredBalance = balance
+        /// @custom:ghost heldShares = balance
         merkleRoot = root;
         statementHash = statementHash_;
         rootTotalEntitlement = totalEntitlement;
@@ -191,6 +265,21 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
 
     /// @notice Pays a root-valid multiproof batch. Anyone may relay it because funds always go to
     ///         the recipients committed by the current root.
+    /// totalPaid grows by exactly the shares the batch reports paid.
+    /// @custom:ensures totalPaid == old(totalPaid) + paidEarnShares
+    /// cumulativePaid never decreases, and only batch recipients change, each to one of its leaf amounts.
+    /// @custom:ensures forall address a :: cumulativePaid[a] >= old(cumulativePaid[a])
+    /// @custom:ensures forall address a :: cumulativePaid[a] != old(cumulativePaid[a]) ==> (exists uint256 j :: j < recipients.length && recipients[j] == a && cumulativeAmounts[j] == cumulativePaid[a])
+    /// Every entry is paid or skipped; a stale version or a paused campaign is refused.
+    /// @custom:ensures paidCount + skippedCount == recipients.length && old(rootVersion) == expectedRootVersion
+    /// @custom:ensures !old(paused)
+    /// @custom:ensures forall bytes32 x :: consumedSettlements[x] == old(consumedSettlements[x])
+    /// Not proved: that a recipient counted as paid received exactly its amount (its EarnShare balance rose
+    /// by cumulativeAmount - the previous cumulativePaid); a short or redirected delivery is counted as paid.
+    /// Not proved: liveness. With claims active, the current version and equal nonempty arrays, a batch whose
+    /// multiproof matches the root returns normally, skipping rather than reverting on any entry it cannot
+    /// pay; the multiproof's validity over the computed leaves cannot be stated as a precondition here.
+    /// Not proved: the verifier does not finish this function within its time limit.
     function pushBatch(
         uint64 expectedRootVersion,
         address[] calldata recipients,
@@ -214,7 +303,21 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
             revert InvalidMultiproof();
         }
 
+        /// @custom:invariant i <= length && length == recipients.length && length == cumulativeAmounts.length
+        /// @custom:invariant paidCount + skippedCount == i
+        /// @custom:invariant totalPaid == old(totalPaid) + paidEarnShares
+        /// @custom:invariant sumPaid == totalPaid && totalPaid <= rootTotalEntitlement
+        /// @custom:invariant !unspentReturned ==> rootTotalEntitlement - totalPaid <= heldShares
+        /// @custom:invariant forall address a :: cumulativePaid[a] <= totalPaid
+        /// @custom:invariant rootVersion == 0 <==> merkleRoot == bytes32(0)
+        /// @custom:invariant rootVersion == 0 <==> statementHash == bytes32(0)
+        /// @custom:invariant rootVersion == 0 ==> rootTotalEntitlement == 0
+        /// @custom:invariant !consumedSettlements[bytes32(0)]
+        /// @custom:invariant forall bytes32 x :: consumedSettlements[x] == old(consumedSettlements[x])
+        /// @custom:invariant forall address a :: cumulativePaid[a] >= old(cumulativePaid[a])
+        /// @custom:invariant forall address a :: cumulativePaid[a] != old(cumulativePaid[a]) ==> (exists uint256 j :: j < i && recipients[j] == a && cumulativeAmounts[j] == cumulativePaid[a])
         for (uint256 i; i < length; ++i) {
+            /// @custom:ghost minTotal = rootTotalEntitlement
             address recipient = recipients[i];
             uint256 cumulativeAmount = cumulativeAmounts[i];
             SkipReason reason;
@@ -233,11 +336,16 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
                         reason = SkipReason.RootTotalExceeded;
                         skip = true;
                     } else if (!_tryTransfer(earnShare, recipient, amount)) {
+                        /// A failed push leaves the entitlement unpaid, so a later claim recovers it.
+                        /// @custom:assert cumulativePaid[recipient] == alreadyPaid
                         reason = SkipReason.TransferFailed;
                         skip = true;
                     } else {
                         uint256 nextTotalPaid = totalPaid + amount;
+                        /// @custom:ghost sumPaid = sumPaid - cumulativePaid[recipient] + cumulativeAmount
+                        /// @custom:ghost heldShares = heldShares - amount
                         cumulativePaid[recipient] = cumulativeAmount;
+                        /// @custom:assert totalPaid <= minTotal && minTotal <= rootTotalEntitlement
                         totalPaid = nextTotalPaid;
                         paidCount += 1;
                         paidEarnShares += amount;
@@ -255,6 +363,19 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice Pays the amount newly owed under the current cumulative root. Anyone may submit the proof.
+    /// No double claim: pays exactly the newly owed cumulative delta and records the leaf's amount.
+    /// @custom:ensures amount > 0 && amount == cumulativeAmount - old(cumulativePaid[recipient])
+    /// @custom:ensures cumulativePaid[recipient] == cumulativeAmount
+    /// @custom:ensures totalPaid == old(totalPaid) + amount
+    /// @custom:ensures forall address a :: a != recipient ==> cumulativePaid[a] == old(cumulativePaid[a])
+    /// A claim never exceeds the remaining root liability, and claims stop while paused.
+    /// @custom:ensures amount <= old(rootTotalEntitlement) - old(totalPaid)
+    /// @custom:ensures !old(paused) && recipient != address(0)
+    /// Not proved: liveness. With claims active, a proof of the leaf under the current root, a cumulative amount
+    /// above what was paid and the newly owed amount within the root's remaining liability, the claim returns
+    /// normally once the EarnShare transfer succeeds; the proof's validity cannot be stated as a precondition here.
+    /// Not proved: that the recipient's EarnShare balance rose by exactly amount; the transfer's
+    /// return value is trusted and the delivery is not measured.
     function claim(address recipient, uint256 cumulativeAmount, bytes32[] calldata proof)
         external
         nonReentrant
@@ -273,12 +394,18 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
             revert RootTotalExceeded(amount, rootTotalEntitlement - totalPaid);
         }
         uint256 nextTotalPaid = totalPaid + amount;
+        /// @custom:ghost sumPaid = sumPaid - cumulativePaid[recipient] + cumulativeAmount
+        /// @custom:ghost heldShares = heldShares - amount
         cumulativePaid[recipient] = cumulativeAmount;
         totalPaid = nextTotalPaid;
         _safeTransfer(earnShare, recipient, amount);
         emit RewardClaimed(recipient, amount, cumulativeAmount);
     }
 
+    /// Only the owner pauses; roots and payouts are unchanged.
+    /// @custom:ensures old(owner()) == msg.sender && paused == paused_
+    /// @custom:ensures merkleRoot == old(merkleRoot) && rootVersion == old(rootVersion)
+    /// @custom:ensures rootTotalEntitlement == old(rootTotalEntitlement) && totalPaid == old(totalPaid)
     function setPaused(bool paused_) external onlyOwner {
         if (paused == paused_) return;
         paused = paused_;
@@ -291,9 +418,14 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice Returns remaining EarnShare inventory to the treasury after the claim window.
+    /// Only after the claim window; payout bookkeeping is unchanged.
+    /// @custom:ensures block.timestamp > claimDeadline
+    /// @custom:ensures totalPaid == old(totalPaid)
+    /// @custom:ensures forall address a :: cumulativePaid[a] == old(cumulativePaid[a])
     function returnUnspent() external nonReentrant returns (uint256 earnShares) {
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp <= claimDeadline) revert ClaimsNotExpired();
+        /// @custom:ghost unspentReturned = true
         earnShares = IERC20Like(earnShare).balanceOf(address(this));
         if (earnShares != 0) _safeTransfer(earnShare, treasury, earnShares);
         emit UnspentReturned(treasury, earnShares);
