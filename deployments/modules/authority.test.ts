@@ -9,6 +9,7 @@ import { describe, expect, test, vi } from 'vitest'
 
 import { executeAvailableAuthority } from '../../deployments/modules/index.js'
 import { canAuthorizeRouter } from './earn/zone-router/steps.js'
+import { requireRouterProvenance } from './earn/zone-router/provenance.js'
 import {
   earnEngineBindingAbi,
   propAMMPoolAbi,
@@ -362,6 +363,27 @@ describe('deployment authority adapters', () => {
     const unreachable = mockDependencies([address('c')])
     unreachable.readContract.mockRejectedValue(new HttpRequestError({ url: 'https://rpc.invalid' }))
     await expect(canAuthorize(unreachable.dependencies)).rejects.toThrow(HttpRequestError)
+  })
+
+  test('checks the recovered router implementation before pool admission', async () => {
+    const router = address('d')
+    const error = new Error('noncanonical router')
+    vi.mocked(requireRouterProvenance).mockRejectedValueOnce(error)
+    const runtime = mockDependencies([authorityAccount, false, false, router])
+    await expect(
+      execute(
+        profile,
+        'authorize-router',
+        { DEPLOYER_PRIVATE_KEY: authorityKey },
+        { ...outputs, earnRouter: router },
+        runtime.dependencies,
+      ),
+    ).rejects.toBe(error)
+    expect(vi.mocked(requireRouterProvenance).mock.lastCall?.[1]).toMatchObject({
+      address: router,
+      contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+    })
+    expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
   })
 
   test('refuses to admit a router whose pool recipient is redirected', async () => {

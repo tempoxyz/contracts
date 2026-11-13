@@ -231,6 +231,7 @@ export const authorizeZoneRouter = defineAuthorityStep({
           dependencies,
           required(routerPool(options.profile), 'Zone router conversion pool'),
           requiredOutput(options.outputs, 'zoneRouter'),
+          (client) => requireModeProvenance(client, options.profile, options.outputs),
         ),
 })
 
