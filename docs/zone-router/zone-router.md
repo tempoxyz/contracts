@@ -77,7 +77,7 @@ contracts:
    one in one batch). The lifecycle grants pool, gateway and account admission with its own keys only when it
    deployed the factory itself; for a router from a factory the profile names, each is always handed
    off, for the pool owner or the Portal administrator to check that factory's verified source
-   first. Before any automatic Portal role grant, read-only constructor simulations of the reviewed local
+   first. Before any automatic pool admission or Portal role grant, read-only constructor simulations of the reviewed local
    factory and router builds must match the deployed runtime exactly, including their immutable
    values. A matching getter or address alone is insufficient; missing evidence stops the grant.
 
