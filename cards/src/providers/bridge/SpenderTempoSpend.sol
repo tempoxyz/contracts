@@ -7,6 +7,7 @@ import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { IERC20 } from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { LibClone } from "solady/utils/LibClone.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "zone-router/interfaces/IAddressRegistry.sol";
 
 import { ITempoEarnVault } from "../../core/interfaces/ITempoEarnVault.sol";
@@ -52,9 +53,12 @@ contract SpenderTempoSpend is SpenderBase {
     error DestinationNotAuthorized(address destination);
     error ExpectedBooleanByte();
     error IncorrectAssetForVault();
+    error InvalidVault();
     error ShareCostExceeded(uint256 required, uint256 maxShares);
     error PipelineDisabled();
+    error RefundNotCredited();
     error UnresolvedRecipient();
+    error UnsupportedToken(address token);
     error VaultNotAllowed();
     error WrongProgram(bytes32 spenderId);
 
@@ -116,6 +120,7 @@ contract SpenderTempoSpend is SpenderBase {
         require(data.length == 23, DataIncorrectLength());
         require(data[2] == 0x00 || data[2] == 0x01, ExpectedBooleanByte());
         address vault = address(bytes20(data[3:23]));
+        require(vault != address(0), InvalidVault());
         bool allowed = data[2] == 0x01;
         _storage().allowedVaults[vault] = allowed;
         // The clone's standing EarnShare approval follows the allowlist: set for an allowed vault, so its
@@ -202,10 +207,17 @@ contract SpenderTempoSpend is SpenderBase {
         // Implied by `_isCanonical` under the vendored factory, which registers an ID once and deploys its clone
         // only in `createSpender`; kept because the factory is upgradeable and could re-point an ID.
         require(factory.getSpenderAddress(s.spenderId) == address(this), WrongProgram(s.spenderId));
-        require(factory.isAuthorizedDestination(s.spenderId, s.destination), DestinationNotAuthorized(s.destination));
-        require(s.amount > 0 && s.fromVault <= s.amount, InvalidAmount());
         address payee = _payee(s.destination);
         require(payee != address(0) && payee != address(this), DestinationNotAuthorized(s.destination));
+        // A virtual destination credits its master, so allowing the master allows it too, as TIP-403 checks the master.
+        require(
+            factory.isAuthorizedDestination(s.spenderId, s.destination)
+                || (payee != s.destination && factory.isAuthorizedDestination(s.spenderId, payee)),
+            DestinationNotAuthorized(s.destination)
+        );
+        require(s.amount > 0 && s.fromVault <= s.amount, InvalidAmount());
+        // Only TIP-20s settle: no transfer callbacks, fees or rebases to upset the exact-credit checks.
+        require(StdPrecompiles.TIP20_FACTORY.isTIP20(s.token), UnsupportedToken(s.token));
 
         uint256 fromStable = s.amount - s.fromVault;
         uint256 before = IERC20(s.token).balanceOf(payee);
@@ -235,6 +247,7 @@ contract SpenderTempoSpend is SpenderBase {
         require(s.maxShares == 0 || required <= s.maxShares, ShareCostExceeded(required, s.maxShares));
 
         address share = v.earnShare();
+        uint256 shareBase = IERC20(share).balanceOf(address(this));
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
         // A standing maximum approval, set when governance allowed the vault and topped up here when
         // another handler (such as TF, which clears its own) has lowered it. Clearing it after each spend
@@ -251,14 +264,27 @@ contract SpenderTempoSpend is SpenderBase {
             }
         }
         if (payee == s.destination) {
-            burned = v.withdrawExact(s.fromVault, s.destination, required);
+            v.withdrawExact(s.fromVault, s.destination, required);
         } else {
             uint256 held = IERC20(s.token).balanceOf(address(this));
-            burned = v.withdrawExact(s.fromVault, address(this), required);
+            v.withdrawExact(s.fromVault, address(this), required);
             require(IERC20(s.token).balanceOf(address(this)) == held + s.fromVault, DestinationNotCredited());
             SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);
         }
-        if (burned < required) SafeTransferLib.safeTransfer(share, msg.sender, required - burned);
+        // The burn is measured, not taken from the vault's report, and may not reach shares the clone held before.
+        uint256 shareHeld = IERC20(share).balanceOf(address(this));
+        require(shareHeld >= shareBase, ShareCostExceeded(required + shareBase - shareHeld, required));
+        uint256 unused = shareHeld - shareBase;
+        burned = required - unused;
+        if (unused != 0) _refund(share, unused);
+    }
+
+    /// @dev Returns unused shares to the payer. Receive policies can redirect a successful transfer to a guard
+    ///      (TIP-1028), so the payer's balance must rise by exactly `amount`.
+    function _refund(address share, uint256 amount) private {
+        uint256 before = IERC20(share).balanceOf(msg.sender);
+        SafeTransferLib.safeTransfer(share, msg.sender, amount);
+        require(IERC20(share).balanceOf(msg.sender) == before + amount, RefundNotCredited());
     }
 
     /// @dev Who a transfer to `to` credits: its TIP-1022 master if it is a virtual address, else `to`.

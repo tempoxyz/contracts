@@ -9,6 +9,7 @@ import {
     ZONE_FACTORY_ADDRESS as ROUTER_ZONE_FACTORY,
     ZoneInfo as RouterZoneInfo
 } from "tempo-earn/interfaces/external/tempo/IZone.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ZoneRouter } from "zone-router/ZoneRouter.sol";
 import { ZoneRouterFactory } from "zone-router/ZoneRouterFactory.sol";
 
@@ -378,6 +379,12 @@ contract BridgeProgramTest is AccessKeys {
     ///         reentrancy lock, and the spend still settles.
     function test_rejectsReentrancy() public {
         ReentrantToken token = new ReentrantToken();
+        // Stands in for a TIP-20, so the program's own lock is what stops the callback.
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(token)),
+            abi.encode(true)
+        );
         token.mint(router, AMOUNT);
         token.arm(address(program), abi.encodeCall(CardSpender.spendFrom, (address(token), 1, "")));
         CardSpend memory spend = _stableSpend(AMOUNT);

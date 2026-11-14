@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "zone-router/interfaces/IAddressRegistry.sol";
 import { IERC20Allowance } from "zone-router/interfaces/IERC20Allowance.sol";
 import { ISpender } from "zone-router/interfaces/ISpender.sol";
@@ -55,6 +56,7 @@ contract CardSpender is ISpender {
     error ResidualBalance(address token);
     error ShareCostExceeded(uint256 required, uint256 maxShares);
     error UnresolvedRecipient();
+    error UnsupportedToken(address token);
     error VaultNotAllowed(address vault);
     error WrongInputToken(address token);
     error WrongProgram(address program);
@@ -224,6 +226,9 @@ contract CardSpender is ISpender {
     function _check(CardSpend memory s, address payer, bool isPrivate) private view returns (address payee) {
         if (s.program != address(this)) revert WrongProgram(s.program);
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
+        // Only TIP-20s settle: no transfer callbacks, fees or rebases to upset the exact-credit checks. A vault's
+        // asset must equal `s.token`, so this covers redemptions too.
+        if (!StdPrecompiles.TIP20_FACTORY.isTIP20(s.token)) revert UnsupportedToken(s.token);
         payee = _payee(s.destination);
         // The program's own balance is the baseline it measures input against, so it never pays itself.
         if (payee == address(0) || payee == address(this)) revert DestinationNotAuthorized(s.destination);
@@ -254,9 +259,15 @@ contract CardSpender is ISpender {
         uint256 required = v.previewWithdraw(s.fromVault);
         if (s.maxShares != 0 && required > s.maxShares) revert ShareCostExceeded(required, s.maxShares);
         address share = v.earnShare();
+        uint256 shareBase = IERC20Like(share).balanceOf(address(this));
         SafeTransferLib.safeTransferFrom(share, msg.sender, address(this), required);
-        sharesUsed = _redeem(v, share, s, payee, required);
-        if (sharesUsed < required) _refund(share, required - sharesUsed);
+        _redeem(v, share, s, payee, required);
+        // The burn is measured, not taken from the vault's report, and may not reach the program's seed.
+        uint256 shareHeld = IERC20Like(share).balanceOf(address(this));
+        if (shareHeld < shareBase) revert ShareCostExceeded(required + shareBase - shareHeld, required);
+        uint256 unused = shareHeld - shareBase;
+        sharesUsed = required - unused;
+        if (unused != 0) _refund(share, unused);
     }
 
     /// @dev A direct private spend, from the `maxInput` the router sent. The vault prices shares itself and
