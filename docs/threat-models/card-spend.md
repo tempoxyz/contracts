@@ -284,11 +284,34 @@ The design accepts these risks. They are decisions, not gaps.
 - **A leaked Zone key.** It can withdraw a cardholder's Zone balance, up to the key's limit, to any
   address in an open Zone or any admitted account in a closed-loop Zone, and it chooses where the change
   goes. Bridge uses one key per program, so one leak reaches every cardholder of that program.
+- **Standing outbox approvals.** A Zone key's `approve` and `requestWithdrawal` scopes are separate, and
+  only `approve` counts against its limit. A key that approves in one period and withdraws in the next
+  can take up to twice its periodic limit, and another key with `requestWithdrawal` on the same account
+  can use an approval it did not make. Bridge sends both calls in one transaction for the exact amount;
+  removing the need for the approval needs an outbox or scope change outside this repository.
 - **A leaked public key.** It can spend a cardholder's funds, up to the key's limit, only to the
   program's destinations: its scope names the program's `spend`.
 - **No on-chain idempotency.** The provider removes duplicate spends off chain, by its own reference.
 - **Approval before settlement.** The provider approves a private spend on the Zone receipt. If L1
-  settlement fails, the provider's reserve pays.
+  settlement fails, the funds return to the cardholder's Zone balance and the provider's reserve pays.
+  Known ways an approved spend can fail to settle:
+  - **Liquidity.** `availableBalance` values shares and reserves nothing. A spend can exceed the vault's
+    withdrawable liquidity, or lose it to a redemption the cardholder queues ahead of it in the same Zone,
+    makes on the L1 before it settles, or to another spend against the same buffer, by the same
+    cardholder or another.
+  - **Ordering.** On a Zone that permits arbitrary callback targets, an earlier withdrawal in the same
+    `processWithdrawals` can run an L1 operation first. On a Veda engine, an earlier operation in the same
+    transaction can pin and then move the Accountant rate (`RateChangedWithinTransaction`).
+  - **Fees and gas.** A higher L1 base fee raises the bounce-back fee above the change's margin
+    (`ChangeBelowDepositFee`, `DepositTooSmall`), and a venue's gas can rise past the callback's budget.
+  - **Provider governance in flight.** Bridge's pauser pauses the factory; governance disables or replaces
+    the "TS" handler, removes the destination or disallows the vault.
+  - **Zone administration in flight.** The admin disables the return token or pauses deposits, raises the
+    deposit fee or `bouncebackGas`, removes the router's gateway or depositor permissions, or de-admits
+    the program's `refundRecipient`; or the return's encryption key expires.
+  - **Policies and venues.** A TIP-403 administrator blocks a participant in the settlement; an Earn venue
+    stops servicing withdrawals; the value per share falls past `maxShares` or the input; or the vault's
+    engine or fees change between approval and settlement.
 - **Events are not proof of payment.** Anyone can emit a spend event with any `ref`. The provider
   reconciles by transaction and log index, binding a private spend's `CardSpent` and `InputSpent` to the
   portal's `WithdrawalProcessed` and the router's `Spent` in the same transaction, and a public spend to

@@ -17,7 +17,8 @@ struct CardSpend {
     uint256 destinationHint;
     /// @dev Tempo Earn vault that funds `fromVault`, holding `token`. Zero when `fromVault` is zero.
     address vault;
-    /// @dev Part of `amount` redeemed from `vault`. The rest is paid in `token`.
+    /// @dev Part of `amount` redeemed from `vault`. The rest is paid in `token`. Only a public spend mixes the two: a
+    ///      private spend carries one token, so `fromVault` is zero or all of `amount`.
     uint256 fromVault;
     /// @dev Most EarnShares `fromVault` may burn. Zero accepts the live price.
     uint256 maxShares;

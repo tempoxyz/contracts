@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { Test } from "forge-std/Test.sol";
 import { IERC165 } from "openzeppelin-contracts/utils/introspection/IERC165.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
@@ -185,6 +186,17 @@ contract BridgeProviderMockTest is Test {
     function setUp() public {
         usd = new SpenderMockToken();
         share = new SpenderMockToken();
+        // The mock tokens stand in for TIP-20s, which the program requires.
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(usd)),
+            abi.encode(true)
+        );
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(share)),
+            abi.encode(true)
+        );
         vault = new MockVault(address(share), address(usd));
         clone = new MockClone();
         clone.setVaultAnswer(abi.encode(abi.encode(true)), false);

@@ -21,6 +21,8 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 import { CardSpend } from "../../src/core/CardSpend.sol";
 import { CardSpender } from "../../src/core/CardSpender.sol";
+import { SpenderTempoSpend } from "../../src/providers/bridge/SpenderTempoSpend.sol";
+import { Spend } from "../../src/providers/bridge/interfaces/IBridgeSpender.sol";
 import { TempoEnv } from "../bridge/harness/TempoEnv.sol";
 import { MockProvider } from "./harness/Mocks.sol";
 
@@ -135,6 +137,56 @@ contract RefundReceivePolicyTest is TempoEnv {
 
     function test_payoutNoReceivePolicyRefundCreditsPayer() public {
         _successful(program);
+    }
+
+    function test_directCloneBlockedRefundDefaultAuthorityRevertsAtomically() public {
+        _cloneBlocked(address(0));
+    }
+
+    function test_directCloneBlockedRefundPayerAuthorityRevertsAtomically() public {
+        _cloneBlocked(payer);
+    }
+
+    function test_directCloneNoReceivePolicyRefundCreditsPayer() public {
+        Spend memory s = _cloneSpend();
+        vm.prank(payer);
+        earnShare.approve(spender, s.maxShares);
+        uint256 shares = earnShare.balanceOf(payer);
+        vm.prank(payer);
+        _cloneCall(_psCall(s));
+        assertEq(shares - earnShare.balanceOf(payer), 10e6, "refund must reach payer");
+        assertEq(earnShare.balanceOf(address(GUARD)), 0);
+        assertEq(earnShare.balanceOf(spender), 0);
+    }
+
+    /// @dev A payer may spend through the clone directly; its refund must reach the payer, not the guard.
+    function _cloneBlocked(address authority) internal {
+        vm.prank(payer);
+        POLICIES.setReceivePolicy(senderPolicy, allTokens, authority);
+        Spend memory s = _cloneSpend();
+        vm.prank(payer);
+        earnShare.approve(spender, s.maxShares);
+        Balances memory before = _balances(program);
+        vm.prank(payer);
+        vm.expectRevert(SpenderTempoSpend.RefundNotCredited.selector);
+        _cloneCall(_psCall(s));
+        assertEq(abi.encode(_balances(program)), abi.encode(before), "refund failure must roll back every balance");
+        assertEq(earnShare.allowance(payer, spender), s.maxShares, "payer approval must roll back");
+    }
+
+    function _cloneSpend() internal view returns (Spend memory) {
+        uint256 quote = earnVault.previewWithdraw(SPEND_AMOUNT);
+        assertEq(quote, 11e6);
+        return Spend({
+            spenderId: SPENDER_ID,
+            token: address(usd),
+            amount: SPEND_AMOUNT,
+            destination: settlement,
+            vault: address(earnVault),
+            fromVault: SPEND_AMOUNT,
+            maxShares: quote,
+            ref: bytes32("refund.clone")
+        });
     }
 
     function _allowRefund(CardSpender selected) internal {

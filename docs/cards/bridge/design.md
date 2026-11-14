@@ -96,6 +96,9 @@ and expiry of the key in the protocol. The cardholder can revoke the key at any 
 - **Tempo account.** Scope: `token.approve(recipient = program)`, `earnShare.approve(recipient =
   program)` for Earn, and `program.spend`.
 - **Zone account.** Scope: `zoneToken.approve(recipient = outbox)` and `outbox.requestWithdrawal`.
+  The scope does not tie the two together, so Bridge always sends them in one transaction, approving
+  exactly what that withdrawal takes. An approval left standing would let the key withdraw it later
+  without charging its limit again, and let any other key with `requestWithdrawal` on the account use it.
 - **Limits.** Each key has a periodic limit for each token and an expiry. Bridge uses one key for
   each program. Limits count gross debits.
 
@@ -299,10 +302,17 @@ struct SpendReturn {
 - `transferToDestination` and `transferToDestinationStrict` always revert, so no standing allowance
   can be pulled. Wallets that cannot use access keys stay on the EA and TF handlers.
 - Governance action "UV" (factory only) allows or disallows a vault, and sets or clears the clone's
-  share approval to that vault.
+  share approval to that vault. It refuses the zero address (`InvalidVault`).
+- Only TIP-20 tokens settle (`UnsupportedToken`).
+- Unused shares go back to the payer, measured from the clone's own balance rather than the vault's
+  report, and the payer's balance must rise by exactly that amount (`RefundNotCredited`). A payer who
+  calls the clone directly is held to the same check as the program.
 - `availableBalance` reports the payer's balance of `token` plus the value of its shares in an
   allowed vault that holds `token`: an upper bound, since a spend pays at the `previewWithdraw` cost.
-- A virtual destination (TIP-1022) is credited through its master: the handler checks the master's
+- A virtual destination (TIP-1022) is credited through its master. Unlike TIP-403, which authorizes the
+  master, the handler authorizes only the literal destination on the program's allowlist: a master may
+  hand out its virtual addresses as separate deposit accounts, so allowing a master does not allow them,
+  and allowing a virtual address pays its master. The handler checks the master's
   balance, and redeems Earn shares for one to the clone and transfers them on, since Earn's engines
   check the literal receiver.
 - Storage is at an ERC-7201 slot (`tempo.spend.SpenderTempoSpend`), so it cannot collide with the
