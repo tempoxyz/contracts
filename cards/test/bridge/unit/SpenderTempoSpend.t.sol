@@ -596,40 +596,16 @@ contract SpenderTempoSpendTest is TempoEnv {
         assertEq(share.balanceOf(spender), 0);
     }
 
-    /// @notice Allowing a master allows its virtual addresses, which credit it, as TIP-403 authorizes the master.
-    function test_spendToAVirtualDestinationOfAnAllowedMaster() public {
+    /// @notice Allowing a master does not allow its virtual addresses: a master may hand them out as separate
+    ///         deposit accounts, so only the literal destination on the allowlist is paid.
+    function test_spendToAVirtualDestinationOfAnAllowedMasterReverts() public {
         address virtualTo = address(uint160(0x12345678fdfDfdFdfDFdfdfdFDfD000000000002));
         address master = makeAddr("virtual.allowed-master");
         vm.mockCall(
             ADDRESS_REGISTRY_ADDRESS, abi.encodeCall(IAddressRegistry.resolveRecipient, (virtualTo)), abi.encode(master)
         );
-        VirtualAwareToken vusd = new VirtualAwareToken("VUSD");
-        vm.mockCall(
-            StdPrecompiles.TIP20_FACTORY_ADDRESS,
-            abi.encodeWithSignature("isTIP20(address)", address(vusd)),
-            abi.encode(true)
-        );
-        vusd.mint(alice, 100e6);
-        vm.prank(alice);
-        vusd.approve(spender, type(uint256).max);
         vm.prank(bridgeGovernor);
         bridgeFactory.updateSpenderDestination(SPENDER_ID, master, true);
-
-        Spend memory s = _stable(10e6);
-        s.token = address(vusd);
-        s.destination = virtualTo;
-        _spendAs(alice, s);
-        assertEq(vusd.balanceOf(master), 10e6, "the master was credited");
-    }
-
-    /// @notice A virtual address of a master nobody allowed is still refused.
-    function test_spendToAVirtualDestinationOfAnotherMasterReverts() public {
-        address virtualTo = address(uint160(0x12345678FdfdFDfdfdFdfDfdFDfD000000000003));
-        vm.mockCall(
-            ADDRESS_REGISTRY_ADDRESS,
-            abi.encodeCall(IAddressRegistry.resolveRecipient, (virtualTo)),
-            abi.encode(makeAddr("virtual.other-master"))
-        );
         Spend memory s = _stable(1e6);
         s.destination = virtualTo;
         _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.DestinationNotAuthorized.selector, virtualTo));

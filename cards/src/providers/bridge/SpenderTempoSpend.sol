@@ -207,15 +207,12 @@ contract SpenderTempoSpend is SpenderBase {
         // Implied by `_isCanonical` under the vendored factory, which registers an ID once and deploys its clone
         // only in `createSpender`; kept because the factory is upgradeable and could re-point an ID.
         require(factory.getSpenderAddress(s.spenderId) == address(this), WrongProgram(s.spenderId));
+        // The literal destination, not the master it resolves to: a master may hand out its virtual addresses as
+        // separate deposit accounts, so allowing the master must not allow them.
+        require(factory.isAuthorizedDestination(s.spenderId, s.destination), DestinationNotAuthorized(s.destination));
+        require(s.amount > 0 && s.fromVault <= s.amount, InvalidAmount());
         address payee = _payee(s.destination);
         require(payee != address(0) && payee != address(this), DestinationNotAuthorized(s.destination));
-        // A virtual destination credits its master, so allowing the master allows it too, as TIP-403 checks the master.
-        require(
-            factory.isAuthorizedDestination(s.spenderId, s.destination)
-                || (payee != s.destination && factory.isAuthorizedDestination(s.spenderId, payee)),
-            DestinationNotAuthorized(s.destination)
-        );
-        require(s.amount > 0 && s.fromVault <= s.amount, InvalidAmount());
         // Only TIP-20s settle: no transfer callbacks, fees or rebases to upset the exact-credit checks.
         require(StdPrecompiles.TIP20_FACTORY.isTIP20(s.token), UnsupportedToken(s.token));
 

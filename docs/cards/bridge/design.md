@@ -309,9 +309,10 @@ struct SpendReturn {
   calls the clone directly is held to the same check as the program.
 - `availableBalance` reports the payer's balance of `token` plus the value of its shares in an
   allowed vault that holds `token`: an upper bound, since a spend pays at the `previewWithdraw` cost.
-- A virtual destination (TIP-1022) is credited through its master. A destination is authorized when it,
-  or the master it resolves to, is on the program's allowlist, so allowing a master allows its virtual
-  addresses, as TIP-403 authorizes the master. The handler checks the master's
+- A virtual destination (TIP-1022) is credited through its master. Unlike TIP-403, which authorizes the
+  master, the handler authorizes only the literal destination on the program's allowlist: a master may
+  hand out its virtual addresses as separate deposit accounts, so allowing a master does not allow them,
+  and allowing a virtual address pays its master. The handler checks the master's
   balance, and redeems Earn shares for one to the clone and transfers them on, since Earn's engines
   check the literal receiver.
 - Storage is at an ERC-7201 slot (`tempo.spend.SpenderTempoSpend`), so it cannot collide with the
