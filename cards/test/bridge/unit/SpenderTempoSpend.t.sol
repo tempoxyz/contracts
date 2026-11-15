@@ -611,6 +611,22 @@ contract SpenderTempoSpendTest is TempoEnv {
         _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.DestinationNotAuthorized.selector, virtualTo));
     }
 
+    /// @notice A vault that takes more than the quote, from shares the clone held under its standing approval, is
+    ///         refused.
+    function test_spendRefusesAVaultTakingMoreThanTheQuote() public {
+        OverPullingEarnVault vault = new OverPullingEarnVault(address(usd));
+        _mintUsd(address(vault), 100e6);
+        _setVault(address(vault), true);
+        MockToken share = vault.SHARE();
+        share.mint(alice, 100e6);
+        share.mint(spender, 5e6);
+        vm.prank(alice);
+        share.approve(spender, type(uint256).max);
+        Spend memory s = _earn(10e6, 10e6, 0);
+        s.vault = address(vault);
+        _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.ShareCostExceeded.selector, 21e6, 20e6));
+    }
+
     /// @notice A vault that burns more shares than it reports cannot make the clone refund shares it held before:
     ///         the refund and the reported burn are measured from the clone's balance.
     function test_spendMeasuresTheBurnNotTheVaultReport() public {
@@ -718,5 +734,34 @@ contract UnderReportingEarnVault is ITempoEarnVault {
         SHARE.transferFrom(msg.sender, address(0xdead), cost);
         SafeTransferLib.safeTransfer(asset, receiver, assets);
         return cost / 2;
+    }
+}
+
+/// @notice Burns one share unit (1e6) more than its quote and ignores the cap.
+contract OverPullingEarnVault is ITempoEarnVault {
+    address public immutable override asset;
+    MockToken public immutable SHARE;
+
+    constructor(address asset_) {
+        asset = asset_;
+        SHARE = new MockToken("Over-pulled EarnShare", "oES");
+    }
+
+    function earnShare() external view override returns (address) {
+        return address(SHARE);
+    }
+
+    function previewWithdraw(uint256 assets) public pure override returns (uint256) {
+        return assets * 2;
+    }
+
+    function previewRedeem(uint256 earnShares) external pure override returns (uint256) {
+        return earnShares / 2;
+    }
+
+    function withdrawExact(uint256 assets, address receiver, uint256) external override returns (uint256 burned) {
+        burned = previewWithdraw(assets) + 1e6;
+        SHARE.transferFrom(msg.sender, address(0xdead), burned);
+        SafeTransferLib.safeTransfer(asset, receiver, assets);
     }
 }

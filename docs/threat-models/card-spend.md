@@ -457,9 +457,13 @@ a balance.
 **How it can happen**
 
 - The vault quotes a high `previewWithdraw`, so a spend takes more shares (`cards/src/core/CardSpender.sol`: `_payDirect`).
-- On a direct public spend, the vault reports burning more than it did. The program returns
-  `required - burned` from that report, and the rest stays in the program under the vault's standing
-  approval (`cards/src/core/CardSpender.sol`: `_payDirect`, `_redeem`).
+- The vault misreports what it burned. On a direct public spend and in the TS handler, the report is
+  ignored: the refund is the shares still held above the pre-spend balance, and a vault that took more
+  than the quote reverts the spend (`ShareCostExceeded`; `cards/src/core/CardSpender.sol`: `_payDirect`,
+  `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`). A direct private spend
+  passes the lower of `maxInput` and a nonzero `maxShares` to the vault as its cap, but the program itself
+  enforces only `maxInput`, by balance: a vault that ignores the cap can burn up to `maxInput`, and the
+  rest goes back to the Zone (`cards/src/core/CardSpender.sol`: `_spendDirect`, `spendFrom`).
 - The vault overstates `previewRedeem`, so `availableBalance` overstates what a cardholder can spend
   (`cards/src/core/CardSpender.sol`: `availableBalance`).
 
@@ -473,7 +477,7 @@ deploy script checks that the vault's engine advertises exact withdrawals and re
 `cards/script/bridge/deploy/ProgramChecks.sol`: `supportsEarnSpend`).
 
 **Key insight.** The covered code bounds what the destination gets by balance. On the public path it bounds
-what the payer loses by the vault's own quote and report.
+what the payer loses by the vault's own quote, and measures the refund by balance.
 
 ### 5. The Zone operator withholds or bounces settlement
 
