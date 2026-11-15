@@ -461,8 +461,9 @@ a balance.
   ignored: the refund is the shares still held above the pre-spend balance, and a vault that took more
   than the quote reverts the spend (`ShareCostExceeded`; `cards/src/core/CardSpender.sol`: `_payDirect`,
   `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`). A direct private spend
-  caps the burn at the lower of `maxInput` and a nonzero `maxShares`, not the quote, and measures what
-  it consumed by balance (`cards/src/core/CardSpender.sol`: `_spendDirect`, `spendFrom`).
+  passes the lower of `maxInput` and a nonzero `maxShares` to the vault as its cap, but the program itself
+  enforces only `maxInput`, by balance: a vault that ignores the cap can burn up to `maxInput`, and the
+  rest goes back to the Zone (`cards/src/core/CardSpender.sol`: `_spendDirect`, `spendFrom`).
 - The vault overstates `previewRedeem`, so `availableBalance` overstates what a cardholder can spend
   (`cards/src/core/CardSpender.sol`: `availableBalance`).
 
