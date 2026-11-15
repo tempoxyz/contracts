@@ -78,7 +78,8 @@ library EarnVaultTestDeployer {
             emergencyGuardian: operator,
             asyncJanitor: operator,
             maxManagedAssets: 0,
-            migrationMode: EngineMigrationMode.OperatorEnabled
+            migrationMode: EngineMigrationMode.OperatorEnabled,
+            restrictDeposits: false
         });
     }
 }

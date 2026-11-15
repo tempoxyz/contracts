@@ -285,6 +285,7 @@ export function earnFactoryDeployParams(
       asyncJanitor: profile.core.asyncJanitor ?? zeroAddress,
       maxManagedAssets: 0n,
       migrationMode: profile.core.migrationMode === 'OperatorEnabled' ? 1 : 0,
+      restrictDeposits: false,
     },
     distributorConfig: {
       distributor: protectedFee?.distributor ?? zeroAddress,

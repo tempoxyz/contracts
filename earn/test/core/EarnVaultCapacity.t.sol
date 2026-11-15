@@ -143,7 +143,8 @@ contract EarnVaultCapacityTest is Test {
             emergencyGuardian: address(0),
             asyncJanitor: address(0),
             maxManagedAssets: maxManagedAssets,
-            migrationMode: EngineMigrationMode.UserOnly
+            migrationMode: EngineMigrationMode.UserOnly,
+            restrictDeposits: false
         });
     }
 }

@@ -76,6 +76,11 @@ contract EarnVault is IEarnVault {
     /// @notice Whether deposits, in-kind entry, contributions, and surplus absorption are paused.
     ///         Exit paths stay open.
     bool public override depositsPaused;
+    /// @notice Deployment-fixed entry restriction. There is intentionally no setter.
+    bool public override restrictDeposits;
+    /// @notice Callers the operator approved for `deposit` and `depositVenueShares` under
+    ///         {restrictDeposits}. Ignored when entry is open.
+    mapping(address account => bool) public override isDepositor;
 
     struct PendingRedeem {
         address receiver;
@@ -129,6 +134,7 @@ contract EarnVault is IEarnVault {
     );
 
     error DepositsPaused();
+    error DepositsUnrestricted();
     error DuplicateRequest(bytes32 requestId);
     error EngineAssetMismatch();
     error EngineCapabilityUnsupported(bytes4 interfaceId);
@@ -156,6 +162,7 @@ contract EarnVault is IEarnVault {
     error NoEarnShares();
     error NotEngine();
     error NotEmergencyGuardianOrOperator();
+    error NotDepositor();
     error NotDistributor();
     error NotPendingDistributor();
     error NotOperator();
@@ -220,6 +227,7 @@ contract EarnVault is IEarnVault {
         asyncJanitor = controlInit_.asyncJanitor;
         maxManagedAssets = controlInit_.maxManagedAssets;
         engineMigrationMode = controlInit_.migrationMode;
+        restrictDeposits = controlInit_.restrictDeposits;
 
         FeeConfig memory initialFeeConfig = IEarnFees(earnFees_).feeConfig(IEarnFees(earnFees_).currentFeeConfigId());
         if (distributor == address(0)) {
@@ -418,6 +426,18 @@ contract EarnVault is IEarnVault {
         emit DepositPauseChanged(msg.sender, paused);
     }
 
+    /// @notice Approves or removes a caller of `deposit` and `depositVenueShares`.
+    /// @dev Operator only, and only on an EarnVault initialized with {restrictDeposits}. Removing a
+    ///      depositor never affects existing EarnShare or any exit path.
+    function setDepositor(address depositor, bool allowed) external override {
+        if (msg.sender != operator) revert NotOperator();
+        if (!restrictDeposits) revert DepositsUnrestricted();
+        if (depositor == address(0)) revert ZeroAddress();
+        if (isDepositor[depositor] == allowed) return;
+        isDepositor[depositor] = allowed;
+        emit DepositorChanged(depositor, allowed);
+    }
+
     /// @notice Updates the maximum active assets permitted after a voluntary inflow.
     /// @dev Zero disables the limit. Lowering the limit below current managed assets does not force
     ///      an exit; it blocks later voluntary inflows until exits reopen capacity or the limit changes.
@@ -456,6 +476,7 @@ contract EarnVault is IEarnVault {
 
     function _deposit(uint256 assets, address receiver, uint256 minEarnShares) internal returns (uint256 earnShares) {
         if (depositsPaused) revert DepositsPaused();
+        _requireDepositor();
         if (assets == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
@@ -520,6 +541,7 @@ contract EarnVault is IEarnVault {
         returns (uint256 earnShares)
     {
         if (depositsPaused) revert DepositsPaused();
+        _requireDepositor();
         if (venueShares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
@@ -1272,6 +1294,10 @@ contract EarnVault is IEarnVault {
         uint256 wholeMultiples = current / baseline;
         return !(wholeMultiples > MAX_REWARD_RATE_MULTIPLIER
                 || (wholeMultiples == MAX_REWARD_RATE_MULTIPLIER && current % baseline != 0));
+    }
+
+    function _requireDepositor() internal view {
+        if (restrictDeposits && !isDepositor[msg.sender]) revert NotDepositor();
     }
 
     function _requireDistributor() internal view {

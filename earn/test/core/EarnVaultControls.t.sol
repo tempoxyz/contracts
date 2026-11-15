@@ -224,7 +224,8 @@ contract EarnVaultControlsTest is Test {
             emergencyGuardian: emergencyGuardian,
             asyncJanitor: asyncJanitor,
             maxManagedAssets: 0,
-            migrationMode: migrationMode
+            migrationMode: migrationMode,
+            restrictDeposits: false
         });
     }
 }

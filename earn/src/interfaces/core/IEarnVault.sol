@@ -27,6 +27,7 @@ interface IEarnVault {
     );
     event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 earnShares);
     event DepositPauseChanged(address indexed caller, bool paused);
+    event DepositorChanged(address indexed depositor, bool allowed);
     event EmergencyRolesChanged(address indexed emergencyGuardian, address indexed asyncJanitor);
     event OperatorTransferStarted(address indexed operator, address indexed pendingOperator);
     event OperatorTransferCancelled(address indexed operator, address indexed pendingOperator);
@@ -102,6 +103,8 @@ interface IEarnVault {
     function acceptOperator() external;
     function asyncJanitor() external view returns (address);
     function depositsPaused() external view returns (bool);
+    function restrictDeposits() external view returns (bool);
+    function isDepositor(address account) external view returns (bool);
     function maxManagedAssets() external view returns (uint256);
     function remainingDepositCapacity() external view returns (uint256 assets);
     function openRedeemRequestCount() external view returns (uint256);
@@ -119,6 +122,7 @@ interface IEarnVault {
     function convertToEngineShares(uint256 earnShares) external view returns (uint256 engineShares);
     function setEmergencyRoles(address newGuardian, address newJanitor) external;
     function setDepositsPaused(bool paused) external;
+    function setDepositor(address depositor, bool allowed) external;
     function setMaxManagedAssets(uint256 newMaxManagedAssets) external;
     /// @notice Uses the caller as receiver; suitable for self-recipient access-key scopes.
     function withdrawExact(uint256 assets, uint256 maxEarnShares) external returns (uint256 earnSharesBurned);

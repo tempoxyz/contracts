@@ -81,30 +81,32 @@ transfer-policy setup completed.
 
 ### Core state
 
-| Read                                          | Meaning                                                                 |
-| --------------------------------------------- | ----------------------------------------------------------------------- |
-| `asset()`                                     | Immutable base asset, read from the initial engine                      |
-| `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                         |
-| `engine()`                                    | Current engine                                                          |
-| `engineMigrationMode()`                       | Deployment-fixed `UserOnly` or `OperatorEnabled`; no setter             |
-| `operator()` / `pendingOperator()`            | Operator and nominated successor                                        |
-| `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                        |
-| `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                                |
-| `engineShares()`                              | Managed engine shares backing active EarnShare, capped at raw custody   |
-| `rawEngineShares()`                           | Raw current-engine custody, including surplus                           |
-| `surplusEngineShares()`                       | Raw shares not recognized as managed backing                            |
-| `totalAssets()`                               | Value of managed backing; surplus excluded                              |
-| `totalEarnShares()`                           | EarnShare total supply                                                  |
-| `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares                |
-| `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability         |
-| `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution   |
-| `rewardRateBaseline()`                        | Rate at initialization or the last empty reset                          |
-| `MAX_REWARD_RATE_MULTIPLIER()`                | Fixed reward-admission ceiling: `100`                                   |
-| `openRedeemRequestCount()`                    | Number of open async claims                                             |
-| `pendingRedeem(requestId)`                    | Stored receiver, requester, burned EarnShare, engine shares, and `open` |
-| `depositsPaused()`                            | New-exposure pause state                                                |
-| `maxManagedAssets()`                          | Managed-assets ceiling; zero means unlimited                            |
-| `remainingDepositCapacity()`                  | Room under the ceiling; `type(uint256).max` when unlimited              |
+| Read                                          | Meaning                                                                    |
+| --------------------------------------------- | -------------------------------------------------------------------------- |
+| `asset()`                                     | Immutable base asset, read from the initial engine                         |
+| `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                            |
+| `engine()`                                    | Current engine                                                             |
+| `engineMigrationMode()`                       | Deployment-fixed `UserOnly` or `OperatorEnabled`; no setter                |
+| `operator()` / `pendingOperator()`            | Operator and nominated successor                                           |
+| `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                           |
+| `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                                   |
+| `engineShares()`                              | Managed engine shares backing active EarnShare, capped at raw custody      |
+| `rawEngineShares()`                           | Raw current-engine custody, including surplus                              |
+| `surplusEngineShares()`                       | Raw shares not recognized as managed backing                               |
+| `totalAssets()`                               | Value of managed backing; surplus excluded                                 |
+| `totalEarnShares()`                           | EarnShare total supply                                                     |
+| `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares                   |
+| `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability            |
+| `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution      |
+| `rewardRateBaseline()`                        | Rate at initialization or the last empty reset                             |
+| `MAX_REWARD_RATE_MULTIPLIER()`                | Fixed reward-admission ceiling: `100`                                      |
+| `openRedeemRequestCount()`                    | Number of open async claims                                                |
+| `pendingRedeem(requestId)`                    | Stored receiver, requester, burned EarnShare, engine shares, and `open`    |
+| `depositsPaused()`                            | New-exposure pause state                                                   |
+| `restrictDeposits()`                          | Deployment-fixed: whether entry needs an approved depositor                |
+| `isDepositor(account)`                        | Whether the operator approved `account` for entry under `restrictDeposits` |
+| `maxManagedAssets()`                          | Managed-assets ceiling; zero means unlimited                               |
+| `remainingDepositCapacity()`                  | Room under the ceiling; `type(uint256).max` when unlimited                 |
 
 ### User and accounting API
 
@@ -163,14 +165,15 @@ receiver of an async claim may implement
 
 ### Controls
 
-| Function                                     | Authority                              |
-| -------------------------------------------- | -------------------------------------- |
-| `setDepositsPaused(paused)`                  | Operator; guardian may only set `true` |
-| `setMaxManagedAssets(newMaxManagedAssets)`   | Operator                               |
-| `setEmergencyRoles(newGuardian, newJanitor)` | Operator; zero empties a seat          |
+| Function                                     | Authority                               |
+| -------------------------------------------- | --------------------------------------- |
+| `setDepositsPaused(paused)`                  | Operator; guardian may only set `true`  |
+| `setMaxManagedAssets(newMaxManagedAssets)`   | Operator                                |
+| `setDepositor(depositor, allowed)`           | Operator; only under `restrictDeposits` |
+| `setEmergencyRoles(newGuardian, newJanitor)` | Operator; zero empties a seat           |
 
 `setDepositsPaused` checks authorization first, then does nothing and emits no event when the value
-already matches. The managed-assets limit and reward-admission limit are specified under
+already matches; so does `setDepositor`. The [depositor allowlist](../architecture/system.md#depositor-allowlist), managed-assets limit and reward-admission limit are specified under
 [accounting anchors](../architecture/system.md#accounting-anchors).
 
 ### Engine migration
@@ -184,24 +187,26 @@ compatible asset, vault binding, interface, and output bounds. The full
 
 ### Events
 
-| Event                                                                                     | Emitted when                                                                            |
-| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `Deposited`, `VenueSharesDeposited`                                                       | A base-asset or in-kind entry mints EarnShare                                           |
-| `Redeemed`, `WithdrewExact`                                                               | An immediate exit pays its receiver                                                     |
-| `Contributed`, `EngineShareSurplusAbsorbed`                                               | A reward is recognized, with the new anchor                                             |
-| `EngineMigrated`                                                                          | The operator replaces the current engine, recording custody, supply, and the new anchor |
-| `EngineShareShortfallReconciled`                                                          | Raw custody fell below the managed count and the count was cut                          |
-| `RedeemRequested`, `RedeemFinalized`, `RedeemCancelled`                                   | An async claim opens or closes                                                          |
-| `DepositPauseChanged`, `MaxManagedAssetsChanged`, `EmergencyRolesChanged`                 | A control changes                                                                       |
-| `OperatorTransferStarted`, `OperatorTransferCancelled`, `OperatorTransferred`             | The operator handoff progresses                                                         |
-| `DistributorFeeUpdateScheduled`, `DistributorFeeUpdateCancelled`, `DistributorFeeUpdated` | A distributor fee update progresses                                                     |
-| `DistributorTransferStarted`, `DistributorTransferCancelled`, `DistributorTransferred`    | The distributor handoff progresses                                                      |
+| Event                                                                                         | Emitted when                                                                            |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `Deposited`, `VenueSharesDeposited`                                                           | A base-asset or in-kind entry mints EarnShare                                           |
+| `Redeemed`, `WithdrewExact`                                                                   | An immediate exit pays its receiver                                                     |
+| `Contributed`, `EngineShareSurplusAbsorbed`                                                   | A reward is recognized, with the new anchor                                             |
+| `EngineMigrated`                                                                              | The operator replaces the current engine, recording custody, supply, and the new anchor |
+| `EngineShareShortfallReconciled`                                                              | Raw custody fell below the managed count and the count was cut                          |
+| `RedeemRequested`, `RedeemFinalized`, `RedeemCancelled`                                       | An async claim opens or closes                                                          |
+| `DepositPauseChanged`, `DepositorChanged`, `MaxManagedAssetsChanged`, `EmergencyRolesChanged` | A control changes                                                                       |
+| `OperatorTransferStarted`, `OperatorTransferCancelled`, `OperatorTransferred`                 | The operator handoff progresses                                                         |
+| `DistributorFeeUpdateScheduled`, `DistributorFeeUpdateCancelled`, `DistributorFeeUpdated`     | A distributor fee update progresses                                                     |
+| `DistributorTransferStarted`, `DistributorTransferCancelled`, `DistributorTransferred`        | The distributor handoff progresses                                                      |
 
 ### Errors that enforce core rules
 
 | Error                                                                                                 | Rule                                                                                         |
 | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `DepositsPaused`                                                                                      | Pause blocks deposits, in-kind entry, contributions, and absorption                          |
+| `NotDepositor`                                                                                        | Under `restrictDeposits`, only approved depositors may deposit or enter in kind              |
+| `DepositsUnrestricted`                                                                                | An open EarnVault has no depositor list to change                                            |
 | `ActiveSupplyWithoutBacking`                                                                          | No principal entry into a pool whose supply has zero-value backing                           |
 | `ExcessiveConversionLoss`                                                                             | Entry, request, or nonempty-pool re-entry loses more than 1 bp to rounding                   |
 | `MaxManagedAssetsExceeded`                                                                            | A voluntary inflow would exceed the managed-assets limit                                     |

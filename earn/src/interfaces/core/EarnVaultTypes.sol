@@ -21,6 +21,10 @@ struct EarnVaultControls {
     uint256 maxManagedAssets;
     /// @dev Fixed forever at EarnVault initialization; there is intentionally no setter.
     EngineMigrationMode migrationMode;
+    /// @dev Fixed forever at EarnVault initialization. When true, only operator-approved depositors may
+    ///      call `deposit` or `depositVenueShares`. Exits, contributions, and surplus absorption stay
+    ///      permissionless. When false, entry is open and the depositor list cannot be used.
+    bool restrictDeposits;
 }
 
 /// @notice Initialization-time configuration for the protected distributor fee authority.
