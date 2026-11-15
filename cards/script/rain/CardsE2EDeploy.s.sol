@@ -164,7 +164,8 @@ contract CardsE2EDeploy is Script, RainStack {
                     emergencyGuardian: owner,
                     asyncJanitor: owner,
                     maxManagedAssets: 0,
-                    migrationMode: EngineMigrationMode.OperatorEnabled
+                    migrationMode: EngineMigrationMode.OperatorEnabled,
+                    restrictDeposits: false
                 }),
                 distributorConfig: DistributorConfig(address(0), 0),
                 fees: noFees,

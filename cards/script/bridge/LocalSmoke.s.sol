@@ -103,7 +103,7 @@ contract LocalSmoke is Script {
                 deploymentId: keccak256(abi.encode("smoke", block.timestamp)),
                 engine: address(engine),
                 owner: deployer,
-                controls: EarnVaultControls(deployer, deployer, 0, EngineMigrationMode.OperatorEnabled),
+                controls: EarnVaultControls(deployer, deployer, 0, EngineMigrationMode.OperatorEnabled, false),
                 distributorConfig: DistributorConfig(address(0), 0),
                 fees: noFees,
                 transferPolicyId: 0

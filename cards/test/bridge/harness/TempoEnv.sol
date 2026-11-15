@@ -123,7 +123,8 @@ abstract contract TempoEnv is Test {
                     emergencyGuardian: address(this),
                     asyncJanitor: address(this),
                     maxManagedAssets: 0,
-                    migrationMode: EngineMigrationMode.OperatorEnabled
+                    migrationMode: EngineMigrationMode.OperatorEnabled,
+                    restrictDeposits: false
                 }),
                 distributorConfig: DistributorConfig(address(0), 0),
                 fees: noFees,
