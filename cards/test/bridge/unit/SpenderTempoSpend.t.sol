@@ -737,7 +737,7 @@ contract UnderReportingEarnVault is ITempoEarnVault {
     }
 }
 
-/// @notice Takes one share more than the quote for each share quoted above ten, ignoring the cap.
+/// @notice Burns one share unit (1e6) more than its quote and ignores the cap.
 contract OverPullingEarnVault is ITempoEarnVault {
     address public immutable override asset;
     MockToken public immutable SHARE;

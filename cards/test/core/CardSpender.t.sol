@@ -495,8 +495,6 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
         assertEq(program.PAYOUT_TARGET(), address(0));
     }
 
-    /// @dev A vault that burns more shares than it reports cannot make the program refund from its own balance:
-    ///      the refund is what the program measurably still holds of the payer's shares.
     /// @dev A vault that reports burning more than it did leaves the unburned shares to the payer, measured by balance.
     function test_publicSpend_overReportedBurnStillRefundsThePayer() public {
         MisreportingVault vault = _misreportingVault(50, 100);
@@ -535,6 +533,8 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
         s.maxShares = 0;
     }
 
+    /// @dev A vault that burns more shares than it reports cannot make the program refund from its own balance:
+    ///      the refund is what the program measurably still holds of the payer's shares.
     function test_publicSpend_refundIsMeasuredNotReported() public {
         UnderReportingVault vault = new UnderReportingVault(address(usd));
         mock.setVault(address(vault), true);
