@@ -457,10 +457,12 @@ a balance.
 **How it can happen**
 
 - The vault quotes a high `previewWithdraw`, so a spend takes more shares (`cards/src/core/CardSpender.sol`: `_payDirect`).
-- The vault misreports what it burned. The program and the TS handler ignore the report: the refund is
-  the shares they still hold above their pre-spend balance, and a vault that took more than the quote
-  reverts the spend (`ShareCostExceeded`; `cards/src/core/CardSpender.sol`: `_payDirect`,
-  `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`).
+- The vault misreports what it burned. On a direct public spend and in the TS handler, the report is
+  ignored: the refund is the shares still held above the pre-spend balance, and a vault that took more
+  than the quote reverts the spend (`ShareCostExceeded`; `cards/src/core/CardSpender.sol`: `_payDirect`,
+  `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`). A direct private spend
+  caps the burn at the lower of `maxInput` and a nonzero `maxShares`, not the quote, and measures what
+  it consumed by balance (`cards/src/core/CardSpender.sol`: `_spendDirect`, `spendFrom`).
 - The vault overstates `previewRedeem`, so `availableBalance` overstates what a cardholder can spend
   (`cards/src/core/CardSpender.sol`: `availableBalance`).
 
