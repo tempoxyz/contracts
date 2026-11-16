@@ -37,7 +37,7 @@ this repository.
 | Path                       | Purpose                                                                                                                                               |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `earn/`                    | Tempo Earn Foundry project (solar): contracts, tests, Forge scripts.                                                                                  |
-| `zone-router/`             | Zone router Foundry project (solc): `ZoneRouter`, its factory, `ISpender` and `SendSpender`.                                                          |
+| `zone-router/`             | Zone router Foundry project: `ZoneRouter`, its factory, `ISpender` and `SendSpender`.                                                                 |
 | `cards/`                   | Card spend Foundry project (solc): our core (`src/core/`) and per-provider contracts (`src/providers/`), providers' vendored code (`vendor/`), tests. |
 | `deployments/`             | Shared deployment lifecycle (`pnpm earn`), releases, ABIs, and modules (`modules/earn/`, `modules/zone-router/`); the `@tempoxyz/contracts` package.  |
 | `profiles/`                | Deployment profiles and generated records.                                                                                                            |
