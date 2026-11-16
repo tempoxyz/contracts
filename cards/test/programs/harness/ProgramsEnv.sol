@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
+import { CardLimits } from "../../../src/programs/CardLimits.sol";
 import { CardProgram } from "../../../src/programs/CardProgram.sol";
 import { CreditLine } from "../../../src/programs/CreditLine.sol";
 import { SavingsFacility } from "../../../src/programs/SavingsFacility.sol";
@@ -63,6 +64,7 @@ abstract contract ProgramsEnv is CoreEnv {
         core.approveHolder(address(cards), address(usd), type(uint128).max);
         core.approveHolder(address(cards), address(earnShare), type(uint128).max);
         cards.setFunding(address(usd), address(facility), address(0), 0);
+        cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
         vm.stopPrank();
     }
 
@@ -84,7 +86,7 @@ abstract contract ProgramsEnv is CoreEnv {
 
     function _authorize(bytes32 ref, uint128 amount) internal {
         vm.prank(issuer);
-        cards.authorize(CARD, ref, amount, merchant, uint64(block.timestamp + 7 days), false);
+        cards.authorize(CARD, ref, amount, merchant, uint64(block.timestamp + 7 days), 0);
     }
 
     function _capture(bytes32 ref, uint128 amount, bool isFinal) internal {

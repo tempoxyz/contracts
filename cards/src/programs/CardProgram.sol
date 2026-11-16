@@ -5,6 +5,8 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
+import { CardAdjust } from "./CardAdjust.sol";
+import { CardLimits } from "./CardLimits.sol";
 import { CreditLine } from "./CreditLine.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
@@ -22,19 +24,27 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///      issuer recorded for it (`rateOf`, settlement units per token unit, scaled by 1e18); legs round up in token
 ///      units, so the owner never reserves less than the purchase. The program is the payee of cash and credit legs
 ///      and forwards what they capture to `SETTLEMENT_ACCOUNT` in the same call; the facility pays for savings legs.
-///      Windows are fixed: a day is 86,400 seconds and a month 30 days. The core's holder allowance is the owner's
-///      chain-level cap over everything this program holds.
+///      Windows are calendar days and months at the UTC offset the owner granted. The owner's terms (a lifetime
+///      limit, per-purchase, daily and monthly limits) bound all the owner's cards with this issuer, and each card
+///      adds its own limits and an optional lifetime cap. A purchase counts from authorization; captures past its
+///      holds and late charges count when they land; releases and refunds give their amount back. The core's holder
+///      allowance is the owner's chain-level cap over everything this program holds.
 contract CardProgram {
     using FixedPointMathLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant RATE_ONE = 1e18;
-    uint256 private constant MONTH = 30 days;
 
     /// @notice Funding legs, as a card's allowed set and a purchase's placed set.
     uint8 public constant CASH = 1;
     uint8 public constant SAVINGS = 2;
     uint8 public constant CREDIT = 4;
+    /// @notice A late charge's leg: a core charge on the owner's cash token, made after the purchase's holds ended.
+    uint8 public constant CHARGED = 8;
+
+    /// @notice Authorization flags: an offline approval the network already made, and a partial approval.
+    uint8 public constant STAND_IN = 1;
+    uint8 public constant PARTIAL = 2;
 
     enum Status {
         None,
@@ -58,18 +68,8 @@ contract CardProgram {
         Limits limits;
         /// @dev What the owner allows the issuer to raise the limits to.
         Limits ceiling;
-        uint32 day;
-        uint32 month;
-        uint96 daySpent;
-        uint96 monthSpent;
-    }
-
-    struct Mandate {
-        bool revoked;
-        /// @dev Zero means no monthly limit for the merchant.
-        uint96 monthlyLimit;
-        uint32 month;
-        uint96 spent;
+        /// @dev The card's windows and lifetime total.
+        CardLimits.Window window;
     }
 
     /// @notice An owner's funding order: cash token, then savings through a facility, then a credit line.
@@ -91,6 +91,11 @@ contract CardProgram {
         bool open;
         bool standIn;
         bool captured;
+        uint32 month;
+        /// @dev The owner's grant the purchase counts under.
+        uint32 epoch;
+        /// @dev Settlement units the purchase still counts as held.
+        uint64 held;
     }
 
     /// @notice Purchase steps so far, the last one the issuer settled, and net captured settlement units.
@@ -118,7 +123,11 @@ contract CardProgram {
     address public immutable SETTLEMENT_ACCOUNT;
 
     mapping(bytes32 card => Card) internal _cards;
-    mapping(address owner => mapping(address merchant => Mandate)) public mandates;
+    mapping(address owner => mapping(address merchant => CardLimits.Mandate)) public mandates;
+    mapping(address owner => CardLimits.Grant) public grants;
+    mapping(address owner => CardLimits.Usage) public usageOf;
+    /// @notice Keys the issuer lets act on purchases besides itself.
+    mapping(address key => bool) public operators;
     mapping(address owner => Funding) public fundingOf;
     mapping(bytes32 purchaseRef => Purchase) internal _purchases;
     /// @notice Settlement units per unit of a token other than the settlement token, scaled by 1e18.
@@ -180,6 +189,20 @@ contract CardProgram {
         uint128 net
     );
     event SettlementAcknowledged(uint64 throughSeq, uint64 previous);
+    event Granted(address indexed owner, CardLimits.Terms terms, uint32 epoch);
+    event Revoked(address indexed owner);
+    event OperatorSet(address indexed key, bool allowed);
+    event CardCapSet(bytes32 indexed card, uint64 cap);
+    event PurchaseAdjusted(bytes32 indexed purchaseRef, bytes32 indexed card, uint256 amount, uint256 cash, uint64 seq);
+    event PurchaseCharged(
+        bytes32 indexed purchaseRef,
+        bytes32 indexed card,
+        address indexed merchant,
+        uint256 amount,
+        uint256 cash,
+        uint64 seq,
+        uint128 net
+    );
 
     error CaptureExceedsHolds(uint256 excess);
     error CardExists();
@@ -193,6 +216,8 @@ contract CardProgram {
     error LimitExceeded(uint8 which);
     error MerchantLimitExceeded();
     error MerchantRevoked();
+    error NoTerms();
+    error PurchaseOpen();
     error NotCardOwner();
     error NotIssuer();
     error PurchaseExists();
@@ -208,6 +233,11 @@ contract CardProgram {
 
     modifier onlyIssuer() {
         if (msg.sender != ISSUER) revert NotIssuer();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (msg.sender != ISSUER && !operators[msg.sender]) revert NotIssuer();
         _;
     }
 
@@ -281,6 +311,28 @@ contract CardProgram {
         ) revert LimitAboveCeiling();
         c.limits = limits;
         emit LimitsSet(card, limits, ceiling);
+    }
+
+    /// @notice Lets `key` act on purchases (authorize, adjust, capture, release, charge, refund), or stops it.
+    function setOperator(address key, bool allowed) external onlyIssuer {
+        operators[key] = allowed;
+        emit OperatorSet(key, allowed);
+    }
+
+    /// @notice Caps what `card` commits over its life (open holds plus captures less refunds). Zero removes the cap.
+    function setCardCap(bytes32 card, uint64 cap) external onlyIssuer {
+        Card storage c = _cards[card];
+        if (c.status == Status.None) revert InvalidCard();
+        c.window.cap = cap;
+        emit CardCapSet(card, cap);
+    }
+
+    /// @notice Freezes, unfreezes or closes `card` for the issuer (a fraud stop, a lost card). A closed card stays closed.
+    function setStatus(bytes32 card, Status status) external onlyIssuer {
+        Card storage c = _cards[card];
+        if (c.status == Status.None || c.status == Status.Closed || status == Status.None) revert CardNotActive();
+        c.status = status;
+        emit CardStatusSet(card, status);
     }
 
     /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it.
@@ -358,7 +410,7 @@ contract CardProgram {
 
     /// @notice Revokes or restores `merchant` for all the caller's cards, with an optional monthly limit.
     function setMandate(address merchant, bool revoked, uint96 monthlyLimit) external {
-        Mandate storage m = mandates[msg.sender][merchant];
+        CardLimits.Mandate storage m = mandates[msg.sender][merchant];
         m.revoked = revoked;
         m.monthlyLimit = monthlyLimit;
         emit MandateSet(msg.sender, merchant, revoked, monthlyLimit);
@@ -371,26 +423,46 @@ contract CardProgram {
         emit FundingSet(msg.sender, cashToken, facility, creditLine, lineId);
     }
 
+    /// @notice Grants this program the caller's terms for all their cards, and starts their usage afresh.
+    function grant(CardLimits.Terms calldata terms) external {
+        CardLimits.Grant storage g = grants[msg.sender];
+        g.terms = terms;
+        g.active = true;
+        uint32 epoch = ++g.epoch;
+        delete usageOf[msg.sender];
+        emit Granted(msg.sender, terms, epoch);
+    }
+
+    /// @notice Stops new purchases on all the caller's cards. Open purchases still capture, release and refund.
+    function revoke() external {
+        grants[msg.sender].active = false;
+        emit Revoked(msg.sender);
+    }
+
     // Purchases.
 
-    /// @notice Authorizes a purchase of `amount` settlement units on `card` at `merchant`: checks the card, its
-    ///         limits and the merchant mandate on the whole amount, then places the owner's legs in funding order in
-    ///         this one call. A stand-in records an offline approval as one cash stand-in hold, past the card's
-    ///         freeze, limits and mandates, which the network already decided.
+    /// @notice Authorizes a purchase of `amount` settlement units on `card` at `merchant`: checks the card, the
+    ///         owner's grant, limits and the merchant mandate, then places the owner's legs in funding order in this
+    ///         one call. `PARTIAL` approves what the legs can fund when that is less. `STAND_IN` records an offline
+    ///         approval as one cash stand-in hold, past the card's freeze, limits and mandates, which the network
+    ///         already decided; it still counts toward them.
+    /// @return approved The settlement units the purchase holds.
     function authorize(
         bytes32 card,
         bytes32 purchaseRef,
         uint128 amount,
         address merchant,
         uint64 expiresAt,
-        bool standIn
-    ) external nonReentrant onlyIssuer {
+        uint8 flags
+    ) external nonReentrant onlyOperator returns (uint256 approved) {
         if (amount == 0 || amount > type(uint64).max) revert InvalidAmount();
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner != address(0)) revert PurchaseExists();
         Card storage c = _cards[card];
         address owner = c.owner;
+        bool standIn = flags & STAND_IN != 0;
         if (c.status == Status.None) revert InvalidCard();
+        CardLimits.Grant storage g = grants[owner];
         if (standIn) {
             if (c.status == Status.Closed) revert CardNotActive();
         } else {
@@ -398,14 +470,13 @@ contract CardProgram {
             // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
             // forge-lint: disable-next-line(block-timestamp)
             if (c.expiry <= block.timestamp) revert CardExpired();
-            if (amount > c.limits.perPurchase) revert LimitExceeded(0);
-            _useMandate(owner, merchant, amount);
+            if (!g.active) revert NoTerms();
         }
-        _useWindows(c, amount, !standIn);
 
         Funding memory f = fundingOf[owner];
         uint256[3] memory legAmounts;
         uint8 legs;
+        approved = amount;
         if (standIn) {
             if (c.legs & CASH == 0 || f.cashToken == address(0)) revert InsufficientFunds(amount);
             uint256 tokens = _toTokenUp(amount, _rate(f.cashToken));
@@ -413,29 +484,60 @@ contract CardProgram {
             legAmounts[0] = tokens;
             legs = CASH;
         } else {
-            (legs, legAmounts) = _placeLegs(c.legs, owner, f, purchaseRef, amount, expiresAt);
+            uint256 rest;
+            (legs, legAmounts, rest) = _placeLegs(c.legs, owner, f, purchaseRef, amount, expiresAt);
+            if (rest != 0) {
+                if (flags & PARTIAL == 0 || rest == amount) revert InsufficientFunds(rest);
+                approved = amount - rest;
+            }
             if (legs & CREDIT != 0) p.creditLine = f.creditLine;
+            CardLimits.useMandate(mandates[owner][merchant], g.terms.utcOffset, approved);
         }
+        (p.day, p.month) = _spend(c, owner, approved, approved, !standIn);
 
         p.card = card;
         p.owner = owner;
         p.expiresAt = expiresAt;
-        p.day = c.day;
+        p.epoch = g.epoch;
         // forge-lint: disable-next-line(unsafe-typecast)
-        p.amount = uint64(amount);
+        p.amount = uint64(approved);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        p.held = uint64(approved);
         p.legs = legs;
         p.open = true;
         p.standIn = standIn;
         uint64 seq = ++ledger.seq;
         emit PurchaseAuthorized(
-            purchaseRef, card, merchant, amount, legAmounts[0], legAmounts[1], legAmounts[2], standIn, expiresAt, seq
+            purchaseRef, card, merchant, approved, legAmounts[0], legAmounts[1], legAmounts[2], standIn, expiresAt, seq
         );
+    }
+
+    /// @notice Moves an open purchase to `amount` settlement units (an incremental authorization or a partial
+    ///         reversal). An increase checks the card, grant and limits on the new total and reserves the difference
+    ///         on the purchase's cash leg; a decrease gives back what the cash leg still holds of it.
+    function adjust(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
+        Purchase storage p = _purchases[purchaseRef];
+        address owner = p.owner;
+        address token = fundingOf[owner].cashToken;
+        uint256 cash = CardAdjust.adjust(
+            CORE,
+            p,
+            _cards[p.card],
+            grants[owner],
+            usageOf[owner],
+            token,
+            _rate(token),
+            _legId(purchaseRef, CASH),
+            amount
+        );
+        uint64 seq = ++ledger.seq;
+        emit PurchaseAdjusted(purchaseRef, p.card, amount, cash, seq);
     }
 
     /// @notice Captures `amount` settlement units of a purchase across its legs in funding order (cash, savings,
     ///         credit), and pays the settlement account in the same call. An amount above what the legs hold (a tip)
     ///         is captured on the cash leg within the owner's tolerance on the core. `isFinal` releases the rest.
-    function capture(bytes32 purchaseRef, uint128 amount, bool isFinal) external nonReentrant onlyIssuer {
+    function capture(bytes32 purchaseRef, uint128 amount, bool isFinal) external nonReentrant onlyOperator {
         Purchase storage p = _purchases[purchaseRef];
         if (!p.open) revert PurchaseNotOpen();
         // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
@@ -443,7 +545,7 @@ contract CardProgram {
         if (block.timestamp >= p.expiresAt) revert PurchaseExpired();
         if (amount == 0 && !isFinal) revert InvalidAmount();
         uint8 legs = p.legs;
-        Leg[3] memory l = _readLegs(p, purchaseRef, false);
+        Leg[4] memory l = _readLegs(p, purchaseRef, false);
 
         // Waterfall: each leg pays what it can of the rest, in funding order.
         uint256 rest = amount;
@@ -475,6 +577,17 @@ contract CardProgram {
         if (legs & CASH != 0) _forward(l[0].token);
         if (legs & CREDIT != 0) _forward(l[2].token);
 
+        // The held part of the capture already counts; what it takes past the holds counts now, and a final capture
+        // gives back what it leaves held.
+        uint256 counted = p.held;
+        uint256 fromHeld = amount < counted ? amount : counted;
+        uint256 freed = isFinal ? counted : fromHeld;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        p.held = uint64(counted - freed);
+        Card storage c = _cards[p.card];
+        if (amount > fromHeld) _spend(c, p.owner, 0, amount - fromHeld, false);
+        if (freed > fromHeld) _giveBack(c, p.owner, p.epoch, p.day, p.month, freed - fromHeld);
+
         if (amount != 0) p.captured = true;
         if (isFinal) p.open = false;
         Ledger storage ledger_ = ledger;
@@ -484,9 +597,50 @@ contract CardProgram {
         emit PurchaseCaptured(purchaseRef, p.card, amount, tokens[0], tokens[1], tokens[2], isFinal, seq, net);
     }
 
-    /// @notice Releases every open leg of a purchase. A purchase with nothing captured gives its amount back to the
-    ///         card's windows when they have not rolled over.
-    function release(bytes32 purchaseRef) external nonReentrant onlyIssuer {
+    /// @notice Charges `amount` settlement units for a purchase presented without a live hold (a late presentment
+    ///         or a force post), as one core charge on the owner's cash token: available balance first, then debt
+    ///         within the cap the owner set for this program. An expired open purchase is released first.
+    function charge(bytes32 card, bytes32 purchaseRef, uint128 amount, address merchant)
+        external
+        nonReentrant
+        onlyOperator
+    {
+        if (amount == 0 || amount > type(uint64).max) revert InvalidAmount();
+        Purchase storage p = _purchases[purchaseRef];
+        if (p.owner == address(0)) {
+            Card storage c = _cards[card];
+            if (c.status == Status.None) revert InvalidCard();
+            p.card = card;
+            p.owner = c.owner;
+        } else {
+            if (p.legs & CHARGED != 0) revert PurchaseExists();
+            if (p.open) {
+                // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
+                // forge-lint: disable-next-line(block-timestamp)
+                if (block.timestamp < p.expiresAt) revert PurchaseOpen();
+                _end(purchaseRef, true);
+            }
+        }
+        address owner = p.owner;
+        if (grants[owner].epoch == 0) revert NoTerms();
+        address token = fundingOf[owner].cashToken;
+        uint256 tokens = _toTokenUp(amount, _rate(token));
+        // forge-lint: disable-next-line(unsafe-typecast)
+        CORE.charge(owner, token, _legId(purchaseRef, CHARGED), uint128(tokens), address(this), false);
+        _forward(token);
+        p.legs |= CHARGED;
+        p.captured = true;
+        _spend(_cards[p.card], owner, 0, amount, false);
+
+        Ledger storage ledger_ = ledger;
+        uint64 seq = ++ledger_.seq;
+        uint128 net = ledger_.net + amount;
+        ledger_.net = net;
+        emit PurchaseCharged(purchaseRef, p.card, merchant, amount, tokens, seq, net);
+    }
+
+    /// @notice Releases every open leg of a purchase and gives back what it still held.
+    function release(bytes32 purchaseRef) external nonReentrant onlyOperator {
         _end(purchaseRef, false);
     }
 
@@ -495,44 +649,21 @@ contract CardProgram {
         _end(purchaseRef, true);
     }
 
-    /// @notice Refunds `amount` settlement units of what a purchase captured, in reverse funding order (credit,
-    ///         savings, cash). The issuer funds it: the program pulls each leg's token from the issuer (the savings
-    ///         leg's base asset, which the facility deposits for shares) and refunds the leg as its payee.
-    function refund(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyIssuer {
+    /// @notice Refunds `amount` settlement units of what a purchase captured or charged, in reverse funding order
+    ///         (a late charge, credit, savings, cash), and gives the amount back to the owner's limits. The caller
+    ///         funds it: the program pulls each leg's token from the caller (the savings leg's base asset, which the
+    ///         facility deposits for shares) and refunds the leg as its payee.
+    function refund(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
-        Leg[3] memory l = _readLegs(p, purchaseRef, true);
+        Leg[4] memory l = _readLegs(p, purchaseRef, true);
 
-        uint256 rest = amount;
-        uint256[3] memory take;
-        for (uint256 i = 3; i > 0; --i) {
-            take[i - 1] = rest < l[i - 1].value ? rest : l[i - 1].value;
-            rest -= take[i - 1];
-        }
-        if (rest != 0) revert RefundExceedsCapture(rest);
-
-        uint256[3] memory tokens;
-        if (take[2] != 0) {
-            tokens[2] = _refundTokens(l[2], take[2]);
-            SafeTransferLib.safeTransferFrom(l[2].token, msg.sender, address(this), tokens[2]);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.refund(l[2].holdOwner, l[2].id, uint128(tokens[2]));
-            CreditLine(p.creditLine).sync(l[2].id);
-        }
-        if (take[1] != 0) {
-            SavingsFacility facility = SavingsFacility(_facility(l[1]));
-            uint256 assets = _toTokenUp(take[1], l[1].rate);
-            SafeTransferLib.safeTransferFrom(facility.ASSET(), msg.sender, address(this), assets);
-            SafeTransferLib.safeApprove(facility.ASSET(), address(facility), assets);
-            tokens[1] = facility.refund(l[1].holdOwner, l[1].id, assets);
-        }
-        if (take[0] != 0) {
-            tokens[0] = _refundTokens(l[0], take[0]);
-            SafeTransferLib.safeTransferFrom(l[0].token, msg.sender, address(this), tokens[0]);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.refund(l[0].holdOwner, l[0].id, uint128(tokens[0]));
-        }
+        uint256[3] memory tokens = CardAdjust.refund(CORE, l, p.creditLine, amount);
+        // A refund's own repayment of the owner's debt to this program lands here.
+        if (l[0].token != address(0)) _forward(l[0].token);
+        if (l[3].token != address(0)) _forward(l[3].token);
+        _giveBackNow(_cards[p.card], p.owner, p.epoch, amount);
 
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
@@ -570,8 +701,8 @@ contract CardProgram {
         bytes32 purchaseRef,
         uint256 amount,
         uint64 expiresAt
-    ) private returns (uint8 legs, uint256[3] memory legAmounts) {
-        uint256 rest = amount;
+    ) private returns (uint8 legs, uint256[3] memory legAmounts, uint256 rest) {
+        rest = amount;
         if (allowed & CASH != 0 && f.cashToken != address(0)) {
             uint256 rate = _rate(f.cashToken);
             uint256 take = _min(rest, _toSettlement(CORE.available(owner, f.cashToken), rate));
@@ -605,11 +736,10 @@ contract CardProgram {
             legs |= CREDIT;
             rest = 0;
         }
-        if (rest != 0) revert InsufficientFunds(rest);
     }
 
     /// @dev Reads each placed leg's hold. `forRefund` values what is refundable rather than what is still held.
-    function _readLegs(Purchase storage p, bytes32 purchaseRef, bool forRefund) private view returns (Leg[3] memory l) {
+    function _readLegs(Purchase storage p, bytes32 purchaseRef, bool forRefund) private view returns (Leg[4] memory l) {
         uint8 legs = p.legs;
         address owner = p.owner;
         if (legs & CASH != 0) l[0] = _readLeg(owner, _legId(purchaseRef, CASH), false, forRefund);
@@ -620,6 +750,7 @@ contract CardProgram {
             (address lender,) = line.drawOf(id);
             l[2] = _readLeg(lender, id, false, forRefund);
         }
+        if (legs & CHARGED != 0) l[3] = _readLeg(owner, _legId(purchaseRef, CHARGED), false, forRefund);
     }
 
     function _readLeg(address holdOwner, bytes32 id, bool savings, bool forRefund)
@@ -667,11 +798,6 @@ contract CardProgram {
         return _min(facility.VAULT().previewWithdraw(_toTokenUp(take, leg.rate)), leg.held);
     }
 
-    function _refundTokens(Leg memory leg, uint256 take) private pure returns (uint256) {
-        if (take == leg.value) return leg.refundable;
-        return _min(_toTokenUp(take, leg.rate), leg.refundable);
-    }
-
     function _facility(Leg memory leg) private view returns (address) {
         return CORE.getHold(leg.holdOwner, leg.id).payee;
     }
@@ -682,13 +808,15 @@ contract CardProgram {
         // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (expired && block.timestamp < p.expiresAt) revert PurchaseNotExpired();
-        Leg[3] memory l = _readLegs(p, purchaseRef, false);
+        Leg[4] memory l = _readLegs(p, purchaseRef, false);
         _releaseLeg(l[0], expired);
         _releaseLeg(l[1], expired);
         _releaseLeg(l[2], expired);
         if (p.legs & CREDIT != 0) CreditLine(p.creditLine).sync(l[2].id);
         p.open = false;
-        if (!p.captured) _restoreWindows(_cards[p.card], p.day, p.amount);
+        uint256 held = p.held;
+        p.held = 0;
+        _giveBack(_cards[p.card], p.owner, p.epoch, p.day, p.month, held);
         uint64 seq = ++ledger.seq;
         emit PurchaseReleased(purchaseRef, p.card, l[0].held, l[1].held, l[2].held, expired, seq);
     }
@@ -699,45 +827,34 @@ contract CardProgram {
         else CORE.release(leg.holdOwner, leg.id);
     }
 
-    function _useWindows(Card storage c, uint256 amount, bool enforce) private {
-        // Day and month numbers fit in 32 bits for millions of years.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint32 day = uint32(block.timestamp / 1 days);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint32 month = uint32(block.timestamp / MONTH);
-        uint256 daySpent = c.day == day ? c.daySpent : 0;
-        uint256 monthSpent = c.month == month ? c.monthSpent : 0;
-        daySpent += amount;
-        monthSpent += amount;
-        if (enforce) {
-            if (daySpent > c.limits.daily) revert LimitExceeded(1);
-            if (monthSpent > c.limits.monthly) revert LimitExceeded(2);
-        }
-        c.day = day;
-        c.month = month;
-        // Purchases are at most 64 bits, so 96-bit windows hold billions of them.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        (c.daySpent, c.monthSpent) = (uint96(daySpent), uint96(monthSpent));
+    /// @dev Counts `amount` toward the owner's terms and the card in today's windows, checking them when
+    ///      `enforce`, and returns today's calendar day and month.
+    function _spend(Card storage c, address owner, uint256 total, uint256 amount, bool enforce)
+        private
+        returns (uint32 day, uint32 month)
+    {
+        Limits memory l = c.limits;
+        return CardLimits.spend(
+            grants[owner],
+            usageOf[owner],
+            c.window,
+            [uint256(l.perPurchase), l.daily, l.monthly],
+            total,
+            amount,
+            enforce
+        );
     }
 
-    function _restoreWindows(Card storage c, uint32 day, uint64 amount) private {
-        if (c.day == day) c.daySpent = c.daySpent > amount ? c.daySpent - amount : 0;
-        if (c.month == day / 30) c.monthSpent = c.monthSpent > amount ? c.monthSpent - amount : 0;
+    /// @dev Gives `amount` back to the owner's and card's totals, and to the windows of `day` and `month` while they
+    ///      are still current.
+    function _giveBack(Card storage c, address owner, uint32 epoch, uint32 day, uint32 month, uint256 amount) private {
+        if (amount != 0) CardLimits.giveBack(grants[owner], usageOf[owner], c.window, epoch, day, month, amount);
     }
 
-    function _useMandate(address owner, address merchant, uint256 amount) private {
-        Mandate storage m = mandates[owner][merchant];
-        if (m.revoked) revert MerchantRevoked();
-        uint96 limit = m.monthlyLimit;
-        if (limit == 0) return;
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint32 month = uint32(block.timestamp / MONTH);
-        uint256 spent = (m.month == month ? m.spent : 0) + amount;
-        if (spent > limit) revert MerchantLimitExceeded();
-        m.month = month;
-        // Bounded by the 96-bit limit just checked.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        m.spent = uint96(spent);
+    /// @dev Gives `amount` back in today's windows (a refund).
+    function _giveBackNow(Card storage c, address owner, uint32 epoch, uint256 amount) private {
+        (uint32 day, uint32 month) = CardLimits.calendar(grants[owner].terms.utcOffset);
+        _giveBack(c, owner, epoch, day, month, amount);
     }
 
     function _holdFrom(
@@ -801,3 +918,4 @@ contract CardProgram {
     }
     // forge-lint: disable-end(reentrancy-no-eth)
 }
+

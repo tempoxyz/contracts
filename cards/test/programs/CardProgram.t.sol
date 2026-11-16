@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
+import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { CardProgram } from "../../src/programs/CardProgram.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
 import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
@@ -113,7 +114,7 @@ contract CardProgramTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 1000e6);
         assertFalse(cards.purchaseOf(P1).open);
         // Nothing was captured, so the day's window has its amount back.
-        assertEq(cards.cardOf(CARD).daySpent, 0);
+        assertEq(cards.cardOf(CARD).window.daySpent, 0);
         _assertCoreBalanced();
     }
 
@@ -127,19 +128,19 @@ contract CardProgramTest is ProgramsEnv {
     function test_release_returnsFundsAndWindow() public {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
-        assertEq(cards.cardOf(CARD).daySpent, 100e6);
+        assertEq(cards.cardOf(CARD).window.daySpent, 100e6);
         vm.prank(issuer);
         cards.release(P1);
         assertEq(usd.balanceOf(alice), 1000e6);
-        assertEq(cards.cardOf(CARD).daySpent, 0);
-        assertEq(cards.cardOf(CARD).monthSpent, 0);
+        assertEq(cards.cardOf(CARD).window.daySpent, 0);
+        assertEq(cards.cardOf(CARD).window.monthSpent, 0);
     }
 
     function test_onlyIssuer() public {
         usd.mint(alice, 1000e6);
         vm.prank(alice);
         vm.expectRevert(CardProgram.NotIssuer.selector);
-        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
         _authorize(P1, 1e6);
         vm.prank(alice);
         vm.expectRevert(CardProgram.NotIssuer.selector);
@@ -151,7 +152,7 @@ contract CardProgramTest is ProgramsEnv {
         _authorize(P1, 1e6);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.PurchaseExists.selector);
-        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
     // Card controls.
@@ -165,7 +166,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.freeze(CARD);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.CardNotActive.selector);
-        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
         vm.prank(alice);
         cards.unfreeze(CARD);
         _authorize(P1, 1e6);
@@ -177,7 +178,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.close(CARD);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.CardNotActive.selector);
-        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), true);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 1);
     }
 
     function test_expiredCard_refused() public {
@@ -185,7 +186,7 @@ contract CardProgramTest is ProgramsEnv {
         vm.warp(block.timestamp + 366 days);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.CardExpired.selector);
-        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
     function test_replaceCard_movesOwnerAndLimits() public {
@@ -199,9 +200,9 @@ contract CardProgramTest is ProgramsEnv {
         assertEq(uint8(cards.cardOf(CARD).status), uint8(CardProgram.Status.Closed));
         vm.prank(issuer);
         vm.expectRevert(CardProgram.CardNotActive.selector);
-        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
         vm.prank(issuer);
-        cards.authorize(next, P1, 1e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(next, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
     function test_limits_ownerLowersAndIssuerRaisesOnlyWithinCeiling() public {
@@ -234,7 +235,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.lowerLimits(CARD, _limits(100e6, 1000e6, 5000e6));
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(0)));
-        cards.authorize(CARD, P1, 110e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 110e6, merchant, uint64(block.timestamp + 1 days), 0);
         assertEq(core.reserved(alice, address(usd)), 0);
         assertEq(core.reserved(alice, address(earnShare)), 0);
     }
@@ -246,14 +247,176 @@ contract CardProgramTest is ProgramsEnv {
         _authorize(P1, 400e6);
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(1)));
-        cards.authorize(CARD, P2, 300e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P2, 300e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         // A new day resets the daily window but not the month.
         vm.warp(block.timestamp + 1 days);
         _authorize(P2, 400e6);
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(2)));
-        cards.authorize(CARD, bytes32("purchase-3"), 200e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, bytes32("purchase-3"), 200e6, merchant, uint64(vm.getBlockTimestamp() + 1 days), 0);
+    }
+
+    // Owner terms.
+
+    function test_terms_requireGrant_andRevokeStopsNewPurchases() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        cards.revoke();
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.NoTerms.selector);
+        cards.authorize(CARD, P2, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
+        // Open purchases still settle.
+        _capture(P1, 100e6, true);
+        assertEq(usd.balanceOf(settlement), 100e6);
+    }
+
+    function test_terms_lifetimeLimit_countsHoldsCapturesAndRefunds() public {
+        usd.mint(alice, 1000e6);
+        _grant(150e6, 0, 0, 0, 0);
+        _authorize(P1, 100e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(3)));
+        cards.authorize(CARD, P2, 60e6, merchant, uint64(block.timestamp + 1 days), 0);
+        // A final capture below the hold gives back the rest.
+        _capture(P1, 80e6, true);
+        (uint64 committed,,,,) = cards.usageOf(alice);
+        assertEq(committed, 80e6);
+        _authorize(P2, 70e6);
+        // A refund gives its amount back.
+        usd.mint(issuer, 50e6);
+        vm.prank(issuer);
+        usd.approve(address(cards), 50e6);
+        vm.prank(issuer);
+        cards.refund(P1, 50e6);
+        (committed,,,,) = cards.usageOf(alice);
+        assertEq(committed, 100e6);
+    }
+
+    function test_terms_calendarMonth_atOffset() public {
+        usd.mint(alice, 1000e6);
+        // 2026-01-31 23:00 UTC is 2026-02-01 01:00 at UTC+2.
+        vm.warp(1_769_900_400);
+        _grant(0, 0, 0, 100e6, 2 hours);
+        _authorize(P1, 100e6);
+        // 2026-02-28 21:00 UTC is still February at UTC+2.
+        vm.warp(1_772_312_400);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(2)));
+        cards.authorize(CARD, P2, 1e6, merchant, uint64(vm.getBlockTimestamp() + 1 days), 0);
+        // 2026-02-28 23:00 UTC is March at UTC+2.
+        vm.warp(1_772_319_600);
+        vm.prank(issuer);
+        cards.authorize(CARD, P2, 100e6, merchant, uint64(vm.getBlockTimestamp() + 1 days), 0);
+    }
+
+    function test_terms_perPurchase() public {
+        usd.mint(alice, 1000e6);
+        _grant(0, 50e6, 0, 0, 0);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(0)));
+        cards.authorize(CARD, P1, 60e6, merchant, uint64(block.timestamp + 1 days), 0);
+    }
+
+    function test_cardCap() public {
+        usd.mint(alice, 1000e6);
+        vm.prank(issuer);
+        cards.setCardCap(CARD, 120e6);
+        _authorize(P1, 100e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(4)));
+        cards.authorize(CARD, P2, 30e6, merchant, uint64(block.timestamp + 1 days), 0);
+    }
+
+    function test_partialApproval_holdsWhatIsAvailable() public {
+        usd.mint(alice, 40e6);
+        vm.prank(alice);
+        cards.setFunding(address(usd), address(0), address(0), 0);
+        vm.prank(issuer);
+        uint256 approved = cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 2);
+        assertEq(approved, 40e6);
+        assertEq(cards.purchaseOf(P1).amount, 40e6);
+        assertEq(_hold(alice, P1, CASH).held, 40e6);
+    }
+
+    function test_operator() public {
+        usd.mint(alice, 1000e6);
+        address key = makeAddr("key");
+        vm.prank(issuer);
+        cards.setOperator(key, true);
+        vm.prank(key);
+        cards.authorize(CARD, P1, 10e6, merchant, uint64(block.timestamp + 1 days), 0);
+        vm.prank(issuer);
+        cards.setOperator(key, false);
+        vm.prank(key);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.capture(P1, 10e6, true);
+    }
+
+    // Incremental authorization and late charges.
+
+    function test_adjust_raisesAndLowersCashHold() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(issuer);
+        cards.adjust(P1, 150e6);
+        assertEq(_hold(alice, P1, CASH).held, 150e6);
+        assertEq(cards.cardOf(CARD).window.daySpent, 150e6);
+        vm.prank(issuer);
+        cards.adjust(P1, 120e6);
+        assertEq(_hold(alice, P1, CASH).held, 120e6);
+        assertEq(cards.cardOf(CARD).window.daySpent, 120e6);
+        _capture(P1, 120e6, true);
+        assertEq(usd.balanceOf(settlement), 120e6);
+    }
+
+    function test_adjust_overLimitOrFunds_refused() public {
+        usd.mint(alice, 300e6);
+        _authorize(P1, 100e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(0)));
+        cards.adjust(P1, 600e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.InsufficientFunds.selector, uint256(250e6)));
+        cards.adjust(P1, 350e6);
+    }
+
+    function test_charge_afterExpiry_paysAndTakesDebtWithinCap() public {
+        usd.mint(alice, 50e6);
+        vm.prank(alice);
+        cards.setFunding(address(usd), address(0), address(0), 0);
+        _authorize(P1, 50e6);
+        vm.warp(vm.getBlockTimestamp() + 8 days);
+        vm.prank(issuer);
+        vm.expectRevert(IReservationCore.DebtCapExceeded.selector);
+        cards.charge(CARD, P1, 70e6, merchant);
+        vm.prank(alice);
+        core.setDebtCap(address(cards), address(usd), 30e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 70e6, merchant);
+        assertEq(usd.balanceOf(settlement), 50e6);
+        (, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(debt, 20e6);
+        assertFalse(cards.purchaseOf(P1).open);
+        // A refund repays the debt first.
+        usd.mint(issuer, 30e6);
+        vm.prank(issuer);
+        usd.approve(address(cards), 30e6);
+        vm.prank(issuer);
+        cards.refund(P1, 30e6);
+        (, debt) = core.debtOf(alice, address(usd));
+        assertEq(debt, 0);
+        assertEq(usd.balanceOf(alice), 10e6);
+        assertEq(usd.balanceOf(settlement), 70e6);
+    }
+
+    function test_charge_onOpenPurchase_refused() public {
+        usd.mint(alice, 100e6);
+        _authorize(P1, 50e6);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.PurchaseOpen.selector);
+        cards.charge(CARD, P1, 50e6, merchant);
     }
 
     function test_revokedMerchant_refused() public {
@@ -262,7 +425,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.setMandate(merchant, true, 0);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.MerchantRevoked.selector);
-        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
     function test_merchantMonthlyLimit() public {
@@ -272,7 +435,7 @@ contract CardProgramTest is ProgramsEnv {
         _authorize(P1, 100e6);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.MerchantLimitExceeded.selector);
-        cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
         vm.warp(block.timestamp + 30 days);
         _authorize(P2, 100e6);
     }
@@ -286,7 +449,7 @@ contract CardProgramTest is ProgramsEnv {
         core.approveHolder(address(cards), address(usd), 0);
         vm.prank(issuer);
         vm.expectRevert(IReservationCore.Unauthorized.selector);
-        cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         _capture(P1, 100e6, true);
         assertEq(usd.balanceOf(settlement), 100e6);
@@ -299,7 +462,7 @@ contract CardProgramTest is ProgramsEnv {
         _authorize(P1, 100e6);
         vm.prank(issuer);
         vm.expectRevert(IReservationCore.AllowanceExceeded.selector);
-        cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
     // Savings and credit legs.
@@ -344,7 +507,7 @@ contract CardProgramTest is ProgramsEnv {
         _savings(alice, 20e6);
         vm.prank(issuer);
         vm.expectPartialRevert(CardProgram.InsufficientFunds.selector);
-        cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
         assertEq(core.reserved(alice, address(usd)), 0);
         assertEq(core.reserved(alice, address(earnShare)), 0);
     }
@@ -355,7 +518,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.setSource(address(facility), false);
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.SourceNotApproved.selector, address(facility)));
-        cards.authorize(CARD, P1, 50e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 50e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
     function test_threeLegs_captureAndRepay() public {
@@ -456,7 +619,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.freeze(CARD);
         // The network approved it offline: the program records it past the freeze.
         vm.prank(issuer);
-        cards.authorize(CARD, P1, 80e6, merchant, uint64(block.timestamp + 1 days), true);
+        cards.authorize(CARD, P1, 80e6, merchant, uint64(block.timestamp + 1 days), 1);
         IReservationCore.HoldRecord memory h = _hold(alice, P1, CASH);
         assertTrue(h.standIn);
         assertEq(h.held, 50e6);
@@ -487,7 +650,7 @@ contract CardProgramTest is ProgramsEnv {
         vm.stopPrank();
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.TokenNotAccepted.selector, address(otherUsd)));
-        cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), false);
+        cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         // One unit of the token is worth 1.25 settlement units.
         vm.prank(issuer);
@@ -522,6 +685,15 @@ contract CardProgramTest is ProgramsEnv {
     function _savings(address owner, uint256 assets) internal returns (uint256 shares) {
         usd.mint(owner, assets);
         shares = _depositEarn(owner, assets);
+    }
+
+    function _grant(uint64 limit, uint64 perPurchase, uint64 daily, uint64 monthly, int32 utcOffset) internal {
+        vm.prank(alice);
+        cards.grant(
+            CardLimits.Terms({
+                limit: limit, perPurchase: perPurchase, daily: daily, monthly: monthly, utcOffset: utcOffset
+            })
+        );
     }
 
     function _withLine(uint128 limit) internal returns (uint64 lineId) {
