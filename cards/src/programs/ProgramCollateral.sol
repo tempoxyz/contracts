@@ -15,6 +15,8 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///         seizes it only through here, and never below or beyond the program's live exposure.
 /// @dev The settlement account pledges first (`IReservationCore.pledge` with `pledgeId` and this contract as authority), then
 ///      calls `post`. Value is read from the core's liens and the vault's price, never recorded.
+// Loops over a program's pledges are bounded by MAX_PLEDGES and call only the fixed core and the program's vault.
+// forge-lint: disable-start(calls-loop)
 contract ProgramCollateral is ReentrancyGuardTransient {
     using FixedPointMathLib for uint256;
 
@@ -153,6 +155,8 @@ contract ProgramCollateral is ReentrancyGuardTransient {
             (,, uint128 amount, uint64 expiresAt,) = CORE.lienOf(address(this), id);
             // forge-lint: disable-next-line(block-timestamp)
             if (amount == 0 || expiresAt <= block.timestamp) continue;
+            // Below the 128-bit pledge amount it is compared with.
+            // forge-lint: disable-next-line(unsafe-typecast)
             uint128 part = units < amount ? uint128(units) : amount;
             if (seizing) CORE.seizeLien(id, part);
             else if (part == amount) CORE.releaseLien(id);
@@ -162,3 +166,4 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         }
     }
 }
+// forge-lint: disable-end(calls-loop)

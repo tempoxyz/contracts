@@ -19,20 +19,16 @@ library CardAdjust {
 
     uint256 private constant RATE_ONE = 1e18;
 
-    /// @notice Moves open purchase `p` to `amount` settlement units. An increase checks the card, the owner's grant and
-    ///         every limit on the new total and reserves the difference on the cash leg `id`; a decrease gives back
-    ///         what the cash leg still holds of it. Returns what the cash leg holds afterwards, in tokens.
+    /// @notice Moves open purchase `p` to `amount` settlement units in the program's records. An increase checks the card,
+    ///         the owner's grant and every limit on the new total; a decrease gives the difference back to the limits.
+    ///         The program then moves the purchase's legs with CardFunding.resize.
     function adjust(
-        IReservationCore core,
         CardProgram.Purchase storage p,
         CardProgram.Card storage c,
         CardLimits.Grant storage g,
         CardLimits.Usage storage u,
-        address token,
-        uint256 rate,
-        bytes32 id,
         uint128 amount
-    ) external returns (uint256 cash) {
+    ) external {
         if (!p.open) revert CardProgram.PurchaseNotOpen();
         // Expiries are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
@@ -41,38 +37,21 @@ library CardAdjust {
         if (amount == 0 || amount > type(uint64).max || (p.standIn && amount > p.amount)) {
             revert CardProgram.InvalidAmount();
         }
-        address owner = p.owner;
         uint256 previous = p.amount;
-        uint256 held = core.getHold(owner, id).held;
         if (amount > previous) {
             if (c.status != CardProgram.Status.Active || !g.active) revert CardProgram.CardNotActive();
             uint256 more = amount - previous;
-            uint256 tokens = _toTokenUp(more, rate);
             CardProgram.Limits memory l = c.limits;
             CardLimits.spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], amount, more, true);
-            // An increase lands on the cash leg, which must exist.
-            if (p.legs & 1 == 0 || core.available(owner, token) < tokens) revert CardProgram.InsufficientFunds(more);
-            cash = held + tokens;
             // forge-lint: disable-next-line(unsafe-typecast)
             p.held += uint64(more);
         } else {
             uint256 less = previous - amount;
-            if (p.legs & 1 == 0 || less > p.held) revert CardProgram.InvalidAmount();
-            if (p.standIn) {
-                // A stand-in reserves what was there, which may be less than approved: it keeps up to the new amount.
-                uint256 cap = _toTokenUp(amount, rate);
-                cash = held < cap ? held : cap;
-            } else {
-                uint256 tokens = _toTokenUp(less, rate);
-                if (tokens > held) revert CardProgram.InvalidAmount();
-                cash = held - tokens;
-            }
+            if (less > p.held) revert CardProgram.InvalidAmount();
             if (less != 0) CardLimits.giveBack(g, u, c.window, p.epoch, p.day, p.month, less);
             // forge-lint: disable-next-line(unsafe-typecast)
             p.held -= uint64(less);
         }
-        // forge-lint: disable-next-line(unsafe-typecast)
-        if (cash != held) core.adjust(owner, id, uint128(cash));
         // forge-lint: disable-next-line(unsafe-typecast)
         p.amount = uint64(amount);
     }

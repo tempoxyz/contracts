@@ -383,6 +383,8 @@ contract CreditLine {
         // A draw can only take what the lender's balance backs: its free cash plus the commitment.
         uint256 backed = CORE.available(l.lender, l.token) + _committed(lineId);
         uint256 credit = cap - used;
+        // The commitment counts only until its hold expires, a timestamp by design.
+        // forge-lint: disable-next-line(block-timestamp)
         return credit < backed ? credit : backed;
     }
 
@@ -428,6 +430,11 @@ contract CreditLine {
         return keccak256(abi.encode(address(this), program, ref));
     }
 
+    // _commit runs only inside nonReentrant entry points, against the fixed core; holds expire by timestamp by design,
+    // and every amount it casts is bounded by a 128-bit line limit.
+    // forge-lint: disable-start(reentrancy-no-eth)
+    // forge-lint: disable-start(block-timestamp)
+    // forge-lint: disable-start(unsafe-typecast)
     /// @dev Moves the commitment hold to the line's undrawn limit (what is neither owed nor pending), within what the
     ///      lender's balance backs. A closed, unaccepted or past-due line commits nothing.
     function _commit(uint64 lineId) private {
@@ -485,7 +492,12 @@ contract CreditLine {
                 l.lender,
                 IReservationCore.HoldRequest({
                     // forge-lint: disable-next-line(unsafe-typecast)
-                    token: l.token, id: id, amount: uint128(target), expiresAt: expiresAt, payee: address(this), standIn: false
+                    token: l.token,
+                    id: id,
+                    amount: uint128(target),
+                    expiresAt: expiresAt,
+                    payee: address(this),
+                    standIn: false
                 })
             ) {
                 commitmentOf[lineId] = id;
@@ -506,4 +518,7 @@ contract CreditLine {
         // forge-lint: disable-next-line(block-timestamp)
         return h.settled || h.expiresAt <= block.timestamp ? 0 : h.held;
     }
+    // forge-lint: disable-end(unsafe-typecast)
+    // forge-lint: disable-end(block-timestamp)
+    // forge-lint: disable-end(reentrancy-no-eth)
 }

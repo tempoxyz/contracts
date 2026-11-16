@@ -31,7 +31,9 @@ contract CreditLineTest is ProgramsEnv {
         assertEq(h.placer, address(credit));
         assertEq(h.payee, address(this));
         assertEq(h.held, 100e6);
-        assertEq(core.reserved(lender, address(usd)), 100e6);
+        // The draw comes out of the commitment, so the lender's reserve stays at the limit.
+        assertEq(core.reserved(lender, address(usd)), 1000e6);
+        assertEq(credit.committed(lineId), 900e6);
         assertEq(credit.lineOf(lineId).pending, 100e6);
         assertEq(credit.availableCredit(lineId), 900e6);
         _assertCoreBalanced();
@@ -96,7 +98,9 @@ contract CreditLineTest is ProgramsEnv {
         vm.prank(alice);
         credit.repay(lineId, 40e6);
         assertEq(credit.lineOf(lineId).owed, 0);
-        assertEq(usd.balanceOf(lender), 100_000e6 - 60e6 + 20e6 + 40e6);
+        // Repaid in full, the whole limit is committed again.
+        assertEq(usd.balanceOf(lender) + core.reserved(lender, address(usd)), 100_000e6 - 60e6 + 20e6 + 40e6);
+        assertEq(credit.committed(lineId), 1000e6);
     }
 
     function test_revokedLender_liveDrawStillSettles() public {

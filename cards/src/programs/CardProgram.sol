@@ -510,23 +510,14 @@ contract CardProgram {
     }
 
     /// @notice Moves an open purchase to `amount` settlement units (an incremental authorization or a partial
-    ///         reversal). An increase checks the card, grant and limits on the new total and reserves the difference
-    ///         on the purchase's cash leg; a decrease gives back what the cash leg still holds of it.
+    ///         reversal). An increase checks the card, grant and limits on the new total and places the difference
+    ///         on the owner's funding order; a decrease frees cash first, then the other legs.
     function adjust(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
         Purchase storage p = _purchases[purchaseRef];
         address owner = p.owner;
-        address token = fundingOf[owner];
-        uint256 cash = CardAdjust.adjust(
-            CORE,
-            p,
-            _cards[p.card],
-            grants[owner],
-            usageOf[owner],
-            token,
-            _rate(token),
-            _legId(purchaseRef, CASH),
-            amount
-        );
+        uint256 previous = p.amount;
+        CardAdjust.adjust(p, _cards[p.card], grants[owner], usageOf[owner], amount);
+        uint256 cash = CardFunding.resize(p, purchaseRef, previous, amount);
         uint64 seq = ++ledger.seq;
         emit PurchaseAdjusted(purchaseRef, p.card, amount, cash, seq);
     }
@@ -679,13 +670,6 @@ contract CardProgram {
 
     // Internals.
 
-
-
-
-
-
-
-
     function _end(bytes32 purchaseRef, bool expired) private {
         Purchase storage p = _purchases[purchaseRef];
         if (!p.open) revert PurchaseNotOpen();
@@ -700,7 +684,6 @@ contract CardProgram {
         uint64 seq = ++ledger.seq;
         emit PurchaseReleased(purchaseRef, p.card, released[0], released[1], released[2], expired, seq);
     }
-
 
     /// @dev Counts `amount` toward the owner's terms and the card in today's windows, checking them when
     ///      `enforce`, and returns today's calendar day and month.
@@ -731,7 +714,6 @@ contract CardProgram {
         (uint32 day, uint32 month) = CardLimits.calendar(grants[owner].terms.utcOffset);
         _giveBack(c, owner, epoch, day, month, amount);
     }
-
 
     function _forward(address token) private {
         uint256 balance = IERC20Like(token).balanceOf(address(this));

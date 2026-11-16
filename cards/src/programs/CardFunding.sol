@@ -21,6 +21,9 @@ interface ICollateral {
 ///         external library, it runs in the program's context and keeps its state in its own storage slot.
 /// @dev A purchase's legs are holds whose ids derive from the purchase and the source's index in the order it was
 ///      placed under, so they are read back from the core rather than recorded.
+// Loops run over a funding order (at most MAX_SOURCES entries) or a purchase's charges, and call only the fixed core,
+// issuer-approved facilities and credit lines, and the program itself.
+// forge-lint: disable-start(calls-loop)
 library CardFunding {
     using FixedPointMathLib for uint256;
 
@@ -242,7 +245,9 @@ library CardFunding {
         } else {
             // Over-capture (tips) stays within the owner's tolerance for this program, as the core holds each leg to it.
             uint256 tolerance = cashToken == address(0) ? 0 : CORE.captureTolerance(owner, address(this), cashToken);
-            if (amount > uint256(p.held) + uint256(p.amount) * tolerance / BPS) revert IReservationCore.ToleranceExceeded();
+            if (amount > uint256(p.held) + uint256(p.amount) * tolerance / BPS) {
+                revert IReservationCore.ToleranceExceeded();
+            }
             uint256 rest = amount;
             uint8 allowed = _allowed(L, cardLegs) | (p.legs & ALL_KINDS);
             for (uint256 i; i < order.length; ++i) {
@@ -299,6 +304,9 @@ library CardFunding {
         Part[] memory parts = new Part[](order.length + 1);
         uint256 rest = amount;
         uint256 rate = _rate(cashToken);
+        // Nothing moves unless the purchase can refund all of it.
+        uint256 refundable = _refundable(order, owner, ref, cashToken, rate);
+        if (amount > refundable) revert CardProgram.RefundExceedsCapture(amount - refundable);
 
         // The owner's debt to this program first: a cash refund repays it as it lands.
         (address creditor, uint128 owed) = CORE.debtOf(owner, cashToken);
@@ -307,7 +315,9 @@ library CardFunding {
             if (first > rest) first = rest;
             uint256 left = _refundCharges(ref, owner, cashToken, rate, first, parts);
             for (uint256 i = order.length; i > 0 && left != 0; --i) {
-                if (order[i - 1].kind == CASH) left = _refundLeg(owner, ref, i - 1, _key(order, i - 1), order[i - 1], left, parts);
+                if (order[i - 1].kind == CASH) {
+                    left = _refundLeg(owner, ref, i - 1, _key(order, i - 1), order[i - 1], left, parts);
+                }
             }
             rest -= first - left;
         }
@@ -347,9 +357,11 @@ library CardFunding {
     /// @notice Moves an open purchase's legs to `amount` settlement units, before the program records the new
     ///         amount. An increase places the difference on the funding order's free funds; a decrease frees cash
     ///         first, then the other legs from the last drawn; a stand-in only decreases. Returns the cash tokens held.
-    function resize(CardProgram.Purchase storage p, bytes32 ref, uint256 amount) external returns (uint256 cash) {
+    function resize(CardProgram.Purchase storage p, bytes32 ref, uint256 previous, uint256 amount)
+        external
+        returns (uint256 cash)
+    {
         Layout storage L = _layout();
-        uint256 previous = p.amount;
         if (p.standIn && amount > previous) revert CardProgram.InvalidAmount();
         Source[] storage order = L.orders[p.owner][p.version];
         Part[] memory parts = new Part[](order.length);
@@ -362,7 +374,7 @@ library CardFunding {
         // An increase places only the increment, even on legs a vault's loss left short; a decrease frees only what
         // the legs hold past the new amount, so lowering a purchase never needs more coverage.
         if (amount > previous) {
-            _grow(p, ref, order, legs, parts, amount - previous);
+            _grow(p, ref, order, legs, parts, amount - previous, amount - previous);
         } else if (amount < current) {
             uint256 less = current - amount;
             // Cash first, then the other legs from the last drawn.
@@ -458,7 +470,8 @@ library CardFunding {
         Source[] storage order,
         Leg[] memory legs,
         Part[] memory parts,
-        uint256 rest
+        uint256 rest,
+        uint256 increment
     ) private {
         uint8 allowed = _allowed(_layout(), CardProgram(address(this)).cardOf(p.card).legs);
         for (uint256 i; i < order.length && rest != 0; ++i) {
@@ -477,7 +490,7 @@ library CardFunding {
             p.legs |= s.kind;
             rest -= take;
         }
-        if (rest != 0) revert CardProgram.InsufficientFunds(rest);
+        if (rest != 0) revert CardProgram.InsufficientFunds(increment);
     }
 
     function _heldParts(Source[] storage order, address owner, bytes32 ref) private view returns (Part[] memory parts) {
@@ -588,6 +601,9 @@ library CardFunding {
     ) private {
         if (s.kind == CREDIT) {
             CreditLine line = CreditLine(s.source);
+            if (!leg.exists && !CardProgram(address(this)).approvedSource(s.source)) {
+                revert CardProgram.SourceNotApproved(s.source);
+            }
             // forge-lint: disable-next-line(unsafe-typecast)
             if (leg.exists) line.resize(leg.id, uint128(tokens));
             // forge-lint: disable-next-line(unsafe-typecast)
@@ -596,6 +612,9 @@ library CardFunding {
             // forge-lint: disable-next-line(unsafe-typecast)
             CORE.adjust(owner, leg.id, uint128(tokens));
         } else {
+            if (s.kind == SAVINGS && !CardProgram(address(this)).approvedSource(s.source)) {
+                revert CardProgram.SourceNotApproved(s.source);
+            }
             CORE.holdFrom(
                 owner,
                 IReservationCore.HoldRequest({
@@ -691,6 +710,24 @@ library CardFunding {
             rest -= take;
         }
         return rest;
+    }
+
+    function _refundable(Source[] storage order, address owner, bytes32 ref, address cashToken, uint256 rate)
+        private
+        view
+        returns (uint256 total)
+    {
+        for (uint256 i; i < order.length; ++i) {
+            Leg memory leg = _leg(owner, ref, _key(order, i), order[i]);
+            total += _value(leg, order[i], leg.refundable);
+        }
+        uint256 count;
+        while (CORE.getHold(owner, _legId(ref, DEBT_TAG + count)).token != address(0)) ++count;
+        for (uint256 k; k <= count; ++k) {
+            IReservationCore.HoldRecord memory h =
+                CORE.getHold(owner, k == count ? _legId(ref, CHARGED) : _legId(ref, DEBT_TAG + k));
+            if (h.token == cashToken) total += _toSettlement(h.captured - h.refunded, rate);
+        }
     }
 
     function _refundLeg(
@@ -809,3 +846,4 @@ library CardFunding {
     }
     // forge-lint: disable-end(reentrancy-no-eth)
 }
+// forge-lint: disable-end(calls-loop)

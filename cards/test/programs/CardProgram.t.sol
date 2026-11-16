@@ -589,11 +589,12 @@ contract CardProgramTest is ProgramsEnv {
         assertEq(c.payee, address(cards));
         uint256 drawn = c.held;
         assertApproxEqAbs(drawn, 50e6, 2);
-        assertEq(core.reserved(lender, address(usd)), drawn);
+        // The line commits its whole limit on the lender's balance; the draw comes out of that commitment.
+        assertEq(core.reserved(lender, address(usd)), 1000e6);
 
         _capture(P1, 100e6, true);
         assertApproxEqAbs(usd.balanceOf(settlement), 100e6, 2);
-        assertEq(usd.balanceOf(lender), lenderBefore - drawn);
+        assertEq(usd.balanceOf(lender) + core.reserved(lender, address(usd)), lenderBefore + 1000e6 - drawn);
         assertEq(credit.lineOf(lineId).owed, drawn);
         assertEq(credit.lineOf(lineId).pending, 0);
 
@@ -605,7 +606,7 @@ contract CardProgramTest is ProgramsEnv {
         // forge-lint: disable-next-line(unsafe-typecast)
         credit.repay(lineId, uint128(drawn));
         assertEq(credit.lineOf(lineId).owed, 0);
-        assertEq(usd.balanceOf(lender), lenderBefore);
+        assertEq(usd.balanceOf(lender) + core.reserved(lender, address(usd)), lenderBefore + 1000e6);
         _assertCoreBalanced();
     }
 
@@ -618,7 +619,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.release(P1);
         assertEq(core.reserved(alice, address(usd)), 0);
         assertEq(core.reserved(alice, address(earnShare)), 0);
-        assertEq(core.reserved(lender, address(usd)), 0);
+        assertEq(credit.committed(lineId), 1000e6);
         assertEq(credit.lineOf(lineId).pending, 0);
         assertEq(credit.lineOf(lineId).owed, 0);
     }

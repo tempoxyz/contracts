@@ -98,7 +98,8 @@ contract CardFundingTest is ProgramsEnv {
         vm.expectEmit(true, false, false, false, address(cards));
         emit CardProgram.PurchaseCaptured(P1, CARD, 120e6, 0, 0, 0, 5e6, true, 0, 0);
         cards.capture(P1, 120e6, true);
-        assertEq(usd.balanceOf(settlement), 115e6);
+        // The debt is the owner's to the program: the settlement account receives what the owner had.
+        assertEq(usd.balanceOf(settlement), 100e6);
         (address creditor, uint128 debt) = core.debtOf(alice, address(usd));
         assertEq(creditor, address(cards));
         assertEq(debt, 15e6);
@@ -167,22 +168,23 @@ contract CardFundingTest is ProgramsEnv {
     // Impaired vaults.
 
     function test_impairedVault_captureTakesWhatTheSharesAreWorth_restBecomesDebt() public {
-        _savings(alice, 100e6);
+        _savings(alice, 101e6);
         _tolerance(0);
         vm.prank(alice);
         core.setDebtCap(address(cards), address(usd), 50e6);
         _authorize(P1, 100e6);
-        // The venue loses half its assets: the held shares now redeem for about 50.
+        // The venue loses half its assets: all of Alice's shares now redeem for about 50.5.
         _impair(usd.balanceOf(address(venue)) / 2);
         _capture(P1, 100e6, true);
         (, uint128 debt) = core.debtOf(alice, address(usd));
-        assertApproxEqAbs(debt, 50e6, 2);
+        assertApproxEqAbs(debt, 49.5e6, 2);
+        assertEq(earnShare.balanceOf(alice), 0);
         assertEq(core.reserved(alice, address(earnShare)), 0);
         _assertCoreBalanced();
     }
 
     function test_impairedVault_partialReversalFreesShares() public {
-        _savings(alice, 100e6);
+        _savings(alice, 101e6);
         _authorize(P1, 100e6);
         _impair(usd.balanceOf(address(venue)) / 2);
         vm.prank(issuer);
@@ -206,8 +208,9 @@ contract CardFundingTest is ProgramsEnv {
         (holds,, unsettled,, total) = cards.exposure();
         assertEq(holds, 0);
         assertEq(unsettled, 60e6);
+        (uint64 seq,,,) = cards.ledger();
         vm.prank(issuer);
-        cards.acknowledgeSettlement(1);
+        cards.acknowledgeSettlement(seq);
         (,, unsettled,, total) = cards.exposure();
         assertEq(unsettled, 0);
         assertEq(total, 0);

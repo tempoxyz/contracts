@@ -66,7 +66,9 @@ contract ProgramCollateralTest is ProgramsEnv {
         usd.mint(alice, 500e6);
         _authorize(P1, 100e6);
         vm.prank(sponsor);
-        vm.expectRevert(abi.encodeWithSelector(ProgramCollateral.AboveExposure.selector, uint256(101e6), uint256(100e6)));
+        vm.expectRevert(
+            abi.encodeWithSelector(ProgramCollateral.AboveExposure.selector, uint256(101e6), uint256(100e6))
+        );
         collateral.seize(address(cards), 101e6, sponsor);
         vm.prank(issuer);
         vm.expectRevert(ProgramCollateral.NotSponsor.selector);
@@ -96,38 +98,37 @@ contract ProgramCollateralTest is ProgramsEnv {
         _postCash(10e6);
         uint256 shares = _deposit(100e6);
         bytes32 id = collateral.pledgeId(address(cards), 2);
-        vm.startPrank(settlement);
+        vm.prank(settlement);
         // forge-lint: disable-next-line(unsafe-typecast)
         core.pledge(address(collateral), address(earnShare), id, uint128(shares), uint64(block.timestamp + 365 days));
         vm.expectRevert(ProgramCollateral.WrongAsset.selector);
+        vm.prank(settlement);
         collateral.post(address(cards), sponsor, IEarnVault(address(earnVault)));
-        vm.stopPrank();
-        id = collateral.pledgeId(address(cards), 2);
         usd.mint(settlement, 10e6);
-        vm.startPrank(settlement);
+        vm.prank(settlement);
         core.pledge(address(collateral), address(usd), keccak256("other"), 10e6, uint64(block.timestamp + 365 days));
         vm.expectRevert(ProgramCollateral.WrongSponsor.selector);
+        vm.prank(settlement);
         collateral.post(address(cards), issuer, IEarnVault(address(0)));
-        vm.stopPrank();
     }
 
     function _postCash(uint128 amount) internal {
         usd.mint(settlement, amount);
         bytes32 id = collateral.pledgeId(address(cards), _count() + 1);
-        vm.startPrank(settlement);
+        vm.prank(settlement);
         core.pledge(address(collateral), address(usd), id, amount, uint64(block.timestamp + 365 days));
+        vm.prank(settlement);
         collateral.post(address(cards), sponsor, IEarnVault(address(0)));
-        vm.stopPrank();
     }
 
     function _postShares(uint256 assets) internal returns (uint256 shares) {
         shares = _deposit(assets);
         bytes32 id = collateral.pledgeId(address(cards), _count() + 1);
-        vm.startPrank(settlement);
+        vm.prank(settlement);
         // forge-lint: disable-next-line(unsafe-typecast)
         core.pledge(address(collateral), address(earnShare), id, uint128(shares), uint64(block.timestamp + 365 days));
+        vm.prank(settlement);
         collateral.post(address(cards), sponsor, IEarnVault(address(earnVault)));
-        vm.stopPrank();
     }
 
     function _deposit(uint256 assets) internal returns (uint256) {
