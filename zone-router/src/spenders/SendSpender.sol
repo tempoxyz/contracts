@@ -19,11 +19,12 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/extern
 ///      settings, fixed at deployment, are the router factory it trusts and an optional conversion binding
 ///      (a vault, its par pool and a customer ID). Only a router that factory deployed, and whose mode lists
 ///      this spender, may call `spendFrom`. The router transfers `maxInput` before calling it; the spender
-///      pays, hands every unused unit straight back and keeps nothing. Whoever builds the callback picks the
-///      vault and recipient and spends only their own input, which the router caps at `maxInput`; only the
-///      bound vault's EarnShare reaches the pool, and only from its asset into the paired stablecoin. Tokens
-///      sent here outside a router's spend are not rescued and no call can move them. It neither emits nor
-///      stores the Zone's sender commitment.
+///      pays and hands every unused unit straight back. Whoever builds the callback picks the vault and
+///      recipient and spends only their own input, which the router caps at `maxInput`; only the bound
+///      vault's EarnShare reaches the pool, and only from its asset into the paired stablecoin. With a
+///      conversion binding it keeps a standing maximum `convertAsset` allowance to its immutable pool. Tokens
+///      sent here outside a router's spend are not rescued; only that pool could pull stranded `convertAsset`.
+///      It neither emits nor stores the Zone's sender commitment.
 /// @custom:reentrancy-guard locked
 /// gAllowance tracks temporary allowances only; the standing allowance to the immutable pool is outside it.
 /// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance

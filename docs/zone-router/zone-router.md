@@ -222,8 +222,10 @@ registry resolves, redeems to itself and transfers to `to` (Earn's engines measu
 receiver), and reverts for an unregistered one, as the transfer would. It refuses `to`, or the master
 it resolves to, when that is itself or the calling router (`InvalidRecipient`): the router returns
 only the input token, so an output paid to it would stay there. It hands every unused unit
-back to the router and keeps no balance or allowance; tokens sent to it outside a spend stay there,
-since no call can move them. Whoever builds the callback picks `to` and
+back to the router and keeps no balance. With a conversion binding it keeps a standing maximum
+`convertAsset` approval to its immutable pool, which Tempo would otherwise charge as a new storage
+slot on every conversion; otherwise it keeps no allowance. Tokens sent to it outside a spend are not
+rescued; only that pool could pull stranded `convertAsset`. Whoever builds the callback picks `to` and
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the spender as a taker and recipient.
 It emits `Sent(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and

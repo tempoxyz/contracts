@@ -73,8 +73,10 @@ event and set a reviewed gas limit, or estimation may choose the cheaper caught-
 For two or more providers, Tempo API submits one ordered `fundBatchExact` call that checks the supply
 bound once and settles every amount atomically; one failed or underfunded leg reverts the batch and
 never charges another wallet for its shortfall. The controller cannot mint, change EarnVault
-configuration, or withdraw backing, has no withdrawal or rescue path, retains no assets or approval
-after a call, and can be paused, replaced, or omitted without affecting ordinary Earn behavior.
+configuration, or withdraw backing, has no withdrawal or rescue path, and retains no assets after a
+call. It keeps a standing maximum asset approval to its immutable EarnVault (Tempo charges every
+zero-to-nonzero allowance as a new storage slot), so only that EarnVault could pull asset sent to the
+controller directly. It can be paused, replaced, or omitted without affecting ordinary Earn behavior.
 Providers can always call `EarnVault.contribute` directly.
 
 ## Merkle distributor
