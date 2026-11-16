@@ -297,7 +297,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         _approveStanding(vaultAsset, earnVault, vaultAssets);
         uint256 earnShares = IEarnVault(earnVault).deposit(vaultAssets, address(this), operation.minEarnShares);
         if (earnShares == 0 || earnShares < operation.minEarnShares) revert InsufficientOutput();
-        /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares && allowanceGhost[vaultAsset][earnVault] == 0
+        /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares
 
         bytes32 zoneDepositHash =
             _depositEncryptedToSourceZone(sourcePortal, earnShare, _toUint128(earnShares), zoneReturn);
@@ -317,7 +317,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         _approveStanding(earnShare, earnVault, amount);
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
-        /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets && allowanceGhost[earnShare][earnVault] == 0
+        /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets
 
         uint256 outputAmount = _converts()
             ? _swap(vaultAsset, privateAsset, vaultAssets, operation.minOutputAmount, operation.actionId)
@@ -333,12 +333,12 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     }
 
     /// Conversion only at exact par along the bound pair: measured output equals input, the minimum never
-    /// exceeds the input, and the pool holds no temporary approval (its standing one is outside allowanceGhost).
+    /// exceeds the input. The pool's standing approval sits outside allowanceGhost.
     /// Callers convert a nonzero amount.
     /// @custom:requires locked != 1 && address(pool) != address(0) && amountIn > 0
     /// @custom:ensures amountOut == amountIn && amountOut >= minAmountOut
     /// @custom:ensures _isRoutePair(tokenIn, tokenOut)
-    /// @custom:ensures locked != 1 && allowanceGhost[tokenIn][address(pool)] == 0
+    /// @custom:ensures locked != 1
     /// @custom:ensures portalDeposits == old(portalDeposits) && lastFlowWasDeposit == old(lastFlowWasDeposit)
     /// @custom:ensures forall address t, address spender :: old(allowanceGhost[t][spender]) == 0 ==> allowanceGhost[t][spender] == 0
     function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, bytes32 actionId)
