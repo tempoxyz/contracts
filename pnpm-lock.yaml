@@ -26,7 +26,7 @@ overrides:
   vite@>=8.0.0 <8.1.6: 8.1.6
   undici@>=8.0.0 <8.12.2: 8.12.2
   prool>tar: 7.5.22
-  viem: ^2.57.16
+  viem: ^2.57.17
 
 importers:
 
@@ -42,8 +42,8 @@ importers:
   deployments:
     dependencies:
       viem:
-        specifier: ^2.57.16
-        version: 2.57.16(typescript@7.0.2)
+        specifier: ^2.57.17
+        version: 2.57.17(typescript@7.0.2)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -67,8 +67,8 @@ importers:
         specifier: workspace:*
         version: link:../deployments
       viem:
-        specifier: ^2.57.16
-        version: 2.57.16(typescript@7.0.2)
+        specifier: ^2.57.17
+        version: 2.57.17(typescript@7.0.2)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -101,8 +101,8 @@ importers:
         specifier: 12.2.1
         version: 12.2.1
       viem:
-        specifier: ^2.57.16
-        version: 2.57.16(typescript@7.0.2)
+        specifier: ^2.57.17
+        version: 2.57.17(typescript@7.0.2)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1772,8 +1772,8 @@ packages:
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
 
-  ox@0.14.59:
-    resolution: {integrity: sha512-Y+DPEQScTEGKteQATjtytE1JRQ5cg1R2+DvYQ/lbhUCm/xS9n0Jnkkf2AqQyIntefQxs8xY6dZ+kyNZ7zf2FzA==}
+  ox@0.14.63:
+    resolution: {integrity: sha512-TSKYN151boL1Aq/vsFrd8Buvd7v+oTQr8V7z4f4QQTSMB+ohD8cbNbHCtKRLI0Gs8LuYKirf5qvElTKVIFe2jw==}
     peerDependencies:
       typescript: '>=5.4.0'
     peerDependenciesMeta:
@@ -2086,8 +2086,8 @@ packages:
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
 
-  viem@2.57.16:
-    resolution: {integrity: sha512-+4uaUw3NfkqjaqsZp8Zci94K33oc9rv7mIUgvPduJxsY/tI0ASi2YkaXoUVSBGfdIw/QPWuVnIf9LTFf35IoMg==}
+  viem@2.57.17:
+    resolution: {integrity: sha512-yIMqNoKoVAMwX+zVbqkxfqq7qbGHmKXZidh/xfVpiPTJlAbbDDdDIMH5dDQWxhZcj56L8tPOwsIIxF618P+TOg==}
     peerDependencies:
       mppx: '>=0.17.0'
       typescript: '>=5.0.4'
@@ -3523,7 +3523,7 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  ox@0.14.59(typescript@7.0.2):
+  ox@0.14.63(typescript@7.0.2):
     dependencies:
       '@adraffy/ens-normalize': 1.11.1
       '@noble/ciphers': 1.3.0
@@ -3962,7 +3962,7 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  viem@2.57.16(typescript@7.0.2):
+  viem@2.57.17(typescript@7.0.2):
     dependencies:
       '@noble/curves': 1.9.1
       '@noble/hashes': 1.8.0
@@ -3970,7 +3970,7 @@ snapshots:
       '@scure/bip39': 1.6.0
       abitype: 1.2.3(typescript@7.0.2)
       isows: 1.0.7(ws@8.21.0)
-      ox: 0.14.59(typescript@7.0.2)
+      ox: 0.14.63(typescript@7.0.2)
       ws: 8.21.0
     optionalDependencies:
       typescript: 7.0.2
