@@ -46,7 +46,7 @@ contract CardProgramTest is ProgramsEnv {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         vm.expectEmit(address(cards));
-        emit CardProgram.PurchaseCaptured(P1, CARD, 100e6, 100e6, 0, 0, true, 2, 100e6);
+        emit CardProgram.PurchaseCaptured(P1, CARD, 100e6, 100e6, 0, 0, 0, true, 2, 100e6);
         _capture(P1, 100e6, true);
 
         assertEq(usd.balanceOf(settlement), 100e6);
@@ -332,7 +332,7 @@ contract CardProgramTest is ProgramsEnv {
     function test_partialApproval_holdsWhatIsAvailable() public {
         usd.mint(alice, 40e6);
         vm.prank(alice);
-        cards.setFunding(address(usd), address(0), address(0), 0);
+        _setFunding(address(usd), address(0), address(0), 0);
         vm.prank(issuer);
         uint256 approved = cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 2);
         assertEq(approved, 40e6);
@@ -385,7 +385,7 @@ contract CardProgramTest is ProgramsEnv {
     function test_charge_afterExpiry_paysAndTakesDebtWithinCap() public {
         usd.mint(alice, 50e6);
         vm.prank(alice);
-        cards.setFunding(address(usd), address(0), address(0), 0);
+        _setFunding(address(usd), address(0), address(0), 0);
         _authorize(P1, 50e6);
         vm.warp(vm.getBlockTimestamp() + 8 days);
         vm.prank(alice);
@@ -699,7 +699,7 @@ contract CardProgramTest is ProgramsEnv {
         otherUsd.mint(alice, 1000e6);
         vm.startPrank(alice);
         core.approveHolder(address(cards), address(otherUsd), type(uint128).max);
-        cards.setFunding(address(otherUsd), address(0), address(0), 0);
+        _setFunding(address(otherUsd), address(0), address(0), 0);
         vm.stopPrank();
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.TokenNotAccepted.selector, address(otherUsd)));
@@ -752,6 +752,6 @@ contract CardProgramTest is ProgramsEnv {
     function _withLine(uint128 limit) internal returns (uint64 lineId) {
         lineId = _openLine(alice, limit, IEarnVault(address(0)), 0);
         vm.prank(alice);
-        cards.setFunding(address(usd), address(facility), address(credit), lineId);
+        _setFunding(address(usd), address(facility), address(credit), lineId);
     }
 }

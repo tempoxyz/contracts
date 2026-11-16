@@ -5,6 +5,7 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { CardLimits } from "../../../src/programs/CardLimits.sol";
 import { CardProgram } from "../../../src/programs/CardProgram.sol";
+import { CardFunding } from "../../../src/programs/CardFunding.sol";
 import { CreditLine } from "../../../src/programs/CreditLine.sol";
 import { SavingsFacility } from "../../../src/programs/SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "../../../src/programs/interfaces/IReservationCore.sol";
@@ -63,9 +64,20 @@ abstract contract ProgramsEnv is CoreEnv {
         vm.startPrank(owner);
         core.approveHolder(address(cards), address(usd), type(uint128).max);
         core.approveHolder(address(cards), address(earnShare), type(uint128).max);
-        cards.setFunding(address(usd), address(facility), address(0), 0);
+        _setFunding(address(usd), address(facility), address(0), 0);
         cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
         vm.stopPrank();
+    }
+
+    /// @dev Sets the caller's funding order to cash, then savings, then credit, skipping zero addresses.
+    function _setFunding(address cash, address savings, address line, uint64 lineId) internal {
+        uint256 n = (cash != address(0) ? 1 : 0) + (savings != address(0) ? 1 : 0) + (line != address(0) ? 1 : 0);
+        CardFunding.Source[] memory order = new CardFunding.Source[](n);
+        uint256 i;
+        if (cash != address(0)) order[i++] = CardFunding.Source({ kind: 1, source: cash, lineId: 0 });
+        if (savings != address(0)) order[i++] = CardFunding.Source({ kind: 2, source: savings, lineId: 0 });
+        if (line != address(0)) order[i++] = CardFunding.Source({ kind: 4, source: line, lineId: lineId });
+        cards.setFunding(cash, order);
     }
 
     /// @dev Opens an accepted line from `lender` to `borrower` for the program, funded and approved.

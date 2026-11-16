@@ -6,6 +6,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
 import { CardAdjust } from "./CardAdjust.sol";
+import { CardFunding } from "./CardFunding.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { CreditLine } from "./CreditLine.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
@@ -72,20 +73,12 @@ contract CardProgram {
         CardLimits.Window window;
     }
 
-    /// @notice An owner's funding order: cash token, then savings through a facility, then a credit line.
-    struct Funding {
-        address cashToken;
-        address facility;
-        address creditLine;
-        uint64 lineId;
-    }
-
     struct Purchase {
         bytes32 card;
         address owner;
         uint64 expiresAt;
         uint32 day;
-        address creditLine;
+        uint32 version;
         uint64 amount;
         uint8 legs;
         bool open;
@@ -131,7 +124,7 @@ contract CardProgram {
     mapping(address owner => CardLimits.Usage) public usageOf;
     /// @notice Keys the issuer lets act on purchases besides itself.
     mapping(address key => bool) public operators;
-    mapping(address owner => Funding) public fundingOf;
+    mapping(address owner => address) public fundingOf;
     mapping(bytes32 purchaseRef => Purchase) internal _purchases;
     /// @notice Settlement units per unit of a token other than the settlement token, scaled by 1e18.
     mapping(address token => uint256) public rateOf;
@@ -146,7 +139,6 @@ contract CardProgram {
     event CardStatusSet(bytes32 indexed card, Status status);
     event LimitsSet(bytes32 indexed card, Limits limits, Limits ceiling);
     event MandateSet(address indexed owner, address indexed merchant, bool revoked, uint96 monthlyLimit);
-    event FundingSet(address indexed owner, address cashToken, address facility, address creditLine, uint64 lineId);
     event RateSet(address indexed token, uint256 rate);
     event SourceSet(address indexed source, bool approved);
     event PurchaseAuthorized(
@@ -168,6 +160,7 @@ contract CardProgram {
         uint256 cash,
         uint256 shares,
         uint256 credit,
+        uint256 absorbed,
         bool isFinal,
         uint64 seq,
         uint128 net
@@ -352,6 +345,16 @@ contract CardProgram {
         emit SourceSet(source, approved);
     }
 
+    /// @notice Limits the kinds of source (cash 1, savings 2, credit 4) purchases may draw on; zero allows every kind.
+    function setAssets(uint8 kinds) external onlyIssuer {
+        CardFunding.setAssets(kinds);
+    }
+
+    /// @notice Sets the contract that values the sponsor's collateral; purchases then stay within it. Zero removes it.
+    function setCollateral(address collateral) external onlyIssuer {
+        CardFunding.setCollateral(collateral);
+    }
+
     /// @notice Moves the settled-through cursor to purchase step `throughSeq`.
     function acknowledgeSettlement(uint64 throughSeq) external onlyIssuer {
         Ledger storage l = ledger;
@@ -422,10 +425,9 @@ contract CardProgram {
     }
 
     /// @notice Sets the caller's funding order. Zero skips a leg.
-    function setFunding(address cashToken, address facility, address creditLine, uint64 lineId) external {
-        fundingOf[msg.sender] =
-            Funding({ cashToken: cashToken, facility: facility, creditLine: creditLine, lineId: lineId });
-        emit FundingSet(msg.sender, cashToken, facility, creditLine, lineId);
+    function setFunding(address cashToken, CardFunding.Source[] calldata order) external {
+        fundingOf[msg.sender] = cashToken;
+        CardFunding.setOrder(msg.sender, cashToken, order);
     }
 
     /// @notice Grants this program the caller's terms for all their cards, and starts their usage afresh.
@@ -478,26 +480,9 @@ contract CardProgram {
             if (!g.active) revert NoTerms();
         }
 
-        Funding memory f = fundingOf[owner];
         uint256[3] memory legAmounts;
-        uint8 legs;
-        approved = amount;
-        if (standIn) {
-            if (c.legs & CASH == 0 || f.cashToken == address(0)) revert InsufficientFunds(amount);
-            uint256 tokens = _toTokenUp(amount, _rate(f.cashToken));
-            _holdFrom(owner, f.cashToken, _legId(purchaseRef, CASH), tokens, expiresAt, address(this), true);
-            legAmounts[0] = tokens;
-            legs = CASH;
-        } else {
-            uint256 rest;
-            (legs, legAmounts, rest) = _placeLegs(c.legs, owner, f, purchaseRef, amount, expiresAt);
-            if (rest != 0) {
-                if (flags & PARTIAL == 0 || rest == amount) revert InsufficientFunds(rest);
-                approved = amount - rest;
-            }
-            if (legs & CREDIT != 0) p.creditLine = f.creditLine;
-            CardLimits.useMandate(mandates[owner][merchant], g.terms.utcOffset, approved);
-        }
+        (approved, legAmounts) = CardFunding.place(p, purchaseRef, owner, amount, c.legs, expiresAt, flags);
+        if (!standIn) CardLimits.useMandate(mandates[owner][merchant], g.terms.utcOffset, approved);
         (p.day, p.month) = _spend(c, owner, approved, approved, !standIn);
 
         p.card = card;
@@ -508,7 +493,6 @@ contract CardProgram {
         p.amount = uint64(approved);
         // forge-lint: disable-next-line(unsafe-typecast)
         p.held = uint64(approved);
-        p.legs = legs;
         p.open = true;
         p.standIn = standIn;
         uint64 seq = ++ledger.seq;
@@ -523,7 +507,7 @@ contract CardProgram {
     function adjust(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
         Purchase storage p = _purchases[purchaseRef];
         address owner = p.owner;
-        address token = fundingOf[owner].cashToken;
+        address token = fundingOf[owner];
         uint256 cash = CardAdjust.adjust(
             CORE,
             p,
@@ -549,38 +533,9 @@ contract CardProgram {
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp >= p.expiresAt) revert PurchaseExpired();
         if (amount == 0 && !isFinal) revert InvalidAmount();
-        uint8 legs = p.legs;
-        Leg[4] memory l = _readLegs(p, purchaseRef, false);
-
-        // Waterfall: each leg pays what it can of the rest, in funding order.
-        uint256 rest = amount;
-        uint256[3] memory take;
-        for (uint256 i; i < 3; ++i) {
-            take[i] = rest < l[i].value ? rest : l[i].value;
-            rest -= take[i];
-        }
-        if (rest != 0 && legs & CASH == 0) revert CaptureExceedsHolds(rest);
-
-        uint256[3] memory tokens;
-        tokens[0] = _legTokens(l[0], take[0]) + (rest == 0 ? 0 : _toTokenUp(rest, l[0].rate));
-        if (take[1] != 0) tokens[1] = _shareTokens(l[1], take[1]);
-        tokens[2] = _legTokens(l[2], take[2]);
-
-        if (legs & CASH != 0) _captureLeg(l[0], tokens[0], isFinal);
-        if (legs & SAVINGS != 0) {
-            if (tokens[1] != 0) {
-                // forge-lint: disable-next-line(unsafe-typecast)
-                SavingsFacility(_facility(l[1])).capture(l[1].holdOwner, l[1].id, uint128(tokens[1]), isFinal);
-            } else if (isFinal && !l[1].settled) {
-                CORE.release(l[1].holdOwner, l[1].id);
-            }
-        }
-        if (legs & CREDIT != 0) {
-            _captureLeg(l[2], tokens[2], isFinal);
-            CreditLine(p.creditLine).sync(l[2].id);
-        }
-        if (legs & CASH != 0) _forward(l[0].token);
-        if (legs & CREDIT != 0) _forward(l[2].token);
+        Card storage c = _cards[p.card];
+        (uint256[3] memory tokens,, uint256 absorbed) =
+            CardFunding.capture(p, purchaseRef, amount, isFinal, c.legs, fundingOf[p.owner]);
 
         // The held part of the capture already counts; what it takes past the holds counts now, and a final capture
         // gives back what it leaves held.
@@ -589,7 +544,6 @@ contract CardProgram {
         uint256 freed = isFinal ? counted : fromHeld;
         // forge-lint: disable-next-line(unsafe-typecast)
         p.held = uint64(counted - freed);
-        Card storage c = _cards[p.card];
         if (amount > fromHeld) _spend(c, p.owner, 0, amount - fromHeld, false);
         if (freed > fromHeld) _giveBack(c, p.owner, p.epoch, p.day, p.month, freed - fromHeld);
 
@@ -599,7 +553,7 @@ contract CardProgram {
         uint64 seq = ++ledger_.seq;
         uint128 net = ledger_.net + amount;
         ledger_.net = net;
-        emit PurchaseCaptured(purchaseRef, p.card, amount, tokens[0], tokens[1], tokens[2], isFinal, seq, net);
+        emit PurchaseCaptured(purchaseRef, p.card, amount, tokens[0], tokens[1], tokens[2], absorbed, isFinal, seq, net);
     }
 
     /// @notice Charges `amount` settlement units for a purchase presented without a live hold (a late presentment
@@ -628,7 +582,7 @@ contract CardProgram {
             }
         }
         address owner = p.owner;
-        address token = fundingOf[owner].cashToken;
+        address token = fundingOf[owner];
         (uint256 tokens, uint256 absorbed) = CardAdjust.charge(
             CORE,
             p,
@@ -667,12 +621,7 @@ contract CardProgram {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
-        Leg[4] memory l = _readLegs(p, purchaseRef, true);
-
-        uint256[3] memory tokens = CardAdjust.refund(CORE, l, p.creditLine, amount);
-        // A refund's own repayment of the owner's debt to this program lands here.
-        if (l[0].token != address(0)) _forward(l[0].token);
-        if (l[3].token != address(0)) _forward(l[3].token);
+        uint256[3] memory tokens = CardFunding.refund(p, purchaseRef, amount, fundingOf[p.owner]);
         _giveBackNow(_cards[p.card], p.owner, p.epoch, amount);
 
         Ledger storage ledger_ = ledger;
@@ -697,6 +646,24 @@ contract CardProgram {
         return _purchases[purchaseRef];
     }
 
+    /// @notice What the program's open purchases hold and its cardholders' capped debt to it, in settlement units, and
+    ///         how many cardholders owe it.
+    function outstanding() external view returns (uint256 held, uint256 debt, uint256 debtors) {
+        return CardFunding.outstanding();
+    }
+
+    /// @notice The program's live exposure in settlement units: open holds, cardholders' capped debt to it and captures
+    ///         net of refunds past the settled cursor, against the value of its sponsor's collateral.
+    function exposure()
+        external
+        view
+        returns (uint256 holds, uint256 debt, uint256 unsettled, uint256 collateral, uint256 total)
+    {
+        Ledger memory l = ledger;
+        unsettled = l.net > l.settledNet ? l.net - l.settledNet : 0;
+        (holds, debt, collateral, total) = CardFunding.exposure(unsettled);
+    }
+
     /// @notice The core hold id of a purchase's cash or savings leg on the owner's account.
     function legId(bytes32 purchaseRef, uint8 leg) external view returns (bytes32) {
         return _legId(purchaseRef, leg);
@@ -704,113 +671,12 @@ contract CardProgram {
 
     // Internals.
 
-    function _placeLegs(
-        uint8 allowed,
-        address owner,
-        Funding memory f,
-        bytes32 purchaseRef,
-        uint256 amount,
-        uint64 expiresAt
-    ) private returns (uint8 legs, uint256[3] memory legAmounts, uint256 rest) {
-        rest = amount;
-        if (allowed & CASH != 0 && f.cashToken != address(0)) {
-            uint256 rate = _rate(f.cashToken);
-            uint256 take = _min(rest, _toSettlement(CORE.available(owner, f.cashToken), rate));
-            if (take != 0) {
-                legAmounts[0] = _toTokenUp(take, rate);
-                _holdFrom(owner, f.cashToken, _legId(purchaseRef, CASH), legAmounts[0], expiresAt, address(this), false);
-                legs |= CASH;
-                rest -= take;
-            }
-        }
-        if (rest != 0 && allowed & SAVINGS != 0 && f.facility != address(0)) {
-            if (!approvedSource[f.facility]) revert SourceNotApproved(f.facility);
-            SavingsFacility facility = SavingsFacility(f.facility);
-            address share = facility.SHARE();
-            uint256 rate = _rate(facility.ASSET());
-            uint256 sharesAvailable = CORE.available(owner, share);
-            uint256 take = _min(rest, _toSettlement(facility.VAULT().previewRedeem(sharesAvailable), rate));
-            if (take != 0) {
-                legAmounts[1] = _min(facility.VAULT().previewWithdraw(_toTokenUp(take, rate)), sharesAvailable);
-                _holdFrom(owner, share, _legId(purchaseRef, SAVINGS), legAmounts[1], expiresAt, f.facility, false);
-                legs |= SAVINGS;
-                rest -= take;
-            }
-        }
-        if (rest != 0 && allowed & CREDIT != 0 && f.creditLine != address(0)) {
-            if (!approvedSource[f.creditLine]) revert SourceNotApproved(f.creditLine);
-            CreditLine line = CreditLine(f.creditLine);
-            legAmounts[2] = _toTokenUp(rest, _rate(line.tokenOf(f.lineId)));
-            // forge-lint: disable-next-line(unsafe-typecast)
-            line.draw(f.lineId, owner, purchaseRef, uint128(legAmounts[2]), expiresAt);
-            legs |= CREDIT;
-            rest = 0;
-        }
-    }
 
-    /// @dev Reads each placed leg's hold. `forRefund` values what is refundable rather than what is still held.
-    function _readLegs(Purchase storage p, bytes32 purchaseRef, bool forRefund) private view returns (Leg[4] memory l) {
-        uint8 legs = p.legs;
-        address owner = p.owner;
-        if (legs & CASH != 0) l[0] = _readLeg(owner, _legId(purchaseRef, CASH), false, forRefund);
-        if (legs & SAVINGS != 0) l[1] = _readLeg(owner, _legId(purchaseRef, SAVINGS), true, forRefund);
-        if (legs & CREDIT != 0) {
-            CreditLine line = CreditLine(p.creditLine);
-            bytes32 id = line.holdIdOf(address(this), purchaseRef);
-            (address lender,) = line.drawOf(id);
-            l[2] = _readLeg(lender, id, false, forRefund);
-        }
-        if (legs & CHARGED != 0) l[3] = _readLeg(owner, _legId(purchaseRef, CHARGED), false, forRefund);
-    }
 
-    function _readLeg(address holdOwner, bytes32 id, bool savings, bool forRefund)
-        private
-        view
-        returns (Leg memory leg)
-    {
-        IReservationCore.HoldRecord memory h = CORE.getHold(holdOwner, id);
-        leg.holdOwner = holdOwner;
-        leg.id = id;
-        leg.token = h.token;
-        leg.held = h.settled ? 0 : h.held;
-        leg.refundable = h.captured - h.refunded;
-        leg.settled = h.settled;
-        uint256 units = forRefund ? leg.refundable : leg.held;
-        if (savings) {
-            SavingsFacility facility = SavingsFacility(h.payee);
-            leg.rate = _rate(facility.ASSET());
-            leg.value = _toSettlement(facility.VAULT().previewRedeem(units), leg.rate);
-        } else {
-            leg.rate = _rate(h.token);
-            leg.value = _toSettlement(units, leg.rate);
-        }
-    }
 
-    function _captureLeg(Leg memory leg, uint256 tokens, bool isFinal) private {
-        if (tokens != 0) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.capture(leg.holdOwner, leg.id, uint128(tokens), isFinal);
-        } else if (isFinal && !leg.settled) {
-            CORE.release(leg.holdOwner, leg.id);
-        }
-    }
 
-    /// @dev Token units for `take` settlement units of a cash or credit leg: all it holds when it takes its value.
-    function _legTokens(Leg memory leg, uint256 take) private pure returns (uint256) {
-        if (take == 0) return 0;
-        if (take == leg.value) return leg.held;
-        return _min(_toTokenUp(take, leg.rate), leg.held);
-    }
 
-    function _shareTokens(Leg memory leg, uint256 take) private view returns (uint256) {
-        if (take == leg.value) return leg.held;
-        SavingsFacility facility = SavingsFacility(_facility(leg));
-        return _min(facility.VAULT().previewWithdraw(_toTokenUp(take, leg.rate)), leg.held);
-    }
 
-    function _facility(Leg memory leg) private view returns (address) {
-        return CORE.getHold(leg.holdOwner, leg.id).payee;
-    }
 
     function _end(bytes32 purchaseRef, bool expired) private {
         Purchase storage p = _purchases[purchaseRef];
@@ -818,24 +684,15 @@ contract CardProgram {
         // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (expired && block.timestamp < p.expiresAt) revert PurchaseNotExpired();
-        Leg[4] memory l = _readLegs(p, purchaseRef, false);
-        _releaseLeg(l[0], expired);
-        _releaseLeg(l[1], expired);
-        _releaseLeg(l[2], expired);
-        if (p.legs & CREDIT != 0) CreditLine(p.creditLine).sync(l[2].id);
+        uint256[3] memory released = CardFunding.end(p, purchaseRef, expired);
         p.open = false;
         uint256 held = p.held;
         p.held = 0;
         _giveBack(_cards[p.card], p.owner, p.epoch, p.day, p.month, held);
         uint64 seq = ++ledger.seq;
-        emit PurchaseReleased(purchaseRef, p.card, l[0].held, l[1].held, l[2].held, expired, seq);
+        emit PurchaseReleased(purchaseRef, p.card, released[0], released[1], released[2], expired, seq);
     }
 
-    function _releaseLeg(Leg memory leg, bool expired) private {
-        if (leg.holdOwner == address(0) || leg.settled) return;
-        if (expired) CORE.releaseExpired(leg.holdOwner, leg.id);
-        else CORE.release(leg.holdOwner, leg.id);
-    }
 
     /// @dev Counts `amount` toward the owner's terms and the card in today's windows, checking them when
     ///      `enforce`, and returns today's calendar day and month.
@@ -867,29 +724,6 @@ contract CardProgram {
         _giveBack(c, owner, epoch, day, month, amount);
     }
 
-    function _holdFrom(
-        address owner,
-        address token,
-        bytes32 id,
-        uint256 amount,
-        uint64 expiresAt,
-        address payee,
-        bool standIn
-    ) private {
-        CORE.holdFrom(
-            owner,
-            IReservationCore.HoldRequest({
-                token: token,
-                id: id,
-                // Leg amounts derive from 64-bit purchases at recorded rates.
-                // forge-lint: disable-next-line(unsafe-typecast)
-                amount: uint128(amount),
-                expiresAt: expiresAt,
-                payee: payee,
-                standIn: standIn
-            })
-        );
-    }
 
     function _forward(address token) private {
         uint256 balance = IERC20Like(token).balanceOf(address(this));

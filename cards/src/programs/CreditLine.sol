@@ -20,6 +20,8 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 contract CreditLine {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;
+    /// @dev How long one commitment hold lasts; the core caps holds at 31 days.
+    uint256 private constant COMMITMENT_TERM = 30 days;
 
     struct Line {
         address lender;
@@ -53,6 +55,11 @@ contract CreditLine {
     uint64 public lineCount;
     mapping(uint64 lineId => Line) internal _lines;
     mapping(bytes32 holdId => Draw) public draws;
+    /// @notice The open line each lender has for each borrower, if any.
+    mapping(address lender => mapping(address borrower => uint64 lineId)) public lineIdOf;
+    /// @notice The hold that commits a line's undrawn limit on the lender's balance, and how many it has had.
+    mapping(uint64 lineId => bytes32 holdId) public commitmentOf;
+    mapping(uint64 lineId => uint64) internal _commitments;
 
     bool private transient _locked;
 
@@ -74,6 +81,8 @@ contract CreditLine {
     event Drawn(uint64 indexed lineId, bytes32 indexed holdId, bytes32 ref, uint128 amount, uint64 expiresAt);
     event Synced(uint64 indexed lineId, bytes32 indexed holdId, uint128 owed, uint128 pending);
     event Repaid(uint64 indexed lineId, address indexed payer, uint128 amount, uint128 owed);
+    event Charged(uint64 indexed lineId, uint128 amount, uint128 owed);
+    event Committed(uint64 indexed lineId, bytes32 holdId, uint128 amount);
     event PledgeAttached(uint64 indexed lineId, bytes32 pledgeId, uint128 shares, uint64 expiresAt);
     event PledgeReleased(uint64 indexed lineId, bytes32 pledgeId);
     event Seized(uint64 indexed lineId, bytes32 pledgeId, uint128 shares, uint256 assets, uint128 owed);
@@ -121,7 +130,9 @@ contract CreditLine {
         } else if (ltvBps == 0 || ltvBps > BPS || collateralVault.asset() != token) {
             revert InvalidLine();
         }
+        if (lineIdOf[msg.sender][borrower] != 0) revert InvalidLine();
         lineId = ++lineCount;
+        lineIdOf[msg.sender][borrower] = lineId;
         Line storage l = _lines[lineId];
         l.lender = msg.sender;
         l.dueDate = dueDate;
@@ -143,6 +154,7 @@ contract CreditLine {
         if (msg.sender != l.borrower) revert NotBorrower();
         l.accepted = true;
         emit LineAccepted(lineId);
+        _commit(lineId);
     }
 
     /// @notice The lender sets the line's limit; draws already placed stay.
@@ -151,6 +163,7 @@ contract CreditLine {
         if (msg.sender != l.lender) revert NotLender();
         l.limit = limit;
         emit LimitSet(lineId, limit);
+        _commit(lineId);
     }
 
     /// @notice The lender or the borrower stops new draws. What is owed stays owed.
@@ -158,7 +171,9 @@ contract CreditLine {
         Line storage l = _lines[lineId];
         if (msg.sender != l.lender && msg.sender != l.borrower) revert NotLender();
         l.closed = true;
+        if (lineIdOf[l.lender][l.borrower] == lineId) delete lineIdOf[l.lender][l.borrower];
         emit LineClosed(lineId);
+        _commit(lineId);
     }
 
     /// @notice Places a hold of `amount` on the lender's balance, payable to the calling program, for the
@@ -187,6 +202,8 @@ contract CreditLine {
         // forge-lint: disable-next-line(unsafe-typecast)
         draws[holdId] = Draw({ lineId: lineId, held: uint96(amount), net: 0 });
         l.pending += amount;
+        // The draw comes out of the commitment, so it frees the lender's balance first.
+        _commit(lineId);
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-start(reentrancy-no-eth)
         CORE.holdFrom(
@@ -221,6 +238,55 @@ contract CreditLine {
         // forge-lint: disable-next-line(unsafe-typecast)
         (d.held, d.net) = (uint96(held), uint96(net));
         emit Synced(lineId, holdId, l.owed, l.pending);
+        _commit(lineId);
+    }
+
+    /// @notice Sets what draw `holdId` still reserves, as the program that drew it: an increase must fit the line's
+    ///         available credit and moves out of the commitment; a decrease returns to it.
+    function resize(bytes32 holdId, uint128 amount) external nonReentrant {
+        Draw storage d = draws[holdId];
+        uint64 lineId = d.lineId;
+        if (lineId == 0) revert UnknownDraw();
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.program) revert NotProgram();
+        uint128 held = CORE.getHold(l.lender, holdId).held;
+        if (amount > held) {
+            uint256 more = amount - held;
+            uint256 credit = availableCredit(lineId);
+            if (more > credit) revert CreditExceeded(more, credit);
+            if (amount > type(uint96).max) revert CreditExceeded(amount, type(uint96).max);
+            l.pending = l.pending + amount - d.held;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            d.held = uint96(amount);
+            _commit(lineId);
+            // Every entry point holds the transient lock for this whole call.
+            // forge-lint: disable-next-line(reentrancy-no-eth)
+            CORE.adjust(l.lender, holdId, amount);
+        } else {
+            // forge-lint: disable-next-line(reentrancy-no-eth)
+            CORE.adjust(l.lender, holdId, amount);
+            l.pending = l.pending + amount - d.held;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            d.held = uint96(amount);
+            _commit(lineId);
+        }
+        emit Synced(lineId, holdId, l.owed, l.pending);
+    }
+
+    /// @notice Adds `amount` to what the borrower owes, as the lender (interest, or a re-drawn disputed purchase). It
+    ///         comes out of the line's undrawn limit like a draw.
+    function charge(uint64 lineId, uint128 amount) external nonReentrant {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.lender) revert NotLender();
+        l.owed += amount;
+        emit Charged(lineId, amount, l.owed);
+        _commit(lineId);
+    }
+
+    /// @notice Recommits line `lineId`'s undrawn limit on the lender's balance, renewing its hold before it expires.
+    ///         Anyone may call it.
+    function recommit(uint64 lineId) external nonReentrant {
+        _commit(lineId);
     }
 
     /// @notice Repays `amount` of what the borrower owes, from the caller to the lender.
@@ -230,6 +296,7 @@ contract CreditLine {
         l.owed -= amount;
         SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
         emit Repaid(lineId, msg.sender, amount, l.owed);
+        _commit(lineId);
     }
 
     /// @notice The borrower attaches a pledge it placed on the core with this contract as authority: the line's
@@ -312,7 +379,22 @@ contract CreditLine {
             if (secured < cap) cap = secured;
         }
         uint256 used = uint256(l.owed) + l.pending;
-        return cap > used ? cap - used : 0;
+        if (cap <= used) return 0;
+        // A draw can only take what the lender's balance backs: its free cash plus the commitment.
+        uint256 backed = CORE.available(l.lender, l.token) + _committed(lineId);
+        uint256 credit = cap - used;
+        return credit < backed ? credit : backed;
+    }
+
+    /// @notice What line `lineId`'s commitment hold reserves of the lender's balance now.
+    function committed(uint64 lineId) external view returns (uint256) {
+        return _committed(lineId);
+    }
+
+    /// @notice The lender and token of line `lineId`.
+    function partiesOf(uint64 lineId) external view returns (address lender, address token) {
+        Line storage l = _lines[lineId];
+        return (l.lender, l.token);
     }
 
     /// @notice What the line's pledge is worth now in its token, zero when it is gone or would expire before the
@@ -344,5 +426,84 @@ contract CreditLine {
     /// @notice The hold id of `program`'s draw for its purchase `ref`, on the lender's account.
     function holdIdOf(address program, bytes32 ref) public view returns (bytes32) {
         return keccak256(abi.encode(address(this), program, ref));
+    }
+
+    /// @dev Moves the commitment hold to the line's undrawn limit (what is neither owed nor pending), within what the
+    ///      lender's balance backs. A closed, unaccepted or past-due line commits nothing.
+    function _commit(uint64 lineId) private {
+        Line storage l = _lines[lineId];
+        bytes32 id = commitmentOf[lineId];
+        IReservationCore.HoldRecord memory h;
+        bool live;
+        if (id != bytes32(0)) {
+            h = CORE.getHold(l.lender, id);
+            // Expiries are timestamps by design; a few seconds of validator skew does not change them.
+            // forge-lint: disable-next-line(block-timestamp)
+            live = !h.settled && h.token != address(0) && h.expiresAt > block.timestamp;
+        }
+        uint256 target;
+        // forge-lint: disable-next-line(block-timestamp)
+        if (l.accepted && !l.closed && block.timestamp < l.dueDate) {
+            uint256 used = uint256(l.owed) + l.pending;
+            target = l.limit > used ? l.limit - used : 0;
+            uint256 backed = CORE.available(l.lender, l.token) + (live ? h.held : 0);
+            if (target > backed) target = backed;
+        }
+        // forge-lint: disable-next-line(block-timestamp)
+        uint64 expiresAt = uint64(block.timestamp + COMMITMENT_TERM);
+        if (expiresAt > l.dueDate) expiresAt = l.dueDate;
+        // Renew a live hold that would lapse within a day; otherwise adjust it in place.
+        // forge-lint: disable-next-line(block-timestamp)
+        bool renew = live && h.expiresAt < block.timestamp + 1 days && expiresAt > h.expiresAt;
+        if (live && !renew) {
+            if (target == h.held) return;
+            if (target == 0) {
+                CORE.release(l.lender, id);
+            } else if (target < h.held) {
+                // forge-lint: disable-next-line(unsafe-typecast)
+                CORE.adjust(l.lender, id, uint128(target));
+            } else {
+                // Growing the commitment is best effort: a lender who lowered or revoked this contract's allowance
+                // keeps what is committed, and draws and repayments still settle.
+                // forge-lint: disable-next-line(unsafe-typecast)
+                try CORE.adjust(l.lender, id, uint128(target)) { }
+                catch {
+                    return;
+                }
+            }
+        } else {
+            if (live) CORE.release(l.lender, id);
+            else if (id != bytes32(0) && !h.settled && h.token != address(0)) CORE.releaseExpired(l.lender, id);
+            if (target == 0) {
+                if (id != bytes32(0)) commitmentOf[lineId] = bytes32(0);
+                emit Committed(lineId, bytes32(0), 0);
+                return;
+            }
+            id = keccak256(abi.encode(address(this), "commitment", lineId, ++_commitments[lineId]));
+            // Placing a commitment is best effort too, for the same reason.
+            try CORE.holdFrom(
+                l.lender,
+                IReservationCore.HoldRequest({
+                    // forge-lint: disable-next-line(unsafe-typecast)
+                    token: l.token, id: id, amount: uint128(target), expiresAt: expiresAt, payee: address(this), standIn: false
+                })
+            ) {
+                commitmentOf[lineId] = id;
+            } catch {
+                commitmentOf[lineId] = bytes32(0);
+                emit Committed(lineId, bytes32(0), 0);
+                return;
+            }
+        }
+        // forge-lint: disable-next-line(unsafe-typecast)
+        emit Committed(lineId, id, uint128(target));
+    }
+
+    function _committed(uint64 lineId) private view returns (uint256) {
+        bytes32 id = commitmentOf[lineId];
+        if (id == bytes32(0)) return 0;
+        IReservationCore.HoldRecord memory h = CORE.getHold(_lines[lineId].lender, id);
+        // forge-lint: disable-next-line(block-timestamp)
+        return h.settled || h.expiresAt <= block.timestamp ? 0 : h.held;
     }
 }
