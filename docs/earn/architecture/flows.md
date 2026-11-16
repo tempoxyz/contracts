@@ -44,7 +44,7 @@ sequenceDiagram
     F-->>A: FeePreview
     A->>T: mint(F, totalFeeEarnShares)
     A->>A: reconcile managed shares; require backing if supply is nonzero
-    A->>A: transferFrom(U, A, assets); approve E for assets
+    A->>A: transferFrom(U, A, assets); top up E's standing approval if below assets
     A->>E: deposit(assets)
     E->>V: deposit(assets, E)
     E-->>A: reported engineShares

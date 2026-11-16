@@ -28,7 +28,8 @@ valuation:
 
 Every engine serves exactly one EarnVault with the same immutable base asset, and:
 
-- pulls base assets from the EarnVault and deposits them into its venue;
+- pulls base assets from the EarnVault, through a standing maximum approval the EarnVault keeps to
+  its installed engine, and deposits them into its venue;
 - holds the resulting venue shares itself;
 - sends redeemed assets directly to the receiver the EarnVault selects; and
 - never mints or burns EarnShare.

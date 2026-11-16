@@ -176,7 +176,8 @@ an exit capability, use the same base asset, bind reciprocally to this EarnVault
 share scale. When old raw custody exists, both output bounds must be nonzero. The old engine must
 redeem all raw custody immediately; queued-only or illiquid exits cannot migrate. The vault
 checkpoints fees, measures the redeemed assets and replacement-share increase, and requires the
-replacement to consume all redeemed assets. Any failed leg reverts the entire transaction.
+replacement to consume all redeemed assets, and revokes the old engine's standing base-asset approval.
+Any failed leg reverts the entire transaction.
 
 After the fee checkpoint, EarnShare supply stays unchanged. The vault maps the old managed/raw
 share ratio into the replacement denomination, rounding at most one replacement share toward
