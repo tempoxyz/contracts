@@ -261,6 +261,12 @@ contract ERC4626CompositionInvariantTest is StdInvariant, Test {
         assertEq(earnShare.balanceOf(address(earnVault)), 0);
         assertEq(venue.allowance(address(earnVault), address(engine)), 0);
         assertEq(earnShare.allowance(address(earnVault), address(engine)), 0);
+        _assertZeroOrMax(asset.allowance(address(earnVault), address(engine)));
+        _assertZeroOrMax(asset.allowance(address(engine), address(venue)));
+    }
+
+    function _assertZeroOrMax(uint256 allowance) private pure {
+        assertTrue(allowance == 0 || allowance == type(uint256).max);
     }
 
     function _feeConfig() private pure returns (FeeConfig memory config) {
