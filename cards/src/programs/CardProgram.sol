@@ -142,6 +142,7 @@ contract CardProgram {
     bool private transient _locked;
 
     event CardIssued(bytes32 indexed card, address indexed owner, uint40 expiry, Limits limits, uint8 legs);
+    event CardExpirySet(bytes32 indexed card, uint40 expiry);
     event CardReplaced(bytes32 indexed oldCard, bytes32 indexed newCard, uint40 expiry);
     event CardStatusSet(bytes32 indexed card, Status status);
     event LimitsSet(bytes32 indexed card, Limits limits, Limits ceiling);
@@ -329,6 +330,13 @@ contract CardProgram {
         if (c.status == Status.None) revert InvalidCard();
         c.window.cap = cap;
         emit CardCapSet(card, cap);
+    }
+
+    /// @notice Moves `card`'s expiry, such as a short-lived virtual card's; past it the card authorizes nothing.
+    ///         An unissued card needs no check: issueCard sets its own expiry.
+    function setExpiry(bytes32 card, uint40 expiry) external onlyIssuer {
+        _cards[card].expiry = expiry;
+        emit CardExpirySet(card, expiry);
     }
 
     /// @notice Freezes, unfreezes or closes `card` for the issuer (a fraud stop, a lost card). A closed card stays closed.
