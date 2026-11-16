@@ -102,14 +102,14 @@ contract IssuerDesk {
     event RewardReversed(
         bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
     );
-    event DisputeOpened(bytes32 indexed purchaseRef, address indexed account, uint128 amount, bytes32 evidence);
+    event DisputeOpened(bytes32 indexed purchaseRef, address indexed account, uint128 amount, bytes evidence);
     event DisputeStepped(
         bytes32 indexed purchaseRef,
         address indexed account,
         uint8 state,
         uint128 provisional,
         uint128 repaid,
-        bytes32 evidence,
+        bytes evidence,
         bool byMerchant
     );
     event DisputeResolved(
@@ -213,7 +213,11 @@ contract IssuerDesk {
     }
 
     /// @notice Opens a dispute on a captured purchase, for at most what it captured and has not refunded.
-    function openDispute(bytes32 purchaseRef, uint128 amount, bytes32 evidence) external nonReentrant onlyOperator {
+    function openDispute(bytes32 purchaseRef, uint128 amount, bytes calldata evidence)
+        external
+        nonReentrant
+        onlyOperator
+    {
         Book storage b = books[purchaseRef];
         if (disputes[purchaseRef].state != 0) revert DisputeExists();
         if (amount == 0 || amount > b.captured - b.refunded) revert DisputeTooLarge();
@@ -225,11 +229,13 @@ contract IssuerDesk {
     /// @notice Moves a dispute forward, attaching evidence and giving provisional credit from the settlement account.
     ///         Refunds and provisional credit together never return more than the purchase, nor provisional credit
     ///         more than the dispute. Credit the cardholder receives repays its debt first.
-    function disputeStep(bytes32 purchaseRef, uint8 state, uint128 provisional, bytes32 evidence, bool byMerchant)
-        external
-        nonReentrant
-        onlyOperator
-    {
+    function disputeStep(
+        bytes32 purchaseRef,
+        uint8 state,
+        uint128 provisional,
+        bytes calldata evidence,
+        bool byMerchant
+    ) external nonReentrant onlyOperator {
         Dispute storage d = disputes[purchaseRef];
         if (d.state == 0 || d.state >= WON) revert NoDispute();
         if (state <= d.state || state < PROVISIONAL_CREDIT || state > ARBITRATION) revert InvalidDisputeStep();

@@ -144,14 +144,14 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.prank(alice);
         core.setDebtCap(settlement, address(usd), amount);
         vm.prank(issuer);
-        desk.openDispute(P1, amount, bytes32("evidence"));
+        desk.openDispute(P1, amount, hex"c1a1");
     }
 
     function test_dispute_lost_takesProvisionalBack_restAsDebt() public {
         _disputed(80e6);
         usd.mint(settlement, 80e6);
         vm.prank(issuer);
-        desk.disputeStep(P1, 2, 80e6, bytes32(0), false);
+        desk.disputeStep(P1, 2, 80e6, "", false);
         assertEq(usd.balanceOf(alice), 1000e6, "provisional credit paid");
         vm.prank(alice);
         usd.transfer(bob, 990e6);
@@ -168,19 +168,19 @@ contract IssuerDeskTest is ProgramsEnv {
         usd.mint(settlement, 100e6);
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.DisputeTooLarge.selector);
-        desk.disputeStep(P1, 3, 51e6, bytes32(0), false);
+        desk.disputeStep(P1, 3, 51e6, "", false);
         vm.prank(issuer);
-        desk.disputeStep(P1, 3, 50e6, bytes32(0), true);
+        desk.disputeStep(P1, 3, 50e6, "", true);
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.InvalidDisputeStep.selector);
-        desk.disputeStep(P1, 2, 0, bytes32(0), false);
+        desk.disputeStep(P1, 2, 0, "", false);
     }
 
     function test_dispute_won_countsAsRefund() public {
         _disputed(50e6);
         usd.mint(settlement, 50e6);
         vm.prank(issuer);
-        desk.disputeStep(P1, 2, 20e6, bytes32(0), false);
+        desk.disputeStep(P1, 2, 20e6, "", false);
         vm.prank(issuer);
         desk.resolveDispute(P1, true);
         assertEq(usd.balanceOf(alice), 1000e6, "provisional plus the refunded rest");
@@ -193,6 +193,6 @@ contract IssuerDeskTest is ProgramsEnv {
         _purchase(50e6);
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.DisputeTooLarge.selector);
-        desk.openDispute(P1, 51e6, bytes32(0));
+        desk.openDispute(P1, 51e6, "");
     }
 }
