@@ -38,7 +38,7 @@ describe('earn CLI', () => {
 
   test('accepts --skip-zone only on verify', async () => {
     await expect(main(['deploy', 'profile.json', '--skip-zone'], console, '/')).rejects.toThrow(
-      '--skip-zone is supported only by verify',
+      '--skip-zone is supported only by verify or deposit --broadcast',
     )
   })
 })

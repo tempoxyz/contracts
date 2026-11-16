@@ -72,8 +72,10 @@ jobs:
         with:
           workspace: '@tempoxyz/contracts'
 
-      # zone-router/ is a separate solc Foundry project with its own pinned dependencies; it needs neither
-      # Earn's solar nor its Forge build cache.
+      # zone-router/ is a separate Foundry project with its own pinned dependencies; it compiles with Earn's
+      # solar but needs no Forge build cache.
+      - uses: ./.github/actions/solar-cache
+
       - name: Install the Zone router's Solidity dependencies
         run: scripts/solidity-deps.sh zone-router
 

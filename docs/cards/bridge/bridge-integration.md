@@ -115,6 +115,10 @@ outbox.requestWithdrawal(inputToken, router, input, memo, callbackGas,
 
 `router` is the program's Spend-mode `ZoneRouter` for that Zone (see [`deploy.md`](deploy.md)).
 
+Send both calls in the same transaction, and approve exactly what the withdrawal takes. The key's scope
+allows each call alone, so an approval left standing could be withdrawn in a later period without
+charging the key's limit again, or by another key with `requestWithdrawal` on the same account.
+
 Bridge sponsors the transaction, and the outbox then takes the withdrawal fee from Bridge's fee
 payer in the input token: stablecoin, or EarnShare for an Earn spend. The fee payer holds and
 approves those tokens. Unsponsored, the cardholder approves `input + withdrawalFee` and pays it.

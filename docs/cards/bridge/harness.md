@@ -91,8 +91,8 @@ TempoEnv        tokens, Earn, spender factory with EA/P2/TF/EV/TS
   `vm.getBlockTimestamp()`.
 - Test contracts are large. The Tempo rails deploy the program's contracts and the
   `ZoneRouterFactory` from their artifacts with `deployCode` rather than `new`: inlining their creation code bloats every
-  matrix suite, and put the private ones at a size where solc 0.8.36's via-IR assembler fails with
-  `Tag too large for reserved space`.
+  matrix suite, and once put the private ones at a size where solc 0.8.36's via-IR assembler failed
+  with `Tag too large for reserved space`.
 - Tempo prices new storage far above Ethereum. Simulated transactions use a 29M gas limit, so
   gas numbers from the simulator say nothing about product contracts.
 - Permit2 pins solc 0.8.17, so `TempoEnv` deploys it from creation code committed in

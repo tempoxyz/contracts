@@ -7,12 +7,12 @@ libs = ["lib", "vendor"]
 # Imports Earn's sources (`tempo-earn/` = ../earn/src) and the Zone router's (`zone-router/` =
 # ../zone-router/src) directly, with this project's remappings and Tempo hardfork; their own build
 # settings are unaffected.
-allow_paths = ["../earn", "../zone-router"]
 # Real Tempo precompiles (TIP-20, AccountKeychain, TIP-403, ...) in the test EVM.
 hardfork = "tempo:T8"
 # Providers' contracts whose exact pragma does not build here (Rain's 0.8.17, Permit2) are built with
 # their own settings and deployed from fixtures under test/<provider>/.
-solc_version = "0.8.36"
+solc = "../earn/solar-solc"
+cache_path = "cache/solar"
 via_ir = true
 optimizer = true
 optimizer_runs = 200
@@ -34,8 +34,8 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
     "bridge-spender/=vendor/bridge/",
-    "tempo-earn/=../earn/src/",
-    "zone-router/=../zone-router/src/",
+    "tempo-earn/=linked/earn/src/",
+    "zone-router/=linked/zone-router/src/",
     "tempo-zones/=vendor/tempo-zones/src/runtime/",
 ]
 

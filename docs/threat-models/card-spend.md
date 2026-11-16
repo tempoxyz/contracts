@@ -284,11 +284,34 @@ The design accepts these risks. They are decisions, not gaps.
 - **A leaked Zone key.** It can withdraw a cardholder's Zone balance, up to the key's limit, to any
   address in an open Zone or any admitted account in a closed-loop Zone, and it chooses where the change
   goes. Bridge uses one key per program, so one leak reaches every cardholder of that program.
+- **Standing outbox approvals.** A Zone key's `approve` and `requestWithdrawal` scopes are separate, and
+  only `approve` counts against its limit. A key that approves in one period and withdraws in the next
+  can take up to twice its periodic limit, and another key with `requestWithdrawal` on the same account
+  can use an approval it did not make. Bridge sends both calls in one transaction for the exact amount;
+  removing the need for the approval needs an outbox or scope change outside this repository.
 - **A leaked public key.** It can spend a cardholder's funds, up to the key's limit, only to the
   program's destinations: its scope names the program's `spend`.
 - **No on-chain idempotency.** The provider removes duplicate spends off chain, by its own reference.
 - **Approval before settlement.** The provider approves a private spend on the Zone receipt. If L1
-  settlement fails, the provider's reserve pays.
+  settlement fails, the funds return to the cardholder's Zone balance and the provider's reserve pays.
+  Known ways an approved spend can fail to settle:
+  - **Liquidity.** `availableBalance` values shares and reserves nothing. A spend can exceed the vault's
+    withdrawable liquidity, or lose it to a redemption the cardholder queues ahead of it in the same Zone,
+    makes on the L1 before it settles, or to another spend against the same buffer, by the same
+    cardholder or another.
+  - **Ordering.** On a Zone that permits arbitrary callback targets, an earlier withdrawal in the same
+    `processWithdrawals` can run an L1 operation first. On a Veda engine, an earlier operation in the same
+    transaction can pin and then move the Accountant rate (`RateChangedWithinTransaction`).
+  - **Fees and gas.** A higher L1 base fee raises the bounce-back fee above the change's margin
+    (`ChangeBelowDepositFee`, `DepositTooSmall`), and a venue's gas can rise past the callback's budget.
+  - **Provider governance in flight.** Bridge's pauser pauses the factory; governance disables or replaces
+    the "TS" handler, removes the destination or disallows the vault.
+  - **Zone administration in flight.** The admin disables the return token or pauses deposits, raises the
+    deposit fee or `bouncebackGas`, removes the router's gateway or depositor permissions, or de-admits
+    the program's `refundRecipient`; or the return's encryption key expires.
+  - **Policies and venues.** A TIP-403 administrator blocks a participant in the settlement; an Earn venue
+    stops servicing withdrawals; the value per share falls past `maxShares` or the input; or the vault's
+    engine or fees change between approval and settlement.
 - **Events are not proof of payment.** Anyone can emit a spend event with any `ref`. The provider
   reconciles by transaction and log index, binding a private spend's `CardSpent` and `InputSpent` to the
   portal's `WithdrawalProcessed` and the router's `Spent` in the same transaction, and a public spend to
@@ -434,9 +457,13 @@ a balance.
 **How it can happen**
 
 - The vault quotes a high `previewWithdraw`, so a spend takes more shares (`cards/src/core/CardSpender.sol`: `_payDirect`).
-- On a direct public spend, the vault reports burning more than it did. The program returns
-  `required - burned` from that report, and the rest stays in the program under the vault's standing
-  approval (`cards/src/core/CardSpender.sol`: `_payDirect`, `_redeem`).
+- The vault misreports what it burned. On a direct public spend and in the TS handler, the report is
+  ignored: the refund is the shares still held above the pre-spend balance, and a vault that took more
+  than the quote reverts the spend (`ShareCostExceeded`; `cards/src/core/CardSpender.sol`: `_payDirect`,
+  `cards/src/providers/bridge/SpenderTempoSpend.sol`: `_withdrawFromEarn`). A direct private spend
+  passes the lower of `maxInput` and a nonzero `maxShares` to the vault as its cap, but the program itself
+  enforces only `maxInput`, by balance: a vault that ignores the cap can burn up to `maxInput`, and the
+  rest goes back to the Zone (`cards/src/core/CardSpender.sol`: `_spendDirect`, `spendFrom`).
 - The vault overstates `previewRedeem`, so `availableBalance` overstates what a cardholder can spend
   (`cards/src/core/CardSpender.sol`: `availableBalance`).
 
@@ -450,7 +477,7 @@ deploy script checks that the vault's engine advertises exact withdrawals and re
 `cards/script/bridge/deploy/ProgramChecks.sol`: `supportsEarnSpend`).
 
 **Key insight.** The covered code bounds what the destination gets by balance. On the public path it bounds
-what the payer loses by the vault's own quote and report.
+what the payer loses by the vault's own quote, and measures the refund by balance.
 
 ### 5. The Zone operator withholds or bounces settlement
 

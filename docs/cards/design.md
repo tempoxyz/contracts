@@ -100,6 +100,8 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 
 - `CardSpend.program` is this program (`WrongProgram`); `amount` is above zero and `fromVault` at most
   `amount` (`InvalidAmount`).
+- `token` is a TIP-20 (`UnsupportedToken`), so no transfer callback, fee or rebase can upset the
+  exact-credit checks. An Earn spend's vault holds `token`, so its asset is a TIP-20 too.
 - A program that pays directly asks its provider: it has not paused the program (`ProgramPaused`), it
   authorizes the destination for this payer, token and path (`DestinationNotAuthorized`), and an Earn
   spend's vault is allowed and holds `token` (`VaultNotAllowed`, `IncorrectAssetForVault`). A program
@@ -109,8 +111,10 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 - The destination's balance of `token` rises by exactly `amount` (`DestinationNotCredited`).
 - A private destination may be neither the calling router nor an alias resolving to it
   (`DestinationNotAuthorized`): the router returns only unused input, not the redeemed asset.
-- A public Earn refund increases the payer's share balance by exactly the unused amount
-  (`RefundNotCredited`). A receive policy that redirects the refund reverts the entire spend, including
+- A public Earn refund is what the program measurably still holds of the shares it pulled, not what the
+  vault reports burning, so a vault that under-reports cannot make it refund its own balance
+  (`ShareCostExceeded` if the vault took more). The refund increases the payer's share balance by
+  exactly the unused amount (`RefundNotCredited`). A receive policy that redirects the refund reverts the entire spend, including
   the redemption and provider payment; allowing the program to refund shares permits a retry.
 - A virtual destination (TIP-1022) is credited through its master, so the program checks the master's
   balance, and redeems Earn shares for one to itself first and transfers them on, since Earn's engines

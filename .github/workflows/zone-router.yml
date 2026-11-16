@@ -10,6 +10,9 @@ on:
       - 'earn/test/router/**'
       - 'earn/test/fixtures/propamm/**'
       - 'scripts/solidity-deps.sh'
+      - 'earn/solar.lock'
+      - 'earn/solar-solc'
+      - '.github/actions/solar-cache/**'
       - '.github/workflows/zone-router.yml'
   push:
     branches: [main]
@@ -20,6 +23,9 @@ on:
       - 'earn/test/router/**'
       - 'earn/test/fixtures/propamm/**'
       - 'scripts/solidity-deps.sh'
+      - 'earn/solar.lock'
+      - 'earn/solar-solc'
+      - '.github/actions/solar-cache/**'
       - '.github/workflows/zone-router.yml'
 
 permissions: {}
@@ -28,7 +34,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# The Zone router (zone-router/), a separate solc Foundry project that imports Earn's interfaces and test
+# The Zone router (zone-router/), a separate Foundry project, compiled with Earn's solar, that imports Earn's interfaces and test
 # helpers. Not a required check yet.
 jobs:
   test:
@@ -49,6 +55,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - uses: ./.github/actions/solar-cache
 
       - name: Install the Zone router's Solidity dependencies
         working-directory: .

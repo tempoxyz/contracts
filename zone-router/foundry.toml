@@ -7,7 +7,6 @@ libs = ["lib"]
 # Compiled with solc, not Earn's solar, so hosted deployments can source-verify it. It imports only
 # Earn's interfaces from `tempo-earn/` (= ../earn/src); its tests also use Earn's contracts and test
 # helpers (`earn-test/`), compiled here with this project's settings. Earn's build is unaffected.
-allow_paths = ["../earn"]
 # Earn's own custody suite is imported for its pool mock; it runs in earn/, not here.
 no_match_contract = "SingleZoneEarnRouterCustodyTest"
 # The deployment lifecycle runs script/deploy/ from here and writes each step's outputs where Earn's
@@ -19,7 +18,8 @@ fs_permissions = [
     { access = "read-write", path = "../e2e/.local" },
     { access = "read-write", path = "../localnet/.local" },
 ]
-solc_version = "0.8.36"
+solc = "../earn/solar-solc"
+cache_path = "cache/solar"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
@@ -29,8 +29,8 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
     "openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
-    "tempo-earn/=../earn/src/",
-    "earn-test/=../earn/test/",
+    "tempo-earn/=linked/earn/src/",
+    "earn-test/=linked/earn/test/",
 ]
 
 [profile.ci]

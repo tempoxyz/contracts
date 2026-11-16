@@ -135,10 +135,10 @@ contract RouterFactoryRuntimeTest is Test {
 
     function test_bothTerminalDigestsMayDiffer() public pure {
         bytes memory runtime = type(ZoneRouterFactory).runtimeCode;
-        uint256 start = runtime.length - 106;
+        uint256 start = runtime.length - 109;
         for (uint256 i; i < 2; ++i) {
             for (uint256 j; j < 32; ++j) {
-                runtime[start + i * 53 + 10 + j] ^= 0xff;
+                runtime[start + i * 55 + 10 + j] ^= 0xff;
             }
         }
         assertTrue(RouterFactoryChecks.matches(runtime));
@@ -147,8 +147,8 @@ contract RouterFactoryRuntimeTest is Test {
     function testFuzz_everyOtherByteRemainsAuthenticated(uint256 position) public pure {
         bytes memory runtime = type(ZoneRouterFactory).runtimeCode;
         position = position % runtime.length;
-        uint256 start = runtime.length - 106;
-        bool digest = position >= start && (position - start) % 53 >= 10 && (position - start) % 53 < 42;
+        uint256 start = runtime.length - 109;
+        bool digest = position >= start && (position - start) % 55 >= 10 && (position - start) % 55 < 42;
         runtime[position] ^= 0xff;
         assertEq(RouterFactoryChecks.matches(runtime), digest);
     }
@@ -156,10 +156,10 @@ contract RouterFactoryRuntimeTest is Test {
     function test_trailerStructureCompilerAndDelimiterCannotChange() public pure {
         bytes memory original = type(ZoneRouterFactory).runtimeCode;
         // Check every byte in both trailers, not just the ones a fuzz run happens to select.
-        for (uint256 i = original.length - 107; i < original.length; ++i) {
+        for (uint256 i = original.length - 110; i < original.length; ++i) {
             bytes memory changed = type(ZoneRouterFactory).runtimeCode;
-            uint256 start = original.length - 106;
-            bool digest = i >= start && (i - start) % 53 >= 10 && (i - start) % 53 < 42;
+            uint256 start = original.length - 109;
+            bool digest = i >= start && (i - start) % 55 >= 10 && (i - start) % 55 < 42;
             changed[i] ^= 0xff;
             assertEq(RouterFactoryChecks.matches(changed), digest);
         }

@@ -214,7 +214,7 @@ export const authorizeZoneRouter = defineAuthorityStep({
   },
   handoff: (profile, outputs) => {
     const router = requiredOutput(outputs, 'zoneRouter')
-    return `${namedFactoryCheck(profile, outputs)}The owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
+    return `${namedFactoryCheck(profile, outputs)}Confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${router}) and the mode in its RouterDeployed event, and verify the router's canonical implementation and immutable bindings. Then the owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(${router}, true) and setRecipientAllowed(${router}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`
   },
   // Like gateway admission, a router from a factory the profile names is admitted only by a person.
   signerAvailable: (profile, environment, proven) =>
@@ -231,6 +231,7 @@ export const authorizeZoneRouter = defineAuthorityStep({
           dependencies,
           required(routerPool(options.profile), 'Zone router conversion pool'),
           requiredOutput(options.outputs, 'zoneRouter'),
+          (client) => requireModeProvenance(client, options.profile, options.outputs),
         ),
 })
 

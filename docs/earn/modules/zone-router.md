@@ -287,7 +287,9 @@ Authorities and handoffs:
 - **Pool owner.** `authorize-router` executes under `DEPLOYER_PRIVATE_KEY` only when planning proves
   that key is the pool's `owner()`, or owns the `DirectPropAMMRebalanceController` that owns the pool
   (calls then go through `controller.execute`). It refuses a pool that redirects the router's
-  recipient, which admission cannot repair. Otherwise it emits a pool-owner handoff.
+  recipient, which admission cannot repair, and a router that fails the provenance check below,
+  as does the Zone router's `authorize-zone-router` for its factory and router. Otherwise it emits a
+  pool-owner handoff.
 - **Zone administrator.** When tokens or gateway registration are missing, the command still
   publishes the record and returns the administrator handoff. The administrator checks out the
   committed profile and record and reruns the same command with only `ZONE_ADMIN_PRIVATE_KEY`. That

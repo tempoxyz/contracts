@@ -144,7 +144,7 @@ export const authorizeRouter = defineAuthorityStep({
     return taker && recipient && getAddress(resolved) === router
   },
   handoff: (profile, outputs) =>
-    `The owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(${requiredOutput(outputs, 'earnRouter')}, true) and setRecipientAllowed(${requiredOutput(outputs, 'earnRouter')}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`,
+    `First verify the router's canonical implementation and immutable bindings. Then the owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(${requiredOutput(outputs, 'earnRouter')}, true) and setRecipientAllowed(${requiredOutput(outputs, 'earnRouter')}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`,
   signerAvailable: (_profile, environment, proven) =>
     Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) => canAuthorizeRouter(options),
@@ -154,18 +154,28 @@ export const authorizeRouter = defineAuthorityStep({
       dependencies,
       required(configuredRouterPool(options.profile), 'router conversion pool').pool,
       requiredOutput(options.outputs, 'earnRouter'),
+      (client) =>
+        requireRouterProvenance(client, {
+          address: requiredOutput(options.outputs, 'earnRouter'),
+          project: 'earn',
+          contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+          constructorArgs: deployRouter.source!.constructorArgs(options.profile, options.outputs),
+        }),
     ),
 })
 
 /**
  * Admits `router` as a taker and recipient on `pool` as the deployer, when it owns the pool directly
- * or through its rebalance controller; `undefined` when it holds neither.
+ * or through its rebalance controller; `undefined` when it holds neither. `requireProvenance` must
+ * prove the recovered router canonical: like Portal admission, pool admission grants it authority
+ * the lifecycle cannot take back.
  */
 export async function admitPoolRouter(
   options: AuthorityOptions,
   dependencies: AuthorityDependencies,
   pool: Address,
   router: Address,
+  requireProvenance: (client: AuthorityClient) => Promise<void>,
 ): Promise<{ transactions: Hex[] } | undefined> {
   const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
   if (!key) return undefined
@@ -202,6 +212,7 @@ export async function admitPoolRouter(
         ]),
   ]
   if (poolCalls.length === 0) return { transactions: [] }
+  await requireProvenance(client)
   // A DirectPropAMMRebalanceController owns its pool and forwards owner calls through `execute`.
   const calls = poolCalls.map((data) =>
     authority.controller

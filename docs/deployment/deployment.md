@@ -45,7 +45,7 @@ neither supplies a value it needs:
   `plan` and `status` use the identity in `deployment.json` or `deployment.pending.json` without a key;
 - `TEMPO_RPC_URL` (or `--rpc-url`), for `deploy`, `verify`, and `deposit`.
 
-`verify` of a Zone profile also needs `TEMPO_API_KEY` or `ZONE_RPC_URL` unless `--skip-zone` is
+`verify` and `deposit --broadcast` of a Zone profile also need `TEMPO_API_KEY` or `ZONE_RPC_URL` unless `--skip-zone` is
 passed.
 
 `ZONE_ADMIN_PRIVATE_KEY` is optional: when set, `deploy` performs the Zone administrator's steps
@@ -65,7 +65,10 @@ pnpm earn deposit profiles/e2e-moderato/profile.json --assets 1 --broadcast
 `--account <address>` quotes for another account without that key, and `--receiver <address>`
 mints elsewhere. The minimum output defaults to 50 bps below the quote (`--slippage-bps`, 0 to
 9999). The quote uses one block snapshot and includes pending fee dilution; a zero-share minimum
-is refused. It refuses an RPC whose chain or genesis differs from the record. Nothing is sent
+is refused. With `--broadcast`, it first runs the same checks as `verify` (record provenance,
+source verification, and the stack the reviewed factories predict) and refuses to sign for a
+record that fails them; `--skip-zone` applies as it does for `verify`. It refuses an RPC whose
+chain or genesis differs from the record. Nothing is sent
 without `--broadcast`, and approval and deposit are one Tempo transaction. A hosted record with
 pending source verification may be quoted but cannot be funded until verification completes; local
 records whose verification is not applicable remain usable. The creation engine must match the
@@ -94,7 +97,7 @@ recorded as a completed action.
 Forge writes only where its project's `foundry.toml` allows, so each Forge step writes its outputs
 to a staging copy under the ignored `earn/.earn/external/<id>-<path-hash>/`, which the tooling moves back into
 the profile's `deployment.pending.json` after the step or, if the run stopped, on the next run. A step whose contracts live in a sibling Foundry project, such as the
-Zone router's in `zone-router/` (solc), names it as its `project`: Forge compiles, broadcasts and
+Zone router's in `zone-router/`, names it as its `project`: Forge compiles, broadcasts and
 source-verifies from that project, and writes its outputs to the same place as Earn's steps.
 The hash identifies the canonical profile path, so profiles with the same ID in different
 repositories cannot share staging state or Forge receipts. Receipts live under
@@ -322,8 +325,8 @@ evidence passes, a pending record stays pending and funding stays blocked. Never
 Source inputs are hashed in a fixed (`en`) collation, so the recorded hash does not depend on the
 operator's locale.
 Hosted completion cannot opt out of source verification. A contract from a sibling project, such
-as `zone-router/`'s solc-built `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
-its own compiler settings; its sources may include Earn's through `../earn/`, and each must resolve
+as `zone-router/`'s `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
+its own compiler settings; its sources may include Earn's through `linked/earn/`, and each must resolve
 inside the checkout and match it. The factory-created `ZoneRouter` records the `factory.deploy`
 transaction that emitted its `RouterDeployed` event as its creation transaction.
 
@@ -537,7 +540,7 @@ the **Zone Router Release** workflow ([`zone-router-release.yml`](../../.github/
 and `pnpm zone-router-release <network> <release> [--parameters <json>] [--broadcast]`
 ([`core/zone-router-release.ts`](../../deployments/core/zone-router-release.ts)), which accepts only these
 releases. It runs the same release engine as factory releases, from
-[`zone-router/`](../../zone-router/README.md) with its own solc build and `deploy` profile: the same address,
+[`zone-router/`](../../zone-router/README.md) with its own solar build and `deploy` profile: the same address,
 creation-code, and receipt checks, reconciling a release that already exists, and source
 verification after a broadcast. Its CLI also accepts `--resubmit-verification` with `--broadcast`,
 with the same [repair limits](#source-verification). None has a registry entry, so there is no `all` and nothing is
