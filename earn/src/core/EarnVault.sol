@@ -12,7 +12,7 @@ import {
     EarnVaultControls,
     EngineMigrationMode
 } from "../interfaces/core/EarnVaultTypes.sol";
-import { FeeConfig, FeePreview, FixedFeeRecipient } from "../interfaces/core/EarnFeeTypes.sol";
+import { FeeConfig, FixedFeeRecipient } from "../interfaces/core/EarnFeeTypes.sol";
 import { IEarnEngine } from "../interfaces/engines/IEarnEngine.sol";
 import { IEarnEngineAsyncRedeem } from "../interfaces/engines/IEarnEngineAsyncRedeem.sol";
 import { IEarnEngineExactWithdraw } from "../interfaces/engines/IEarnEngineExactWithdraw.sol";
@@ -22,6 +22,33 @@ import { IEarnEngineRedeem } from "../interfaces/engines/IEarnEngineRedeem.sol";
 import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
 import { IAsyncRedeemReceiver } from "../interfaces/core/IAsyncRedeemReceiver.sol";
 import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
+
+/// @dev {IEarnFees} fee-preview calls decoded to the leading words of `FeePreview`. That struct holds only
+///      static members, so it ABI-encodes inline and these are its first six fields; EarnVault reads no others.
+interface IEarnFeesPreviewHead {
+    function accrueFees()
+        external
+        returns (
+            uint256 activeAssets,
+            uint256 positiveAccrualAssets,
+            uint256 fixedFeeAssets,
+            uint256 excessFeeAssets,
+            uint256 totalFeeAssets,
+            uint256 totalFeeEarnShares
+        );
+
+    function previewAccruedFees()
+        external
+        view
+        returns (
+            uint256 activeAssets,
+            uint256 positiveAccrualAssets,
+            uint256 fixedFeeAssets,
+            uint256 excessFeeAssets,
+            uint256 totalFeeAssets,
+            uint256 totalFeeEarnShares
+        );
+}
 
 /// @notice Persistent issuance, accounting, migration, and async-claim vault for one Earn deployment.
 /// @dev The EarnVault is the exclusive EarnShare issuer and the single client of its current engine.
@@ -263,8 +290,7 @@ contract EarnVault is IEarnVault {
     }
 
     function accrueFees() external override nonReentrant returns (uint256 feeAssets, uint256 feeEarnShares) {
-        (FeePreview memory result,,) = _accrueFees();
-        return (result.totalFeeAssets, result.totalFeeEarnShares);
+        (, feeAssets, feeEarnShares,) = _accrueFees();
     }
 
     function setFeeConfig(FeeConfig calldata config) external override nonReentrant returns (uint64 configId) {
@@ -471,8 +497,8 @@ contract EarnVault is IEarnVault {
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
 
         uint256 supplyBefore = IEarnShare(earnShare).totalSupply();
-        (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
-        _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
+        (uint256 accruedActiveAssets,,, uint256 currentSupply) = _accrueFees();
+        _requireDepositBackingAfterAccrual(currentSupply, accruedActiveAssets);
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
 
@@ -493,7 +519,7 @@ contract EarnVault is IEarnVault {
         IEarnShare(earnShare).mint(receiver, earnShares);
         _reanchorAfterEntry(rateEngineShares, rateEarnShares);
         _requireWithinManagedAssetsLimit();
-        if (supplyBefore == 0 || accruedFees.activeAssets != 0) {
+        if (supplyBefore == 0 || accruedActiveAssets != 0) {
             IEarnFees(earnFees).initializeBaselines();
         }
     }
@@ -1149,7 +1175,7 @@ contract EarnVault is IEarnVault {
         engineShareAnchor = anchorEngineShares;
         supplyAnchor = anchorEarnShares;
 
-        uint256 feeEarnShares = IEarnFees(earnFees).previewAccruedFees().totalFeeEarnShares;
+        (,,,,, uint256 feeEarnShares) = IEarnFeesPreviewHead(earnFees).previewAccruedFees();
         uint256 projectedSupply = IEarnShare(earnShare).totalSupply() + feeEarnShares;
         uint256 held = engineShares();
         if (projectedSupply == 0) {
@@ -1328,14 +1354,17 @@ contract EarnVault is IEarnVault {
         if (!isFeeValuationFresh()) revert FeeValuationStale();
     }
 
-    function _accrueFees() internal returns (FeePreview memory result, uint256 supply, uint256 backing) {
-        result = IEarnFees(earnFees).accrueFees();
-        if (result.totalFeeEarnShares != 0) {
-            IEarnShare(earnShare).mint(earnFees, result.totalFeeEarnShares);
+    function _accrueFees()
+        internal
+        returns (uint256 activeAssets, uint256 feeAssets, uint256 feeEarnShares, uint256 supply)
+    {
+        (activeAssets,,,, feeAssets, feeEarnShares) = IEarnFeesPreviewHead(earnFees).accrueFees();
+        if (feeEarnShares != 0) {
+            IEarnShare(earnShare).mint(earnFees, feeEarnShares);
         }
         // Reconcile the conversion anchor even when no fee shares were minted. Unsolicited positive
         // engine-share drift remains quarantined, while a custody shortfall reduces managed backing.
-        (supply, backing) = _reanchorAtRest();
+        (supply,) = _reanchorAtRest();
     }
 
     function _recordPendingRedeem(
