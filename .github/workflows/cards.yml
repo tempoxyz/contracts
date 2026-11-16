@@ -6,6 +6,10 @@ on:
     paths:
       - 'cards/**'
       - 'earn/src/**'
+      - 'earn/foundry.toml'
+      - 'earn/foundry.lock'
+      - 'earn/solar.lock'
+      - 'earn/solar-solc'
       - 'earn/script/deploy/DeterministicRelease.sol'
       - 'zone-router/src/**'
       - 'scripts/solidity-deps.sh'
@@ -22,6 +26,10 @@ on:
     paths:
       - 'cards/**'
       - 'earn/src/**'
+      - 'earn/foundry.toml'
+      - 'earn/foundry.lock'
+      - 'earn/solar.lock'
+      - 'earn/solar-solc'
       - 'earn/script/deploy/DeterministicRelease.sol'
       - 'zone-router/src/**'
       - 'scripts/solidity-deps.sh'
@@ -68,10 +76,16 @@ jobs:
         working-directory: .
         run: scripts/solidity-deps.sh cards
 
-      # Needs native Tempo precompiles (hardfork = "tempo:T8").
-      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      # Needs native Tempo precompiles (hardfork = "tempo:T8"); the setup action installs Foundry.
+      # Earn's solar compiler and build cache; cards deploys Earn's own artifacts (script/EarnArtifacts.sol).
+      - uses: ./.github/actions/setup
         with:
-          version: v1.8.6
+          forge-cache: cards-earn
+          node: 'false'
+
+      - name: Build Earn with solar
+        working-directory: earn
+        run: forge build --skip test --skip script
 
       - name: Format
         run: forge fmt --check src test script
@@ -125,13 +139,15 @@ jobs:
       - name: Install the cards project's Solidity dependencies
         run: scripts/solidity-deps.sh cards
 
-      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          version: v1.8.6
-
+      # Also installs Foundry, Earn's solar compiler and build cache.
       - uses: ./.github/actions/setup
         with:
+          forge-cache: cards-earn
           workspace: e2e
+
+      - name: Build Earn with solar
+        working-directory: earn
+        run: forge build --skip test --skip script
 
       - name: Build contracts
         working-directory: cards
@@ -202,9 +218,15 @@ jobs:
         working-directory: .
         run: scripts/solidity-deps.sh cards
 
-      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      # Earn's solar compiler and build cache; cards deploys Earn's own artifacts (script/EarnArtifacts.sol).
+      - uses: ./.github/actions/setup
         with:
-          version: v1.8.6
+          forge-cache: cards-earn
+          node: 'false'
+
+      - name: Build Earn with solar
+        working-directory: earn
+        run: forge build --skip test --skip script
 
       - name: Bridge smoke
         run: bash script/bridge/smoke.sh

@@ -21,6 +21,9 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   root) installs `lib/` at the revisions `foundry.lock` pins. Never add this project's remappings,
   dependencies or hardfork to another project's `foundry.toml`: Earn's and the Zone router's feed the
   metadata hash of their releases, and tempoxyz/tempo builds `earn/src/`.
+- Deploy EarnFactory, EarnVault and EarnFees through `script/EarnArtifacts.sol`, which loads Earn's own
+  solar build from `../earn/out`, never `new` from this project's solc build: tests and scripts then run
+  the bytecode Earn releases. Run `forge build --skip test --skip script` in `earn/` first.
 - Import Earn through `tempo-earn/` and the Zone router through `zone-router/`, never a copy. Nothing in
   `earn/` or `zone-router/` imports from here. A change to their interfaces that breaks this project is
   fixed in the same pull request.

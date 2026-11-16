@@ -17,7 +17,6 @@ import { SpenderPermit2 } from "bridge-spender/src/spenders/SpenderPermit2.sol";
 import { SpenderTEWF } from "bridge-spender/src/spenders/SpenderTempoEarnWithFallback.sol";
 
 import { EarnFactory } from "tempo-earn/core/EarnFactory.sol";
-import { EarnFees } from "tempo-earn/core/EarnFees.sol";
 import { EarnVault } from "tempo-earn/core/EarnVault.sol";
 import { Simple4626Vault } from "tempo-earn/demo/Simple4626Vault.sol";
 import { ERC4626Engine, IERC4626Vault } from "tempo-earn/engines/ERC4626Engine.sol";
@@ -28,6 +27,7 @@ import {
     EngineMigrationMode
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
+import { EarnArtifacts } from "../../../script/EarnArtifacts.sol";
 import { CardFactory } from "../../../src/core/CardFactory.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
@@ -112,7 +112,7 @@ abstract contract TempoEnv is Test {
     function _deployEarn() private {
         venue = new Simple4626Vault(address(usd), "Vault OUSD", "vOUSD", 6);
         engine = new ERC4626Engine(IERC4626Vault(address(venue)), address(this), "", "");
-        EarnFactory factory = new EarnFactory(address(tip20Factory), address(new EarnVault()), address(new EarnFees()));
+        EarnFactory factory = EarnArtifacts.deployFactory(address(tip20Factory));
         FeeConfig memory noFees;
         (address share, EarnVault vault,) = factory.deploy(
             EarnFactory.DeployParams({

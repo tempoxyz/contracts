@@ -23,6 +23,8 @@ fs_permissions = [
     { access = "read-write", path = "./reports" },
     { access = "read", path = "./test/bridge/harness/fixtures" },
     { access = "read", path = "./test/rain/fixtures" },
+    # Earn's own solar build, which script/EarnArtifacts.sol deploys.
+    { access = "read", path = "../earn/out" },
 ]
 remappings = [
     "forge-std/=lib/forge-std/src/",

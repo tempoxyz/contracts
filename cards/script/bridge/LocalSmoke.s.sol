@@ -14,7 +14,6 @@ import { IFactory } from "bridge-spender/src/lib/IFactory.sol";
 import { SpenderErc20 } from "bridge-spender/src/spenders/SpenderErc20.sol";
 
 import { EarnFactory } from "tempo-earn/core/EarnFactory.sol";
-import { EarnFees } from "tempo-earn/core/EarnFees.sol";
 import { EarnVault } from "tempo-earn/core/EarnVault.sol";
 import { Simple4626Vault } from "tempo-earn/demo/Simple4626Vault.sol";
 import { ERC4626Engine, IERC4626Vault } from "tempo-earn/engines/ERC4626Engine.sol";
@@ -34,6 +33,7 @@ import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
 import { BridgeProvider } from "../../src/providers/bridge/BridgeProvider.sol";
 import { SpenderTempoSpend } from "../../src/providers/bridge/SpenderTempoSpend.sol";
 import { IBridgeSpenderFactory } from "../../src/providers/bridge/interfaces/IBridgeSpenderFactory.sol";
+import { EarnArtifacts } from "../EarnArtifacts.sol";
 
 /// @notice Deploys the stack to a real Tempo node and broadcasts public card pulls end to end: Bridge's
 ///         EA pull, and spends through the program's `CardSpender`, which pays through the clone's "TS"
@@ -95,8 +95,7 @@ contract LocalSmoke is Script {
 
         Simple4626Vault venue = new Simple4626Vault(address(usd), "Smoke Venue", "sVEN", 6);
         ERC4626Engine engine = new ERC4626Engine(IERC4626Vault(address(venue)), deployer, "", "");
-        EarnFactory earnFactory =
-            new EarnFactory(StdPrecompiles.TIP20_FACTORY_ADDRESS, address(new EarnVault()), address(new EarnFees()));
+        EarnFactory earnFactory = EarnArtifacts.deployFactory(StdPrecompiles.TIP20_FACTORY_ADDRESS);
         FeeConfig memory noFees;
         (address share, EarnVault vault,) = earnFactory.deploy(
             EarnFactory.DeployParams({

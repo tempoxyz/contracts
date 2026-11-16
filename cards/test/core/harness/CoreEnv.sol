@@ -7,7 +7,6 @@ import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
 
 import { EarnFactory } from "tempo-earn/core/EarnFactory.sol";
-import { EarnFees } from "tempo-earn/core/EarnFees.sol";
 import { EarnVault } from "tempo-earn/core/EarnVault.sol";
 import { Simple4626Vault } from "tempo-earn/demo/Simple4626Vault.sol";
 import { ERC4626Engine, IERC4626Vault } from "tempo-earn/engines/ERC4626Engine.sol";
@@ -18,6 +17,7 @@ import {
     EngineMigrationMode
 } from "tempo-earn/interfaces/core/EarnVaultTypes.sol";
 
+import { EarnArtifacts } from "../../../script/EarnArtifacts.sol";
 import { CardFactory } from "../../../src/core/CardFactory.sol";
 import { CardSpend } from "../../../src/core/CardSpend.sol";
 import { CardSpender } from "../../../src/core/CardSpender.sol";
@@ -108,8 +108,7 @@ abstract contract CoreEnv is Test {
     function _deployEarn() private {
         venue = new Simple4626Vault(address(usd), "Vault OUSD", "vOUSD", 6);
         ERC4626Engine engine = new ERC4626Engine(IERC4626Vault(address(venue)), address(this), "", "");
-        EarnFactory earnFactory =
-            new EarnFactory(address(tip20Factory), address(new EarnVault()), address(new EarnFees()));
+        EarnFactory earnFactory = EarnArtifacts.deployFactory(address(tip20Factory));
         FeeConfig memory noFees;
         (address share, EarnVault vault,) = earnFactory.deploy(
             EarnFactory.DeployParams({

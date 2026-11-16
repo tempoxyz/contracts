@@ -6,7 +6,6 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { ERC4626 } from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { EarnFactory } from "tempo-earn/core/EarnFactory.sol";
-import { EarnFees } from "tempo-earn/core/EarnFees.sol";
 import { EarnVault } from "tempo-earn/core/EarnVault.sol";
 import { ERC4626Engine, IERC4626Vault } from "tempo-earn/engines/ERC4626Engine.sol";
 import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
@@ -19,6 +18,7 @@ import { IReceivePolicyGuard } from "tempo-std/interfaces/IReceivePolicyGuard.so
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
+import { EarnArtifacts } from "../../script/EarnArtifacts.sol";
 import { CardSpend } from "../../src/core/CardSpend.sol";
 import { CardSpender } from "../../src/core/CardSpender.sol";
 import { SpenderTempoSpend } from "../../src/providers/bridge/SpenderTempoSpend.sol";
@@ -69,8 +69,7 @@ contract RefundReceivePolicyTest is TempoEnv {
         _deployTempo();
         RefundConservativeQuoteVenue quoteVenue = new RefundConservativeQuoteVenue(IERC20(address(usd)));
         ERC4626Engine quoteEngine = new ERC4626Engine(IERC4626Vault(address(quoteVenue)), address(this), "", "");
-        EarnFactory earnFactory =
-            new EarnFactory(address(tip20Factory), address(new EarnVault()), address(new EarnFees()));
+        EarnFactory earnFactory = EarnArtifacts.deployFactory(address(tip20Factory));
         FeeConfig memory noFees;
         (address share, EarnVault vault,) = earnFactory.deploy(
             EarnFactory.DeployParams({

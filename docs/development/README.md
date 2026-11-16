@@ -13,7 +13,8 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   less gas and executes faster. `pnpm deps` builds that revision once with cargo (Rust stable) into
   the ignored `.solar/`. Forge resolves the wrapper from its working directory: run it from `earn/`,
   or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. The Zone router and the
-  card integration compile with solc.
+  card integration compile with solc, but card tests and scripts deploy Earn's contracts from Earn's
+  solar build (`earn/out`), so build `earn/` before `cards/`.
   CI installs that Foundry version through `.github/actions/setup` and the PropAMM fixture job, and the
   deployment tooling refuses an older Forge (`deployments/chain/foundry.ts`). A record's
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version

@@ -7,7 +7,6 @@ import { StdTokens } from "tempo-std/StdTokens.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 import { EarnFactory } from "tempo-earn/core/EarnFactory.sol";
-import { EarnFees } from "tempo-earn/core/EarnFees.sol";
 import { EarnVault } from "tempo-earn/core/EarnVault.sol";
 import { Simple4626Vault } from "tempo-earn/demo/Simple4626Vault.sol";
 import { ERC4626Engine, IERC4626Vault } from "tempo-earn/engines/ERC4626Engine.sol";
@@ -24,6 +23,7 @@ import { CardFactory } from "../../src/core/CardFactory.sol";
 import { ICardProvider } from "../../src/core/interfaces/ICardProvider.sol";
 import { IRainCollateralFactory } from "../../src/providers/rain/IRain.sol";
 import { RainProvider } from "../../src/providers/rain/RainProvider.sol";
+import { EarnArtifacts } from "../EarnArtifacts.sol";
 import { RainStack } from "./RainStack.sol";
 
 /// @notice A card program's router mode: Spend only on `zoneId`, through `spender` (the program) alone.
@@ -152,8 +152,7 @@ contract CardsE2EDeploy is Script, RainStack {
     function _deployEarn(address owner) private returns (address) {
         Simple4626Vault venue = new Simple4626Vault(StdTokens.PATH_USD_ADDRESS, "Vault pathUSD", "vpUSD", 6);
         ERC4626Engine engine = new ERC4626Engine(IERC4626Vault(address(venue)), owner, "", "");
-        EarnFactory factory =
-            new EarnFactory(address(StdPrecompiles.TIP20_FACTORY), address(new EarnVault()), address(new EarnFees()));
+        EarnFactory factory = EarnArtifacts.deployFactory(address(StdPrecompiles.TIP20_FACTORY));
         FeeConfig memory noFees;
         (, EarnVault vault,) = factory.deploy(
             EarnFactory.DeployParams({

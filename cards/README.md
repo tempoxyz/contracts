@@ -50,7 +50,8 @@ script/
 ## Running it
 
 ```bash
-scripts/solidity-deps.sh cards   # from the repository root
+scripts/solidity-deps.sh earn cards   # from the repository root
+(cd earn && forge build --skip test --skip script)   # Earn's solar build, which cards deploys
 cd cards
 FOUNDRY_PROFILE=ci forge test
 ```
