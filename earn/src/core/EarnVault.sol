@@ -1401,20 +1401,33 @@ contract EarnVault is IEarnVault {
     }
 
     function _safeApprove(address token, address spender, uint256 value) internal {
-        _callOptionalReturn(token, abi.encodeWithSelector(IERC20Like.approve.selector, spender, value));
+        _callOptionalReturn(token, IERC20Like.approve.selector, address(0), spender, value);
     }
 
     function _safeTransfer(address token, address to, uint256 value) internal {
-        _callOptionalReturn(token, abi.encodeWithSelector(IERC20Like.transfer.selector, to, value));
+        _callOptionalReturn(token, IERC20Like.transfer.selector, address(0), to, value);
     }
 
     function _safeTransferFrom(address token, address from, address to, uint256 value) internal {
-        _callOptionalReturn(token, abi.encodeWithSelector(IERC20Like.transferFrom.selector, from, to, value));
+        _callOptionalReturn(token, IERC20Like.transferFrom.selector, from, to, value);
     }
 
-    function _callOptionalReturn(address token, bytes memory data) internal {
+    /// @dev Calls `selector(to, value)`, or `selector(from, to, value)` when `from` is nonzero, from scratch
+    ///      memory past the free pointer, without allocating.
+    function _callOptionalReturn(address token, bytes4 selector, address from, address to, uint256 value) internal {
         assembly ("memory-safe") {
-            let ok := call(gas(), token, 0, add(data, 0x20), mload(data), 0, 0x20)
+            let p := mload(0x40)
+            mstore(p, selector)
+            let len := 0x44
+            let args := add(p, 4)
+            if from {
+                mstore(args, from)
+                args := add(args, 0x20)
+                len := 0x64
+            }
+            mstore(args, to)
+            mstore(add(args, 0x20), value)
+            let ok := call(gas(), token, 0, p, len, 0, 0x20)
             if iszero(ok) {
                 // TokenCallFailed()
                 mstore(0, shl(224, 0x3f409f9a))
