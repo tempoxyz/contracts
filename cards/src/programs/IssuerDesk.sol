@@ -22,6 +22,13 @@ contract IssuerDesk {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;
 
+    /// @notice Dispute states, in the order a dispute moves through them; a dispute ends won or lost.
+    uint8 public constant OPENED = 1;
+    uint8 public constant PROVISIONAL_CREDIT = 2;
+    uint8 public constant ARBITRATION = 5;
+    uint8 public constant WON = 6;
+    uint8 public constant LOST = 7;
+
     /// @notice Step kinds a correction can fix.
     uint8 public constant CAPTURE = 1;
     uint8 public constant REFUND = 2;
@@ -63,6 +70,14 @@ contract IssuerDesk {
         uint128 corrected;
     }
 
+    /// @notice A dispute on a purchase: the disputed amount and the provisional credit given so far.
+    struct Dispute {
+        address owner;
+        uint8 state;
+        uint128 amount;
+        uint128 provisional;
+    }
+
     CardProgram public immutable PROGRAM;
     address public immutable ISSUER;
     address public immutable TOKEN;
@@ -73,6 +88,7 @@ contract IssuerDesk {
     mapping(bytes32 purchaseRef => Book) public books;
     mapping(bytes32 purchaseRef => Split[]) internal _splits;
     mapping(uint64 seq => Step) public steps;
+    mapping(bytes32 purchaseRef => Dispute) public disputes;
     uint64 internal _nonce;
     bool internal _locked;
 
@@ -86,6 +102,25 @@ contract IssuerDesk {
     event RewardReversed(
         bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
     );
+    event DisputeOpened(bytes32 indexed purchaseRef, address indexed account, uint128 amount, bytes32 evidence);
+    event DisputeStepped(
+        bytes32 indexed purchaseRef,
+        address indexed account,
+        uint8 state,
+        uint128 provisional,
+        uint128 repaid,
+        bytes32 evidence,
+        bool byMerchant
+    );
+    event DisputeResolved(
+        bytes32 indexed purchaseRef,
+        address indexed account,
+        bool won,
+        int256 amount,
+        uint128 debt,
+        uint128 repaid,
+        uint128 chargeback
+    );
     event Corrected(bytes32 indexed purchaseRef, uint64 indexed target, int128 amount, string reason);
 
     error NotIssuer();
@@ -95,6 +130,11 @@ contract IssuerDesk {
     error NotCorrectable();
     error CorrectionTooLarge();
     error Reentrancy();
+    error DisputeExists();
+    error NoDispute();
+    error InvalidDisputeStep();
+    error DisputeTooLarge();
+    error RefundTooLarge();
 
     modifier onlyIssuer() {
         _onlyIssuer();
@@ -164,9 +204,82 @@ contract IssuerDesk {
     /// @notice Refunds through the program from the settlement account, then takes back each split's and reward's
     ///         share of the refund.
     function refund(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
+        Book storage b = books[purchaseRef];
+        // A won dispute counts as a refund of the purchase, so nothing it credited refunds again.
+        if (disputes[purchaseRef].state == WON && amount > b.captured - b.refunded) revert RefundTooLarge();
         _refund(purchaseRef, amount);
         _step(purchaseRef, REFUND, amount);
         _reverse(purchaseRef, amount);
+    }
+
+    /// @notice Opens a dispute on a captured purchase, for at most what it captured and has not refunded.
+    function openDispute(bytes32 purchaseRef, uint128 amount, bytes32 evidence) external nonReentrant onlyOperator {
+        Book storage b = books[purchaseRef];
+        if (disputes[purchaseRef].state != 0) revert DisputeExists();
+        if (amount == 0 || amount > b.captured - b.refunded) revert DisputeTooLarge();
+        address owner = PROGRAM.purchaseOf(purchaseRef).owner;
+        disputes[purchaseRef] = Dispute({ owner: owner, state: OPENED, amount: amount, provisional: 0 });
+        emit DisputeOpened(purchaseRef, owner, amount, evidence);
+    }
+
+    /// @notice Moves a dispute forward, attaching evidence and giving provisional credit from the settlement account.
+    ///         Refunds and provisional credit together never return more than the purchase, nor provisional credit
+    ///         more than the dispute. Credit the cardholder receives repays its debt first.
+    function disputeStep(bytes32 purchaseRef, uint8 state, uint128 provisional, bytes32 evidence, bool byMerchant)
+        external
+        nonReentrant
+        onlyOperator
+    {
+        Dispute storage d = disputes[purchaseRef];
+        if (d.state == 0 || d.state >= WON) revert NoDispute();
+        if (state <= d.state || state < PROVISIONAL_CREDIT || state > ARBITRATION) revert InvalidDisputeStep();
+        Book storage b = books[purchaseRef];
+        uint128 open = b.captured - b.refunded;
+        uint128 cap = d.amount < open ? d.amount : open;
+        if (provisional > 0 && d.provisional + provisional > cap) revert DisputeTooLarge();
+        d.state = state;
+        uint128 repaid;
+        if (provisional > 0) {
+            d.provisional += provisional;
+            repaid = _credit(d.owner, provisional);
+        }
+        emit DisputeStepped(purchaseRef, d.owner, state, provisional, repaid, evidence, byMerchant);
+    }
+
+    /// @notice Ends a dispute. A merchant win takes the provisional credit back at once from what the cardholder has,
+    ///         the rest as debt to the settlement account within its cap. A cardholder win counts as a refund of
+    ///         what is still unrefunded: the program refunds what the provisional credit did not cover, every split
+    ///         comes back in proportion, and the whole credited amount is charged back to the network.
+    function resolveDispute(bytes32 purchaseRef, bool cardholderWins) external nonReentrant onlyOperator {
+        Dispute storage d = disputes[purchaseRef];
+        if (d.state == 0 || d.state >= WON) revert NoDispute();
+        address owner = d.owner;
+        uint128 provisional = d.provisional;
+        if (!cardholderWins) {
+            d.state = LOST;
+            uint128 debt;
+            if (provisional > 0) {
+                uint128 free = CORE.available(owner, TOKEN);
+                debt = provisional > free ? provisional - free : 0;
+                CORE.charge(owner, TOKEN, _nextId(), provisional, SETTLEMENT, false);
+            }
+            emit DisputeResolved(purchaseRef, owner, false, -int256(uint256(provisional)), debt, 0, 0);
+            return;
+        }
+        d.state = WON;
+        Book storage b = books[purchaseRef];
+        uint128 open = b.captured - b.refunded;
+        uint128 credited = d.amount < open ? d.amount : open;
+        uint128 rest = credited > provisional ? credited - provisional : 0;
+        uint128 repaid;
+        if (rest > 0) {
+            (, uint128 before) = CORE.debtOf(owner, TOKEN);
+            _refund(purchaseRef, rest);
+            (, uint128 later) = CORE.debtOf(owner, TOKEN);
+            repaid = before > later ? before - later : 0;
+        }
+        _reverse(purchaseRef, credited);
+        emit DisputeResolved(purchaseRef, owner, true, int256(uint256(rest)), 0, repaid, credited);
     }
 
     /// @notice Corrects a processor error on the capture or refund the program logged as target, by an amount
@@ -224,6 +337,15 @@ contract IssuerDesk {
         for (uint256 i; i < _terms.length; ++i) {
             if (_terms[i].payee == payee) share += _terms[i].bps;
         }
+    }
+
+    // Pays the owner from the settlement account, which approved the desk; incoming credit repays its debt first.
+    // forge-lint: disable-next-item(arbitrary-send-erc20)
+    function _credit(address owner, uint128 amount) private returns (uint128 repaid) {
+        (, uint128 before) = CORE.debtOf(owner, TOKEN);
+        SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, owner, amount);
+        (, uint128 later) = CORE.debtOf(owner, TOKEN);
+        repaid = before > later ? before - later : 0;
     }
 
     function _step(bytes32 purchaseRef, uint8 kind, uint128 amount) private {

@@ -138,4 +138,61 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.expectRevert(IssuerDesk.NotIssuer.selector);
         desk.capture(P1, 100e6, true);
     }
+
+    function _disputed(uint128 amount) internal {
+        _purchase(amount);
+        vm.prank(alice);
+        core.setDebtCap(settlement, address(usd), amount);
+        vm.prank(issuer);
+        desk.openDispute(P1, amount, bytes32("evidence"));
+    }
+
+    function test_dispute_lost_takesProvisionalBack_restAsDebt() public {
+        _disputed(80e6);
+        usd.mint(settlement, 80e6);
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 80e6, bytes32(0), false);
+        assertEq(usd.balanceOf(alice), 1000e6, "provisional credit paid");
+        vm.prank(alice);
+        usd.transfer(bob, 990e6);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, false);
+        (address creditor, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(creditor, settlement, "owed to the settlement account");
+        assertEq(debt, 70e6, "what the cardholder no longer has");
+        assertEq(usd.balanceOf(alice), 0, "the rest taken at once");
+    }
+
+    function test_dispute_steps_onlyForward_andProvisionalCapped() public {
+        _disputed(50e6);
+        usd.mint(settlement, 100e6);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.DisputeTooLarge.selector);
+        desk.disputeStep(P1, 3, 51e6, bytes32(0), false);
+        vm.prank(issuer);
+        desk.disputeStep(P1, 3, 50e6, bytes32(0), true);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.InvalidDisputeStep.selector);
+        desk.disputeStep(P1, 2, 0, bytes32(0), false);
+    }
+
+    function test_dispute_won_countsAsRefund() public {
+        _disputed(50e6);
+        usd.mint(settlement, 50e6);
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 20e6, bytes32(0), false);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        assertEq(usd.balanceOf(alice), 1000e6, "provisional plus the refunded rest");
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.RefundTooLarge.selector);
+        desk.refund(P1, 1e6);
+    }
+
+    function test_dispute_aboveCaptured_refused() public {
+        _purchase(50e6);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.DisputeTooLarge.selector);
+        desk.openDispute(P1, 51e6, bytes32(0));
+    }
 }
