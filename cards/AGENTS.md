@@ -7,6 +7,7 @@ so each is easy to find and review:
 | --------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `src/core/`                 | Ours, provider-agnostic: `CardSpender`, `CardFactory`, `CardSpend`, `ICardProvider`                  |
 | `src/providers/<provider>/` | Ours, for one provider: its `ICardProvider` (`BridgeProvider` with the "TS" handler; `RainProvider`) |
+| `src/programs/`             | Ours, on the reservation core: `CardProgram`, `SavingsFacility`, `CreditLine`, `IReservationCore`    |
 | `vendor/<provider>/`        | The provider's own contracts, vendored unmodified (`vendor/bridge/`, `vendor/rain/`)                 |
 
 Tests and scripts follow the same split (`test/core/`, `test/<provider>/`, `script/<provider>/`). Core
@@ -34,6 +35,8 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   `test/rain/fixtures/rain.json`, rebuilt by `script/rain/build-fixture.sh` (`--check` compares it
   without the path-dependent metadata hashes; commit it with any vendor change), and
   `test/bridge/harness/fixtures/Permit2.json`.
+- `src/programs/` builds on `IReservationCore` only; its tests run on
+  `test/programs/harness/MockReservationCore.sol`, a model of the precompile that changes with the node.
 - Programs are immutable: no upgrade, migration, setter or pause of their own (the provider's pause, read
   live, is the only one). A change of provider or settings is a new program.
 - Bridge's "TS" handler, the `CardFactory` and a program's `BridgeProvider` deploy at deterministic
@@ -44,7 +47,7 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   path; providers match private spends by the Portal's own events.
 
 Validate with `forge fmt --check src test script`, `forge build`,
-`forge lint --deny warnings src/core src/providers/rain src/providers/bridge/BridgeProvider.sol`,
+`forge lint --deny warnings src/core src/programs src/providers/rain src/providers/bridge/BridgeProvider.sol`,
 `forge build --sizes src`, `FOUNDRY_PROFILE=ci forge test` and `script/rain/build-fixture.sh --check`,
 plus `python3 script/bridge/matrix.py --out reports/matrix.md` and a diff against
 `../docs/cards/bridge/matrix.md` when Bridge card scenarios or setups change. The E2E runs need Docker:

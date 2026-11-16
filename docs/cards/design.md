@@ -15,7 +15,6 @@ shared design; [bridge/](bridge/README.md) and [rain/](rain/README.md) own each 
 | [`CardFactory`](../../cards/src/core/CardFactory.sol)                       | None                     | Deploys a program at a CREATE2 address fixed by its ID, provider and router factory.                           |
 | [`ICardProvider`](../../cards/src/core/interfaces/ICardProvider.sol) engine | The provider's contracts | Decides destinations, Earn vaults and the provider's pause; optionally names what the program pays through.    |
 | [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)             | None                     | Receives the Zone withdrawal, hands `maxInput` to the program (its listed spender), returns the change.        |
-| [`SavingsFacility`](../../cards/src/core/SavingsFacility.sol)               | None (a fixed funder)    | Pays the issuer in cash for Earn shares a hold captured, then redeems them into its float.                     |
 
 | Provider | Provider contract                                                       | How the program pays                                                                       |
 | -------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -97,35 +96,56 @@ TIP-1000). Anyone may also send a program one unit of each token it handles: `sp
 program holds as its baseline and leaves it there, so a spend never creates the program's balance slot
 (about 250k gas). The Rain E2E requests 3,000,000.
 
-## Spend from savings
+## Card programs
 
-With account reservations (TIP-1153, from T15) a card authorization is a native hold rather than an
-immediate spend, and a hold can span cash and Earn shares: the issuer's access key holds cash first, and
-holds shares for the rest in favor of the program's [`SavingsFacility`](../../cards/src/core/SavingsFacility.sol).
-Held shares stay in the cardholder's balance and keep earning. At capture the issuer captures cash first
-and shares only for the shortfall, so the facility receives the shares, and the issuer calls
-`settle(owner, id, minAssets)`:
+On the reservation core (the precompile at `0x5245…`, gated at T15) a card authorization is a native hold
+rather than an immediate spend. The core keeps only what must be atomic with TIP-20 balances: holds,
+captures, refunds, capped debt and liens. Everything card-specific lives in holder contracts an owner
+approves per token with `approveHolder`, whose allowance caps what the holder has outstanding even if
+the program is wrong. Programs read the core through
+[`IReservationCore`](../../cards/src/programs/interfaces/IReservationCore.sol); tests run them on a model
+of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservationCore.sol).
 
-- The hold must be on the vault's share with the facility as payee; it settles once, for what the
-  precompile records as captured.
-- The facility pays the settlement account `previewRedeem(shares)` in the base asset at once, then redeems
-  the shares for at least that amount. When the vault quotes but cannot redeem at once (an illiquid
-  venue), the shares stay in the facility, the float pays meanwhile, and the funder redeems them later
-  with `redeemHeld`. Pricing needs a quote: while the vault cannot give one (an async-only engine, a
-  paused or stale price), `settle` reverts and the captured shares wait in the facility until it can.
-- A capture beyond the hold may be partly debt to the facility, which the precompile still counts as
-  captured, so no hold of an owner in share debt to the facility settles until it is repaid.
-- Share holds take no refunds; refunds go through the cash path.
-- **Payouts.** A sweep of an account by the card records precompile (TIP-1169: closure, an estate or
-  unclaimed property) may pay its shares into the facility and record the recipient. Anyone may then call
-  `payOut(owner)`, which redeems the swept shares straight to the recipient, once per share, for at least
-  their `previewRedeem` value. The float never pays a payout: while the vault cannot quote or redeem the
-  shares, `payOut` reverts and they wait in the facility. The funder may redeem or withdraw only shares
-  deferred settlements left (`heldShares`), never swept shares awaiting a payout.
+| Contract                                                          | Admin                     | Function                                                                                              |
+| ----------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [`CardProgram`](../../cards/src/programs/CardProgram.sol)         | The issuer, within owners | Card records, limits, mandates and funding order; one purchase as one to three holds; settlement log. |
+| [`SavingsFacility`](../../cards/src/programs/SavingsFacility.sol) | None (a fixed funder)     | Payee of savings legs: captures Earn shares, redeems them and pays the settlement account.            |
+| [`CreditLine`](../../cards/src/programs/CreditLine.sol)           | Each line's lender        | Lender lines whose draws are holds on the lender's balance; optional pledge-secured credit.           |
 
-The facility has no setter: its vault, issuer, settlement account and funder are fixed at deployment.
-The funder supplies the float, bears redemption fees and price moves between capture and redemption, and
-may withdraw what the float holds.
+- **Cards.** A card has an owner, a status (active, frozen, closed), an expiry, the legs it may use
+  (cash, savings, credit) and limits per purchase, per day and per 30-day month in settlement-token
+  units. The owner freezes, unfreezes and closes it, lowers its limits and sets the ceiling the issuer
+  may raise them to; the issuer issues, replaces and raises within that ceiling. Owners revoke merchants
+  or cap a merchant's monthly spend, and set their funding order: a cash token, a savings facility, a
+  credit line. A token other than the settlement token converts at the rate the issuer recorded for it.
+- **Authorize.** The issuer's `authorize(card, purchaseRef, amount, merchant, expiresAt, standIn)` checks
+  the card, its windows and the mandate on the whole amount, then places the legs in funding order in
+  the same call through `holdFrom`: cash up to what is available, Earn shares (payee: the facility) for
+  the rest, then a credit-line draw. Any failure reverts every leg. Leg ids are
+  `keccak256(program, purchaseRef, leg)`. A stand-in records an offline approval as one cash stand-in
+  hold; the core reserves what is there and caps the shortfall at the owner's offline cap.
+- **Capture, release, refund.** `capture(purchaseRef, amount, isFinal)` takes cash first, then shares
+  through the facility, then credit, and a tip beyond the holds on the cash leg within the owner's
+  capture tolerance; the program is payee of the cash and credit legs and forwards them to the settlement
+  account in the same call. `release` (issuer) and `expire` (anyone, after expiry) free every leg and,
+  when nothing was captured, give the amount back to the card's windows. `refund` unwinds legs in
+  reverse order with funds the issuer provides; the facility deposits cash back into the vault and
+  refunds the minted shares. After its expiry a leg can only be released.
+- **Settlement log.** Every step emits one event with the purchase reference, the card, each leg's
+  amount, the settlement-unit amount and a sequence number; captures and refunds also carry the running
+  net. The issuer's `acknowledgeSettlement(throughSeq)` moves a settled-through cursor, so what is owed
+  rebuilds from events with no off-chain state.
+- **Savings.** The facility captures only legs whose placer calls it, never beyond what the hold
+  reserves, so no share debt arises; it writes no storage per capture and keeps standing approvals to its
+  vault. When the vault quotes but cannot redeem, the float pays and the shares wait for the funder.
+- **Credit.** A lender opens a line for a borrower and one program, and approves the `CreditLine` as holder
+  of the line's token; the borrower accepts it. Each draw is a hold on the lender's balance payable to the
+  program, so every approved line part is backed. `sync` turns the core's captured and refunded totals
+  into what the borrower owes; `repay` pays the lender. A secured line caps credit at the pledge's value
+  times its loan-to-value, computed on chain at each draw from a core pledge to the line that outlives the
+  due date plus notice; the lender may seize it only after both, for at most what is owed.
+- **Out of scope.** Disputes, provisional credit, interest, fees, escheat and estates are issuer
+  services, built from plain transfers, holds and charges.
 
 ## What the program checks
 
