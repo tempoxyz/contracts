@@ -57,12 +57,17 @@ install_solar() (
     exit 1
   }
   temporary=
-  trap 'if [[ -n "$temporary" ]]; then rm -rf "$temporary"; fi; rmdir "$lock"' EXIT
+  source=
+  trap 'if [[ -n "$temporary" ]]; then rm -rf "$temporary"; fi; if [[ -n "$source" ]]; then rm -rf "$source"; fi; rmdir "$lock"' EXIT
   # Another installer may have finished between the initial check and acquiring the lock.
   if solar_receipt verify "$destination" "$rev"; then exit 0; fi
   temporary=$(mktemp -d "$PWD/.solar/.build-$rev.XXXXXX")
-  cargo install --quiet --locked --git https://github.com/paradigmxyz/solar --rev "$rev" \
-    --root "$temporary" solar-compiler
+  # Build from a clone with tags: solar labels itself -dev unless its checkout is a release tag, and
+  # that label is written into every contract's metadata. cargo install --git checks out no tags.
+  source=$(mktemp -d "$PWD/.solar/.source-$rev.XXXXXX")
+  git clone --quiet --filter=blob:none https://github.com/paradigmxyz/solar "$source"
+  git -C "$source" -c advice.detachedHead=false checkout --quiet "$rev"
+  cargo install --quiet --locked --path "$source/crates/solar" --root "$temporary"
   solar_receipt write "$temporary" "$rev" || {
     echo "cargo did not produce an executable solar compiler; no installation published" >&2
     exit 1
