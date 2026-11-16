@@ -18,7 +18,8 @@ interface, and the spenders in `src/spenders/`. [README.md](README.md) maps the 
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical
   Messenger, Zone and Portal authentication, conversion only at exact par with measured 1:1 output,
   no balance left after a callback and no approval except a spend's standing one to its own Zone's
-  Portal, and no `senderTag` emitted or stored. A spender
+  Portal and standing maximums to the immutable EarnVault and pool (which hold none of the router's
+  tokens at rest), and no `senderTag` emitted or stored. A spender
   gets at most the callback's `maxInput`; everything else returns through the source Portal.
 - `SingleZoneEarnRouter` stays in `earn/` until its consumers move; ops 0 and 1 here must accept its
   callback data byte for byte.

@@ -110,9 +110,9 @@ the trusted publisher keeps corrections cumulative. The settlement ID (content-a
 unused, and the expected root version is checked before any asset moves, so funding and publication
 succeed or revert together and a retry cannot pull twice or replace an unexpected root.
 
-Funding pulls from an explicit funder within its balance and allowance, approves the EarnVault for
-exactly that amount, deposits, clears the approval, checks that the distributor's base-asset balance
-did not grow, and measures the EarnShare minted. Do not send base assets directly to the
+Funding pulls from an explicit funder within its balance and allowance, keeps a standing maximum
+approval to its immutable EarnVault (Tempo charges every zero-to-nonzero allowance as a new storage
+slot), deposits, checks that the distributor's base-asset balance did not grow, and measures the EarnShare minted. Do not send base assets directly to the
 distributor: it has no base-asset rescue, and `returnUnspent` moves only EarnShare.
 
 `pushBatch` verifies the complete multiproof before any transfer and pays only each recipient's

@@ -11,8 +11,10 @@ Audit coverage is in [audits](../audit/README.md#scope).
 the default engine for venues that execute immediately. It deposits the base asset and measures the
 venue shares it receives, accepts the vault's own shares through `depositInKind`, values its custody
 with the vault's `previewRedeem`, and advertises redeem, exact-withdraw, and in-kind entry. It does
-not advertise fee valuation, so its valuation never expires. Approvals are reset to zero before each
-change, for USDT-style tokens.
+not advertise fee valuation, so its valuation never expires. It keeps a standing maximum base-asset
+allowance for its immutable venue, set once (reset to zero first, for USDT-style tokens), because
+Tempo charges every zero-to-nonzero allowance as a new storage slot; it holds no base asset between
+calls.
 
 The constructor `ERC4626Engine(vault, owner, nameOverride, symbolOverride)` takes the base asset and
 share decimals from the vault and reverts `EmptyMetadata` when the effective name or symbol (the

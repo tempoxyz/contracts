@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
+import { IERC20Allowance } from "../interfaces/external/IERC20Allowance.sol";
 import { IEarnEngine } from "../interfaces/engines/IEarnEngine.sol";
 import { IEarnEngineExactWithdraw } from "../interfaces/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineInKindDeposit } from "../interfaces/engines/IEarnEngineInKindDeposit.sol";
@@ -172,7 +173,11 @@ contract ERC4626Engine is
     /// outside this contract.
     function deposit(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         _pull(baseAsset, msg.sender, assets);
-        _forceApprove(baseAsset, address(vault), assets);
+        // A standing maximum allowance for the immutable venue: Tempo charges every zero-to-nonzero
+        // allowance as a new storage slot, and the engine holds base assets only within this call.
+        if (IERC20Allowance(baseAsset).allowance(address(this), address(vault)) < assets) {
+            _forceApprove(baseAsset, address(vault), type(uint256).max);
+        }
 
         uint256 beforeBalance = vault.balanceOf(address(this));
         vault.deposit(assets, address(this));
@@ -180,7 +185,6 @@ contract ERC4626Engine is
 
         /// The measured delta on top of the balance before is the balance after, a uint256.
         /// @custom:assert beforeBalance + engineShares <= type(uint256).max
-        _forceApprove(baseAsset, address(vault), 0);
         if (engineShares == 0) revert NoVenueSharesReceived();
         emit Deposited(msg.sender, assets, engineShares);
     }

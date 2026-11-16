@@ -305,8 +305,8 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         MemoMockToken[3] memory tokens = [alternate, assetA, earnA];
         for (uint256 i = 0; i < tokens.length; i++) {
             assertEq(tokens[i].balanceOf(address(zr)), 0);
-            assertEq(tokens[i].allowance(address(zr), address(pool)), 0);
-            assertEq(tokens[i].allowance(address(zr), address(earnVaultA)), 0);
+            _assertStandingOrNone(tokens[i].allowance(address(zr), address(pool)));
+            _assertStandingOrNone(tokens[i].allowance(address(zr), address(earnVaultA)));
             uint256 portal = tokens[i].allowance(address(zr), address(portalA));
             assertTrue(portal == 0 || portal > type(uint128).max, "portal allowance");
         }
@@ -527,5 +527,10 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         if (offset > data.length || data.length - offset < 32) return 0;
         uint256 rawOp = uint256(bytes32(data[offset:offset + 32]));
         return rawOp > 3 ? 3 : uint8(rawOp);
+    }
+
+    /// @dev An immutable spender's allowance is either none or a standing maximum, never a leftover amount.
+    function _assertStandingOrNone(uint256 allowance) internal pure {
+        assertTrue(allowance == 0 || allowance == type(uint256).max, "standing allowance");
     }
 }

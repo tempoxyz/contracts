@@ -28,8 +28,8 @@ import {
 ///      the spender hands back the rest, and returns the change to the source Zone, so no spender can take
 ///      more than the sender allowed.
 /// @custom:reentrancy-guard locked
-/// gAllowance tracks the temporary allowances this router grants to the EarnVault, pools and spenders; it
-/// excludes the Portal's standing allowance from _approvePortal, which is not reset after a call.
+/// gAllowance tracks the temporary allowances this router grants; it excludes the standing allowances to the
+/// Portal (_approvePortal) and to the immutable EarnVault and pool (_approveStanding), which outlive a call.
 /// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance
 /// @custom:ghost address gTransferToken
 /// @custom:ghost address gTransferTo
@@ -309,7 +309,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         redeemLiquidity = IERC20Like(privateAsset).balanceOf(address(pool));
     }
 
-    /// No temporary allowance outlives the call; the Portal's standing allowance is outside gAllowance.
+    /// No temporary allowance outlives the call; standing allowances (Portal, EarnVault, pool) are outside gAllowance.
     /// @custom:requires forall address t, address s :: gAllowance[t][s] == 0
     /// @custom:ensures forall address t, address s :: gAllowance[t][s] == 0
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS
@@ -449,10 +449,8 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets == amount && vaultAssets >= operation.minVaultAssets
 
-        _safeApprove(vaultAsset, earnVault, vaultAssets);
-        /// @custom:assert gAllowance[vaultAsset][earnVault] == vaultAssets
+        _approveStanding(vaultAsset, earnVault, vaultAssets);
         uint256 earnShares = IEarnVault(earnVault).deposit(vaultAssets, address(this), operation.minEarnShares);
-        _safeApprove(vaultAsset, earnVault, 0);
         if (earnShares == 0 || earnShares < operation.minEarnShares) revert InsufficientOutput();
         /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares && gAllowance[vaultAsset][earnVault] == 0
         /// @custom:assert sourcePortal == portal && zoneReturn.refundRecipient != address(0)
@@ -471,10 +469,8 @@ contract ZoneRouter is IWithdrawalReceiver {
         _validateSourceReturn(sourcePortal, privateAsset, zoneReturn);
         uint256 outputBalanceBefore = IERC20Like(privateAsset).balanceOf(address(this));
 
-        _safeApprove(earnShare, earnVault, amount);
-        /// @custom:assert gAllowance[earnShare][earnVault] == amount
+        _approveStanding(earnShare, earnVault, amount);
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
-        _safeApprove(earnShare, earnVault, 0);
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets && gAllowance[earnShare][earnVault] == 0
 
@@ -506,13 +502,11 @@ contract ZoneRouter is IWithdrawalReceiver {
 
         // Zero tolerance at par rejects any off-par oracle price. The pool still enforces its own
         // freshness and deviation guards.
-        _safeApprove(tokenIn, address(pool), amountIn);
-        /// @custom:assert gAllowance[tokenIn][address(pool)] == amountIn
+        _approveStanding(tokenIn, address(pool), amountIn);
         // The measured output delta below is authoritative, not the pool's reported amount.
         pool.swapExactInput(
             baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
         );
-        _safeApprove(tokenIn, address(pool), 0);
 
         uint256 outputBalanceAfter = IERC20Like(tokenOut).balanceOf(address(this));
         if (outputBalanceAfter <= outputBalanceBefore) revert InsufficientOutput();
@@ -626,6 +620,16 @@ contract ZoneRouter is IWithdrawalReceiver {
     function _approvePortal(address token, address portal, uint256 amount) private {
         if (IERC20Allowance(token).allowance(address(this), portal) < amount) {
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (portal, type(uint256).max)));
+        }
+    }
+
+    /// @dev A standing maximum allowance for an immutable spender (the EarnVault or pool): Tempo charges every zero-to-nonzero allowance as a new storage slot,
+    ///      and every operation returns this router's touched balances to their baseline, so none is left to pull.
+    ///      Standing allowances sit outside the temporary-allowance ghost, like the Portal's.
+    function _approveStanding(address token, address spender, uint256 amount) private {
+        if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
+            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
+            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
         }
     }
 

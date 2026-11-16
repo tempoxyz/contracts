@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { IEarnVault } from "../interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
+import { IERC20Allowance } from "../interfaces/external/IERC20Allowance.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
@@ -199,10 +200,13 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
         uint256 assetBalanceBefore = IERC20Like(asset).balanceOf(address(this));
         uint256 earnShareBalanceBefore = IERC20Like(earnShare).balanceOf(address(this));
         _safeTransferFrom(asset, funder, address(this), assets);
-        _safeApprove(asset, address(earnVault), 0);
-        _safeApprove(asset, address(earnVault), assets);
+        // A standing maximum allowance for the immutable EarnVault: Tempo charges every zero-to-nonzero allowance as a new storage slot. This
+        // distributor holds no base asset between calls (checked below).
+        if (IERC20Allowance(asset).allowance(address(this), address(earnVault)) < assets) {
+            _safeApprove(asset, address(earnVault), 0);
+            _safeApprove(asset, address(earnVault), type(uint256).max);
+        }
         uint256 reportedEarnShares = earnVault.deposit(assets, address(this), minEarnShares);
-        _safeApprove(asset, address(earnVault), 0);
 
         uint256 assetBalanceAfter = IERC20Like(asset).balanceOf(address(this));
         if (assetBalanceAfter != assetBalanceBefore) {

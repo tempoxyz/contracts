@@ -5,6 +5,7 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 
 import { IEarnVault } from "../interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
+import { IERC20Allowance } from "../interfaces/external/IERC20Allowance.sol";
 import { IPropAMMPriceOracle, IPropAMMVenue } from "../interfaces/external/propamm/IPropAMMVenue.sol";
 import {
     EncryptedDepositPayload,
@@ -36,7 +37,8 @@ import {
 /// @custom:invariant address(pool) == address(0) <==> privateAsset == vaultAsset
 /// @custom:invariant address(pool) == address(0) <==> customerId == bytes32(0)
 /// @custom:invariant address(pool) == address(0) ==> !privateAssetIsBase
-/// Ghost mirror of the last approval this router gave each spender for each token (set in _safeApprove).
+/// Ghost mirror of the last temporary approval this router gave each spender for each token (set in _safeApprove);
+/// standing allowances to the immutable EarnVault and pool (_approveStanding) are outside it.
 /// @custom:ghost mapping(address => mapping(address => uint256)) allowanceGhost
 /// Ghost record of Portal deposits (set in _depositEncryptedToSourceZone): their count and the last one.
 /// @custom:ghost uint256 portalDeposits
@@ -292,11 +294,8 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         /// The private input converts 1:1 into vault assets (par), within the caller's minimum.
         /// @custom:assert vaultAssets == amount && vaultAssets >= operation.minVaultAssets
 
-        _safeApprove(vaultAsset, earnVault, vaultAssets);
-        /// The vault is approved exactly the vault assets it pulls.
-        /// @custom:assert allowanceGhost[vaultAsset][earnVault] == vaultAssets
+        _approveStanding(vaultAsset, earnVault, vaultAssets);
         uint256 earnShares = IEarnVault(earnVault).deposit(vaultAssets, address(this), operation.minEarnShares);
-        _safeApprove(vaultAsset, earnVault, 0);
         if (earnShares == 0 || earnShares < operation.minEarnShares) revert InsufficientOutput();
         /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares && allowanceGhost[vaultAsset][earnVault] == 0
 
@@ -315,11 +314,8 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         _validateSourceReturn(sourcePortal, privateAsset, zoneReturn);
         uint256 outputBalanceBefore = IERC20Like(privateAsset).balanceOf(address(this));
 
-        _safeApprove(earnShare, earnVault, amount);
-        /// The vault is approved exactly the EarnShare it burns.
-        /// @custom:assert allowanceGhost[earnShare][earnVault] == amount
+        _approveStanding(earnShare, earnVault, amount);
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
-        _safeApprove(earnShare, earnVault, 0);
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets && allowanceGhost[earnShare][earnVault] == 0
 
@@ -337,7 +333,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     }
 
     /// Conversion only at exact par along the bound pair: measured output equals input, the minimum never
-    /// exceeds the input, and the pool's approval is cleared.
+    /// exceeds the input, and the pool holds no temporary approval (its standing one is outside allowanceGhost).
     /// Callers convert a nonzero amount.
     /// @custom:requires locked != 1 && address(pool) != address(0) && amountIn > 0
     /// @custom:ensures amountOut == amountIn && amountOut >= minAmountOut
@@ -358,14 +354,11 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
 
         // Zero tolerance at par rejects any off-par oracle price. The pool still enforces its own
         // freshness and deviation guards, so this route needs no separate observation-time floor.
-        _safeApprove(tokenIn, address(pool), amountIn);
+        _approveStanding(tokenIn, address(pool), amountIn);
         // The measured output delta below is authoritative, not the pool's reported amount.
-        /// The pool is approved exactly the input it pulls.
-        /// @custom:assert allowanceGhost[tokenIn][address(pool)] == amountIn
         pool.swapExactInput(
             baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
         );
-        _safeApprove(tokenIn, address(pool), 0);
 
         uint256 outputBalanceAfter = IERC20Like(tokenOut).balanceOf(address(this));
         if (outputBalanceAfter <= outputBalanceBefore) revert InsufficientOutput();
@@ -461,6 +454,17 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         // The explicit bound above makes this narrowing conversion lossless.
         // forge-lint: disable-next-line(unsafe-typecast)
         return uint128(value);
+    }
+
+    /// @dev A standing maximum allowance for an immutable spender (the EarnVault or pool): Tempo charges every
+    ///      zero-to-nonzero allowance as a new storage slot, and every operation returns this router's touched
+    ///      balances to their baseline, so none is left to pull.
+    ///      Standing allowances sit outside the temporary-allowance ghost, allowanceGhost.
+    function _approveStanding(address token, address spender, uint256 amount) private {
+        if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
+            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
+            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
+        }
     }
 
     function _safeApprove(address token, address spender, uint256 value) private {

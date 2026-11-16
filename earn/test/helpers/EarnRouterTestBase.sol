@@ -335,7 +335,10 @@ abstract contract EarnRouterTestBase is Test {
         address[3] memory spenders = [address(router.pool()), address(earnVaultA), address(portalA)];
         for (uint256 i = 0; i < tokens.length; i++) {
             for (uint256 j = 0; j < spenders.length; j++) {
-                assertEq(tokens[i].allowance(address(router), spenders[j]), 0);
+                uint256 allowance = tokens[i].allowance(address(router), spenders[j]);
+                // The pool and EarnVault may keep a standing maximum; the Portal never keeps any.
+                if (j < 2) assertTrue(allowance == 0 || allowance == type(uint256).max, "standing allowance");
+                else assertEq(allowance, 0);
             }
         }
     }

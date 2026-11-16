@@ -25,6 +25,7 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/extern
 ///      sent here outside a router's spend are not rescued and no call can move them. It neither emits nor
 ///      stores the Zone's sender commitment.
 /// @custom:reentrancy-guard locked
+/// gAllowance tracks temporary allowances only; the standing allowance to the immutable pool is outside it.
 /// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance
 /// @custom:ghost mapping(address => mapping(address => uint256)) gSent
 /// @custom:ghost uint256 gPaidBefore
@@ -270,15 +271,19 @@ contract SendSpender is ISpender {
     ///      price, into this spender; any other price or output reverts.
     function _convertAtPar(uint256 amount) private {
         uint256 outBefore = IERC20Like(parToken).balanceOf(address(this));
-        _safeApprove(convertAsset, address(pool), amount);
+        // A standing maximum allowance for the immutable pool: Tempo charges every zero-to-nonzero allowance as a new storage slot. The
+        // caller-chosen vault above keeps exact, cleared approvals.
+        // It sits outside gAllowance, which tracks only temporary allowances.
+        if (IERC20Allowance(convertAsset).allowance(address(this), address(pool)) < amount) {
+            _callOptionalReturn(convertAsset, abi.encodeCall(IERC20Like.approve, (address(pool), 0)));
+            _callOptionalReturn(convertAsset, abi.encodeCall(IERC20Like.approve, (address(pool), type(uint256).max)));
+        }
         // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
         // forge-lint: disable-start(reentrancy-no-eth)
         pool.swapExactInput(
             assetIsBase, amount, amount, address(this), customerId, bytes32(0), block.timestamp, parPrice(), 0, 0
         );
         // forge-lint: disable-end(reentrancy-no-eth)
-        _safeApprove(convertAsset, address(pool), 0);
-        /// @custom:assert gAllowance[convertAsset][address(pool)] == 0 && address(pool) != address(0)
         if (IERC20Like(parToken).balanceOf(address(this)) != outBefore + amount) revert DestinationNotPaid();
     }
 

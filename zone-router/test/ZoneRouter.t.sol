@@ -612,8 +612,13 @@ contract ZoneRouterTest is EarnRouterTestBase {
             uint256 portalAllowance = tokens[i].allowance(address(zr), address(portalA));
             assertTrue(portalAllowance == 0 || portalAllowance > type(uint128).max, "portal allowance");
             assertEq(tokens[i].allowance(address(zr), address(spender)), 0);
-            assertEq(tokens[i].allowance(address(zr), address(earnVaultA)), 0);
-            assertEq(tokens[i].allowance(address(zr), address(pool)), 0);
+            _assertStandingOrNone(tokens[i].allowance(address(zr), address(earnVaultA)));
+            _assertStandingOrNone(tokens[i].allowance(address(zr), address(pool)));
         }
+    }
+
+    /// @dev An immutable spender's allowance is either none or a standing maximum, never a leftover amount.
+    function _assertStandingOrNone(uint256 allowance) internal pure {
+        assertTrue(allowance == 0 || allowance == type(uint256).max, "standing allowance");
     }
 }

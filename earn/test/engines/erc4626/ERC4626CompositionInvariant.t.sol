@@ -251,13 +251,16 @@ contract ERC4626CompositionInvariantTest is StdInvariant, Test {
         assertLe(fees.totalClaimableEarnShares(), earnShare.totalSupply());
     }
 
-    function invariant_intermediateContractsRetainNoTokensOrApprovals() public view {
+    /// @dev Allowances may stand (Tempo charges each zero-to-nonzero allowance as a new slot), but only
+    ///      along the fixed vault-to-engine-to-venue path, so a standing allowance can never reach a token
+    ///      balance outside that path: neither intermediate holds any token between calls.
+    function invariant_intermediateContractsRetainNoTokens() public view {
         assertEq(asset.balanceOf(address(earnVault)), 0);
         assertEq(asset.balanceOf(address(engine)), 0);
         assertEq(venue.balanceOf(address(earnVault)), 0);
         assertEq(earnShare.balanceOf(address(earnVault)), 0);
-        assertEq(asset.allowance(address(earnVault), address(engine)), 0);
-        assertEq(asset.allowance(address(engine), address(venue)), 0);
+        assertEq(venue.allowance(address(earnVault), address(engine)), 0);
+        assertEq(earnShare.allowance(address(earnVault), address(engine)), 0);
     }
 
     function _feeConfig() private pure returns (FeeConfig memory config) {

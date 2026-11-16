@@ -17,7 +17,10 @@ accounting specification for contracts, tests, and integrations; this file is no
   exit; in-kind entry alone is insufficient. Keep venue-specific behavior behind engine capabilities.
   Veda requests stay bound to their originating Queue; settled assets are not sweepable dust.
 - The router authenticates canonical callbacks, returns through the same source Portal, converts
-  only at exact par with measured 1:1 output, and cleans up temporary balances and approvals. A
+  only at exact par with measured 1:1 output, and cleans up temporary balances and approvals except
+  standing maximums to its immutable EarnVault and pool. A standing allowance is only for a spender
+  that cannot change and a holder with no token balance at rest; Veda's engine keeps exact approvals
+  because it holds settled payouts. A
   same-asset router binds no pool. Do not add caller-selected tokens, vaults, or destinations.
 - Reward periphery has no issuer authority; preserve measured solvency, domain-separated cumulative
   entitlements, settlement replay protection, and unpaid entitlement after failed transfers.

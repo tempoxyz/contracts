@@ -20,6 +20,7 @@ import { IEarnEngineFeeValuation } from "../interfaces/engines/IEarnEngineFeeVal
 import { IEarnEngineInKindDeposit } from "../interfaces/engines/IEarnEngineInKindDeposit.sol";
 import { IEarnEngineRedeem } from "../interfaces/engines/IEarnEngineRedeem.sol";
 import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
+import { IERC20Allowance } from "../interfaces/external/IERC20Allowance.sol";
 import { IAsyncRedeemReceiver } from "../interfaces/core/IAsyncRedeemReceiver.sol";
 import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 
@@ -596,11 +597,9 @@ contract EarnVault is IEarnVault {
         /// @custom:assert currentSupply == 0 ==> rateEarnShares == earnShareScale && rateEngineShares == rewardRateBaseline
 
         _safeTransferFrom(asset, msg.sender, address(this), assets);
-        _safeApprove(asset, engine, 0);
-        _safeApprove(asset, engine, assets);
+        _approveEngine(engine, assets);
         uint256 rawSharesBefore = rawEngineShares();
         uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
-        _safeApprove(asset, engine, 0);
         uint256 receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
 
         earnShares = _convertEngineSharesToEarnShares(receivedEngineShares);
@@ -728,11 +727,9 @@ contract EarnVault is IEarnVault {
         // Gains up to here are checkpointed before the contribution enters.
         /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
         _safeTransferFrom(asset, msg.sender, address(this), assets);
-        _safeApprove(asset, engine, 0);
-        _safeApprove(asset, engine, assets);
+        _approveEngine(engine, assets);
         uint256 rawSharesBefore = rawEngineShares();
         uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
-        _safeApprove(asset, engine, 0);
         receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
         /// @custom:ghost cappedManagedShares = _managedEngineShares
         _requireWithinManagedAssetsLimit();
@@ -1160,11 +1157,9 @@ contract EarnVault is IEarnVault {
             if (IEarnEngine(oldEngine).totalShares() != 0) revert ResidualBacking();
 
             // Leg 2 — deposit everything into the new engine, which mints and holds the new venue shares.
-            _safeApprove(asset, newEngine, 0);
-            _safeApprove(asset, newEngine, assetsMoved);
+            _approveEngine(newEngine, assetsMoved);
             uint256 rawSharesBefore = IEarnEngine(newEngine).totalShares();
             uint256 reportedEngineShares = IEarnEngine(newEngine).deposit(assetsMoved);
-            _safeApprove(asset, newEngine, 0);
             // The share delta proves what arrived at the destination, while this balance check proves
             // the replacement consumed the complete measured source redemption. Otherwise an under-pulling
             // engine could leave base assets permanently stranded outside managed NAV.
@@ -1205,6 +1200,8 @@ contract EarnVault is IEarnVault {
             }
         }
 
+        // The retired engine keeps no standing allowance over the vault's base asset.
+        _safeApprove(asset, oldEngine, 0);
         /// @custom:ghost currentEngine = newEngine
         engine = newEngine;
         _managedEngineShares = newEngineShares;
@@ -1688,6 +1685,15 @@ contract EarnVault is IEarnVault {
                 && !ERC165Checker.supportsInterface(candidate, type(IEarnEngineExactWithdraw).interfaceId)
                 && !ERC165Checker.supportsInterface(candidate, type(IEarnEngineAsyncRedeem).interfaceId)
         ) revert EngineExitUnsupported();
+    }
+
+    /// @dev Keeps a standing maximum allowance for `engine_`. Tempo charges every zero-to-nonzero allowance as a
+    ///      new storage slot, so re-approving from zero costs a new slot per deposit. The vault holds base
+    ///      assets only within a call, and migration revokes the old engine's allowance.
+    function _approveEngine(address engine_, uint256 assets) internal {
+        if (IERC20Allowance(asset).allowance(address(this), engine_) < assets) {
+            _safeApprove(asset, engine_, type(uint256).max);
+        }
     }
 
     function _safeApprove(address token, address spender, uint256 value) internal {
