@@ -24,6 +24,18 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "tempo-earn/interfaces/extern
 ///      bound vault's EarnShare reaches the pool, and only from its asset into the paired stablecoin. Tokens
 ///      sent here outside a router's spend are not rescued and no call can move them. It neither emits nor
 ///      stores the Zone's sender commitment.
+/// @custom:reentrancy-guard locked
+/// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance
+/// @custom:ghost mapping(address => mapping(address => uint256)) gSent
+/// @custom:ghost uint256 gPaidBefore
+/// @custom:ghost uint256 gReturnedBefore
+/// @custom:invariant ROUTER_FACTORY != address(0)
+/// @custom:invariant (address(convertVault) != address(0)) == (address(pool) != address(0))
+/// @custom:invariant (address(convertVault) != address(0)) == (customerId != bytes32(0))
+/// @custom:invariant address(convertVault) != address(0) ==> convertAsset != address(0) && parToken != address(0)
+/// @custom:invariant address(convertVault) != address(0) ==> parToken != convertAsset
+/// @custom:invariant address(convertVault) == address(0) ==> convertAsset == address(0) && parToken == address(0)
+/// @custom:invariant address(convertVault) == address(0) ==> !assetIsBase
 contract SendSpender is ISpender {
     /// @notice One send: `to` receives exactly `amount` of `token`.
     /// @dev With `vault` zero, `token` is the withdrawn token. Otherwise the input is `vault`'s
@@ -96,6 +108,8 @@ contract SendSpender is ISpender {
     ///        and redeems.
     /// @param pool_ The pool pairing that asset with one other stablecoin of equal decimals.
     /// @param customerId_ The pool customer identifier. All three are set, or all three are zero.
+    /// @custom:ensures ROUTER_FACTORY == routerFactory_ && convertVault == convertVault_
+    /// @custom:ensures pool == pool_ && customerId == customerId_
     constructor(address routerFactory_, IEarnVault convertVault_, IPropAMMVenue pool_, bytes32 customerId_) {
         if (routerFactory_ == address(0) || routerFactory_.code.length == 0) revert InvalidRouterFactory();
         bool converts = address(convertVault_) != address(0);
@@ -117,6 +131,8 @@ contract SendSpender is ISpender {
             if (!isBase && quote != asset) revert InvalidRoutePair();
             other = isBase ? quote : base;
             if (other == address(0) || other == asset || other == earnShare) revert InvalidRoutePair();
+            /// @custom:assert isBase ? base == asset && other == quote : quote == asset && other == base
+            /// @custom:assert other != address(0) && other != asset && other != earnShare && asset != address(0)
             // Equal units make the par price an exact 1:1 conversion with no rounding remainder.
             if (IERC20Metadata(asset).decimals() != IERC20Metadata(other).decimals()) revert InvalidRoutePair();
         }
@@ -132,6 +148,9 @@ contract SendSpender is ISpender {
     /// @inheritdoc ISpender
     /// @dev `data` is `abi.encode(Send)`. Only a router from `ROUTER_FACTORY` listing this spender may call it, so
     ///      `maxInput` is what that router measured out, never a caller's claim on balances held here.
+    /// @custom:requires forall address t, address s :: gAllowance[t][s] == 0
+    /// @custom:ensures forall address t, address s :: gAllowance[t][s] == 0
+    /// @custom:ensures 0 < maxInput && maxInput <= type(uint128).max
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
         if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
         _spendFrom(token, maxInput, abi.decode(data, (Send)));
@@ -142,22 +161,31 @@ contract SendSpender is ISpender {
         if (send.amount == 0 || maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
         // Paying the router would strand the output there: it measures and returns only the input token.
         if (send.to == address(this) || send.to == msg.sender) revert InvalidRecipient();
+        /// @custom:assert send.to != address(0) && send.token != address(0) && send.amount != 0
+        /// @custom:assert 0 < maxInput && maxInput <= type(uint128).max
+        /// @custom:assert send.to != address(this) && send.to != msg.sender
         // A TIP-20 transfer to a virtual address credits its master, so that is whose balance must rise.
         address payee = _payee(send.to);
         if (payee == address(0)) revert ZeroAddress();
         if (payee == address(this) || payee == msg.sender) revert InvalidRecipient();
+        /// @custom:assert payee != address(0) && payee != address(this) && payee != msg.sender
 
         // The caller sent maxInput first; anything else held here is the baseline, and none may stay behind.
         uint256 balance = IERC20Like(token).balanceOf(address(this));
         if (balance < maxInput) revert InsufficientInput();
+        /// @custom:assert balance >= maxInput
         uint256 baseline = balance - maxInput;
         uint256 outputBaseline = send.token == token ? baseline : IERC20Like(send.token).balanceOf(address(this));
+        /// @custom:assert send.token == token ==> outputBaseline == baseline
+        /// @custom:ghost gPaidBefore = gSent[send.token][send.to]
         uint256 paidBefore = IERC20Like(send.token).balanceOf(payee);
 
         if (send.vault == address(0)) {
             if (send.token != token) revert WrongInputToken(token);
             if (send.amount > maxInput) revert InvalidAmount();
+            /// @custom:assert send.token == token && send.amount <= maxInput
             _safeTransfer(token, send.to, send.amount);
+            /// @custom:assert gSent[token][send.to] == gPaidBefore + send.amount
         } else {
             if (IEarnVault(send.vault).earnShare() != token) revert WrongInputToken(token);
             address asset = IEarnVault(send.vault).asset();
@@ -168,7 +196,11 @@ contract SendSpender is ISpender {
             if (converts && (send.vault != address(convertVault) || asset != convertAsset || send.token != parToken)) {
                 revert ConversionNotAllowed();
             }
+            /// @custom:assert send.token != token && asset != token && converts == (send.token != asset)
+            /// @custom:assert converts ==> send.vault == address(convertVault) && asset == convertAsset
+            /// @custom:assert converts ==> send.token == parToken
             _safeApprove(token, send.vault, maxInput);
+            /// @custom:assert gAllowance[token][send.vault] == maxInput
             if (!converts && payee == send.to) {
                 // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
                 // forge-lint: disable-next-line(reentrancy-no-eth)
@@ -185,9 +217,12 @@ contract SendSpender is ISpender {
                 }
                 if (converts) _convertAtPar(send.amount);
                 _safeTransfer(send.token, send.to, send.amount);
+                /// @custom:assert gSent[send.token][send.to] == gPaidBefore + send.amount
+                /// @custom:assert converts || payee != send.to
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore) revert ResidualBalance(asset);
             }
             _safeApprove(token, send.vault, 0);
+            /// @custom:assert gAllowance[token][send.vault] == 0
         }
 
         // Checked on the payee, so a vault or pool that reports success without paying cannot settle.
@@ -195,7 +230,10 @@ contract SendSpender is ISpender {
 
         uint256 unused = IERC20Like(token).balanceOf(address(this)) - baseline;
         if (unused >= maxInput) revert NothingSpent();
+        /// @custom:assert unused < maxInput
+        /// @custom:ghost gReturnedBefore = gSent[token][msg.sender]
         if (unused != 0) _safeTransfer(token, msg.sender, unused);
+        /// @custom:assert gSent[token][msg.sender] == gReturnedBefore + unused
         if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
         if (send.token != token && IERC20Like(send.token).balanceOf(address(this)) != outputBaseline) {
             revert ResidualBalance(send.token);
@@ -205,6 +243,7 @@ contract SendSpender is ISpender {
     }
 
     /// @notice The pool's par price, or zero without a pool.
+    /// @custom:ensures address(pool) == address(0) ==> result == 0
     function parPrice() public view returns (uint256) {
         if (address(pool) == address(0)) return 0;
         return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
@@ -223,6 +262,7 @@ contract SendSpender is ISpender {
         }
         if (returnData.length == 0) return to;
         if (returnData.length != 32) revert UnresolvedRecipient();
+        /// @custom:assert returnData.length == 32
         return abi.decode(returnData, (address));
     }
 
@@ -238,18 +278,22 @@ contract SendSpender is ISpender {
         );
         // forge-lint: disable-end(reentrancy-no-eth)
         _safeApprove(convertAsset, address(pool), 0);
+        /// @custom:assert gAllowance[convertAsset][address(pool)] == 0 && address(pool) != address(0)
         if (IERC20Like(parToken).balanceOf(address(this)) != outBefore + amount) revert DestinationNotPaid();
     }
 
     /// @dev Clears a leftover allowance first only when there is one; every path here leaves none.
     function _safeApprove(address token, address spender, uint256 value) private {
+        /// @custom:ghost gAllowance[token][spender] = 0
         if (IERC20Allowance(token).allowance(address(this), spender) != 0) {
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
         }
+        /// @custom:ghost gAllowance[token][spender] = value
         if (value != 0) _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, value)));
     }
 
     function _safeTransfer(address token, address to, uint256 value) private {
+        /// @custom:ghost gSent[token][to] = gSent[token][to] + value
         _callOptionalReturn(token, abi.encodeCall(IERC20Like.transfer, (to, value)));
     }
 

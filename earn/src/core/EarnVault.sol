@@ -35,6 +35,53 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 ///
 ///      Each deployed EarnVault is a non-upgradeable ERC-1967 proxy pointing to the factory's fixed
 ///      implementation. The implementation is locked against direct initialization.
+/// @dev The `@custom:` specs are checked by solar-verify and state the rules of docs/earn/architecture/system.md
+///      and flows.md. Spec arithmetic is over mathematical integers. The `fixed*` ghosts record what
+///      `initialize` set, so the invariants below say those fields never change afterwards; `currentEngine`,
+///      `currentOperator` and `currentDistributor` move only where the role handoff or migration writes them.
+///      `openCount` mirrors every write of a pending request's `open` flag.
+/// @custom:ghost address fixedAsset
+/// @custom:ghost address fixedEarnShare
+/// @custom:ghost address fixedEarnFees
+/// @custom:ghost uint256 fixedEarnShareScale
+/// @custom:ghost uint40 fixedDistributorUpdateDelay
+/// @custom:ghost bool fixedOperatorMigration
+/// @custom:ghost address currentEngine
+/// @custom:ghost address currentOperator
+/// @custom:ghost address currentDistributor
+/// @custom:ghost uint256 openCount
+/// @custom:ghost uint256 feeCheckpoints
+/// @custom:ghost uint256 baselineEntries
+/// @custom:ghost uint256 cappedManagedShares
+/// @custom:reentrancy-guard initialized && locked == 2
+/// @custom:invariant locked <= 2 && (locked != 0 ==> initialized)
+/// @custom:invariant !initialized ==> openCount == 0 && operator == address(0) && distributor == address(0)
+/// @custom:invariant !initialized ==> pendingOperator == address(0) && pendingDistributor == address(0)
+/// @custom:invariant locked != 2 ==> openRedeemRequestCount == openCount
+/// @custom:invariant locked != 0 ==> asset == fixedAsset && earnShare == fixedEarnShare && earnFees == fixedEarnFees
+/// @custom:invariant locked != 0 ==> earnShareScale == fixedEarnShareScale && distributorUpdateDelay == fixedDistributorUpdateDelay
+/// @custom:invariant locked != 0 ==> (engineMigrationMode == EngineMigrationMode.OperatorEnabled) == fixedOperatorMigration
+/// @custom:invariant locked != 0 ==> engine == currentEngine && operator == currentOperator && distributor == currentDistributor
+/// @custom:invariant locked != 0 ==> anchorEngineShares != 0 && anchorEarnShares != 0
+/// @custom:invariant locked != 0 ==> rewardRateBaseline != 0 && earnShareScale != 0
+/// @custom:invariant locked != 0 ==> operator != address(0)
+/// @custom:invariant (distributor == address(0)) == (distributorUpdateDelay == 0)
+/// @custom:invariant pendingDistributor != address(0) ==> distributor != address(0)
+/// @custom:invariant !_pendingDistributorFeeUpdate.pending ==> _specNoDistributorFeeUpdate()
+/// @custom:invariant locked == 1 ==> anchorEngineShares == _managedEngineShares || _specEmptyAnchor()
+/// @custom:invariant forall bytes32 id :: _pending[id].open ==> _specLiveRequest(id)
+/// @custom:invariant forall bytes32 id :: !_pending[id].open ==> _specClosedRequest(id)
+/// @dev Between calls the anchor is the managed engine-share count over the live supply (or the empty-pool
+///      anchor), so the supply converts exactly to its managed backing. An open request holds a nonzero burned
+///      EarnShare amount and a nonzero queued engine-share amount, and a closed one holds neither.
+///      `feeCheckpoints` counts fee checkpoints, `baselineEntries` principal-entry baseline updates, and
+///      `cappedManagedShares` is the managed count at the latest capacity check.
+///      Not proved: the anchor's EarnShare side equals the live EarnShare supply between calls; the supply is
+///      another contract's state, read only inside calls.
+///      Not proved: the queued engine shares of all open requests sum to what the engine still holds for them,
+///      and the engine pays each at least what it committed; both are the engine's state.
+///      Not proved: fee EarnShare minted in a checkpoint never exceeds the positive accrual it charges; that
+///      bound is EarnFees' own contract, which the vault reads only through its interface.
 contract EarnVault is IEarnVault {
     uint256 internal constant CONVERSION_BPS = 10_000;
     /// @notice Maximum contribution-funded increase in the normalized engine-share/EarnShare rate.
@@ -182,10 +229,21 @@ contract EarnVault is IEarnVault {
 
     /// @dev Locks the standalone implementation. Each EarnVault is an ERC-1967 proxy with no upgrade
     ///      entrypoint, initialized atomically by {EarnFactory} against this fixed implementation.
+    /// @custom:ensures initialized && locked == 0
     constructor() {
         initialized = true;
     }
 
+    /// @notice A fresh proxy is initialized once with its engine, EarnShare, fees module, roles and controls.
+    /// @custom:ensures !old(initialized) && initialized && locked == 1
+    /// @custom:ensures engine == engine_ && earnShare == earnShare_ && earnFees == earnFees_ && operator == operator_
+    /// @custom:ensures engine_ != address(0) && earnShare_ != address(0) && earnFees_ != address(0) && operator_ != address(0)
+    /// @custom:ensures asset != address(0) && distributor == distributorInit_.distributor
+    /// @custom:ensures distributorUpdateDelay == distributorInit_.updateDelay && maxManagedAssets == controlInit_.maxManagedAssets
+    /// @custom:ensures emergencyGuardian == controlInit_.emergencyGuardian && asyncJanitor == controlInit_.asyncJanitor
+    /// @custom:ensures engineMigrationMode == controlInit_.migrationMode
+    /// @custom:ensures openRedeemRequestCount == 0 && pendingOperator == address(0) && pendingDistributor == address(0)
+    /// @custom:ensures rewardRateBaseline == anchorEngineShares && anchorEarnShares == earnShareScale
     function initialize(
         address engine_,
         address earnShare_,
@@ -234,8 +292,20 @@ contract EarnVault is IEarnVault {
         uint8 earnDecimals = IEarnShare(earnShare_).decimals();
         if (earnDecimals > 77) revert InvalidEarnDecimals();
         earnShareScale = 10 ** earnDecimals;
+        // The verifier models 10 ** e with a symbolic exponent as an uninterpreted value, so it can't prove it
+        // nonzero; with e <= 77 (checked above) it is at least 1 and below 2 ** 256.
+        /// @custom:assume earnShareScale > 0
         _resetEmptyAnchor(engine_);
         rewardRateBaseline = anchorEngineShares;
+        /// @custom:ghost fixedAsset = asset
+        /// @custom:ghost fixedEarnShare = earnShare
+        /// @custom:ghost fixedEarnFees = earnFees
+        /// @custom:ghost fixedEarnShareScale = earnShareScale
+        /// @custom:ghost fixedDistributorUpdateDelay = distributorUpdateDelay
+        /// @custom:ghost fixedOperatorMigration = engineMigrationMode == EngineMigrationMode.OperatorEnabled
+        /// @custom:ghost currentEngine = engine
+        /// @custom:ghost currentOperator = operator
+        /// @custom:ghost currentDistributor = distributor
         locked = 1;
 
         FixedFeeRecipient memory distributorFee_ = _distributorFee;
@@ -262,11 +332,18 @@ contract EarnVault is IEarnVault {
         locked = 1;
     }
 
+    /// @notice Anyone can checkpoint fees whenever no other vault call is running.
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1
+    /// Not proved: it returns whenever locked == 1; that depends on the engine, EarnShare and EarnFees calls returning.
     function accrueFees() external override nonReentrant returns (uint256 feeAssets, uint256 feeEarnShares) {
         (FeePreview memory result,,) = _accrueFees();
         return (result.totalFeeAssets, result.totalFeeEarnShares);
     }
 
+    /// @custom:ensures msg.sender == old(operator)
+    /// @custom:ensures distributor != address(0) ==> _specProtectsDistributorFee(config, _distributorFee)
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
     function setFeeConfig(FeeConfig calldata config) external override nonReentrant returns (uint64 configId) {
         if (msg.sender != operator) revert NotOperator();
         _validateOperatorFeeConfig(config);
@@ -275,12 +352,15 @@ contract EarnVault is IEarnVault {
         configId = IEarnFees(earnFees).setFeeConfig(config);
     }
 
+    /// @notice Only the operator of a deployment without a distributor can disable fees globally.
+    /// @custom:ensures old(distributor) == address(0) && msg.sender == old(operator)
     function disableFees() external override {
         if (distributor != address(0)) revert GlobalFeeDisableUnavailable();
         if (msg.sender != operator) revert NotOperator();
         IEarnFees(earnFees).disableFees(msg.sender);
     }
 
+    /// @custom:ensures msg.sender == operator && newOperator != address(0) && pendingOperator == newOperator
     function transferOperator(address newOperator) external override {
         if (msg.sender != operator) revert NotOperator();
         if (newOperator == address(0)) revert ZeroAddress();
@@ -288,6 +368,8 @@ contract EarnVault is IEarnVault {
         emit OperatorTransferStarted(operator, newOperator);
     }
 
+    /// @custom:ensures msg.sender == operator && old(pendingOperator) != address(0) && pendingOperator == address(0)
+    /// @custom:succeeds-if msg.sender == operator && pendingOperator != address(0)
     function cancelOperatorTransfer() external override {
         if (msg.sender != operator) revert NotOperator();
         address pending = pendingOperator;
@@ -296,12 +378,15 @@ contract EarnVault is IEarnVault {
         emit OperatorTransferCancelled(operator, pending);
     }
 
+    /// @custom:ensures msg.sender == old(pendingOperator) && operator == msg.sender && pendingOperator == address(0)
+    /// @custom:succeeds-if msg.sender == pendingOperator && pendingOperator != address(0)
     function acceptOperator() external override {
         address pending = pendingOperator;
         if (pending == address(0)) revert OperatorTransferNotPending();
         if (msg.sender != pending) revert NotPendingOperator();
 
         address previous = operator;
+        /// @custom:ghost currentOperator = pending
         operator = pending;
         delete pendingOperator;
         emit OperatorTransferred(previous, pending);
@@ -319,6 +404,10 @@ contract EarnVault is IEarnVault {
     /// @notice Schedules a prospective update to the distributor's reserved fixed-fee item.
     /// @dev Scheduling validates both the current operator configuration and the proposed composed
     ///      configuration. A later operator update must preserve this pending configuration's validity.
+    /// @custom:ensures distributor != address(0) && msg.sender == distributor && (rateBps == 0) == (recipient == address(0))
+    /// @custom:ensures _pendingDistributorFeeUpdate.pending && _pendingDistributorFeeUpdate.recipient == recipient
+    /// @custom:ensures _pendingDistributorFeeUpdate.rateBps == rateBps
+    /// @custom:ensures _pendingDistributorFeeUpdate.executableAt == block.timestamp + distributorUpdateDelay
     function scheduleDistributorFeeUpdate(address recipient, uint16 rateBps) external override {
         _requireDistributor();
         if ((rateBps == 0) != (recipient == address(0))) revert InvalidDistributorFeeConfiguration();
@@ -339,6 +428,8 @@ contract EarnVault is IEarnVault {
         emit DistributorFeeUpdateScheduled(distributor, recipient, rateBps, executableAt_);
     }
 
+    /// @custom:ensures distributor != address(0) && msg.sender == distributor && old(_pendingDistributorFeeUpdate.pending)
+    /// @custom:ensures _specNoDistributorFeeUpdate()
     function cancelDistributorFeeUpdate() external override {
         _requireDistributor();
         if (!_pendingDistributorFeeUpdate.pending) revert DistributorFeeUpdateNotPending();
@@ -347,6 +438,11 @@ contract EarnVault is IEarnVault {
     }
 
     /// @notice Permissionlessly activates a ready distributor fee update after settling the old terms.
+    /// @notice Anyone may activate a scheduled distributor fee once its delay has passed.
+    /// @custom:ensures old(_pendingDistributorFeeUpdate.pending) && block.timestamp >= old(_pendingDistributorFeeUpdate.executableAt)
+    /// @custom:ensures _distributorFee.account == old(_pendingDistributorFeeUpdate.recipient)
+    /// @custom:ensures _distributorFee.rateBps == old(_pendingDistributorFeeUpdate.rateBps)
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
     function executeDistributorFeeUpdate() external override nonReentrant returns (uint64 feeConfigId) {
         DistributorFeeUpdate memory pending = _pendingDistributorFeeUpdate;
         if (!pending.pending) revert DistributorFeeUpdateNotPending();
@@ -366,6 +462,8 @@ contract EarnVault is IEarnVault {
         emit DistributorFeeUpdated(nextFee.account, nextFee.rateBps, feeConfigId);
     }
 
+    /// @custom:ensures distributor != address(0) && msg.sender == distributor
+    /// @custom:ensures pendingDistributor == newDistributor && newDistributor != address(0) && newDistributor != distributor
     function transferDistributor(address newDistributor) external override {
         _requireDistributor();
         if (newDistributor == address(0) || newDistributor == distributor) revert InvalidDistributorConfiguration();
@@ -373,6 +471,8 @@ contract EarnVault is IEarnVault {
         emit DistributorTransferStarted(distributor, newDistributor);
     }
 
+    /// @custom:ensures distributor != address(0) && msg.sender == distributor
+    /// @custom:ensures old(pendingDistributor) != address(0) && pendingDistributor == address(0)
     function cancelDistributorTransfer() external override {
         _requireDistributor();
         address pending = pendingDistributor;
@@ -381,12 +481,17 @@ contract EarnVault is IEarnVault {
         emit DistributorTransferCancelled(distributor, pending);
     }
 
+    /// @notice The pending distributor takes the role, and any fee update its predecessor scheduled is cancelled.
+    /// @custom:ensures msg.sender == old(pendingDistributor) && distributor == msg.sender && pendingDistributor == address(0)
+    /// @custom:ensures _specNoDistributorFeeUpdate()
+    /// @custom:succeeds-if msg.sender == pendingDistributor && pendingDistributor != address(0)
     function acceptDistributor() external override {
         address pending = pendingDistributor;
         if (pending == address(0)) revert DistributorTransferNotPending();
         if (msg.sender != pending) revert NotPendingDistributor();
 
         address previous = distributor;
+        /// @custom:ghost currentDistributor = pending
         distributor = pending;
         delete pendingDistributor;
         if (_pendingDistributorFeeUpdate.pending) {
@@ -398,6 +503,7 @@ contract EarnVault is IEarnVault {
 
     /// @notice Rotates the fast pause-only and bounded async cancellation seats together.
     /// @dev The operator may preserve either seat by passing its current address.
+    /// @custom:ensures msg.sender == operator && emergencyGuardian == newGuardian && asyncJanitor == newJanitor
     function setEmergencyRoles(address newGuardian, address newJanitor) external override {
         if (msg.sender != operator) revert NotOperator();
         emergencyGuardian = newGuardian;
@@ -408,6 +514,10 @@ contract EarnVault is IEarnVault {
     /// @notice Pauses or unpauses deposits, in-kind entry, contributions, and surplus absorption
     ///         without blocking exits.
     /// @dev The guardian may only pause. The operator may pause or unpause.
+    /// @notice The operator pauses or unpauses; the guardian can only pause.
+    /// @custom:ensures depositsPaused == paused
+    /// @custom:ensures msg.sender == operator || (msg.sender == emergencyGuardian && paused)
+    /// @custom:succeeds-if msg.sender == operator || (msg.sender == emergencyGuardian && paused)
     function setDepositsPaused(bool paused) external override {
         if (msg.sender != operator) {
             if (msg.sender != emergencyGuardian) revert NotEmergencyGuardianOrOperator();
@@ -421,6 +531,7 @@ contract EarnVault is IEarnVault {
     /// @notice Updates the maximum active assets permitted after a voluntary inflow.
     /// @dev Zero disables the limit. Lowering the limit below current managed assets does not force
     ///      an exit; it blocks later voluntary inflows until exits reopen capacity or the limit changes.
+    /// @custom:ensures msg.sender == operator && maxManagedAssets == newMaxManagedAssets
     function setMaxManagedAssets(uint256 newMaxManagedAssets) external override {
         if (msg.sender != operator) revert NotOperator();
         uint256 previousMaxManagedAssets = maxManagedAssets;
@@ -434,6 +545,9 @@ contract EarnVault is IEarnVault {
     ///         empty-pool rate normalizes engine and EarnShare precision. `minEarnShares` protects
     ///         the caller from quote drift, and the EarnVault rejects conversion floor loss above one
     ///         basis point even when the caller obtained a quote after the anchor was distorted.
+    /// @custom:ensures !old(depositsPaused) && earnShares != 0 && earnShares >= minEarnShares
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1
     function deposit(uint256 assets, address receiver, uint256 minEarnShares)
         external
         override
@@ -445,6 +559,9 @@ contract EarnVault is IEarnVault {
 
     /// @notice Deposits assets from the caller and mints EarnShare only to the caller.
     /// @dev Separate selector for access keys scoped to self-recipient calls.
+    /// @custom:ensures !old(depositsPaused) && earnShares != 0 && earnShares >= minEarnShares
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1
     function deposit(uint256 assets, uint256 minEarnShares)
         external
         override
@@ -454,6 +571,13 @@ contract EarnVault is IEarnVault {
         return _deposit(assets, msg.sender, minEarnShares);
     }
 
+    /// @dev Not proved: after the first entry into an empty pool the fee high-water mark is at or below the
+    ///      entrants' value per EarnShare; EarnFees' principal-entry update only raises the mark.
+    /// @dev Not proved: the backing value of a live supply is at least its supply times a minimum value per
+    ///      EarnShare over earnShareScale; the vault requires only nonzero backing value before an entry.
+    /// @dev Not proved: with deposits unpaused, a nonzero amount, receiver and minimum, a backed or empty
+    ///      pool, an engine that credits the reported shares and a token that moves the assets, a deposit
+    ///      within the managed-assets limit and the one-basis-point conversion bound returns normally.
     function _deposit(uint256 assets, address receiver, uint256 minEarnShares) internal returns (uint256 earnShares) {
         if (depositsPaused) revert DepositsPaused();
         if (assets == 0) revert ZeroAmount();
@@ -465,6 +589,11 @@ contract EarnVault is IEarnVault {
         _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
+        // Fees are checkpointed first, so the entry is priced against the post-fee supply, and an entry into
+        // an empty pool is priced at the normalized empty-pool anchor rather than the previous cohort's rate.
+        /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
+        /// @custom:assert rateEarnShares == currentSupply || rateEarnShares == earnShareScale
+        /// @custom:assert currentSupply == 0 ==> rateEarnShares == earnShareScale && rateEngineShares == rewardRateBaseline
 
         _safeTransferFrom(asset, msg.sender, address(this), assets);
         _safeApprove(asset, engine, 0);
@@ -478,13 +607,18 @@ contract EarnVault is IEarnVault {
         if (earnShares == 0) revert InsufficientOutput();
         if (earnShares < minEarnShares) revert MinimumEarnSharesNotMet(minEarnShares, earnShares);
         _requireAcceptableConversion(receivedEngineShares, earnShares);
-
+        /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
+        /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
         _reanchorAfterEntry(rateEngineShares, rateEarnShares);
         _requireWithinManagedAssetsLimit();
+        /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (supplyBefore == 0 || accruedFees.activeAssets != 0) {
+            /// @custom:ghost baselineEntries = baselineEntries + 1
             IEarnFees(earnFees).initializeBaselines();
         }
+        // The first entry into an empty pool always updates the fee baselines.
+        /// @custom:assert supplyBefore == 0 ==> baselineEntries == old(baselineEntries) + 1
         emit Deposited(msg.sender, receiver, assets, earnShares);
     }
 
@@ -495,6 +629,9 @@ contract EarnVault is IEarnVault {
     ///      crystallized before the new backing enters, and the proportional EarnShare mint prevents
     ///      the incoming principal from being treated as positive value accrual. The same one-basis-point
     ///      conversion-loss ceiling as {deposit} applies independently of `minEarnShares`.
+    /// @custom:ensures !old(depositsPaused) && earnShares != 0 && earnShares >= minEarnShares
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1
     function depositVenueShares(uint256 venueShares, address receiver, uint256 minEarnShares)
         external
         override
@@ -506,6 +643,9 @@ contract EarnVault is IEarnVault {
 
     /// @notice Deposits venue shares from the caller and mints EarnShare only to the caller.
     /// @dev Separate selector for access keys scoped to self-recipient calls.
+    /// @custom:ensures !old(depositsPaused) && earnShares != 0 && earnShares >= minEarnShares
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1
     function depositVenueShares(uint256 venueShares, uint256 minEarnShares)
         external
         override
@@ -529,6 +669,11 @@ contract EarnVault is IEarnVault {
         _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
+        // Fees are checkpointed first, so the entry is priced against the post-fee supply, and an entry into
+        // an empty pool is priced at the normalized empty-pool anchor rather than the previous cohort's rate.
+        /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
+        /// @custom:assert rateEarnShares == currentSupply || rateEarnShares == earnShareScale
+        /// @custom:assert currentSupply == 0 ==> rateEarnShares == earnShareScale && rateEngineShares == rewardRateBaseline
 
         _requireCapability(engine, type(IEarnEngineInKindDeposit).interfaceId);
         uint256 engineSharesBefore = rawEngineShares();
@@ -539,13 +684,18 @@ contract EarnVault is IEarnVault {
         if (earnShares == 0) revert InsufficientOutput();
         if (earnShares < minEarnShares) revert MinimumEarnSharesNotMet(minEarnShares, earnShares);
         _requireAcceptableConversion(receivedEngineShares, earnShares);
-
+        /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
+        /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
         _reanchorAfterEntry(rateEngineShares, rateEarnShares);
         _requireWithinManagedAssetsLimit();
+        /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (supplyBefore == 0 || accruedFees.activeAssets != 0) {
+            /// @custom:ghost baselineEntries = baselineEntries + 1
             IEarnFees(earnFees).initializeBaselines();
         }
+        // The first entry into an empty pool always updates the fee baselines.
+        /// @custom:assert supplyBefore == 0 ==> baselineEntries == old(baselineEntries) + 1
         emit VenueSharesDeposited(msg.sender, receiver, venueShares, receivedEngineShares, earnShares);
     }
 
@@ -554,6 +704,18 @@ contract EarnVault is IEarnVault {
     ///      then the conversion anchor is restated against the unchanged EarnShare
     ///      supply. With open async exits, only the active pool participates because queued claims
     ///      have already burned their EarnShare and left active NAV.
+    /// @custom:ensures !old(depositsPaused) && assets != 0 && receivedEngineShares != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 2
+    /// @custom:ensures _managedEngineShares <= cappedManagedShares
+    /// @custom:ensures _specNormalizedRate(anchorEngineShares, anchorEarnShares) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER
+    /// @dev The reward-rate limit holds after the final fee checkpoint, and the managed backing at return is
+    ///      at most the count that passed the managed-assets limit.
+    ///      Not proved: totalAssets() <= maxManagedAssets at return; the engine valuation is read again after
+    ///      the final fee checkpoint.
+    ///      Not proved: with deposits unpaused, a nonzero amount, a live supply, an engine that credits the
+    ///      reported shares and a token that moves the assets, a contribution within the managed-assets and
+    ///      reward-rate limits returns normally.
     function contribute(uint256 assets) external override nonReentrant returns (uint256 receivedEngineShares) {
         if (depositsPaused) revert DepositsPaused();
         if (assets == 0) revert ZeroAmount();
@@ -563,6 +725,8 @@ contract EarnVault is IEarnVault {
 
         _accrueFees();
 
+        // Gains up to here are checkpointed before the contribution enters.
+        /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
         _safeTransferFrom(asset, msg.sender, address(this), assets);
         _safeApprove(asset, engine, 0);
         _safeApprove(asset, engine, assets);
@@ -570,7 +734,9 @@ contract EarnVault is IEarnVault {
         uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
         _safeApprove(asset, engine, 0);
         receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
+        /// @custom:ghost cappedManagedShares = _managedEngineShares
         _requireWithinManagedAssetsLimit();
+        /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
 
         _reanchorAtRest();
         _accrueFees();
@@ -583,6 +749,11 @@ contract EarnVault is IEarnVault {
     /// @dev Raw engine shares are otherwise quarantined: they do not affect active backing, fees, deposits,
     ///      or exits. Absorption is subject to the same pause, capacity, and reward-rate limits as
     ///      an asset contribution.
+    /// @custom:ensures !old(depositsPaused) && engineShares_ != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 2
+    /// @custom:ensures _managedEngineShares <= cappedManagedShares
+    /// @custom:ensures _specNormalizedRate(anchorEngineShares, anchorEarnShares) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER
     function absorbEngineShareSurplus(uint256 engineShares_) external override nonReentrant {
         if (depositsPaused) revert DepositsPaused();
         if (engineShares_ == 0) revert ZeroAmount();
@@ -595,7 +766,9 @@ contract EarnVault is IEarnVault {
         uint256 available = raw > managed ? raw - managed : 0;
         if (engineShares_ > available) revert InsufficientEngineShareSurplus(available, engineShares_);
         _managedEngineShares = managed + engineShares_;
+        /// @custom:ghost cappedManagedShares = _managedEngineShares
         _requireWithinManagedAssetsLimit();
+        /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
 
         _reanchorAtRest();
         _accrueFees();
@@ -606,6 +779,9 @@ contract EarnVault is IEarnVault {
 
     /// @notice Burns `earnShares` of EarnShare pulled from the caller and redeems the rate-converted
     ///         engine shares. Proceeds go directly to `receiver`.
+    /// @custom:ensures assets != 0 && assets >= minAssets && minAssets != 0 && earnShares != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures _managedEngineShares < old(_managedEngineShares)
     function redeem(uint256 earnShares, address receiver, uint256 minAssets)
         external
         override
@@ -617,10 +793,16 @@ contract EarnVault is IEarnVault {
 
     /// @notice Redeems the caller's EarnShare and sends assets only to the caller.
     /// @dev Separate selector for access keys scoped to self-recipient calls.
+    /// @custom:ensures assets != 0 && assets >= minAssets && minAssets != 0 && earnShares != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    /// @custom:ensures _managedEngineShares < old(_managedEngineShares)
     function redeem(uint256 earnShares, uint256 minAssets) external override nonReentrant returns (uint256 assets) {
         return _redeem(earnShares, msg.sender, minAssets);
     }
 
+    /// @dev Not proved: with a nonzero amount, receiver and minimum, the caller's EarnShare and allowance,
+    ///      and an engine that redeems the converted shares for at least the minimum, a redemption returns
+    ///      normally.
     function _redeem(uint256 earnShares, address receiver, uint256 minAssets) internal returns (uint256 assets) {
         if (earnShares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
@@ -634,7 +816,9 @@ contract EarnVault is IEarnVault {
 
         uint256 engineSharesToRedeem = _convertToEngineShares(earnShares);
         if (engineSharesToRedeem == 0) revert InsufficientOutput();
-
+        // The burned EarnShare redeems exactly its engine shares at the post-checkpoint anchor.
+        /// @custom:assert engineSharesToRedeem == earnShares * anchorEngineShares / anchorEarnShares
+        /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
         assets = IEarnEngineRedeem(engine).redeem(engineSharesToRedeem, receiver, minAssets);
         if (assets == 0) revert InsufficientOutput();
         if (assets < minAssets) revert MinimumAssetsNotMet(minAssets, assets);
@@ -648,6 +832,8 @@ contract EarnVault is IEarnVault {
     ///         actually consumed (pulled from the caller). Reverts if more than `maxEarnShares`
     ///         would be burned.
     /// @dev Used when public requests are denominated in assets. The caller keeps any unused EarnShare.
+    /// @custom:ensures earnSharesBurned != 0 && earnSharesBurned <= maxEarnShares && assets != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
     function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares)
         external
         override
@@ -659,6 +845,8 @@ contract EarnVault is IEarnVault {
 
     /// @notice Withdraws exact assets only to the caller, burning the caller's EarnShare.
     /// @dev Separate selector for access keys scoped to self-recipient calls.
+    /// @custom:ensures earnSharesBurned != 0 && earnSharesBurned <= maxEarnShares && assets != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
     function withdrawExact(uint256 assets, uint256 maxEarnShares)
         external
         override
@@ -708,6 +896,9 @@ contract EarnVault is IEarnVault {
     ///         entitlement while `EarnFees` snapshots any applicable queued-growth fee state.
     /// @dev The queued backing and burned EarnShare leave active accounting atomically. If the engine
     ///      request fails, the entire transaction—including the burn—reverts.
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) + 1 && engine == old(engine)
+    /// @custom:ensures _managedEngineShares + _pending[requestId].engineShares <= old(_managedEngineShares)
+    /// @custom:ensures _specRecordedRequest(requestId, msg.sender, receiver, earnShares)
     function requestRedeem(uint256 earnShares, bytes calldata engineData, address receiver)
         external
         override
@@ -719,6 +910,9 @@ contract EarnVault is IEarnVault {
 
     /// @notice Requests redemption to `receiver`, ordered consistently with other explicit-receiver calls.
     /// @dev Equivalent to the legacy overload with `engineData` before `receiver`.
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) + 1 && engine == old(engine)
+    /// @custom:ensures _managedEngineShares + _pending[requestId].engineShares <= old(_managedEngineShares)
+    /// @custom:ensures _specRecordedRequest(requestId, msg.sender, receiver, earnShares)
     function requestRedeem(uint256 earnShares, address receiver, bytes calldata engineData)
         external
         override
@@ -730,6 +924,9 @@ contract EarnVault is IEarnVault {
 
     /// @notice Requests redemption with the caller as both requester and stored receiver.
     /// @dev Separate selector for access keys scoped to self-recipient calls.
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) + 1 && engine == old(engine)
+    /// @custom:ensures _managedEngineShares + _pending[requestId].engineShares <= old(_managedEngineShares)
+    /// @custom:ensures _specRecordedRequest(requestId, msg.sender, msg.sender, earnShares)
     function requestRedeem(uint256 earnShares, bytes calldata engineData)
         external
         override
@@ -739,6 +936,8 @@ contract EarnVault is IEarnVault {
         return _requestRedeem(earnShares, engineData, msg.sender);
     }
 
+    /// @dev Not proved: the receiver is paid at least a floor of its choosing; the vault takes no asset floor
+    ///      for an async request, and the engine fixes the queued payout that finalization forwards.
     function _requestRedeem(uint256 earnShares, bytes calldata engineData, address receiver)
         internal
         returns (bytes32 requestId)
@@ -760,6 +959,11 @@ contract EarnVault is IEarnVault {
         _decreaseManagedEngineShares(engineSharesToRedeem);
 
         _recordPendingRedeem(requestId, msg.sender, receiver, earnShares, engineSharesToRedeem);
+        // The burned EarnShare and the queued engine shares agree at the post-checkpoint anchor, within the
+        // one-basis-point conversion bound, and the queued shares left active backing.
+        /// @custom:assert _pending[requestId].engineShares == engineSharesToRedeem && _pending[requestId].burnedEarnShares == earnShares
+        /// @custom:assert engineSharesToRedeem == earnShares * anchorEngineShares / anchorEarnShares
+        /// @custom:assert _specAcceptableLoss(earnShares, engineSharesToRedeem * anchorEarnShares / anchorEngineShares)
 
         openRedeemRequestCount += 1;
         _reanchorAtRest();
@@ -768,6 +972,10 @@ contract EarnVault is IEarnVault {
 
     /// @notice ENGINE-ONLY. Forwards a solved queued payout to the stored receiver and closes the
     ///         pending claim. No EarnShare is burned here because it was burned at request time.
+    /// @notice Only the engine finalizes, in the vault's asset, an open request, which closes.
+    /// @custom:ensures msg.sender == engine && asset_ == asset && old(_pending[requestId].open) && !_pending[requestId].open
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) - 1 && engine == old(engine)
+    /// @custom:ensures _specClosedRequest(requestId)
     function finalizeRedeem(bytes32 requestId, address asset_, uint256 amount) external nonReentrant {
         if (msg.sender != engine) revert NotEngine();
         if (asset_ != asset) revert FinalizedAssetMismatch(asset_);
@@ -776,6 +984,7 @@ contract EarnVault is IEarnVault {
 
         address receiver = p.receiver;
         uint256 earnShares = p.burnedEarnShares;
+        /// @custom:ghost openCount = openCount - 1
         delete _pending[requestId];
         openRedeemRequestCount -= 1;
         IEarnFees(earnFees).closeRedeemRequest(requestId);
@@ -794,6 +1003,16 @@ contract EarnVault is IEarnVault {
     ///         pool's current price, snapshotted fee terms apply to queued growth, and the resulting
     ///         EarnShare is minted to the same stored receiver used by finalization.
     /// @param minReceiverEarnShares Nonzero minimum EarnShare that the stored receiver must receive.
+    /// @notice The requester or the async janitor cancels an open request, which closes.
+    /// @custom:ensures msg.sender == old(_pending[requestId].requester) || msg.sender == old(asyncJanitor)
+    /// @custom:ensures old(_pending[requestId].open) && !_pending[requestId].open && minReceiverEarnShares != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) - 1 && engine == old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1 && _specClosedRequest(requestId)
+    /// @dev Not proved: when the cancellation reopens an empty pool, the fee baselines restart at the
+    ///      re-entry's value; EarnFees sets them when it settles the cancellation.
+    ///      Not proved: for an open request, called by its requester or the janitor with a nonzero minimum,
+    ///      an engine that returns the queued shares and values them, and a minimum the re-entry meets, a
+    ///      cancellation returns normally.
     function cancelRedeem(bytes32 requestId, uint256 minReceiverEarnShares) external override nonReentrant {
         if (minReceiverEarnShares == 0) revert ZeroMinimumEarnShares();
         PendingRedeem storage p = _pending[requestId];
@@ -817,6 +1036,7 @@ contract EarnVault is IEarnVault {
         uint256 returnedEngineShares = heldAfter - heldBefore;
         _managedEngineShares += returnedEngineShares;
 
+        /// @custom:ghost openCount = openCount - 1
         delete _pending[requestId];
         openRedeemRequestCount -= 1;
 
@@ -848,6 +1068,9 @@ contract EarnVault is IEarnVault {
         if (receiverEarnShares < minReceiverEarnShares) {
             revert MinimumEarnSharesNotMet(minReceiverEarnShares, receiverEarnShares);
         }
+        // Fees are checkpointed before the re-entry is minted, and the fee and receiver shares split it.
+        /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
+        /// @custom:assert receiverEarnShares + feeEarnShares == totalReentryEarnShares && receiverEarnShares >= minReceiverEarnShares
         IEarnShare(earnShare).mint(receiver, receiverEarnShares);
         if (activeSupply == 0) {
             // The full exit already reset the reward baseline. Restoring its position must not
@@ -887,6 +1110,16 @@ contract EarnVault is IEarnVault {
     ///        the managed replacement count must independently meet the same floor.
     /// @param minAssetsRetained Minimum base-asset value retained by the replacement position. When active
     ///        backing exists, its managed value must independently meet the same floor.
+    /// @notice Only the operator of an operator-migratable deployment, with no open async requests, migrates.
+    /// @custom:ensures msg.sender == old(operator) && old(engineMigrationMode) == EngineMigrationMode.OperatorEnabled
+    /// @custom:ensures old(openRedeemRequestCount) == 0 && openRedeemRequestCount == 0
+    /// @custom:ensures engine == newEngine && newEngine != address(0) && newEngine != old(engine)
+    /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1
+    /// @custom:ensures anchorEngineShares == _managedEngineShares || _specEmptyAnchor()
+    /// @dev Not proved: for the operator of an operator-migratable deployment with no open requests, a
+    ///      replacement engine for this vault and asset, an old engine that redeems all of its shares at once
+    ///      and a replacement that takes all of the assets within the stated floors, a migration returns
+    ///      normally.
     function migrateEngine(address newEngine, uint256 minNewEngineShares, uint256 minAssetsRetained)
         external
         override
@@ -972,6 +1205,7 @@ contract EarnVault is IEarnVault {
             }
         }
 
+        /// @custom:ghost currentEngine = newEngine
         engine = newEngine;
         _managedEngineShares = newEngineShares;
 
@@ -1058,6 +1292,8 @@ contract EarnVault is IEarnVault {
     /// @notice Additional assets that may enter before reaching the current managed-assets limit.
     /// @dev Returns `type(uint256).max` when no limit is configured. This is a quote, not a reservation;
     ///      venue value and concurrent inflows may change before execution.
+    /// @custom:ensures maxManagedAssets == 0 ==> assets == type(uint256).max
+    /// @custom:ensures maxManagedAssets != 0 ==> assets <= maxManagedAssets
     function remainingDepositCapacity() external view override returns (uint256 assets) {
         uint256 maximum = maxManagedAssets;
         if (maximum == 0) return type(uint256).max;
@@ -1105,14 +1341,19 @@ contract EarnVault is IEarnVault {
         return _convertEngineSharesToEarnShares(engineShares_);
     }
 
+    /// @custom:ensures result == earnShares * anchorEngineShares / anchorEarnShares
+    /// @custom:succeeds-if anchorEarnShares != 0 && earnShares * anchorEngineShares / anchorEarnShares <= type(uint256).max
     function _convertToEngineShares(uint256 earnShares) internal view returns (uint256) {
         return Math.mulDiv(earnShares, anchorEngineShares, anchorEarnShares);
     }
 
+    /// @custom:ensures result == engineShares_ * anchorEarnShares / anchorEngineShares
+    /// @custom:succeeds-if anchorEngineShares != 0 && engineShares_ * anchorEarnShares / anchorEngineShares <= type(uint256).max
     function _convertEngineSharesToEarnShares(uint256 engineShares_) internal view returns (uint256) {
         return Math.mulDiv(engineShares_, anchorEarnShares, anchorEngineShares);
     }
 
+    /// @custom:ensures result == _specCeilDiv(engineShares_ * anchorEarnShares, anchorEngineShares)
     function _convertEngineSharesToEarnSharesUp(uint256 engineShares_) internal view returns (uint256) {
         return Math.mulDiv(engineShares_, anchorEarnShares, anchorEngineShares, Math.Rounding.Ceil);
     }
@@ -1120,16 +1361,22 @@ contract EarnVault is IEarnVault {
     /// @dev Rejects entries whose floor-rounded EarnShare output represents materially less than
     ///      the engine shares that entered. The one-basis-point protocol ceiling protects callers even
     ///      when a tiny active supply makes an already-quoted conversion pathologically coarse.
+    /// @custom:ensures _specAcceptableLoss(inputShares, outputTokens * anchorEngineShares / anchorEarnShares)
+    /// @custom:succeeds-if anchorEarnShares != 0 && _specAcceptableLoss(inputShares, outputTokens * anchorEngineShares / anchorEarnShares)
     function _requireAcceptableConversion(uint256 inputShares, uint256 outputTokens) internal view {
         uint256 representedShares = _convertToEngineShares(outputTokens);
         _requireAcceptableLoss(inputShares, representedShares);
     }
 
+    /// @custom:ensures _specAcceptableLoss(inputTokens, outputShares * anchorEarnShares / anchorEngineShares)
+    /// @custom:succeeds-if anchorEngineShares != 0 && _specAcceptableLoss(inputTokens, outputShares * anchorEarnShares / anchorEngineShares)
     function _requireAcceptableEarnShareConversion(uint256 inputTokens, uint256 outputShares) internal view {
         uint256 representedTokens = _convertEngineSharesToEarnShares(outputShares);
         _requireAcceptableLoss(inputTokens, representedTokens);
     }
 
+    /// @custom:ensures _specAcceptableLoss(inputAmount, representedAmount)
+    /// @custom:succeeds-if _specAcceptableLoss(inputAmount, representedAmount)
     function _requireAcceptableLoss(uint256 inputAmount, uint256 representedAmount) internal pure {
         if (representedAmount > inputAmount) revert ExcessiveConversionLoss(inputAmount, representedAmount);
         uint256 maximumLoss = inputAmount / CONVERSION_BPS;
@@ -1141,6 +1388,8 @@ contract EarnVault is IEarnVault {
     /// @dev A replacement denomination must represent the old managed/raw split without transferring
     ///      economically material value between active backing and quarantined surplus. Share-count
     ///      rounding favors managed backing, but its value error may not exceed one basis point.
+    /// @custom:ensures _specDistance(actualManagedAssets, expectedManagedAssets) <= expectedManagedAssets / CONVERSION_BPS
+    /// @custom:succeeds-if _specDistance(actualManagedAssets, expectedManagedAssets) <= expectedManagedAssets / CONVERSION_BPS
     function _requireAcceptableMigrationClassification(uint256 expectedManagedAssets, uint256 actualManagedAssets)
         internal
         pure
@@ -1175,12 +1424,17 @@ contract EarnVault is IEarnVault {
     /// @dev A principal deposit must not recapitalize existing EarnShare after its active engine
     ///      position has zero base-asset value, even when raw engine shares remain. Permissionless
     ///      `contribute` is the explicit path for deliberately restoring value without issuing a claim.
+    /// @custom:ensures supply == 0 || backingAssets != 0
+    /// @custom:succeeds-if supply == 0 || backingAssets != 0
     function _requireDepositBacking(uint256 supply, uint256 backingAssets) internal pure {
         if (supply != 0 && backingAssets == 0) revert ActiveSupplyWithoutBacking();
     }
 
     /// @dev Active fee checkpoints already read managed assets. Reuse that verified value rather
     ///      than calling through the engine again; inactive fees retain the original backing read.
+    /// @custom:ensures supply == 0 || (accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets) != 0
+    /// @dev The check is on the asset value of managed backing, never on a share count.
+    ///      Not proved: a nonzero accruedActiveAssets is the engine's valuation of the managed shares.
     function _requireDepositBackingAfterAccrual(uint256 supply, uint256 accruedActiveAssets) internal view {
         _requireDepositBacking(supply, accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets);
     }
@@ -1197,6 +1451,11 @@ contract EarnVault is IEarnVault {
     /// @dev Restates the anchor from exact active backing and supply. Exact pair equality is required:
     ///      a floor conversion can map a changed supply to the same held count while still preserving
     ///      a stale pre-fee rate that lets holders consume backing allocated to fee EarnShare.
+    /// @notice Restates the anchor from exact active backing and supply, capping managed backing at raw custody.
+    /// @custom:ensures held == _managedEngineShares && held <= old(_managedEngineShares)
+    /// @custom:ensures (supply != 0 && held != 0) ==> anchorEngineShares == held && anchorEarnShares == supply
+    /// @custom:ensures (supply == 0 || held == 0) ==> _specEmptyAnchor()
+    /// @custom:ensures (old(rewardRateBaseline) != 0 ==> rewardRateBaseline != 0) && earnShareScale == old(earnShareScale)
     function _reanchorAtRest() internal returns (uint256 supply, uint256 held) {
         supply = IEarnShare(earnShare).totalSupply();
         uint256 raw = rawEngineShares();
@@ -1220,6 +1479,12 @@ contract EarnVault is IEarnVault {
     ///      minted at the pre-entry anchor represents an exact floor-rounded engine-share count;
     ///      only that count becomes managed backing. Any unrepresented entry remainder stays raw
     ///      surplus and may be absorbed later through the explicit capped reward path.
+    /// Not proved: held <= supply * rateEngineShares / rateEarnShares. The verifier answers the second totalSupply()
+    /// read (in _reanchorAtRest) afresh after the write to _managedEngineShares, so it can't tie the two reads.
+    /// @custom:ensures held == _managedEngineShares && held <= old(_managedEngineShares)
+    /// @custom:ensures (old(rewardRateBaseline) != 0 ==> rewardRateBaseline != 0) && earnShareScale == old(earnShareScale)
+    /// @custom:ensures (supply != 0 && held != 0) ==> anchorEngineShares == held && anchorEarnShares == supply
+    /// @custom:ensures (supply == 0 || held == 0) ==> _specEmptyAnchor()
     function _reanchorAfterEntry(uint256 rateEngineShares, uint256 rateEarnShares)
         internal
         returns (uint256 supply, uint256 held)
@@ -1232,6 +1497,7 @@ contract EarnVault is IEarnVault {
 
     /// @dev Empty pools use whole-share units instead of a raw-unit 1:1 rate. This keeps the first
     ///      EarnShare mint normalized even when the engine and EarnShare use different decimals.
+    /// @custom:ensures _specEmptyAnchor()
     function _resetEmptyAnchor(address engine_) internal {
         anchorEngineShares = IEarnEngine(engine_).shareScale();
         if (anchorEngineShares == 0) revert InvalidEngineShareScale();
@@ -1239,6 +1505,9 @@ contract EarnVault is IEarnVault {
         rewardRateBaseline = anchorEngineShares;
     }
 
+    /// @notice Measured custody, not the engine's report, is what becomes managed backing; both must agree.
+    /// @custom:ensures receivedEngineShares != 0 && receivedEngineShares == reportedEngineShares
+    /// @custom:ensures _managedEngineShares == old(_managedEngineShares) + receivedEngineShares
     function _recordEngineShareIncrease(uint256 rawSharesBefore, uint256 reportedEngineShares)
         internal
         returns (uint256 receivedEngineShares)
@@ -1250,23 +1519,34 @@ contract EarnVault is IEarnVault {
         _managedEngineShares += receivedEngineShares;
     }
 
+    /// @custom:ensures _managedEngineShares == old(_managedEngineShares) - engineShares_
+    /// @custom:succeeds-if engineShares_ <= _managedEngineShares
     function _decreaseManagedEngineShares(uint256 engineShares_) internal {
         uint256 managed = _managedEngineShares;
         if (engineShares_ > managed) revert InsufficientOutput();
         _managedEngineShares = managed - engineShares_;
     }
 
+    /// @custom:ensures result == _specNormalizedRate(engineShareAnchor, supplyAnchor)
+    /// @custom:succeeds-if engineShareAnchor == 0 || (supplyAnchor != 0 && _specNormalizedRate(engineShareAnchor, supplyAnchor) <= type(uint256).max)
     function _normalizedRate(uint256 engineShareAnchor, uint256 supplyAnchor) internal view returns (uint256) {
         if (engineShareAnchor == 0) return 0;
         return Math.mulDiv(engineShareAnchor, earnShareScale, supplyAnchor, Math.Rounding.Ceil);
     }
 
+    /// @notice Contributions may raise the normalized rate to at most MAX_REWARD_RATE_MULTIPLIER times the baseline.
+    /// @custom:requires rewardRateBaseline != 0 && anchorEarnShares != 0
+    /// @custom:ensures _specNormalizedRate(anchorEngineShares, anchorEarnShares) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER
+    /// @custom:succeeds-if _specNormalizedRate(anchorEngineShares, anchorEarnShares) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER && rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER <= type(uint256).max
     function _requireRewardRateWithinLimit() internal view {
         uint256 baseline = rewardRateBaseline;
         uint256 current = _normalizedRate(anchorEngineShares, anchorEarnShares);
         if (!_isRewardRateWithinLimit(current)) revert RewardRateLimitExceeded(current, baseline);
     }
 
+    /// @custom:requires rewardRateBaseline != 0
+    /// @custom:ensures result == (current <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER)
+    /// @custom:succeeds-if true
     function _isRewardRateWithinLimit(uint256 current) internal view returns (bool) {
         uint256 baseline = rewardRateBaseline;
         uint256 wholeMultiples = current / baseline;
@@ -1274,6 +1554,8 @@ contract EarnVault is IEarnVault {
                 || (wholeMultiples == MAX_REWARD_RATE_MULTIPLIER && current % baseline != 0));
     }
 
+    /// @custom:ensures distributor != address(0) && msg.sender == distributor
+    /// @custom:succeeds-if distributor != address(0) && msg.sender == distributor
     function _requireDistributor() internal view {
         if (distributor == address(0) || msg.sender != distributor) revert NotDistributor();
     }
@@ -1283,6 +1565,8 @@ contract EarnVault is IEarnVault {
         return fees.feeConfig(fees.currentFeeConfigId());
     }
 
+    /// @notice An operator configuration must keep the distributor's reserved item (fees.md, "Fee policies").
+    /// @custom:ensures distributor != address(0) ==> _specProtectsDistributorFee(config, _distributorFee)
     function _validateOperatorFeeConfig(FeeConfig calldata config) internal view {
         IEarnFees(earnFees).validateFeeConfig(config);
         if (distributor == address(0)) return;
@@ -1297,6 +1581,13 @@ contract EarnVault is IEarnVault {
         IEarnFees(earnFees).validateFeeConfig(_replaceDistributorFee(candidate, _distributorFee, pendingFee));
     }
 
+    /// @notice The distributor's item is fixed fee 0, followed by the operator's items in order; the excess fee is kept.
+    /// @custom:ensures _specProtectsDistributorFee(config, currentFee)
+    /// @custom:ensures result.fixedFeeCount == _specOperatorFeeCount(config, currentFee) + (nextFee.rateBps != 0 ? 1 : 0)
+    /// @custom:ensures nextFee.rateBps != 0 ==> _specSameFee(result.fixedFees[0], nextFee)
+    /// @custom:ensures forall uint256 i :: i < _specOperatorFeeCount(config, currentFee) ==> _specOperatorFeeKept(result, config, currentFee, nextFee, i)
+    /// @custom:ensures forall uint256 i :: (i >= result.fixedFeeCount && i < MAX_FIXED_FEE_RECIPIENTS) ==> _specEmptyFee(result.fixedFees[i])
+    /// @custom:ensures _specSameExcess(result, config)
     function _replaceDistributorFee(
         FeeConfig memory config,
         FixedFeeRecipient memory currentFee,
@@ -1317,12 +1608,23 @@ contract EarnVault is IEarnVault {
             resultStart = 1;
         }
         result.fixedFeeCount = operatorCount + resultStart;
+        /// @custom:invariant i <= operatorCount && operatorCount == _specOperatorFeeCount(config, currentFee)
+        /// @custom:invariant result.fixedFeeCount == operatorCount + resultStart && resultStart == (nextFee.rateBps != 0 ? 1 : 0)
+        /// @custom:invariant operatorStart == (currentFee.rateBps != 0 ? 1 : 0) && operatorCount + operatorStart == config.fixedFeeCount
+        // Each copy is bounds-checked, so a count above the array's length reverts before the loop ends.
+        /// @custom:invariant i == 0 || resultStart + i <= MAX_FIXED_FEE_RECIPIENTS
+        /// @custom:invariant nextFee.rateBps != 0 ==> _specSameFee(result.fixedFees[0], nextFee)
+        /// @custom:invariant forall uint256 k :: k < i ==> _specOperatorFeeKept(result, config, currentFee, nextFee, k)
+        /// @custom:invariant forall uint256 k :: (k >= resultStart + i && k < MAX_FIXED_FEE_RECIPIENTS) ==> _specEmptyFee(result.fixedFees[k])
+        /// @custom:invariant _specEmptyExcess(result)
         for (uint8 i = 0; i < operatorCount; i++) {
             result.fixedFees[resultStart + i] = config.fixedFees[operatorStart + i];
         }
         result.excess = config.excess;
     }
 
+    /// @custom:ensures _specProtectsDistributorFee(config, expected)
+    /// @custom:succeeds-if _specProtectsDistributorFee(config, expected)
     function _requireProtectedDistributorFee(FeeConfig memory config, FixedFeeRecipient memory expected) internal pure {
         if (expected.rateBps == 0) {
             if (config.fixedFeeCount > 3) revert InvalidDistributorFeeConfiguration();
@@ -1338,7 +1640,10 @@ contract EarnVault is IEarnVault {
         if (!isFeeValuationFresh()) revert FeeValuationStale();
     }
 
+    /// @dev No contract of its own: it calls out mid-update, so the verifier inlines it into each caller, which
+    ///      holds the lock and the invariants. _reanchorAtRest's contract gives the anchor facts.
     function _accrueFees() internal returns (FeePreview memory result, uint256 supply, uint256 backing) {
+        /// @custom:ghost feeCheckpoints = feeCheckpoints + 1
         result = IEarnFees(earnFees).accrueFees();
         if (result.totalFeeEarnShares != 0) {
             IEarnShare(earnShare).mint(earnFees, result.totalFeeEarnShares);
@@ -1348,6 +1653,8 @@ contract EarnVault is IEarnVault {
         (supply, backing) = _reanchorAtRest();
     }
 
+    /// @dev No contract of its own: it calls out after recording, so the verifier inlines it into each caller,
+    ///      which holds the lock and the invariants.
     function _recordPendingRedeem(
         bytes32 requestId,
         address requester,
@@ -1361,6 +1668,7 @@ contract EarnVault is IEarnVault {
         pending.requester = requester;
         pending.burnedEarnShares = earnShares;
         pending.engineShares = engineShares_;
+        /// @custom:ghost openCount = openCount + 1
         pending.open = true;
         if (IEarnFees(earnFees).feesActive() && isFeeValuationFresh()) {
             uint256 requestValue = IEarnEngine(engine).valueOf(engineShares_);
@@ -1411,5 +1719,117 @@ contract EarnVault is IEarnVault {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------- spec helpers, never executed
+
+    /// @custom:spec `ceil(numerator / denominator)`.
+    function _specCeilDiv(uint256 numerator, uint256 denominator) internal pure returns (uint256) {
+        return (numerator + denominator - 1) / denominator;
+    }
+
+    /// @custom:spec `|a - b|`.
+    function _specDistance(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a - b : b - a;
+    }
+
+    /// @custom:spec A conversion may round down, but may not lose more than one basis point of its input.
+    function _specAcceptableLoss(uint256 inputAmount, uint256 representedAmount) internal pure returns (bool) {
+        return representedAmount <= inputAmount && inputAmount - representedAmount <= inputAmount / CONVERSION_BPS;
+    }
+
+    /// @custom:spec Normalized engine shares per whole EarnShare, rounded up (0 without backing).
+    function _specNormalizedRate(uint256 engineShareAnchor, uint256 supplyAnchor) internal view returns (uint256) {
+        return engineShareAnchor == 0 ? 0 : _specCeilDiv(engineShareAnchor * earnShareScale, supplyAnchor);
+    }
+
+    /// @custom:spec The empty-pool anchor: whole engine share per whole EarnShare, and a fresh reward baseline.
+    function _specEmptyAnchor() internal view returns (bool) {
+        return anchorEngineShares != 0 && anchorEarnShares == earnShareScale && rewardRateBaseline == anchorEngineShares;
+    }
+
+    /// @custom:spec Request `id` holds a receiver, a nonzero burned EarnShare amount and nonzero queued engine shares.
+    function _specLiveRequest(bytes32 id) internal view returns (bool) {
+        return
+            _pending[id].receiver != address(0) && _pending[id].burnedEarnShares != 0 && _pending[id].engineShares != 0;
+    }
+
+    /// @custom:spec Request `id` holds no burned EarnShare and no queued engine shares.
+    function _specClosedRequest(bytes32 id) internal view returns (bool) {
+        return _pending[id].burnedEarnShares == 0 && _pending[id].engineShares == 0;
+    }
+
+    /// @custom:spec No distributor fee update is scheduled.
+    function _specNoDistributorFeeUpdate() internal view returns (bool) {
+        return !_pendingDistributorFeeUpdate.pending && _pendingDistributorFeeUpdate.recipient == address(0)
+            && _pendingDistributorFeeUpdate.rateBps == 0 && _pendingDistributorFeeUpdate.executableAt == 0;
+    }
+
+    /// @custom:spec Request `requestId` is open for `requester`, pays `receiver` and burned `earnShares`.
+    function _specRecordedRequest(bytes32 requestId, address requester, address receiver, uint256 earnShares)
+        internal
+        view
+        returns (bool)
+    {
+        return _pending[requestId].open && _pending[requestId].requester == requester
+            && _pending[requestId].receiver == receiver && _pending[requestId].burnedEarnShares == earnShares;
+    }
+
+    /// @custom:spec A configuration keeps the distributor's reserved item as its first fixed fee; without one it
+    ///     leaves a slot free for it.
+    function _specProtectsDistributorFee(FeeConfig memory config, FixedFeeRecipient memory fee)
+        internal
+        pure
+        returns (bool)
+    {
+        return fee.rateBps == 0
+            ? config.fixedFeeCount < config.fixedFees.length
+            : config.fixedFeeCount != 0 && _specSameFee(config.fixedFees[0], fee);
+    }
+
+    /// @custom:spec The number of operator fixed fees in `config`, after the distributor's item if it has one.
+    function _specOperatorFeeCount(FeeConfig memory config, FixedFeeRecipient memory currentFee)
+        internal
+        pure
+        returns (uint256)
+    {
+        return config.fixedFeeCount - (currentFee.rateBps != 0 ? 1 : 0);
+    }
+
+    /// @custom:spec Operator fee `i` of `config` sits right after the new distributor item in `result`.
+    function _specOperatorFeeKept(
+        FeeConfig memory result,
+        FeeConfig memory config,
+        FixedFeeRecipient memory currentFee,
+        FixedFeeRecipient memory nextFee,
+        uint256 i
+    ) internal pure returns (bool) {
+        return _specSameFee(
+            result.fixedFees[i + (nextFee.rateBps != 0 ? 1 : 0)],
+            config.fixedFees[i + (currentFee.rateBps != 0 ? 1 : 0)]
+        );
+    }
+
+    /// @custom:spec Two fixed fees name the same recipient and rate.
+    function _specSameFee(FixedFeeRecipient memory a, FixedFeeRecipient memory b) internal pure returns (bool) {
+        return a.account == b.account && a.rateBps == b.rateBps;
+    }
+
+    /// @custom:spec An unused fixed-fee slot.
+    function _specEmptyFee(FixedFeeRecipient memory fee) internal pure returns (bool) {
+        return fee.account == address(0) && fee.rateBps == 0;
+    }
+
+    /// @custom:spec `result` carries `config`'s excess fee unchanged.
+    function _specSameExcess(FeeConfig memory result, FeeConfig memory config) internal pure returns (bool) {
+        return result.excess.enabled == config.excess.enabled && result.excess.account == config.excess.account
+            && result.excess.annualTargetRateBps == config.excess.annualTargetRateBps
+            && result.excess.excessFeeRateBps == config.excess.excessFeeRateBps;
+    }
+
+    /// @custom:spec No excess fee is set yet.
+    function _specEmptyExcess(FeeConfig memory result) internal pure returns (bool) {
+        return !result.excess.enabled && result.excess.account == address(0) && result.excess.annualTargetRateBps == 0
+            && result.excess.excessFeeRateBps == 0;
     }
 }

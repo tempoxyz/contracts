@@ -28,20 +28,37 @@ describe('solidity-deps solar installation', () => {
     const result = fixture.install()
     expect(result.status, result.stderr).toBe(0)
     expect(fixture.calls()).toHaveLength(1)
+    // Solar is built from a clone with tags so a release revision reports its release version.
+    const [clone, checkout] = fixture.gitCalls()
+    expect(clone).toEqual([
+      'clone',
+      '--quiet',
+      '--filter=blob:none',
+      'https://github.com/paradigmxyz/solar',
+      expect.any(String),
+    ])
+    const source = clone![4]!
+    expect(source.startsWith(join(fixture.root, '.solar', '.source-'))).toBe(true)
+    expect(checkout).toEqual([
+      '-C',
+      source,
+      '-c',
+      'advice.detachedHead=false',
+      'checkout',
+      '--quiet',
+      revision,
+    ])
     expect(fixture.calls()[0]).toEqual([
       'install',
       '--quiet',
       '--locked',
-      '--git',
-      'https://github.com/paradigmxyz/solar',
-      '--rev',
-      revision,
+      '--path',
+      join(source, 'crates/solar'),
       '--root',
       expect.any(String),
-      'solar-compiler',
     ])
-    expect(fixture.calls()[0]![8]).not.toBe(fixture.directory)
-    expect(fixture.calls()[0]![8]!.startsWith(join(fixture.root, '.solar', '.build-'))).toBe(true)
+    expect(fixture.calls()[0]![6]).not.toBe(fixture.directory)
+    expect(fixture.calls()[0]![6]!.startsWith(join(fixture.root, '.solar', '.build-'))).toBe(true)
     expect(readFileSync(fixture.binary, 'utf8')).toBe(installedBytes)
     expect(JSON.parse(readFileSync(fixture.receipt, 'utf8'))).toEqual({
       schemaVersion: 1,
@@ -149,6 +166,17 @@ if (process.env.TEST_CARGO_FAIL === '1') process.exit(33);
 `,
   )
   chmodSync(join(root, 'bin/cargo'), 0o700)
+  const gitCallsFile = join(root, 'git-calls.jsonl')
+  writeFileSync(
+    join(root, 'bin/git'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(gitCallsFile)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'clone') fs.mkdirSync(args[args.length - 1], { recursive: true });
+`,
+  )
+  chmodSync(join(root, 'bin/git'), 0o700)
   const directory = join(root, '.solar', revision)
   const binary = join(directory, 'bin/solar')
   const receipt = join(directory, 'install-receipt.json')
@@ -160,6 +188,13 @@ if (process.env.TEST_CARGO_FAIL === '1') process.exit(33);
     calls: () =>
       existsSync(callsFile)
         ? readFileSync(callsFile, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as string[])
+        : [],
+    gitCalls: () =>
+      existsSync(gitCallsFile)
+        ? readFileSync(gitCallsFile, 'utf8')
             .trim()
             .split('\n')
             .map((line) => JSON.parse(line) as string[])

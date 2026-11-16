@@ -11,6 +11,7 @@ import { ICardProvider } from "./interfaces/ICardProvider.sol";
 ///      whoever deploys it: deploying it again returns the existing program, and nobody can take its address
 ///      with another provider. A program cannot be changed; a provider replaces one by deploying a new program.
 ///      A Zone admin checks a router's spender's provenance through `isDeployed` and `ProgramDeployed`.
+/// @custom:invariant ROUTER_FACTORY != address(0)
 contract CardFactory {
     /// @notice The `ZoneRouterFactory` whose routers may call every program's `spendFrom`.
     address public immutable ROUTER_FACTORY;
@@ -22,18 +23,21 @@ contract CardFactory {
 
     error ZeroAddress();
 
+    /// @custom:ensures ROUTER_FACTORY == routerFactory_
     constructor(address routerFactory_) {
         if (routerFactory_ == address(0)) revert ZeroAddress();
         ROUTER_FACTORY = routerFactory_;
     }
 
     /// @notice Deploys the program for `programId` and `provider`, or returns it if it exists.
+    /// @custom:ensures isDeployed[program]
     function deploy(bytes32 programId, ICardProvider provider) external returns (address program) {
         program = predict(programId, provider);
         if (isDeployed[program]) return program;
         address deployed = address(new CardSpender{ salt: _salt(programId, provider) }(provider, ROUTER_FACTORY));
         // CREATE2 makes this an invariant; checked so a compiler or EVM change cannot silently diverge.
         if (deployed != program) revert();
+        /// @custom:assert deployed == program
         isDeployed[program] = true;
         emit ProgramDeployed(program, programId, address(provider));
     }

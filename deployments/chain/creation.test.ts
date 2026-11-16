@@ -305,7 +305,8 @@ describe('assertVerifiedCreationTransaction', () => {
       constructorArgs: '0x' as const,
       compiler: {
         ...compiler,
-        version: `0.8.36+commit.d83529b.solar.${artifact.metadata.compiler.version}`,
+        // Solar records its full solc-wrapper version in metadata, as the verifier reports it.
+        version: artifact.metadata.compiler.version,
       },
       minedTransaction: { ...options.minedTransaction, input: changed },
     }
