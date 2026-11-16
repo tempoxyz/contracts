@@ -37,7 +37,10 @@ library CardAdjust {
         // Expiries are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp >= p.expiresAt) revert CardProgram.PurchaseExpired();
-        if (amount == 0 || amount > type(uint64).max || p.standIn) revert CardProgram.InvalidAmount();
+        // A stand-in's amount was approved offline: it can come down but never go up.
+        if (amount == 0 || amount > type(uint64).max || (p.standIn && amount > p.amount)) {
+            revert CardProgram.InvalidAmount();
+        }
         address owner = p.owner;
         uint256 previous = p.amount;
         uint256 held = core.getHold(owner, id).held;
@@ -54,15 +57,22 @@ library CardAdjust {
             p.held += uint64(more);
         } else {
             uint256 less = previous - amount;
-            uint256 tokens = _toTokenUp(less, rate);
-            if (p.legs & 1 == 0 || tokens > held || less > p.held) revert CardProgram.InvalidAmount();
-            cash = held - tokens;
+            if (p.legs & 1 == 0 || less > p.held) revert CardProgram.InvalidAmount();
+            if (p.standIn) {
+                // A stand-in reserves what was there, which may be less than approved: it keeps up to the new amount.
+                uint256 cap = _toTokenUp(amount, rate);
+                cash = held < cap ? held : cap;
+            } else {
+                uint256 tokens = _toTokenUp(less, rate);
+                if (tokens > held) revert CardProgram.InvalidAmount();
+                cash = held - tokens;
+            }
             if (less != 0) CardLimits.giveBack(g, u, c.window, p.epoch, p.day, p.month, less);
             // forge-lint: disable-next-line(unsafe-typecast)
             p.held -= uint64(less);
         }
         // forge-lint: disable-next-line(unsafe-typecast)
-        core.adjust(owner, id, uint128(cash));
+        if (cash != held) core.adjust(owner, id, uint128(cash));
         // forge-lint: disable-next-line(unsafe-typecast)
         p.amount = uint64(amount);
     }
