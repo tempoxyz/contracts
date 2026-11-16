@@ -455,8 +455,18 @@ contract EarnVault is IEarnVault {
     }
 
     function _deposit(uint256 assets, address receiver, uint256 minEarnShares) internal returns (uint256 earnShares) {
+        (earnShares,) = _enter(assets, receiver, minEarnShares, false);
+        emit Deposited(msg.sender, receiver, assets, earnShares);
+    }
+
+    /// @dev Shared principal entry for {deposit} (`inKind` false: `amount` is base assets pulled from the
+    ///      caller) and {depositVenueShares} (`inKind` true: `amount` is venue shares the engine pulls).
+    function _enter(uint256 amount, address receiver, uint256 minEarnShares, bool inKind)
+        internal
+        returns (uint256 earnShares, uint256 receivedEngineShares)
+    {
         if (depositsPaused) revert DepositsPaused();
-        if (assets == 0) revert ZeroAmount();
+        if (amount == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
 
@@ -466,13 +476,14 @@ contract EarnVault is IEarnVault {
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
 
-        _safeTransferFrom(asset, msg.sender, address(this), assets);
-        _safeApprove(asset, engine, 0);
-        _safeApprove(asset, engine, assets);
-        uint256 rawSharesBefore = rawEngineShares();
-        uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
-        _safeApprove(asset, engine, 0);
-        uint256 receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
+        if (inKind) {
+            _requireCapability(engine, type(IEarnEngineInKindDeposit).interfaceId);
+            uint256 engineSharesBefore = rawEngineShares();
+            uint256 reportedEngineShares = IEarnEngineInKindDeposit(engine).depositInKind(amount, msg.sender);
+            receivedEngineShares = _recordEngineShareIncrease(engineSharesBefore, reportedEngineShares);
+        } else {
+            receivedEngineShares = _depositAssetsToEngine(amount);
+        }
 
         earnShares = _convertEngineSharesToEarnShares(receivedEngineShares);
         if (earnShares == 0) revert InsufficientOutput();
@@ -485,7 +496,17 @@ contract EarnVault is IEarnVault {
         if (supplyBefore == 0 || accruedFees.activeAssets != 0) {
             IEarnFees(earnFees).initializeBaselines();
         }
-        emit Deposited(msg.sender, receiver, assets, earnShares);
+    }
+
+    /// @dev Pulls `assets` from the caller into the current engine and records the measured share delta.
+    function _depositAssetsToEngine(uint256 assets) internal returns (uint256 receivedEngineShares) {
+        _safeTransferFrom(asset, msg.sender, address(this), assets);
+        _safeApprove(asset, engine, 0);
+        _safeApprove(asset, engine, assets);
+        uint256 rawSharesBefore = rawEngineShares();
+        uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
+        _safeApprove(asset, engine, 0);
+        receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
     }
 
     /// @notice Deposits shares of the current engine's venue directly and mints rate-converted
@@ -519,33 +540,8 @@ contract EarnVault is IEarnVault {
         internal
         returns (uint256 earnShares)
     {
-        if (depositsPaused) revert DepositsPaused();
-        if (venueShares == 0) revert ZeroAmount();
-        if (receiver == address(0)) revert ZeroAddress();
-        if (minEarnShares == 0) revert ZeroMinimumEarnShares();
-
-        uint256 supplyBefore = IEarnShare(earnShare).totalSupply();
-        (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
-        _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
-        uint256 rateEngineShares = anchorEngineShares;
-        uint256 rateEarnShares = anchorEarnShares;
-
-        _requireCapability(engine, type(IEarnEngineInKindDeposit).interfaceId);
-        uint256 engineSharesBefore = rawEngineShares();
-        uint256 reportedEngineShares = IEarnEngineInKindDeposit(engine).depositInKind(venueShares, msg.sender);
-        uint256 receivedEngineShares = _recordEngineShareIncrease(engineSharesBefore, reportedEngineShares);
-
-        earnShares = _convertEngineSharesToEarnShares(receivedEngineShares);
-        if (earnShares == 0) revert InsufficientOutput();
-        if (earnShares < minEarnShares) revert MinimumEarnSharesNotMet(minEarnShares, earnShares);
-        _requireAcceptableConversion(receivedEngineShares, earnShares);
-
-        IEarnShare(earnShare).mint(receiver, earnShares);
-        _reanchorAfterEntry(rateEngineShares, rateEarnShares);
-        _requireWithinManagedAssetsLimit();
-        if (supplyBefore == 0 || accruedFees.activeAssets != 0) {
-            IEarnFees(earnFees).initializeBaselines();
-        }
+        uint256 receivedEngineShares;
+        (earnShares, receivedEngineShares) = _enter(venueShares, receiver, minEarnShares, true);
         emit VenueSharesDeposited(msg.sender, receiver, venueShares, receivedEngineShares, earnShares);
     }
 
@@ -563,13 +559,7 @@ contract EarnVault is IEarnVault {
 
         _accrueFees();
 
-        _safeTransferFrom(asset, msg.sender, address(this), assets);
-        _safeApprove(asset, engine, 0);
-        _safeApprove(asset, engine, assets);
-        uint256 rawSharesBefore = rawEngineShares();
-        uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
-        _safeApprove(asset, engine, 0);
-        receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
+        receivedEngineShares = _depositAssetsToEngine(assets);
         _requireWithinManagedAssetsLimit();
 
         _reanchorAtRest();
