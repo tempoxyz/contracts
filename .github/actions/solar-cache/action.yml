@@ -1,0 +1,14 @@
+name: Cache solar
+description: >-
+  Restore and save the solar compiler earn/solar.lock pins (every project compiles with it through
+  earn/solar-solc). Run before scripts/solidity-deps.sh, which builds solar on a miss and verifies the
+  installation receipt on a hit.
+runs:
+  using: composite
+  steps:
+    # Building solar takes minutes, so the binary and its installation receipt are cached by revision
+    # and receipt format.
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .solar
+        key: solar-receipt-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/solar.lock') }}

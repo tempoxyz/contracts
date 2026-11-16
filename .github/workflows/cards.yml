@@ -9,6 +9,9 @@ on:
       - 'earn/script/deploy/DeterministicRelease.sol'
       - 'zone-router/src/**'
       - 'scripts/solidity-deps.sh'
+      - 'earn/solar.lock'
+      - 'earn/solar-solc'
+      - '.github/actions/solar-cache/**'
       - 'localnet/**'
       - 'e2e/cards/**'
       - 'e2e/harness/**'
@@ -25,6 +28,9 @@ on:
       - 'earn/script/deploy/DeterministicRelease.sol'
       - 'zone-router/src/**'
       - 'scripts/solidity-deps.sh'
+      - 'earn/solar.lock'
+      - 'earn/solar-solc'
+      - '.github/actions/solar-cache/**'
       - 'localnet/**'
       - 'e2e/cards/**'
       - 'e2e/harness/**'
@@ -63,6 +69,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - uses: ./.github/actions/solar-cache
 
       - name: Install the cards project's Solidity dependencies
         working-directory: .
@@ -122,6 +130,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/solar-cache
+
       - name: Install the cards project's Solidity dependencies
         run: scripts/solidity-deps.sh cards
 
@@ -160,6 +170,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/solar-cache
+
       - name: Install the cards project's Solidity dependencies
         run: scripts/solidity-deps.sh cards
 
@@ -197,6 +209,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - uses: ./.github/actions/solar-cache
 
       - name: Install the cards project's Solidity dependencies
         working-directory: .
