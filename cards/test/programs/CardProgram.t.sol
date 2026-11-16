@@ -666,6 +666,43 @@ contract CardProgramTest is ProgramsEnv {
 
     // Stand-ins, rates and the settlement cursor.
 
+    function test_standIn_adjustDown_keepsWhatIsHeldUpToTheNewAmount() public {
+        usd.mint(alice, 30e6);
+        vm.prank(alice);
+        core.setOfflineCap(address(cards), address(usd), 50e6);
+        vm.prank(issuer);
+        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), 1);
+        assertEq(_hold(alice, P1, CASH).held, 30e6);
+        // Down to 35: the 30 reserved still fits, so nothing moves on the core.
+        vm.prank(issuer);
+        cards.adjust(P1, 35e6);
+        assertEq(_hold(alice, P1, CASH).held, 30e6);
+        assertEq(cards.purchaseOf(P1).amount, 35e6);
+        assertEq(cards.cardOf(CARD).window.daySpent, 35e6);
+        // Down to 20: the hold gives back 10.
+        vm.prank(issuer);
+        cards.adjust(P1, 20e6);
+        assertEq(_hold(alice, P1, CASH).held, 20e6);
+        assertEq(usd.balanceOf(alice), 10e6);
+        assertEq(cards.cardOf(CARD).window.daySpent, 20e6);
+        _assertCoreBalanced();
+    }
+
+    function test_standIn_adjustUp_refused() public {
+        usd.mint(alice, 100e6);
+        vm.prank(issuer);
+        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), 1);
+        vm.prank(issuer);
+        cards.adjust(P1, 30e6);
+        // Not past the offline approval, and not back up after coming down either.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        cards.adjust(P1, 41e6);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        cards.adjust(P1, 35e6);
+    }
+
     function test_standIn_reservesWhatIsThereAndForwardsRepaidDebt() public {
         usd.mint(alice, 50e6);
         vm.prank(alice);
