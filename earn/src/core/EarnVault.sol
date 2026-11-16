@@ -248,7 +248,7 @@ contract EarnVault is IEarnVault {
         maxManagedAssets = controlInit_.maxManagedAssets;
         engineMigrationMode = controlInit_.migrationMode;
 
-        FeeConfig memory initialFeeConfig = IEarnFees(earnFees_).feeConfig(IEarnFees(earnFees_).currentFeeConfigId());
+        FeeConfig memory initialFeeConfig = _currentFeeConfig();
         if (distributor == address(0)) {
             if (distributorUpdateDelay != 0) revert InvalidDistributorConfiguration();
         } else {
@@ -293,7 +293,7 @@ contract EarnVault is IEarnVault {
         (, feeAssets, feeEarnShares,) = _accrueFees();
     }
 
-    function setFeeConfig(FeeConfig calldata config) external override nonReentrant returns (uint64 configId) {
+    function setFeeConfig(FeeConfig memory config) external override nonReentrant returns (uint64 configId) {
         if (msg.sender != operator) revert NotOperator();
         _validateOperatorFeeConfig(config);
         _requireFreshFeeValuation();
@@ -1299,11 +1299,10 @@ contract EarnVault is IEarnVault {
         return fees.feeConfig(fees.currentFeeConfigId());
     }
 
-    function _validateOperatorFeeConfig(FeeConfig calldata config) internal view {
-        IEarnFees(earnFees).validateFeeConfig(config);
+    function _validateOperatorFeeConfig(FeeConfig memory candidate) internal view {
+        IEarnFees(earnFees).validateFeeConfig(candidate);
         if (distributor == address(0)) return;
 
-        FeeConfig memory candidate = config;
         _requireProtectedDistributorFee(candidate, _distributorFee);
 
         DistributorFeeUpdate memory pending = _pendingDistributorFeeUpdate;
