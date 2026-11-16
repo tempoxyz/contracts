@@ -144,7 +144,7 @@ contract PropAMMEngine is
     /// @custom:ensures id == type(IEarnEngineExactWithdraw).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineRedeem).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineFeeValuation).interfaceId ==> result
-    /// @custom:ensures result ==> _isAdvertised(id)
+    /// @custom:ensures result ==> (id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId || id == type(IEarnEngineFeeValuation).interfaceId)
     function supportsInterface(bytes4 id) external pure returns (bool) {
         return id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId
             || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId
@@ -393,13 +393,6 @@ contract PropAMMEngine is
             0,
             observedAt
         );
-    }
-
-    /// @custom:spec
-    function _isAdvertised(bytes4 id) internal pure returns (bool) {
-        return id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId
-            || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId
-            || id == type(IEarnEngineFeeValuation).interfaceId;
     }
 
     function _route() private view {

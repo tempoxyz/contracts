@@ -285,16 +285,8 @@ contract ERC4626Engine is
     /// @custom:ensures interfaceId == type(IEarnEngineRedeem).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineExactWithdraw).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineInKindDeposit).interfaceId ==> result
-    /// @custom:ensures result ==> _isAdvertised(interfaceId)
+    /// @custom:ensures result ==> (interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId || interfaceId == type(IEarnEngineRedeem).interfaceId || interfaceId == type(IEarnEngineExactWithdraw).interfaceId || interfaceId == type(IEarnEngineInKindDeposit).interfaceId)
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId
-            || interfaceId == type(IEarnEngineRedeem).interfaceId
-            || interfaceId == type(IEarnEngineExactWithdraw).interfaceId
-            || interfaceId == type(IEarnEngineInKindDeposit).interfaceId;
-    }
-
-    /// @custom:spec
-    function _isAdvertised(bytes4 interfaceId) internal pure returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId
             || interfaceId == type(IEarnEngineRedeem).interfaceId
             || interfaceId == type(IEarnEngineExactWithdraw).interfaceId
