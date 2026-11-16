@@ -31,6 +31,8 @@ import {
 /// gAllowance tracks the temporary allowances this router grants; it excludes the standing allowances to the
 /// Portal (_approvePortal) and to the immutable EarnVault and pool (_approveStanding), which outlive a call.
 /// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance
+/// gStanding records every token and spender given a standing allowance in _approveStanding.
+/// @custom:ghost mapping(address => mapping(address => bool)) gStanding
 /// @custom:ghost address gTransferToken
 /// @custom:ghost address gTransferTo
 /// @custom:ghost uint256 gTransferAmount
@@ -312,6 +314,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// No temporary allowance outlives the call; standing allowances (Portal, EarnVault, pool) are outside gAllowance.
     /// @custom:requires forall address t, address s :: gAllowance[t][s] == 0
     /// @custom:ensures forall address t, address s :: gAllowance[t][s] == 0
+    /// Standing approvals (outside the Portal's) go only to the EarnVault, for the vault asset or EarnShare, or to the pool, for a route token.
+    /// @custom:ensures forall address t, address s :: gStanding[t][s] && !old(gStanding[t][s]) ==> (s == earnVault && (t == vaultAsset || t == earnShare)) || (s == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset))
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS
     /// @custom:ensures sourceZoneId == allowedZoneId && sourcePortal == portal && amount > 0
     /// @custom:ensures result == IWithdrawalReceiver.onWithdrawalReceived.selector
@@ -452,7 +456,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         _approveStanding(vaultAsset, earnVault, vaultAssets);
         uint256 earnShares = IEarnVault(earnVault).deposit(vaultAssets, address(this), operation.minEarnShares);
         if (earnShares == 0 || earnShares < operation.minEarnShares) revert InsufficientOutput();
-        /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares && gAllowance[vaultAsset][earnVault] == 0
+        /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares
         /// @custom:assert sourcePortal == portal && zoneReturn.refundRecipient != address(0)
 
         bytes32 zoneDepositHash = _depositEncrypted(sourcePortal, earnShare, _toUint128(earnShares), zoneReturn);
@@ -472,7 +476,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         _approveStanding(earnShare, earnVault, amount);
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
-        /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets && gAllowance[earnShare][earnVault] == 0
+        /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets
 
         uint256 outputAmount = _converts()
             ? _swap(vaultAsset, privateAsset, vaultAssets, operation.minOutputAmount, operation.actionId)
@@ -513,7 +517,6 @@ contract ZoneRouter is IWithdrawalReceiver {
         amountOut = outputBalanceAfter - outputBalanceBefore;
         if (amountOut != amountIn) revert InsufficientOutput();
         /// @custom:assert amountOut == amountIn && amountOut == outputBalanceAfter - outputBalanceBefore
-        /// @custom:assert gAllowance[tokenIn][address(pool)] == 0
         _requireBalance(tokenIn, inputBalanceBefore);
     }
 
@@ -627,6 +630,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     ///      and every operation returns this router's touched balances to their baseline, so none is left to pull.
     ///      Standing allowances sit outside the temporary-allowance ghost, like the Portal's.
     function _approveStanding(address token, address spender, uint256 amount) private {
+        /// @custom:ghost gStanding[token][spender] = true
         if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
