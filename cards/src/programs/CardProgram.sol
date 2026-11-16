@@ -98,11 +98,14 @@ contract CardProgram {
         uint64 held;
     }
 
-    /// @notice Purchase steps so far, the last one the issuer settled, and net captured settlement units.
+    /// @notice Purchase steps so far, the last one the issuer settled, net captured settlement units, and the net at
+    ///         the last acknowledgement that reached the latest step (so `net - settledNet` never understates what
+    ///         is unsettled).
     struct Ledger {
         uint64 seq;
         uint64 settledThrough;
         uint128 net;
+        uint128 settledNet;
     }
 
     /// @dev One leg's hold as a purchase step reads it.
@@ -200,6 +203,7 @@ contract CardProgram {
         address indexed merchant,
         uint256 amount,
         uint256 cash,
+        uint256 absorbed,
         uint64 seq,
         uint128 net
     );
@@ -354,6 +358,7 @@ contract CardProgram {
         uint64 previous = l.settledThrough;
         if (throughSeq <= previous || throughSeq > l.seq) revert InvalidCursor();
         l.settledThrough = throughSeq;
+        if (throughSeq == l.seq) l.settledNet = l.net;
         emit SettlementAcknowledged(throughSeq, previous);
     }
 
@@ -599,7 +604,8 @@ contract CardProgram {
 
     /// @notice Charges `amount` settlement units for a purchase presented without a live hold (a late presentment
     ///         or a force post), as one core charge on the owner's cash token: available balance first, then debt
-    ///         within the cap the owner set for this program. An expired open purchase is released first.
+    ///         within the cap the owner set for this program. The issuer absorbs what neither covers; the event
+    ///         reports it. An expired open purchase is released first.
     function charge(bytes32 card, bytes32 purchaseRef, uint128 amount, address merchant)
         external
         nonReentrant
@@ -613,7 +619,7 @@ contract CardProgram {
             p.card = card;
             p.owner = c.owner;
         } else {
-            if (p.legs & CHARGED != 0) revert PurchaseExists();
+            if (p.legs & (CHARGED | 16) != 0) revert PurchaseExists();
             if (p.open) {
                 // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
                 // forge-lint: disable-next-line(block-timestamp)
@@ -622,21 +628,25 @@ contract CardProgram {
             }
         }
         address owner = p.owner;
-        if (grants[owner].epoch == 0) revert NoTerms();
         address token = fundingOf[owner].cashToken;
-        uint256 tokens = _toTokenUp(amount, _rate(token));
-        // forge-lint: disable-next-line(unsafe-typecast)
-        CORE.charge(owner, token, _legId(purchaseRef, CHARGED), uint128(tokens), address(this), false);
+        (uint256 tokens, uint256 absorbed) = CardAdjust.charge(
+            CORE,
+            p,
+            _cards[p.card],
+            grants[owner],
+            usageOf[owner],
+            token,
+            _rate(token),
+            _legId(purchaseRef, CHARGED),
+            amount
+        );
         _forward(token);
-        p.legs |= CHARGED;
-        p.captured = true;
-        _spend(_cards[p.card], owner, 0, amount, false);
 
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
         uint128 net = ledger_.net + amount;
         ledger_.net = net;
-        emit PurchaseCharged(purchaseRef, p.card, merchant, amount, tokens, seq, net);
+        emit PurchaseCharged(purchaseRef, p.card, merchant, amount, tokens, absorbed, seq, net);
     }
 
     /// @notice Releases every open leg of a purchase and gives back what it still held.

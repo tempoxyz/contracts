@@ -68,7 +68,9 @@ library CardAdjust {
     }
 
     /// @notice Charges `amount` settlement units for purchase `p` as one core charge `id` on the owner's cash token,
-    ///         paid to the program, and counts it toward the owner's limits. Returns the tokens charged.
+    ///         paid to the program, and counts the whole amount toward the owner's limits. The charge takes what the
+    ///         owner has available plus what the debt cap the owner set for the program still allows; the issuer
+    ///         absorbs the rest. Returns the tokens charged and the settlement units absorbed.
     function charge(
         IReservationCore core,
         CardProgram.Purchase storage p,
@@ -79,15 +81,40 @@ library CardAdjust {
         uint256 rate,
         bytes32 id,
         uint128 amount
-    ) external returns (uint256 tokens) {
+    ) external returns (uint256 tokens, uint256 absorbed) {
         if (g.epoch == 0) revert CardProgram.NoTerms();
-        tokens = _toTokenUp(amount, rate);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        core.charge(p.owner, token, id, uint128(tokens), address(this), false);
-        p.legs |= 8;
+        address owner = p.owner;
+        uint256 wanted = _toTokenUp(amount, rate);
+        tokens = _chargeable(core, owner, token, wanted);
+        if (tokens != 0) {
+            // forge-lint: disable-next-line(unsafe-typecast)
+            core.charge(owner, token, id, uint128(tokens), address(this), false);
+        }
+        // Bit 16 marks a late charge that took nothing from the owner, so the reference can't be charged again.
+        p.legs |= tokens != 0 ? 8 : 16;
+        if (tokens < wanted) {
+            uint256 paid = rate == RATE_ONE ? tokens : tokens.mulDiv(rate, RATE_ONE);
+            absorbed = amount - paid;
+        }
         p.captured = true;
         CardProgram.Limits memory l = c.limits;
         CardLimits.spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], 0, amount, false);
+    }
+
+    /// @dev What a charge of `wanted` tokens can take from `owner`: its available balance, then the program's debt cap
+    ///      less the debt the owner already carries to it. Debt to another creditor leaves no room for new debt here.
+    function _chargeable(IReservationCore core, address owner, address token, uint256 wanted)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 room = core.available(owner, token);
+        (address creditor, uint256 debt) = core.debtOf(owner, token);
+        if (debt == 0 || creditor == address(this)) {
+            uint256 cap = core.debtCap(owner, address(this), token);
+            if (cap > debt) room += cap - debt;
+        }
+        return wanted < room ? wanted : room;
     }
 
     /// @notice Refunds `amount` settlement units across legs `l` (cash, savings, credit, late charge) in reverse order,

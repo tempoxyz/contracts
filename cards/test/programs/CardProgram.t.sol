@@ -388,9 +388,6 @@ contract CardProgramTest is ProgramsEnv {
         cards.setFunding(address(usd), address(0), address(0), 0);
         _authorize(P1, 50e6);
         vm.warp(vm.getBlockTimestamp() + 8 days);
-        vm.prank(issuer);
-        vm.expectRevert(IReservationCore.DebtCapExceeded.selector);
-        cards.charge(CARD, P1, 70e6, merchant);
         vm.prank(alice);
         core.setDebtCap(address(cards), address(usd), 30e6);
         vm.prank(issuer);
@@ -409,6 +406,62 @@ contract CardProgramTest is ProgramsEnv {
         assertEq(debt, 0);
         assertEq(usd.balanceOf(alice), 10e6);
         assertEq(usd.balanceOf(settlement), 70e6);
+    }
+
+    function test_charge_pastDebtCap_issuerAbsorbsTheRest() public {
+        usd.mint(alice, 50e6);
+        vm.prank(alice);
+        core.setDebtCap(address(cards), address(usd), 30e6);
+        // 50 available plus 30 of debt: the issuer carries the other 20.
+        vm.expectEmit(address(cards));
+        emit CardProgram.PurchaseCharged(P1, CARD, merchant, 100e6, 80e6, 20e6, 1, 100e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        assertEq(usd.balanceOf(settlement), 50e6);
+        (, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(debt, 30e6);
+        // The whole amount counts toward the limits, not just what the owner paid.
+        assertEq(cards.cardOf(CARD).window.daySpent, 100e6);
+        _assertCoreBalanced();
+    }
+
+    function test_charge_nothingToTake_absorbsAllAndPlacesNoCharge() public {
+        vm.expectEmit(address(cards));
+        emit CardProgram.PurchaseCharged(P1, CARD, merchant, 40e6, 0, 40e6, 1, 40e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 40e6, merchant);
+        // No charge leg: only the marker that the reference was charged.
+        assertEq(cards.purchaseOf(P1).legs, 16);
+        assertTrue(cards.purchaseOf(P1).captured);
+        // Nothing was taken from the owner, so there is nothing to refund.
+        vm.prank(issuer);
+        vm.expectRevert();
+        cards.refund(P1, 1e6);
+        // The same reference cannot be charged twice.
+        usd.mint(alice, 100e6);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.PurchaseExists.selector);
+        cards.charge(CARD, P1, 40e6, merchant);
+    }
+
+    function test_charge_debtToAnotherCreditor_leavesNoDebtRoom() public {
+        address lender = makeAddr("lender");
+        usd.mint(alice, 10e6);
+        vm.startPrank(alice);
+        core.setDebtCap(address(cards), address(usd), 30e6);
+        core.setDebtCap(lender, address(usd), 5e6);
+        core.approveHolder(lender, address(usd), 100e6);
+        vm.stopPrank();
+        // Another creditor's debt holds the owner's debt slot; this program can't add to it.
+        vm.prank(lender);
+        core.charge(alice, address(usd), bytes32("x"), 15e6, lender, false);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 20e6, merchant);
+        (address creditor, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(creditor, lender);
+        assertEq(debt, 5e6);
+        assertEq(usd.balanceOf(settlement), 0);
+        _assertCoreBalanced();
     }
 
     function test_charge_onOpenPurchase_refused() public {
@@ -607,7 +660,7 @@ contract CardProgramTest is ProgramsEnv {
         vm.prank(issuer);
         cards.refund(P1, 50e6);
         assertEq(usd.balanceOf(alice), 1000e6);
-        (,, uint128 net) = cards.ledger();
+        (,, uint128 net,) = cards.ledger();
         assertEq(net, 0);
     }
 
@@ -665,7 +718,7 @@ contract CardProgramTest is ProgramsEnv {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         _capture(P1, 100e6, true);
-        (uint64 seq,, uint128 net) = cards.ledger();
+        (uint64 seq,, uint128 net,) = cards.ledger();
         assertEq(seq, 2);
         assertEq(net, 100e6);
         vm.prank(issuer);
@@ -673,7 +726,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.acknowledgeSettlement(3);
         vm.prank(issuer);
         cards.acknowledgeSettlement(2);
-        (, uint64 settledThrough,) = cards.ledger();
+        (, uint64 settledThrough,,) = cards.ledger();
         assertEq(settledThrough, 2);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.InvalidCursor.selector);
