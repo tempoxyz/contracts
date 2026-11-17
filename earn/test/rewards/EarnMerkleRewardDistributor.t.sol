@@ -124,17 +124,19 @@ contract EarnMerkleRewardDistributorTest is Test {
         uint256 funderBalance = asset.balanceOf(funder);
 
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.RepeatedSettlementId.selector, settlementId));
+        vm.expectRevert(
+            abi.encodeWithSelector(EarnMerkleRewardDistributor.SettlementAlreadyConsumed.selector, settlementId)
+        );
         distributor.fundAndPublishRoot(
             settlementId, 1, funder, 100 ether, 100 ether, root, 100 ether, keccak256("one-shot-statement")
         );
 
         assertEq(asset.balanceOf(funder), funderBalance);
-        assertEq(distributor.lastSettlementId(), settlementId);
+        assertTrue(distributor.consumedSettlements(settlementId));
         assertEq(distributor.rootVersion(), 1);
     }
 
-    function testFundAndPublishRootRejectsOlderSettlementReplayAsStaleVersion() public {
+    function testFundAndPublishRootRejectsOlderSettlementAtCurrentVersion() public {
         bytes32 first = keccak256("settlement-1");
         bytes32 second = keccak256("settlement-2");
         (bytes32 root,,) = _twoLeafRoot(60 ether, 40 ether);
@@ -148,52 +150,15 @@ contract EarnMerkleRewardDistributorTest is Test {
         );
         uint256 funderBalance = asset.balanceOf(funder);
 
-        // The first settlement is no longer the last one, so the root version check refuses its replay.
-        vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.StaleRootVersion.selector, 0, 2));
+        // An earlier settlement ID is refused even with the current root version.
+        vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.SettlementAlreadyConsumed.selector, first));
         distributor.fundAndPublishRoot(
-            first, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("statement-1")
+            first, 2, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("statement-3")
         );
         vm.stopPrank();
 
         assertEq(asset.balanceOf(funder), funderBalance);
-        assertEq(distributor.lastSettlementId(), second);
         assertEq(distributor.rootVersion(), 2);
-        assertEq(distributor.merkleRoot(), nextRoot);
-    }
-
-    function testLaterSettlementOverwritesOneSlotAndEmitsItsId() public {
-        bytes32 first = keccak256("settlement-1");
-        bytes32 second = keccak256("settlement-2");
-        (bytes32 root,,) = _twoLeafRoot(60 ether, 40 ether);
-        (bytes32 nextRoot,,) = _twoLeafRoot(120 ether, 80 ether);
-        vm.prank(owner);
-        distributor.fundAndPublishRoot(
-            first, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("statement-1")
-        );
-
-        vm.expectEmit(true, true, false, true, address(distributor));
-        emit EarnMerkleRewardDistributor.AssetsFunded(second, funder, 100 ether, 100 ether);
-        vm.startStateDiffRecording();
-        vm.prank(owner);
-        distributor.fundAndPublishRoot(
-            second, 1, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("statement-2")
-        );
-        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
-
-        // A later settlement creates no distributor slot: its ID overwrites the previous one in place.
-        uint256 created;
-        uint256 overwrites;
-        for (uint256 i; i < accesses.length; ++i) {
-            for (uint256 j; j < accesses[i].storageAccesses.length; ++j) {
-                Vm.StorageAccess memory access = accesses[i].storageAccesses[j];
-                if (access.account != address(distributor) || !access.isWrite || access.reverted) continue;
-                if (access.previousValue == bytes32(0) && access.newValue != bytes32(0)) ++created;
-                if (access.previousValue == first && access.newValue == second) ++overwrites;
-            }
-        }
-        assertEq(created, 0);
-        assertEq(overwrites, 1);
-        assertEq(distributor.lastSettlementId(), second);
     }
 
     function testRootPublicationRejectsStaleExpectedVersion() public {
