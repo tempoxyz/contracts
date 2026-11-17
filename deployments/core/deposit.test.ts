@@ -168,6 +168,7 @@ async function depositRpc(current: { engine?: Address; venue?: Address; mode?: n
     [`${vault}.remainingDepositCapacity`]: 100_000_000n,
     [`${vault}.totalEarnShares`]: 10_000_000n,
     [`${vault}.engineShares`]: 10_000_000n,
+    [`${vault}.totalAssets`]: 10_000_000n,
     [`${activeEngine}.asset`]: asset,
     [`${activeEngine}.earnVault`]: vault,
     [`${activeEngine}.vault`]: activeVenue,
