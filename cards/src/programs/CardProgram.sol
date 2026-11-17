@@ -451,9 +451,17 @@ contract CardProgram {
         if (token == address(0) || token == current || rateOf[token] != 0) revert TokenNotAccepted(token);
         // The new token's scale follows from the old one's at today's reference rate, without conversion cost.
         uint256 step = Conversion(conversion).mid(token, current);
+        CardConvert.carryIssuerDebt(current, token);
         _scales[token] = _scaleOf(current).mulDiv(step, RATE_ONE);
         _settlementToken = token;
         emit SettlementTokenSet(token, current, step);
+    }
+
+    /// @notice Pays `amount` from the settlement account to `to` with `memo`, the program advancing what the account
+    ///         lacks as debt the account owes it. The settlement account, the issuer or an operator calls it.
+    function payOut(address to, uint256 amount, bytes32 memo) external nonReentrant returns (uint256 advanced) {
+        if (msg.sender != SETTLEMENT_ACCOUNT && msg.sender != ISSUER && !operators[msg.sender]) revert NotIssuer();
+        return CardConvert.payOut(to, amount, memo);
     }
 
     /// @notice Repays what the owner owes in the settlement token from its cash in another token, through the venue.

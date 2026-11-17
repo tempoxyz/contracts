@@ -11,6 +11,10 @@ import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
+interface ITIP20PayOut {
+    function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
+}
+
 /// @title CardConvert
 /// @notice Legs held in a token other than the one the program settles in: the rate each leg locked when it was
 ///         placed, the price a capture converts at (the lock while the market stays within the owner's tolerance,
@@ -29,6 +33,8 @@ library CardConvert {
     uint256 internal constant RATE_ONE = 1e18;
     /// @dev CardProgram's SettlementTokenInUse reason for a held or liened settlement balance.
     uint8 internal constant IN_USE_HELD = 6;
+    /// @dev CardProgram's SettlementTokenInUse reason when the settlement account cannot owe its debt in the new token.
+    uint8 internal constant IN_USE_ISSUER_DEBT = 7;
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     bytes32 private constant SLOT = keccak256("tempo.cards.CardConvert.v1");
     /// @dev Transient: the earlier settlement token a refund in progress is booked in, which rates then read in.
@@ -37,7 +43,17 @@ library CardConvert {
     struct Layout {
         /// @dev The rate a converted leg locked: settlement units per token unit, scaled by 1e18.
         mapping(bytes32 legId => uint256) locked;
+        /// @dev How many debts the program has charged the settlement account, which names each charge.
+        uint256 issuerCharges;
     }
+
+    /// @notice The settlement account paid `amount` to `to`, of which the program advanced `advanced`, which the
+    ///         account now owes it as core debt.
+    event IssuerPaid(address indexed to, address indexed token, uint256 amount, uint256 advanced, bytes32 memo);
+
+    /// @notice A settlement token change carried what the settlement account owed the program in `token` into
+    ///         `carried` of `next`, at the venue's price rounded up for the program.
+    event IssuerDebtCarried(address indexed token, uint256 owed, address indexed next, uint256 carried);
 
     /// @notice A captured leg converted into the settlement token: what the owner paid in its token, what the issuer
     ///         received and what the issuer absorbed because the market moved within the rate lock, in settlement units.
@@ -290,6 +306,62 @@ library CardConvert {
             uint8 reason = ISettlementTokenGuard(guards[i]).settlementTokenInUse(address(this));
             if (reason != 0) revert CardProgram.SettlementTokenInUse(reason);
         }
+    }
+
+    /// @notice Pays `amount` of the settlement token from the settlement account to `to` with `memo`. What the
+    ///         account lacks, the program advances from its own funds, and the account owes it to the program as core
+    ///         debt, within the cap the account set; the core repays it first from what the account receives.
+    function payOut(address to, uint256 amount, bytes32 memo) external returns (uint256 advanced) {
+        CardProgram program = CardProgram(address(this));
+        address token = program.settlementToken();
+        address account = program.SETTLEMENT_ACCOUNT();
+        uint256 free = CORE.available(account, token);
+        if (amount > free) {
+            advanced = amount - free;
+            (address creditor, uint128 owed) = CORE.debtOf(account, token);
+            uint256 prior = creditor == address(this) ? owed : 0;
+            // What the account already owes comes straight back as repayment, leaving the advance free to pay out.
+            SafeTransferLib.safeTransfer(token, account, advanced + prior);
+            ITIP20PayOut(token).transferFromWithMemo(account, to, amount, memo);
+            _chargeIssuer(account, token, advanced + prior);
+        } else {
+            ITIP20PayOut(token).transferFromWithMemo(account, to, amount, memo);
+        }
+        emit IssuerPaid(to, token, amount, advanced, memo);
+    }
+
+    /// @notice Carries what the settlement account owes the program in `current` into `next`: the units of `next`
+    ///         that buy it back at the venue, rounded up. Reverts when the account cannot owe that in `next`.
+    function carryIssuerDebt(address current, address next) external {
+        CardProgram program = CardProgram(address(this));
+        address account = program.SETTLEMENT_ACCOUNT();
+        (address creditor, uint128 owed) = CORE.debtOf(account, current);
+        if (creditor != address(this) || owed == 0) return;
+        uint256 carried = Conversion(program.conversion()).quoteOut(next, current, owed);
+        // What the program sends comes straight back as repayment, which clears the debt in `current`.
+        SafeTransferLib.safeTransfer(current, account, owed);
+        if (!_tryChargeIssuer(account, next, carried)) revert CardProgram.SettlementTokenInUse(IN_USE_ISSUER_DEBT);
+        emit IssuerDebtCarried(current, owed, next, carried);
+    }
+
+    /// @dev Charges the settlement account `amount` for the program; what it cannot pay becomes its debt.
+    function _chargeIssuer(address account, address token, uint256 amount) private {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        CORE.charge(account, token, _issuerChargeId(), uint128(amount), address(this), false);
+    }
+
+    function _tryChargeIssuer(address account, address token, uint256 amount) private returns (bool) {
+        if (amount > type(uint128).max) return false;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        try CORE.charge(account, token, _issuerChargeId(), uint128(amount), address(this), false) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function _issuerChargeId() private returns (bytes32) {
+        return keccak256(abi.encode("tempo.cards.issuer-debt", address(this), ++_layout().issuerCharges));
     }
 
     /// @notice Swaps what a converted leg captured into the settlement token for the settlement account, as price

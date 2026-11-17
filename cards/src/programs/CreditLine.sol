@@ -11,6 +11,23 @@ interface IProgramOperators {
     function operators(address key) external view returns (bool);
 }
 
+/// @dev The conversion venue a card program trades through.
+interface IProgramConversion {
+    function conversion() external view returns (address);
+}
+
+/// @dev What a line uses of its program's conversion venue: quotes after cost, and swaps from the caller.
+interface ILineVenue {
+    function quoteIn(address tokenIn, address tokenOut, uint256 amountIn) external view returns (uint256);
+    function quoteOut(address tokenIn, address tokenOut, uint256 amountOut) external view returns (uint256);
+    function swapExactIn(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, address recipient)
+        external
+        returns (uint256 out);
+    function swapExactOut(address tokenIn, address tokenOut, uint256 amountOut, uint256 maxIn, address recipient)
+        external
+        returns (uint256 spent);
+}
+
 /// @title CreditLine
 /// @notice Lenders' credit lines that card programs draw on. Each draw is a hold on the lender's own balance, placed
 ///         here through `holdFrom` (the lender approves this contract as a holder of the line's token), so every
@@ -148,6 +165,8 @@ contract CreditLine {
     event Autopaid(uint64 indexed lineId, uint32 indexed n, address source, uint128 amount);
 
     error CreditExceeded(uint256 amount, uint256 available);
+    error ConversionExceedsMax(uint256 cost, uint256 maxIn);
+    error NoConversion();
     error InvalidAutopay();
     error InvalidLine();
     error InvalidRate();
@@ -191,7 +210,10 @@ contract CreditLine {
         if (dueDate <= block.timestamp) revert InvalidLine();
         if (address(collateralVault) == address(0)) {
             if (ltvBps != 0) revert InvalidLine();
-        } else if (ltvBps == 0 || ltvBps > BPS || collateralVault.asset() != token) {
+        } else if (ltvBps == 0 || ltvBps > BPS) {
+            revert InvalidLine();
+        } else if (collateralVault.asset() != token && _venueOf(program) == address(0)) {
+            // Collateral in another token is valued and sold through the program's conversion venue.
             revert InvalidLine();
         }
         if (lineIdOf[msg.sender][borrower] != 0) revert InvalidLine();
@@ -408,10 +430,43 @@ contract CreditLine {
     /// @notice Repays `amount` of what the borrower owes, from the caller to the lender.
     function repay(uint64 lineId, uint128 amount) external nonReentrant {
         Line storage l = _lines[lineId];
+        _repay(lineId, l, amount);
+        SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
+        _afterRepay(lineId, l, amount);
+    }
+
+    /// @notice Repays `amount` of the line's token from the caller's `payToken`, which the program's conversion
+    ///         venue sells to the lender for exactly that amount, at a cost of at most `maxIn`.
+    /// @return spent What the caller paid in `payToken`.
+    // Takes only from the caller, which approved this contract.
+    // forge-lint: disable-next-item(arbitrary-send-erc20)
+    function repayFrom(uint64 lineId, address payToken, uint128 amount, uint256 maxIn)
+        external
+        nonReentrant
+        returns (uint256 spent)
+    {
+        Line storage l = _lines[lineId];
+        _repay(lineId, l, amount);
+        if (payToken == l.token) {
+            spent = amount;
+            SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
+        } else {
+            ILineVenue venue = _venue(l);
+            spent = venue.quoteOut(payToken, l.token, amount);
+            if (spent > maxIn) revert ConversionExceedsMax(spent, maxIn);
+            SafeTransferLib.safeTransferFrom(payToken, msg.sender, address(this), spent);
+            _buy(venue, payToken, l.token, amount, spent, l.lender, msg.sender);
+        }
+        _afterRepay(lineId, l, amount);
+    }
+
+    function _repay(uint64 lineId, Line storage l, uint128 amount) private {
         if (amount == 0 || amount > l.owed) revert RepayExceedsOwed(amount, l.owed);
         l.owed -= amount;
         _payStatements(lineId, amount);
-        SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
+    }
+
+    function _afterRepay(uint64 lineId, Line storage l, uint128 amount) private {
         emit Repaid(lineId, msg.sender, amount, l.owed);
         _commit(lineId);
         _lock(lineId);
@@ -456,7 +511,8 @@ contract CreditLine {
     }
 
     /// @notice The borrower names what statements falling due collect from, in order: the line's token for its cash,
-    ///         or an Earn vault over that token for its free shares there. It approves this contract to take them.
+    ///         an Earn vault over that token for its free shares there, or another token the program's conversion
+    ///         venue sells for the line's. It approves this contract to take them.
     // At most MAX_AUTOPAY sources, each checked once.
     // forge-lint: disable-next-item(calls-loop)
     function setAutopay(uint64 lineId, address[] calldata sources) external {
@@ -465,8 +521,8 @@ contract CreditLine {
         if (sources.length > MAX_AUTOPAY) revert InvalidAutopay();
         for (uint256 i; i < sources.length; ++i) {
             address source = sources[i];
-            if (source == l.token) continue;
-            if (source.code.length == 0 || IEarnVault(source).asset() != l.token) revert InvalidAutopay();
+            if (source == l.token || _assetOf(source) == l.token) continue;
+            if (_venueOf(l.program) == address(0)) revert InvalidAutopay();
         }
         _autopay[lineId] = sources;
         emit AutopaySet(lineId, sources);
@@ -537,8 +593,10 @@ contract CreditLine {
             if (source == token) {
                 got = _min(want, _min(CORE.available(borrower, token), _allowance(token, borrower)));
                 if (got != 0) SafeTransferLib.safeTransferFrom(token, borrower, lender, got);
-            } else {
+            } else if (_assetOf(source) == token) {
                 got = _redeemFor(IEarnVault(source), borrower, lender, token, want);
+            } else {
+                got = _convertFor(l, source, borrower, want);
             }
             if (got == 0) continue;
             // Each part is at most `amount`.
@@ -577,6 +635,110 @@ contract CreditLine {
         if (received > got) SafeTransferLib.safeTransfer(token, borrower, received - got);
         uint256 left = _balanceOf(share, address(this));
         if (left != 0) SafeTransferLib.safeTransfer(share, borrower, left);
+    }
+
+    /// @dev Sells up to what buys `want` of the line's token from the borrower's free `source` tokens through the
+    ///      program's venue, to the lender, and returns what the lender received. Gives what the free tokens buy when
+    ///      they fall short, and nothing when the venue cannot quote.
+    // Runs inside `collect`'s lock, once per autopay source, taking only from the borrower that approved it.
+    // forge-lint: disable-next-item(calls-loop,arbitrary-send-erc20)
+    function _convertFor(Line storage l, address source, address borrower, uint256 want) private returns (uint256 got) {
+        address v = _venueOf(l.program);
+        if (v == address(0)) return 0;
+        ILineVenue venue = ILineVenue(v);
+        uint256 free = _min(CORE.available(borrower, source), _allowance(source, borrower));
+        if (free == 0) return 0;
+        try venue.quoteOut(source, l.token, want) returns (uint256 need) {
+            if (need <= free) {
+                SafeTransferLib.safeTransferFrom(source, borrower, address(this), need);
+                _buy(venue, source, l.token, want, need, l.lender, borrower);
+                return want;
+            }
+        } catch {
+            return 0;
+        }
+        SafeTransferLib.safeTransferFrom(source, borrower, address(this), free);
+        got = _sell(venue, source, l.token, free, l.lender);
+    }
+
+    /// @dev Buys exactly `amount` of `tokenOut` for `recipient` with up to `budget` of `tokenIn` this contract holds,
+    ///      returning what is left to `payer`.
+    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
+    function _buy(
+        ILineVenue venue,
+        address tokenIn,
+        address tokenOut,
+        uint256 amount,
+        uint256 budget,
+        address recipient,
+        address payer
+    ) private {
+        SafeTransferLib.safeApprove(tokenIn, address(venue), budget);
+        uint256 spent = venue.swapExactOut(tokenIn, tokenOut, amount, budget, recipient);
+        SafeTransferLib.safeApprove(tokenIn, address(venue), 0);
+        if (budget > spent) SafeTransferLib.safeTransfer(tokenIn, payer, budget - spent);
+    }
+
+    /// @dev Sells `amount` of `tokenIn` this contract holds for `tokenOut`, paid to `recipient`, and returns what it got.
+    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
+    function _sell(ILineVenue venue, address tokenIn, address tokenOut, uint256 amount, address recipient)
+        private
+        returns (uint256 out)
+    {
+        SafeTransferLib.safeApprove(tokenIn, address(venue), amount);
+        out = venue.swapExactIn(tokenIn, tokenOut, amount, 0, recipient);
+        SafeTransferLib.safeApprove(tokenIn, address(venue), 0);
+    }
+
+    /// @dev Redeems `shares` of the line's collateral and pays the lender in the line's token, selling through the
+    ///      venue when the vault's asset differs, and returns what the lender received.
+    // forge-lint: disable-next-item(reentrancy-no-eth)
+    function _redeemToLender(Line storage l, uint256 shares) private returns (uint256 assets) {
+        IEarnVault vault = l.collateralVault;
+        SafeTransferLib.safeApprove(vault.earnShare(), address(vault), shares);
+        address asset = vault.asset();
+        if (asset == l.token) return vault.redeem(shares, l.lender, vault.previewRedeem(shares));
+        uint256 redeemed = vault.redeem(shares, address(this), vault.previewRedeem(shares));
+        assets = _sell(_venue(l), asset, l.token, redeemed, l.lender);
+    }
+
+    /// @dev What the collateral's `assets` sell for in the line's token now.
+    // Called from the bounded liquidation and autopay loops.
+    // forge-lint: disable-next-item(calls-loop)
+    function _inLine(Line storage l, uint256 assets) private view returns (uint256) {
+        address asset = l.collateralVault.asset();
+        if (asset == l.token || assets == 0) return assets;
+        return _venue(l).quoteIn(asset, l.token, assets);
+    }
+
+    /// @dev The collateral assets that sell for `amount` of the line's token now.
+    function _assetsFor(Line storage l, uint256 amount) private view returns (uint256) {
+        address asset = l.collateralVault.asset();
+        if (asset == l.token || amount == 0) return amount;
+        return _venue(l).quoteOut(asset, l.token, amount);
+    }
+
+    function _venue(Line storage l) private view returns (ILineVenue) {
+        address v = _venueOf(l.program);
+        if (v == address(0)) revert NoConversion();
+        return ILineVenue(v);
+    }
+
+    /// @dev The program's conversion venue, zero when it has none.
+    // Called from the bounded liquidation and autopay loops.
+    // forge-lint: disable-next-item(calls-loop)
+    function _venueOf(address program) private view returns (address v) {
+        (bool ok, bytes memory data) = program.staticcall(abi.encodeCall(IProgramConversion.conversion, ()));
+        if (ok && data.length >= 32) v = abi.decode(data, (address));
+    }
+
+    /// @dev The asset of an Earn vault, zero for anything else, such as a token.
+    // Called from the bounded liquidation and autopay loops.
+    // forge-lint: disable-next-item(calls-loop)
+    function _assetOf(address source) private view returns (address a) {
+        if (source.code.length == 0) return address(0);
+        (bool ok, bytes memory data) = source.staticcall(abi.encodeCall(IEarnVault.asset, ()));
+        if (ok && data.length >= 32) a = abi.decode(data, (address));
     }
 
     /// @dev Applies a repayment of `amount` to line `lineId`'s statements not yet paid, oldest first.
@@ -668,8 +830,7 @@ contract CreditLine {
         bytes32 pledgeId = l.pledgeId;
         if (pledgeId == bytes32(0)) revert InvalidPledge();
         (,, uint128 pledgedShares,,) = CORE.lienOf(address(this), pledgeId);
-        IEarnVault vault = l.collateralVault;
-        uint256 cover = vault.previewWithdraw(owed);
+        uint256 cover = l.collateralVault.previewWithdraw(_assetsFor(l, owed));
         // forge-lint: disable-next-line(unsafe-typecast)
         shares = cover < pledgedShares ? uint128(cover) : pledgedShares;
         if (shares == 0) revert InvalidPledge();
@@ -677,11 +838,7 @@ contract CreditLine {
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         CORE.seizeLien(pledgeId, shares);
-        address share = vault.earnShare();
-        SafeTransferLib.safeApprove(share, address(vault), shares);
-        // Every entry point holds the transient lock for this whole call.
-        // forge-lint: disable-next-line(reentrancy-no-eth)
-        assets = vault.redeem(shares, l.lender, vault.previewRedeem(shares));
+        assets = _redeemToLender(l, shares);
         // Rounding may return a little more than owed; the debt never goes below zero.
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 credited = assets < owed ? uint128(assets) : owed;
@@ -721,17 +878,17 @@ contract CreditLine {
         _lock(lineId);
         IEarnVault vault = l.collateralVault;
         uint256 locked = _lockedShares(lineId);
-        uint256 value = locked == 0 ? 0 : vault.previewRedeem(locked);
+        uint256 value = locked == 0 ? 0 : _inLine(l, vault.previewRedeem(locked));
         uint256 used = uint256(l.owed) + l.pending;
         uint256 ltv = l.ltvBps;
         if (used * BPS <= value * ltv) revert NotUndercollateralized(used, value * ltv / BPS);
         // Selling x restores used - x = ltv * (value - x).
         uint256 sell = (used * BPS - value * ltv + (BPS - ltv) - 1) / (BPS - ltv);
         if (sell > l.owed) sell = l.owed;
-        uint256 cover = vault.previewWithdraw(sell);
+        uint256 cover = vault.previewWithdraw(_assetsFor(l, sell));
         if (cover > locked) cover = locked;
         // Rounding can leave the ratio a few units short; sell one more share at a time until it holds (bounded).
-        for (uint256 i; i < 16 && cover < locked && !_sound(vault, used, l.owed, locked, cover, ltv); ++i) {
+        for (uint256 i; i < 16 && cover < locked && !_sound(l, used, locked, cover); ++i) {
             ++cover;
         }
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -740,9 +897,7 @@ contract CreditLine {
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         CORE.capture(l.borrower, id, shares, false);
-        SafeTransferLib.safeApprove(vault.earnShare(), address(vault), shares);
-        // forge-lint: disable-next-line(reentrancy-no-eth)
-        assets = vault.redeem(shares, l.lender, vault.previewRedeem(shares));
+        assets = _redeemToLender(l, shares);
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 credited = assets < l.owed ? uint128(assets) : l.owed;
         l.owed -= credited;
@@ -755,14 +910,11 @@ contract CreditLine {
     /// @dev Whether selling `sold` of `locked` shares leaves what is owed and pending within the loan-to-value of the rest.
     // Called in a loop of at most 16 steps, reading only the line's vault.
     // forge-lint: disable-next-item(calls-loop)
-    function _sound(IEarnVault vault, uint256 used, uint256 owed, uint256 locked, uint256 sold, uint256 ltv)
-        private
-        view
-        returns (bool)
-    {
-        uint256 proceeds = vault.previewRedeem(sold);
-        if (proceeds > owed) proceeds = owed;
-        return (used - proceeds) * BPS <= vault.previewRedeem(locked - sold) * ltv;
+    function _sound(Line storage l, uint256 used, uint256 locked, uint256 sold) private view returns (bool) {
+        IEarnVault vault = l.collateralVault;
+        uint256 proceeds = _inLine(l, vault.previewRedeem(sold));
+        if (proceeds > l.owed) proceeds = l.owed;
+        return (used - proceeds) * BPS <= _inLine(l, vault.previewRedeem(locked - sold)) * l.ltvBps;
     }
 
     /// @notice The shares line `lineId`'s lock holds now.
@@ -808,12 +960,12 @@ contract CreditLine {
         if (locking[lineId]) {
             // The shares locked so far and the borrower's free shares, which the next draw can lock.
             uint256 shares = _lockedShares(lineId) + CORE.available(l.borrower, l.collateralVault.earnShare());
-            return shares == 0 ? 0 : l.collateralVault.previewRedeem(shares);
+            return shares == 0 ? 0 : _inLine(l, l.collateralVault.previewRedeem(shares));
         }
         if (l.pledgeId == bytes32(0)) return 0;
         (address owner,, uint128 shares, uint64 expiresAt,) = CORE.lienOf(address(this), l.pledgeId);
         if (owner != l.borrower || shares == 0 || expiresAt <= uint256(l.dueDate) + l.noticePeriod) return 0;
-        return l.collateralVault.previewRedeem(shares);
+        return _inLine(l, l.collateralVault.previewRedeem(shares));
     }
 
     /// @notice A line's terms and state.
@@ -934,7 +1086,7 @@ contract CreditLine {
             live = !h.settled && h.token != address(0) && h.expiresAt > block.timestamp;
         }
         uint256 used = uint256(l.owed) + l.pending;
-        uint256 target = used == 0 ? 0 : vault.previewWithdraw((used * BPS + l.ltvBps - 1) / l.ltvBps);
+        uint256 target = used == 0 ? 0 : vault.previewWithdraw(_assetsFor(l, (used * BPS + l.ltvBps - 1) / l.ltvBps));
         uint256 have = CORE.available(l.borrower, share) + (live ? h.held : 0);
         if (target > have) target = have;
         uint64 expiresAt = uint64(block.timestamp + COMMITMENT_TERM);
