@@ -715,19 +715,22 @@ library CardFunding {
             // The late charge (tag 8) refunds after every capture charge.
             Leg memory leg;
             leg.holdOwner = owner;
-            leg.token = cashToken;
             leg.id = k == 1 ? _legId(ref, CHARGED) : _legId(ref, DEBT_TAG + k - 2);
-            leg.rate = rate;
+            // A charge is in the owner's cash token or, when debt is owed in the settlement token, in that at par.
+            address token = CORE.getHold(owner, leg.id).token;
+            if (token != cashToken && token != _settlement()) continue;
+            leg.token = token;
+            leg.rate = token == cashToken ? rate : RATE_ONE;
             _readHold(leg);
             if (leg.refundable == 0) continue;
-            uint256 value = _toSettlement(leg.refundable, rate);
+            uint256 value = _toSettlement(leg.refundable, leg.rate);
             uint256 take = rest < value ? rest : value;
-            uint256 tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, rate), leg.refundable);
-            SafeTransferLib.safeTransferFrom(cashToken, msg.sender, address(this), tokens);
+            uint256 tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, leg.rate), leg.refundable);
+            SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), tokens);
             // forge-lint: disable-next-line(unsafe-typecast)
             CORE.refund(owner, leg.id, uint128(tokens));
             part.kind = CASH;
-            part.source = cashToken;
+            part.source = token;
             part.amount += take;
             part.tokens += tokens;
             rest -= take;
@@ -750,6 +753,7 @@ library CardFunding {
             IReservationCore.HoldRecord memory h =
                 CORE.getHold(owner, k == count ? _legId(ref, CHARGED) : _legId(ref, DEBT_TAG + k));
             if (h.token == cashToken) total += _toSettlement(h.captured - h.refunded, rate);
+            else if (h.token == _settlement()) total += h.captured - h.refunded;
         }
     }
 
@@ -855,6 +859,10 @@ library CardFunding {
         // Tags fit in a byte: legs use 16 + an index below 8, charges 64 and up, the late charge 8.
         // forge-lint: disable-next-line(unsafe-typecast)
         return keccak256(abi.encode(address(this), ref, uint8(tag)));
+    }
+
+    function _settlement() private view returns (address) {
+        return CardProgram(address(this)).settlementToken();
     }
 
     function _rate(address token) private view returns (uint256) {
