@@ -1323,11 +1323,15 @@ contract EarnVault is IEarnVault {
     function isAccountingAligned() external view override returns (bool) {
         uint256 supply = totalEarnShares();
         uint256 held = engineShares();
-        if (supply == 0 || held == 0) return supply == 0 && held == 0;
-        if (_convertToEngineShares(supply) == held) return true;
+        if (_aligned(supply, held)) return true;
         // A residue sent since the last checkpoint is still inside the stored anchor until the next call restates it.
         uint256 total = IEarnShare(earnShare).totalSupply();
-        return total != supply && _convertToEngineShares(total) == held;
+        return total != supply && _aligned(total, held);
+    }
+
+    function _aligned(uint256 supply, uint256 held) internal view returns (bool) {
+        if (supply == 0 || held == 0) return supply == 0 && held == 0;
+        return _convertToEngineShares(supply) == held;
     }
 
     /// @notice Reads the stored fields of the pending async request `requestId`.
@@ -1469,11 +1473,14 @@ contract EarnVault is IEarnVault {
         supply = _activeSupply();
         uint256 raw = rawEngineShares();
         uint256 managed = _managedEngineShares;
+        held = managed;
         if (managed > raw) {
-            _managedEngineShares = raw;
+            held = raw;
             emit EngineShareShortfallReconciled(engine, managed, raw, managed - raw, supply);
         }
-        held = _managedEngineShares;
+        // No active supply claims managed backing (an exit or a residue transfer can empty it), so it becomes surplus.
+        if (supply == 0) held = 0;
+        if (held != managed) _managedEngineShares = held;
         if (supply == 0 || held == 0) {
             _resetEmptyAnchor(engine);
             return (supply, held);

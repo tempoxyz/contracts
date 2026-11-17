@@ -105,4 +105,29 @@ contract EarnVaultShareResidueTest is Test {
         assertEq(core.totalEarnShares(), share.totalSupply() - 1);
         assertTrue(core.isAccountingAligned());
     }
+
+    function testTransferringTheOnlyShareToTheVaultEmptiesBacking() public {
+        vm.prank(user);
+        uint256 minted = core.deposit(1 ether, user, 1);
+        vm.prank(user);
+        core.redeem(minted - 1, user, 1);
+        assertEq(core.totalEarnShares(), 1);
+        vm.prank(user);
+        share.transfer(address(core), 1);
+        assertEq(core.totalEarnShares(), 0);
+        // Aligned before any call restates the anchor.
+        assertTrue(core.isAccountingAligned());
+
+        // The next call restates the anchor and leaves the empty pool with no managed backing.
+        vm.prank(other);
+        uint256 minted2 = core.deposit(1 ether, other, 1);
+        assertGt(minted2, 0);
+        assertEq(core.totalEarnShares(), minted2);
+        assertTrue(core.isAccountingAligned());
+        vm.prank(other);
+        core.redeem(minted2, other, 1);
+        assertEq(core.totalEarnShares(), 0);
+        assertEq(core.engineShares(), 0);
+        assertTrue(core.isAccountingAligned());
+    }
 }

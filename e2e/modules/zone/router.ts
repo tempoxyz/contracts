@@ -91,7 +91,7 @@ export async function routerIntegrity(context: E2eContext) {
 /**
  * Checks every approval used by deposit, redemption, conversion, and return to the source Portal. The
  * immutable EarnVault and pool may hold a standing maximum (Tempo charges each zero-to-nonzero allowance
- * as a new slot); any other amount, and any Portal allowance, is a leftover.
+ * as a new slot), and so may the source Portal, drawn down by each return; any other amount is a leftover.
  */
 async function routerAllowances(
   client: DeploymentPublicClient,

@@ -179,16 +179,22 @@ After a new stack is bound, send it a one-time residue that keeps those slots no
 - 1 base unit to its engine, only for an `erc4626` engine (Veda's settlement checks and PropAMM's
   idle cash read the engine's whole balance, so those engines hold none)
 
-Also send the EarnVault 1 unit of EarnShare, from a small first deposit. The vault counts up to 1 unit of EarnShare it holds as
-burned (TIP-20 burns only the caller's balance, so every exit moves shares to the vault first), so
-that unit keeps its balance slot without ever counting as supply or claiming backing. EarnShare
-beyond that unit still counts as supply, so transfers to the vault cannot shrink supply to inflate
-the rate.
+Only an EarnVault from a factory release that includes this change counts up to 1 unit of EarnShare it
+holds as burned (TIP-20 burns only the caller's balance, so every exit moves shares to the vault
+first). Send such a vault 1 unit of EarnShare, from a small first deposit, after confirming from the
+stack's recorded factory release that its EarnVault implementation was built from this change: that
+unit keeps its balance slot without ever counting as supply or claiming backing. EarnShare beyond
+that unit still counts as supply, so transfers to the vault cannot shrink supply to inflate the rate.
+
+Never send EarnShare to an EarnVault from an earlier factory release, which includes every stack
+recorded before this change. That vault cannot burn it, so supply could never return to zero: after
+every other holder exits and that unit's backing rounds to zero, deposits and whole-pool migration
+revert.
 
 Every EarnVault and ERC-4626 engine balance check is a before/after delta, so the residue never
 counts as user assets; it stays with the contract for good. Measured on real TIP-20
-(`cards/test/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and the
-EarnShare unit cuts a redeem from 427k to 173k. The residue is a plain transfer outside the
+(`cards/test/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and on a
+vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The residue is a plain transfer outside the
 recorded deployment actions, so it adds no step to existing deployment records.
 
 Zone routers and card programs (`CardSpender`) hold a token only while a call runs, so each callback
