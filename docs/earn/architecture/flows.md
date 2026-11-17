@@ -59,8 +59,8 @@ sequenceDiagram
 The caller supplies nonzero `assets` and `minEarnShares` and a nonzero receiver; the pause must be
 off. When supply exists but managed backing is worth zero, the EarnVault restarts the pool: it moves
 the worthless managed engine shares to surplus and converts at the empty-pool anchor. It admits that
-entry only when those engine shares are at most one basis point of the entry's and the unbacked supply
-dilutes the entrant by at most one basis point, rounding included, and otherwise rejects it with
+entry only when those engine shares are at most one basis point of the entry's, the engine values the
+entry above zero, and the unbacked supply dilutes the entrant by at most one basis point, rounding included, and otherwise rejects it with
 `ActiveSupplyWithoutBacking`. An engine that prices a real position at zero for now therefore keeps
 deposits closed. Until a deposit restarts such a pool, `cancelRedeem` of a fee-bearing request reverts
 with `InsufficientOutput`; finalizing the request still works. It converts the measured engine shares at the anchor in force before
