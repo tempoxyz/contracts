@@ -458,6 +458,16 @@ contract CardProgram {
         emit SettlementTokenSet(token, current, step);
     }
 
+    /// @notice Adds `amount` of `token` from the caller to the program's funds for advancing payouts.
+    function fundIssuerDebt(address token, uint256 amount) external nonReentrant {
+        CardConvert.fundIssuerDebt(token, amount);
+    }
+
+    /// @notice What the program holds of `token` for advancing payouts.
+    function issuerFunds(address token) external view returns (uint256) {
+        return CardConvert.retained(token);
+    }
+
     /// @notice Pays `amount` from the settlement account to `to` with `memo`, the program advancing what the account
     ///         lacks as debt the account owes it. The settlement account, the issuer or an operator calls it.
     function payOut(address to, uint256 amount, bytes32 memo) external nonReentrant returns (uint256 advanced) {
@@ -1114,7 +1124,8 @@ contract CardProgram {
     }
 
     function _forward(address token) private {
-        uint256 balance = IERC20Like(token).balanceOf(address(this));
+        // The program's own funds for advancing payouts stay.
+        uint256 balance = CardConvert.sweepable(token);
         if (balance != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT_ACCOUNT, balance);
     }
 

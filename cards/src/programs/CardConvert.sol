@@ -45,7 +45,12 @@ library CardConvert {
         mapping(bytes32 legId => uint256) locked;
         /// @dev How many debts the program has charged the settlement account, which names each charge.
         uint256 issuerCharges;
+        /// @dev Per token, the program's own funds for advancing payouts: what it holds for them plus what the
+        ///      settlement account owes it. Sweeps to the settlement account leave the held part in place.
+        mapping(address token => uint256) issuerFunds;
     }
+
+    error IssuerFundsShort(uint256 needed, uint256 held);
 
     /// @notice The settlement account paid `amount` to `to`, of which the program advanced `advanced`, which the
     ///         account now owes it as core debt.
@@ -264,7 +269,7 @@ library CardConvert {
         else Conversion(c).swapExactIn(cash, settlement, pay, 0, owner);
         (, uint128 left) = CORE.debtOf(owner, settlement);
         repaid = owed - left;
-        uint256 landed = IERC20Like(settlement).balanceOf(address(this));
+        uint256 landed = _sweepable(settlement);
         if (landed != 0) SafeTransferLib.safeTransfer(settlement, program.SETTLEMENT_ACCOUNT(), landed);
         emit Converted(bytes32(0), cash, pay, settlement, repaid, 0);
     }
@@ -309,6 +314,33 @@ library CardConvert {
         }
     }
 
+    /// @notice Adds `amount` of `token` from the caller to the program's own funds for advancing payouts.
+    function fundIssuerDebt(address token, uint256 amount) external {
+        SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), amount);
+        _layout().issuerFunds[token] += amount;
+    }
+
+    /// @notice What the program holds of `token` for advancing payouts, which sweeps leave in place: its funds less
+    ///         what the settlement account owes it.
+    function retained(address token) public view returns (uint256) {
+        uint256 funds = _layout().issuerFunds[token];
+        if (funds == 0) return 0;
+        (address creditor, uint128 owed) = CORE.debtOf(CardProgram(address(this)).SETTLEMENT_ACCOUNT(), token);
+        if (creditor != address(this)) return funds;
+        return funds > owed ? funds - owed : 0;
+    }
+
+    /// @notice What of the program's `token` balance is not its own funds and goes on to the settlement account.
+    function sweepable(address token) external view returns (uint256) {
+        return _sweepable(token);
+    }
+
+    function _sweepable(address token) private view returns (uint256) {
+        uint256 balance = IERC20Like(token).balanceOf(address(this));
+        uint256 keep = retained(token);
+        return balance > keep ? balance - keep : 0;
+    }
+
     /// @notice Pays `amount` of the settlement token from the settlement account to `to` with `memo`. What the
     ///         account lacks, the program advances from its own funds, and the account owes it to the program as core
     ///         debt, within the cap the account set; the core repays it first from what the account receives.
@@ -321,6 +353,8 @@ library CardConvert {
             advanced = amount - free;
             (address creditor, uint128 owed) = CORE.debtOf(account, token);
             uint256 prior = creditor == address(this) ? owed : 0;
+            uint256 held = retained(token);
+            if (held < advanced + prior) revert IssuerFundsShort(advanced + prior, held);
             // What the account already owes comes straight back as repayment, leaving the advance free to pay out.
             SafeTransferLib.safeTransfer(token, account, advanced + prior);
             ITIP20PayOut(token).transferFromWithMemo(account, to, amount, memo);
@@ -339,9 +373,13 @@ library CardConvert {
         (address creditor, uint128 owed) = CORE.debtOf(account, current);
         if (creditor != address(this) || owed == 0) return;
         uint256 carried = Conversion(program.conversion()).quoteOut(next, current, owed);
+        uint256 held = retained(current);
+        if (held < owed) revert IssuerFundsShort(owed, held);
         // What the program sends comes straight back as repayment, which clears the debt in `current`.
         SafeTransferLib.safeTransfer(current, account, owed);
         if (!_tryChargeIssuer(account, next, carried)) revert CardProgram.SettlementTokenInUse(IN_USE_ISSUER_DEBT);
+        // The claim moves to `next`; in `current` the program now holds all its funds.
+        _layout().issuerFunds[next] += carried;
         emit IssuerDebtCarried(current, owed, next, carried);
     }
 

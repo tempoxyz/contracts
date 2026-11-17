@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
+import { CardConvert } from "../../src/programs/CardConvert.sol";
 import { CardProgram } from "../../src/programs/CardProgram.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
@@ -34,7 +35,9 @@ contract IssuerDebtTest is ProgramsEnv {
         cards.setConversion(address(conv));
         _allowDebt(usd, 100e6);
         // The program's own funds, which advance what the settlement account lacks.
-        usd.mint(address(cards), 50e6);
+        usd.mint(address(this), 50e6);
+        usd.approve(address(cards), 50e6);
+        cards.fundIssuerDebt(address(usd), 50e6);
     }
 
     function test_payOut_advancesWhatTheSettlementAccountLacksAsDebt() public {
@@ -60,6 +63,28 @@ contract IssuerDebtTest is ProgramsEnv {
         assertEq(debt, 9e6);
         assertEq(usd.balanceOf(address(cards)), 41e6);
         assertEq(usd.balanceOf(bob), 24e6);
+    }
+
+    function test_payOut_refusedPastTheProgramsFunds() public {
+        vm.prank(settlement);
+        vm.expectRevert(abi.encodeWithSelector(CardConvert.IssuerFundsShort.selector, 51e6, 50e6));
+        cards.payOut(bob, 51e6, bytes32("credit-1"));
+    }
+
+    function test_issuerFunds_followTheDebtAndAreNotForwarded() public {
+        assertEq(cards.issuerFunds(address(usd)), 50e6);
+        vm.prank(settlement);
+        cards.payOut(bob, 20e6, bytes32("credit-1"));
+        assertEq(cards.issuerFunds(address(usd)), 30e6);
+        // What the program forwards to the settlement account leaves its own funds in place, and repays the debt.
+        usd.mint(address(cards), 7e6);
+        cards.forward(address(usd));
+        core.repay(settlement, address(usd));
+        (, uint128 debt) = core.debtOf(settlement, address(usd));
+        assertEq(debt, 13e6);
+        assertEq(cards.issuerFunds(address(usd)), 37e6);
+        assertEq(usd.balanceOf(address(cards)), 37e6);
+        assertEq(usd.balanceOf(settlement), 0);
     }
 
     function test_payOut_fromWhatTheAccountHoldsNeedsNoAdvance() public {

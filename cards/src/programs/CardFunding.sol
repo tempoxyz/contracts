@@ -869,7 +869,8 @@ library CardFunding {
     }
 
     function _forward(address token, address to) private {
-        uint256 balance = IERC20Like(token).balanceOf(address(this));
+        // The program's own funds for advancing payouts stay.
+        uint256 balance = CardConvert.sweepable(token);
         if (balance != 0) SafeTransferLib.safeTransfer(token, to, balance);
     }
 
