@@ -169,6 +169,26 @@ Missing or ambiguous creation evidence still fails source verification.
 Before binding, predicted core addresses and reciprocal asset, engine, and fee-module bindings must
 match; an engine already bound elsewhere stops rather than producing an impossible handoff.
 
+### Gas residue after deployment
+
+Tempo charges 250,000 gas whenever a storage slot goes from zero to nonzero. An EarnVault and an
+ERC-4626 engine hold no base asset between calls, so each deposit recreates their balance slots.
+After a new stack is bound, send it a one-time residue that keeps those slots nonzero:
+
+- 1 base unit of the vault asset to the EarnVault
+- 1 base unit to its engine, only for an `erc4626` engine (Veda's settlement checks and PropAMM's
+  idle cash read the engine's whole balance, so those engines hold none)
+
+Never leave EarnShare with the EarnVault. The vault cannot burn it, so supply could never return to
+zero: after every other holder exits and that unit's backing rounds to zero, deposits and whole-pool
+migration revert.
+
+Every EarnVault and ERC-4626 engine balance check is a before/after delta, so the residue never
+counts as user assets; it stays with the contract for good. Measured on real TIP-20
+(`cards/test/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas; redeems
+still pay for the vault's EarnShare slot (426k). The residue is a plain transfer outside the
+recorded deployment actions, so it adds no step to existing deployment records.
+
 ## Generated record
 
 When the deployment steps complete, the command atomically publishes `deployment.json` beside

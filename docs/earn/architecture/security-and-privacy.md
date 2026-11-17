@@ -94,7 +94,8 @@ forwarding-solver authorities are in [Veda](../modules/veda.md#contracts).
 ### Earn router
 
 The ownerless `SingleZoneEarnRouter` has no authority over EarnVault, its pool, or EarnShare
-issuance and retains no balances or allowances after success. Its authentication, par-conversion
+issuance and retains no balances after success; its only allowances are standing maximums to its
+immutable EarnVault and pool. Its authentication, par-conversion
 dependency, and failure behavior are specified in [Tempo Zones](../modules/zone-router.md).
 
 ### Reward periphery
@@ -156,13 +157,16 @@ Independently of caller bounds, the EarnVault rejects a base-asset or in-kind en
 nonempty-pool cancellation re-entry, that leaves more than one basis point of the engine shares
 unrepresented after floor rounding.
 
-### Reentrancy and transient approvals
+### Reentrancy and standing approvals
 
 EarnVault economic calls, `EarnFees.claim`, engine asset paths, and the router callback use local
-reentrancy locks. The router
-sets exact approvals, performs one downstream call, clears or fully consumes the approval, and
-verifies touched token balances against the operation baseline, so no leftover allowance survives a
-successful call. External token callbacks remain a trust boundary; a revert rolls back approval and
+reentrancy locks. The EarnVault keeps a standing maximum base-asset approval to its installed engine,
+topped up only when it is below the amount moved; it holds base assets only within a call, and
+`migrateEngine` revokes the retired engine's approval. The router
+keeps standing maximum approvals only to its immutable EarnVault and pool (Tempo charges every
+zero-to-nonzero allowance as a new storage slot), performs one downstream call, and verifies touched
+token balances against the operation baseline, so no token balance an allowance could reach survives
+a successful call. External token callbacks remain a trust boundary; a revert rolls back approval and
 balance changes atomically.
 
 ### Async claim isolation

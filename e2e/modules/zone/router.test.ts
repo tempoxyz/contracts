@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getAddress, stringify, zeroAddress, type Address } from 'viem'
+import { getAddress, maxUint256, stringify, zeroAddress, type Address } from 'viem'
 import type { DeploymentPublicClient, E2eContext, E2eStack } from '../../harness/context.js'
 import { routerIntegrity, validateRouter } from './router.js'
 
@@ -39,6 +39,19 @@ describe('validateRouter', () => {
       await expect(validateRouter(client, deployment)).rejects.toThrow(
         `EarnRouter retains an allowance at rest: ${label}`,
       )
+    },
+  )
+
+  it.each(temporaryAllowances)(
+    'accepts a standing maximum only for the EarnVault and pool: %s',
+    async (label, token, spender) => {
+      const { client, deployment, allowances } = routerFixture()
+      allowances.set(allowanceKey(token, spender), maxUint256)
+      if (spender === portal)
+        await expect(validateRouter(client, deployment)).rejects.toThrow(
+          `EarnRouter retains an allowance at rest: ${label}`,
+        )
+      else await expect(validateRouter(client, deployment)).resolves.toBeUndefined()
     },
   )
 
@@ -96,7 +109,9 @@ describe('routerIntegrity', () => {
       privateAsset,
     })
     expect(before?.allowances).toEqual(
-      temporaryAllowances.map(([, token, spender]) => ({ token, spender, allowance: 0n })),
+      temporaryAllowances.map(([, token, spender]) =>
+        spender === portal ? { token, spender, allowance: 0n } : { token, spender, standing: true },
+      ),
     )
     expect(stringify(await routerIntegrity(context))).toBe(stringify(before))
   })

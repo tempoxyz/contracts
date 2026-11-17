@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { IERC20Like } from "../interfaces/external/IERC20Like.sol";
+import { IERC20Allowance } from "../interfaces/external/IERC20Allowance.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
@@ -29,13 +30,12 @@ interface IContributionTarget {
 /// @custom:ghost bool lastCallOk
 /// @custom:ghost bool lastCallReturnedData
 /// @custom:ghost bool lastCallReturnedTrue
-/// Ghost record of the last amount pulled from a funder and the last approval given to the vault.
+/// Ghost record of the last amount pulled from a funder.
 /// @custom:ghost uint256 lastPulled
-/// @custom:ghost uint256 vaultApproval
 /// Ghost record of the supply the last supply check accepted.
 /// @custom:ghost uint256 checkedSupply
 /// Solvency: the controller never holds what it contributes. Every successful leg pulls exactly the requested
-/// assets and leaves no approval behind (see _contributeExact).
+/// assets; the only allowance it keeps is a standing one to the immutable EarnVault (see _contributeExact).
 /// Not proved: that the controller's asset balance returns to its prior value after each leg; the vault's
 /// contribute pull is not measured here.
 contract EarnContributionController is Ownable2Step {
@@ -118,12 +118,12 @@ contract EarnContributionController is Ownable2Step {
     /// @dev The fee-inclusive supply bound is checked once before the first contribution. A provider
     ///      or venue failure reverts every leg, preventing partial multi-provider settlement.
     /// Only the owner funds, only while active, with at least two legs of equal-length arrays, every funder
-    /// nonzero and every amount positive; the total covers every leg and no vault approval is left.
+    /// nonzero and every amount positive; the total covers every leg.
     /// @custom:ensures old(owner()) == msg.sender && old(active)
     /// @custom:ensures funders.length >= 2 && funders.length == requestedAssets.length
     /// @custom:ensures forall uint256 j :: j < funders.length ==> funders[j] != address(0) && requestedAssets[j] > 0
     /// @custom:ensures totalFundedAssets >= funders.length
-    /// @custom:ensures locked == 1 && vaultApproval == 0
+    /// @custom:ensures locked == 1
     /// Not proved: liveness. The batch is all-or-nothing by design, so it also needs every funder's pull, the
     /// vault's fee accrual and every contribution to succeed, which depend on calls outside this contract.
     function fundBatchExact(address[] calldata funders, uint256[] calldata requestedAssets, uint256 maxEarnShareSupply)
@@ -144,7 +144,7 @@ contract EarnContributionController is Ownable2Step {
 
         _checkEarnShareSupply(maxEarnShareSupply);
         /// @custom:invariant i <= length && length == funders.length && length == requestedAssets.length
-        /// @custom:invariant totalFundedAssets >= i && (i > 0 ==> vaultApproval == 0)
+        /// @custom:invariant totalFundedAssets >= i
         /// @custom:invariant forall uint256 j :: j < length ==> funders[j] != address(0) && requestedAssets[j] > 0
         for (uint256 i; i < length; ++i) {
             uint256 amount = requestedAssets[i];
@@ -155,8 +155,8 @@ contract EarnContributionController is Ownable2Step {
     }
 
     /// @notice Atomic provider pull, live-supply check, and contribution leg used only through `fund`.
-    /// Only the controller itself calls it; it funds exactly the requested assets and leaves no approval.
-    /// @custom:ensures msg.sender == address(this) && fundedAssets == requestedAssets && vaultApproval == 0
+    /// Only the controller itself calls it; it funds exactly the requested assets.
+    /// @custom:ensures msg.sender == address(this) && fundedAssets == requestedAssets
     function executeFunding(address funder, uint256 requestedAssets, uint256 maxEarnShareSupply)
         external
         returns (uint256 fundedAssets)
@@ -183,14 +183,16 @@ contract EarnContributionController is Ownable2Step {
 
     /// The contract invariants hold on entry (it is called from verified entry points only).
     /// @custom:requires address(earnVault) != address(0) && asset != address(0)
-    /// A contribution pulls exactly the requested assets before approving the vault, and leaves no approval.
-    /// @custom:ensures vaultApproval == 0
+    /// A contribution pulls exactly the requested assets before the vault pulls them.
     function _contributeExact(address funder, uint256 requestedAssets) private {
         _safeTransferFrom(asset, funder, address(this), requestedAssets);
         /// @custom:assert lastPulled == requestedAssets
-        _safeApprove(asset, address(earnVault), requestedAssets);
+        // A standing maximum allowance for the immutable EarnVault: Tempo charges every zero-to-nonzero allowance as a new storage slot.
+        if (IERC20Allowance(asset).allowance(address(this), address(earnVault)) < requestedAssets) {
+            _safeApprove(asset, address(earnVault), 0);
+            _safeApprove(asset, address(earnVault), type(uint256).max);
+        }
         earnVault.contribute(requestedAssets);
-        _safeApprove(asset, address(earnVault), 0);
     }
 
     /// @notice Stops or restarts future funding calls without touching the vault or existing rewards.
@@ -219,10 +221,9 @@ contract EarnContributionController is Ownable2Step {
     /// The contract invariants hold on entry (it is called from verified entry points only).
     /// @custom:requires address(earnVault) != address(0) && asset != address(0)
     /// A token call is accepted only if it succeeded and returned nothing or true.
-    /// @custom:ensures lastCallOk && (lastCallReturnedData ==> lastCallReturnedTrue) && vaultApproval == amount
+    /// @custom:ensures lastCallOk && (lastCallReturnedData ==> lastCallReturnedTrue)
     function _safeApprove(address token, address spender, uint256 amount) private {
         (bool ok, bytes memory result) = token.call(abi.encodeCall(IERC20Like.approve, (spender, amount)));
-        /// @custom:ghost vaultApproval = amount
         /// @custom:ghost lastCallOk = ok
         /// @custom:ghost lastCallReturnedData = result.length != 0
         /// @custom:ghost lastCallReturnedTrue = result.length != 0 && abi.decode(result, (bool))

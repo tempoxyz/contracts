@@ -1,6 +1,6 @@
 import { earnRouterAbi } from '@tempoxyz/contracts/abis'
 import { inspectRouterReadiness } from '@tempoxyz/contracts/deployments'
-import { erc20Abi, getAddress, zeroAddress, type Address } from 'viem'
+import { erc20Abi, getAddress, maxUint256, zeroAddress, type Address } from 'viem'
 import type { DeploymentPublicClient, E2eContext, E2eStack } from '../../harness/context.js'
 import { tokenBalance } from '../../harness/support/funding.js'
 import { assert, ZONE_CASE_AMOUNT } from '../../harness/support/utils.js'
@@ -77,7 +77,11 @@ export async function routerIntegrity(context: E2eContext) {
   }
 }
 
-/** Checks every approval used by deposit, redemption, conversion, and return to the source Portal. */
+/**
+ * Checks every approval used by deposit, redemption, conversion, and return to the source Portal. The
+ * immutable EarnVault and pool may hold a standing maximum (Tempo charges each zero-to-nonzero allowance
+ * as a new slot); any other amount, and any Portal allowance, is a leftover.
+ */
 async function routerAllowances(
   client: DeploymentPublicClient,
   deployment: E2eStack,
@@ -90,28 +94,44 @@ async function routerAllowances(
     portal !== undefined && getAddress(portal) !== zeroAddress,
     'EarnRouter has no source Portal',
   )
-  const targets: { token: Address; spender: Address; label: string }[] = [
-    { token: asset, spender: earnVault, label: 'vault asset to EarnVault' },
-    { token: earnShare, spender: earnVault, label: 'EarnShare to EarnVault' },
-    { token: privateAsset, spender: portal, label: 'private asset to source Portal' },
-    { token: earnShare, spender: portal, label: 'EarnShare to source Portal' },
+  const targets: { token: Address; spender: Address; label: string; standing: boolean }[] = [
+    { token: asset, spender: earnVault, label: 'vault asset to EarnVault', standing: true },
+    { token: earnShare, spender: earnVault, label: 'EarnShare to EarnVault', standing: true },
+    {
+      token: privateAsset,
+      spender: portal,
+      label: 'private asset to source Portal',
+      standing: false,
+    },
+    { token: earnShare, spender: portal, label: 'EarnShare to source Portal', standing: false },
   ]
   if (getAddress(pool) !== zeroAddress) {
     targets.push(
-      { token: asset, spender: pool, label: 'vault asset to conversion pool' },
-      { token: privateAsset, spender: pool, label: 'private asset to conversion pool' },
+      { token: asset, spender: pool, label: 'vault asset to conversion pool', standing: true },
+      {
+        token: privateAsset,
+        spender: pool,
+        label: 'private asset to conversion pool',
+        standing: true,
+      },
     )
   }
   return Promise.all(
-    targets.map(async ({ token, spender, label }) => {
+    targets.map(async ({ token, spender, label, standing }) => {
       const allowance = await client.readContract({
         address: token,
         abi: erc20Abi,
         functionName: 'allowance',
         args: [router, spender],
       })
-      assert(allowance === 0n, `EarnRouter retains an allowance at rest: ${label}`)
-      return { token: getAddress(token), spender: getAddress(spender), allowance }
+      assert(
+        allowance === 0n || (standing && allowance === maxUint256),
+        `EarnRouter retains an allowance at rest: ${label}`,
+      )
+      // A standing allowance is set by the first operation, so its value is no baseline to compare.
+      return standing
+        ? { token: getAddress(token), spender: getAddress(spender), standing }
+        : { token: getAddress(token), spender: getAddress(spender), allowance }
     }),
   )
 }

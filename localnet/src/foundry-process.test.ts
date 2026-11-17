@@ -257,12 +257,23 @@ it('keeps inspection, fixture scripts and sibling lifecycle builds off stale out
   for (const [name, value] of Object.entries(overrides)) vi.stubEnv(name, value)
 
   releaseAddresses([], broadcastDirectory)
-  const inspected = JSON.parse(readFileSync(history, 'utf8').trim().split('\n')[0]!)
+  const [built, inspected] = readFileSync(history, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  // The release prediction builds and inspects its own output, apart from fixture scripts.
+  expect(built).toMatchObject({
+    arguments: ['build', 'script/deploy/DeployFactoryRelease.s.sol'],
+    cwd: Config.earnRoot,
+    out: resolve(runRoot, 'build/earn/out-release'),
+    cache: resolve(runRoot, 'build/earn/cache-release'),
+    reused: false,
+  })
   expect(inspected).toMatchObject({
     cwd: Config.earnRoot,
-    out: resolve(runRoot, 'build/earn/out'),
-    cache: resolve(runRoot, 'build/earn/cache'),
-    reused: false,
+    out: built.out,
+    cache: built.cache,
+    reused: true,
     bytecode: '0x6001',
   })
   await expect(
@@ -276,9 +287,9 @@ it('keeps inspection, fixture scripts and sibling lifecycle builds off stale out
     }),
   ).rejects.toThrow('Forge did not write a new broadcast transaction')
   expect(JSON.parse(readFileSync(captured, 'utf8'))).toMatchObject({
-    out: inspected.out,
-    cache: inspected.cache,
-    reused: true,
+    out: resolve(runRoot, 'build/earn/out'),
+    cache: resolve(runRoot, 'build/earn/cache'),
+    reused: false,
     bytecode: '0x6001',
   })
   for (const project of ['earn', 'zone-router']) {
@@ -348,6 +359,16 @@ pragma solidity ^0.8.36;
 contract ${name} { function value() external pure returns (uint256) { return 42; } }
 `,
       )
+    // The release prediction compiles exactly the release script's sources.
+    mkdirSync(resolve(Config.earnRoot, 'script/deploy'), { recursive: true })
+    writeFileSync(
+      resolve(Config.earnRoot, 'script/deploy/DeployFactoryRelease.s.sol'),
+      `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.36;
+${plan.contracts.map(({ name }) => `import { ${name} } from "../../src/core/${name}.sol";`).join('\n')}
+contract DeployFactoryReleaseScript {}
+`,
+    )
     const forge = (...args: string[]) =>
       execFileSync('forge', args, {
         cwd: Config.earnRoot,
@@ -377,7 +398,7 @@ contract ${name} { function value() external pure returns (uint256) { return 42;
     vi.stubEnv('FOUNDRY_CACHE_PATH', resolve(Config.earnRoot, 'cache/deploy'))
     expect(releaseAddresses([], broadcastDirectory)).toEqual(expected)
     const fresh = JSON.parse(
-      readFileSync(resolve(runRoot, 'build/earn/out/EarnVault.sol/EarnVault.json'), 'utf8'),
+      readFileSync(resolve(runRoot, 'build/earn/out-release/EarnVault.sol/EarnVault.json'), 'utf8'),
     )
     expect(fresh.bytecode.object).toBe(bytecodes['src/core/EarnVault.sol:EarnVault'])
     expect(JSON.parse(readFileSync(poisoned, 'utf8')).bytecode.object).toBe('0xdead')

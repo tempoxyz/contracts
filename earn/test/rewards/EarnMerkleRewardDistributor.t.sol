@@ -87,7 +87,8 @@ contract EarnMerkleRewardDistributorTest is Test {
         assertEq(distributor.rootTotalEntitlement(), 150 ether);
         assertEq(share.balanceOf(address(distributor)), 150 ether);
         assertEq(asset.balanceOf(address(distributor)), 0);
-        assertEq(asset.allowance(address(distributor), address(vault)), 0);
+        // A standing maximum to the immutable EarnVault; the distributor holds no base asset to pull.
+        assertEq(asset.allowance(address(distributor), address(vault)), type(uint256).max);
     }
 
     function testFundAndPublishRootRevertsAtomicallyBelowMinimum() public {

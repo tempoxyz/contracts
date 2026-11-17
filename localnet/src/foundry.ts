@@ -35,6 +35,11 @@ export type Step = StepOptions & {
 
 export type StepOptions = {
   /**
+   * Builds into the factory release's own output, which only the release script's sources reach, so
+   * the deployed bytecode is the bytecode {releaseAddresses} predicts.
+   */
+  releaseBuild?: boolean
+  /**
    * Uses Forge's raw gas estimate: for large CREATE steps a 200% multiplier can exceed Tempo's 30M
    * transaction cap even when the deployment itself fits comfortably.
    */
@@ -73,10 +78,10 @@ export function fixtureScript<const abi extends Abi>(name: string, abi: abi) {
 }
 
 /** The shared factory release, one CREATE per entry point for Tempo batches. */
-export const release = script(
-  'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript',
-  deployFactoryReleaseScriptAbi,
-)
+const releaseTarget = 'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
+const releaseScript = script(releaseTarget, deployFactoryReleaseScriptAbi)
+export const release: typeof releaseScript = (functionName, args, options = {}) =>
+  releaseScript(functionName, args, { ...options, releaseBuild: true })
 
 /**
  * The deterministic CREATE2 address of every shared release contract, by contract name, from the
@@ -95,11 +100,20 @@ export function releaseAddresses(
     Config.earnRoot,
   )
   delete environment.DEPLOYER_PRIVATE_KEY
+  const releaseEnvironment = releaseBuildEnvironment(environment)
+  // solar's output for a contract depends on the other sources compiled with it, so predict from
+  // the same build, over the same sources, that the release script deploys from.
+  execFileSync('forge', ['build', releaseTarget.split(':')[0]!], {
+    cwd: Config.earnRoot,
+    encoding: 'utf8',
+    env: releaseEnvironment,
+  })
+  // Inspection reuses that build's artifacts rather than compiling a narrower source set.
   const creationBytecode = (contract: string) =>
     execFileSync('forge', ['inspect', contract, 'bytecode'], {
       cwd: Config.earnRoot,
       encoding: 'utf8',
-      env: environment,
+      env: releaseEnvironment,
     }).trim() as Hex
   return Object.fromEntries(
     ['core', ...releaseKeys].flatMap((kind) =>
@@ -150,6 +164,7 @@ export async function run(options: run.Options) {
       foundryProcessEnvironment({ ...process.env, DEPLOYER_PRIVATE_KEY: options.privateKey }),
       options.rpcUrl,
     ),
+    step.releaseBuild,
     options.broadcastDirectory,
     step.rawGasEstimate,
   )
@@ -203,6 +218,7 @@ export function runLifecycleStep(step: LifecycleStep, broadcastDirectory: string
   const forge = spawnForge(
     step.arguments,
     step.environment,
+    false,
     broadcastDirectory,
     step.rawGasEstimate,
     projectRoot(step.root, broadcastDirectory),
@@ -256,10 +272,12 @@ function ensureDependencies(project: string) {
 function spawnForge(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
+  releaseBuild: boolean | undefined,
   broadcastDirectory: string,
   rawGasEstimate: boolean | undefined,
   root = Config.earnRoot,
 ) {
+  const built = buildEnvironment(environment, broadcastDirectory, root)
   assertFoundryProjectEnvironment(root)
   ensureDependencies(basename(root))
   return spawnSync(
@@ -277,7 +295,7 @@ function spawnForge(
       cwd: root,
       encoding: 'utf8',
       env: {
-        ...buildEnvironment(environment, broadcastDirectory, root),
+        ...(releaseBuild ? releaseBuildEnvironment(built) : built),
         FOUNDRY_BROADCAST: environment.FOUNDRY_BROADCAST ?? broadcastDirectory,
       },
       maxBuffer: 32 * 1024 * 1024,
@@ -298,6 +316,15 @@ function buildEnvironment(
     ...environment,
     FOUNDRY_CACHE_PATH: resolve(directory, 'cache'),
     FOUNDRY_OUT: resolve(directory, 'out'),
+  }
+}
+
+/** The factory release's own output and cache beside the project's shared build. */
+function releaseBuildEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...environment,
+    FOUNDRY_CACHE_PATH: `${environment.FOUNDRY_CACHE_PATH!}-release`,
+    FOUNDRY_OUT: `${environment.FOUNDRY_OUT!}-release`,
   }
 }
 
