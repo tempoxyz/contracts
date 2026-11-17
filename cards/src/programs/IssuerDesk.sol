@@ -368,6 +368,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 kept = credited - rest;
         uint128 net = chargeback > rest ? chargeback - rest : 0;
         if (kept != 0 || net != 0) PROGRAM.creditBack(purchaseRef, kept, net);
+        // Of the refund, what the merchant's reserves paid is not the network's to return.
+        if (rest > chargeback) PROGRAM.reserveSettled(purchaseRef, rest - chargeback);
         _reverse(purchaseRef, credited);
         emit DisputeResolved(purchaseRef, owner, true, int256(uint256(rest)), 0, repaid, chargeback);
     }

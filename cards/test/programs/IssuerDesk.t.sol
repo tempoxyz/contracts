@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
+import { CardProgram } from "../../src/programs/CardProgram.sol";
 import { IssuerDesk } from "../../src/programs/IssuerDesk.sol";
 import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
 
@@ -214,6 +215,31 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.RefundTooLarge.selector);
         desk.refund(P1, 1e6);
+    }
+
+    function test_dispute_won_reserveCoveredRefundLeavesSettlement() public {
+        _disputed(50e6);
+        usd.mint(settlement, 50e6);
+        (,, uint128 before,) = cards.ledger();
+        // The merchant's reserves paid the issuer 30 of the 50.
+        vm.prank(issuer);
+        desk.collectedReserve(P1, 30e6);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        assertEq(usd.balanceOf(alice), 1000e6, "the whole purchase refunded");
+        // The network returns only the 20 the reserves did not cover.
+        (,, uint128 net,) = cards.ledger();
+        assertEq(before - net, 20e6, "net settlement less the reserve-paid part");
+    }
+
+    function test_reserveSettled_onlyOperatorAndKnownPurchase() public {
+        _purchase(10e6);
+        vm.prank(bob);
+        vm.expectRevert();
+        cards.reserveSettled(P1, 1e6);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.UnknownPurchase.selector);
+        cards.reserveSettled(bytes32("missing"), 1e6);
     }
 
     function test_dispute_open_keepsTheSettlementToken() public {

@@ -253,6 +253,9 @@ contract CardProgram {
         uint64 seq,
         uint128 net
     );
+    /// @notice Of a purchase's refund, `amount` the merchant's reserves already paid the issuer, which the network
+    ///         therefore does not return through settlement.
+    event ReserveSettled(bytes32 indexed purchaseRef, uint256 amount, uint64 seq, uint128 net);
     event SettlementAcknowledged(uint64 throughSeq, uint64 previous);
     event Granted(address indexed owner, CardLimits.Terms terms, uint32 epoch);
     event Revoked(address indexed owner);
@@ -841,6 +844,18 @@ contract CardProgram {
         uint128 net = ledger_.net > amount ? ledger_.net - amount : 0;
         ledger_.net = net;
         emit PurchaseRefunded(purchaseRef, p.card, amount, tokens[0], tokens[1], tokens[2], seq, net);
+    }
+
+    /// @notice Records that merchant reserves paid the issuer `amount` of a purchase's refund, which settlement then
+    ///         leaves out of what the network returns. Moves no money.
+    function reserveSettled(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
+        if (_purchases[purchaseRef].owner == address(0)) revert UnknownPurchase();
+        if (amount == 0) revert InvalidAmount();
+        Ledger storage ledger_ = ledger;
+        uint64 seq = ++ledger_.seq;
+        uint128 net = ledger_.net + amount;
+        ledger_.net = net;
+        emit ReserveSettled(purchaseRef, amount, seq, net);
     }
 
     /// @notice Records `usage` of a purchase as given back to its card's limits and `net` as returned to the network,
