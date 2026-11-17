@@ -694,6 +694,25 @@ contract CardProgram {
         emit PurchaseRefunded(purchaseRef, p.card, amount, tokens[0], tokens[1], tokens[2], seq, net);
     }
 
+    /// @notice Records `usage` of a purchase as given back to its card's limits and `net` as returned to the network,
+    ///         moving no money: dispute credit the cardholder already holds, which a win or a later refund settles.
+    function creditBack(bytes32 purchaseRef, uint128 usage, uint128 net) external nonReentrant onlyOperator {
+        Purchase storage p = _purchases[purchaseRef];
+        if (p.owner == address(0)) revert UnknownPurchase();
+        if (usage == 0 && net == 0) revert InvalidAmount();
+        _giveBackNow(_cards[p.card], p.owner, p.epoch, usage);
+        Ledger storage ledger_ = ledger;
+        uint64 seq = ++ledger_.seq;
+        uint128 left = ledger_.net > net ? ledger_.net - net : 0;
+        ledger_.net = left;
+        emit PurchaseRefunded(purchaseRef, p.card, net, 0, 0, 0, seq, left);
+    }
+
+    /// @notice An owner's funding order on this program, which issuer services walk to take money back.
+    function fundingOrderOf(address owner) external view returns (uint32 version, CardFunding.Source[] memory order) {
+        return CardFunding.orderOf(owner);
+    }
+
     /// @notice Sends what the program holds of `token` (debt an owner repaid to it) to the settlement account.
     function forward(address token) external nonReentrant {
         _forward(token);
