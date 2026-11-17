@@ -68,6 +68,11 @@ contract CardProgram {
     }
 
     /// @notice Spending limits in settlement units. Zero allows nothing.
+    struct KeyCap {
+        uint128 cap;
+        uint128 used;
+    }
+
     struct Limits {
         uint80 perPurchase;
         uint80 daily;
@@ -144,6 +149,9 @@ contract CardProgram {
     mapping(address owner => CardLimits.Usage) public usageOf;
     /// @notice Keys the issuer lets act on purchases besides itself.
     mapping(address key => bool) public operators;
+    /// @dev An operator key's spend cap and what it has authorized, in SETTLEMENT_TOKEN units so a settlement token
+    ///      change rescales both. A zero cap means none.
+    mapping(address key => KeyCap) internal _keyCaps;
     mapping(address owner => address) public fundingOf;
     mapping(bytes32 purchaseRef => Purchase) internal _purchases;
     /// @notice Settlement units per unit of a token other than the settlement token, scaled by 1e18.
@@ -260,6 +268,7 @@ contract CardProgram {
     event Granted(address indexed owner, CardLimits.Terms terms, uint32 epoch);
     event Revoked(address indexed owner);
     event OperatorSet(address indexed key, bool allowed);
+    event OperatorCapSet(address indexed key, uint256 cap);
     event CardCapSet(bytes32 indexed card, uint64 cap);
     event PurchaseAdjusted(bytes32 indexed purchaseRef, bytes32 indexed card, uint256 amount, uint256 cash, uint64 seq);
     event PurchaseCharged(
@@ -283,6 +292,7 @@ contract CardProgram {
     error CardNotActive();
     error InsufficientFunds(uint256 shortfall);
     error InvalidAmount();
+    error KeyCapExceeded(uint256 room);
     error InvalidCard();
     error InvalidCursor();
     /// @notice The settlement token still sizes something: 1 open holds, 2 unsettled captures, 3 debt owed to the
@@ -367,7 +377,31 @@ contract CardProgram {
     /// @notice Lets `key` act on purchases (authorize, adjust, capture, release, charge, refund), or stops it.
     function setOperator(address key, bool allowed) external onlyIssuer {
         operators[key] = allowed;
+        delete _keyCaps[key];
         emit OperatorSet(key, allowed);
+    }
+
+    /// @notice Lets `key` act on purchases while what it authorizes, holds and increases alike (stand-in included),
+    ///         stays within `cap` settlement units over its life. A settlement token change rescales the cap and what
+    ///         it has used at that day's rate: the cap rounds down and its use up, so a change never adds room.
+    function setOperatorCap(address key, uint256 cap) external onlyIssuer {
+        uint256 scale = _scaleOf(settlementToken());
+        uint256 base = scale == RATE_ONE ? cap : cap.mulDiv(scale, RATE_ONE);
+        if (base == 0 || base > type(uint128).max) revert InvalidAmount();
+        operators[key] = true;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _keyCaps[key] = KeyCap(uint128(base), 0);
+        emit OperatorSet(key, true);
+        emit OperatorCapSet(key, cap);
+    }
+
+    /// @notice `key`'s cap and what it has used in the current settlement token, zero cap meaning none.
+    function operatorCap(address key) external view returns (uint256 cap, uint256 used) {
+        KeyCap storage k = _keyCaps[key];
+        if (k.cap == 0) return (0, 0);
+        uint256 scale = _scaleOf(settlementToken());
+        if (scale == RATE_ONE) return (k.cap, k.used);
+        return (uint256(k.cap).mulDiv(RATE_ONE, scale), uint256(k.used).mulDivUp(RATE_ONE, scale));
     }
 
     /// @notice Caps what `card` commits over its life (open holds plus captures less refunds). Zero removes the cap.
@@ -654,6 +688,7 @@ contract CardProgram {
             }
         }
         uint256 counted = _base(approved, type(uint256).max);
+        _useKey(counted);
         if (!standIn) CardLimits.useMandate(mandates[owner][merchant], g.terms.utcOffset, counted);
         (p.day, p.month) = _spend(c, owner, counted, counted, !standIn);
 
@@ -696,7 +731,10 @@ contract CardProgram {
             amount = uint128(rounded);
         }
         Card storage c = _follow(p);
-        if (amount > previous) _admit(owner);
+        if (amount > previous) {
+            _admit(owner);
+            _useKey(_counted(purchaseRef, amount - previous));
+        }
         CardAdjust.adjust(p, c, grants[owner], usageOf[owner], amount);
         uint256 cash = CardFunding.resize(p, purchaseRef, previous, amount);
         uint64 seq = ++ledger.seq;
@@ -1109,6 +1147,18 @@ contract CardProgram {
         // Dividing first is the rounding: up to the next whole increment.
         // forge-lint: disable-next-line(divide-before-multiply)
         return increment == 0 ? amount : (amount + increment - 1) / increment * increment;
+    }
+
+    /// @dev Counts `counted` SETTLEMENT_TOKEN units against the calling key's cap, when it has one.
+    function _useKey(uint256 counted) private {
+        KeyCap storage k = _keyCaps[msg.sender];
+        uint256 cap = k.cap;
+        if (cap == 0) return;
+        uint256 used = k.used + counted;
+        if (used > cap) revert KeyCapExceeded(cap - k.used);
+        // Bounded by the 128-bit cap just checked.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        k.used = uint128(used);
     }
 
     function _scaleOf(address token) private view returns (uint256 scale) {

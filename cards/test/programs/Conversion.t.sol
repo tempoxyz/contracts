@@ -597,6 +597,59 @@ contract ConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 0, "the cash stays spent");
     }
 
+    function test_operatorCap_rescalesWithTheSettlementToken() public {
+        // A EUR 100 cap; EUR 40 used before the issuer moves to GBP at $1.25.
+        FixedPricePool gbpAsk = new FixedPricePool(address(otherUsd), address(usd), 1.25e18);
+        otherUsd.mint(address(gbpAsk), 1_000_000e6);
+        conv.setVenue(address(usd), address(otherUsd), address(gbpAsk), false);
+        conv.setReferenceRate(address(otherUsd), 1.25e18);
+        _localIssuer();
+        address key = makeAddr("key");
+        vm.prank(issuer);
+        cards.setOperatorCap(key, 100e6);
+        usd.mint(alice, 500e6);
+        vm.prank(key);
+        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 7 days), 0);
+        (uint256 cap, uint256 used) = cards.operatorCap(key);
+        assertEq(cap, 100e6);
+        assertEq(used, 40e6);
+        vm.prank(key);
+        cards.capture(P1, 40e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        vm.prank(issuer);
+        cards.setSettlementToken(address(otherUsd));
+        (cap, used) = cards.operatorCap(key);
+        assertEq(cap, 88e6, "the cap rescales down");
+        // Within a unit: the pound's scale is the euro's times a truncated reference rate.
+        assertApproxEqAbs(used, 35.2e6, 1, "and its use up");
+        assertGe(used, 35.2e6, "rounded up");
+        vm.prank(key);
+        vm.expectPartialRevert(CardProgram.KeyCapExceeded.selector);
+        cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), 0);
+        // A stand-in approval counts too.
+        vm.prank(key);
+        vm.expectPartialRevert(CardProgram.KeyCapExceeded.selector);
+        cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), 1);
+        vm.prank(key);
+        cards.authorize(CARD, P2, 50e6, merchant, uint64(block.timestamp + 7 days), 0);
+        // An increase counts what it adds.
+        vm.prank(key);
+        vm.expectPartialRevert(CardProgram.KeyCapExceeded.selector);
+        cards.adjust(P2, 52.81e6);
+        vm.prank(key);
+        cards.adjust(P2, 52.8e6);
+        // Without a cap, the issuer and other operators are not counted.
+        vm.prank(issuer);
+        cards.authorize(CARD, bytes32("purchase-3"), 100e6, merchant, uint64(block.timestamp + 7 days), 0);
+        // Plain operator rights clear the cap.
+        vm.prank(issuer);
+        cards.setOperator(key, true);
+        (cap,) = cards.operatorCap(key);
+        assertEq(cap, 0);
+    }
+
     function _tokenFirst(address owner, uint64 maxCostBps) internal {
         CardFunding.Source[] memory order = new CardFunding.Source[](2);
         order[0] = CardFunding.Source({ kind: TOKEN, source: address(eur), lineId: maxCostBps });
