@@ -100,6 +100,33 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(debt, 1e6, "the split it no longer has");
     }
 
+    function test_refund_pastTheSettlementBalance_owesTheProgram() public {
+        _purchase(100e6);
+        // The settlement account kept $97 and spent $90 of it.
+        vm.prank(settlement);
+        usd.transfer(bob, 90e6);
+        _allowIssuerDebt(50e6);
+        vm.prank(issuer);
+        desk.refund(P1, 20e6);
+        assertEq(usd.balanceOf(alice), 920e6, "the whole refund reaches the owner");
+        assertEq(usd.balanceOf(settlement), 0.6e6, "the splits taken back");
+        (address creditor, uint128 debt) = core.debtOf(settlement, address(usd));
+        assertEq(creditor, address(cards), "owed to the program");
+        assertEq(debt, 13e6, "what the account lacked");
+        assertEq(cards.issuerFunds(address(usd)), 37e6, "the program advanced it");
+        assertEq(usd.balanceOf(address(desk)), 0, "the desk keeps nothing");
+    }
+
+    function test_refund_pastTheIssuerDebtCap_refused() public {
+        _purchase(100e6);
+        vm.prank(settlement);
+        usd.transfer(bob, 97e6);
+        _allowIssuerDebt(10e6);
+        vm.prank(issuer);
+        vm.expectRevert();
+        desk.refund(P1, 20e6);
+    }
+
     function test_rewards_paidFromFunderSplit() public {
         IssuerDesk.Reward[] memory rewards = new IssuerDesk.Reward[](1);
         rewards[0] = IssuerDesk.Reward({ funder: partner, bps: 150, kind: "cashback" });
@@ -328,5 +355,16 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.DisputeTooLarge.selector);
         desk.openDispute(P1, 51e6, "");
+    }
+
+    function _allowIssuerDebt(uint128 cap) internal {
+        vm.startPrank(settlement);
+        usd.approve(address(cards), type(uint256).max);
+        core.approveHolder(address(cards), address(usd), type(uint128).max);
+        core.setDebtCap(address(cards), address(usd), cap);
+        vm.stopPrank();
+        usd.mint(address(this), 50e6);
+        usd.approve(address(cards), 50e6);
+        cards.fundIssuerDebt(address(usd), 50e6);
     }
 }

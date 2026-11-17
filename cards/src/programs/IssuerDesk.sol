@@ -524,7 +524,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         address token = PROGRAM.settlementToken();
         address booked = PROGRAM.purchaseToken(purchaseRef);
         if (booked == token) {
-            SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), amount);
+            _pull(token, amount);
             _allow(token, address(PROGRAM), amount);
             PROGRAM.refund(purchaseRef, amount);
             return;
@@ -535,11 +535,21 @@ contract IssuerDesk is ISettlementTokenGuard {
             uint256(amount).mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE) + LEG_ROUNDING;
         // What the desk already holds (a one-unit seed, sent by anyone) stays, so a refund never creates its balance.
         uint256 baseline = SafeTransferLib.balanceOf(token, address(this));
-        SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), paying);
+        _pull(token, paying);
         _allow(token, address(PROGRAM), paying);
         PROGRAM.refund(purchaseRef, amount);
         uint256 left = SafeTransferLib.balanceOf(token, address(this)) - baseline;
         if (left != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT, left);
+    }
+
+    /// @dev Pulls `amount` of today's settlement token from the settlement account. What the account lacks, the program
+    ///      advances as issuer debt, as it does for a payout: the account owes it to the program within its debt cap.
+    function _pull(address token, uint256 amount) private {
+        if (amount <= CORE.available(SETTLEMENT, token)) {
+            SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), amount);
+        } else {
+            PROGRAM.payOut(address(this), amount, bytes32(0));
+        }
     }
 
     /// @dev A standing maximum allowance for the immutable program, or a credit line it draws on: Tempo charges every
