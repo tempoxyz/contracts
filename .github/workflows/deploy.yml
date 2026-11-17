@@ -58,6 +58,9 @@ jobs:
       # Only with broadcast: the commands refuse it otherwise.
       RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}
       DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+      # Optional. Where set, profile deploys make the Zone administrator's grants themselves, such as
+      # admitting a new router on its Zone Portal; where unset, they stop at that handoff.
+      ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}
       TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
       TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
       TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
