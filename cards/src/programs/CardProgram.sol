@@ -756,7 +756,16 @@ contract CardProgram {
         Card storage card_ = _follow(p);
         _noteActivity(owner, false);
         (uint256 tokens, uint256 absorbed) = CardAdjust.charge(
-            CORE, p, card_, grants[owner], usageOf[owner], token, _rate(token), _legId(purchaseRef, CHARGED), amount
+            CORE,
+            p,
+            card_,
+            grants[owner],
+            usageOf[owner],
+            token,
+            _rate(token),
+            _legId(purchaseRef, CHARGED),
+            amount,
+            purchaseRef
         );
         _forward(token);
         if (absorbed != 0) CardFunding.noteAbsorbed(purchaseRef, absorbed);

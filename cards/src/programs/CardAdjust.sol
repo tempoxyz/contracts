@@ -6,6 +6,7 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
 import { AccountLifecycle } from "./AccountLifecycle.sol";
+import { CardConvert } from "./CardConvert.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { CardProgram } from "./CardProgram.sol";
 import { CreditLine } from "./CreditLine.sol";
@@ -78,21 +79,31 @@ library CardAdjust {
         address token,
         uint256 rate,
         bytes32 id,
-        uint128 amount
+        uint128 amount,
+        bytes32 ref
     ) external returns (uint256 tokens, uint256 absorbed) {
         // A late charge on an authorized purchase needs only past terms; one that opens a purchase (a force post) needs
         // the owner's grant to be active, as an authorization does.
         if (g.epoch == 0 || (p.epoch == 0 && !g.active)) revert CardProgram.NoTerms();
         address owner = p.owner;
         uint256 wanted = _toTokenUp(amount, rate);
-        tokens = _chargeable(core, owner, token, wanted);
+        // An owner whose cash converts into the settlement token pays from that cash first, as a capture would.
+        if (token != CardProgram(address(this)).fundingOf(owner)) {
+            tokens = CardConvert.chargeCash(owner, ref, id, amount);
+        }
         if (tokens != 0) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            core.charge(owner, token, id, uint128(tokens), address(this), false);
+            wanted = 0;
+            rate = RATE_ONE;
+        } else {
+            tokens = _chargeable(core, owner, token, wanted);
+            if (tokens != 0) {
+                // forge-lint: disable-next-line(unsafe-typecast)
+                core.charge(owner, token, id, uint128(tokens), address(this), false);
+            }
         }
         // Bit 16 marks a late charge that took nothing from the owner, so the reference can't be charged again.
         p.legs |= tokens != 0 ? 8 : 16;
-        if (tokens < wanted) {
+        if (wanted != 0 && tokens < wanted) {
             uint256 paid = rate == RATE_ONE ? tokens : tokens.mulDiv(rate, RATE_ONE);
             absorbed = amount - paid;
         }

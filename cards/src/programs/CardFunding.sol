@@ -740,15 +740,22 @@ library CardFunding {
             address token = CORE.getHold(owner, leg.id).token;
             if (token != cashToken && token != _settlement()) continue;
             leg.token = token;
-            leg.rate = token == cashToken ? rate : RATE_ONE;
+            uint256 locked = CardConvert.lockOf(leg.id);
+            leg.rate = token != cashToken ? RATE_ONE : locked != 0 ? locked : rate;
             _readHold(leg);
             if (leg.refundable == 0) continue;
             uint256 value = _toSettlement(leg.refundable, leg.rate);
             uint256 take = rest < value ? rest : value;
-            uint256 tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, leg.rate), leg.refundable);
-            SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), tokens);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.refund(owner, leg.id, uint128(tokens));
+            uint256 tokens;
+            if (locked != 0 && token == cashToken) {
+                // A force post that converted cash takes the refund in the settlement token at the reference rate.
+                tokens = CardConvert.refund(ref, owner, leg.id, token, leg.refundable, take);
+            } else {
+                tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, leg.rate), leg.refundable);
+                SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), tokens);
+                // forge-lint: disable-next-line(unsafe-typecast)
+                CORE.refund(owner, leg.id, uint128(tokens));
+            }
             // A charge in the settlement token rather than the owner's cash lands as that token.
             part.kind = token == cashToken ? CASH : TOKEN;
             part.source = token;
@@ -771,9 +778,11 @@ library CardFunding {
         uint256 count;
         while (CORE.getHold(owner, _legId(ref, DEBT_TAG + count)).token != address(0)) ++count;
         for (uint256 k; k <= count; ++k) {
-            IReservationCore.HoldRecord memory h =
-                CORE.getHold(owner, k == count ? _legId(ref, CHARGED) : _legId(ref, DEBT_TAG + k));
-            if (h.token == cashToken) total += _toSettlement(h.captured - h.refunded, rate);
+            bytes32 id = k == count ? _legId(ref, CHARGED) : _legId(ref, DEBT_TAG + k);
+            IReservationCore.HoldRecord memory h = CORE.getHold(owner, id);
+            // A force post that converted cash refunds it at the rate it locked.
+            uint256 locked = CardConvert.lockOf(id);
+            if (h.token == cashToken) total += _toSettlement(h.captured - h.refunded, locked != 0 ? locked : rate);
             else if (h.token == _settlement()) total += h.captured - h.refunded;
         }
     }

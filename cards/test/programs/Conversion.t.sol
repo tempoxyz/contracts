@@ -283,6 +283,26 @@ contract ConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 50e6 - cost);
     }
 
+    function test_localIssuer_forcePostConvertsCashAndRefundsItAtTodaysRate() public {
+        _localIssuer();
+        usd.mint(alice, 100e6);
+        uint256 cost = conv.quoteOut(address(usd), address(eur), 10e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 10e6, merchant);
+        assertEq(usd.balanceOf(alice), 100e6 - cost);
+        assertEq(eur.balanceOf(settlement), 10e6);
+        (, uint128 debt) = core.debtOf(alice, address(eur));
+        assertEq(debt, 0);
+        eur.mint(issuer, 10e6);
+        vm.prank(issuer);
+        eur.approve(address(cards), 10e6);
+        vm.prank(issuer);
+        cards.refund(P1, 10e6);
+        // The refund gives the USD cash back at today's reference rate, not the venue's price.
+        uint256 mid = conv.mid(address(usd), address(eur));
+        assertEq(usd.balanceOf(alice), 100e6 - cost + 10e6 * 1e18 / mid);
+    }
+
     function test_localIssuer_refundPastDebtCapRepaysAndLandsTheRestInItsToken() public {
         _localIssuer();
         eur.mint(alice, 20e6);

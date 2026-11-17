@@ -253,6 +253,26 @@ library CardConvert {
         emit Converted(bytes32(0), cash, pay, settlement, repaid, 0);
     }
 
+    /// @notice Pays a force post of `amount` settlement units from the owner's cash where it converts and covers the whole
+    ///         post at the venue's price, landing the settlement token with the settlement account. Returns the cash
+    ///         taken, zero when the post can't be paid that way.
+    function chargeCash(address owner, bytes32 ref, bytes32 id, uint256 amount) external returns (uint256 tokens) {
+        CardProgram program = CardProgram(address(this));
+        address cash = program.fundingOf(owner);
+        address c = cash == address(0) ? address(0) : swapper(cash, CASH);
+        if (c == address(0)) return 0;
+        address settlement = _settlement();
+        tokens = Conversion(c).quoteOut(cash, settlement, amount);
+        if (tokens == 0 || tokens > CORE.available(owner, cash)) return 0;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        CORE.charge(owner, cash, id, uint128(tokens), address(this), false);
+        SafeTransferLib.safeApprove(cash, c, tokens);
+        Conversion(c).swapExactOut(cash, settlement, amount, tokens, program.SETTLEMENT_ACCOUNT());
+        // A refund gives the cash back at today's reference rate, which the leg keeps.
+        _layout().locked[id] = Conversion(c).mid(cash, settlement);
+        emit Converted(ref, cash, tokens, settlement, amount, 0);
+    }
+
     /// @notice The token capture debt is owed in: the settlement token where cash converts into it, else cash.
     function debtToken(address cashToken) external view returns (address) {
         return cashToken != address(0) && swapper(cashToken, CASH) != address(0) ? _settlement() : cashToken;
