@@ -431,6 +431,11 @@ contract CardProgram {
         emit SettlementTokenSet(token, current, step);
     }
 
+    /// @notice Repays what the owner owes in the settlement token from its cash in another token, through the venue.
+    function repayConverted(address owner) external nonReentrant returns (uint256) {
+        return CardConvert.repay(owner);
+    }
+
     /// @notice Sets the venue legs in other stablecoins convert through at capture (for tokens without an issuer rate).
     // Zero turns conversion off: legs then convert only at an issuer rate.
     // forge-lint: disable-next-item(missing-zero-check)
@@ -732,7 +737,8 @@ contract CardProgram {
             }
         }
         address owner = p.owner;
-        address token = fundingOf[owner];
+        // A late charge is owed like capture debt: in the settlement token where the owner's cash converts into it.
+        address token = CardConvert.debtToken(fundingOf[owner]);
         (uint256 tokens, uint256 absorbed) = CardAdjust.charge(
             CORE,
             p,

@@ -170,6 +170,38 @@ library CardConvert {
         return _layout().locked[legId];
     }
 
+    /// @notice Repays capture debt the owner owes the program in the settlement token from the owner's cash in another
+    ///         token, converted through the program's venue: what the owner can spend, up to what the debt costs today.
+    ///         The settlement token lands with the owner, so the core repays the debt from it, and the program forwards
+    ///         what it was repaid to the settlement account. Returns the settlement units repaid.
+    function repay(address owner) external returns (uint256 repaid) {
+        CardProgram program = CardProgram(address(this));
+        address cash = program.fundingOf(owner);
+        address settlement = _settlement();
+        address c = cash == address(0) ? address(0) : swapper(cash, CASH);
+        if (c == address(0)) return 0;
+        (address creditor, uint128 owed) = CORE.debtOf(owner, settlement);
+        if (creditor != address(this) || owed == 0) return 0;
+        uint256 need = Conversion(c).quoteOut(cash, settlement, owed);
+        uint256 pay = _min(need, CORE.available(owner, cash));
+        if (pay == 0) return 0;
+        bytes32 id;
+        for (uint256 k;; ++k) {
+            id = keccak256(abi.encode(address(this), owner, "repay", k));
+            if (CORE.getHold(owner, id).token == address(0)) break;
+        }
+        // forge-lint: disable-next-line(unsafe-typecast)
+        CORE.charge(owner, cash, id, uint128(pay), address(this), false);
+        SafeTransferLib.safeApprove(cash, c, pay);
+        if (pay == need) Conversion(c).swapExactOut(cash, settlement, owed, pay, owner);
+        else Conversion(c).swapExactIn(cash, settlement, pay, 0, owner);
+        (, uint128 left) = CORE.debtOf(owner, settlement);
+        repaid = owed - left;
+        uint256 landed = IERC20Like(settlement).balanceOf(address(this));
+        if (landed != 0) SafeTransferLib.safeTransfer(settlement, program.SETTLEMENT_ACCOUNT(), landed);
+        emit Converted(bytes32(0), cash, pay, settlement, repaid, 0);
+    }
+
     /// @notice The token capture debt is owed in: the settlement token where cash converts into it, else cash.
     function debtToken(address cashToken) external view returns (address) {
         return cashToken != address(0) && swapper(cashToken, CASH) != address(0) ? _settlement() : cashToken;

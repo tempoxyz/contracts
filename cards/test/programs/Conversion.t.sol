@@ -242,6 +242,46 @@ contract ConversionTest is ProgramsEnv {
         assertEq(eur.balanceOf(issuer), 0);
     }
 
+    function test_localIssuer_lateChargeIsOwedInItsTokenAndCashRepaysItThroughTheVenue() public {
+        _localIssuer();
+        vm.prank(alice);
+        core.setDebtCap(address(cards), address(eur), 50e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 30e6, merchant);
+        (address creditor, uint128 debt) = core.debtOf(alice, address(eur));
+        assertEq(creditor, address(cards));
+        assertEq(debt, 30e6);
+        // Cash arriving later converts to repay the euro debt, and the issuer gets its token.
+        usd.mint(alice, 50e6);
+        uint256 cost = conv.quoteOut(address(usd), address(eur), 30e6);
+        cards.repayConverted(alice);
+        // The node repays debt from each credit as it lands; the model does it on the next operation.
+        core.repay(alice, address(eur));
+        (, debt) = core.debtOf(alice, address(eur));
+        assertEq(debt, 0);
+        assertEq(usd.balanceOf(alice), 50e6 - cost);
+        assertEq(eur.balanceOf(alice), 0);
+        assertEq(eur.balanceOf(address(cards)), 30e6);
+        // Nothing owed, nothing taken.
+        assertEq(cards.repayConverted(alice), 0);
+        assertEq(usd.balanceOf(alice), 50e6 - cost);
+    }
+
+    function test_localIssuer_partRepaysWithWhatCashThereIs() public {
+        _localIssuer();
+        vm.prank(alice);
+        core.setDebtCap(address(cards), address(eur), 50e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 30e6, merchant);
+        usd.mint(alice, 11e6);
+        uint256 repaid = conv.quoteIn(address(usd), address(eur), 11e6);
+        cards.repayConverted(alice);
+        core.repay(alice, address(eur));
+        (, uint128 debt) = core.debtOf(alice, address(eur));
+        assertEq(debt, 30e6 - repaid);
+        assertEq(usd.balanceOf(alice), 0);
+    }
+
     function test_setSettlementToken_refusedWhilePurchasesAreUnsettled() public {
         usd.mint(alice, 100e6);
         _authorize(P1, 10e6);
