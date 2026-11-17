@@ -249,7 +249,7 @@ input. Its checks are in the [card spend design](../cards/design.md#what-the-pro
    spender uses, at most the callback's `maxInput`.
 4. Conversion happens only at the pool oracle's exact par price with measured 1:1 output.
 5. No balance a callback brings stays with the router (a one-unit seed anyone sends it stays as it
-   is), and no allowance except a spend's standing approval to its own Zone's Portal and standing
+   is), and no allowance except a standing approval to its own Zone's Portal and standing
    maximum approvals to its immutable EarnVault and pool, which Tempo would otherwise charge as a
    new storage slot on every op.
 6. The router never emits or stores `senderTag`.
