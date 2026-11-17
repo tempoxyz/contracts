@@ -108,7 +108,9 @@ library CardConvert {
         if (lapsed) rate = now_;
         uint256 take;
         uint256 exactIn;
-        if (!lapsed && held != 0) {
+        // Only a market that moved against the lock is carried by the issuer: at an unchanged or better rate, the take
+        // converts exactly, so venue rounding never short-changes it.
+        if (!lapsed && held != 0 && now_ < rate) {
             uint256 value = held.mulDiv(rate, RATE_ONE);
             uint256 locked = rest < value ? rest : value;
             uint256 tokens = locked == value ? held : held.mulDivUp(locked, value);
