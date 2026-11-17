@@ -8,6 +8,10 @@ paths:
     ignore:
       # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.
       - 'unexpected key "queue" for "concurrency" section'
+  '.github/workflows/deploy.yml':
+    ignore:
+      # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.
+      - 'unexpected key "queue" for "concurrency" section'
   '.github/workflows/zone-router-release.yml':
     ignore:
       # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.

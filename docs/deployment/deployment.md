@@ -569,6 +569,34 @@ FOUNDRY_PROFILE=deploy forge script \
   --network tempo --rpc-url https://rpc.moderato.tempo.xyz --broadcast --slow
 ```
 
+### Deploying the hosted stack from CI
+
+The **Deploy** workflow ([`deploy.yml`](../../.github/workflows/deploy.yml)) brings a hosted
+network to what `main` describes in one dispatch: every shared factory release (`pnpm factory-release
+<network> all`), the Zone router release's `ZoneRouterFactory`, then `pnpm earn deploy` for every
+committed profile on that network (`pnpm profiles --network <network>`, which lists them without
+checking records, so a record a release outdated is redeployed rather than refused). Choose
+`both` (Moderato, then mainnet only after Moderato succeeds), one network, and whether to broadcast;
+without broadcast it simulates the releases and prints each profile's plan.
+
+Every step reconciles: existing release contracts are reused, and a profile deploy keeps what its
+record and the chain already hold, so a run on an unchanged `main` sends nothing and a rerun after a
+failure resumes. Each network's profile resume state (`deployment.pending.json`, `earn/.earn/external/`,
+and Forge's `broadcast/` receipts) is kept in the Actions cache between runs for that. A profile
+short of `complete` (a handoff to an outside authority, or source verification still pending) fails
+the job after the others run, naming what it waits on; rerun once that is done.
+
+It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue as
+the release workflows, with the same deployer key, which is also every committed profile's deployer;
+dispatching from `main` is the only approval. After a broadcast, the `record` job pushes a
+`deploy/<run>-<attempt>` branch with every source-verified release in `releases.ts` and every changed
+`deployment.json`, from every network that got that far, and opens its pull request (or links it in the
+summary when Actions may not open one). A `SendSpender`, a `ZoneRouter` outside a profile, and Bridge
+releases take per-deployment parameters and stay with their own workflows.
+
+A change that bumps a release a committed profile uses leaves that profile's record stale until the
+stack is redeployed: dispatch Deploy after it merges, then merge the record pull request.
+
 ### Zone router releases
 
 The [Zone router](../zone-router/zone-router.md)'s ownerless contracts release apart from Earn's, through
