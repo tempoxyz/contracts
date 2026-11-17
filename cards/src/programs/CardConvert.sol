@@ -140,7 +140,13 @@ library CardConvert {
         uint256 worth = left == 0 ? 0 : c.quoteIn(token, settlement, left);
         uint256 exactOut = _min(rest - take, worth);
         take += exactOut;
-        v = [take, exactIn + c.quoteOut(token, settlement, exactOut), exactIn, exactOut, held, rate];
+        uint256 pay = exactIn + c.quoteOut(token, settlement, exactOut);
+        // At the rate it locked, a capture of the whole leg spends the whole hold, so the owner pays what the lock
+        // promised; the venue's rounding left over goes to the settlement account with the capture.
+        if (!lapsed && now_ == rate && exactIn == 0 && exactOut == held.mulDiv(rate, RATE_ONE) && pay < held) {
+            pay = held;
+        }
+        v = [take, pay, exactIn, exactOut, held, rate];
     }
 
     /// @notice After a part capture, what a converted leg still holds re-prices at today's rate: it holds the value the
@@ -204,10 +210,9 @@ library CardConvert {
         address settlement = program.settlementToken();
         address c = program.conversion();
         if (token == settlement || program.rateOf(token) != 0 || c.code.length == 0) return tokens;
-        // The leg holds what the venue charges for the value today, so a capture at an unchanged market spends exactly
-        // what it held; a venue that can't quote the whole value leaves the leg at the rate's size.
+        // A venue that can't quote the whole value leaves the leg at the rate's size.
         try Conversion(c).quoteOut(token, settlement, value) returns (uint256 cost) {
-            if (cost != 0) tokens = cost;
+            if (cost > tokens) tokens = cost;
         } catch { }
     }
 
@@ -277,7 +282,9 @@ library CardConvert {
         SafeTransferLib.safeApprove(token, c, pay);
         uint256 paid = exactOut;
         if (exactIn != 0) paid += Conversion(c).swapExactIn(token, settlement, exactIn, 0, account);
-        if (exactOut != 0) Conversion(c).swapExactOut(token, settlement, exactOut, pay - exactIn, account);
+        uint256 spent = exactIn;
+        if (exactOut != 0) spent += Conversion(c).swapExactOut(token, settlement, exactOut, pay - exactIn, account);
+        if (pay > spent) SafeTransferLib.safeTransfer(token, account, pay - spent);
         emit Converted(ref, token, pay, settlement, paid, take > paid ? take - paid : 0);
     }
 
