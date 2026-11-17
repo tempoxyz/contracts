@@ -398,17 +398,17 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         uint128 amount,
         ZoneReturn memory zoneReturn
     ) private returns (bytes32 hash) {
-        _safeApprove(token, sourcePortal, amount);
+        // Standing approval: clearing it would recreate the allowance slot on every callback.
+        if (IERC20Allowance(token).allowance(address(this), sourcePortal) < amount) {
+            _safeApprove(token, sourcePortal, type(uint256).max);
+        }
         /// @custom:ghost portalDeposits = portalDeposits + 1
         /// @custom:ghost lastReturnPortal = sourcePortal
         /// @custom:ghost lastReturnToken = token
         /// @custom:ghost lastReturnAmount = amount
         /// @custom:ghost lastRefundRecipient = zoneReturn.refundRecipient
-        /// The Portal is approved exactly the amount it pulls.
-        /// @custom:assert allowanceGhost[token][sourcePortal] == amount
         hash = IZonePortal(sourcePortal)
             .depositEncrypted(token, amount, zoneReturn.keyIndex, zoneReturn.encrypted, zoneReturn.refundRecipient);
-        _safeApprove(token, sourcePortal, 0);
     }
 
     /// @custom:ensures earnVault_ != address(0) && asset != address(0) && share != address(0)

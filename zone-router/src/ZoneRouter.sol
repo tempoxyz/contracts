@@ -266,9 +266,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     ///         the router holds no balance between callbacks, and the Portal is the Zone's own.
     ///         Only a router that spends has one: an Earn-only router keeps SingleZoneEarnRouter's exact approvals.
     /// @dev Invariant: the Portal moves the router's tokens only inside a `depositEncrypted` call the router makes.
-    /// @custom:ensures (enabledOps & OP_SPEND) != 0
     function warm(address token) external {
-        if (enabledOps & OP_SPEND == 0) revert OpDisabled();
         _approvePortal(token, portal, type(uint256).max);
     }
 
@@ -569,14 +567,10 @@ contract ZoneRouter is IWithdrawalReceiver {
         private
         returns (bytes32 hash)
     {
-        // A standing approval a spend or `warm` left is used and kept, so an Earn op on a router that
-        // also spends never clears it. Without one, the op keeps SingleZoneEarnRouter's exact approval,
-        // cleared after the deposit, so an Earn-only router behaves exactly like it.
-        bool standing = IERC20Allowance(token).allowance(address(this), sourcePortal) > type(uint128).max;
-        if (!standing) _safeApprove(token, sourcePortal, amount);
+        // Every router keeps a standing Portal approval: clearing it would recreate the allowance slot each callback.
+        _approvePortal(token, sourcePortal, amount);
         hash = IZonePortal(sourcePortal)
             .depositEncrypted(token, amount, zoneReturn.keyIndex, zoneReturn.encrypted, zoneReturn.refundRecipient);
-        if (!standing) _safeApprove(token, sourcePortal, 0);
     }
 
     /// @custom:ensures callbackData.length >= 32

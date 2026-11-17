@@ -161,7 +161,7 @@ contract EarnFees is IEarnFees {
     function previewAccruedFees() public view returns (FeePreview memory result) {
         if (!_feesActive()) return result;
         if (feeBaselinesPending || !_feeValuationFresh()) return result;
-        uint256 earnShareSupply = IEarnShare(earnShare).totalSupply();
+        uint256 earnShareSupply = _activeSupply();
         if (earnShareSupply == 0) return result;
 
         uint64 configId = currentFeeConfigId;
@@ -239,7 +239,7 @@ contract EarnFees is IEarnFees {
                     targetBase = oldTargetNow;
                     targetStartedAt = uint40(block.timestamp);
                 } else {
-                    uint256 earnShareSupply = IEarnShare(earnShare).totalSupply();
+                    uint256 earnShareSupply = _activeSupply();
                     targetBase = earnShareSupply == 0
                         ? 0
                         : EarnFeeMath.valuePerEarnShareUp(_activeAssets(), earnShareScale, earnShareSupply);
@@ -461,7 +461,7 @@ contract EarnFees is IEarnFees {
         if (feesDisabled) return result;
         FeeConfig storage storedConfig = _feeConfigs[currentFeeConfigId];
         if (storedConfig.fixedFeeCount == 0 && !storedConfig.excess.enabled) return result;
-        uint256 earnShareSupply = IEarnShare(earnShare).totalSupply();
+        uint256 earnShareSupply = _activeSupply();
         if (earnShareSupply == 0) return result;
         if (!_feeValuationFresh()) return result;
         if (feeBaselinesPending) {
@@ -687,7 +687,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures targetStartedAt == 0 || targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures highWaterMark == 0 || targetBase == 0 || targetStartedAt == uint40(block.timestamp)
     function _initializeFeeBaselines() internal {
-        uint256 earnShareSupply = IEarnShare(earnShare).totalSupply();
+        uint256 earnShareSupply = _activeSupply();
         if (earnShareSupply == 0) {
             highWaterMark = 0;
             targetBase = 0;
@@ -712,7 +712,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures targetBase == old(targetBase) ==> targetStartedAt == old(targetStartedAt)
     /// @custom:ensures !_feeConfigs[currentFeeConfigId].excess.enabled ==> targetBase == old(targetBase)
     function _updateBaselinesAfterPrincipalEntry() internal {
-        uint256 earnShareSupply = IEarnShare(earnShare).totalSupply();
+        uint256 earnShareSupply = _activeSupply();
         if (earnShareSupply == 0) return;
 
         uint256 valuePerShare = EarnFeeMath.valuePerEarnShareUp(_activeAssets(), earnShareScale, earnShareSupply);
@@ -1263,5 +1263,10 @@ contract EarnFees is IEarnFees {
         annualRateBps;
         startedAt;
         timestamp;
+    }
+
+    /// @dev Matches EarnVault: EarnShare the vault holds counts as burned.
+    function _activeSupply() internal view returns (uint256) {
+        return IEarnShare(earnShare).totalSupply() - IEarnShare(earnShare).balanceOf(earnVault);
     }
 }

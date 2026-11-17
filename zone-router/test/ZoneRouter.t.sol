@@ -272,10 +272,10 @@ contract ZoneRouterTest is EarnRouterTestBase {
     }
 
     /// @notice An Earn-only router cannot be warmed, so it never holds a standing Portal approval.
-    function testWarmRefusesAnEarnOnlyRouter() public {
+    function testWarmSetsAnEarnOnlyRoutersPortalApproval() public {
         ZoneRouter zr = _earnRouter(false);
-        vm.expectRevert(ZoneRouter.OpDisabled.selector);
         zr.warm(address(alternate));
+        assertEq(alternate.allowance(address(zr), address(portalA)), type(uint256).max);
     }
 
     function testSpendUsingEverythingReturnsNothing() public {

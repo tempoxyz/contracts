@@ -585,7 +585,7 @@ contract EarnVault is IEarnVault {
         if (receiver == address(0)) revert ZeroAddress();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
 
-        uint256 supplyBefore = IEarnShare(earnShare).totalSupply();
+        uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
         _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
         uint256 rateEngineShares = anchorEngineShares;
@@ -663,7 +663,7 @@ contract EarnVault is IEarnVault {
         if (receiver == address(0)) revert ZeroAddress();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
 
-        uint256 supplyBefore = IEarnShare(earnShare).totalSupply();
+        uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
         _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
         uint256 rateEngineShares = anchorEngineShares;
@@ -719,7 +719,7 @@ contract EarnVault is IEarnVault {
         if (depositsPaused) revert DepositsPaused();
         if (assets == 0) revert ZeroAmount();
 
-        uint256 supply = IEarnShare(earnShare).totalSupply();
+        uint256 supply = _activeSupply();
         if (supply == 0) revert NoEarnShares();
 
         _accrueFees();
@@ -754,7 +754,7 @@ contract EarnVault is IEarnVault {
     function absorbEngineShareSurplus(uint256 engineShares_) external override nonReentrant {
         if (depositsPaused) revert DepositsPaused();
         if (engineShares_ == 0) revert ZeroAmount();
-        if (IEarnShare(earnShare).totalSupply() == 0) revert NoEarnShares();
+        if (_activeSupply() == 0) revert NoEarnShares();
 
         _accrueFees();
 
@@ -878,7 +878,7 @@ contract EarnVault is IEarnVault {
         if (earnSharesBurned == 0) revert InsufficientOutput();
         if (earnSharesBurned > maxEarnShares) revert ExceedsMaxEarnShares();
         if (engineSharesBurned == engineSharesBefore && assets < engineAssetsBefore) revert ResidualBacking();
-        if (earnSharesBurned == IEarnShare(earnShare).totalSupply() && engineShares() != 0) {
+        if (earnSharesBurned == _activeSupply() && engineShares() != 0) {
             revert ResidualBacking();
         }
 
@@ -1023,7 +1023,7 @@ contract EarnVault is IEarnVault {
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
         bool chargePending = IEarnFees(earnFees).shouldChargeRedeem(requestId);
-        uint256 activeSupply = IEarnShare(earnShare).totalSupply();
+        uint256 activeSupply = _activeSupply();
         uint256 activeAssets = activeSupply == 0 || !chargePending ? 0 : totalAssets();
         uint256 heldBefore = rawEngineShares();
 
@@ -1137,7 +1137,7 @@ contract EarnVault is IEarnVault {
 
         _accrueFees();
 
-        uint256 supply = IEarnShare(earnShare).totalSupply();
+        uint256 supply = _activeSupply();
         uint256 oldEngineShares = engineShares();
         uint256 oldRawEngineShares = rawEngineShares();
         uint256 assetsMoved = 0;
@@ -1304,8 +1304,14 @@ contract EarnVault is IEarnVault {
         return _normalizedRate(engineShareAnchor, supplyAnchor);
     }
 
+    /// @dev EarnShare this vault holds counts as burned: TIP-20 burns only the caller's balance, so the vault keeps a
+    ///      standing EarnShare residue to avoid recreating its balance slot on every exit.
+    function _activeSupply() internal view returns (uint256) {
+        return IEarnShare(earnShare).totalSupply() - IEarnShare(earnShare).balanceOf(address(this));
+    }
+
     function totalEarnShares() public view override returns (uint256) {
-        return IEarnShare(earnShare).totalSupply();
+        return _activeSupply();
     }
 
     /// @notice Checks that live EarnShare supply converts exactly to active engine shares at the
@@ -1406,7 +1412,7 @@ contract EarnVault is IEarnVault {
         supplyAnchor = anchorEarnShares;
 
         uint256 feeEarnShares = IEarnFees(earnFees).previewAccruedFees().totalFeeEarnShares;
-        uint256 projectedSupply = IEarnShare(earnShare).totalSupply() + feeEarnShares;
+        uint256 projectedSupply = _activeSupply() + feeEarnShares;
         uint256 held = engineShares();
         if (projectedSupply == 0) {
             return (IEarnEngine(engine).shareScale(), earnShareScale);
@@ -1454,7 +1460,7 @@ contract EarnVault is IEarnVault {
     /// @custom:ensures (supply == 0 || held == 0) ==> _specEmptyAnchor()
     /// @custom:ensures (old(rewardRateBaseline) != 0 ==> rewardRateBaseline != 0) && earnShareScale == old(earnShareScale)
     function _reanchorAtRest() internal returns (uint256 supply, uint256 held) {
-        supply = IEarnShare(earnShare).totalSupply();
+        supply = _activeSupply();
         uint256 raw = rawEngineShares();
         uint256 managed = _managedEngineShares;
         if (managed > raw) {
@@ -1486,7 +1492,7 @@ contract EarnVault is IEarnVault {
         internal
         returns (uint256 supply, uint256 held)
     {
-        supply = IEarnShare(earnShare).totalSupply();
+        supply = _activeSupply();
         uint256 represented = Math.mulDiv(supply, rateEngineShares, rateEarnShares);
         if (_managedEngineShares > represented) _managedEngineShares = represented;
         return _reanchorAtRest();

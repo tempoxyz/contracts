@@ -63,6 +63,26 @@ contract EarnTip20GasTest is CoreEnv {
         vm.snapshotValue("earn-tip20", "redeem.partial.residue", before - gasleft());
     }
 
+    function test_gasRedeemPartialWithShareResidue() public {
+        _leaveResidue();
+        vm.prank(returning);
+        earnShare.transfer(address(earnVault), 1);
+        vm.prank(returning);
+        uint256 before = gasleft();
+        earnVault.redeem(500e6, returning, 1);
+        vm.snapshotValue("earn-tip20", "redeem.partial.share-residue", before - gasleft());
+    }
+
+    function test_gasDepositReturningHolderWithShareResidue() public {
+        _leaveResidue();
+        vm.prank(returning);
+        earnShare.transfer(address(earnVault), 1);
+        vm.prank(returning);
+        uint256 before = gasleft();
+        earnVault.deposit(1000e6, returning, 1);
+        vm.snapshotValue("earn-tip20", "deposit.returning.share-residue", before - gasleft());
+    }
+
     function _leaveResidue() private {
         usd.mint(address(earnVault), 1);
         usd.mint(earnVault.engine(), 1);
