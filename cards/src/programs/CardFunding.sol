@@ -606,9 +606,7 @@ library CardFunding {
         returns (uint256 tokens)
     {
         if (take >= value) return units;
-        tokens = _toTokenUp(take, leg.rate);
-        if (s.kind == SAVINGS) tokens = SavingsFacility(s.source).VAULT().previewWithdraw(tokens);
-        if (tokens > units) tokens = units;
+        tokens = CardConvert.tokensFor(leg.token, s.kind == SAVINGS ? s.source : address(0), take, leg.rate, units);
     }
 
     /// @dev Sets the leg's hold to `tokens`, placing it if new.

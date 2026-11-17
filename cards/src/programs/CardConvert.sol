@@ -70,8 +70,12 @@ library CardConvert {
             booked := tload(slot)
         }
         if (booked == address(0)) return _current(token);
-        // A refund on a purchase booked in an earlier token values everything in that token's units.
-        return token == booked ? RATE_ONE : _current(token).mulDiv(RATE_ONE, _current(booked));
+        // A refund on a purchase booked in an earlier token values everything in that token's units, at the reference
+        // rates the refund converts at.
+        if (token == booked) return RATE_ONE;
+        address c = CardProgram(address(this)).conversion();
+        if (c.code.length != 0 && Conversion(c).converts(token, booked)) return Conversion(c).mid(token, booked);
+        return _current(token).mulDiv(RATE_ONE, _current(booked));
     }
 
     function _current(address token) private view returns (uint256 rate) {
@@ -180,13 +184,25 @@ library CardConvert {
 
     /// @dev The tokens a leg holds for value at rate: at least what the venue charges for it today, so a capture at an
     ///      unchanged market converts exactly what the leg holds.
+    /// @notice The tokens, or for savings the vault shares, a leg needs for take settlement units at rate, within units.
+    function tokensFor(address token, address savings, uint256 take, uint256 rate, uint256 units)
+        external
+        view
+        returns (uint256 tokens)
+    {
+        tokens = _tokensFor(token, take, rate);
+        if (savings != address(0)) tokens = SavingsFacility(savings).VAULT().previewWithdraw(tokens);
+        if (tokens > units) tokens = units;
+    }
+
     function _tokensFor(address token, uint256 value, uint256 rate) private view returns (uint256 tokens) {
         tokens = value.mulDivUp(RATE_ONE, rate);
         CardProgram program = CardProgram(address(this));
         address settlement = program.settlementToken();
-        if (token == settlement || program.rateOf(token) != 0) return tokens;
+        address c = program.conversion();
+        if (token == settlement || program.rateOf(token) != 0 || c.code.length == 0) return tokens;
         // A venue that can't quote the whole value leaves the leg at the rate's size.
-        try Conversion(program.conversion()).quoteOut(token, settlement, value) returns (uint256 cost) {
+        try Conversion(c).quoteOut(token, settlement, value) returns (uint256 cost) {
             if (cost > tokens) tokens = cost;
         } catch { }
     }
