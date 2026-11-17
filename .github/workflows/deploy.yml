@@ -51,7 +51,6 @@ jobs:
       NETWORK: ${{ matrix.network }}
       BROADCAST: ${{ inputs.broadcast }}
       DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-      TEMPO_API_KEY: ${{ secrets.TEMPO_API_KEY }}
       TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
       TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
       TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}

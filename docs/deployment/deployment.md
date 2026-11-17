@@ -523,17 +523,11 @@ registered engine factory's entry point.
 
 ### Releasing from CI
 
-The **Factory Release** workflow ([`factory-release.yml`](../../.github/workflows/factory-release.yml))
-releases from `main` in one run. Choose the networks (`both` runs Moderato, then mainnet only after
-Moderato succeeds), the releases (`all` is the core release and every engine factory the registry
-names; `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just
-that one), and whether to broadcast. Each network's job runs
-`pnpm factory-release <network> <release|all> [--broadcast] [--resubmit-verification]` ([`core/factory-release.ts`](../../deployments/core/factory-release.ts)),
-which runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning `all` deploys only what changed. For invalid verifier entries, `--resubmit-verification` requires `--broadcast` and follows the same [repair limits](#source-verification); it does not force redeployment. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. Each job's summary and its `factory-release-<network>-<attempt>` artifact list the
-addresses, transactions, and source matches; a run that stops keeps the releases before it. The
-Zone router and Bridge releases share these environments and the hosted-contracts queue, and release
-separately ([Zone router releases](#zone-router-releases), [Bridge releases](#bridge-releases)); the
-command refuses them.
+The [Deploy workflow](#deploying-the-hosted-stack-from-ci) releases every shared factory from `main`
+as its first step on each network, running `pnpm factory-release <network> all [--broadcast]`
+([`core/factory-release.ts`](../../deployments/core/factory-release.ts)); `all` is the core release and every engine factory the registry names. The command
+runs each release's entry point below with the `deploy` profile, checks that it created exactly the contracts missing from their deterministic addresses, each from the locally compiled creation code, and, after a broadcast, source-verifies every contract in the release on Tempo's verifier. A release whose contracts all exist is reconciled without running Forge, so rerunning deploys only what changed. Locally, `core`, `rewards`, or one engine factory's `releaseKey`, such as `erc4626Engine`, deploys just that one. For invalid verifier entries, `--resubmit-verification` requires `--broadcast` and follows the same [repair limits](#source-verification); it does not force redeployment. Without broadcast, Forge only simulates, at the same addresses a broadcast uses. The command refuses
+Zone router and Bridge releases, which release separately ([Zone router releases](#zone-router-releases), [Bridge releases](#bridge-releases)).
 
 Registry inputs must contain the complete expected contract set at addresses independently derived
 from the local compile and CREATE2 parameters, with only `match` or `exact_match` source results.
@@ -543,18 +537,17 @@ receipt and actual transaction calldata; a nested router requires its matching f
 Already-present contracts without that creation proof are recorded as reused with no creator
 transaction. Reused routers still require each spender's router-factory binding to match.
 
-After a broadcast, the last job records every release whose contracts all source verified, from
-every network that reached it, in [`releases.ts`](../../deployments/core/releases.ts) on a
-`factory-release/<run>-<attempt>` branch (`pnpm factory-release registry`) and links it in the job summary with
-the pull request description; a maintainer opens that pull request, so the registry changes only
-through its review.
+After a broadcast, `pnpm factory-release registry` records every release whose contracts all source
+verified in [`releases.ts`](../../deployments/core/releases.ts), and the Deploy workflow's record pull
+request carries it, so the registry changes only through review.
 
-Dispatching the workflow from `main` is the approval: each network's job runs in the
-`factory-release-<network>` environment, which has no required reviewer, accepts only `main`, and holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
-`TEMPO_RPC_PASSWORD`). Both environments hold the same deployer key that local profile deployments
-use; releases are ownerless, so it only pays fees. Rotating it updates both environments. The
-network's `hosted-contracts-<network>` queue orders only CI jobs, so do not broadcast with that key
-locally while a release runs. The same command runs locally with `DEPLOYER_PRIVATE_KEY` exported,
+Every CI deployment (Deploy, Zone Router Release, Bridge Release) runs in the
+`factory-release-<network>` environment, which has no required reviewer, accepts only `main`, and
+holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`,
+`TEMPO_RPC_PASSWORD`), so dispatching from `main` is the approval. Both environments hold the one
+deployer key, which is also every committed profile's deployer; releases are ownerless, so for them it
+only pays fees. Rotating it updates both environments. The network's `hosted-contracts-<network>`
+queue orders only CI jobs, so do not broadcast with that key locally while a CI deployment runs. The same command runs locally with `DEPLOYER_PRIVATE_KEY` exported,
 for example from a profile's `.env.<id>`; it does not load dotenv files itself.
 
 An engine factory release is independent: the `<releaseKey>Factory` entry point of the engine's
@@ -616,11 +609,13 @@ and the job summary.
 The workflow runs from `main` only. Choose the networks (`both` runs Moderato, then mainnet only after
 Moderato succeeds), one release and its parameters, and whether to broadcast. Each job's summary and
 its `zone-router-release-<network>-<attempt>` artifact list the addresses, transactions, source matches,
-and parameters, with `zone-router/broadcast/`. As with factory releases, the dispatch is
+and parameters, with `zone-router/broadcast/`. As with Deploy, the dispatch is
 the approval: each network's job runs in the same `factory-release-<network>` environment, with no
 required reviewer, `main` only, and the same deployer key; the contracts are ownerless, so the key only
 pays fees. It shares the network's
-`hosted-contracts-<network>` queue with the factory and Bridge releases.
+`hosted-contracts-<network>` queue with Deploy and the Bridge releases. The `ZoneRouterFactory` takes no
+parameters and deploys with the stack in [Deploy](#deploying-the-hosted-stack-from-ci); the command
+still releases it locally.
 
 | Release             | Parameters                                                                                        | Creates                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -629,8 +624,7 @@ pays fees. It shares the network's
 | `zoneRouter`        | `{"factory": <address>, "mode": {...}}`                                                           | The router `factory.deploy(mode)` creates                              |
 
 A `SendSpender` accepts spends only from routers its factory deployed whose mode lists it. Without
-`factory`, the release binds the release `ZoneRouterFactory` (the `zoneRouterFactory` release's
-address) and deploys that factory first when it is missing, so operators pass no factory and the
+`factory`, the release binds the release `ZoneRouterFactory` (the address Deploy and the `zoneRouterFactory` release share) and deploys that factory first when it is missing, so operators pass no factory and the
 spender's address still follows from the build and settings alone. List it only in modes deployed
 through that factory.
 
