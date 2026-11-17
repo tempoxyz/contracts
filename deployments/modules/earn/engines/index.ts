@@ -1,4 +1,4 @@
-import { erc20Abi, getAddress, parseAbi, zeroAddress, type Address, type PublicClient } from 'viem'
+import { erc20Abi, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
 
 import { earnEngineBindingAbi, earnFeesAbi, earnVaultAbi } from '../../../abis/index.js'
 import type { Engine, EngineFactory, EngineStack } from './engine.js'
@@ -139,19 +139,9 @@ export async function quoteEarnDeposit(
     const earnShares = (engineShares * 10n ** BigInt(decimals)) / engineScale
     // The vault admits a restart only when the stranded position and the unbacked supply's dilution are
     // each within one basis point of the entry.
-    // It also refuses an entry the engine values at zero, which would only grow the unbacked supply.
-    const entryValue = restarts
-      ? await snapshot.readContract({
-          address: currentEngine,
-          abi: engineValueAbi,
-          functionName: 'valueOf',
-          args: [engineShares],
-        })
-      : 1n
     if (
       restarts &&
-      (entryValue === 0n ||
-        held > engineShares / 10_000n ||
+      (held > engineShares / 10_000n ||
         engineShares - (engineShares * earnShares) / (earnShares + projectedSupply) >
           engineShares / 10_000n)
     )
@@ -163,10 +153,6 @@ export async function quoteEarnDeposit(
   // Deposit accrues fee shares and reanchors to managed custody before converting venue output.
   return (engineShares * projectedSupply) / held
 }
-
-const engineValueAbi = parseAbi([
-  'function valueOf(uint256 engineShares) view returns (uint256 assets)',
-])
 
 /** Resolves a migrated engine's supported adapter; ambiguous or unknown interfaces fail closed. */
 export async function readEngineKind(client: ReadClient, engine: Address): Promise<EngineKind> {

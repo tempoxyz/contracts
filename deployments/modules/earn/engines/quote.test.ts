@@ -68,14 +68,14 @@ describe('quoteEarnDeposit', () => {
         10_000_000n,
       ),
     ).rejects.toThrow('without managed backing')
-    // An entry the engine values at zero carries no backing.
-    await expect(
-      quoteEarnDeposit(
+    // An asset deposit carries its own value, so a venue whose shares are worth zero today still restarts.
+    expect(
+      await quoteEarnDeposit(
         quoteClient({ ...unbacked, totalEarnShares: 1n, engineShares: 0n, valueOf: 0n }),
         stack,
         10_000_000n,
       ),
-    ).rejects.toThrow('without managed backing')
+    ).toBe(10_000_000n)
     // Supply that would dilute the entrant by more than one basis point keeps deposits closed.
     await expect(
       quoteEarnDeposit(
@@ -92,7 +92,6 @@ function quoteClient(overrides: Record<string, unknown> = {}) {
     previewDeposit: 10_000_000n,
     totalEarnShares: 100_000_000n,
     totalAssets: 100_000_000n,
-    valueOf: 10_000_000n,
     engineShares: 100_000_000n,
     earnFees: address,
     engine: address,
