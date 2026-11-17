@@ -460,6 +460,22 @@ library CardConvert {
         if (out > tokens) SafeTransferLib.safeTransfer(token, owner, out - tokens);
     }
 
+    /// @notice Converts `amount` of `token` from `from` into the settlement token at the reference rate, paid to the
+    ///         settlement account.
+    function convertToSettlement(address from, address token, uint256 amount) external returns (uint256 out) {
+        CardProgram program = CardProgram(address(this));
+        address settlement = program.settlementToken();
+        address account = program.SETTLEMENT_ACCOUNT();
+        if (token == settlement) {
+            SafeTransferLib.safeTransferFrom(token, from, account, amount);
+            return amount;
+        }
+        Conversion c = Conversion(program.conversion());
+        SafeTransferLib.safeTransferFrom(token, from, address(this), amount);
+        SafeTransferLib.safeApprove(token, address(c), amount);
+        out = c.convertAtMid(token, settlement, amount, account);
+    }
+
     function _settlement() private view returns (address) {
         return CardProgram(address(this)).settlementToken();
     }

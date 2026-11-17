@@ -362,7 +362,7 @@ contract ConversionTest is ProgramsEnv {
         assertEq(core.liened(settlement, address(eur)), 0);
     }
 
-    function test_desk_refundsAnEarlierTokensPurchaseInTodaysTokenAndKeepsItsSplitsInTheOld() public {
+    function test_desk_refundsAnEarlierTokensPurchaseInTodaysTokenAndConvertsItsSplitsBack() public {
         IssuerDesk desk = new IssuerDesk(cards);
         address network = makeAddr("network");
         IssuerDesk.Line[] memory lines = new IssuerDesk.Line[](1);
@@ -389,13 +389,14 @@ contract ConversionTest is ProgramsEnv {
         cards.acknowledgeSettlement(seq);
         cards.setSettlementToken(address(eur));
         vm.stopPrank();
-        // A $22 refund costs the issuer EUR 20 at the reference rate, and the network gives back its dollar split.
+        // A $22 refund costs the issuer EUR 20 at the reference rate, and the network gives back its dollar split, which
+        // reaches the issuer as EUR 0.20 at the reference rate.
         uint256 cash = usd.balanceOf(alice);
         eur.mint(settlement, 50e6);
         vm.prank(issuer);
         desk.refund(P1, 22e6);
         assertEq(usd.balanceOf(alice), cash + 22e6);
-        assertEq(eur.balanceOf(settlement), 30e6);
+        assertEq(eur.balanceOf(settlement), 30.2e6);
         assertEq(eur.balanceOf(address(desk)), 0);
         assertEq(usd.balanceOf(network), 0.18e6);
         // An undercharge would draw euros for dollars, so the issuer charges it as a new purchase instead.

@@ -128,7 +128,10 @@ contract IssuerDesk is ISettlementTokenGuard {
     event TermsSet(Line[] lines);
     event RewardsSet(Reward[] rewards);
     event FeePaid(bytes32 indexed purchaseRef, address indexed payee, bytes32 kind, uint128 amount);
-    event FeeReversed(bytes32 indexed purchaseRef, address indexed payee, bytes32 kind, uint128 amount, uint128 debt);
+    /// @notice A payee returned `amount` of a refunded purchase's split, worth `value` in today's settlement token.
+    event FeeReversed(
+        bytes32 indexed purchaseRef, address indexed payee, bytes32 kind, uint128 amount, uint128 debt, uint256 value
+    );
     event RewardPaid(
         bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
     );
@@ -799,8 +802,11 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 refunded = b.refunded + amount;
         if (refunded > captured) refunded = captured;
         b.refunded = refunded;
-        // Splits were paid, and come back, in the token the purchase was booked in.
+        // Splits were paid, and come back, in the token the purchase was booked in; the issuer gets what returns in
+        // today's settlement token at the reference rate.
         address token = PROGRAM.purchaseToken(purchaseRef);
+        address today = PROGRAM.settlementToken();
+        uint256 rate = token == today ? RATE_ONE : Conversion(PROGRAM.conversion()).mid(token, today);
         Split[] storage splits = _splits[purchaseRef];
         for (uint256 i; i < splits.length; ++i) {
             Split storage s = splits[i];
@@ -812,8 +818,13 @@ contract IssuerDesk is ISettlementTokenGuard {
             s.reversed = due;
             uint128 available = CORE.available(s.payee, token);
             if (s.funder == address(0)) {
-                CORE.charge(s.payee, token, _nextId(), share, SETTLEMENT, false);
-                emit FeeReversed(purchaseRef, s.payee, s.kind, share, share > available ? share - available : 0);
+                uint256 value = uint256(share).mulDiv(rate, RATE_ONE);
+                uint128 owed = share > available ? share - available : 0;
+                // The issuer's own share was paid to its settlement account, where it already is.
+                if (s.payee == SETTLEMENT) owed = 0;
+                else if (token == today) CORE.charge(s.payee, token, _nextId(), share, SETTLEMENT, false);
+                else _reverseForeign(s.payee, token, share - owed, owed);
+                emit FeeReversed(purchaseRef, s.payee, s.kind, share, owed, value);
                 continue;
             }
             uint128 taken = share < available ? share : available;
@@ -826,6 +837,19 @@ contract IssuerDesk is ISettlementTokenGuard {
     // forge-lint: disable-end(calls-loop)
     // forge-lint: disable-end(arbitrary-send-erc20)
     // forge-lint: disable-end(reentrancy-no-eth)
+
+    /// @dev Takes `paid` of an earlier settlement token from a payee and converts it into today's for the settlement
+    ///      account at the reference rate; what the payee lacks, `owed`, it owes the settlement account in that token.
+    // Runs once per split inside the refund lock; the program and core are fixed trusted contracts.
+    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
+    function _reverseForeign(address payee, address token, uint128 paid, uint128 owed) private {
+        if (paid != 0) {
+            CORE.charge(payee, token, _nextId(), paid, address(this), false);
+            SafeTransferLib.safeApprove(token, address(PROGRAM), paid);
+            PROGRAM.convertToSettlement(token, paid);
+        }
+        if (owed != 0) CORE.charge(payee, token, _nextId(), owed, SETTLEMENT, false);
+    }
 
     function _nextId() private returns (bytes32) {
         return keccak256(abi.encode(address(this), ++_nonce));
