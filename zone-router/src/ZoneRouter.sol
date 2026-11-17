@@ -262,9 +262,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     }
 
     /// @notice Sets the router's standing approval of `token` to its Zone's Portal, which a spend's
-    ///         change would otherwise set on its first callback. Earn ops then use it too. Permissionless:
-    ///         the router holds no balance between callbacks, and the Portal is the Zone's own.
-    ///         Only a router that spends has one: an Earn-only router keeps SingleZoneEarnRouter's exact approvals.
+    ///         first callback would otherwise set. Permissionless: the router holds no balance between
+    ///         callbacks beyond a residue, and the Portal is the Zone's own.
     /// @dev Invariant: the Portal moves the router's tokens only inside a `depositEncrypted` call the router makes.
     function warm(address token) external {
         _approvePortal(token, portal, type(uint256).max);

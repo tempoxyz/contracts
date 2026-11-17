@@ -245,8 +245,8 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @custom:ensures lastRefundRecipient != address(0)
     /// No temporary approval is left behind: every temporary allowance that was zero before is zero after.
     /// @custom:ensures forall address t, address spender :: old(allowanceGhost[t][spender]) == 0 ==> allowanceGhost[t][spender] == 0
-    /// Standing approvals go only to the EarnVault, for the vault asset or EarnShare, or to the pool, for a route token.
-    /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> (spender == earnVault && (t == vaultAsset || t == earnShare)) || (spender == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset))
+    /// Standing approvals go only to the EarnVault, for the vault asset or EarnShare, to the pool, for a route token, or to the source Zone's Portal.
+    /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> (spender == earnVault && (t == vaultAsset || t == earnShare)) || (spender == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset)) || spender == sourcePortal
     /// @custom:ensures locked == 1 && result == IWithdrawalReceiver.onWithdrawalReceived.selector
     function onWithdrawalReceived(
         uint32 sourceZoneId,
@@ -399,9 +399,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         ZoneReturn memory zoneReturn
     ) private returns (bytes32 hash) {
         // Standing approval: clearing it would recreate the allowance slot on every callback.
-        if (IERC20Allowance(token).allowance(address(this), sourcePortal) < amount) {
-            _safeApprove(token, sourcePortal, type(uint256).max);
-        }
+        _approveStanding(token, sourcePortal, amount);
         /// @custom:ghost portalDeposits = portalDeposits + 1
         /// @custom:ghost lastReturnPortal = sourcePortal
         /// @custom:ghost lastReturnToken = token
@@ -461,7 +459,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         return uint128(value);
     }
 
-    /// @dev A standing maximum allowance for an immutable spender (the EarnVault or pool): Tempo charges every
+    /// @dev A standing maximum allowance for an immutable spender (the EarnVault, pool or Zone Portal): Tempo charges every
     ///      zero-to-nonzero allowance as a new storage slot, and every operation returns this router's touched
     ///      balances to their baseline, so none is left to pull.
     ///      Standing allowances sit outside the temporary-allowance ghost, allowanceGhost.
