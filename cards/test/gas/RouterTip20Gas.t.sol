@@ -125,9 +125,8 @@ contract RouterTip20GasTest is CoreEnv {
     function _measureRouter(bool spends, bool residue, bool warm, string memory name) internal {
         zr = _router(spends);
         if (residue) {
+            // Base asset only: EarnShare left here could never be redeemed, so supply could never return to zero.
             usd.mint(address(zr), 1);
-            vm.prank(address(portal));
-            earnShare.transfer(address(zr), 1);
         }
         if (warm) {
             zr.warm(address(usd));
@@ -184,8 +183,6 @@ contract RouterTip20GasTest is CoreEnv {
         _depositEarn(alice, 10_000e6);
         if (residue) {
             usd.mint(address(program), 1);
-            vm.prank(alice);
-            earnShare.transfer(address(program), 1);
         }
         CardSpend memory s = fromVault
             ? _earnSpend(pooledWallet, 0, 100e6, 100e6, bytes32(uint256(1)))
