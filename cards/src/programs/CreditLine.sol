@@ -15,8 +15,9 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///         loan-to-value, and may seize the pledge for what is owed once the due date and notice period have passed.
 ///         Specified in docs/cards/design.md (Card programs).
 /// @dev Owed and pending amounts follow the core's records: `sync` reads a draw's hold and applies what changed,
-///      whoever captured, released or refunded it. Interest, fees and collection beyond the pledge are the issuer's
-///      and lender's services, not this contract's.
+///      whoever captured, released or refunded it. The lender accrues interest on what is owed and closes statements;
+///      a statement falling due is collected through the borrower's autopay sources. Fees and collection beyond the
+///      pledge and autopay are the issuer's and lender's services, not this contract's.
 contract CreditLine {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;
@@ -52,6 +53,31 @@ contract CreditLine {
         uint96 net;
     }
 
+    enum StatementStatus {
+        None,
+        Due,
+        Paid,
+        PastDue
+    }
+
+    /// @dev What was owed when the lender closed the statement, and what repayments have paid of it since.
+    struct Statement {
+        uint64 dueAt;
+        StatementStatus status;
+        uint128 balance;
+        uint128 paid;
+    }
+
+    /// @dev A line's statement count, the first statement collection has not reached, and the first one not yet paid.
+    struct Statements {
+        uint32 count;
+        uint32 collectFrom;
+        uint32 payFrom;
+    }
+
+    /// @dev At most this many autopay sources per line.
+    uint256 private constant MAX_AUTOPAY = 4;
+
     uint64 public lineCount;
     mapping(uint64 lineId => Line) internal _lines;
     mapping(bytes32 holdId => Draw) public draws;
@@ -65,6 +91,12 @@ contract CreditLine {
     mapping(uint64 lineId => bool) public locking;
     mapping(uint64 lineId => bytes32 holdId) public lockOf;
     mapping(uint64 lineId => uint64) internal _locks;
+    /// @notice Each line's statements by number, from 1, and its counters.
+    mapping(uint64 lineId => mapping(uint32 n => Statement)) internal _statements;
+    mapping(uint64 lineId => Statements) public statementsOf;
+    /// @dev What a statement falling due collects from, in order: the line's token for the borrower's cash, or an Earn
+    ///      vault over that token for the borrower's free shares in it.
+    mapping(uint64 lineId => address[]) internal _autopay;
 
     bool private transient _locked;
 
@@ -94,9 +126,19 @@ contract CreditLine {
     event LockingEnabled(uint64 indexed lineId);
     event Locked(uint64 indexed lineId, bytes32 holdId, uint128 shares);
     event Liquidated(uint64 indexed lineId, uint128 shares, uint256 assets, uint128 owed);
+    event InterestAccrued(uint64 indexed lineId, uint16 bps, uint128 interest, uint128 owed);
+    event StatementClosed(uint64 indexed lineId, uint32 indexed n, uint128 balance, uint64 dueAt);
+    event StatementCollected(
+        uint64 indexed lineId, uint32 indexed n, uint128 balance, uint128 paid, StatementStatus status
+    );
+    event AutopaySet(uint64 indexed lineId, address[] sources);
+    event Autopaid(uint64 indexed lineId, uint32 indexed n, address source, uint128 amount);
 
     error CreditExceeded(uint256 amount, uint256 available);
+    error InvalidAutopay();
     error InvalidLine();
+    error InvalidRate();
+    error InvalidStatement();
     error InvalidPledge();
     error LineNotOpen();
     error NotBorrower();
@@ -307,10 +349,213 @@ contract CreditLine {
         Line storage l = _lines[lineId];
         if (amount == 0 || amount > l.owed) revert RepayExceedsOwed(amount, l.owed);
         l.owed -= amount;
+        _payStatements(lineId, amount);
         SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
         emit Repaid(lineId, msg.sender, amount, l.owed);
         _commit(lineId);
         _lock(lineId);
+    }
+
+    /// @notice Adds interest of `bps` basis points on what line `lineId` owes, as its lender, rounding up to the
+    ///         token's smallest unit. Like a purchase, it comes out of the line's undrawn limit.
+    function accrue(uint64 lineId, uint16 bps) external nonReentrant {
+        if (bps == 0 || bps > BPS) revert InvalidRate();
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.lender) revert NotLender();
+        uint256 owed = l.owed;
+        if (owed == 0) return;
+        uint256 interest = (owed * bps + BPS - 1) / BPS;
+        if (owed + interest > type(uint128).max) revert InvalidRate();
+        // Both are bounded by the check above.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        l.owed = uint128(owed + interest);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        emit InterestAccrued(lineId, bps, uint128(interest), l.owed);
+        _commit(lineId);
+        _lock(lineId);
+    }
+
+    /// @notice Snapshots what line `lineId` owes as a statement due at `dueAt`, as its lender. Repayments pay the
+    ///         line's open statements oldest first; one owing nothing is paid at once.
+    /// @return n The statement's number on the line.
+    function closeStatement(uint64 lineId, uint64 dueAt) external returns (uint32 n) {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.lender) revert NotLender();
+        // Due dates are timestamps by design; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (dueAt <= block.timestamp) revert InvalidStatement();
+        Statements storage s = statementsOf[lineId];
+        n = ++s.count;
+        if (s.collectFrom == 0) (s.collectFrom, s.payFrom) = (n, n);
+        uint128 balance = l.owed;
+        _statements[lineId][n] = Statement({
+            dueAt: dueAt, status: balance == 0 ? StatementStatus.Paid : StatementStatus.Due, balance: balance, paid: 0
+        });
+        emit StatementClosed(lineId, n, balance, dueAt);
+    }
+
+    /// @notice The borrower names what statements falling due collect from, in order: the line's token for its cash,
+    ///         or an Earn vault over that token for its free shares there. It approves this contract to take them.
+    // At most MAX_AUTOPAY sources, each checked once.
+    // forge-lint: disable-next-item(calls-loop)
+    function setAutopay(uint64 lineId, address[] calldata sources) external {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.borrower) revert NotBorrower();
+        if (sources.length > MAX_AUTOPAY) revert InvalidAutopay();
+        for (uint256 i; i < sources.length; ++i) {
+            address source = sources[i];
+            if (source == l.token) continue;
+            if (source.code.length == 0 || IEarnVault(source).asset() != l.token) revert InvalidAutopay();
+        }
+        _autopay[lineId] = sources;
+        emit AutopaySet(lineId, sources);
+    }
+
+    /// @notice Collects every statement of line `lineId` that has fallen due: autopay pays what the statement still
+    ///         owes, at most what the line owes, from the borrower's sources in order, and a statement still short
+    ///         is past due. Anyone may call it.
+    function collect(uint64 lineId) external nonReentrant {
+        Line storage l = _lines[lineId];
+        Statements storage s = statementsOf[lineId];
+        uint32 count = s.count;
+        uint32 n = s.collectFrom;
+        if (n == 0) return;
+        // The cursor moves only past a run of statements no longer due at the front.
+        bool front = true;
+        for (; n <= count; ++n) {
+            Statement storage st = _statements[lineId][n];
+            // Due dates are timestamps by design.
+            // forge-lint: disable-next-line(block-timestamp)
+            if (st.status != StatementStatus.Due || st.dueAt > block.timestamp) {
+                if (front && st.status != StatementStatus.Due) s.collectFrom = n + 1;
+                else front = false;
+                continue;
+            }
+            uint128 open = st.balance - st.paid;
+            if (open > l.owed) open = l.owed;
+            if (open != 0) {
+                uint128 covered = _autopayFor(lineId, n, open);
+                if (covered != 0) {
+                    l.owed -= covered;
+                    _payStatements(lineId, covered);
+                    emit Repaid(lineId, l.borrower, covered, l.owed);
+                }
+            }
+            st.status = st.paid >= st.balance || l.owed == 0 ? StatementStatus.Paid : StatementStatus.PastDue;
+            emit StatementCollected(lineId, n, st.balance, st.paid, st.status);
+            if (front) s.collectFrom = n + 1;
+        }
+        _commit(lineId);
+        _lock(lineId);
+    }
+
+    /// @notice Statement `n` of line `lineId`.
+    function statementOf(uint64 lineId, uint32 n) external view returns (Statement memory) {
+        return _statements[lineId][n];
+    }
+
+    /// @notice What line `lineId`'s statements collect from.
+    function autopayOf(uint64 lineId) external view returns (address[] memory) {
+        return _autopay[lineId];
+    }
+
+    /// @dev Takes up to `amount` for statement `n` from the borrower's autopay sources, in order, to the lender, and
+    ///      returns what the lender received. A source short of funds or approval gives what it can; a vault counts only
+    ///      the tokens it actually paid.
+    // Runs inside `collect`'s lock, over at most MAX_AUTOPAY sources the borrower named, and takes only from the
+    // borrower that approved this contract for its autopay.
+    // forge-lint: disable-next-item(calls-loop,arbitrary-send-erc20)
+    function _autopayFor(uint64 lineId, uint32 n, uint128 amount) private returns (uint128 covered) {
+        Line storage l = _lines[lineId];
+        (address borrower, address lender, address token) = (l.borrower, l.lender, l.token);
+        address[] storage sources = _autopay[lineId];
+        for (uint256 i; i < sources.length && covered < amount; ++i) {
+            address source = sources[i];
+            uint256 want = amount - covered;
+            uint256 got;
+            if (source == token) {
+                got = _min(want, _min(CORE.available(borrower, token), _allowance(token, borrower)));
+                if (got != 0) SafeTransferLib.safeTransferFrom(token, borrower, lender, got);
+            } else {
+                got = _redeemFor(IEarnVault(source), borrower, lender, token, want);
+            }
+            if (got == 0) continue;
+            // Each part is at most `amount`.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            covered += uint128(got);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            emit Autopaid(lineId, n, source, uint128(got));
+        }
+    }
+
+    /// @dev Sells the borrower's free shares in `vault` for up to `want` of `token`, pays that to the lender and
+    ///      returns surplus tokens and unspent shares to the borrower. Counts only tokens this contract received.
+    // Runs inside `collect`'s lock, once per autopay source, taking only from the borrower that approved it.
+    // forge-lint: disable-next-item(calls-loop,arbitrary-send-erc20,reentrancy-no-eth)
+    function _redeemFor(IEarnVault vault, address borrower, address lender, address token, uint256 want)
+        private
+        returns (uint256 got)
+    {
+        address share = vault.earnShare();
+        // Shares under a hold or a lien stay out of reach.
+        uint256 free = _min(CORE.available(borrower, share), _allowance(share, borrower));
+        if (free == 0) return 0;
+        uint256 need = vault.previewWithdraw(want);
+        uint256 shares = need < free ? need : free;
+        if (shares == 0) return 0;
+        SafeTransferLib.safeTransferFrom(share, borrower, address(this), shares);
+        SafeTransferLib.safeApprove(share, address(vault), shares);
+        uint256 before = _balanceOf(token, address(this));
+        // Exactly what is due when the free shares cover it, else everything they are worth.
+        if (need < free) vault.withdrawExact(want, address(this), shares);
+        else vault.redeem(shares, address(this), 0);
+        uint256 received = _balanceOf(token, address(this)) - before;
+        SafeTransferLib.safeApprove(share, address(vault), 0);
+        got = _min(received, want);
+        if (got != 0) SafeTransferLib.safeTransfer(token, lender, got);
+        if (received > got) SafeTransferLib.safeTransfer(token, borrower, received - got);
+        uint256 left = _balanceOf(share, address(this));
+        if (left != 0) SafeTransferLib.safeTransfer(share, borrower, left);
+    }
+
+    /// @dev Applies a repayment of `amount` to line `lineId`'s statements not yet paid, oldest first.
+    function _payStatements(uint64 lineId, uint256 amount) private {
+        Statements storage s = statementsOf[lineId];
+        uint32 count = s.count;
+        uint32 first = s.payFrom;
+        if (first == 0) return;
+        for (uint32 n = first; n <= count && amount != 0; ++n) {
+            Statement storage st = _statements[lineId][n];
+            if (st.status == StatementStatus.Paid) continue;
+            uint256 part = _min(st.balance - st.paid, amount);
+            // At most the statement's 128-bit balance.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            st.paid += uint128(part);
+            amount -= part;
+        }
+        // Statements before the first one still short take no more.
+        while (first <= count) {
+            Statement storage st = _statements[lineId][first];
+            if (st.status != StatementStatus.Paid && st.paid < st.balance) break;
+            ++first;
+        }
+        s.payFrom = first;
+    }
+
+    function _balanceOf(address token, address account) private view returns (uint256) {
+        return SafeTransferLib.balanceOf(token, account);
+    }
+
+    // Called once per autopay source.
+    // forge-lint: disable-next-item(calls-loop)
+    function _allowance(address token, address owner) private view returns (uint256 amount) {
+        (bool ok, bytes memory data) =
+            token.staticcall(abi.encodeWithSignature("allowance(address,address)", owner, address(this)));
+        if (ok && data.length >= 32) amount = abi.decode(data, (uint256));
+    }
+
+    function _min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
     }
 
     /// @notice The borrower attaches a pledge it placed on the core with this contract as authority: the line's
@@ -380,6 +625,7 @@ contract CreditLine {
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 credited = assets < owed ? uint128(assets) : owed;
         l.owed = owed - credited;
+        _payStatements(lineId, credited);
         emit Seized(lineId, pledgeId, shares, assets, l.owed);
     }
 
@@ -439,6 +685,7 @@ contract CreditLine {
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 credited = assets < l.owed ? uint128(assets) : l.owed;
         l.owed -= credited;
+        _payStatements(lineId, credited);
         emit Liquidated(lineId, shares, assets, l.owed);
         _commit(lineId);
         _lock(lineId);
