@@ -45,6 +45,8 @@ contract CardProgram {
     uint8 internal constant IN_USE_DEBT = 3;
     uint8 internal constant IN_USE_COLLATERAL = 5;
     uint8 internal constant IN_USE_HELD = 6;
+    /// @dev The networks' longest dispute window, which bounds a dispute reserve.
+    uint64 internal constant MAX_DISPUTE_RESERVE = 120 days;
     uint256 private constant RATE_ONE = 1e18;
 
     /// @notice Funding legs, as a card's allowed set and a purchase's placed set.
@@ -168,6 +170,10 @@ contract CardProgram {
     address public lifecycle;
     /// @notice The card that replaced a card. An open purchase follows its card's replacements.
     mapping(bytes32 card => bytes32) public replacedBy;
+    /// @notice Whether an owner lets this program place dispute reserves on its balance, past the card-hold limit.
+    mapping(address owner => bool) public disputeReserves;
+    /// @dev Reserves this program may still hold, so a settlement token change waits for them.
+    bytes32[] internal _reserves;
 
     event CardIssued(bytes32 indexed card, address indexed owner, uint40 expiry, Limits limits, uint8 legs);
     event CardExpirySet(bytes32 indexed card, uint40 expiry);
@@ -178,6 +184,11 @@ contract CardProgram {
     event RateSet(address indexed token, uint256 rate);
     event ConversionSet(address conversion);
     event HoldRoundingSet(address indexed owner, uint64 increment);
+    event DisputeReservesSet(address indexed owner, bool allowed);
+    event ReservePlaced(
+        bytes32 indexed id, address indexed owner, address token, uint128 amount, uint64 expiresAt, bool dispute
+    );
+    event ReserveCollected(bytes32 indexed id, address indexed to, uint128 amount);
     /// @notice New purchases settle in token; limits sized in previous rescale at step, previous units per token unit
     ///         scaled by 1e18.
     event SettlementTokenSet(address token, address previous, uint256 step);
@@ -274,6 +285,8 @@ contract CardProgram {
     error PurchaseNotOpen();
     error Reentrancy();
     error RefundExceedsCapture(uint256 excess);
+    error ReserveNotAllowed();
+    error ReserveTooLong();
     error SourceNotApproved(address source);
     error TokenNotAccepted(address token);
     error UnknownPurchase();
@@ -418,6 +431,7 @@ contract CardProgram {
         (, uint256 debt, uint256 posted,) = CardFunding.exposure(0);
         if (debt != 0) revert SettlementTokenInUse(IN_USE_DEBT);
         if (posted != 0) revert SettlementTokenInUse(IN_USE_COLLATERAL);
+        _checkReserves();
         address current = settlementToken();
         CardConvert.checkUnused(tokenGuards, SETTLEMENT_ACCOUNT, current);
         if (token == address(0) || token == current || rateOf[token] != 0) revert TokenNotAccepted(token);
@@ -799,6 +813,47 @@ contract CardProgram {
         _forward(token);
     }
 
+    // Reserves.
+
+    /// @notice Lets this program, the caller's acquirer, place dispute reserves on the caller's balance.
+    function setDisputeReserves(bool allowed) external {
+        disputeReserves[msg.sender] = allowed;
+        emit DisputeReservesSet(msg.sender, allowed);
+    }
+
+    /// @notice Holds back `amount` of `owner`'s `token` until `expiresAt`, as a pledge within the allowance the owner
+    ///         approved this program for. An owner other than the settlement account needs an active grant, and a
+    ///         dispute reserve also needs the owner's consent and lasts at most the networks' dispute window.
+    function reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt, bool dispute)
+        external
+        nonReentrant
+        onlyOperator
+    {
+        if (owner != SETTLEMENT_ACCOUNT && !grants[owner].active) revert NoTerms();
+        if (dispute) {
+            if (owner != SETTLEMENT_ACCOUNT && !disputeReserves[owner]) revert ReserveNotAllowed();
+            // forge-lint: disable-next-line(block-timestamp)
+            if (expiresAt > block.timestamp + MAX_DISPUTE_RESERVE) revert ReserveTooLong();
+        }
+        CORE.pledgeFrom(owner, token, id, amount, expiresAt);
+        _reserves.push(id);
+        emit ReservePlaced(id, owner, token, amount, expiresAt, dispute);
+    }
+
+    /// @notice Releases a reserve before it expires.
+    function releaseReserve(bytes32 id) external nonReentrant onlyOperator {
+        CORE.releaseLien(id);
+    }
+
+    /// @notice Takes `amount` of a reserve and pays it to `to` (the issuer a dispute was lost to), releasing the rest.
+    function collectReserve(bytes32 id, uint128 amount, address to) external nonReentrant onlyOperator {
+        (, address token, uint128 held,,) = CORE.lienOf(address(this), id);
+        if (amount != 0) CORE.seizeLien(id, amount);
+        if (held > amount) CORE.releaseLien(id);
+        if (amount != 0) SafeTransferLib.safeTransfer(token, to, amount);
+        emit ReserveCollected(id, to, amount);
+    }
+
     // Views.
 
     /// @notice The token purchases settle in now.
@@ -862,6 +917,20 @@ contract CardProgram {
     }
 
     // Internals.
+
+    /// @dev Reverts while a reserve is still held, dropping the ones that ended.
+    function _checkReserves() private {
+        uint256 i = _reserves.length;
+        while (i != 0) {
+            --i;
+            // Each reserve the program placed is one core read; the list only holds reserves still to end.
+            // forge-lint: disable-next-line(calls-loop)
+            (,, uint128 amount,,) = CORE.lienOf(address(this), _reserves[i]);
+            if (amount != 0) revert SettlementTokenInUse(IN_USE_HOLDS);
+            _reserves[i] = _reserves[_reserves.length - 1];
+            _reserves.pop();
+        }
+    }
 
     function _end(bytes32 purchaseRef, bool expired) private {
         Purchase storage p = _purchases[purchaseRef];

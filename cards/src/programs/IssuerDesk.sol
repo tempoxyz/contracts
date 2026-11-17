@@ -100,6 +100,8 @@ contract IssuerDesk is ISettlementTokenGuard {
     mapping(bytes32 purchaseRef => Split[]) internal _splits;
     mapping(uint64 seq => Step) public steps;
     mapping(bytes32 purchaseRef => Dispute) public disputes;
+    /// @notice What the issuer collected from merchant reserves toward an open dispute.
+    mapping(bytes32 purchaseRef => uint128) public reserveCollected;
     /// @notice Disputes opened and not yet resolved, which keep the program on its settlement token.
     uint64 public openDisputes;
     uint64 internal _nonce;
@@ -119,6 +121,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
     );
     event DisputeOpened(bytes32 indexed purchaseRef, address indexed account, uint128 amount, bytes evidence);
+    event ReserveCollectedFor(bytes32 indexed purchaseRef, uint128 amount);
     event DisputeStepped(
         bytes32 indexed purchaseRef,
         address indexed account,
@@ -303,7 +306,9 @@ contract IssuerDesk is ISettlementTokenGuard {
         }
         d.state = WON;
         (uint128 credited, uint128 rest) = _won(purchaseRef);
-        uint128 chargeback = credited;
+        // What the issuer collected from merchant reserves is no longer the network's to charge back.
+        uint128 collected = reserveCollected[purchaseRef];
+        uint128 chargeback = credited > collected ? credited - collected : 0;
         uint128 repaid;
         if (rest > 0) {
             (, uint128 before) = CORE.debtOf(owner, TOKEN);
@@ -318,6 +323,15 @@ contract IssuerDesk is ISettlementTokenGuard {
         if (kept != 0 || net != 0) PROGRAM.creditBack(purchaseRef, kept, net);
         _reverse(purchaseRef, credited);
         emit DisputeResolved(purchaseRef, owner, true, int256(uint256(rest)), 0, repaid, chargeback);
+    }
+
+    /// @notice Records what the issuer collected from merchant reserves toward an open dispute, which a cardholder win
+    ///         then leaves out of the chargeback.
+    function collectedReserve(bytes32 purchaseRef, uint128 amount) external onlyOperator {
+        Dispute storage d = disputes[purchaseRef];
+        if (d.state == 0 || d.state >= WON) revert NoDispute();
+        reserveCollected[purchaseRef] += amount;
+        emit ReserveCollectedFor(purchaseRef, amount);
     }
 
     /// @notice Corrects a processor error on the capture or refund the program logged as target, by an amount
