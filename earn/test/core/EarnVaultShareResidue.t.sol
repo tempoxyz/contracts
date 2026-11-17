@@ -38,6 +38,8 @@ contract EarnVaultShareResidueTest is Test {
         vm.prank(user);
         share.transfer(address(core), 1);
         assertEq(core.totalEarnShares(), 100 ether - 1);
+        // Aligned at once, before any call restates the anchor.
+        assertTrue(core.isAccountingAligned());
 
         uint256 held = share.balanceOf(user);
         vm.prank(user);

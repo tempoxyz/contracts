@@ -1324,7 +1324,10 @@ contract EarnVault is IEarnVault {
         uint256 supply = totalEarnShares();
         uint256 held = engineShares();
         if (supply == 0 || held == 0) return supply == 0 && held == 0;
-        return _convertToEngineShares(supply) == held;
+        if (_convertToEngineShares(supply) == held) return true;
+        // A residue sent since the last checkpoint is still inside the stored anchor until the next call restates it.
+        uint256 total = IEarnShare(earnShare).totalSupply();
+        return total != supply && _convertToEngineShares(total) == held;
     }
 
     /// @notice Reads the stored fields of the pending async request `requestId`.
