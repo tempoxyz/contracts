@@ -5,6 +5,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
 import { CardProgram } from "./CardProgram.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
+import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
 /// @title IssuerDesk
 /// @notice An issuer's services over its CardProgram, kept off the card program and the reservation core: the
@@ -18,7 +19,7 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///      settlement account, so a refund takes its share back from what it has available and leaves the rest as
 ///      capped debt. A cardholder approves the desk as a holder so a refund can take back a reward from money it
 ///      still has, never as debt. Amounts are in units of the program's settlement token.
-contract IssuerDesk {
+contract IssuerDesk is ISettlementTokenGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;
 
@@ -89,6 +90,8 @@ contract IssuerDesk {
     mapping(bytes32 purchaseRef => Split[]) internal _splits;
     mapping(uint64 seq => Step) public steps;
     mapping(bytes32 purchaseRef => Dispute) public disputes;
+    /// @notice Disputes opened and not yet resolved, which keep the program on its settlement token.
+    uint64 public openDisputes;
     uint64 internal _nonce;
     bool internal _locked;
 
@@ -212,6 +215,11 @@ contract IssuerDesk {
         _reverse(purchaseRef, amount);
     }
 
+    /// @notice An open dispute is sized in the program's settlement token, so the token waits for it to resolve.
+    function settlementTokenInUse(address) external view returns (uint8) {
+        return openDisputes != 0 ? 4 : 0;
+    }
+
     /// @notice Opens a dispute on a captured purchase, for at most what it captured and has not refunded.
     function openDispute(bytes32 purchaseRef, uint128 amount, bytes calldata evidence)
         external
@@ -223,6 +231,7 @@ contract IssuerDesk {
         if (amount == 0 || amount > b.captured - b.refunded) revert DisputeTooLarge();
         address owner = PROGRAM.purchaseOf(purchaseRef).owner;
         disputes[purchaseRef] = Dispute({ owner: owner, state: OPENED, amount: amount, provisional: 0 });
+        ++openDisputes;
         emit DisputeOpened(purchaseRef, owner, amount, evidence);
     }
 
@@ -261,6 +270,7 @@ contract IssuerDesk {
         if (d.state == 0 || d.state >= WON) revert NoDispute();
         address owner = d.owner;
         uint128 provisional = d.provisional;
+        --openDisputes;
         if (!cardholderWins) {
             d.state = LOST;
             uint128 debt;

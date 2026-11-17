@@ -189,6 +189,17 @@ contract IssuerDeskTest is ProgramsEnv {
         desk.refund(P1, 1e6);
     }
 
+    function test_dispute_open_keepsTheSettlementToken() public {
+        assertEq(desk.settlementTokenInUse(address(cards)), 0);
+        _disputed(50e6);
+        assertEq(desk.openDisputes(), 1);
+        assertEq(desk.settlementTokenInUse(address(cards)), 4);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, false);
+        assertEq(desk.openDisputes(), 0);
+        assertEq(desk.settlementTokenInUse(address(cards)), 0);
+    }
+
     function test_dispute_aboveCaptured_refused() public {
         _purchase(50e6);
         vm.prank(issuer);
