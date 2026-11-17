@@ -254,6 +254,18 @@ contract IssuerDesk is ISettlementTokenGuard {
         if (amount != 0) _charged(purchaseRef, amount);
     }
 
+    /// @notice Posts a purchase with no hold through the program and pays each split and reward as a capture does, so
+    ///         the purchase can be refunded and disputed through the desk.
+    function charge(bytes32 card, bytes32 purchaseRef, uint128 amount, address merchant)
+        external
+        nonReentrant
+        onlyOperator
+    {
+        PROGRAM.charge(card, purchaseRef, amount, merchant);
+        _step(purchaseRef, CAPTURE, amount);
+        _charged(purchaseRef, amount);
+    }
+
     /// @notice Refunds through the program from the settlement account, then takes back each split's and reward's
     ///         share of the refund.
     function refund(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {

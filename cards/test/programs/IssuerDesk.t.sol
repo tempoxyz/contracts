@@ -52,6 +52,17 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(usd.balanceOf(settlement), 97e6, "issuer keeps the rest");
     }
 
+    function test_charge_paysSplitsAndBooksForDisputes() public {
+        vm.prank(issuer);
+        desk.charge(CARD, P1, 100e6, merchant);
+        assertEq(usd.balanceOf(network), 1e6, "network split");
+        assertEq(usd.balanceOf(settlement), 97e6, "issuer keeps the rest");
+        vm.prank(issuer);
+        desk.openDispute(P1, 100e6, hex"c1a1");
+        (, uint8 state,,) = desk.disputes(P1);
+        assertEq(state, 1);
+    }
+
     function test_refund_takesSplitsBackInProportion() public {
         _purchase(100e6);
         usd.mint(settlement, 100e6);
