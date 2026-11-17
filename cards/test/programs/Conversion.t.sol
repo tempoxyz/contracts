@@ -367,6 +367,77 @@ contract ConversionTest is ProgramsEnv {
         desk.refund(P1, 0.01e6);
     }
 
+    function test_desk_wonDisputeOnAnEarlierTokensPurchaseGivesBackItsUsage() public {
+        IssuerDesk desk = new IssuerDesk(cards);
+        vm.prank(issuer);
+        cards.setOperator(address(desk), true);
+        vm.startPrank(settlement);
+        usd.approve(address(desk), type(uint256).max);
+        eur.approve(address(desk), type(uint256).max);
+        vm.stopPrank();
+        (,,, uint64 daySpent0, uint64 monthSpent0) = cards.usageOf(alice);
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        vm.prank(issuer);
+        desk.capture(P1, 40e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.startPrank(issuer);
+        cards.acknowledgeSettlement(seq);
+        cards.setSettlementToken(address(eur));
+        vm.stopPrank();
+        eur.mint(settlement, 100e6);
+        vm.prank(issuer);
+        desk.refund(P1, 15e6);
+        vm.prank(issuer);
+        desk.openDispute(P1, 20e6, hex"c1a8");
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 20e6, "", false);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        (,,, uint64 daySpent, uint64 monthSpent) = cards.usageOf(alice);
+        assertEq(daySpent, daySpent0 + 5e6, "day: the undisputed $5 still counts");
+        assertEq(monthSpent, monthSpent0 + 5e6, "month: the undisputed $5 still counts");
+    }
+
+    function test_desk_wonDisputeOnAPurchaseBookedInAScaledTokenGivesBackItsUsage() public {
+        ITIP20Token gbp = _createToken("Pound", "GBPX");
+        IssuerDesk desk = new IssuerDesk(cards);
+        vm.prank(issuer);
+        cards.setOperator(address(desk), true);
+        vm.startPrank(settlement);
+        eur.approve(address(desk), type(uint256).max);
+        gbp.approve(address(desk), type(uint256).max);
+        vm.stopPrank();
+        (,,, uint64 daySpent0, uint64 monthSpent0) = cards.usageOf(alice);
+        _localIssuer();
+        eur.mint(alice, 100e6);
+        _tokenFirst(alice, 100);
+        _authorize(P1, 40e6);
+        vm.prank(issuer);
+        desk.capture(P1, 40e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        uint256 held = eur.balanceOf(settlement);
+        vm.prank(settlement);
+        eur.transfer(bob, held);
+        conv.setReferenceRate(address(gbp), 1.25e18);
+        vm.prank(issuer);
+        cards.setSettlementToken(address(gbp));
+        gbp.mint(settlement, 100e6);
+        vm.prank(issuer);
+        desk.openDispute(P1, 20e6, hex"c1a8");
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 20e6, "", false);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        // The EUR 20 credited gives back the $22 it counted; the undisputed EUR 20 still counts.
+        (,,, uint64 daySpent, uint64 monthSpent) = cards.usageOf(alice);
+        assertEq(daySpent, daySpent0 + 22e6, "day");
+        assertEq(monthSpent, monthSpent0 + 22e6, "month");
+        assertEq(gbp.balanceOf(alice), 17.6e6, "the provisional credit came in today's token at the reference rate");
+    }
+
     function test_setSettlementToken_issuerOnly() public {
         vm.prank(alice);
         vm.expectRevert();

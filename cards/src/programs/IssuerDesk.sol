@@ -633,11 +633,17 @@ contract IssuerDesk is ISettlementTokenGuard {
     // Takes amount back after a lost dispute: the owner's free settlement token first, then its savings positions in
     // its funding order, never a credit line; the rest becomes capped debt to the settlement account, without a fee.
     function _recover(bytes32 purchaseRef, address owner, uint256 amount) private returns (uint256 debt) {
-        uint256 free = CORE.available(owner, TOKEN);
+        // Provisional credit went out in today's settlement token (no token change while a dispute is open), so it
+        // comes back in it: a purchase booked in an earlier token at the reference rate.
+        address token = PROGRAM.settlementToken();
+        address booked = PROGRAM.purchaseToken(purchaseRef);
+        if (booked != token) amount = amount.mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE);
+        uint256 free = CORE.available(owner, token);
         uint256 cash = free < amount ? free : amount;
-        if (cash != 0) emit DisputeRecovered(purchaseRef, owner, 1, TOKEN, 0, cash);
+        if (cash != 0) emit DisputeRecovered(purchaseRef, owner, token == TOKEN ? 1 : TOKEN_SOURCE, token, 0, cash);
         debt = amount - cash;
-        if (debt != 0) {
+        // Savings facilities invest the desk's own token.
+        if (debt != 0 && token == TOKEN) {
             (, CardFunding.Source[] memory order) = PROGRAM.fundingOrderOf(owner);
             for (uint256 i; i < order.length && debt != 0; ++i) {
                 if (order[i].kind != 2) continue;
@@ -648,7 +654,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         if (cash + debt != 0) {
             // Bounded by the uint128 provisional credit.
             // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.charge(owner, TOKEN, _nextId(), uint128(cash + debt), SETTLEMENT, false);
+            CORE.charge(owner, token, _nextId(), uint128(cash + debt), SETTLEMENT, false);
         }
         if (debt != 0 && !_isDebtor[owner]) {
             _isDebtor[owner] = true;

@@ -798,7 +798,8 @@ contract CardProgram {
         if (p.owner == address(0)) revert UnknownPurchase();
         if (usage == 0 && net == 0) revert InvalidAmount();
         _booked[purchaseRef].refunded += net;
-        _giveBackNow(_cards[p.card], p.owner, p.epoch, usage);
+        // Usage counted in an earlier settlement token gives back at the rate it was counted, as a refund does.
+        _giveBackNow(_follow(p), p.owner, p.epoch, _counted(purchaseRef, usage));
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
         uint128 left = ledger_.net > net ? ledger_.net - net : 0;
