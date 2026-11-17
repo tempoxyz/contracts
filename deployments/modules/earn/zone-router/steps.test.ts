@@ -290,19 +290,27 @@ describe('preflightRouterRoute', () => {
 })
 
 describe('router release intent', () => {
-  test('preserves existing release records and changes the intent on a release bump', () => {
+  test('puts the current release in the intent so a bump redeploys the routers', () => {
     expect(zoneRouterModeProfile.deploymentIntent(profile)).toEqual({
       zoneRouter: profile.zoneRouter,
+      zoneRouterContractRelease: 2,
     })
     expect(zoneRouterModeProfile.components.zoneRouter(profile, 'deployment')).toHaveProperty(
       'contractRelease',
-      1,
+      2,
     )
-    expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({ zone: profile.zone })
+    expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({
+      zone: profile.zone,
+      routerContractRelease: 2,
+    })
     expect(zoneRouterProfile.components.zone(profile, 'deployment')).toEqual({
       deployment: 'deployment',
       zone: profile.zone,
+      routerContractRelease: 2,
     })
+    // Release 1 adds nothing, so records written before releases existed keep their hash.
+    expect(modeReleaseIntent(1)).toEqual({})
+    expect(routerReleaseIntent(1)).toEqual({})
     expect(modeReleaseIntent(2)).toEqual({ zoneRouterContractRelease: 2 })
     expect(routerReleaseIntent(2)).toEqual({ routerContractRelease: 2 })
     expect(modeReleaseIntent(3)).not.toEqual(modeReleaseIntent(2))

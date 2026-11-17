@@ -86,7 +86,7 @@ describe('retained Zone router ABI compatibility', () => {
     await expect(deployZoneRouter.satisfied(chain(error), profile, outputs)).rejects.toBe(error)
   })
 
-  test('retains release-1 identities and history but stops resume before preparing a transaction', async () => {
+  test('retains recorded identities and history but stops resume before preparing a transaction', async () => {
     const root = mkdtempSync(join(tmpdir(), 'zone-router-compatibility-'))
     try {
       const profilePath = join(root, 'profile.json')
@@ -102,11 +102,11 @@ describe('retained Zone router ABI compatibility', () => {
       }
       const before = structuredClone(committed)
       expect(zoneRouterModeProfile.components.zoneRouter(profile, 'deployment')).toMatchObject({
-        contractRelease: 1,
+        contractRelease: 2,
       })
       expect(
         zoneRouterModeProfile.components.zoneRouterFactory(profile, 'deployment'),
-      ).toMatchObject({ contractRelease: 1 })
+      ).toMatchObject({ contractRelease: 2 })
       const restored = restorePendingDeployment(profilePath, profile, committed)
       expect(restored.outputs.zoneRouter).toBe(outputs.zoneRouter)
       expect(restored.outputs.zoneRouterFactory).toBe(outputs.zoneRouterFactory)

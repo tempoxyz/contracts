@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { expect, test, vi } from 'vitest'
 
 import { inspectZone } from '../../../chain/zone.js'
-import { loadEarnProfileBundle } from '../../../core/bundle.js'
+import { loadEarnProfileForRead } from '../../../core/bundle.js'
 import { discoverOutputs, verifyEarnProfile } from '../../../core/deploy.js'
 import { zoneRpcConfiguration } from './outputs.js'
 
@@ -23,7 +23,8 @@ const repositoryRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.
 /** Earn's Foundry project, where verification reads its build. */
 const root = resolve(repositoryRoot, 'earn')
 const profilePath = (id: string) => resolve(repositoryRoot, 'profiles', id, 'profile.json')
-const { profile } = loadEarnProfileBundle(profilePath('e2e-moderato'))
+// The profile alone: a router release bump leaves the hosted record stale until it redeploys.
+const profile = loadEarnProfileForRead(profilePath('e2e-moderato'))
 const rpcUrl = 'http://127.0.0.1:1'
 
 test('Zone verification without a Zone RPC names the variable and what it checks', async () => {
