@@ -218,6 +218,34 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 0, "the rest taken at once");
     }
 
+    function test_dispute_provisionalPastTheSettlementBalance_owesTheProgram() public {
+        _disputed(80e6);
+        // The settlement account kept $77.60 and spent $70.60 of it.
+        vm.prank(settlement);
+        usd.transfer(bob, 70.6e6);
+        _allowIssuerDebt(100e6);
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 30e6, "", false);
+        assertEq(usd.balanceOf(alice), 950e6, "provisional credit paid in full");
+        (address creditor, uint128 debt) = core.debtOf(settlement, address(usd));
+        assertEq(creditor, address(cards), "owed to the program");
+        assertEq(debt, 30e6 - 7e6, "what the account lacked");
+    }
+
+    function test_dispute_wonPastTheSettlementBalance_owesTheProgram() public {
+        _disputed(80e6);
+        vm.prank(settlement);
+        usd.transfer(bob, 40e6);
+        _allowIssuerDebt(100e6);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        assertEq(usd.balanceOf(alice), 1000e6, "the whole disputed amount comes back");
+        (address creditor, uint128 debt) = core.debtOf(settlement, address(usd));
+        assertEq(creditor, address(cards), "owed to the program");
+        assertEq(debt, 80e6 - 37.6e6, "what the account lacked");
+        assertEq(usd.balanceOf(address(desk)), 0, "the desk keeps nothing");
+    }
+
     function test_dispute_steps_onlyForward_andProvisionalCapped() public {
         _disputed(50e6);
         usd.mint(settlement, 100e6);

@@ -496,7 +496,7 @@ contract IssuerDesk is ISettlementTokenGuard {
             emit DisputeCredited(purchaseRef, owner, 1, token, 0, amount, amount);
         }
         (, uint128 before) = CORE.debtOf(owner, token);
-        SafeTransferLib.safeTransferFrom(token, SETTLEMENT, owner, units);
+        _payFromSettlement(token, owner, units);
         (, uint128 later) = CORE.debtOf(owner, token);
         repaid = before > later ? before - later : 0;
     }
@@ -524,7 +524,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         address token = PROGRAM.settlementToken();
         address booked = PROGRAM.purchaseToken(purchaseRef);
         if (booked == token) {
-            _pull(token, amount);
+            _payFromSettlement(token, address(this), amount);
             _allow(token, address(PROGRAM), amount);
             PROGRAM.refund(purchaseRef, amount);
             return;
@@ -535,20 +535,21 @@ contract IssuerDesk is ISettlementTokenGuard {
             uint256(amount).mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE) + LEG_ROUNDING;
         // What the desk already holds (a one-unit seed, sent by anyone) stays, so a refund never creates its balance.
         uint256 baseline = SafeTransferLib.balanceOf(token, address(this));
-        _pull(token, paying);
+        _payFromSettlement(token, address(this), paying);
         _allow(token, address(PROGRAM), paying);
         PROGRAM.refund(purchaseRef, amount);
         uint256 left = SafeTransferLib.balanceOf(token, address(this)) - baseline;
         if (left != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT, left);
     }
 
-    /// @dev Pulls `amount` of today's settlement token from the settlement account. What the account lacks, the program
-    ///      advances as issuer debt, as it does for a payout: the account owes it to the program within its debt cap.
-    function _pull(address token, uint256 amount) private {
+    /// @dev Pays `amount` of today's settlement token from the settlement account to `to`, for a refund or a credit.
+    ///      What the account lacks, the program advances as issuer debt, as it does for a payout: the account owes it to
+    ///      the program within its debt cap.
+    function _payFromSettlement(address token, address to, uint256 amount) private {
         if (amount <= CORE.available(SETTLEMENT, token)) {
-            SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), amount);
+            SafeTransferLib.safeTransferFrom(token, SETTLEMENT, to, amount);
         } else {
-            PROGRAM.payOut(address(this), amount, bytes32(0));
+            PROGRAM.payOut(to, amount, bytes32(0));
         }
     }
 
