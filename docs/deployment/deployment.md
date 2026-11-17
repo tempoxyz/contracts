@@ -189,6 +189,23 @@ counts as user assets; it stays with the contract for good. Measured on real TIP
 still pay for the vault's EarnShare slot (426k). The residue is a plain transfer outside the
 recorded deployment actions, so it adds no step to existing deployment records.
 
+Zone routers and card programs (`CardSpender`) hold a token only while a call runs, so each callback
+or spend recreates the balance slot of every token it handles. After one is deployed, send it 1 base
+unit of each token it handles:
+
+- a Zone router with Earn ops: its vault asset and EarnShare (its private asset too, when it converts
+  through a pool), plus each token it spends
+- a card program: each token it pays out, and EarnShare for each vault its Earn spends redeem from
+
+Unlike the EarnVault's, a router's or program's EarnShare residue is safe: it never burns EarnShare,
+and EarnShare it holds is a balance like any other holder's. Their balance checks also measure
+against what they held before the call, so the residue stays put. Measured on real TIP-20
+(`cards/test/gas/RouterTip20Gas.t.sol`, with the vault residue above), an Earn-only router's deposit
+callback drops from 1.53M to 535k gas and its redeem from 1.25M to 758k; on a router that spends and
+has called `warm` for both tokens, 272k and 495k. A card program's spend drops by 250k per token
+(621k to 369k for a router-paid spend). Anyone can send it, so it also applies to routers and
+programs already deployed.
+
 ## Generated record
 
 When the deployment steps complete, the command atomically publishes `deployment.json` beside
