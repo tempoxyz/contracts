@@ -51,8 +51,21 @@ contract EarnFees is IEarnFees {
     mapping(uint64 configId => FeeConfig config) private _feeConfigs;
     mapping(uint64 configId => mapping(uint8 slot => uint256 remainder)) private _feeRemainders;
     mapping(uint64 configId => uint256 count) private _openRequestsByFeeConfig;
-    mapping(bytes32 requestId => PendingFeeSnapshot snapshot) private _pendingFeeSnapshots;
-    mapping(bytes32 requestId => uint256 disableEpoch) private _requestDisableEpoch;
+
+    /// @dev Stored form of {PendingFeeSnapshot} in three slots, with the disable epoch it was recorded in;
+    ///      {pendingFeeSnapshot} widens it back.
+    struct StoredFeeSnapshot {
+        uint128 burnedEarnShares;
+        uint128 requestValue;
+        uint128 highWaterValue;
+        uint128 targetValue;
+        uint64 feeConfigId;
+        uint40 requestedAt;
+        bool open;
+        uint64 disableEpoch;
+    }
+
+    mapping(bytes32 requestId => StoredFeeSnapshot snapshot) private _pendingFeeSnapshots;
     mapping(address recipient => uint256 earnShares) public claimableEarnShares;
     uint256 public totalClaimableEarnShares;
     /// @notice Whether an empty active pool was reopened while fee valuation was stale.
@@ -145,13 +158,22 @@ contract EarnFees is IEarnFees {
     }
 
     function pendingFeeSnapshot(bytes32 requestId) external view returns (PendingFeeSnapshot memory) {
-        return _pendingFeeSnapshots[requestId];
+        StoredFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
+        return PendingFeeSnapshot({
+            burnedEarnShares: pending.burnedEarnShares,
+            requestValue: pending.requestValue,
+            highWaterValue: pending.highWaterValue,
+            targetValue: pending.targetValue,
+            feeConfigId: pending.feeConfigId,
+            requestedAt: pending.requestedAt,
+            open: pending.open
+        });
     }
 
     /// @custom:ensures result ==> _specChargesPending(requestId)
     function shouldChargeRedeem(bytes32 requestId) external view returns (bool) {
-        PendingFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
-        return pending.open && _requestDisableEpoch[requestId] == _disableEpoch && !feesDisabled
+        StoredFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
+        return pending.open && pending.disableEpoch == _disableEpoch && !feesDisabled
             && _configHasFees(_feeConfigs[pending.feeConfigId]) && _feeValuationFresh();
     }
 
@@ -204,7 +226,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures (config.excess.enabled && old(_specFeesActive() && _feeConfigs[currentFeeConfigId].excess.enabled)) ==> targetBase == old(_specTargetNow())
     /// @custom:ensures (old(feesDisabled) || old(_openRequestsByFeeConfig[currentFeeConfigId]) == 0) ==> _specRemaindersWaived(old(currentFeeConfigId))
     /// @custom:ensures forall address a :: claimableEarnShares[a] == old(claimableEarnShares[a])
-    /// @custom:ensures _disableEpoch == old(_disableEpoch) && forall bytes32 r :: _requestDisableEpoch[r] == old(_requestDisableEpoch[r])
+    /// @custom:ensures _disableEpoch == old(_disableEpoch) && forall bytes32 r :: _pendingFeeSnapshots[r].disableEpoch == old(_pendingFeeSnapshots[r].disableEpoch)
     /// @custom:ensures forall bytes32 r :: _pendingFeeSnapshots[r].open == old(_pendingFeeSnapshots[r].open) && _pendingFeeSnapshots[r].feeConfigId == old(_pendingFeeSnapshots[r].feeConfigId)
     /// @custom:ensures forall bytes32 r :: _pendingFeeSnapshots[r].burnedEarnShares == old(_pendingFeeSnapshots[r].burnedEarnShares) && _pendingFeeSnapshots[r].requestValue == old(_pendingFeeSnapshots[r].requestValue) && _pendingFeeSnapshots[r].requestedAt == old(_pendingFeeSnapshots[r].requestedAt)
     /// @custom:ensures forall bytes32 r :: _pendingFeeSnapshots[r].highWaterValue == old(_pendingFeeSnapshots[r].highWaterValue) && _pendingFeeSnapshots[r].targetValue == old(_pendingFeeSnapshots[r].targetValue)
@@ -309,22 +331,31 @@ contract EarnFees is IEarnFees {
         onlyEarnVault
     {
         if (!_feesActive() || !_feeValuationFresh()) return;
-        PendingFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
+        StoredFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
         if (pending.open) revert InvalidFeeConfiguration();
 
-        pending.burnedEarnShares = burnedEarnShares;
-        pending.requestValue = requestValue;
-        pending.highWaterValue = Math.mulDiv(highWaterMark, burnedEarnShares, earnShareScale, Math.Rounding.Ceil);
+        uint256 highWaterValue = Math.mulDiv(highWaterMark, burnedEarnShares, earnShareScale, Math.Rounding.Ceil);
+        uint256 targetValue;
         FeeConfig memory config = _feeConfigs[currentFeeConfigId];
         if (config.excess.enabled) {
             uint256 currentTarget =
                 EarnFeeMath.targetAt(targetBase, config.excess.annualTargetRateBps, targetStartedAt, block.timestamp);
-            pending.targetValue = Math.mulDiv(currentTarget, burnedEarnShares, earnShareScale, Math.Rounding.Ceil);
+            targetValue = Math.mulDiv(currentTarget, burnedEarnShares, earnShareScale, Math.Rounding.Ceil);
         }
+        // A snapshot too large for the packed record reverts rather than truncating.
+        if (
+            burnedEarnShares > type(uint128).max || requestValue > type(uint128).max
+                || highWaterValue > type(uint128).max || targetValue > type(uint128).max
+                || _disableEpoch > type(uint64).max
+        ) revert InvalidFeeConfiguration();
+        pending.burnedEarnShares = uint128(burnedEarnShares);
+        pending.requestValue = uint128(requestValue);
+        pending.highWaterValue = uint128(highWaterValue);
+        pending.targetValue = uint128(targetValue);
         pending.feeConfigId = currentFeeConfigId;
         pending.requestedAt = uint40(block.timestamp);
         pending.open = true;
-        _requestDisableEpoch[requestId] = _disableEpoch;
+        pending.disableEpoch = uint64(_disableEpoch);
         _openRequestsByFeeConfig[currentFeeConfigId] += 1;
     }
 
@@ -333,13 +364,12 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares == old(totalClaimableEarnShares)
     /// @custom:ensures !_pendingFeeSnapshots[requestId].open
     /// @custom:ensures old(_pendingFeeSnapshots[requestId].open) ==> _specClosed(requestId, old(_pendingFeeSnapshots[requestId].feeConfigId), old(_openRequestsByFeeConfig[_pendingFeeSnapshots[requestId].feeConfigId]))
-    /// @custom:ensures !old(_pendingFeeSnapshots[requestId].open) ==> _requestDisableEpoch[requestId] == old(_requestDisableEpoch[requestId])
+    /// @custom:ensures !old(_pendingFeeSnapshots[requestId].open) ==> _pendingFeeSnapshots[requestId].disableEpoch == old(_pendingFeeSnapshots[requestId].disableEpoch)
     function closeRedeemRequest(bytes32 requestId) external onlyEarnVault {
-        PendingFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
+        StoredFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
         if (!pending.open) return;
         uint64 configId = pending.feeConfigId;
         delete _pendingFeeSnapshots[requestId];
-        delete _requestDisableEpoch[requestId];
         _openRequestsByFeeConfig[configId] -= 1;
         _waiveClosedHistoricalRemainders(configId);
     }
@@ -363,13 +393,13 @@ contract EarnFees is IEarnFees {
         uint256 activeAssets,
         uint256 totalReentryEarnShares
     ) external onlyEarnVault returns (uint256 feeEarnShares) {
-        PendingFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
+        StoredFeeSnapshot storage pending = _pendingFeeSnapshots[requestId];
         bool pendingOpen = pending.open;
         uint64 configId = pendingOpen ? pending.feeConfigId : 0;
         bool feesActive_ = _feesActive();
         bool valuationFresh = _feeValuationFresh();
 
-        bool chargePending = pendingOpen && _requestDisableEpoch[requestId] == _disableEpoch && !feesDisabled
+        bool chargePending = pendingOpen && pending.disableEpoch == _disableEpoch && !feesDisabled
             && _configHasFees(_feeConfigs[configId]) && valuationFresh;
         if (chargePending) {
             (FeePreview memory pendingFees, uint256[5] memory nextRemainders) =
@@ -398,7 +428,6 @@ contract EarnFees is IEarnFees {
 
         if (!pendingOpen) return 0;
         delete _pendingFeeSnapshots[requestId];
-        delete _requestDisableEpoch[requestId];
         _openRequestsByFeeConfig[configId] -= 1;
         _waiveClosedHistoricalRemainders(configId);
     }
@@ -542,7 +571,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures result.totalFeeAssets <= result.positiveAccrualAssets && result.activeAssets == returnedValue
     /// @custom:ensures result.positiveAccrualAssets <= returnedValue
     /// @custom:requires _feeConfigs[pending.feeConfigId].fixedFeeCount <= MAX_FIXED_FEE_RECIPIENTS
-    function _previewPendingFees(PendingFeeSnapshot storage pending, uint256 returnedValue)
+    function _previewPendingFees(StoredFeeSnapshot storage pending, uint256 returnedValue)
         internal
         view
         returns (FeePreview memory result, uint256[5] memory nextRemainders)
@@ -643,7 +672,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures !_feeConfigs[currentFeeConfigId].excess.enabled ==> targetBase == old(targetBase) && targetStartedAt == old(targetStartedAt)
     /// @custom:ensures (normalization != 0 && _feeConfigs[currentFeeConfigId].excess.enabled) ==> targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures (normalization != 0 && _feeConfigs[currentFeeConfigId].excess.enabled) ==> targetBase >= _specSnapshotTargetNow(pending)
-    function _restoreReopenedBaselines(PendingFeeSnapshot storage pending, uint256 normalization) internal {
+    function _restoreReopenedBaselines(StoredFeeSnapshot storage pending, uint256 normalization) internal {
         if (normalization == 0) return;
         uint256 currentValue = EarnFeeMath.valuePerEarnShareUp(_activeAssets(), earnShareScale, normalization);
         uint256 pendingHighWater =
@@ -1022,8 +1051,8 @@ contract EarnFees is IEarnFees {
     /// @custom:spec Whether a request's snapshot is still charged when it settles: open, recorded since fees were
     ///     last disabled, fees enabled, and its configuration charging a fee.
     function _specChargesPending(bytes32 requestId) internal view returns (bool) {
-        return _pendingFeeSnapshots[requestId].open && _requestDisableEpoch[requestId] == _disableEpoch && !feesDisabled
-            && _specCharges(_pendingFeeSnapshots[requestId].feeConfigId);
+        return _pendingFeeSnapshots[requestId].open && _pendingFeeSnapshots[requestId].disableEpoch == _disableEpoch
+            && !feesDisabled && _specCharges(_pendingFeeSnapshots[requestId].feeConfigId);
     }
 
     /// @custom:spec The request's snapshot was just recorded from the current fee state (fees.md, "Queued withdrawals").
@@ -1033,7 +1062,7 @@ contract EarnFees is IEarnFees {
         returns (bool)
     {
         return _pendingFeeSnapshots[requestId].open && _pendingFeeSnapshots[requestId].feeConfigId == currentFeeConfigId
-            && _requestDisableEpoch[requestId] == _disableEpoch
+            && _pendingFeeSnapshots[requestId].disableEpoch == _disableEpoch
             && _pendingFeeSnapshots[requestId].burnedEarnShares == burnedEarnShares
             && _pendingFeeSnapshots[requestId].requestValue == requestValue
             && _pendingFeeSnapshots[requestId].requestedAt == uint40(block.timestamp)
@@ -1049,7 +1078,7 @@ contract EarnFees is IEarnFees {
     function _specClosed(bytes32 requestId, uint64 configId, uint256 openBefore) internal view returns (bool) {
         return !_pendingFeeSnapshots[requestId].open && _pendingFeeSnapshots[requestId].burnedEarnShares == 0
             && _pendingFeeSnapshots[requestId].highWaterValue == 0 && _pendingFeeSnapshots[requestId].targetValue == 0
-            && _pendingFeeSnapshots[requestId].feeConfigId == 0 && _requestDisableEpoch[requestId] == 0
+            && _pendingFeeSnapshots[requestId].feeConfigId == 0 && _pendingFeeSnapshots[requestId].disableEpoch == 0
             && _openRequestsByFeeConfig[configId] == openBefore - 1
             && (!_specHistoricalAndClosed(configId) || _specRemaindersWaived(configId));
     }
@@ -1060,12 +1089,12 @@ contract EarnFees is IEarnFees {
     }
 
     /// @custom:spec The snapshot's high-water mark per EarnShare, rounded up.
-    function _specSnapshotHighWater(PendingFeeSnapshot storage pending) internal view returns (uint256) {
+    function _specSnapshotHighWater(StoredFeeSnapshot storage pending) internal view returns (uint256) {
         return EarnFeeMath.ceilDiv(pending.highWaterValue * earnShareScale, pending.burnedEarnShares);
     }
 
     /// @custom:spec The snapshot's target per EarnShare, grown from the request time to now.
-    function _specSnapshotTargetNow(PendingFeeSnapshot storage pending) internal view returns (uint256) {
+    function _specSnapshotTargetNow(StoredFeeSnapshot storage pending) internal view returns (uint256) {
         return EarnFeeMath.targetFrom(
             EarnFeeMath.ceilDiv(pending.targetValue * earnShareScale, pending.burnedEarnShares),
             _feeConfigs[pending.feeConfigId].excess.annualTargetRateBps,

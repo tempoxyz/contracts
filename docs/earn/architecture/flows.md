@@ -218,9 +218,11 @@ Optional supply-bounded orchestration around `contribute` is in
 4. `A` pulls and burns the EarnShare, asks the engine to queue the engine shares with `engineData`,
    and removes them from managed backing.
 5. `A` records the requester, receiver, burned EarnShare, and engine shares under the engine's
-   request ID, rejecting a duplicate ID.
+   request ID, rejecting a duplicate ID. The record packs both amounts into `uint128`, so a request
+   above that bound reverts with `ExceedsMaxEarnShares`.
 6. If fees are active and the valuation is fresh, `F.recordRedeemRequest` stores the request's fee
-   snapshot ([queued withdrawals](fees.md#queued-withdrawals)).
+   snapshot with its disable epoch ([queued withdrawals](fees.md#queued-withdrawals)). The snapshot
+   packs its values into `uint128` and reverts with `InvalidFeeConfiguration` above that bound.
 7. `A` increments `openRedeemRequestCount` and re-anchors; active supply and NAV exclude the claim.
 
 The deposit pause does not block requests. Engine-specific request data and validation, such as
