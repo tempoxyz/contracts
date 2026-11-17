@@ -14,6 +14,8 @@ import { IBoringVault } from "../../src/interfaces/external/veda/IBoringVault.so
 import { ITeller } from "../../src/interfaces/external/veda/ITeller.sol";
 import { IVedaPeripheryRegistry } from "../../src/interfaces/external/veda/IVedaPeripheryRegistry.sol";
 import { OnChainWithdraw, VedaRedeemRequest } from "../../src/interfaces/external/veda/VedaTypes.sol";
+import { ExcessReturnFee, FeeConfig, FixedFeeRecipient } from "../../src/interfaces/core/EarnFeeTypes.sol";
+import { IEarnFees } from "../../src/interfaces/core/IEarnFees.sol";
 import { CoreMockToken, earnVaultTestNoFees } from "../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../helpers/EarnVaultTestDeployer.sol";
 import { MockAccountant, MockAsset, MockBoringVault, MockQueue, MockTeller } from "../helpers/VedaEngineMocks.sol";
@@ -271,8 +273,7 @@ contract VedaFullStackGasAudit is VedaAuditFixture {
         );
         registry.bindEngine(address(engine));
         earnShare = new CoreMockToken("Earn Share", "EARN", 6);
-        earnVault =
-            EarnVaultTestDeployer.deploy(address(engine), address(earnShare), address(this), earnVaultTestNoFees());
+        earnVault = EarnVaultTestDeployer.deploy(address(engine), address(earnShare), address(this), _feeConfig());
         engine.initializeEarnVault(address(earnVault));
 
         boringSolver = new AuditBoringSolver(asset);
@@ -376,6 +377,10 @@ contract VedaFullStackGasAudit is VedaAuditFixture {
         assertEq(claimed, 5);
     }
 
+    function _feeConfig() internal pure virtual returns (FeeConfig memory config) {
+        config = earnVaultTestNoFees();
+    }
+
     function _depositForUser(uint256 assets) internal returns (uint256 shares) {
         vm.prank(user);
         shares = earnVault.deposit(assets, user, 1);
@@ -385,5 +390,24 @@ contract VedaFullStackGasAudit is VedaAuditFixture {
         _depositForUser(earnShares);
         vm.prank(user);
         requestId = earnVault.requestRedeem(earnShares, _requestData(), receiver);
+    }
+}
+
+/// @dev The full stack with fees on, so a queued request also records its fee snapshot.
+contract VedaFullStackFeeGasAudit is VedaFullStackGasAudit {
+    function testGasFullRequestRedeemRecordsFeeSnapshot() public {
+        vm.pauseGasMetering();
+        _depositForUser(ACTION_AMOUNT);
+        vm.prank(user);
+        uint256 gasBefore = _startMeasure();
+        bytes32 requestId = earnVault.requestRedeem(ACTION_AMOUNT, _requestData(), receiver);
+        _stopMeasure("full.fees.requestRedeem", gasBefore);
+        assertTrue(IEarnFees(earnVault.earnFees()).pendingFeeSnapshot(requestId).open);
+    }
+
+    function _feeConfig() internal pure override returns (FeeConfig memory config) {
+        config.fixedFeeCount = 1;
+        config.fixedFees[0] = FixedFeeRecipient(address(0xFEE), 250);
+        config.excess = ExcessReturnFee(true, address(0xFEE), 300, 5_000);
     }
 }

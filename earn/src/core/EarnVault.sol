@@ -135,7 +135,16 @@ contract EarnVault is IEarnVault {
         bool open;
     }
 
-    mapping(bytes32 requestId => PendingRedeem) private _pending;
+    /// @dev Stored form of {PendingRedeem} in three slots; {pendingRedeem} widens it back.
+    struct StoredRedeem {
+        address receiver;
+        address requester;
+        bool open;
+        uint128 burnedEarnShares;
+        uint128 engineShares;
+    }
+
+    mapping(bytes32 requestId => StoredRedeem) private _pending;
 
     FixedFeeRecipient private _distributorFee;
     DistributorFeeUpdate private _pendingDistributorFeeUpdate;
@@ -990,7 +999,7 @@ contract EarnVault is IEarnVault {
     function finalizeRedeem(bytes32 requestId, address asset_, uint256 amount) external nonReentrant {
         if (msg.sender != engine) revert NotEngine();
         if (asset_ != asset) revert FinalizedAssetMismatch(asset_);
-        PendingRedeem storage p = _pending[requestId];
+        StoredRedeem storage p = _pending[requestId];
         if (!p.open) revert RequestNotOpen(requestId);
 
         address receiver = p.receiver;
@@ -1026,7 +1035,7 @@ contract EarnVault is IEarnVault {
     ///      cancellation returns normally.
     function cancelRedeem(bytes32 requestId, uint256 minReceiverEarnShares) external override nonReentrant {
         if (minReceiverEarnShares == 0) revert ZeroMinimumEarnShares();
-        PendingRedeem storage p = _pending[requestId];
+        StoredRedeem storage p = _pending[requestId];
         if (!p.open) revert RequestNotOpen(requestId);
         if (msg.sender != p.requester && msg.sender != asyncJanitor) revert NotRequesterOrJanitor();
 
@@ -1358,7 +1367,14 @@ contract EarnVault is IEarnVault {
 
     /// @notice Reads the stored fields of the pending async request `requestId`.
     function pendingRedeem(bytes32 requestId) external view returns (PendingRedeem memory) {
-        return _pending[requestId];
+        StoredRedeem storage p = _pending[requestId];
+        return PendingRedeem({
+            receiver: p.receiver,
+            requester: p.requester,
+            burnedEarnShares: p.burnedEarnShares,
+            engineShares: p.engineShares,
+            open: p.open
+        });
     }
 
     /// @notice Converts an EarnShare amount to engine shares at the current re-anchored rate.
@@ -1733,12 +1749,14 @@ contract EarnVault is IEarnVault {
         uint256 earnShares,
         uint256 engineShares_
     ) internal {
-        PendingRedeem storage pending = _pending[requestId];
+        StoredRedeem storage pending = _pending[requestId];
         if (pending.open) revert DuplicateRequest(requestId);
+        // A request too large for the packed record reverts rather than truncating.
+        if (earnShares > type(uint128).max || engineShares_ > type(uint128).max) revert ExceedsMaxEarnShares();
         pending.receiver = receiver;
+        pending.burnedEarnShares = uint128(earnShares);
+        pending.engineShares = uint128(engineShares_);
         pending.requester = requester;
-        pending.burnedEarnShares = earnShares;
-        pending.engineShares = engineShares_;
         /// @custom:ghost openCount = openCount + 1
         pending.open = true;
         if (IEarnFees(earnFees).feesActive() && isFeeValuationFresh()) {
