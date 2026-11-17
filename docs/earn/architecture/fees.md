@@ -283,7 +283,11 @@ The fee portion of the re-entry, `floor(reentry × fee assets / returned value)`
 meet the caller's nonzero `minReceiverEarnShares`. A re-entry into a nonempty pool that leaves more
 than one basis point of the returned engine shares unrepresented reverts. Losses pay no fee and
 re-enter at their returned value. With a chargeable snapshot, queuing does not avoid fees on
-positive queued growth; stale valuation and fee disablement are explicit exceptions.
+positive queued growth; stale valuation and fee disablement are explicit exceptions. After a charged
+re-entry into a nonempty pool, the baselines ratchet up to the pooled value as after a principal
+entry, since everything in the pool was just charged. A small active pool, such as a seed unit whose
+value rounds down, therefore cannot leave the mark low and have the next checkpoint charge the queued
+growth again.
 
 A request filed while the valuation is stale records no snapshot, and a stale cancellation charges
 none, so either remains cancellable and finalizable without the expired NAV. Cancellation closes

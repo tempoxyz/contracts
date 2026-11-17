@@ -182,7 +182,10 @@ Any failed leg reverts the entire transaction.
 After the fee checkpoint, EarnShare supply stays unchanged. The vault maps the old managed/raw
 share ratio into the replacement denomination, rounding at most one replacement share toward
 managed backing and rejecting more than one basis point of managed-value error. Both output floors
-also apply independently to managed backing when it exists. Pre-existing replacement shares and
+also apply independently to managed backing when it exists. Managed backing of at most one basis
+point of the raw custody, such as a seed unit beside surplus, is dust: the floors apply only to the
+whole move, and the classification error is bounded by one basis point of the whole replacement
+position instead. Pre-existing replacement shares and
 the migrated unrecognized fraction remain surplus. The vault switches `engine`, re-anchors
 conversion and the reward-rate baseline, and emits `EngineMigrated`. These checks preserve accounting
 boundaries, not the safety of an operator-selected venue or valuation.

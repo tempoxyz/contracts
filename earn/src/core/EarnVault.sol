@@ -1089,6 +1089,10 @@ contract EarnVault is IEarnVault {
             _reanchorAtRest();
         } else {
             _reanchorAfterEntry(rateEngineShares, rateEarnShares);
+            // The active pool was just checkpointed and the queued growth was just charged, so the mark may
+            // only rise to the pooled value. Otherwise a small active pool, such as a seed unit whose value
+            // rounds down, leaves the mark low and the next checkpoint charges the queued growth again.
+            if (chargePending) IEarnFees(earnFees).initializeBaselines();
         }
 
         if (receiver.code.length != 0) {
@@ -1199,16 +1203,22 @@ contract EarnVault is IEarnVault {
                 newEngineShares =
                     Math.mulDiv(receivedNewEngineShares, oldEngineShares, oldRawEngineShares, Math.Rounding.Ceil);
             }
+            // Active backing of at most one basis point of the custody, such as a seed unit beside surplus, is
+            // dust: the total floors above already protect the move, and the classification error is bounded
+            // by one basis point of the whole replacement position instead of the dust's own value.
+            bool dustBacking = oldEngineShares <= oldRawEngineShares / CONVERSION_BPS;
             if (oldEngineShares != 0) {
-                if (newEngineShares < minNewEngineShares) {
+                if (!dustBacking && newEngineShares < minNewEngineShares) {
                     revert MinimumEngineSharesNotMet(minNewEngineShares, newEngineShares);
                 }
                 uint256 assetsRetained = IEarnEngine(newEngine).valueOf(newEngineShares);
                 if (oldEngineShares != oldRawEngineShares) {
                     uint256 expectedManagedAssets = Math.mulDiv(replacementAssets, oldEngineShares, oldRawEngineShares);
-                    _requireAcceptableMigrationClassification(expectedManagedAssets, assetsRetained);
+                    _requireAcceptableMigrationClassification(
+                        expectedManagedAssets, assetsRetained, dustBacking ? replacementAssets : expectedManagedAssets
+                    );
                 }
-                if (assetsRetained < minAssetsRetained) {
+                if (!dustBacking && assetsRetained < minAssetsRetained) {
                     revert MinimumAssetsNotMet(minAssetsRetained, assetsRetained);
                 }
             }
@@ -1412,17 +1422,20 @@ contract EarnVault is IEarnVault {
 
     /// @dev A replacement denomination must represent the old managed/raw split without transferring
     ///      economically material value between active backing and quarantined surplus. Share-count
-    ///      rounding favors managed backing, but its value error may not exceed one basis point.
-    /// @custom:ensures _specDistance(actualManagedAssets, expectedManagedAssets) <= expectedManagedAssets / CONVERSION_BPS
-    /// @custom:succeeds-if _specDistance(actualManagedAssets, expectedManagedAssets) <= expectedManagedAssets / CONVERSION_BPS
-    function _requireAcceptableMigrationClassification(uint256 expectedManagedAssets, uint256 actualManagedAssets)
-        internal
-        pure
-    {
+    ///      rounding favors managed backing, but its value error may not exceed one basis point of
+    ///      `referenceAssets`: the managed value itself, or the whole replacement position when the managed
+    ///      backing is dust.
+    /// @custom:ensures _specDistance(actualManagedAssets, expectedManagedAssets) <= referenceAssets / CONVERSION_BPS
+    /// @custom:succeeds-if _specDistance(actualManagedAssets, expectedManagedAssets) <= referenceAssets / CONVERSION_BPS
+    function _requireAcceptableMigrationClassification(
+        uint256 expectedManagedAssets,
+        uint256 actualManagedAssets,
+        uint256 referenceAssets
+    ) internal pure {
         uint256 difference = actualManagedAssets > expectedManagedAssets
             ? actualManagedAssets - expectedManagedAssets
             : expectedManagedAssets - actualManagedAssets;
-        if (difference > expectedManagedAssets / CONVERSION_BPS) {
+        if (difference > referenceAssets / CONVERSION_BPS) {
             revert ExcessiveMigrationClassificationError(expectedManagedAssets, actualManagedAssets);
         }
     }
