@@ -127,7 +127,7 @@ library CardConvert {
     ///         purchase has left, within what the owner can spend.
     function _replan(address owner, bytes32 legId, address token, uint256 value, uint256 most) private {
         uint256 rate = current(token);
-        uint256 tokens = _min(value.mulDivUp(RATE_ONE, rate), most);
+        uint256 tokens = _min(_tokensFor(token, value, rate), most);
         if (CORE.getHold(owner, legId).held != tokens) {
             // forge-lint: disable-next-line(unsafe-typecast)
             CORE.adjust(owner, legId, uint128(tokens));
@@ -162,7 +162,20 @@ library CardConvert {
         uint256 cap = units.mulDiv(now_, RATE_ONE);
         uint256 room = cap > before ? cap - before : 0;
         take = rest < room ? rest : room;
-        if (take != 0) total = _min((before + take).mulDivUp(RATE_ONE, now_), units);
+        if (take != 0) total = _min(_tokensFor(token, before + take, now_), units);
+    }
+
+    /// @dev The tokens a leg holds for value at rate: at least what the venue charges for it today, so a capture at an
+    ///      unchanged market converts exactly what the leg holds.
+    function _tokensFor(address token, uint256 value, uint256 rate) private view returns (uint256 tokens) {
+        tokens = value.mulDivUp(RATE_ONE, rate);
+        CardProgram program = CardProgram(address(this));
+        address settlement = program.settlementToken();
+        if (token == settlement || program.rateOf(token) != 0) return tokens;
+        // A venue that can't quote the whole value leaves the leg at the rate's size.
+        try Conversion(program.conversion()).quoteOut(token, settlement, value) returns (uint256 cost) {
+            if (cost > tokens) tokens = cost;
+        } catch { }
     }
 
     /// @notice The rate a converted leg locked, settlement units per token unit scaled by 1e18; zero for none.
