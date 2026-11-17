@@ -99,6 +99,8 @@ contract IssuerDesk is ISettlementTokenGuard {
 
     /// @dev A funding source's kind for a credit line, and the key of the first source of its kind.
     uint8 private constant CREDIT = 4;
+    /// @dev A funding source's kind for a token held as it is.
+    uint8 private constant TOKEN_SOURCE = 64;
 
     CardProgram public immutable PROGRAM;
     address public immutable ISSUER;
@@ -159,9 +161,16 @@ contract IssuerDesk is ISettlementTokenGuard {
     event DisputeRecovered(
         bytes32 indexed purchaseRef, address indexed account, uint8 kind, address source, uint64 lineId, uint256 amount
     );
-    /// @notice Where one provisional credit went, when part of it repaid a credit line: each line, then the cash.
+    /// @notice Where one provisional credit went, when part of it repaid a credit line or it was paid in another token
+    ///         than the purchase's: each line, then the cash. amount is in the purchase's units, units in the source's.
     event DisputeCredited(
-        bytes32 indexed purchaseRef, address indexed account, uint8 kind, address source, uint64 lineId, uint256 amount
+        bytes32 indexed purchaseRef,
+        address indexed account,
+        uint8 kind,
+        address source,
+        uint64 lineId,
+        uint256 amount,
+        uint256 units
     );
 
     error NotIssuer();
@@ -297,10 +306,7 @@ contract IssuerDesk is ISettlementTokenGuard {
             uint128 onLines = _repayLines(purchaseRef, d, provisional, open);
             d.provisional += provisional;
             uint128 cash = provisional - onLines;
-            if (cash > 0) {
-                if (onLines > 0) emit DisputeCredited(purchaseRef, d.owner, 1, TOKEN, 0, cash);
-                repaid = _credit(d.owner, cash);
-            }
+            if (cash > 0) repaid = _creditCash(purchaseRef, d.owner, cash, onLines > 0);
         }
         emit DisputeStepped(purchaseRef, d.owner, state, provisional, repaid, evidence, byMerchant);
     }
@@ -365,6 +371,9 @@ contract IssuerDesk is ISettlementTokenGuard {
             _refundSettling(purchaseRef, size);
             _reverse(purchaseRef, size);
         } else {
+            // An undercharge on a purchase booked in an earlier settlement token would draw today's token for the old
+            // one's units: the issuer charges it as a new purchase instead.
+            if (PROGRAM.purchaseToken(purchaseRef) != PROGRAM.settlementToken()) revert NotCorrectable();
             PROGRAM.charge(PROGRAM.purchaseOf(purchaseRef).card, purchaseRef, size, address(0));
             _charged(purchaseRef, size);
         }
@@ -427,10 +436,24 @@ contract IssuerDesk is ISettlementTokenGuard {
 
     // Pays the owner from the settlement account, which approved the desk; incoming credit repays its debt first.
     // forge-lint: disable-next-item(arbitrary-send-erc20)
-    function _credit(address owner, uint128 amount) private returns (uint128 repaid) {
-        (, uint128 before) = CORE.debtOf(owner, TOKEN);
-        SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, owner, amount);
-        (, uint128 later) = CORE.debtOf(owner, TOKEN);
+    // Pays amount of provisional credit, in the purchase's units, in today's settlement token: a purchase booked in an
+    // earlier token is paid at the reference rate, rounded toward the cardholder. Returns the debt it repaid.
+    function _creditCash(bytes32 purchaseRef, address owner, uint128 amount, bool split)
+        private
+        returns (uint128 repaid)
+    {
+        address token = PROGRAM.settlementToken();
+        address booked = PROGRAM.purchaseToken(purchaseRef);
+        uint256 units = amount;
+        if (booked != token) {
+            units = uint256(amount).mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE);
+            emit DisputeCredited(purchaseRef, owner, TOKEN_SOURCE, token, 0, amount, units);
+        } else if (split) {
+            emit DisputeCredited(purchaseRef, owner, 1, token, 0, amount, amount);
+        }
+        (, uint128 before) = CORE.debtOf(owner, token);
+        SafeTransferLib.safeTransferFrom(token, SETTLEMENT, owner, units);
+        (, uint128 later) = CORE.debtOf(owner, token);
         repaid = before > later ? before - later : 0;
     }
 
@@ -538,7 +561,7 @@ contract IssuerDesk is ISettlementTokenGuard {
             _allow(TOKEN, address(line), pay);
             // forge-lint: disable-next-line(unsafe-typecast)
             line.repay(order[i].lineId, uint128(pay));
-            emit DisputeCredited(purchaseRef, d.owner, CREDIT, address(line), order[i].lineId, pay);
+            emit DisputeCredited(purchaseRef, d.owner, CREDIT, address(line), order[i].lineId, pay, pay);
             // forge-lint: disable-next-line(unsafe-typecast)
             onLines += uint128(pay);
         }

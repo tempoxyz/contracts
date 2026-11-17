@@ -340,6 +340,7 @@ contract ConversionTest is ProgramsEnv {
         desk.capture(P1, 40e6, true);
         assertEq(usd.balanceOf(network), 0.4e6);
         (uint64 seq,,,) = cards.ledger();
+        uint64 captured = seq;
         vm.startPrank(issuer);
         cards.acknowledgeSettlement(seq);
         cards.setSettlementToken(address(eur));
@@ -353,6 +354,10 @@ contract ConversionTest is ProgramsEnv {
         assertEq(eur.balanceOf(settlement), 30e6);
         assertEq(eur.balanceOf(address(desk)), 0);
         assertEq(usd.balanceOf(network), 0.18e6);
+        // An undercharge would draw euros for dollars, so the issuer charges it as a new purchase instead.
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.NotCorrectable.selector);
+        desk.correct(P1, captured, -1e6, "undercharge");
         // The rest refunds, and nothing past what it captured.
         vm.prank(issuer);
         desk.refund(P1, 18e6);
