@@ -272,6 +272,57 @@ contract CardProgramTest is ProgramsEnv {
         assertEq(usd.balanceOf(settlement), 100e6);
     }
 
+    function test_revoke_stopsIncrementsWithNoTerms_butDecreasesStillRun() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        cards.revoke();
+        // The card is still active, so the decline names the revoked grant, not the card.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.NoTerms.selector);
+        cards.adjust(P1, 150e6);
+        vm.prank(issuer);
+        cards.adjust(P1, 60e6);
+        assertEq(_hold(alice, P1, CASH).held, 60e6);
+        _capture(P1, 60e6, true);
+        assertEq(usd.balanceOf(settlement), 60e6);
+    }
+
+    function test_adjust_frozenCardBeforeRevokedGrant() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        cards.revoke();
+        vm.prank(alice);
+        cards.freeze(CARD);
+        // The card's status is checked first.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.CardNotActive.selector);
+        cards.adjust(P1, 150e6);
+    }
+
+    function test_revoke_refusesForcePost_butLateChargeOnAuthorizedPurchaseLands() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        cards.revoke();
+        // A force post opens a new purchase, which a revoked grant refuses.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.NoTerms.selector);
+        cards.charge(CARD, P2, 10e6, merchant);
+        assertEq(cards.purchaseOf(P2).owner, address(0));
+        // A late presentment of a purchase authorized under the grant still charges.
+        vm.warp(vm.getBlockTimestamp() + 8 days);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        assertEq(usd.balanceOf(settlement), 100e6);
+        // Granting again restores force posts.
+        _grant(0, 0, 0, 0, 0);
+        vm.prank(issuer);
+        cards.charge(CARD, P2, 10e6, merchant);
+        assertEq(usd.balanceOf(settlement), 110e6);
+    }
+
     function test_terms_lifetimeLimit_countsHoldsCapturesAndRefunds() public {
         usd.mint(alice, 1000e6);
         _grant(150e6, 0, 0, 0, 0);

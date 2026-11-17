@@ -39,7 +39,9 @@ library CardAdjust {
         }
         uint256 previous = p.amount;
         if (amount > previous) {
-            if (c.status != CardProgram.Status.Active || !g.active) revert CardProgram.CardNotActive();
+            if (c.status != CardProgram.Status.Active) revert CardProgram.CardNotActive();
+            // A revoked grant stops increments as it stops new purchases; captures, releases and refunds still run.
+            if (!g.active) revert CardProgram.NoTerms();
             uint256 more = amount - previous;
             CardProgram.Limits memory l = c.limits;
             CardLimits.spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], amount, more, true);
@@ -71,7 +73,9 @@ library CardAdjust {
         bytes32 id,
         uint128 amount
     ) external returns (uint256 tokens, uint256 absorbed) {
-        if (g.epoch == 0) revert CardProgram.NoTerms();
+        // A late charge on an authorized purchase needs only past terms; one that opens a purchase (a force post) needs
+        // the owner's grant to be active, as an authorization does.
+        if (g.epoch == 0 || (p.epoch == 0 && !g.active)) revert CardProgram.NoTerms();
         address owner = p.owner;
         uint256 wanted = _toTokenUp(amount, rate);
         tokens = _chargeable(core, owner, token, wanted);
