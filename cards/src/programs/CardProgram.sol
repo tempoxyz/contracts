@@ -8,12 +8,15 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { AccountKeys } from "./AccountKeys.sol";
 import { AccountLifecycle } from "./AccountLifecycle.sol";
 import { CardAdjust } from "./CardAdjust.sol";
+import { CardConvert } from "./CardConvert.sol";
 import { CardFunding } from "./CardFunding.sol";
 import { CardLimits } from "./CardLimits.sol";
+import { Conversion } from "./Conversion.sol";
 import { CreditLine } from "./CreditLine.sol";
 import { IdentityRules } from "./IdentityRules.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
+import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
 /// @title CardProgram
 /// @notice An issuer's card program, and the holder its cardholders approve on the reservation core. It keeps the
@@ -37,6 +40,11 @@ contract CardProgram {
     using FixedPointMathLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
+    uint8 internal constant IN_USE_HOLDS = 1;
+    uint8 internal constant IN_USE_UNSETTLED = 2;
+    uint8 internal constant IN_USE_DEBT = 3;
+    uint8 internal constant IN_USE_COLLATERAL = 5;
+    uint8 internal constant IN_USE_HELD = 6;
     uint256 private constant RATE_ONE = 1e18;
 
     /// @notice Funding legs, as a card's allowed set and a purchase's placed set.
@@ -138,6 +146,22 @@ contract CardProgram {
     address public accountKeys;
     /// @notice The identity rules new authorizations must satisfy; zero checks none.
     address public identityRules;
+    /// @notice The venue legs in other stablecoins convert through at capture; zero converts none.
+    address public conversion;
+    /// @dev The token purchases settle in now; zero for SETTLEMENT_TOKEN.
+    address internal _settlementToken;
+    /// @dev Units of SETTLEMENT_TOKEN one unit of a later settlement token was worth when the program moved to it,
+    ///      scaled by 1e18 (zero means one). Limits and spend count in SETTLEMENT_TOKEN units, so they keep their value
+    ///      across a change, and each purchase counts at the scale of the token it was authorized in.
+    mapping(address token => uint256) internal _scales;
+    /// @dev Purchases still open, which keep the settlement token from changing.
+    uint256 internal _openPurchases;
+    /// @notice Contracts a settlement token change asks first.
+    address[] public tokenGuards;
+    /// @dev The token a purchase was authorized in, where that was not SETTLEMENT_TOKEN.
+    mapping(bytes32 purchaseRef => address) internal _purchaseTokens;
+    /// @notice The increment an owner's holds and increases round up to, in settlement units; zero holds exact amounts.
+    mapping(address owner => uint64) public holdRounding;
 
     bool private transient _locked;
     /// @notice The account lifecycle the program reads at authorization and reports activity to; zero for none.
@@ -152,6 +176,11 @@ contract CardProgram {
     event LimitsSet(bytes32 indexed card, Limits limits, Limits ceiling);
     event MandateSet(address indexed owner, address indexed merchant, bool revoked, uint96 monthlyLimit);
     event RateSet(address indexed token, uint256 rate);
+    event ConversionSet(address conversion);
+    event HoldRoundingSet(address indexed owner, uint64 increment);
+    /// @notice New purchases settle in token; limits sized in previous rescale at step, previous units per token unit
+    ///         scaled by 1e18.
+    event SettlementTokenSet(address token, address previous, uint256 step);
     event SourceSet(address indexed source, bool approved);
     event CompanionsSet(address accountKeys, address identityRules);
     event LifecycleSet(address lifecycle);
@@ -228,6 +257,9 @@ contract CardProgram {
     error InvalidAmount();
     error InvalidCard();
     error InvalidCursor();
+    /// @notice The settlement token still sizes something: 1 open holds, 2 unsettled captures, 3 debt owed to the
+    ///         issuer, 4 open disputes, 5 posted collateral, 6 a held or liened balance, 7 open credit lines.
+    error SettlementTokenInUse(uint8 reason);
     error LimitAboveCeiling();
     error LimitExceeded(uint8 which);
     error MerchantLimitExceeded();
@@ -264,12 +296,12 @@ contract CardProgram {
         _locked = false;
     }
 
-    constructor(address issuer, address settlementToken, address settlementAccount) {
-        if (issuer == address(0) || settlementToken == address(0) || settlementAccount == address(0)) {
+    constructor(address issuer, address settlementToken_, address settlementAccount) {
+        if (issuer == address(0) || settlementToken_ == address(0) || settlementAccount == address(0)) {
             revert ZeroAddress();
         }
         ISSUER = issuer;
-        SETTLEMENT_TOKEN = settlementToken;
+        SETTLEMENT_TOKEN = settlementToken_;
         SETTLEMENT_ACCOUNT = settlementAccount;
     }
 
@@ -284,50 +316,21 @@ contract CardProgram {
         external
         onlyIssuer
     {
-        Card storage c = _cards[card];
-        if (c.status != Status.None) revert CardExists();
-        // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
-        // forge-lint: disable-next-line(block-timestamp)
-        if (owner == address(0) || expiry <= block.timestamp || legs == 0 || legs > (CASH | SAVINGS | CREDIT)) {
-            revert InvalidCard();
-        }
-        c.owner = owner;
-        c.expiry = expiry;
-        c.status = Status.Active;
-        c.legs = legs;
-        c.limits = limits;
-        c.ceiling = limits;
-        emit CardIssued(card, owner, expiry, limits, legs);
+        CardAdjust.issueCard(_cards[card], card, owner, expiry, _baseLimits(limits), legs);
     }
 
     /// @notice Replaces `oldCard` with `newCard` (a lost card or a new expiry): same owner, limits, legs and
     ///         windows; the old card closes.
     function replaceCard(bytes32 oldCard, bytes32 newCard, uint40 expiry) external onlyIssuer {
-        Card storage old = _cards[oldCard];
-        if (old.status != Status.Active && old.status != Status.Frozen) revert CardNotActive();
-        Card storage c = _cards[newCard];
-        if (c.status != Status.None) revert CardExists();
-        // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
-        // forge-lint: disable-next-line(block-timestamp)
-        if (expiry <= block.timestamp) revert InvalidCard();
-        _cards[newCard] = old;
-        c.expiry = expiry;
-        old.status = Status.Closed;
+        CardAdjust.replaceCard(_cards[oldCard], _cards[newCard], oldCard, newCard, expiry);
         replacedBy[oldCard] = newCard;
-        emit CardReplaced(oldCard, newCard, expiry);
-        emit CardStatusSet(oldCard, Status.Closed);
     }
 
     /// @notice Sets `card`'s limits, each at most what its owner allows.
-    function raiseLimits(bytes32 card, Limits calldata limits) external onlyIssuer {
+    function raiseLimits(bytes32 card, Limits calldata given) external onlyIssuer {
         Card storage c = _cards[card];
         if (c.status == Status.None || c.status == Status.Closed) revert CardNotActive();
-        Limits memory ceiling = c.ceiling;
-        if (
-            limits.perPurchase > ceiling.perPurchase || limits.daily > ceiling.daily || limits.monthly > ceiling.monthly
-        ) revert LimitAboveCeiling();
-        c.limits = limits;
-        emit LimitsSet(card, limits, ceiling);
+        CardAdjust.raiseLimits(c, card, _baseLimits(given));
     }
 
     /// @notice Lets `key` act on purchases (authorize, adjust, capture, release, charge, refund), or stops it.
@@ -340,6 +343,8 @@ contract CardProgram {
     function setCardCap(bytes32 card, uint64 cap) external onlyIssuer {
         Card storage c = _cards[card];
         if (c.status == Status.None) revert InvalidCard();
+        // forge-lint: disable-next-line(unsafe-typecast)
+        cap = uint64(_base(cap, type(uint64).max));
         c.window.cap = cap;
         emit CardCapSet(card, cap);
     }
@@ -355,21 +360,7 @@ contract CardProgram {
         address[] calldata merchants,
         CardLimits.Mandate[] calldata spent
     ) external onlyIssuer {
-        if (cards.length != windows.length || merchants.length != spent.length) {
-            revert InvalidAmount();
-        }
-        CardLimits.carryUsage(usageOf[owner], usage);
-        // CardLimits is a linked library over this program's own storage; the issuer names a handful of entries.
-        // forge-lint: disable-start(calls-loop)
-        for (uint256 i; i < cards.length; ++i) {
-            Card storage c = _cards[cards[i]];
-            if (c.owner != owner) revert InvalidCard();
-            CardLimits.carryWindow(c.window, windows[i]);
-        }
-        for (uint256 i; i < merchants.length; ++i) {
-            CardLimits.carryMandate(mandates[owner][merchants[i]], spent[i]);
-        }
-        // forge-lint: disable-end(calls-loop)
+        CardAdjust.carryUsage(_cards, mandates[owner], usageOf[owner], owner, usage, cards, windows, merchants, spent);
         emit UsageCarried(owner);
     }
 
@@ -407,9 +398,47 @@ contract CardProgram {
 
     /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it.
     function setRate(address token, uint256 rate) external onlyIssuer {
-        if (token == SETTLEMENT_TOKEN) revert TokenNotAccepted(token);
+        if (token == settlementToken()) revert TokenNotAccepted(token);
         rateOf[token] = rate;
         emit RateSet(token, rate);
+    }
+
+    /// @notice Contracts sizing money in the settlement token that a change must wait for (an issuer desk, credit lines).
+    function setTokenGuards(address[] calldata guards) external onlyIssuer {
+        tokenGuards = guards;
+    }
+
+    /// @notice Settles new purchases in token from now on. Refused while anything is still sized in the old token (an
+    ///         open or unsettled purchase, debt owed, posted collateral, a held or liened settlement balance, or what a
+    ///         token guard reports), so every purchase settles in the token it was authorized in.
+    function setSettlementToken(address token) external onlyIssuer {
+        Ledger storage l = ledger;
+        if (_openPurchases != 0) revert SettlementTokenInUse(IN_USE_HOLDS);
+        if (l.settledThrough != l.seq || l.net != l.settledNet) revert SettlementTokenInUse(IN_USE_UNSETTLED);
+        (, uint256 debt, uint256 posted,) = CardFunding.exposure(0);
+        if (debt != 0) revert SettlementTokenInUse(IN_USE_DEBT);
+        if (posted != 0) revert SettlementTokenInUse(IN_USE_COLLATERAL);
+        address current = settlementToken();
+        CardConvert.checkUnused(tokenGuards, SETTLEMENT_ACCOUNT, current);
+        if (token == address(0) || token == current || rateOf[token] != 0) revert TokenNotAccepted(token);
+        // The new token's scale follows from the old one's at today's reference rate, without conversion cost.
+        uint256 step = Conversion(conversion).mid(token, current);
+        _scales[token] = _scaleOf(current).mulDiv(step, RATE_ONE);
+        _settlementToken = token;
+        emit SettlementTokenSet(token, current, step);
+    }
+
+    /// @notice Repays what the owner owes in the settlement token from its cash in another token, through the venue.
+    function repayConverted(address owner) external nonReentrant returns (uint256) {
+        return CardConvert.repay(owner);
+    }
+
+    /// @notice Sets the venue legs in other stablecoins convert through at capture (for tokens without an issuer rate).
+    // Zero turns conversion off: legs then convert only at an issuer rate.
+    // forge-lint: disable-next-item(missing-zero-check)
+    function setConversion(address conversion_) external onlyIssuer {
+        conversion = conversion_;
+        emit ConversionSet(conversion_);
     }
 
     /// @notice Accepts or stops a savings facility or credit line contract as a funding source.
@@ -462,37 +491,21 @@ contract CardProgram {
     }
 
     /// @notice Lowers `card`'s limits; the ceiling drops with them, so the issuer cannot raise them back.
-    function lowerLimits(bytes32 card, Limits calldata limits) external {
-        Card storage c = _ownedCard(card);
-        Limits memory current = c.limits;
-        if (
-            limits.perPurchase > current.perPurchase || limits.daily > current.daily || limits.monthly > current.monthly
-        ) revert LimitAboveCeiling();
-        c.limits = limits;
-        Limits memory ceiling = c.ceiling;
-        ceiling.perPurchase = _min80(ceiling.perPurchase, limits.perPurchase);
-        ceiling.daily = _min80(ceiling.daily, limits.daily);
-        ceiling.monthly = _min80(ceiling.monthly, limits.monthly);
-        c.ceiling = ceiling;
-        emit LimitsSet(card, limits, ceiling);
+    function lowerLimits(bytes32 card, Limits calldata given) external {
+        CardAdjust.lowerLimits(_ownedCard(card), card, _baseLimits(given));
     }
 
     /// @notice Sets how far the issuer may raise `card`'s limits; limits above it come down to it.
-    function allowLimits(bytes32 card, Limits calldata ceiling) external {
-        Card storage c = _ownedCard(card);
-        c.ceiling = ceiling;
-        Limits memory limits = c.limits;
-        limits.perPurchase = _min80(limits.perPurchase, ceiling.perPurchase);
-        limits.daily = _min80(limits.daily, ceiling.daily);
-        limits.monthly = _min80(limits.monthly, ceiling.monthly);
-        c.limits = limits;
-        emit LimitsSet(card, limits, ceiling);
+    function allowLimits(bytes32 card, Limits calldata given) external {
+        CardAdjust.allowLimits(_ownedCard(card), card, _baseLimits(given));
     }
 
     /// @notice Revokes or restores `merchant` for all the caller's cards, with an optional monthly limit.
     function setMandate(address merchant, bool revoked, uint96 monthlyLimit) external {
         CardLimits.Mandate storage m = mandates[msg.sender][merchant];
         m.revoked = revoked;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        monthlyLimit = uint96(_base(monthlyLimit, type(uint96).max));
         m.monthlyLimit = monthlyLimit;
         emit MandateSet(msg.sender, merchant, revoked, monthlyLimit);
     }
@@ -503,9 +516,27 @@ contract CardProgram {
         CardFunding.setOrder(msg.sender, cashToken, order);
     }
 
+    /// @notice Rounds the caller's holds and increases up to `increment`, so hold amounts don't reveal what was bought.
+    ///         Captures stay exact, and a hold whose rounded amount isn't free holds the exact amount instead.
+    function setHoldRounding(uint64 increment) external {
+        holdRounding[msg.sender] = increment;
+        emit HoldRoundingSet(msg.sender, increment);
+    }
+
     /// @notice Grants this program the caller's terms for all their cards, and starts their usage afresh.
-    function grant(CardLimits.Terms calldata terms) external {
+    function grant(CardLimits.Terms calldata given) external {
         CardLimits.Grant storage g = grants[msg.sender];
+        CardLimits.Terms memory terms = given;
+        uint256 most = type(uint64).max;
+        // forge-lint: disable-start(unsafe-typecast)
+        (terms.limit, terms.perPurchase, terms.daily, terms.monthly) =
+        (
+            uint64(_base(terms.limit, most)),
+            uint64(_base(terms.perPurchase, most)),
+            uint64(_base(terms.daily, most)),
+            uint64(_base(terms.monthly, most))
+        );
+        // forge-lint: disable-end(unsafe-typecast)
         g.terms = terms;
         g.active = true;
         uint32 epoch = ++g.epoch;
@@ -557,9 +588,24 @@ contract CardProgram {
         }
 
         uint256[3] memory legAmounts;
-        (approved, legAmounts) = CardFunding.place(p, purchaseRef, owner, amount, c.legs, expiresAt, flags);
-        if (!standIn) CardLimits.useMandate(mandates[owner][merchant], g.terms.utcOffset, approved);
-        (p.day, p.month) = _spend(c, owner, approved, approved, !standIn);
+        // A partial or stand-in approval holds what the network asked for, unrounded.
+        uint256 want = flags & (STAND_IN | PARTIAL) != 0 ? amount : _rounded(owner, amount);
+        if (want > type(uint64).max) revert InvalidAmount();
+        (approved, legAmounts) =
+            CardFunding.place(p, purchaseRef, owner, want, c.legs, expiresAt, want == amount ? flags : flags | PARTIAL);
+        if (approved < want && want != amount) {
+            // The rounded hold isn't free: hold the exact amount, or what a partial approval covers.
+            if (approved < amount) {
+                if (flags & PARTIAL == 0) revert InsufficientFunds(amount - approved);
+            } else {
+                p.owner = owner;
+                legAmounts[0] = CardFunding.resize(p, purchaseRef, approved, amount);
+                approved = amount;
+            }
+        }
+        uint256 counted = _base(approved, type(uint256).max);
+        if (!standIn) CardLimits.useMandate(mandates[owner][merchant], g.terms.utcOffset, counted);
+        (p.day, p.month) = _spend(c, owner, counted, counted, !standIn);
 
         p.card = card;
         p.owner = owner;
@@ -570,6 +616,10 @@ contract CardProgram {
         // forge-lint: disable-next-line(unsafe-typecast)
         p.held = uint64(approved);
         p.open = true;
+        ++_openPurchases;
+        // A purchase settles in the token it was authorized in; only a moved settlement token costs the extra slot.
+        address token = settlementToken();
+        if (token != SETTLEMENT_TOKEN) _purchaseTokens[purchaseRef] = token;
         p.standIn = standIn;
         uint64 seq = ++ledger.seq;
         emit PurchaseAuthorized(
@@ -584,6 +634,17 @@ contract CardProgram {
         Purchase storage p = _purchases[purchaseRef];
         address owner = p.owner;
         uint256 previous = p.amount;
+        if (!p.standIn) {
+            uint256 rounded = _rounded(owner, amount);
+            // A decrease never grows the hold to round it.
+            if (amount < previous && rounded > previous) rounded = amount;
+            // A change within the rounded hold changes nothing on chain, so it doesn't reveal the new amount.
+            // forge-lint: disable-next-line(block-timestamp)
+            if (rounded == previous && p.open && block.timestamp < p.expiresAt) return;
+            if (rounded > type(uint64).max) revert InvalidAmount();
+            // forge-lint: disable-next-line(unsafe-typecast)
+            amount = uint128(rounded);
+        }
         Card storage c = _follow(p);
         if (amount > previous) _admit(owner);
         CardAdjust.adjust(p, c, grants[owner], usageOf[owner], amount);
@@ -613,12 +674,17 @@ contract CardProgram {
         uint256 freed = isFinal ? counted : fromHeld;
         // forge-lint: disable-next-line(unsafe-typecast)
         p.held = uint64(counted - freed);
-        if (amount > fromHeld) _spend(c, p.owner, 0, amount - fromHeld, false);
-        if (freed > fromHeld) _giveBack(c, p.owner, p.epoch, p.day, p.month, freed - fromHeld);
+        if (amount > fromHeld) _spend(c, p.owner, 0, _counted(purchaseRef, amount - fromHeld), false);
+        if (freed > fromHeld) {
+            _giveBack(c, p.owner, p.epoch, p.day, p.month, _counted(purchaseRef, freed - fromHeld));
+        }
 
         if (amount != 0) p.captured = true;
-        if (isFinal) p.open = false;
         Ledger storage ledger_ = ledger;
+        if (isFinal) {
+            p.open = false;
+            --_openPurchases;
+        }
         uint64 seq = ++ledger_.seq;
         uint128 net = ledger_.net + amount;
         ledger_.net = net;
@@ -651,13 +717,17 @@ contract CardProgram {
             }
         }
         address owner = p.owner;
-        address token = fundingOf[owner];
+        // A late charge is owed like capture debt: in the settlement token where the owner's cash converts into it.
+        address token = CardConvert.debtToken(fundingOf[owner]);
         Card storage card_ = _follow(p);
-        _noteActivity(owner);
+        _noteActivity(owner, false);
         (uint256 tokens, uint256 absorbed) = CardAdjust.charge(
             CORE, p, card_, grants[owner], usageOf[owner], token, _rate(token), _legId(purchaseRef, CHARGED), amount
         );
         _forward(token);
+        // Debt the charge left counts in the program's exposure, like a capture's.
+        (address creditor, uint128 owed) = CORE.debtOf(owner, token);
+        if (creditor == address(this) && owed != 0) CardFunding.noteDebtor(owner);
 
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
@@ -684,8 +754,19 @@ contract CardProgram {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
+        // A purchase booked in an earlier settlement token refunds in its units: rates read in that token meanwhile.
+        address booked = _purchaseTokens[purchaseRef];
+        if (booked == address(0)) booked = SETTLEMENT_TOKEN;
+        if (booked == settlementToken()) booked = address(0);
+        bytes32 slot = CardConvert.BOOKED_SLOT;
+        assembly {
+            tstore(slot, booked)
+        }
         uint256[3] memory tokens = CardFunding.refund(p, purchaseRef, amount, fundingOf[p.owner]);
-        _giveBackNow(_follow(p), p.owner, p.epoch, amount);
+        assembly {
+            tstore(slot, 0)
+        }
+        _giveBackNow(_follow(p), p.owner, p.epoch, _counted(purchaseRef, amount));
 
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
@@ -720,6 +801,23 @@ contract CardProgram {
 
     // Views.
 
+    /// @notice The token purchases settle in now.
+    function settlementToken() public view returns (address) {
+        address token = _settlementToken;
+        return token == address(0) ? SETTLEMENT_TOKEN : token;
+    }
+
+    /// @notice The settlement token a purchase was authorized in, which its refunds, corrections and disputes use.
+    function purchaseToken(bytes32 purchaseRef) external view returns (address) {
+        address token = _purchaseTokens[purchaseRef];
+        return token == address(0) ? SETTLEMENT_TOKEN : token;
+    }
+
+    /// @notice The rate a converted leg locked, settlement units per token unit scaled by 1e18; zero for none.
+    function lockedRate(bytes32 legId) external view returns (uint256) {
+        return CardConvert.lockOf(legId);
+    }
+
     /// @notice A card's record, with the status its account's lifecycle gives it: closed once the account closed,
     ///         frozen while the account is an estate.
     function cardOf(bytes32 card) external view returns (Card memory c) {
@@ -729,6 +827,11 @@ contract CardProgram {
         AccountLifecycle.Status account = AccountLifecycle(lc).statusOf(c.owner);
         if (account == AccountLifecycle.Status.Closed) c.status = Status.Closed;
         else if (account == AccountLifecycle.Status.Estate) c.status = Status.Frozen;
+    }
+
+    /// @notice The owner's funding order at `version`, the one a purchase authorized at that version draws on.
+    function orderAt(address owner, uint32 version) external view returns (CardFunding.Source[] memory) {
+        return CardFunding.orderAt(owner, version);
     }
 
     function purchaseOf(bytes32 purchaseRef) external view returns (Purchase memory) {
@@ -768,26 +871,23 @@ contract CardProgram {
         if (expired && block.timestamp < p.expiresAt) revert PurchaseNotExpired();
         uint256[3] memory released = CardFunding.end(p, purchaseRef, expired);
         p.open = false;
+        --_openPurchases;
         uint256 held = p.held;
         p.held = 0;
-        _giveBack(_follow(p), p.owner, p.epoch, p.day, p.month, held);
+        _giveBack(_follow(p), p.owner, p.epoch, p.day, p.month, _counted(purchaseRef, held));
         uint64 seq = ++ledger.seq;
         emit PurchaseReleased(purchaseRef, p.card, released[0], released[1], released[2], expired, seq);
     }
 
     /// @dev Reports activity on the owner's account to the lifecycle and declines unless the account takes new holds.
     function _admit(address owner) private {
-        AccountLifecycle.Status account = _noteActivity(owner);
-        if (account == AccountLifecycle.Status.Dormant) revert AccountInactive();
-        if (account == AccountLifecycle.Status.Closed || account == AccountLifecycle.Status.Estate) {
-            revert CardsClosed();
-        }
+        _noteActivity(owner, true);
     }
 
-    function _noteActivity(address owner) private returns (AccountLifecycle.Status) {
+    /// @dev Reports activity on the owner's account to the lifecycle, declining when admit unless it takes new holds.
+    function _noteActivity(address owner, bool admit) private {
         address lc = lifecycle;
-        if (lc == address(0)) return AccountLifecycle.Status.None;
-        return AccountLifecycle(lc).noteActivity(owner);
+        if (lc != address(0)) CardAdjust.noteActivity(lc, owner, admit);
     }
 
     /// @dev The purchase's card after following its replacements, which the purchase moves to.
@@ -827,6 +927,46 @@ contract CardProgram {
         if (amount != 0) CardLimits.giveBack(grants[owner], usageOf[owner], c.window, epoch, day, month, amount);
     }
 
+    /// @dev `amount` rounded up to the owner's hold increment.
+    function _rounded(address owner, uint256 amount) private view returns (uint256) {
+        uint256 increment = holdRounding[owner];
+        // Dividing first is the rounding: up to the next whole increment.
+        // forge-lint: disable-next-line(divide-before-multiply)
+        return increment == 0 ? amount : (amount + increment - 1) / increment * increment;
+    }
+
+    function _scaleOf(address token) private view returns (uint256 scale) {
+        scale = _scales[token];
+        if (scale == 0) scale = RATE_ONE;
+    }
+
+    /// @dev SETTLEMENT_TOKEN units of amount in the current settlement token, rounded up and capped at most.
+    function _base(uint256 amount, uint256 most) private view returns (uint256) {
+        uint256 scale = _scaleOf(settlementToken());
+        if (scale == RATE_ONE) return amount;
+        uint256 base = amount.mulDivUp(scale, RATE_ONE);
+        return base > most ? most : base;
+    }
+
+    function _baseLimits(Limits calldata limits) private view returns (Limits memory) {
+        uint256 most = type(uint80).max;
+        // Each is capped at type(uint80).max, so the casts keep every value.
+        // forge-lint: disable-start(unsafe-typecast)
+        return Limits(
+            uint80(_base(limits.perPurchase, most)),
+            uint80(_base(limits.daily, most)),
+            uint80(_base(limits.monthly, most))
+        );
+        // forge-lint: disable-end(unsafe-typecast)
+    }
+
+    /// @dev SETTLEMENT_TOKEN units of amount in the token a purchase was authorized in, rounded up.
+    function _counted(bytes32 purchaseRef, uint256 amount) private view returns (uint256) {
+        address token = _purchaseTokens[purchaseRef];
+        uint256 scale = _scaleOf(token == address(0) ? SETTLEMENT_TOKEN : token);
+        return scale == RATE_ONE ? amount : amount.mulDivUp(scale, RATE_ONE);
+    }
+
     /// @dev Gives `amount` back in today's windows (a refund).
     function _giveBackNow(Card storage c, address owner, uint32 epoch, uint256 amount) private {
         (uint32 day, uint32 month) = CardLimits.calendar(grants[owner].terms.utcOffset);
@@ -852,7 +992,7 @@ contract CardProgram {
     }
 
     function _rate(address token) private view returns (uint256 rate) {
-        if (token == SETTLEMENT_TOKEN) return RATE_ONE;
+        if (token == settlementToken()) return RATE_ONE;
         rate = rateOf[token];
         if (rate == 0) revert TokenNotAccepted(token);
     }
@@ -869,9 +1009,6 @@ contract CardProgram {
         return a < b ? a : b;
     }
 
-    function _min80(uint80 a, uint80 b) private pure returns (uint80) {
-        return a < b ? a : b;
-    }
     // forge-lint: disable-end(reentrancy-no-eth)
 }
 

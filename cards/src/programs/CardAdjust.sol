@@ -5,6 +5,7 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
+import { AccountLifecycle } from "./AccountLifecycle.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { CardProgram } from "./CardProgram.sol";
 import { CreditLine } from "./CreditLine.sol";
@@ -16,6 +17,12 @@ import { IReservationCore } from "./interfaces/IReservationCore.sol";
 ///         program keeps its runtime code small. It runs in the program's context.
 library CardAdjust {
     using FixedPointMathLib for uint256;
+
+    /// @dev CardProgram's event, emitted in the program's context.
+    event LimitsSet(bytes32 indexed card, CardProgram.Limits limits, CardProgram.Limits ceiling);
+    event CardIssued(bytes32 indexed card, address indexed owner, uint40 expiry, CardProgram.Limits limits, uint8 legs);
+    event CardReplaced(bytes32 indexed oldCard, bytes32 indexed newCard, uint40 expiry);
+    event CardStatusSet(bytes32 indexed card, CardProgram.Status status);
 
     uint256 private constant RATE_ONE = 1e18;
 
@@ -151,6 +158,139 @@ library CardAdjust {
         SafeTransferLib.safeTransferFrom(leg.token, msg.sender, address(this), tokens);
         // forge-lint: disable-next-line(unsafe-typecast)
         core.refund(leg.holdOwner, leg.id, uint128(tokens));
+    }
+
+    /// @notice Issues a card to owner; its ceiling starts at the issued limits, in SETTLEMENT_TOKEN units.
+    function issueCard(
+        CardProgram.Card storage c,
+        bytes32 card,
+        address owner,
+        uint40 expiry,
+        CardProgram.Limits memory limits,
+        uint8 legs
+    ) external {
+        if (c.status != CardProgram.Status.None) revert CardProgram.CardExists();
+        // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
+        // Legs are CASH | SAVINGS | CREDIT at most (7).
+        // forge-lint: disable-next-line(block-timestamp)
+        if (owner == address(0) || expiry <= block.timestamp || legs == 0 || legs > 7) {
+            revert CardProgram.InvalidCard();
+        }
+        c.owner = owner;
+        c.expiry = expiry;
+        c.status = CardProgram.Status.Active;
+        c.legs = legs;
+        c.limits = limits;
+        c.ceiling = limits;
+        emit CardIssued(card, owner, expiry, limits, legs);
+    }
+
+    /// @notice Copies an active or frozen card to an unissued one with a new expiry, and closes the old card.
+    function replaceCard(
+        CardProgram.Card storage old,
+        CardProgram.Card storage c,
+        bytes32 oldCard,
+        bytes32 newCard,
+        uint40 expiry
+    ) external {
+        if (old.status != CardProgram.Status.Active && old.status != CardProgram.Status.Frozen) {
+            revert CardProgram.CardNotActive();
+        }
+        if (c.status != CardProgram.Status.None) revert CardProgram.CardExists();
+        // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (expiry <= block.timestamp) revert CardProgram.InvalidCard();
+        c.owner = old.owner;
+        c.status = old.status;
+        c.legs = old.legs;
+        c.limits = old.limits;
+        c.ceiling = old.ceiling;
+        c.window = old.window;
+        c.expiry = expiry;
+        old.status = CardProgram.Status.Closed;
+        emit CardReplaced(oldCard, newCard, expiry);
+        emit CardStatusSet(oldCard, CardProgram.Status.Closed);
+    }
+
+    /// @notice Reports activity on owner's account to its lifecycle; with admit, declines unless the account takes
+    ///         new holds (dormant accounts decline as inactive, closed accounts and estates as closed).
+    function noteActivity(address lifecycle, address owner, bool admit) external {
+        AccountLifecycle.Status account = AccountLifecycle(lifecycle).noteActivity(owner);
+        if (!admit) return;
+        if (account == AccountLifecycle.Status.Dormant) revert CardProgram.AccountInactive();
+        if (account == AccountLifecycle.Status.Closed || account == AccountLifecycle.Status.Estate) {
+            revert CardProgram.CardsClosed();
+        }
+    }
+
+    /// @notice Raises (or sets) a card's limits up to its ceiling. Amounts are in SETTLEMENT_TOKEN units.
+    function raiseLimits(CardProgram.Card storage c, bytes32 card, CardProgram.Limits memory limits) external {
+        CardProgram.Limits memory ceiling = c.ceiling;
+        if (
+            limits.perPurchase > ceiling.perPurchase || limits.daily > ceiling.daily || limits.monthly > ceiling.monthly
+        ) revert CardProgram.LimitAboveCeiling();
+        c.limits = limits;
+        emit LimitsSet(card, limits, ceiling);
+    }
+
+    /// @notice Lowers a card's limits, bringing its ceiling down with them.
+    function lowerLimits(CardProgram.Card storage c, bytes32 card, CardProgram.Limits memory limits) external {
+        CardProgram.Limits memory current = c.limits;
+        if (
+            limits.perPurchase > current.perPurchase || limits.daily > current.daily || limits.monthly > current.monthly
+        ) revert CardProgram.LimitAboveCeiling();
+        c.limits = limits;
+        CardProgram.Limits memory ceiling = c.ceiling;
+        ceiling.perPurchase = _min80(ceiling.perPurchase, limits.perPurchase);
+        ceiling.daily = _min80(ceiling.daily, limits.daily);
+        ceiling.monthly = _min80(ceiling.monthly, limits.monthly);
+        c.ceiling = ceiling;
+        emit LimitsSet(card, limits, ceiling);
+    }
+
+    /// @notice Sets how far the issuer may raise a card's limits; limits above it come down to it.
+    function allowLimits(CardProgram.Card storage c, bytes32 card, CardProgram.Limits memory ceiling) external {
+        c.ceiling = ceiling;
+        CardProgram.Limits memory limits = c.limits;
+        limits.perPurchase = _min80(limits.perPurchase, ceiling.perPurchase);
+        limits.daily = _min80(limits.daily, ceiling.daily);
+        limits.monthly = _min80(limits.monthly, ceiling.monthly);
+        c.limits = limits;
+        emit LimitsSet(card, limits, ceiling);
+    }
+
+    /// @notice Carries an owner's counted usage, its cards' windows and its merchant mandates' spend from another
+    ///         instance of the program into this one's storage. Counts only rise; every card must be the owner's.
+    function carryUsage(
+        mapping(bytes32 => CardProgram.Card) storage cards,
+        mapping(address => CardLimits.Mandate) storage ownerMandates,
+        CardLimits.Usage storage u,
+        address owner,
+        CardLimits.Usage calldata usage,
+        bytes32[] calldata cardIds,
+        CardLimits.Window[] calldata windows,
+        address[] calldata merchants,
+        CardLimits.Mandate[] calldata spent
+    ) external {
+        if (cardIds.length != windows.length || merchants.length != spent.length) {
+            revert CardProgram.InvalidAmount();
+        }
+        CardLimits.carryUsage(u, usage);
+        // CardLimits is a linked library over the program's own storage; the issuer names a handful of entries.
+        // forge-lint: disable-start(calls-loop)
+        for (uint256 i; i < cardIds.length; ++i) {
+            CardProgram.Card storage c = cards[cardIds[i]];
+            if (c.owner != owner) revert CardProgram.InvalidCard();
+            CardLimits.carryWindow(c.window, windows[i]);
+        }
+        for (uint256 i; i < merchants.length; ++i) {
+            CardLimits.carryMandate(ownerMandates[merchants[i]], spent[i]);
+        }
+        // forge-lint: disable-end(calls-loop)
+    }
+
+    function _min80(uint80 a, uint80 b) private pure returns (uint80) {
+        return a < b ? a : b;
     }
 
     function _toTokenUp(uint256 units, uint256 rate) private pure returns (uint256) {
