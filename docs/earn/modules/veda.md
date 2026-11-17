@@ -139,14 +139,20 @@ and cancellation sequence is in [flows](../architecture/flows.md#async-redemptio
    asset), `discountBps`, `secondsToDeadline`, and a nonzero absolute payout floor
    `minQueuedAssets`. The engine verifies its BoringVault shares decreased by exactly the request,
    reads the request back with `getOnChainWithdraw(requestId)`, checks its ID and engine-owned
-   fields, requires the fixed `amountOfAssets` to meet `minQueuedAssets`, and stores the share and
-   asset amounts. Any failure rolls back the whole request, including the EarnShare burn.
+   fields, and requires the fixed `amountOfAssets` to meet `minQueuedAssets` and fit in `uint88`
+   (`QueuedAssetsTooLarge` above about 3.1e26 base units). It stores one slot per request: the Queue,
+   the claim status, and `amountOfAssets`. Tempo charges 250,000 gas for a slot first written from
+   zero, and a claim is never cleared, so each request pays for one such slot. Any failure rolls back
+   the whole request, including the EarnShare burn.
 2. **Solve.** An authorized solver submits request IDs to `VedaForwardingSolver`; the stock solve,
    measured engine credit, and finalization to each stored receiver happen in one transaction. If a
    receiver cannot accept the payout, that request becomes claimable and stays earmarked until anyone
    calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds.
-3. **Cancel.** The engine calls the originating Queue's `cancelOnChainWithdrawUsingRequestId`.
-   Returned shares re-enter at the current price under the snapshotted fee configuration.
+3. **Cancel.** The engine calls the originating Queue's `cancelOnChainWithdrawUsingRequestId`,
+   checks that the returned request hashes to the request ID, and requires its BoringVault-share
+   balance to rise by exactly that request's `amountOfShares` (`InvalidTrackedRequest`,
+   `UnexpectedVenueSharesReturned`). Returned shares re-enter at the current price under the
+   snapshotted fee configuration.
 
 Each claim records its originating Queue, so a later rotation or Queue removal cannot strand its
 cancellation or settlement, and the engine rejects any reused request ID (`DuplicateRequest`),
@@ -228,6 +234,7 @@ const [request] = parseEventLogs({
 
 - `QueueUnavailable`: no Queue is active. Existing requests stay attached to their Queue.
 - `ZeroMinimumQueuedAssets`: the request omitted the payout floor.
+- `QueuedAssetsTooLarge`: the payout does not fit in `uint88`; split the request.
 - `QueuedAssetsBelowMinimum`: the Queue fixed a payout below the floor; refresh the quote and ask the
   user to authorize a new request.
 - `InvalidAsset`, malformed `engineData`, and Queue deadline or discount failures need corrected

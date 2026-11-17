@@ -269,6 +269,8 @@ contract MockQueue {
     uint256 public rateAfterRequest;
     uint256 public rateAfterCancel;
     uint16 public sharePullBps = 10_000;
+    uint16 public shareReturnBps = 10_000;
+    uint128 public cancelReportedShares;
     mapping(bytes32 => OnChainWithdraw) internal _built;
     mapping(bytes32 => bool) public isActive;
 
@@ -291,6 +293,16 @@ contract MockQueue {
 
     function setSharePullBps(uint16 bps) external {
         sharePullBps = bps;
+    }
+
+    /// @dev Returns only this fraction of a cancelled request's shares.
+    function setShareReturnBps(uint16 bps) external {
+        shareReturnBps = bps;
+    }
+
+    /// @dev When nonzero, a cancellation returns and reports this share amount instead of the request's.
+    function setCancelReportedShares(uint128 shares) external {
+        cancelReportedShares = shares;
     }
 
     function requestOnChainWithdraw(address assetOut, uint128 shares, uint16, uint24 secondsToDeadline)
@@ -321,7 +333,9 @@ contract MockQueue {
         require(isActive[requestId], "REQUEST");
         require(request.user == msg.sender, "USER");
         isActive[requestId] = false;
-        require(boringVault.transfer(request.user, request.amountOfShares), "RETURN");
+        if (cancelReportedShares != 0) request.amountOfShares = cancelReportedShares;
+        uint256 sharesToReturn = uint256(request.amountOfShares) * shareReturnBps / 10_000;
+        require(boringVault.transfer(request.user, sharesToReturn), "RETURN");
         if (rateAfterCancel != 0) accountant.setRate(rateAfterCancel);
     }
 

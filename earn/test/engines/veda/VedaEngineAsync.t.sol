@@ -2,11 +2,15 @@
 pragma solidity ^0.8.36;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { Vm } from "forge-std/Vm.sol";
 import { VedaEngine } from "../../../src/engines/veda/VedaEngine.sol";
 import { VedaRedeemRequest } from "../../../src/interfaces/external/veda/VedaTypes.sol";
 import { VedaEngineTestBase } from "../../helpers/VedaEngineTestBase.sol";
 
 contract VedaEngineAsyncTest is VedaEngineTestBase {
+    /// @dev Storage slot of VedaEngine's `_claims` mapping.
+    uint256 private constant CLAIMS_SLOT = 9;
+
     function testRequestRejectsQueuedPayoutBelowMinimumAtomically() public {
         vault.mint(address(engine), 40);
 
@@ -40,6 +44,87 @@ contract VedaEngineAsyncTest is VedaEngineTestBase {
         assertEq(vault.balanceOf(address(queue)), 0);
         assertEq(queue.nonce(), 1);
         assertEq(engine.unresolvedClaimCount(), 0);
+    }
+
+    function testRequestWritesOneNewClaimSlot() public {
+        _request(30); // the first request also creates the per-Queue and unresolved counters
+        vault.mint(address(engine), 40);
+
+        vm.startStateDiffRecording();
+        bytes32 id = core.requestRedeem(40, address(asset), 0, 3600);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        bytes32 claimSlot = keccak256(abi.encode(id, CLAIMS_SLOT));
+        (uint256 created, bytes32 createdSlot) = _countCreatedSlots(accesses, address(engine));
+        assertEq(created, 1);
+        assertEq(createdSlot, claimSlot);
+
+        // Queue in the low 160 bits, then status, then the fixed payout in the top 88 bits.
+        uint256 word = uint256(vm.load(address(engine), claimSlot));
+        assertEq(address(uint160(word)), address(queue));
+        assertEq(uint8(word >> 160), uint8(VedaEngine.ClaimStatus.Open));
+        assertEq(word >> 168, 40);
+        assertEq(vm.load(address(engine), bytes32(uint256(claimSlot) + 1)), bytes32(0));
+    }
+
+    function testRequestStoresPayoutAtUint88Bound() public {
+        uint128 shares = type(uint88).max;
+        bytes32 id = _request(shares);
+
+        uint256 word = uint256(vm.load(address(engine), keccak256(abi.encode(id, CLAIMS_SLOT))));
+        assertEq(word >> 168, type(uint88).max);
+        assertEq(address(uint160(word)), address(queue));
+
+        asset.mint(address(engine), shares);
+        assertEq(engine.forwardSolved(_ids(id), address(asset), shares), 1);
+        assertEq(core.finalizedAmount(id), shares);
+    }
+
+    function testRequestRejectsPayoutAboveUint88Atomically() public {
+        uint128 shares = uint128(type(uint88).max) + 1;
+        vault.mint(address(engine), shares);
+
+        vm.expectRevert(abi.encodeWithSelector(VedaEngine.QueuedAssetsTooLarge.selector, shares));
+        core.requestRedeem(shares, address(asset), 0, 3600);
+
+        _assertNoRequestSideEffects(shares);
+    }
+
+    function testCancelReturnsMeasuredQueuedSharesAndKeepsClaimSlot() public {
+        bytes32 id = _request(40);
+        bytes32 claimSlot = keccak256(abi.encode(id, CLAIMS_SLOT));
+
+        assertEq(core.cancelRedeem(id), 40);
+
+        assertEq(vault.balanceOf(address(engine)), 40);
+        assertEq(vault.balanceOf(address(queue)), 0);
+        assertEq(engine.unresolvedClaimCount(), 0);
+        // The cancelled claim keeps its Queue, so the ID stays rejected.
+        uint256 word = uint256(vm.load(address(engine), claimSlot));
+        assertEq(address(uint160(word)), address(queue));
+        assertEq(uint8(word >> 160), uint8(VedaEngine.ClaimStatus.Cancelled));
+        assertEq(engine.claimQueue(id), address(queue));
+    }
+
+    function testCancelRevertsWhenQueueReturnsFewerShares() public {
+        bytes32 id = _request(40);
+        queue.setShareReturnBps(5_000);
+
+        vm.expectRevert(abi.encodeWithSelector(VedaEngine.UnexpectedVenueSharesReturned.selector, 40, 20));
+        core.cancelRedeem(id);
+
+        _assertClaimStillOpen(id, 40);
+    }
+
+    function testCancelRejectsRecordThatDoesNotMatchRequestId() public {
+        bytes32 id = _request(40);
+        vault.mint(address(queue), 10);
+        queue.setCancelReportedShares(50); // returns and reports 50 shares for a 40-share request
+
+        vm.expectRevert(abi.encodeWithSelector(VedaEngine.InvalidTrackedRequest.selector, id));
+        core.cancelRedeem(id);
+
+        _assertClaimStillOpen(id, 50);
     }
 
     function testForwardSolvedCreditIsBoundedByRealBalance() public {
@@ -220,6 +305,32 @@ contract VedaEngineAsyncTest is VedaEngineTestBase {
     function testSweepDustCannotTouchBackingShares() public {
         vm.expectRevert(VedaEngine.CannotSweepEngineBacking.selector);
         engine.sweepDust(address(vault), address(this), 1);
+    }
+
+    function _assertClaimStillOpen(bytes32 id, uint256 queueShares) private view {
+        assertEq(vault.balanceOf(address(engine)), 0);
+        assertEq(vault.balanceOf(address(queue)), queueShares);
+        assertEq(engine.openClaimsByQueue(address(queue)), 1);
+        assertEq(engine.unresolvedClaimCount(), 1);
+        (VedaEngine.ClaimStatus status,) = engine.getClaim(id);
+        assertEq(uint256(status), uint256(VedaEngine.ClaimStatus.Open));
+    }
+
+    function _countCreatedSlots(Vm.AccountAccess[] memory accesses, address account)
+        private
+        pure
+        returns (uint256 created, bytes32 lastSlot)
+    {
+        for (uint256 i; i < accesses.length; ++i) {
+            Vm.StorageAccess[] memory storageAccesses = accesses[i].storageAccesses;
+            for (uint256 j; j < storageAccesses.length; ++j) {
+                Vm.StorageAccess memory s = storageAccesses[j];
+                if (s.account != account || !s.isWrite || s.reverted) continue;
+                if (s.previousValue != bytes32(0) || s.newValue == bytes32(0)) continue;
+                created++;
+                lastSlot = s.slot;
+            }
+        }
     }
 
     function _assertNoRequestSideEffects(uint256 expectedEngineShares) private view {
