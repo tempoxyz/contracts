@@ -460,6 +460,23 @@ library CardConvert {
         if (out > tokens) SafeTransferLib.safeTransfer(token, owner, out - tokens);
     }
 
+    /// @notice Pulls `amount` of `asset` from the caller for a refund onto a leg held in it. For an asset neither the
+    ///         settlement token nor rated by the issuer, the caller pays in the settlement token at the reference rate,
+    ///         rounded up so the leg gets the whole amount. Returns the units of `asset` now held for the refund.
+    function pullRefund(address asset, uint256 amount) external returns (uint256) {
+        CardProgram program = CardProgram(address(this));
+        address settlement = program.settlementToken();
+        address c = program.conversion();
+        if (asset == settlement || program.rateOf(asset) != 0 || c == address(0)) {
+            SafeTransferLib.safeTransferFrom(asset, msg.sender, address(this), amount);
+            return amount;
+        }
+        uint256 paying = amount.mulDivUp(Conversion(c).mid(asset, settlement), RATE_ONE);
+        SafeTransferLib.safeTransferFrom(settlement, msg.sender, address(this), paying);
+        SafeTransferLib.safeApprove(settlement, c, paying);
+        return Conversion(c).convertAtMid(settlement, asset, paying, address(this));
+    }
+
     /// @notice Converts `amount` of `token` from `from` into the settlement token at the reference rate, paid to `to`.
     function convertToSettlement(address from, address token, uint256 amount, address to)
         external

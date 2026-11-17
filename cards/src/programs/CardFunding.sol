@@ -805,8 +805,8 @@ library CardFunding {
         if (s.kind == SAVINGS) {
             SavingsFacility facility = SavingsFacility(s.source);
             address asset = facility.ASSET();
-            uint256 paid = _toTokenUp(take, leg.rate);
-            SafeTransferLib.safeTransferFrom(asset, msg.sender, address(this), paid);
+            // The issuer pays a vault in another token in today's settlement token, converted at the reference rate.
+            uint256 paid = CardConvert.pullRefund(asset, _toTokenUp(take, leg.rate));
             SafeTransferLib.safeApprove(asset, address(facility), paid);
             tokens = facility.refund(owner, leg.id, paid);
         } else if (CardConvert.swapper(leg.token, s.kind) != address(0)) {

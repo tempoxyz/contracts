@@ -574,6 +574,29 @@ contract ConversionTest is ProgramsEnv {
         cards.refund(P1, 0.01e6);
     }
 
+    function test_refund_earlierTokensSavings_paidInTodaysTokenAtTheReferenceRate() public {
+        // Booked in dollars on $20 of cash and $25 of savings, then the issuer settles in euros.
+        usd.mint(alice, 20e6);
+        usd.mint(alice, 100e6);
+        _depositEarn(alice, 100e6);
+        _authorize(P1, 45e6);
+        _capture(P1, 45e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        _localIssuer();
+        eur.mint(issuer, 100e6);
+        vm.prank(issuer);
+        eur.approve(address(cards), type(uint256).max);
+        vm.prank(issuer);
+        cards.refund(P1, 25e6);
+        // The savings go back into Earn first, the issuer paying euros at the reference rate, rounded up.
+        assertEq(eur.balanceOf(issuer), 100e6 - _up(25e6, 1.1e18), "the issuer pays EUR 22.727273");
+        assertEq(usd.balanceOf(issuer), 0, "and no dollars");
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 100e6, 2, "savings restored");
+        assertEq(usd.balanceOf(alice), 0, "the cash stays spent");
+    }
+
     function _tokenFirst(address owner, uint64 maxCostBps) internal {
         CardFunding.Source[] memory order = new CardFunding.Source[](2);
         order[0] = CardFunding.Source({ kind: TOKEN, source: address(eur), lineId: maxCostBps });
