@@ -114,12 +114,12 @@ contract IssuerDebtTest is ProgramsEnv {
         vm.prank(settlement);
         cards.payOut(bob, 20e6, bytes32("credit-1"));
         vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(7)));
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(8)));
         cards.setSettlementToken(address(eur));
         // Within a cap too small for the carried debt, it is refused as well.
         _allowDebt(eur, 18e6);
         vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(7)));
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(8)));
         cards.setSettlementToken(address(eur));
     }
 

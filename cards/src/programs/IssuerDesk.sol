@@ -162,7 +162,13 @@ contract IssuerDesk is ISettlementTokenGuard {
     /// @notice A lost dispute took `amount` (settlement units) back from one funding source, in the funding order's
     ///         terms: kind 1 cash, 2 a savings facility, 4 a credit line re-drawn.
     event DisputeRecovered(
-        bytes32 indexed purchaseRef, address indexed account, uint8 kind, address source, uint64 lineId, uint256 amount
+        bytes32 indexed purchaseRef,
+        address indexed account,
+        uint8 kind,
+        address source,
+        uint64 lineId,
+        uint256 amount,
+        uint256 units
     );
     /// @notice Where one provisional credit went, when part of it repaid a credit line or it was paid in another token
     ///         than the purchase's: each line, then the cash. amount is in the purchase's units, units in the source's.
@@ -625,7 +631,7 @@ contract IssuerDesk is ISettlementTokenGuard {
             delete lineShares[purchaseRef][i];
             uint128 drawn = CreditLine(order[i].source).redraw(order[i].lineId, want, SETTLEMENT);
             if (drawn == 0) continue;
-            emit DisputeRecovered(purchaseRef, owner, CREDIT, order[i].source, order[i].lineId, drawn);
+            emit DisputeRecovered(purchaseRef, owner, CREDIT, order[i].source, order[i].lineId, drawn, drawn);
             reinstated += drawn;
         }
     }
@@ -663,10 +669,16 @@ contract IssuerDesk is ISettlementTokenGuard {
         // comes back in it: a purchase booked in an earlier token at the reference rate.
         address token = PROGRAM.settlementToken();
         address booked = PROGRAM.purchaseToken(purchaseRef);
-        if (booked != token) amount = amount.mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE);
+        uint256 original = amount;
+        uint256 rate = booked == token ? RATE_ONE : Conversion(PROGRAM.conversion()).mid(booked, token);
+        if (booked != token) amount = amount.mulDivUp(rate, RATE_ONE);
         uint256 free = CORE.available(owner, token);
         uint256 cash = free < amount ? free : amount;
-        if (cash != 0) emit DisputeRecovered(purchaseRef, owner, token == TOKEN ? 1 : TOKEN_SOURCE, token, 0, cash);
+        if (cash != 0) {
+            // The event keeps the purchase's units beside the units of today's token that left.
+            uint256 part = cash == amount ? original : cash.mulDiv(RATE_ONE, rate);
+            emit DisputeRecovered(purchaseRef, owner, token == TOKEN ? 1 : TOKEN_SOURCE, token, 0, part, cash);
+        }
         debt = amount - cash;
         // Savings facilities invest the desk's own token.
         if (debt != 0 && token == TOKEN) {
@@ -718,7 +730,7 @@ contract IssuerDesk is ISettlementTokenGuard {
             SafeTransferLib.safeTransfer(share, SETTLEMENT, shares);
         }
         taken = value < need ? value : need;
-        emit DisputeRecovered(purchaseRef, owner, 2, address(facility), 0, taken);
+        emit DisputeRecovered(purchaseRef, owner, 2, address(facility), 0, taken, taken);
     }
 
     // Pays every terms line its share of amount, then each reward out of its funder's share, from the settlement

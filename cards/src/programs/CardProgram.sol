@@ -283,7 +283,8 @@ contract CardProgram {
     error InvalidCard();
     error InvalidCursor();
     /// @notice The settlement token still sizes something: 1 open holds, 2 unsettled captures, 3 debt owed to the
-    ///         issuer, 4 open disputes, 5 posted collateral, 6 a held or liened balance, 7 open credit lines.
+    ///         issuer, 4 open disputes, 5 posted collateral, 6 a held or liened balance, 7 open credit lines, 8 debt the
+    ///         settlement account owes the program that it cannot owe in the new token.
     error SettlementTokenInUse(uint8 reason);
     error LimitAboveCeiling();
     error LimitExceeded(uint8 which);

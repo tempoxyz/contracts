@@ -20,6 +20,9 @@ contract CreditLineConversionTest is ProgramsEnv {
     /// @notice The program's conversion venue, read by the line.
     address public conversion;
 
+    /// @notice The program's settlement token, read by the line's token guard.
+    address public settlementToken;
+
     ITIP20Token internal eur;
     Conversion internal conv;
     uint64 internal due;
@@ -178,6 +181,29 @@ contract CreditLineConversionTest is ProgramsEnv {
         vm.prank(lender);
         vm.expectRevert(CreditLine.InvalidLine.selector);
         credit.openLine(alice, address(eur), address(this), 1, due, 0, IEarnVault(address(earnVault)), 5000);
+    }
+
+    function test_settlementTokenInUse_whileALineInTheTokenIsOpen() public {
+        settlementToken = address(eur);
+        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0);
+        assertEq(credit.settlementTokenInUse(address(this)), 7);
+        // A line in another token, or drawn by another program, does not hold this one.
+        assertEq(credit.settlementTokenInUse(address(cards)), 0);
+        settlementToken = address(usd);
+        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        settlementToken = address(eur);
+        // Closed to a zero limit with a balance still owed, it stays open until repaid.
+        _owe(lineId, 40e6);
+        vm.prank(lender);
+        credit.setLimit(lineId, 0);
+        assertEq(credit.settlementTokenInUse(address(this)), 7);
+        eur.mint(alice, 40e6);
+        vm.prank(alice);
+        eur.approve(address(credit), 40e6);
+        vm.prank(alice);
+        credit.repay(lineId, 40e6);
+        assertEq(credit.settlementTokenInUse(address(this)), 0);
     }
 
     function _line(uint128 limit, IEarnVault vault, uint16 ltvBps) internal returns (uint64 lineId) {

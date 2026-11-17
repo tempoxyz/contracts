@@ -34,7 +34,7 @@ library CardConvert {
     /// @dev CardProgram's SettlementTokenInUse reason for a held or liened settlement balance.
     uint8 internal constant IN_USE_HELD = 6;
     /// @dev CardProgram's SettlementTokenInUse reason when the settlement account cannot owe its debt in the new token.
-    uint8 internal constant IN_USE_ISSUER_DEBT = 7;
+    uint8 internal constant IN_USE_ISSUER_DEBT = 8;
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     bytes32 private constant SLOT = keccak256("tempo.cards.CardConvert.v1");
     /// @dev Transient: the earlier settlement token a refund in progress is booked in, which rates then read in.
@@ -298,13 +298,14 @@ library CardConvert {
     ///         settlement token, or a token guard still sizes money in it. The program checks its own purchases, debt
     ///         and collateral first.
     function checkUnused(address[] storage guards, address account, address current) external view {
-        if (CORE.reserved(account, current) != 0 || CORE.liened(account, current) != 0) {
-            revert CardProgram.SettlementTokenInUse(IN_USE_HELD);
-        }
+        // What a guard names (an open dispute, an open credit line) explains a held balance, so it comes first.
         for (uint256 i; i < guards.length; ++i) {
             // Guards are the issuer's own contracts, a short list it sets.
             uint8 reason = ISettlementTokenGuard(guards[i]).settlementTokenInUse(address(this));
             if (reason != 0) revert CardProgram.SettlementTokenInUse(reason);
+        }
+        if (CORE.reserved(account, current) != 0 || CORE.liened(account, current) != 0) {
+            revert CardProgram.SettlementTokenInUse(IN_USE_HELD);
         }
     }
 

@@ -5,6 +5,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
+import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
 /// @dev The keys a card program lets act for it, such as its issuer desk.
 interface IProgramOperators {
@@ -14,6 +15,11 @@ interface IProgramOperators {
 /// @dev The conversion venue a card program trades through.
 interface IProgramConversion {
     function conversion() external view returns (address);
+}
+
+/// @dev The token a card program settles in.
+interface IProgramSettlementToken {
+    function settlementToken() external view returns (address);
 }
 
 /// @dev What a line uses of its program's conversion venue: quotes after cost, and swaps from the caller.
@@ -41,7 +47,7 @@ interface ILineVenue {
 ///      a statement falling due is collected through the borrower's autopay sources. Fees and collection beyond the
 ///      pledge and autopay are the issuer's and lender's services, not this contract's.
 /// @custom:reentrancy-guard _locked
-contract CreditLine {
+contract CreditLine is ISettlementTokenGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;
     /// @dev How long one commitment hold lasts; the core caps holds at 31 days.
@@ -966,6 +972,21 @@ contract CreditLine {
         (address owner,, uint128 shares, uint64 expiresAt,) = CORE.lienOf(address(this), l.pledgeId);
         if (owner != l.borrower || shares == 0 || expiresAt <= uint256(l.dueDate) + l.noticePeriod) return 0;
         return _inLine(l, l.collateralVault.previewRedeem(shares));
+    }
+
+    /// @notice A line `program` draws on is open in its settlement token while it has a limit, a balance owed or a live
+    ///         hold, so the program's token waits for it to close (reason 7, open credit lines).
+    // A read-only scan the program makes once, at a settlement token change.
+    // forge-lint: disable-next-item(calls-loop)
+    function settlementTokenInUse(address program) external view returns (uint8) {
+        address token = IProgramSettlementToken(program).settlementToken();
+        uint64 count = lineCount;
+        for (uint64 id = 1; id <= count; ++id) {
+            Line storage l = _lines[id];
+            if (l.program != program || l.closed || l.token != token) continue;
+            if (l.limit != 0 || l.owed != 0 || l.pending != 0) return 7;
+        }
+        return 0;
     }
 
     /// @notice A line's terms and state.
