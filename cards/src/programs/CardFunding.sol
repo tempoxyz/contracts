@@ -93,6 +93,8 @@ library CardFunding {
         uint128 held;
         address[] debtors;
         mapping(address owner => bool) isDebtor;
+        /// @dev Settlement units the issuer absorbed on a purchase past its owner's debt cap that no refund paid yet.
+        mapping(bytes32 ref => uint256) absorbed;
     }
 
     bytes32 private constant SLOT = keccak256("tempo.cards.CardFunding.v1");
@@ -292,6 +294,7 @@ library CardFunding {
                 (debt, charged) = _chargeDebt(p, ref, owner, CardConvert.debtToken(cashToken), rest);
                 sums[0] += charged;
                 absorbed = rest - debt;
+                if (absorbed != 0) L.absorbed[ref] += absorbed;
             }
         }
         _forwardAll(order, cashToken);
@@ -316,11 +319,12 @@ library CardFunding {
         address owner = p.owner;
         Source[] storage order = L.orders[owner][p.version];
         // The last part collects the purchase's charges.
-        Part[] memory parts = new Part[](order.length + 1);
+        // The last two parts collect the purchase's charges and what the issuer absorbed.
+        Part[] memory parts = new Part[](order.length + 2);
         uint256 rest = amount;
         uint256 rate = _rate(cashToken);
         // Nothing moves unless the purchase can refund all of it.
-        uint256 refundable = _refundable(order, owner, ref, cashToken, rate);
+        uint256 refundable = _refundable(order, owner, ref, cashToken, rate) + L.absorbed[ref];
         if (amount > refundable) revert CardProgram.RefundExceedsCapture(amount - refundable);
 
         // The owner's debt to this program first: a cash refund repays it as it lands.
@@ -340,12 +344,26 @@ library CardFunding {
         for (uint256 i = order.length; i > 0 && rest != 0; --i) {
             rest = _refundLeg(owner, ref, i - 1, _key(order, i - 1), order[i - 1], rest, parts);
         }
+        // What the issuer absorbed past the debt cap lands with the owner as settlement-token cash.
+        if (rest != 0 && L.absorbed[ref] >= rest) {
+            address settles = _settlement();
+            L.absorbed[ref] -= rest;
+            SafeTransferLib.safeTransferFrom(settles, msg.sender, owner, rest);
+            parts[order.length + 1] = Part({ kind: CASH, source: settles, lineId: 0, amount: rest, tokens: rest });
+            rest = 0;
+        }
         if (rest != 0) revert CardProgram.RefundExceedsCapture(rest);
         for (uint256 i; i < parts.length; ++i) {
             if (parts[i].tokens != 0) sums[_sumIndex(parts[i].kind)] += parts[i].tokens;
         }
         _forwardAll(order, cashToken);
         emit Funded(ref, STEP_REFUND, parts, 0, 0);
+    }
+
+    /// @notice Records settlement units the issuer absorbed on a purchase past its owner's debt cap, which a refund
+    ///         pays to the owner after everything the owner paid.
+    function noteAbsorbed(bytes32 ref, uint256 amount) external {
+        _layout().absorbed[ref] += amount;
     }
 
     /// @notice Releases every leg a purchase still holds (once expired, as anyone may) and returns the cash, share and
@@ -710,7 +728,7 @@ library CardFunding {
     ) private returns (uint256) {
         uint256 count;
         while (CORE.getHold(owner, _legId(ref, DEBT_TAG + count)).token != address(0)) ++count;
-        Part memory part = parts[parts.length - 1];
+        Part memory part = parts[parts.length - 2];
         for (uint256 k = count + 1; k > 0 && rest != 0; --k) {
             // The late charge (tag 8) refunds after every capture charge.
             Leg memory leg;

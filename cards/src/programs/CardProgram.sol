@@ -745,6 +745,7 @@ contract CardProgram {
             CORE, p, card_, grants[owner], usageOf[owner], token, _rate(token), _legId(purchaseRef, CHARGED), amount
         );
         _forward(token);
+        if (absorbed != 0) CardFunding.noteAbsorbed(purchaseRef, absorbed);
         // Debt the charge left counts in the program's exposure, like a capture's.
         (address creditor, uint128 owed) = CORE.debtOf(owner, token);
         if (creditor == address(this) && owed != 0) CardFunding.noteDebtor(owner);

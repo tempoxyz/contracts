@@ -539,6 +539,27 @@ contract CardProgramTest is ProgramsEnv {
         _assertCoreBalanced();
     }
 
+    function test_refund_pastDebtCap_repaysThenPaysWhatTheIssuerAbsorbed() public {
+        usd.mint(alice, 50e6);
+        vm.prank(alice);
+        core.setDebtCap(address(cards), address(usd), 30e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        usd.mint(issuer, 101e6);
+        vm.prank(issuer);
+        usd.approve(address(cards), 101e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.RefundExceedsCapture.selector, uint256(1e6)));
+        cards.refund(P1, 101e6);
+        // The refund repays the debt, restores the cash and lands what the issuer carried with the owner.
+        vm.prank(issuer);
+        cards.refund(P1, 100e6);
+        (, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(debt, 0);
+        assertEq(core.available(alice, address(usd)), 70e6);
+        _assertCoreBalanced();
+    }
+
     function test_charge_nothingToTake_absorbsAllAndPlacesNoCharge() public {
         vm.expectEmit(address(cards));
         emit CardProgram.PurchaseCharged(P1, CARD, merchant, 40e6, 0, 40e6, 1, 40e6);
