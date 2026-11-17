@@ -201,7 +201,8 @@ contract ConversionTest is ProgramsEnv {
         usd.mint(alice, 100e6);
         _authorize(P1, 40e6);
         uint256 held = _hold(alice, P1, CASH).held;
-        assertEq(held, _up(40e6, uint256(1e18) * 1e18 / ASK));
+        // The hold is what the venue charges for the value, which the capture then spends.
+        assertEq(held, conv.quoteOut(address(usd), address(eur), 40e6));
         _capture(P1, 40e6, true);
         assertEq(eur.balanceOf(settlement), 40e6);
         assertEq(usd.balanceOf(alice), 100e6 - conv.quoteOut(address(usd), address(eur), 40e6));
@@ -218,14 +219,13 @@ contract ConversionTest is ProgramsEnv {
         assertEq(eur.balanceOf(alice), 40e6);
     }
 
-    function test_localIssuer_partialReversalKeepsHalfRoundedUp() public {
+    function test_localIssuer_partialReversalHoldsTheRestAtTheLockedRate() public {
         _localIssuer();
         usd.mint(alice, 100e6);
         _authorize(P1, 40e6);
-        uint256 placed = _hold(alice, P1, CASH).held;
         vm.prank(issuer);
         cards.adjust(P1, 20e6);
-        assertEq(_hold(alice, P1, CASH).held, (placed + 1) / 2);
+        assertEq(_hold(alice, P1, CASH).held, _up(20e6, uint256(1e18) * 1e18 / ASK));
     }
 
     function test_localIssuer_refundPaysTheCardholderAtTheReferenceRate() public {

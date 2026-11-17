@@ -204,9 +204,10 @@ library CardConvert {
         address settlement = program.settlementToken();
         address c = program.conversion();
         if (token == settlement || program.rateOf(token) != 0 || c.code.length == 0) return tokens;
-        // A venue that can't quote the whole value leaves the leg at the rate's size.
+        // The leg holds what the venue charges for the value today, so a capture at an unchanged market spends exactly
+        // what it held; a venue that can't quote the whole value leaves the leg at the rate's size.
         try Conversion(c).quoteOut(token, settlement, value) returns (uint256 cost) {
-            if (cost > tokens) tokens = cost;
+            if (cost != 0) tokens = cost;
         } catch { }
     }
 
