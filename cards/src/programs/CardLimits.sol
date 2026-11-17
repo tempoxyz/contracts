@@ -130,6 +130,32 @@ library CardLimits {
         m.spent = uint96(spent);
     }
 
+    /// @notice Carries an owner's usage counted on another instance of the program into this one. Counts only rise:
+    ///         a later window replaces an earlier one, the same window keeps the larger count, and totals keep the
+    ///         larger. Carrying the same usage twice changes nothing.
+    function carryUsage(Usage storage u, Usage calldata from) external {
+        u.committed = _more64(u.committed, from.committed);
+        if (from.day > u.day) (u.day, u.daySpent) = (from.day, from.daySpent);
+        else if (from.day == u.day) u.daySpent = _more64(u.daySpent, from.daySpent);
+        if (from.month > u.month) (u.month, u.monthSpent) = (from.month, from.monthSpent);
+        else if (from.month == u.month) u.monthSpent = _more64(u.monthSpent, from.monthSpent);
+    }
+
+    /// @notice Carries a card's window counted elsewhere, as carryUsage does. The card's cap stays its own.
+    function carryWindow(Window storage w, Window calldata from) external {
+        w.committed = _more64(w.committed, from.committed);
+        if (from.day > w.day) (w.day, w.daySpent) = (from.day, from.daySpent);
+        else if (from.day == w.day && from.daySpent > w.daySpent) w.daySpent = from.daySpent;
+        if (from.month > w.month) (w.month, w.monthSpent) = (from.month, from.monthSpent);
+        else if (from.month == w.month && from.monthSpent > w.monthSpent) w.monthSpent = from.monthSpent;
+    }
+
+    /// @notice Carries a merchant mandate's monthly spend counted elsewhere. Its limit and revocation stay its own.
+    function carryMandate(Mandate storage m, Mandate calldata from) external {
+        if (from.month > m.month) (m.month, m.spent) = (from.month, from.spent);
+        else if (from.month == m.month && from.spent > m.spent) m.spent = from.spent;
+    }
+
     /// @notice Today's day number (days since 1970) and month number (year * 12 + month - 1) at `utcOffset`.
     function calendar(int32 utcOffset) public view returns (uint32 day, uint32 month) {
         // Block timestamps and offsets are far from the int256 bounds; day numbers fit 32 bits.
@@ -156,6 +182,10 @@ library CardLimits {
         return uint32(y * 12 + m - 1);
     }
     // forge-lint: disable-end(divide-before-multiply)
+
+    function _more64(uint64 a, uint64 b) private pure returns (uint64) {
+        return b > a ? b : a;
+    }
 
     function _less(uint256 a, uint256 b) private pure returns (uint256) {
         return b >= a ? 0 : a - b;

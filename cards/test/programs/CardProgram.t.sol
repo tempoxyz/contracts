@@ -205,6 +205,69 @@ contract CardProgramTest is ProgramsEnv {
         cards.authorize(next, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
+    function test_replaceCard_openPurchaseFollowsReplacement() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 50e6);
+        bytes32 next = bytes32("card-2");
+        vm.prank(issuer);
+        cards.replaceCard(CARD, next, uint40(block.timestamp + 700 days));
+        assertEq(cards.replacedBy(CARD), next);
+
+        // The increment counts against the replacement, which carried the old card's windows.
+        vm.prank(issuer);
+        cards.adjust(P1, 80e6);
+        assertEq(cards.purchaseOf(P1).card, next);
+        assertEq(cards.cardOf(next).window.daySpent, 80e6);
+        _capture(P1, 80e6, true);
+        assertEq(usd.balanceOf(settlement), 80e6);
+    }
+
+    function test_carryUsage_countsSpendFromAnotherInstance() public {
+        usd.mint(alice, 1000e6);
+        vm.prank(alice);
+        cards.setMandate(merchant, false, 150e6);
+        (uint32 day, uint32 month) = CardLimits.calendar(0);
+        bytes32[] memory ids = new bytes32[](1);
+        ids[0] = CARD;
+        CardLimits.Window[] memory windows = new CardLimits.Window[](1);
+        windows[0] = CardLimits.Window({ day: day, month: month, daySpent: 0, monthSpent: 0, cap: 0, committed: 0 });
+        address[] memory merchants = new address[](1);
+        merchants[0] = merchant;
+        CardLimits.Mandate[] memory spent = new CardLimits.Mandate[](1);
+        spent[0] = CardLimits.Mandate({ revoked: false, monthlyLimit: 0, month: month, spent: 100e6 });
+        CardLimits.Usage memory usage =
+            CardLimits.Usage({ committed: 100e6, day: day, month: month, daySpent: 100e6, monthSpent: 100e6 });
+
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.carryUsage(alice, usage, ids, windows, merchants, spent);
+        vm.startPrank(issuer);
+        cards.carryUsage(alice, usage, ids, windows, merchants, spent);
+        // Carrying the same usage again changes nothing.
+        cards.carryUsage(alice, usage, ids, windows, merchants, spent);
+        vm.stopPrank();
+
+        (bool revoked, uint96 limit,, uint96 counted) = cards.mandates(alice, merchant);
+        assertFalse(revoked);
+        assertEq(limit, 150e6);
+        assertEq(counted, 100e6);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.MerchantLimitExceeded.selector);
+        cards.authorize(CARD, P1, 60e6, merchant, uint64(block.timestamp + 1 days), 0);
+        _authorize(P1, 50e6);
+        (uint64 committed,,,,) = cards.usageOf(alice);
+        assertEq(committed, 150e6);
+    }
+
+    function test_carryUsage_refusesAnotherOwnersCard() public {
+        bytes32[] memory ids = new bytes32[](1);
+        ids[0] = CARD;
+        CardLimits.Window[] memory windows = new CardLimits.Window[](1);
+        CardLimits.Usage memory usage;
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.InvalidCard.selector);
+        cards.carryUsage(address(0xB0B), usage, ids, windows, new address[](0), new CardLimits.Mandate[](0));
+    }
+
     function test_limits_ownerLowersAndIssuerRaisesOnlyWithinCeiling() public {
         vm.prank(issuer);
         vm.expectRevert(CardProgram.LimitAboveCeiling.selector);

@@ -6,6 +6,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
 import { AccountKeys } from "./AccountKeys.sol";
+import { AccountLifecycle } from "./AccountLifecycle.sol";
 import { CardAdjust } from "./CardAdjust.sol";
 import { CardFunding } from "./CardFunding.sol";
 import { CardLimits } from "./CardLimits.sol";
@@ -139,6 +140,10 @@ contract CardProgram {
     address public identityRules;
 
     bool private transient _locked;
+    /// @notice The account lifecycle the program reads at authorization and reports activity to; zero for none.
+    address public lifecycle;
+    /// @notice The card that replaced a card. An open purchase follows its card's replacements.
+    mapping(bytes32 card => bytes32) public replacedBy;
 
     event CardIssued(bytes32 indexed card, address indexed owner, uint40 expiry, Limits limits, uint8 legs);
     event CardExpirySet(bytes32 indexed card, uint40 expiry);
@@ -149,6 +154,8 @@ contract CardProgram {
     event RateSet(address indexed token, uint256 rate);
     event SourceSet(address indexed source, bool approved);
     event CompanionsSet(address accountKeys, address identityRules);
+    event LifecycleSet(address lifecycle);
+    event UsageCarried(address indexed owner);
     event PurchaseAuthorized(
         bytes32 indexed purchaseRef,
         bytes32 indexed card,
@@ -209,7 +216,11 @@ contract CardProgram {
         uint128 net
     );
 
+    /// @notice The owner's account is dormant: it declines new holds until the owner reactivates it.
+    error AccountInactive();
     error CaptureExceedsHolds(uint256 excess);
+    /// @notice The owner's account is closed or an estate, which closes or freezes every card on it.
+    error CardsClosed();
     error CardExists();
     error CardExpired();
     error CardNotActive();
@@ -302,6 +313,7 @@ contract CardProgram {
         _cards[newCard] = old;
         c.expiry = expiry;
         old.status = Status.Closed;
+        replacedBy[oldCard] = newCard;
         emit CardReplaced(oldCard, newCard, expiry);
         emit CardStatusSet(oldCard, Status.Closed);
     }
@@ -332,6 +344,35 @@ contract CardProgram {
         emit CardCapSet(card, cap);
     }
 
+    /// @notice Carries what an owner's spend already counted on another instance of this program (the same issuer's
+    ///         program on another chain the owner moved from) into its usage, cards' windows and merchant mandates
+    ///         here, so the same limits keep counting it. Counts only rise; the cards must be the owner's.
+    function carryUsage(
+        address owner,
+        CardLimits.Usage calldata usage,
+        bytes32[] calldata cards,
+        CardLimits.Window[] calldata windows,
+        address[] calldata merchants,
+        CardLimits.Mandate[] calldata spent
+    ) external onlyIssuer {
+        if (cards.length != windows.length || merchants.length != spent.length) {
+            revert InvalidAmount();
+        }
+        CardLimits.carryUsage(usageOf[owner], usage);
+        // CardLimits is a linked library over this program's own storage; the issuer names a handful of entries.
+        // forge-lint: disable-start(calls-loop)
+        for (uint256 i; i < cards.length; ++i) {
+            Card storage c = _cards[cards[i]];
+            if (c.owner != owner) revert InvalidCard();
+            CardLimits.carryWindow(c.window, windows[i]);
+        }
+        for (uint256 i; i < merchants.length; ++i) {
+            CardLimits.carryMandate(mandates[owner][merchants[i]], spent[i]);
+        }
+        // forge-lint: disable-end(calls-loop)
+        emit UsageCarried(owner);
+    }
+
     /// @notice Moves `card`'s expiry, such as a short-lived virtual card's; past it the card authorizes nothing.
     ///         An unissued card needs no check: issueCard sets its own expiry.
     function setExpiry(bytes32 card, uint40 expiry) external onlyIssuer {
@@ -354,6 +395,14 @@ contract CardProgram {
         accountKeys = accountKeys_;
         identityRules = identityRules_;
         emit CompanionsSet(accountKeys_, identityRules_);
+    }
+
+    /// @notice Follows the account lifecycle at the given address; zero stops reading one.
+    // Zero is how the issuer stops following a lifecycle.
+    // forge-lint: disable-next-line(missing-zero-check)
+    function setLifecycle(address lifecycle_) external onlyIssuer {
+        lifecycle = lifecycle_;
+        emit LifecycleSet(lifecycle_);
     }
 
     /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it.
@@ -496,6 +545,7 @@ contract CardProgram {
         CardLimits.Grant storage g = grants[owner];
         // A stand-in approval is decided when it lands: a card frozen or closed meanwhile declines it.
         if (c.status != Status.Active) revert CardNotActive();
+        _admit(owner);
         if (!standIn) {
             // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
             // forge-lint: disable-next-line(block-timestamp)
@@ -534,7 +584,9 @@ contract CardProgram {
         Purchase storage p = _purchases[purchaseRef];
         address owner = p.owner;
         uint256 previous = p.amount;
-        CardAdjust.adjust(p, _cards[p.card], grants[owner], usageOf[owner], amount);
+        Card storage c = _follow(p);
+        if (amount > previous) _admit(owner);
+        CardAdjust.adjust(p, c, grants[owner], usageOf[owner], amount);
         uint256 cash = CardFunding.resize(p, purchaseRef, previous, amount);
         uint64 seq = ++ledger.seq;
         emit PurchaseAdjusted(purchaseRef, p.card, amount, cash, seq);
@@ -550,7 +602,7 @@ contract CardProgram {
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp >= p.expiresAt) revert PurchaseExpired();
         if (amount == 0 && !isFinal) revert InvalidAmount();
-        Card storage c = _cards[p.card];
+        Card storage c = _follow(p);
         (uint256[3] memory tokens,, uint256 absorbed) =
             CardFunding.capture(p, purchaseRef, amount, isFinal, c.legs, fundingOf[p.owner]);
 
@@ -600,16 +652,10 @@ contract CardProgram {
         }
         address owner = p.owner;
         address token = fundingOf[owner];
+        Card storage card_ = _follow(p);
+        _noteActivity(owner);
         (uint256 tokens, uint256 absorbed) = CardAdjust.charge(
-            CORE,
-            p,
-            _cards[p.card],
-            grants[owner],
-            usageOf[owner],
-            token,
-            _rate(token),
-            _legId(purchaseRef, CHARGED),
-            amount
+            CORE, p, card_, grants[owner], usageOf[owner], token, _rate(token), _legId(purchaseRef, CHARGED), amount
         );
         _forward(token);
 
@@ -639,7 +685,7 @@ contract CardProgram {
         if (p.owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
         uint256[3] memory tokens = CardFunding.refund(p, purchaseRef, amount, fundingOf[p.owner]);
-        _giveBackNow(_cards[p.card], p.owner, p.epoch, amount);
+        _giveBackNow(_follow(p), p.owner, p.epoch, amount);
 
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
@@ -655,8 +701,15 @@ contract CardProgram {
 
     // Views.
 
-    function cardOf(bytes32 card) external view returns (Card memory) {
-        return _cards[card];
+    /// @notice A card's record, with the status its account's lifecycle gives it: closed once the account closed,
+    ///         frozen while the account is an estate.
+    function cardOf(bytes32 card) external view returns (Card memory c) {
+        c = _cards[card];
+        address lc = lifecycle;
+        if (lc == address(0) || c.status == Status.None || c.status == Status.Closed) return c;
+        AccountLifecycle.Status account = AccountLifecycle(lc).statusOf(c.owner);
+        if (account == AccountLifecycle.Status.Closed) c.status = Status.Closed;
+        else if (account == AccountLifecycle.Status.Estate) c.status = Status.Frozen;
     }
 
     function purchaseOf(bytes32 purchaseRef) external view returns (Purchase memory) {
@@ -698,9 +751,37 @@ contract CardProgram {
         p.open = false;
         uint256 held = p.held;
         p.held = 0;
-        _giveBack(_cards[p.card], p.owner, p.epoch, p.day, p.month, held);
+        _giveBack(_follow(p), p.owner, p.epoch, p.day, p.month, held);
         uint64 seq = ++ledger.seq;
         emit PurchaseReleased(purchaseRef, p.card, released[0], released[1], released[2], expired, seq);
+    }
+
+    /// @dev Reports activity on the owner's account to the lifecycle and declines unless the account takes new holds.
+    function _admit(address owner) private {
+        AccountLifecycle.Status account = _noteActivity(owner);
+        if (account == AccountLifecycle.Status.Dormant) revert AccountInactive();
+        if (account == AccountLifecycle.Status.Closed || account == AccountLifecycle.Status.Estate) {
+            revert CardsClosed();
+        }
+    }
+
+    function _noteActivity(address owner) private returns (AccountLifecycle.Status) {
+        address lc = lifecycle;
+        if (lc == address(0)) return AccountLifecycle.Status.None;
+        return AccountLifecycle(lc).noteActivity(owner);
+    }
+
+    /// @dev The purchase's card after following its replacements, which the purchase moves to.
+    function _follow(Purchase storage p) private returns (Card storage) {
+        bytes32 card = p.card;
+        bytes32 next = replacedBy[card];
+        if (next == bytes32(0)) return _cards[card];
+        while (next != bytes32(0)) {
+            card = next;
+            next = replacedBy[card];
+        }
+        p.card = card;
+        return _cards[card];
     }
 
     /// @dev Counts `amount` toward the owner's terms and the card in today's windows, checking them when
