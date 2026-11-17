@@ -415,7 +415,9 @@ contract CardProgram {
         if (debt != 0) revert SettlementTokenInUse(IN_USE_DEBT);
         if (posted != 0) revert SettlementTokenInUse(IN_USE_COLLATERAL);
         address current = settlementToken();
-        if (CORE.reserved(SETTLEMENT_ACCOUNT, current) != 0) revert SettlementTokenInUse(IN_USE_HELD);
+        if (CORE.reserved(SETTLEMENT_ACCOUNT, current) != 0 || CORE.liened(SETTLEMENT_ACCOUNT, current) != 0) {
+            revert SettlementTokenInUse(IN_USE_HELD);
+        }
         address[] memory guards = tokenGuards;
         for (uint256 i; i < guards.length; ++i) {
             // Guards are the issuer's own contracts, a short list it sets.

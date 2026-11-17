@@ -302,6 +302,21 @@ contract ConversionTest is ProgramsEnv {
         cards.setSettlementToken(address(eur));
     }
 
+    function test_setSettlementToken_refusedWhileTheSettlementBalanceIsLiened() public {
+        _localIssuer();
+        eur.mint(settlement, 10e6);
+        address authority = makeAddr("authority");
+        core.grantLienRole(authority, true);
+        vm.prank(authority);
+        core.lien(settlement, address(eur), bytes32("freeze"), 5e6, 0);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(6)));
+        cards.setSettlementToken(address(usd));
+        vm.prank(authority);
+        core.releaseLien(bytes32("freeze"));
+        assertEq(core.liened(settlement, address(eur)), 0);
+    }
+
     function test_setSettlementToken_issuerOnly() public {
         vm.prank(alice);
         vm.expectRevert();
