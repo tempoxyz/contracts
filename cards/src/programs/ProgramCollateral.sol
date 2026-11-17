@@ -7,12 +7,16 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { CardProgram } from "./CardProgram.sol";
+import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 
 /// @title ProgramCollateral
 /// @notice Collateral a card program's settlement account pledges to its sponsor, in cash or in savings shares that
 ///         keep earning. Each deposit is a core pledge whose authority is this contract, so the sponsor releases or
 ///         seizes it only through here, and never below or beyond the program's live exposure.
+///         Collateral is worth settlement units of the token the program settles in now. Cash or shares whose asset
+///         is another token count at the program's rate for it or, without one, at what they sell for through the
+///         program's conversion venue, and are sold there when seized.
 /// @dev The settlement account pledges first (`IReservationCore.pledge` with `pledgeId` and this contract as authority), then
 ///      calls `post`. Value is read from the core's liens and the vault's price, never recorded.
 // Loops over a program's pledges are bounded by MAX_PLEDGES and call only the fixed core and the program's vault.
@@ -47,6 +51,7 @@ contract ProgramCollateral is ReentrancyGuardTransient {
     error TooManyPledges();
     error BelowExposure(uint256 remaining, uint256 exposure);
     error AboveExposure(uint256 value, uint256 exposure);
+    error NoConversion();
 
     /// @notice The id the settlement account pledges its next deposit for `program` under.
     function pledgeId(address program, uint256 n) public view returns (bytes32) {
@@ -62,6 +67,8 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         address token = address(vault) == address(0) ? CardProgram(program).SETTLEMENT_TOKEN() : vault.earnShare();
         if (pos.count == 0) {
             if (sponsor == address(0)) revert WrongSponsor();
+            // Shares in another asset need a rate or a venue to be valued at all.
+            if (address(vault) != address(0)) _toAssets(program, vault.asset(), 0);
             (pos.sponsor, pos.token, pos.vault) = (sponsor, token, vault);
         } else {
             if (pos.token != token || address(pos.vault) != address(vault)) revert WrongAsset();
@@ -93,14 +100,29 @@ contract ProgramCollateral is ReentrancyGuardTransient {
     }
 
     /// @notice Seizes `value` settlement units of `program`'s collateral to `to`, as its sponsor, up to the
-    ///         program's live exposure: the sponsor takes what the program owes, never more.
+    ///         program's live exposure: the sponsor takes what the program owes, never more. Collateral in the
+    ///         settlement token, or in a token the program rates, moves as it is; shares or cash in another asset are
+    ///         redeemed and sold through the program's conversion venue, so `to` receives settlement tokens.
     function seize(address program, uint256 value, address to) external nonReentrant {
         Position storage pos = _sponsored(program);
         uint256 exposure = _exposure(program);
         if (value > exposure) revert AboveExposure(value, exposure);
         uint256 units = _unitsDown(pos, program, value);
         uint256 seized = _take(pos, program, units, true);
-        SafeTransferLib.safeTransfer(pos.token, to, seized);
+        CardProgram p = CardProgram(program);
+        address settlement = p.settlementToken();
+        IEarnVault vault = pos.vault;
+        address asset = address(vault) == address(0) ? pos.token : vault.asset();
+        // Every entry point holds the lock for this whole call.
+        // forge-lint: disable-start(reentrancy-no-eth)
+        if (asset == settlement || p.rateOf(asset) != 0) {
+            SafeTransferLib.safeTransfer(pos.token, to, seized);
+        } else if (address(vault) == address(0)) {
+            ProgramVenue.sell(_venue(program), asset, settlement, seized, to);
+        } else {
+            ProgramVenue.redeemTo(_venue(program), vault, seized, settlement, to);
+        }
+        // forge-lint: disable-end(reentrancy-no-eth)
         emit CollateralSeized(program, to, value, seized);
     }
 
@@ -119,12 +141,16 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         Position storage pos = positionOf[program];
         uint256 units = unitsOf(program);
         if (units == 0) return 0;
-        if (address(pos.vault) == address(0)) return units;
-        uint256 assets = pos.vault.previewRedeem(units);
-        address asset = pos.vault.asset();
-        CardProgram p = CardProgram(program);
-        if (asset == p.SETTLEMENT_TOKEN()) return assets;
-        return assets.mulDiv(p.rateOf(asset), RATE_ONE);
+        IEarnVault vault = pos.vault;
+        if (address(vault) == address(0)) return _inSettlement(program, pos.token, units);
+        return _inSettlement(program, vault.asset(), vault.previewRedeem(units));
+    }
+
+    /// @notice The units `program`'s settlement account pledges for collateral worth at least `value` settlement units
+    ///         now: in `vault`'s shares, or in the settlement token when `vault` is zero. Rounds up.
+    function unitsFor(address program, IEarnVault vault, uint256 value) external view returns (uint256) {
+        if (address(vault) == address(0) || value == 0) return value;
+        return vault.previewWithdraw(_toAssets(program, vault.asset(), value));
     }
 
     function _sponsored(address program) private view returns (Position storage pos) {
@@ -136,14 +162,47 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         (,,,, total) = CardProgram(program).exposure();
     }
 
-    function _unitsDown(Position storage pos, address program, uint256 value) private view returns (uint256) {
-        if (address(pos.vault) == address(0)) return value;
-        address asset = pos.vault.asset();
+    /// @dev What `amount` of `asset` is worth in `program`'s settlement units now: at par in the settlement token, at
+    ///      the program's rate for `asset`, else what it sells for through the program's venue. Rounds down.
+    function _inSettlement(address program, address asset, uint256 amount) private view returns (uint256) {
         CardProgram p = CardProgram(program);
-        uint256 assets = asset == p.SETTLEMENT_TOKEN() ? value : value.mulDiv(RATE_ONE, p.rateOf(asset));
-        uint256 shares = pos.vault.previewWithdraw(assets);
+        address settlement = p.settlementToken();
+        if (asset == settlement || amount == 0) return amount;
+        uint256 rate = p.rateOf(asset);
+        if (rate != 0) return amount.mulDiv(rate, RATE_ONE);
+        return ProgramVenue.quoteIn(_venue(program), asset, settlement, amount);
+    }
+
+    /// @dev The `asset` worth `value` of `program`'s settlement units now, the inverse of `_inSettlement`: through
+    ///      the venue, what buys exactly `value`. Rounds up. Reverts when `program` cannot value `asset`.
+    function _toAssets(address program, address asset, uint256 value) private view returns (uint256) {
+        CardProgram p = CardProgram(program);
+        address settlement = p.settlementToken();
+        if (asset == settlement) return value;
+        uint256 rate = p.rateOf(asset);
+        if (rate != 0) return value.mulDivUp(RATE_ONE, rate);
+        return ProgramVenue.quoteOut(_venue(program), asset, settlement, value);
+    }
+
+    function _venue(address program) private view returns (ILineVenue venue) {
+        venue = ProgramVenue.venueOf(program);
+        if (address(venue) == address(0)) revert NoConversion();
+    }
+
+    function _unitsDown(Position storage pos, address program, uint256 value) private view returns (uint256) {
+        IEarnVault vault = pos.vault;
+        if (address(vault) == address(0)) {
+            uint256 cash = _toAssets(program, pos.token, value);
+            // Step down when the venue's rounding would release more than the value asked.
+            if (cash != 0 && cash != value && _inSettlement(program, pos.token, cash) > value) --cash;
+            return cash;
+        }
+        uint256 assets = _toAssets(program, vault.asset(), value);
+        // Converted assets round up; step down when they would fetch more than the value asked.
+        if (assets != 0 && assets != value && _inSettlement(program, vault.asset(), assets) > value) --assets;
+        uint256 shares = vault.previewWithdraw(assets);
         // previewWithdraw rounds up; step down when that share would redeem for more than the value asked.
-        if (shares != 0 && pos.vault.previewRedeem(shares) > assets) --shares;
+        if (shares != 0 && vault.previewRedeem(shares) > assets) --shares;
         return shares;
     }
 

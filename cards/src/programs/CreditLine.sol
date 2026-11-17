@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
+import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
@@ -12,26 +13,9 @@ interface IProgramOperators {
     function operators(address key) external view returns (bool);
 }
 
-/// @dev The conversion venue a card program trades through.
-interface IProgramConversion {
-    function conversion() external view returns (address);
-}
-
 /// @dev The token a card program settles in.
 interface IProgramSettlementToken {
     function settlementToken() external view returns (address);
-}
-
-/// @dev What a line uses of its program's conversion venue: quotes after cost, and swaps from the caller.
-interface ILineVenue {
-    function quoteIn(address tokenIn, address tokenOut, uint256 amountIn) external view returns (uint256);
-    function quoteOut(address tokenIn, address tokenOut, uint256 amountOut) external view returns (uint256);
-    function swapExactIn(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, address recipient)
-        external
-        returns (uint256 out);
-    function swapExactOut(address tokenIn, address tokenOut, uint256 amountOut, uint256 maxIn, address recipient)
-        external
-        returns (uint256 spent);
 }
 
 /// @title CreditLine
@@ -218,7 +202,7 @@ contract CreditLine is ISettlementTokenGuard {
             if (ltvBps != 0) revert InvalidLine();
         } else if (ltvBps == 0 || ltvBps > BPS) {
             revert InvalidLine();
-        } else if (collateralVault.asset() != token && _venueOf(program) == address(0)) {
+        } else if (collateralVault.asset() != token && address(ProgramVenue.venueOf(program)) == address(0)) {
             // Collateral in another token is valued and sold through the program's conversion venue.
             revert InvalidLine();
         }
@@ -461,7 +445,7 @@ contract CreditLine is ISettlementTokenGuard {
             spent = venue.quoteOut(payToken, l.token, amount);
             if (spent > maxIn) revert ConversionExceedsMax(spent, maxIn);
             SafeTransferLib.safeTransferFrom(payToken, msg.sender, address(this), spent);
-            _buy(venue, payToken, l.token, amount, spent, l.lender, msg.sender);
+            ProgramVenue.buy(venue, payToken, l.token, amount, spent, l.lender, msg.sender);
         }
         _afterRepay(lineId, l, amount);
     }
@@ -528,7 +512,7 @@ contract CreditLine is ISettlementTokenGuard {
         for (uint256 i; i < sources.length; ++i) {
             address source = sources[i];
             if (source == l.token || _assetOf(source) == l.token) continue;
-            if (_venueOf(l.program) == address(0)) revert InvalidAutopay();
+            if (address(ProgramVenue.venueOf(l.program)) == address(0)) revert InvalidAutopay();
         }
         _autopay[lineId] = sources;
         emit AutopaySet(lineId, sources);
@@ -649,63 +633,30 @@ contract CreditLine is ISettlementTokenGuard {
     // Runs inside `collect`'s lock, once per autopay source, taking only from the borrower that approved it.
     // forge-lint: disable-next-item(calls-loop,arbitrary-send-erc20)
     function _convertFor(Line storage l, address source, address borrower, uint256 want) private returns (uint256 got) {
-        address v = _venueOf(l.program);
-        if (v == address(0)) return 0;
-        ILineVenue venue = ILineVenue(v);
+        ILineVenue venue = ProgramVenue.venueOf(l.program);
+        if (address(venue) == address(0)) return 0;
         uint256 free = _min(CORE.available(borrower, source), _allowance(source, borrower));
         if (free == 0) return 0;
         try venue.quoteOut(source, l.token, want) returns (uint256 need) {
             if (need <= free) {
                 SafeTransferLib.safeTransferFrom(source, borrower, address(this), need);
-                _buy(venue, source, l.token, want, need, l.lender, borrower);
+                ProgramVenue.buy(venue, source, l.token, want, need, l.lender, borrower);
                 return want;
             }
         } catch {
             return 0;
         }
         SafeTransferLib.safeTransferFrom(source, borrower, address(this), free);
-        got = _sell(venue, source, l.token, free, l.lender);
-    }
-
-    /// @dev Buys exactly `amount` of `tokenOut` for `recipient` with up to `budget` of `tokenIn` this contract holds,
-    ///      returning what is left to `payer`.
-    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
-    function _buy(
-        ILineVenue venue,
-        address tokenIn,
-        address tokenOut,
-        uint256 amount,
-        uint256 budget,
-        address recipient,
-        address payer
-    ) private {
-        SafeTransferLib.safeApprove(tokenIn, address(venue), budget);
-        uint256 spent = venue.swapExactOut(tokenIn, tokenOut, amount, budget, recipient);
-        SafeTransferLib.safeApprove(tokenIn, address(venue), 0);
-        if (budget > spent) SafeTransferLib.safeTransfer(tokenIn, payer, budget - spent);
-    }
-
-    /// @dev Sells `amount` of `tokenIn` this contract holds for `tokenOut`, paid to `recipient`, and returns what it got.
-    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
-    function _sell(ILineVenue venue, address tokenIn, address tokenOut, uint256 amount, address recipient)
-        private
-        returns (uint256 out)
-    {
-        SafeTransferLib.safeApprove(tokenIn, address(venue), amount);
-        out = venue.swapExactIn(tokenIn, tokenOut, amount, 0, recipient);
-        SafeTransferLib.safeApprove(tokenIn, address(venue), 0);
+        got = ProgramVenue.sell(venue, source, l.token, free, l.lender);
     }
 
     /// @dev Redeems `shares` of the line's collateral and pays the lender in the line's token, selling through the
     ///      venue when the vault's asset differs, and returns what the lender received.
     // forge-lint: disable-next-item(reentrancy-no-eth)
-    function _redeemToLender(Line storage l, uint256 shares) private returns (uint256 assets) {
+    function _redeemToLender(Line storage l, uint256 shares) private returns (uint256) {
         IEarnVault vault = l.collateralVault;
-        SafeTransferLib.safeApprove(vault.earnShare(), address(vault), shares);
-        address asset = vault.asset();
-        if (asset == l.token) return vault.redeem(shares, l.lender, vault.previewRedeem(shares));
-        uint256 redeemed = vault.redeem(shares, address(this), vault.previewRedeem(shares));
-        assets = _sell(_venue(l), asset, l.token, redeemed, l.lender);
+        ILineVenue venue = vault.asset() == l.token ? ILineVenue(address(0)) : _venue(l);
+        return ProgramVenue.redeemTo(venue, vault, shares, l.token, l.lender);
     }
 
     /// @dev What the collateral's `assets` sell for in the line's token now.
@@ -714,28 +665,19 @@ contract CreditLine is ISettlementTokenGuard {
     function _inLine(Line storage l, uint256 assets) private view returns (uint256) {
         address asset = l.collateralVault.asset();
         if (asset == l.token || assets == 0) return assets;
-        return _venue(l).quoteIn(asset, l.token, assets);
+        return ProgramVenue.quoteIn(_venue(l), asset, l.token, assets);
     }
 
     /// @dev The collateral assets that sell for `amount` of the line's token now.
     function _assetsFor(Line storage l, uint256 amount) private view returns (uint256) {
         address asset = l.collateralVault.asset();
         if (asset == l.token || amount == 0) return amount;
-        return _venue(l).quoteOut(asset, l.token, amount);
+        return ProgramVenue.quoteOut(_venue(l), asset, l.token, amount);
     }
 
-    function _venue(Line storage l) private view returns (ILineVenue) {
-        address v = _venueOf(l.program);
-        if (v == address(0)) revert NoConversion();
-        return ILineVenue(v);
-    }
-
-    /// @dev The program's conversion venue, zero when it has none.
-    // Called from the bounded liquidation and autopay loops.
-    // forge-lint: disable-next-item(calls-loop)
-    function _venueOf(address program) private view returns (address v) {
-        (bool ok, bytes memory data) = program.staticcall(abi.encodeCall(IProgramConversion.conversion, ()));
-        if (ok && data.length >= 32) v = abi.decode(data, (address));
+    function _venue(Line storage l) private view returns (ILineVenue venue) {
+        venue = ProgramVenue.venueOf(l.program);
+        if (address(venue) == address(0)) revert NoConversion();
     }
 
     /// @dev The asset of an Earn vault, zero for anything else, such as a token.
