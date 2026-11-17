@@ -349,7 +349,9 @@ library CardFunding {
             address settles = _settlement();
             L.absorbed[ref] -= rest;
             SafeTransferLib.safeTransferFrom(settles, msg.sender, owner, rest);
-            parts[order.length + 1] = Part({ kind: CASH, source: settles, lineId: 0, amount: rest, tokens: rest });
+            parts[order.length + 1] = Part({
+                kind: settles == cashToken ? CASH : TOKEN, source: settles, lineId: 0, amount: rest, tokens: rest
+            });
             rest = 0;
         }
         if (rest != 0) revert CardProgram.RefundExceedsCapture(rest);
@@ -747,7 +749,8 @@ library CardFunding {
             SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), tokens);
             // forge-lint: disable-next-line(unsafe-typecast)
             CORE.refund(owner, leg.id, uint128(tokens));
-            part.kind = CASH;
+            // A charge in the settlement token rather than the owner's cash lands as that token.
+            part.kind = token == cashToken ? CASH : TOKEN;
             part.source = token;
             part.amount += take;
             part.tokens += tokens;
