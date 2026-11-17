@@ -6,6 +6,11 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 
+/// @dev The keys a card program lets act for it, such as its issuer desk.
+interface IProgramOperators {
+    function operators(address key) external view returns (bool);
+}
+
 /// @title CreditLine
 /// @notice Lenders' credit lines that card programs draw on. Each draw is a hold on the lender's own balance, placed
 ///         here through `holdFrom` (the lender approves this contract as a holder of the line's token), so every
@@ -99,6 +104,9 @@ contract CreditLine {
     ///      vault over that token for the borrower's free shares in it.
     mapping(uint64 lineId => address[]) internal _autopay;
 
+    /// @dev Re-draws so far, which number their charges on the lender.
+    uint64 internal _redraws;
+
     bool private transient _locked;
 
     event LineOpened(
@@ -120,6 +128,10 @@ contract CreditLine {
     event Synced(uint64 indexed lineId, bytes32 indexed holdId, uint128 owed, uint128 pending);
     event Repaid(uint64 indexed lineId, address indexed payer, uint128 amount, uint128 owed);
     event Charged(uint64 indexed lineId, uint128 amount, uint128 owed);
+    /// @notice A refund past what the line owed, passed from the lender to the borrower.
+    event Overpaid(uint64 indexed lineId, bytes32 holdId, uint128 amount);
+    /// @notice The lender paid `payee` `amount` on the borrower's behalf, which the borrower now owes.
+    event Redrawn(uint64 indexed lineId, address indexed payee, uint128 amount, uint128 owed);
     event Committed(uint64 indexed lineId, bytes32 holdId, uint128 amount);
     event PledgeAttached(uint64 indexed lineId, bytes32 pledgeId, uint128 shares, uint64 expiresAt);
     event PledgeReleased(uint64 indexed lineId, bytes32 pledgeId);
@@ -281,15 +293,30 @@ contract CreditLine {
         uint128 net = h.captured - h.refunded;
         // Pending holds only shrink after placement: captures and releases free them.
         l.pending = l.pending + held - d.held;
+        uint128 excess;
         if (net >= d.net) {
             l.owed += net - d.net;
         } else {
             uint128 back = d.net - net;
-            l.owed = back < l.owed ? l.owed - back : 0;
+            if (back > l.owed) excess = back - l.owed;
+            l.owed -= back - excess;
         }
         // Both are at most the draw's amount, which fits in 96 bits.
         // forge-lint: disable-next-line(unsafe-typecast)
         (d.held, d.net) = (uint96(held), uint96(net));
+        // A refund past what the borrower owes (it repaid the purchase already) reached the lender; it is the
+        // borrower's. The id is unique: each refund lowers the draw's net.
+        if (excess != 0) {
+            CORE.charge(
+                l.lender,
+                l.token,
+                keccak256(abi.encode(address(this), "overpaid", holdId, net)),
+                excess,
+                l.borrower,
+                false
+            );
+            emit Overpaid(lineId, holdId, excess);
+        }
         emit Synced(lineId, holdId, l.owed, l.pending);
         _commit(lineId);
         _lock(lineId);
@@ -335,6 +362,39 @@ contract CreditLine {
         if (msg.sender != l.lender) revert NotLender();
         l.owed += amount;
         emit Charged(lineId, amount, l.owed);
+        _commit(lineId);
+        _lock(lineId);
+    }
+
+    /// @notice Draws up to `amount` on line `lineId` again for its program (a merchant's win on a purchase that
+    ///         provisional credit repaid), paying `payee` from what the lender can fund: its commitment, then its free
+    ///         balance. It may pass the limit, as the purchase was drawn before. Returns what it drew.
+    function redraw(uint64 lineId, uint128 amount, address payee) external nonReentrant returns (uint128 drawn) {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.program && !IProgramOperators(l.program).operators(msg.sender)) revert NotProgram();
+        uint256 committed_ = _committed(lineId);
+        uint256 free = CORE.available(l.lender, l.token);
+        uint256 fundable = committed_ + free;
+        // The commitment's expiry only zeroes it in _committed; nothing here compares time. The call is nonReentrant
+        // and _commit rewrites the commitment afterwards.
+        // forge-lint: disable-start(block-timestamp)
+        // forge-lint: disable-start(reentrancy-no-eth)
+        // At most amount, a uint128.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        drawn = uint128(amount < fundable ? amount : fundable);
+        if (drawn == 0) return 0;
+        if (drawn > free) {
+            uint256 keep = committed_ - (drawn - free);
+            bytes32 id = commitmentOf[lineId];
+            if (keep == 0) CORE.release(l.lender, id);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            else CORE.adjust(l.lender, id, uint128(keep));
+        }
+        CORE.charge(l.lender, l.token, keccak256(abi.encode(address(this), "redraw", ++_redraws)), drawn, payee, false);
+        // forge-lint: disable-end(reentrancy-no-eth)
+        // forge-lint: disable-end(block-timestamp)
+        l.owed += drawn;
+        emit Redrawn(lineId, payee, drawn, l.owed);
         _commit(lineId);
         _lock(lineId);
     }

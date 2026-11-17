@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
+
 import { IssuerDesk } from "../../src/programs/IssuerDesk.sol";
 import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
 
@@ -212,6 +214,76 @@ contract IssuerDeskTest is ProgramsEnv {
         desk.resolveDispute(P1, false);
         assertEq(desk.openDisputes(), 0);
         assertEq(desk.settlementTokenInUse(address(cards)), 0);
+    }
+
+    // A $100 purchase, $40 from cash and $60 from a credit line, disputed in full.
+    function _disputedOnCredit() internal returns (uint64 lineId) {
+        lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0);
+        vm.startPrank(alice);
+        _setFunding(address(usd), address(0), address(credit), lineId);
+        usd.transfer(bob, 960e6);
+        vm.stopPrank();
+        _purchase(100e6);
+        assertEq(credit.lineOf(lineId).owed, 60e6, "drawn");
+        vm.prank(alice);
+        core.setDebtCap(settlement, address(usd), 100e6);
+        vm.prank(issuer);
+        desk.openDispute(P1, 100e6, hex"c1a1");
+        usd.mint(settlement, 100e6);
+    }
+
+    function test_dispute_creditPurchase_provisionalRepaysTheLine_merchantWinDrawsItAgain() public {
+        uint64 lineId = _disputedOnCredit();
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 100e6, "", false);
+        assertEq(credit.lineOf(lineId).owed, 0, "the line's share repaid it");
+        assertEq(usd.balanceOf(alice), 40e6, "only the cash share came as cash");
+        (uint128 repaid, uint128 landed) = desk.lineShares(P1, 1);
+        assertEq(repaid, 60e6);
+        assertEq(landed, 0);
+        uint256 before = usd.balanceOf(settlement);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, false);
+        assertEq(credit.lineOf(lineId).owed, 60e6, "drawn again");
+        assertEq(usd.balanceOf(settlement), before + 100e6, "the lender pays the line's share, the cardholder the rest");
+        assertEq(usd.balanceOf(alice), 0);
+        (, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(debt, 0);
+    }
+
+    function test_dispute_creditPurchase_merchantWinDrawsOnlyWhatTheLenderCanFund() public {
+        uint64 lineId = _disputedOnCredit();
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 100e6, "", false);
+        vm.startPrank(lender);
+        credit.setLimit(lineId, 25e6);
+        usd.transfer(bob, usd.balanceOf(lender));
+        vm.stopPrank();
+        vm.prank(issuer);
+        desk.resolveDispute(P1, false);
+        assertEq(credit.lineOf(lineId).owed, 25e6, "what the lender could fund");
+        // The cardholder owes the other $75: the $40 it holds at once, the rest as debt.
+        assertEq(usd.balanceOf(alice), 0);
+        (, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(debt, 35e6);
+    }
+
+    function test_dispute_creditPurchase_repaidLineTakesItsShareAsCash() public {
+        uint64 lineId = _disputedOnCredit();
+        usd.mint(alice, 60e6);
+        vm.startPrank(alice);
+        usd.approve(address(credit), 60e6);
+        credit.repay(lineId, 60e6);
+        vm.stopPrank();
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 50e6, "", false);
+        assertEq(usd.balanceOf(alice), 50e6, "nothing owed, so all cash");
+        (uint128 repaid, uint128 landed) = desk.lineShares(P1, 1);
+        assertEq(repaid, 0);
+        assertEq(landed, 30e6, "cash that still counts as the line's share");
+        vm.prank(issuer);
+        desk.resolveDispute(P1, false);
+        assertEq(credit.lineOf(lineId).owed, 0, "never drawn again");
     }
 
     function test_dispute_aboveCaptured_refused() public {

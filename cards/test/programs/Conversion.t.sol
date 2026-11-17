@@ -382,6 +382,30 @@ contract ConversionTest is ProgramsEnv {
 
     // Helpers.
 
+    function test_refund_earlierTokensPurchase_neverPassesWhatItCaptured() public {
+        // Booked in dollars, then the issuer settles in euros: refunds stay in dollars, paid in euros at the rate.
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        _capture(P1, 40e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        _localIssuer();
+        eur.mint(issuer, 100e6);
+        vm.prank(issuer);
+        eur.approve(address(cards), type(uint256).max);
+        vm.prank(issuer);
+        cards.refund(P1, 25e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.RefundExceedsCapture.selector, 0.01e6));
+        cards.refund(P1, 15.01e6);
+        vm.prank(issuer);
+        cards.refund(P1, 15e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.RefundExceedsCapture.selector, 0.01e6));
+        cards.refund(P1, 0.01e6);
+    }
+
     function _tokenFirst(address owner, uint64 maxCostBps) internal {
         CardFunding.Source[] memory order = new CardFunding.Source[](2);
         order[0] = CardFunding.Source({ kind: TOKEN, source: address(eur), lineId: maxCostBps });

@@ -8,6 +8,7 @@ import { IERC20Allowance } from "tempo-earn/interfaces/external/IERC20Allowance.
 import { CardFunding } from "./CardFunding.sol";
 import { CardProgram } from "./CardProgram.sol";
 import { Conversion } from "./Conversion.sol";
+import { CreditLine } from "./CreditLine.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
@@ -89,6 +90,16 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 provisional;
     }
 
+    /// @notice What an open dispute's provisional credit repaid on one credit line its purchase drew (which a merchant
+    ///         win draws again), and the line's share that landed as cash because the line owed nothing.
+    struct LineShare {
+        uint128 repaid;
+        uint128 landed;
+    }
+
+    /// @dev A funding source's kind for a credit line, and the key of the first source of its kind.
+    uint8 private constant CREDIT = 4;
+
     CardProgram public immutable PROGRAM;
     address public immutable ISSUER;
     address public immutable TOKEN;
@@ -100,6 +111,8 @@ contract IssuerDesk is ISettlementTokenGuard {
     mapping(bytes32 purchaseRef => Split[]) internal _splits;
     mapping(uint64 seq => Step) public steps;
     mapping(bytes32 purchaseRef => Dispute) public disputes;
+    /// @notice Each dispute's line shares, by the index of the line in the purchase's funding order.
+    mapping(bytes32 purchaseRef => mapping(uint256 index => LineShare)) public lineShares;
     /// @notice Disputes opened and not yet resolved, which keep the program on its settlement token.
     uint64 public openDisputes;
     uint64 internal _nonce;
@@ -144,6 +157,10 @@ contract IssuerDesk is ISettlementTokenGuard {
     /// @notice A lost dispute took `amount` (settlement units) back from one funding source, in the funding order's
     ///         terms: kind 1 cash, 2 a savings facility, 4 a credit line re-drawn.
     event DisputeRecovered(
+        bytes32 indexed purchaseRef, address indexed account, uint8 kind, address source, uint64 lineId, uint256 amount
+    );
+    /// @notice Where one provisional credit went, when part of it repaid a credit line: each line, then the cash.
+    event DisputeCredited(
         bytes32 indexed purchaseRef, address indexed account, uint8 kind, address source, uint64 lineId, uint256 amount
     );
 
@@ -277,8 +294,13 @@ contract IssuerDesk is ISettlementTokenGuard {
         d.state = state;
         uint128 repaid;
         if (provisional > 0) {
+            uint128 onLines = _repayLines(purchaseRef, d, provisional, open);
             d.provisional += provisional;
-            repaid = _credit(d.owner, provisional);
+            uint128 cash = provisional - onLines;
+            if (cash > 0) {
+                if (onLines > 0) emit DisputeCredited(purchaseRef, d.owner, 1, TOKEN, 0, cash);
+                repaid = _credit(d.owner, cash);
+            }
         }
         emit DisputeStepped(purchaseRef, d.owner, state, provisional, repaid, evidence, byMerchant);
     }
@@ -295,7 +317,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         --openDisputes;
         if (!cardholderWins) {
             d.state = LOST;
-            uint256 debt = provisional > 0 ? _recover(purchaseRef, owner, provisional) : 0;
+            uint256 reinstated = _redrawLines(purchaseRef, owner);
+            uint256 debt = provisional > reinstated ? _recover(purchaseRef, owner, provisional - reinstated) : 0;
             // Below provisional, a uint128.
             // forge-lint: disable-next-line(unsafe-typecast)
             emit DisputeResolved(purchaseRef, owner, false, -int256(uint256(provisional)), uint128(debt), 0, 0);
@@ -435,7 +458,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         address booked = PROGRAM.purchaseToken(purchaseRef);
         if (booked == token) {
             SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), amount);
-            _allowProgram(token, amount);
+            _allow(token, address(PROGRAM), amount);
             PROGRAM.refund(purchaseRef, amount);
             return;
         }
@@ -446,18 +469,18 @@ contract IssuerDesk is ISettlementTokenGuard {
         // What the desk already holds (a one-unit seed, sent by anyone) stays, so a refund never creates its balance.
         uint256 baseline = SafeTransferLib.balanceOf(token, address(this));
         SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), paying);
-        _allowProgram(token, paying);
+        _allow(token, address(PROGRAM), paying);
         PROGRAM.refund(purchaseRef, amount);
         uint256 left = SafeTransferLib.balanceOf(token, address(this)) - baseline;
         if (left != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT, left);
     }
 
-    /// @dev A standing maximum allowance for the immutable program: Tempo charges every zero-to-nonzero allowance as a
-    ///      new storage slot. The program takes only what each refund pulls from the desk, which holds nothing between
-    ///      calls but a seed.
-    function _allowProgram(address token, uint256 amount) private {
-        if (IERC20Allowance(token).allowance(address(this), address(PROGRAM)) < amount) {
-            SafeTransferLib.safeApproveWithRetry(token, address(PROGRAM), type(uint256).max);
+    /// @dev A standing maximum allowance for the immutable program, or a credit line it draws on: Tempo charges every
+    ///      zero-to-nonzero allowance as a new storage slot. Each takes only what one refund or repayment pulls from the
+    ///      desk, which holds nothing between calls but a seed.
+    function _allow(address token, address spender, uint256 amount) private {
+        if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
+            SafeTransferLib.safeApproveWithRetry(token, spender, type(uint256).max);
         }
     }
 
@@ -476,11 +499,112 @@ contract IssuerDesk is ISettlementTokenGuard {
                 if (settled > d.provisional) settled = d.provisional;
                 if (settled > amount) settled = amount;
                 d.provisional -= settled;
+                _settleLines(purchaseRef, d.provisional);
                 emit DisputeSettled(purchaseRef, d.owner, settled);
             }
         }
         if (amount > settled) _refund(purchaseRef, amount - settled);
         if (settled != 0) PROGRAM.creditBack(purchaseRef, settled, settled);
+    }
+
+    // Gives each credit line the purchase drew its share of a provisional credit: its part of all provisional credit so
+    // far, less what earlier steps gave it, so several steps add up to one split. Only what the line still owes repays
+    // it; the rest of the share lands as cash and still counts toward the share, so a later step never repays a newer
+    // draw instead. A share never draws a line. Returns what repaid lines.
+    function _repayLines(bytes32 purchaseRef, Dispute storage d, uint128 amount, uint128 open)
+        private
+        returns (uint128 onLines)
+    {
+        if (open == 0 || PROGRAM.purchaseToken(purchaseRef) != TOKEN) return 0;
+        CardFunding.Source[] memory order = _orderOf(purchaseRef);
+        uint256 rest = amount;
+        for (uint256 i; i < order.length && rest != 0; ++i) {
+            if (order[i].kind != CREDIT) continue;
+            uint256 drawn = _drawn(purchaseRef, order, i);
+            LineShare storage sh = lineShares[purchaseRef][i];
+            uint256 given = uint256(sh.repaid) + sh.landed;
+            if (drawn <= given) continue;
+            uint256 target = (uint256(d.provisional) + amount) * drawn / open;
+            if (target <= given) continue;
+            uint256 share = _min(_min(target - given, drawn - given), rest);
+            rest -= share;
+            CreditLine line = CreditLine(order[i].source);
+            uint256 pay = _min(share, line.lineOf(order[i].lineId).owed);
+            // Both at most amount, a uint128.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            (sh.repaid, sh.landed) = (sh.repaid + uint128(pay), sh.landed + uint128(share - pay));
+            if (pay == 0) continue;
+            SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, address(this), pay);
+            _allow(TOKEN, address(line), pay);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            line.repay(order[i].lineId, uint128(pay));
+            emit DisputeCredited(purchaseRef, d.owner, CREDIT, address(line), order[i].lineId, pay);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            onLines += uint128(pay);
+        }
+    }
+
+    // After a refund settled provisional credit, the cash share settles first; a line share it settles stays repaid,
+    // so a merchant win never draws it again.
+    function _settleLines(bytes32 purchaseRef, uint128 left) private {
+        CardFunding.Source[] memory order = _orderOf(purchaseRef);
+        uint256 total;
+        for (uint256 i; i < order.length; ++i) {
+            if (order[i].kind == CREDIT) total += lineShares[purchaseRef][i].repaid;
+        }
+        if (total <= left) return;
+        uint256 excess = total - left;
+        for (uint256 i; i < order.length && excess != 0; ++i) {
+            if (order[i].kind != CREDIT) continue;
+            LineShare storage sh = lineShares[purchaseRef][i];
+            uint256 take = _min(sh.repaid, excess);
+            // At most sh.repaid.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            sh.repaid -= uint128(take);
+            excess -= take;
+        }
+    }
+
+    // A merchant win draws again what provisional credit repaid on each line, as far as its lender can fund it, the
+    // lender paying the settlement account. Returns what it drew.
+    function _redrawLines(bytes32 purchaseRef, address owner) private returns (uint256 reinstated) {
+        CardFunding.Source[] memory order = _orderOf(purchaseRef);
+        for (uint256 i; i < order.length; ++i) {
+            if (order[i].kind != CREDIT) continue;
+            uint128 want = lineShares[purchaseRef][i].repaid;
+            if (want == 0) continue;
+            delete lineShares[purchaseRef][i];
+            uint128 drawn = CreditLine(order[i].source).redraw(order[i].lineId, want, SETTLEMENT);
+            if (drawn == 0) continue;
+            emit DisputeRecovered(purchaseRef, owner, CREDIT, order[i].source, order[i].lineId, drawn);
+            reinstated += drawn;
+        }
+    }
+
+    function _orderOf(bytes32 purchaseRef) private view returns (CardFunding.Source[] memory) {
+        CardProgram.Purchase memory p = PROGRAM.purchaseOf(purchaseRef);
+        return PROGRAM.orderAt(p.owner, p.version);
+    }
+
+    // What credit source i drew for the purchase, net of refunds; nothing for a line in another token than the desk's.
+    function _drawn(bytes32 purchaseRef, CardFunding.Source[] memory order, uint256 i) private view returns (uint256) {
+        CreditLine line = CreditLine(order[i].source);
+        (address lender, address token) = line.partiesOf(order[i].lineId);
+        if (token != TOKEN) return 0;
+        // The program's draw reference: the purchase for its first credit source, else keyed by the source's index.
+        bytes32 ref = purchaseRef;
+        for (uint256 j; j < i; ++j) {
+            if (order[j].kind == CREDIT) {
+                ref = keccak256(abi.encode(purchaseRef, i));
+                break;
+            }
+        }
+        IReservationCore.HoldRecord memory h = CORE.getHold(lender, line.holdIdOf(address(PROGRAM), ref));
+        return h.captured - h.refunded;
+    }
+
+    function _min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
     }
 
     // Takes amount back after a lost dispute: the owner's free settlement token first, then its savings positions in
