@@ -160,7 +160,9 @@ unrepresented after floor rounding.
 ### Reentrancy and standing approvals
 
 EarnVault economic calls, `EarnFees.claim`, engine asset paths, and the router callback use local
-reentrancy locks. The EarnVault keeps a standing maximum base-asset approval to its installed engine,
+reentrancy locks. The EarnVault and EarnFees locks are transient flags, so they occupy no storage slot
+(Tempo charges 250,000 gas for each slot first written nonzero), and an EarnVault refuses locked calls
+until it is initialized. The EarnVault keeps a standing maximum base-asset approval to its installed engine,
 topped up only when it is below the amount moved; it holds base assets only within a call, and
 `migrateEngine` revokes the retired engine's approval. The router
 keeps standing maximum approvals only to its immutable EarnVault and pool and its source Zone's
