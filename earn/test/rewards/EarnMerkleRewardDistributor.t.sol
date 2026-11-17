@@ -4,8 +4,8 @@ pragma solidity ^0.8.36;
 import { IEarnVault } from "../../src/interfaces/core/IEarnVault.sol";
 import { EarnMerkleRewardDistributor } from "../../src/rewards/EarnMerkleRewardDistributor.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { Test } from "forge-std/Test.sol";
-import { FaultyMockToken, RewardVaultMock } from "../helpers/EarnVaultMocks.sol";
+import { Test, Vm } from "forge-std/Test.sol";
+import { FaultyMockToken, ReentrantMockToken, RewardVaultMock } from "../helpers/EarnVaultMocks.sol";
 
 contract EarnMerkleRewardDistributorTest is Test {
     FaultyMockToken private asset;
@@ -124,16 +124,76 @@ contract EarnMerkleRewardDistributorTest is Test {
         uint256 funderBalance = asset.balanceOf(funder);
 
         vm.prank(owner);
-        vm.expectRevert(
-            abi.encodeWithSelector(EarnMerkleRewardDistributor.SettlementAlreadyConsumed.selector, settlementId)
-        );
+        vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.RepeatedSettlementId.selector, settlementId));
         distributor.fundAndPublishRoot(
             settlementId, 1, funder, 100 ether, 100 ether, root, 100 ether, keccak256("one-shot-statement")
         );
 
         assertEq(asset.balanceOf(funder), funderBalance);
-        assertTrue(distributor.consumedSettlements(settlementId));
+        assertEq(distributor.lastSettlementId(), settlementId);
         assertEq(distributor.rootVersion(), 1);
+    }
+
+    function testFundAndPublishRootRejectsOlderSettlementReplayAsStaleVersion() public {
+        bytes32 first = keccak256("settlement-1");
+        bytes32 second = keccak256("settlement-2");
+        (bytes32 root,,) = _twoLeafRoot(60 ether, 40 ether);
+        (bytes32 nextRoot,,) = _twoLeafRoot(120 ether, 80 ether);
+        vm.startPrank(owner);
+        distributor.fundAndPublishRoot(
+            first, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("statement-1")
+        );
+        distributor.fundAndPublishRoot(
+            second, 1, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("statement-2")
+        );
+        uint256 funderBalance = asset.balanceOf(funder);
+
+        // The first settlement is no longer the last one, so the root version check refuses its replay.
+        vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.StaleRootVersion.selector, 0, 2));
+        distributor.fundAndPublishRoot(
+            first, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("statement-1")
+        );
+        vm.stopPrank();
+
+        assertEq(asset.balanceOf(funder), funderBalance);
+        assertEq(distributor.lastSettlementId(), second);
+        assertEq(distributor.rootVersion(), 2);
+        assertEq(distributor.merkleRoot(), nextRoot);
+    }
+
+    function testLaterSettlementOverwritesOneSlotAndEmitsItsId() public {
+        bytes32 first = keccak256("settlement-1");
+        bytes32 second = keccak256("settlement-2");
+        (bytes32 root,,) = _twoLeafRoot(60 ether, 40 ether);
+        (bytes32 nextRoot,,) = _twoLeafRoot(120 ether, 80 ether);
+        vm.prank(owner);
+        distributor.fundAndPublishRoot(
+            first, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("statement-1")
+        );
+
+        vm.expectEmit(true, true, false, true, address(distributor));
+        emit EarnMerkleRewardDistributor.AssetsFunded(second, funder, 100 ether, 100 ether);
+        vm.startStateDiffRecording();
+        vm.prank(owner);
+        distributor.fundAndPublishRoot(
+            second, 1, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("statement-2")
+        );
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        // A later settlement creates no distributor slot: its ID overwrites the previous one in place.
+        uint256 created;
+        uint256 overwrites;
+        for (uint256 i; i < accesses.length; ++i) {
+            for (uint256 j; j < accesses[i].storageAccesses.length; ++j) {
+                Vm.StorageAccess memory access = accesses[i].storageAccesses[j];
+                if (access.account != address(distributor) || !access.isWrite || access.reverted) continue;
+                if (access.previousValue == bytes32(0) && access.newValue != bytes32(0)) ++created;
+                if (access.previousValue == first && access.newValue == second) ++overwrites;
+            }
+        }
+        assertEq(created, 0);
+        assertEq(overwrites, 1);
+        assertEq(distributor.lastSettlementId(), second);
     }
 
     function testRootPublicationRejectsStaleExpectedVersion() public {
@@ -360,6 +420,58 @@ contract EarnMerkleRewardDistributorTest is Test {
         uint256 gasUsed = gasBefore - gasleft();
         assertLt(gasUsed, 25_000_000);
         emit log_named_uint("pushBatch(256) gas", gasUsed);
+    }
+
+    function testClaimWritesOnlyPayoutStorage() public {
+        _fund(100 ether);
+        (bytes32 root,, bytes32 bobLeaf) = _twoLeafRoot(60 ether, 40 ether);
+        vm.prank(owner);
+        distributor.publishRoot(0, root, 100 ether, keccak256("statement"));
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bobLeaf;
+
+        vm.startStateDiffRecording();
+        distributor.claim(alice, 60 ether, proof);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        // The transient reentrancy lock writes no storage: only totalPaid and the recipient's cumulativePaid change.
+        uint256 writes;
+        for (uint256 i; i < accesses.length; ++i) {
+            for (uint256 j; j < accesses[i].storageAccesses.length; ++j) {
+                Vm.StorageAccess memory access = accesses[i].storageAccesses[j];
+                if (access.account == address(distributor) && access.isWrite && !access.reverted) ++writes;
+            }
+        }
+        assertEq(writes, 2);
+        assertEq(distributor.cumulativePaid(alice), 60 ether);
+        assertEq(distributor.totalPaid(), 60 ether);
+    }
+
+    function testReentryDuringPayoutReverts() public {
+        ReentrantMockToken hookShare = new ReentrantMockToken("Reward", "RWD", 6);
+        RewardVaultMock hookVault = new RewardVaultMock(asset, hookShare);
+        EarnMerkleRewardDistributor hooked =
+            new EarnMerkleRewardDistributor(IEarnVault(address(hookVault)), treasury, campaignId, deadline, owner);
+        hookShare.mint(address(hooked), 100 ether);
+        bytes32 aliceLeaf = hooked.leaf(alice, 60 ether);
+        bytes32 bobLeaf = hooked.leaf(bob, 40 ether);
+        vm.prank(owner);
+        hooked.publishRoot(0, _hashPair(aliceLeaf, bobLeaf), 100 ether, keccak256("statement"));
+        bytes32[] memory aliceProof = new bytes32[](1);
+        aliceProof[0] = bobLeaf;
+        bytes32[] memory bobProof = new bytes32[](1);
+        bobProof[0] = aliceLeaf;
+        hookShare.armReentry(
+            address(hooked), abi.encodeCall(EarnMerkleRewardDistributor.claim, (bob, 40 ether, bobProof))
+        );
+
+        hooked.claim(alice, 60 ether, aliceProof);
+
+        assertFalse(hookShare.reentrySucceeded());
+        assertEq(hookShare.reentryResult(), abi.encodeWithSelector(EarnMerkleRewardDistributor.ReentrantCall.selector));
+        assertEq(hookShare.balanceOf(alice), 60 ether);
+        assertEq(hookShare.balanceOf(bob), 0);
+        assertEq(hooked.totalPaid(), 60 ether);
     }
 
     function _fund(uint256 assets) private {

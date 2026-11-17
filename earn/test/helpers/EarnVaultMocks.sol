@@ -98,6 +98,42 @@ contract CoreMockToken {
     }
 }
 
+/// @dev Calls back into a target once, from the token's own address, on its next transfer or transferFrom,
+/// recording whether that reentrant call succeeded and its return or revert data.
+contract ReentrantMockToken is CoreMockToken {
+    address public reentryTarget;
+    bytes public reentryCall;
+    bool public reentrySucceeded;
+    bytes public reentryResult;
+
+    constructor(string memory name_, string memory symbol_, uint8 decimals_)
+        CoreMockToken(name_, symbol_, decimals_)
+    { }
+
+    function armReentry(address target, bytes calldata data) external {
+        reentryTarget = target;
+        reentryCall = data;
+    }
+
+    function transfer(address to, uint256 value) external override returns (bool) {
+        _reenter();
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        _reenter();
+        return super.transferFrom(from, to, value);
+    }
+
+    function _reenter() private {
+        address target = reentryTarget;
+        if (target == address(0)) return;
+        reentryTarget = address(0);
+        (reentrySucceeded, reentryResult) = target.call(reentryCall);
+    }
+}
+
 /// @dev Injects token failures: a blocked recipient makes direct transfers revert, `forceTransferFalse` makes them
 /// return false, and a failing funder makes `transferFrom` return false.
 contract FaultyMockToken is CoreMockToken {

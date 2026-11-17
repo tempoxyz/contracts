@@ -90,15 +90,15 @@ campaign, recipient, and cumulative amount:
 keccak256(keccak256(abi.encode(chainId, distributor, campaignId, recipient, cumulativeEarnShares)))
 ```
 
-| Function                                                                                              | Authority             | Behavior                                                                                                              |
-| ----------------------------------------------------------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `fundAndPublishRoot(settlementId, expectedVersion, funder, assets, minEarnShares, root, total, hash)` | Owner                 | Consume a settlement ID, compare-and-set the root version, deposit with a mint floor, and publish a fully funded root |
-| `publishRoot(expectedVersion, root, total, statementHash)`                                            | Owner                 | Compare-and-set a fully funded cumulative root and its reconciliation hash                                            |
-| `claim(recipient, cumulativeAmount, proof)`                                                           | Anyone                | Pay the recipient's newly owed cumulative difference                                                                  |
-| `pushBatch(version, recipients, amounts, multiproof, flags)`                                          | Anyone                | Verify the whole batch, then push each cumulative delta, skipping failed transfers                                    |
-| `setPaused(paused)`                                                                                   | Owner                 | Stop or resume funding, pushes, and claims; while paused, a new root may only restate the same total                  |
-| `returnUnspent()`                                                                                     | Anyone after deadline | Send the remaining EarnShare to the immutable treasury                                                                |
-| `transferOwnership` / `acceptOwnership`                                                               | Owner / pending owner | Two-step ownership; renunciation is disabled                                                                          |
+| Function                                                                                              | Authority             | Behavior                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `fundAndPublishRoot(settlementId, expectedVersion, funder, assets, minEarnShares, root, total, hash)` | Owner                 | Record a new settlement ID, compare-and-set the root version, deposit with a mint floor, and publish a fully funded root |
+| `publishRoot(expectedVersion, root, total, statementHash)`                                            | Owner                 | Compare-and-set a fully funded cumulative root and its reconciliation hash                                               |
+| `claim(recipient, cumulativeAmount, proof)`                                                           | Anyone                | Pay the recipient's newly owed cumulative difference                                                                     |
+| `pushBatch(version, recipients, amounts, multiproof, flags)`                                          | Anyone                | Verify the whole batch, then push each cumulative delta, skipping failed transfers                                       |
+| `setPaused(paused)`                                                                                   | Owner                 | Stop or resume funding, pushes, and claims; while paused, a new root may only restate the same total                     |
+| `returnUnspent()`                                                                                     | Anyone after deadline | Send the remaining EarnShare to the immutable treasury                                                                   |
+| `transferOwnership` / `acceptOwnership`                                                               | Owner / pending owner | Two-step ownership; renunciation is disabled                                                                             |
 
 Each interval starts from a cumulative statement computed by Tempo API. When the distributor's
 unreserved EarnShare covers the new liability, the owner calls `publishRoot`; otherwise
@@ -109,8 +109,12 @@ Root totals cannot decrease, and each root must be covered by the distributor's 
 its total less everything already paid. The check is aggregate, so a corrective root that lowers an
 already-paid recipient's cumulative amount can leave other recipients' unpaid entitlement uncovered;
 the trusted publisher keeps corrections cumulative. The settlement ID (content-addressed by Tempo API) must be nonzero and
-unused, and the expected root version is checked before any asset moves, so funding and publication
-succeed or revert together and a retry cannot pull twice or replace an unexpected root.
+differ from `lastSettlementId`, and the expected root version is checked before any asset moves, so
+funding and publication succeed or revert together and a retry cannot pull twice or replace an
+unexpected root. The distributor keeps only the latest settlement ID, overwriting one slot rather than
+writing a new slot per settlement (Tempo charges 250,000 gas for each slot written from zero); an older
+settlement cannot replay because its expected root version is stale. `AssetsFunded` records every
+settlement ID.
 
 Funding pulls from an explicit funder within its balance and allowance, keeps a standing maximum
 approval to its immutable EarnVault (Tempo charges every zero-to-nonzero allowance as a new storage
@@ -195,7 +199,7 @@ API; compiler metadata differs between source revisions, so chains need not shar
 - Controller `fund` reverts `Inactive` while paused, and otherwise records zero for a failed leg,
   including `EarnShareSupplyOutOfBounds`; `fundBatchExact` reverts on any failure.
 - The distributor reverts `Paused`, `ClaimsExpired`, `StaleRootVersion`,
-  `SettlementAlreadyConsumed`, `InsufficientFunding`, `RootTotalDecreased`, or
+  `RepeatedSettlementId`, `InsufficientFunding`, `RootTotalDecreased`, or
   `PausedLiabilityIncrease` rather than publishing an unsafe root.
 - Contributions benefit whoever holds active EarnShare when they are recognized; there is no
   time-weighted or per-user attribution, and direct permissionless contributions have no supply

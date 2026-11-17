@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 import { EarnVault } from "../../../src/core/EarnVault.sol";
 import { ERC4626Engine, IERC4626Vault } from "../../../src/engines/ERC4626Engine.sol";
 import { AdversarialERC4626Vault } from "../../helpers/AdversarialERC4626Vault.sol";
-import { CoreMockToken, earnVaultTestNoFees } from "../../helpers/EarnVaultMocks.sol";
+import { Simple4626Vault } from "../../../src/demo/Simple4626Vault.sol";
+import { CoreMockToken, ReentrantMockToken, earnVaultTestNoFees } from "../../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../../helpers/EarnVaultTestDeployer.sol";
 
 /// @dev Drives a production EarnVault over an ERC-4626 venue whose return values can disagree with its
@@ -103,6 +104,44 @@ contract ERC4626EngineTest is Test {
         vm.expectRevert(abi.encodeWithSelector(ERC4626Engine.NotEarnVault.selector, STRANGER));
         engine.withdraw(1 ether, STRANGER);
         vm.stopPrank();
+    }
+
+    function testReentryDuringVenueEntryReverts() public {
+        ReentrantMockToken hookAsset = new ReentrantMockToken("Asset", "AST", 18);
+        Simple4626Vault hookVenue = new Simple4626Vault(address(hookAsset), "Hook Venue", "hVEN", 18);
+        ERC4626Engine hooked = new ERC4626Engine(IERC4626Vault(address(hookVenue)), address(this), "", "");
+        // This test acts as the bound EarnVault so the reentrant call passes the caller check and reaches the lock.
+        hooked.initializeEarnVault(address(this));
+        hookAsset.mint(address(this), 10 ether);
+        hookAsset.approve(address(hooked), type(uint256).max);
+        hookAsset.armReentry(address(this), abi.encodeCall(this.relayDeposit, (hooked)));
+
+        assertEq(hooked.deposit(5 ether), 5 ether);
+
+        assertFalse(hookAsset.reentrySucceeded());
+        assertEq(hookAsset.reentryResult(), abi.encodeWithSelector(ERC4626Engine.ReentrantCall.selector));
+        assertEq(hookAsset.balanceOf(address(this)), 5 ether);
+        assertEq(hookVenue.balanceOf(address(hooked)), 5 ether);
+    }
+
+    function testVenueEntryWritesNoLockStorage() public {
+        vm.startStateDiffRecording();
+        _deposit(USER_A, 10 ether);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        // The engine keeps no state of its own after setup: the transient lock leaves its storage untouched.
+        for (uint256 i; i < accesses.length; ++i) {
+            for (uint256 j; j < accesses[i].storageAccesses.length; ++j) {
+                Vm.StorageAccess memory access = accesses[i].storageAccesses[j];
+                assertFalse(access.account == address(engine) && access.isWrite && !access.reverted);
+            }
+        }
+        assertEq(venue.balanceOf(address(engine)), 110 ether);
+    }
+
+    /// @dev Reenters as the bound EarnVault from inside a token transfer.
+    function relayDeposit(ERC4626Engine target) external {
+        target.deposit(1 ether);
     }
 
     function _assertUntouched() private view {
