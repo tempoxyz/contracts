@@ -727,6 +727,9 @@ contract CardProgram {
             if (c.status == Status.None) revert InvalidCard();
             p.card = card;
             p.owner = c.owner;
+            // A force post books in today's settlement token, as an authorization does.
+            address today = settlementToken();
+            if (today != SETTLEMENT_TOKEN) _purchaseTokens[purchaseRef] = today;
         } else {
             if (p.legs & (CHARGED | 16) != 0) revert PurchaseExists();
             if (p.open) {

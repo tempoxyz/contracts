@@ -283,6 +283,27 @@ contract ConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 50e6 - cost);
     }
 
+    function test_localIssuer_refundPastDebtCapRepaysAndLandsTheRestInItsToken() public {
+        _localIssuer();
+        eur.mint(alice, 20e6);
+        vm.prank(alice);
+        core.setDebtCap(address(cards), address(eur), 50e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 80e6, merchant);
+        assertEq(cards.purchaseToken(P1), address(eur));
+        (, uint128 debt) = core.debtOf(alice, address(eur));
+        assertEq(debt, 50e6);
+        eur.mint(issuer, 80e6);
+        vm.prank(issuer);
+        eur.approve(address(cards), 80e6);
+        vm.prank(issuer);
+        cards.refund(P1, 80e6);
+        (, debt) = core.debtOf(alice, address(eur));
+        assertEq(debt, 0);
+        assertEq(core.available(alice, address(eur)), 30e6);
+        assertEq(eur.balanceOf(issuer), 0);
+    }
+
     function test_localIssuer_partRepaysWithWhatCashThereIs() public {
         _localIssuer();
         vm.prank(alice);
