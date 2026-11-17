@@ -272,6 +272,57 @@ contract CardProgramTest is ProgramsEnv {
         assertEq(usd.balanceOf(settlement), 100e6);
     }
 
+    function test_revoke_stopsIncrementsWithNoTerms_butDecreasesStillRun() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        cards.revoke();
+        // The card is still active, so the decline names the revoked grant, not the card.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.NoTerms.selector);
+        cards.adjust(P1, 150e6);
+        vm.prank(issuer);
+        cards.adjust(P1, 60e6);
+        assertEq(_hold(alice, P1, CASH).held, 60e6);
+        _capture(P1, 60e6, true);
+        assertEq(usd.balanceOf(settlement), 60e6);
+    }
+
+    function test_adjust_frozenCardBeforeRevokedGrant() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        cards.revoke();
+        vm.prank(alice);
+        cards.freeze(CARD);
+        // The card's status is checked first.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.CardNotActive.selector);
+        cards.adjust(P1, 150e6);
+    }
+
+    function test_revoke_refusesForcePost_butLateChargeOnAuthorizedPurchaseLands() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        cards.revoke();
+        // A force post opens a new purchase, which a revoked grant refuses.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.NoTerms.selector);
+        cards.charge(CARD, P2, 10e6, merchant);
+        assertEq(cards.purchaseOf(P2).owner, address(0));
+        // A late presentment of a purchase authorized under the grant still charges.
+        vm.warp(vm.getBlockTimestamp() + 8 days);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        assertEq(usd.balanceOf(settlement), 100e6);
+        // Granting again restores force posts.
+        _grant(0, 0, 0, 0, 0);
+        vm.prank(issuer);
+        cards.charge(CARD, P2, 10e6, merchant);
+        assertEq(usd.balanceOf(settlement), 110e6);
+    }
+
     function test_terms_lifetimeLimit_countsHoldsCapturesAndRefunds() public {
         usd.mint(alice, 1000e6);
         _grant(150e6, 0, 0, 0, 0);
@@ -689,6 +740,17 @@ contract CardProgramTest is ProgramsEnv {
         _assertCoreBalanced();
     }
 
+    function test_standIn_onFrozenCard_declinedWhenItLands() public {
+        usd.mint(alice, 30e6);
+        vm.prank(alice);
+        cards.freeze(CARD);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.CardNotActive.selector);
+        cards.authorize(CARD, P1, 20e6, merchant, uint64(block.timestamp + 1 days), 1);
+        assertEq(usd.balanceOf(alice), 30e6);
+        assertEq(cards.purchaseOf(P1).owner, address(0));
+    }
+
     function test_standIn_adjustUp_refused() public {
         usd.mint(alice, 100e6);
         vm.prank(issuer);
@@ -706,9 +768,6 @@ contract CardProgramTest is ProgramsEnv {
 
     function test_standIn_reservesWhatIsThereAndForwardsRepaidDebt() public {
         usd.mint(alice, 50e6);
-        vm.prank(alice);
-        cards.freeze(CARD);
-        // The network approved it offline: the program records it past the freeze.
         vm.prank(issuer);
         cards.authorize(CARD, P1, 80e6, merchant, uint64(block.timestamp + 1 days), 1);
         IReservationCore.HoldRecord memory h = _hold(alice, P1, CASH);
