@@ -326,7 +326,7 @@ abstract contract EarnRouterTestBase is Test {
         _assertRouterState(alternateBefore + (sameAsset ? 0 : ONE), assetBefore + (sameAsset ? ONE : 0), earnBefore);
     }
 
-    /// @dev Asserts the router's exact balances and that it left no allowance to the pool, EarnVault, or portal.
+    /// @dev Asserts the router's exact balances and that its pool, EarnVault and Portal allowances are none or standing.
     function _assertRouterState(uint256 alternateBalance, uint256 assetBalance, uint256 earnBalance) internal view {
         assertEq(alternate.balanceOf(address(router)), alternateBalance);
         assertEq(assetA.balanceOf(address(router)), assetBalance);
@@ -336,9 +336,9 @@ abstract contract EarnRouterTestBase is Test {
         for (uint256 i = 0; i < tokens.length; i++) {
             for (uint256 j = 0; j < spenders.length; j++) {
                 uint256 allowance = tokens[i].allowance(address(router), spenders[j]);
-                // The pool and EarnVault may keep a standing maximum; the Portal never keeps any.
+                // Each may keep a standing maximum (the Portal less what deposits used), never a leftover amount.
                 if (j < 2) assertTrue(allowance == 0 || allowance == type(uint256).max, "standing allowance");
-                else assertEq(allowance, 0);
+                else assertTrue(allowance == 0 || allowance > type(uint128).max, "portal allowance");
             }
         }
     }

@@ -107,8 +107,9 @@ assets back at par (conversion router only), enforces `minOutputAmount`, and ret
 private-asset output. A same-asset router passes the amount straight through with the same bounds;
 a deposit whose `minVaultAssets` exceeds the withdrawn amount reverts.
 
-Every successful callback approves exactly the output to the source Portal, calls
-`depositEncrypted`, clears the approval, verifies that each touched balance is back at its pre-call
+Every successful callback keeps a standing maximum approval to the source Portal (set only when the
+current allowance falls short; the Portal moves the router's tokens only inside a
+`depositEncrypted` call the router makes), calls `depositEncrypted`, verifies that each touched balance is back at its pre-call
 value, and emits `EarnDeposit` or `EarnRedeem` with the `actionId` and the Portal's deposit hash.
 Success proves the Portal queued the encrypted deposit, not that the Zone has credited it.
 

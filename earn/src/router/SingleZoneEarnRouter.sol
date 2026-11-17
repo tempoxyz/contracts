@@ -37,9 +37,6 @@ import {
 /// @custom:invariant address(pool) == address(0) <==> privateAsset == vaultAsset
 /// @custom:invariant address(pool) == address(0) <==> customerId == bytes32(0)
 /// @custom:invariant address(pool) == address(0) ==> !privateAssetIsBase
-/// Ghost mirror of the last temporary approval this router gave each spender for each token (set in _safeApprove);
-/// standing allowances to the immutable EarnVault and pool (_approveStanding) are outside it.
-/// @custom:ghost mapping(address => mapping(address => uint256)) allowanceGhost
 /// Ghost record of every token and spender this router has given a standing allowance (set in _approveStanding).
 /// @custom:ghost mapping(address => mapping(address => bool)) standingGhost
 /// Ghost record of Portal deposits (set in _depositEncryptedToSourceZone): their count and the last one.
@@ -243,10 +240,8 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @custom:ensures !lastFlowWasDeposit ==> token == earnShare && lastReturnToken == privateAsset
     /// Refunds of the returned deposit go to a nonzero recipient.
     /// @custom:ensures lastRefundRecipient != address(0)
-    /// No temporary approval is left behind: every temporary allowance that was zero before is zero after.
-    /// @custom:ensures forall address t, address spender :: old(allowanceGhost[t][spender]) == 0 ==> allowanceGhost[t][spender] == 0
-    /// Standing approvals go only to the EarnVault, for the vault asset or EarnShare, or to the pool, for a route token.
-    /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> (spender == earnVault && (t == vaultAsset || t == earnShare)) || (spender == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset))
+    /// Standing approvals go only to the EarnVault, for the vault asset or EarnShare, to the pool, for a route token, or to the source Zone's Portal.
+    /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> (spender == earnVault && (t == vaultAsset || t == earnShare)) || (spender == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset)) || spender == sourcePortal
     /// @custom:ensures locked == 1 && result == IWithdrawalReceiver.onWithdrawalReceived.selector
     function onWithdrawalReceived(
         uint32 sourceZoneId,
@@ -337,14 +332,13 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     }
 
     /// Conversion only at exact par along the bound pair: measured output equals input, the minimum never
-    /// exceeds the input. The pool's standing approval sits outside allowanceGhost and is the only one set here.
+    /// exceeds the input. The pool's standing approval is the only one set here.
     /// Callers convert a nonzero amount.
     /// @custom:requires locked != 1 && address(pool) != address(0) && amountIn > 0
     /// @custom:ensures amountOut == amountIn && amountOut >= minAmountOut
     /// @custom:ensures _isRoutePair(tokenIn, tokenOut)
     /// @custom:ensures locked != 1
     /// @custom:ensures portalDeposits == old(portalDeposits) && lastFlowWasDeposit == old(lastFlowWasDeposit)
-    /// @custom:ensures forall address t, address spender :: old(allowanceGhost[t][spender]) == 0 ==> allowanceGhost[t][spender] == 0
     /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> spender == address(pool) && t == tokenIn
     function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, bytes32 actionId)
         private
@@ -398,17 +392,15 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         uint128 amount,
         ZoneReturn memory zoneReturn
     ) private returns (bytes32 hash) {
-        _safeApprove(token, sourcePortal, amount);
+        // Standing approval: clearing it would recreate the allowance slot on every callback.
+        _approveStanding(token, sourcePortal, amount);
         /// @custom:ghost portalDeposits = portalDeposits + 1
         /// @custom:ghost lastReturnPortal = sourcePortal
         /// @custom:ghost lastReturnToken = token
         /// @custom:ghost lastReturnAmount = amount
         /// @custom:ghost lastRefundRecipient = zoneReturn.refundRecipient
-        /// The Portal is approved exactly the amount it pulls.
-        /// @custom:assert allowanceGhost[token][sourcePortal] == amount
         hash = IZonePortal(sourcePortal)
             .depositEncrypted(token, amount, zoneReturn.keyIndex, zoneReturn.encrypted, zoneReturn.refundRecipient);
-        _safeApprove(token, sourcePortal, 0);
     }
 
     /// @custom:ensures earnVault_ != address(0) && asset != address(0) && share != address(0)
@@ -461,23 +453,15 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         return uint128(value);
     }
 
-    /// @dev A standing maximum allowance for an immutable spender (the EarnVault or pool): Tempo charges every
+    /// @dev A standing maximum allowance for an immutable spender (the EarnVault, pool or Zone Portal): Tempo charges every
     ///      zero-to-nonzero allowance as a new storage slot, and every operation returns this router's touched
     ///      balances to their baseline, so none is left to pull.
-    ///      Standing allowances sit outside the temporary-allowance ghost, allowanceGhost.
     function _approveStanding(address token, address spender, uint256 amount) private {
         /// @custom:ghost standingGhost[token][spender] = true
         if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
         }
-    }
-
-    function _safeApprove(address token, address spender, uint256 value) private {
-        /// @custom:ghost allowanceGhost[token][spender] = 0
-        _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
-        /// @custom:ghost allowanceGhost[token][spender] = value
-        if (value != 0) _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, value)));
     }
 
     function _callOptionalReturn(address token, bytes memory data) private {

@@ -94,7 +94,7 @@ transfer-policy setup completed.
 | `rawEngineShares()`                           | Raw current-engine custody, including surplus                           |
 | `surplusEngineShares()`                       | Raw shares not recognized as managed backing                            |
 | `totalAssets()`                               | Value of managed backing; surplus excluded                              |
-| `totalEarnShares()`                           | EarnShare total supply                                                  |
+| `totalEarnShares()`                           | Active supply: EarnShare total supply minus up to 1 vault-held unit     |
 | `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares                |
 | `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability         |
 | `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution   |

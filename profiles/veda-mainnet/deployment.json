@@ -13,7 +13,9 @@
     "engine": "b9115e01c6168fd93cbf54bbd2617972b5dfa8cb51b5cf03be9146a2580b1b13",
     "zone": null,
     "targetYield": null,
-    "boostRewards": null
+    "boostRewards": null,
+    "zoneRouterFactory": null,
+    "zoneRouter": null
   },
   "target": {
     "chainId": 4217,

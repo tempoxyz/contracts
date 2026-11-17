@@ -155,9 +155,8 @@ the allowance slot again on every callback, which Tempo charges (TIP-1000) again
 gas limit; the Portal is the Zone's own, and the router holds nothing between callbacks. This rests on
 an invariant of the Portal: it moves the router's tokens only inside a `depositEncrypted` call the
 router makes, pulling exactly that deposit's amount. Anyone can
-set it ahead of the first spend with `warm(token)`. An Earn op on a router that holds this approval uses and keeps it; without one, ops 0 and 1 keep
-`SingleZoneEarnRouter`'s exact approval, cleared after the deposit, so an Earn-only router behaves
-exactly like it.
+set it ahead of the first callback with `warm(token)`. Earn ops keep it too, on every router, and
+`SingleZoneEarnRouter` does the same.
 
 ## Spenders
 
@@ -250,7 +249,7 @@ input. Its checks are in the [card spend design](../cards/design.md#what-the-pro
    spender uses, at most the callback's `maxInput`.
 4. Conversion happens only at the pool oracle's exact par price with measured 1:1 output.
 5. No balance a callback brings stays with the router (a one-unit seed anyone sends it stays as it
-   is), and no allowance except a spend's standing approval to its own Zone's Portal and standing
+   is), and no allowance except a standing approval to its own Zone's Portal and standing
    maximum approvals to its immutable EarnVault and pool, which Tempo would otherwise charge as a
    new storage slot on every op.
 6. The router never emits or stores `senderTag`.

@@ -163,8 +163,9 @@ EarnVault economic calls, `EarnFees.claim`, engine asset paths, and the router c
 reentrancy locks. The EarnVault keeps a standing maximum base-asset approval to its installed engine,
 topped up only when it is below the amount moved; it holds base assets only within a call, and
 `migrateEngine` revokes the retired engine's approval. The router
-keeps standing maximum approvals only to its immutable EarnVault and pool (Tempo charges every
-zero-to-nonzero allowance as a new storage slot), performs one downstream call, and verifies touched
+keeps standing maximum approvals only to its immutable EarnVault and pool and its source Zone's
+Portal (Tempo charges every zero-to-nonzero allowance as a new storage slot; the Portal moves the
+router's tokens only inside a `depositEncrypted` call the router makes), performs one downstream call, and verifies touched
 token balances against the operation baseline, so no token balance an allowance could reach survives
 a successful call. External token callbacks remain a trust boundary; a revert rolls back approval and
 balance changes atomically.

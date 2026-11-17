@@ -500,7 +500,10 @@ describe('router release workflow', () => {
 
   test('offers every hosted network, both, and every router release, without all', () => {
     expect(options('network')?.sort()).toEqual(['both', ...Object.keys(hostedEnvironments)].sort())
-    expect(options('release')).toEqual([...routerReleaseKinds])
+    // The ZoneRouterFactory deploys with the stack (deploy.yml); this workflow keeps the parameterized releases.
+    expect(options('release')).toEqual(
+      routerReleaseKinds.filter((kind) => kind !== 'zoneRouterFactory'),
+    )
     expect(workflow).toContain('["moderato","mainnet"]')
     expect(workflow).toContain('environment: factory-release-${{ matrix.network }}')
   })

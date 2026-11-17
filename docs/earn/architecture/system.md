@@ -235,7 +235,12 @@ Every economic action ends by restating the anchor from actual state, so after e
 convertToEngineShares(totalEarnShares()) == engineShares()
 ```
 
-`isAccountingAligned()` reports this equality. Deposits and exits change backing and supply
+`totalEarnShares()` is the active supply: EarnShare total supply minus up to 1 unit the EarnVault
+holds, which counts as burned so a standing residue keeps its balance slot. When active supply is zero,
+managed backing is zero too: the next action moves any engine shares left over to surplus.
+
+`isAccountingAligned()` reports this equality. Between a residue transfer to the vault and the next
+action that restates the anchor, it also accepts the equality on full total supply. Deposits and exits change backing and supply
 proportionally. Fee mints add supply without backing; contributions and surplus absorption add
 backing without supply.
 Each restates the anchor against the resulting pair.

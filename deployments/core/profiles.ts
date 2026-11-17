@@ -4,7 +4,7 @@ import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { hostedEnvironment } from '../chain/tempo.js'
+import { hostedEnvironment, hostedEnvironments } from '../chain/tempo.js'
 import {
   loadEarnProfile,
   loadEarnProfileBundle,
@@ -20,6 +20,8 @@ import {
  * `--matrix`, emits the recorded-profile matrix instead: every recorded profile paired with its
  * hosted chain's public L1 RPC, as the `profiles` output under GitHub Actions or on stdout.
  * `--profiles <directory>` scans another repository's profiles directory instead of Earn's own.
+ * `--network <id>` instead lists every profile on that hosted network, recorded or not, without
+ * checking records: the Deploy workflow reconciles each one, rewriting a record a release outdated.
  * A bare `--`, which `pnpm profiles -- --matrix` forwards, is ignored.
  */
 const { values: args } = parseArgs({
@@ -27,6 +29,7 @@ const { values: args } = parseArgs({
   options: {
     profiles: { type: 'string' },
     matrix: { type: 'boolean', default: false },
+    network: { type: 'string' },
     'trusted-identity': { type: 'string', multiple: true },
   },
   strict: true,
@@ -34,6 +37,11 @@ const { values: args } = parseArgs({
 for (const [flag, value] of Object.entries(args))
   if (value === '' || (Array.isArray(value) && value.includes('')))
     throw new Error(`--${flag} requires a value`)
+if (args.network && args.matrix) throw new Error('--network and --matrix are separate modes')
+if (args.network && !Object.hasOwn(hostedEnvironments, args.network))
+  throw new Error(
+    `--network must be one of ${Object.keys(hostedEnvironments).join(', ')}, not ${args.network}`,
+  )
 const environmentIdentity = process.env.EARN_TRUSTED_DEPLOYMENT_IDENTITY?.trim()
 const identityPaths = args['trusted-identity'] ?? (environmentIdentity ? [environmentIdentity] : [])
 const trustedIdentities = identityPaths.map((path) =>
@@ -47,6 +55,21 @@ const paths = readdirSync(directory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => resolve(directory, entry.name, 'profile.json'))
   .sort()
+
+if (args.network) {
+  const listed = paths
+    .map((path) => ({ path, profile: loadEarnProfile(path) }))
+    .filter(({ profile }) => hostedEnvironment(profile.chainId)?.id === args.network)
+    .map(({ path, profile }) => ({
+      id: profile.id,
+      path: relative(root, path),
+      rpcUrl: hostedEnvironments[args.network as keyof typeof hostedEnvironments].rpcUrl,
+    }))
+  const output = JSON.stringify(listed)
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `profiles=${output}\n`)
+  else console.log(output)
+  process.exit(0)
+}
 
 const ids = new Set<string>()
 const recorded: { id: string; path: string; rpcUrl: string }[] = []

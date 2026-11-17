@@ -87,6 +87,8 @@ contract EarnVault is IEarnVault {
     uint256 internal constant CONVERSION_BPS = 10_000;
     /// @notice Maximum contribution-funded increase in the normalized engine-share/EarnShare rate.
     uint256 public constant override MAX_REWARD_RATE_MULTIPLIER = 100;
+    /// @dev EarnShare base units the vault may hold without counting as supply.
+    uint256 internal constant SHARE_RESIDUE = 1;
 
     /// @notice The current yield engine and sole custodian of the venue shares backing this EarnVault's
     ///         EarnShare supply. MUTABLE only through operator-authorized {migrateEngine}.
@@ -585,7 +587,7 @@ contract EarnVault is IEarnVault {
         if (receiver == address(0)) revert ZeroAddress();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
 
-        uint256 supplyBefore = IEarnShare(earnShare).totalSupply();
+        uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
         _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
         uint256 rateEngineShares = anchorEngineShares;
@@ -663,7 +665,7 @@ contract EarnVault is IEarnVault {
         if (receiver == address(0)) revert ZeroAddress();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
 
-        uint256 supplyBefore = IEarnShare(earnShare).totalSupply();
+        uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
         _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
         uint256 rateEngineShares = anchorEngineShares;
@@ -719,7 +721,7 @@ contract EarnVault is IEarnVault {
         if (depositsPaused) revert DepositsPaused();
         if (assets == 0) revert ZeroAmount();
 
-        uint256 supply = IEarnShare(earnShare).totalSupply();
+        uint256 supply = _activeSupply();
         if (supply == 0) revert NoEarnShares();
 
         _accrueFees();
@@ -754,7 +756,7 @@ contract EarnVault is IEarnVault {
     function absorbEngineShareSurplus(uint256 engineShares_) external override nonReentrant {
         if (depositsPaused) revert DepositsPaused();
         if (engineShares_ == 0) revert ZeroAmount();
-        if (IEarnShare(earnShare).totalSupply() == 0) revert NoEarnShares();
+        if (_activeSupply() == 0) revert NoEarnShares();
 
         _accrueFees();
 
@@ -878,7 +880,7 @@ contract EarnVault is IEarnVault {
         if (earnSharesBurned == 0) revert InsufficientOutput();
         if (earnSharesBurned > maxEarnShares) revert ExceedsMaxEarnShares();
         if (engineSharesBurned == engineSharesBefore && assets < engineAssetsBefore) revert ResidualBacking();
-        if (earnSharesBurned == IEarnShare(earnShare).totalSupply() && engineShares() != 0) {
+        if (earnSharesBurned == _activeSupply() && engineShares() != 0) {
             revert ResidualBacking();
         }
 
@@ -1023,7 +1025,7 @@ contract EarnVault is IEarnVault {
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
         bool chargePending = IEarnFees(earnFees).shouldChargeRedeem(requestId);
-        uint256 activeSupply = IEarnShare(earnShare).totalSupply();
+        uint256 activeSupply = _activeSupply();
         uint256 activeAssets = activeSupply == 0 || !chargePending ? 0 : totalAssets();
         uint256 heldBefore = rawEngineShares();
 
@@ -1137,7 +1139,7 @@ contract EarnVault is IEarnVault {
 
         _accrueFees();
 
-        uint256 supply = IEarnShare(earnShare).totalSupply();
+        uint256 supply = _activeSupply();
         uint256 oldEngineShares = engineShares();
         uint256 oldRawEngineShares = rawEngineShares();
         uint256 assetsMoved = 0;
@@ -1304,8 +1306,15 @@ contract EarnVault is IEarnVault {
         return _normalizedRate(engineShareAnchor, supplyAnchor);
     }
 
+    /// @dev Up to `SHARE_RESIDUE` EarnShare this vault holds counts as burned, so a standing residue keeps its balance
+    ///      slot across exits. The cap stops transfers to the vault from shrinking supply and inflating the rate.
+    function _activeSupply() internal view returns (uint256) {
+        uint256 held = IEarnShare(earnShare).balanceOf(address(this));
+        return IEarnShare(earnShare).totalSupply() - (held < SHARE_RESIDUE ? held : SHARE_RESIDUE);
+    }
+
     function totalEarnShares() public view override returns (uint256) {
-        return IEarnShare(earnShare).totalSupply();
+        return _activeSupply();
     }
 
     /// @notice Checks that live EarnShare supply converts exactly to active engine shares at the
@@ -1314,6 +1323,13 @@ contract EarnVault is IEarnVault {
     function isAccountingAligned() external view override returns (bool) {
         uint256 supply = totalEarnShares();
         uint256 held = engineShares();
+        if (_aligned(supply, held)) return true;
+        // A residue sent since the last checkpoint is still inside the stored anchor until the next call restates it.
+        uint256 total = IEarnShare(earnShare).totalSupply();
+        return total != supply && _aligned(total, held);
+    }
+
+    function _aligned(uint256 supply, uint256 held) internal view returns (bool) {
         if (supply == 0 || held == 0) return supply == 0 && held == 0;
         return _convertToEngineShares(supply) == held;
     }
@@ -1406,7 +1422,7 @@ contract EarnVault is IEarnVault {
         supplyAnchor = anchorEarnShares;
 
         uint256 feeEarnShares = IEarnFees(earnFees).previewAccruedFees().totalFeeEarnShares;
-        uint256 projectedSupply = IEarnShare(earnShare).totalSupply() + feeEarnShares;
+        uint256 projectedSupply = _activeSupply() + feeEarnShares;
         uint256 held = engineShares();
         if (projectedSupply == 0) {
             return (IEarnEngine(engine).shareScale(), earnShareScale);
@@ -1454,14 +1470,17 @@ contract EarnVault is IEarnVault {
     /// @custom:ensures (supply == 0 || held == 0) ==> _specEmptyAnchor()
     /// @custom:ensures (old(rewardRateBaseline) != 0 ==> rewardRateBaseline != 0) && earnShareScale == old(earnShareScale)
     function _reanchorAtRest() internal returns (uint256 supply, uint256 held) {
-        supply = IEarnShare(earnShare).totalSupply();
+        supply = _activeSupply();
         uint256 raw = rawEngineShares();
         uint256 managed = _managedEngineShares;
+        held = managed;
         if (managed > raw) {
-            _managedEngineShares = raw;
+            held = raw;
             emit EngineShareShortfallReconciled(engine, managed, raw, managed - raw, supply);
         }
-        held = _managedEngineShares;
+        // No active supply claims managed backing (an exit or a residue transfer can empty it), so it becomes surplus.
+        if (supply == 0) held = 0;
+        if (held != managed) _managedEngineShares = held;
         if (supply == 0 || held == 0) {
             _resetEmptyAnchor(engine);
             return (supply, held);
@@ -1486,7 +1505,7 @@ contract EarnVault is IEarnVault {
         internal
         returns (uint256 supply, uint256 held)
     {
-        supply = IEarnShare(earnShare).totalSupply();
+        supply = _activeSupply();
         uint256 represented = Math.mulDiv(supply, rateEngineShares, rateEarnShares);
         if (_managedEngineShares > represented) _managedEngineShares = represented;
         return _reanchorAtRest();

@@ -42,21 +42,30 @@ describe('validateRouter', () => {
     },
   )
 
-  it.each(temporaryAllowances)(
-    'accepts a standing maximum only for the EarnVault and pool: %s',
-    async (label, token, spender) => {
-      const { client, deployment, allowances } = routerFixture()
-      allowances.set(allowanceKey(token, spender), maxUint256)
-      if (spender === portal)
-        await expect(validateRouter(client, deployment)).rejects.toThrow(
-          `EarnRouter retains an allowance at rest: ${label}`,
-        )
-      else await expect(validateRouter(client, deployment)).resolves.toBeUndefined()
-    },
-  )
+  it.each(temporaryAllowances)('accepts a standing maximum: %s', async (_label, token, spender) => {
+    const { client, deployment, allowances } = routerFixture()
+    allowances.set(allowanceKey(token, spender), maxUint256)
+    await expect(validateRouter(client, deployment)).resolves.toBeUndefined()
+  })
+
+  it('accepts a standing Portal maximum that deposits have drawn down', async () => {
+    const { client, deployment, allowances } = routerFixture()
+    allowances.set(allowanceKey(privateAsset, portal), maxUint256 - 10n ** 18n)
+    await expect(validateRouter(client, deployment)).resolves.toBeUndefined()
+  })
+
+  it('rejects a drawn-down maximum for the EarnVault', async () => {
+    const { client, deployment, allowances } = routerFixture()
+    allowances.set(allowanceKey(asset, earnVault), maxUint256 - 1n)
+    await expect(validateRouter(client, deployment)).rejects.toThrow(
+      'EarnRouter retains an allowance at rest: vault asset to EarnVault',
+    )
+  })
 
   it('checks vault and Portal allowances without a conversion pool', async () => {
-    const { client, deployment, allowanceReads } = routerFixture({ sameAsset: true })
+    const { client, deployment, allowanceReads } = routerFixture({
+      sameAsset: true,
+    })
     await validateRouter(client, deployment)
     expect(allowanceReads).toEqual([
       allowanceKey(asset, earnVault),
@@ -109,9 +118,11 @@ describe('routerIntegrity', () => {
       privateAsset,
     })
     expect(before?.allowances).toEqual(
-      temporaryAllowances.map(([, token, spender]) =>
-        spender === portal ? { token, spender, allowance: 0n } : { token, spender, standing: true },
-      ),
+      temporaryAllowances.map(([, token, spender]) => ({
+        token,
+        spender,
+        standing: true,
+      })),
     )
     expect(stringify(await routerIntegrity(context))).toBe(stringify(before))
   })
