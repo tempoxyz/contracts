@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
 import { CardProgram } from "./CardProgram.sol";
+import { Conversion } from "./Conversion.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
@@ -20,8 +22,13 @@ import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 ///      capped debt. A cardholder approves the desk as a holder so a refund can take back a reward from money it
 ///      still has, never as debt. Amounts are in units of the program's settlement token.
 contract IssuerDesk is ISettlementTokenGuard {
+    using FixedPointMathLib for uint256;
+
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;
+    uint256 private constant RATE_ONE = 1e18;
+    /// @dev Converted legs each round what they take up by a unit, at most one per funding source.
+    uint256 private constant LEG_ROUNDING = 8;
 
     /// @notice Dispute states, in the order a dispute moves through them; a dispute ends won or lost.
     uint8 public constant OPENED = 1;
@@ -375,15 +382,30 @@ contract IssuerDesk is ISettlementTokenGuard {
     // forge-lint: disable-start(calls-loop)
 
     function _refund(bytes32 purchaseRef, uint128 amount) private {
-        SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, address(this), amount);
-        SafeTransferLib.safeApprove(TOKEN, address(PROGRAM), amount);
+        address token = PROGRAM.settlementToken();
+        address booked = PROGRAM.purchaseToken(purchaseRef);
+        if (booked == token) {
+            SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), amount);
+            SafeTransferLib.safeApprove(token, address(PROGRAM), amount);
+            PROGRAM.refund(purchaseRef, amount);
+            return;
+        }
+        // A purchase booked in an earlier settlement token refunds in its units, which the program takes in today's
+        // token at the reference rate; what the desk pulled beyond that goes back to the settlement account.
+        uint256 paying =
+            uint256(amount).mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE) + LEG_ROUNDING;
+        SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), paying);
+        SafeTransferLib.safeApprove(token, address(PROGRAM), paying);
         PROGRAM.refund(purchaseRef, amount);
+        SafeTransferLib.safeApprove(token, address(PROGRAM), 0);
+        SafeTransferLib.safeTransfer(token, SETTLEMENT, SafeTransferLib.balanceOf(token, address(this)));
     }
 
     // Pays every terms line its share of amount, then each reward out of its funder's share, from the settlement
     // account: a funder gets its split less the rewards it funds, the owner the rewards.
     function _charged(bytes32 purchaseRef, uint128 amount) private {
         address owner = PROGRAM.purchaseOf(purchaseRef).owner;
+        address token = PROGRAM.purchaseToken(purchaseRef);
         books[purchaseRef].captured += amount;
         uint256 count = _terms.length;
         uint128[] memory left = new uint128[](count);
@@ -416,9 +438,9 @@ contract IssuerDesk is ISettlementTokenGuard {
             emit RewardPaid(purchaseRef, owner, reward.funder, reward.kind, paid);
         }
         for (uint256 i; i < count; ++i) {
-            if (left[i] != 0) SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, _terms[i].payee, left[i]);
+            if (left[i] != 0) SafeTransferLib.safeTransferFrom(token, SETTLEMENT, _terms[i].payee, left[i]);
         }
-        if (rewarded != 0) SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, owner, rewarded);
+        if (rewarded != 0) SafeTransferLib.safeTransferFrom(token, SETTLEMENT, owner, rewarded);
     }
 
     function _addSplit(bytes32 purchaseRef, address payee, address funder, bytes32 kind, uint128 amount) private {
@@ -443,6 +465,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 refunded = b.refunded + amount;
         if (refunded > captured) refunded = captured;
         b.refunded = refunded;
+        // Splits were paid, and come back, in the token the purchase was booked in.
+        address token = PROGRAM.purchaseToken(purchaseRef);
         Split[] storage splits = _splits[purchaseRef];
         for (uint256 i; i < splits.length; ++i) {
             Split storage s = splits[i];
@@ -452,15 +476,15 @@ contract IssuerDesk is ISettlementTokenGuard {
             if (due <= s.reversed) continue;
             uint128 share = due - s.reversed;
             s.reversed = due;
-            uint128 available = CORE.available(s.payee, TOKEN);
+            uint128 available = CORE.available(s.payee, token);
             if (s.funder == address(0)) {
-                CORE.charge(s.payee, TOKEN, _nextId(), share, SETTLEMENT, false);
+                CORE.charge(s.payee, token, _nextId(), share, SETTLEMENT, false);
                 emit FeeReversed(purchaseRef, s.payee, s.kind, share, share > available ? share - available : 0);
                 continue;
             }
             uint128 taken = share < available ? share : available;
             if (taken == 0) continue;
-            CORE.charge(s.payee, TOKEN, _nextId(), taken, s.funder, false);
+            CORE.charge(s.payee, token, _nextId(), taken, s.funder, false);
             emit RewardReversed(purchaseRef, s.payee, s.funder, s.kind, taken);
         }
     }

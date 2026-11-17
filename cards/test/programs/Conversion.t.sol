@@ -6,6 +6,7 @@ import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 import { CardFunding } from "../../src/programs/CardFunding.sol";
 import { CardProgram } from "../../src/programs/CardProgram.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
+import { IssuerDesk } from "../../src/programs/IssuerDesk.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
 
@@ -315,6 +316,43 @@ contract ConversionTest is ProgramsEnv {
         vm.prank(authority);
         core.releaseLien(bytes32("freeze"));
         assertEq(core.liened(settlement, address(eur)), 0);
+    }
+
+    function test_desk_refundsAnEarlierTokensPurchaseInTodaysTokenAndKeepsItsSplitsInTheOld() public {
+        IssuerDesk desk = new IssuerDesk(cards);
+        address network = makeAddr("network");
+        IssuerDesk.Line[] memory lines = new IssuerDesk.Line[](1);
+        lines[0] = IssuerDesk.Line({ payee: network, bps: 100, kind: "interchange" });
+        vm.startPrank(issuer);
+        cards.setOperator(address(desk), true);
+        desk.setTerms(lines);
+        vm.stopPrank();
+        vm.startPrank(settlement);
+        usd.approve(address(desk), type(uint256).max);
+        eur.approve(address(desk), type(uint256).max);
+        vm.stopPrank();
+        vm.prank(network);
+        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        // Booked in dollars, then the issuer settles in euros.
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        vm.prank(issuer);
+        desk.capture(P1, 40e6, true);
+        assertEq(usd.balanceOf(network), 0.4e6);
+        (uint64 seq,,,) = cards.ledger();
+        vm.startPrank(issuer);
+        cards.acknowledgeSettlement(seq);
+        cards.setSettlementToken(address(eur));
+        vm.stopPrank();
+        // A $22 refund costs the issuer EUR 20 at the reference rate, and the network gives back its dollar split.
+        uint256 cash = usd.balanceOf(alice);
+        eur.mint(settlement, 50e6);
+        vm.prank(issuer);
+        desk.refund(P1, 22e6);
+        assertEq(usd.balanceOf(alice), cash + 22e6);
+        assertEq(eur.balanceOf(settlement), 30e6);
+        assertEq(eur.balanceOf(address(desk)), 0);
+        assertEq(usd.balanceOf(network), 0.18e6);
     }
 
     function test_setSettlementToken_issuerOnly() public {
