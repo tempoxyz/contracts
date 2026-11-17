@@ -589,7 +589,8 @@ contract EarnVault is IEarnVault {
 
         uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
-        _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
+        bool restarted = _isUnbacked(currentSupply, accruedFees.activeAssets);
+        if (restarted) _restartEmptyAnchor();
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
         // Fees are checkpointed first, so the entry is priced against the post-fee supply, and an entry into
@@ -608,13 +609,14 @@ contract EarnVault is IEarnVault {
         if (earnShares == 0) revert InsufficientOutput();
         if (earnShares < minEarnShares) revert MinimumEarnSharesNotMet(minEarnShares, earnShares);
         _requireAcceptableConversion(receivedEngineShares, earnShares);
+        if (restarted) _requireNegligibleUnbackedSupply(currentSupply, earnShares);
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
         _reanchorAfterEntry(rateEngineShares, rateEarnShares);
         _requireWithinManagedAssetsLimit();
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
-        if (supplyBefore == 0 || accruedFees.activeAssets != 0) {
+        if (supplyBefore == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
             IEarnFees(earnFees).initializeBaselines();
         }
@@ -667,7 +669,8 @@ contract EarnVault is IEarnVault {
 
         uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
-        _requireDepositBackingAfterAccrual(currentSupply, accruedFees.activeAssets);
+        bool restarted = _isUnbacked(currentSupply, accruedFees.activeAssets);
+        if (restarted) _restartEmptyAnchor();
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
         // Fees are checkpointed first, so the entry is priced against the post-fee supply, and an entry into
@@ -685,13 +688,14 @@ contract EarnVault is IEarnVault {
         if (earnShares == 0) revert InsufficientOutput();
         if (earnShares < minEarnShares) revert MinimumEarnSharesNotMet(minEarnShares, earnShares);
         _requireAcceptableConversion(receivedEngineShares, earnShares);
+        if (restarted) _requireNegligibleUnbackedSupply(currentSupply, earnShares);
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
         _reanchorAfterEntry(rateEngineShares, rateEarnShares);
         _requireWithinManagedAssetsLimit();
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
-        if (supplyBefore == 0 || accruedFees.activeAssets != 0) {
+        if (supplyBefore == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
             IEarnFees(earnFees).initializeBaselines();
         }
@@ -1435,21 +1439,32 @@ contract EarnVault is IEarnVault {
     }
 
     /// @dev A principal deposit must not recapitalize existing EarnShare after its active engine
-    ///      position has zero base-asset value, even when raw engine shares remain. Permissionless
-    ///      `contribute` is the explicit path for deliberately restoring value without issuing a claim.
-    /// @custom:ensures supply == 0 || backingAssets != 0
-    /// @custom:succeeds-if supply == 0 || backingAssets != 0
-    function _requireDepositBacking(uint256 supply, uint256 backingAssets) internal pure {
-        if (supply != 0 && backingAssets == 0) revert ActiveSupplyWithoutBacking();
+    ///      position has zero base-asset value. Instead, such a pool restarts at the empty-pool rate:
+    ///      its worthless managed engine shares become surplus, and the entry is then admitted only
+    ///      when the unbacked supply's claim on it is negligible ({_requireNegligibleUnbackedSupply}).
+    ///      Supply that cannot exit, such as a seed unit an ownerless router holds, can therefore never
+    ///      block deposits for good. Permissionless `contribute` still restores value without a claim.
+    /// @custom:ensures unbacked == (supply != 0 && (accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets) == 0)
+    ///      Not proved: a nonzero accruedActiveAssets is the engine's valuation of the managed shares.
+    function _isUnbacked(uint256 supply, uint256 accruedActiveAssets) internal view returns (bool unbacked) {
+        return supply != 0 && (accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets) == 0;
     }
 
-    /// @dev Active fee checkpoints already read managed assets. Reuse that verified value rather
-    ///      than calling through the engine again; inactive fees retain the original backing read.
-    /// @custom:ensures supply == 0 || (accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets) != 0
-    /// @dev The check is on the asset value of managed backing, never on a share count.
-    ///      Not proved: a nonzero accruedActiveAssets is the engine's valuation of the managed shares.
-    function _requireDepositBackingAfterAccrual(uint256 supply, uint256 accruedActiveAssets) internal view {
-        _requireDepositBacking(supply, accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets);
+    /// @dev Moves the worthless managed engine shares to surplus and prices the next entry at the
+    ///      empty-pool rate.
+    /// @custom:ensures _managedEngineShares == 0 && _specEmptyAnchor()
+    function _restartEmptyAnchor() internal {
+        _managedEngineShares = 0;
+        _resetEmptyAnchor(engine);
+    }
+
+    /// @dev After a restart the unbacked supply shares the new entry's backing pro rata. Admit the entry
+    ///      only when that share is within the one-basis-point conversion-loss ceiling every deposit
+    ///      already accepts; larger stranded supply, such as after a real loss, keeps deposits closed.
+    /// @custom:ensures unbackedSupply * CONVERSION_BPS <= earnShares
+    /// @custom:succeeds-if unbackedSupply * CONVERSION_BPS <= earnShares
+    function _requireNegligibleUnbackedSupply(uint256 unbackedSupply, uint256 earnShares) internal pure {
+        if (unbackedSupply > earnShares / CONVERSION_BPS) revert ActiveSupplyWithoutBacking();
     }
 
     /// @dev Applies only to voluntary inflows. Passive yield may exceed the limit, and exit,
