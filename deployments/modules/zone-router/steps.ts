@@ -1,11 +1,4 @@
-import {
-  encodeFunctionData,
-  erc20Abi,
-  getAbiItem,
-  getAddress,
-  zeroAddress,
-  type Address,
-} from 'viem'
+import { encodeFunctionData, getAbiItem, getAddress, zeroAddress, type Address } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import {
@@ -44,7 +37,12 @@ import {
 } from '../module.js'
 import { sendAuthorityCalls } from '../signer.js'
 import { inspectZoneRouterBinding } from './inspection.js'
-import { missingZoneRouterSeeds, zoneRouterSeedCalls, zoneRouterSeedPlan } from './seeds.js'
+import {
+  missingZoneRouterSeeds,
+  sendableZoneRouterSeedCalls,
+  zoneRouterSeeded,
+  zoneRouterSeedPlan,
+} from './seeds.js'
 import {
   configuredZoneRouter,
   zoneRouterConstructorArgs,
@@ -407,11 +405,10 @@ export const seedZoneRouter = defineAuthorityStep({
   enabled: hasZoneRouter,
   async satisfied(client, profile, outputs) {
     const plan = await zoneRouterSeedPlan(client, profile, outputs)
-    const missing = await missingZoneRouterSeeds(client, plan)
-    return missing.seeds.length === 0 && missing.warm.length === 0
+    return zoneRouterSeeded(plan, await missingZoneRouterSeeds(client, plan))
   },
   handoff: (_profile, outputs) =>
-    `The deployer holds too little of a token to seed ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} and its SendSpenders: run pnpm earn verify, send each holder named under Zone router seeds 1 base unit and call warm(token) on the router for each allowance blocker (anyone may), then re-run the same pnpm earn deploy command; it will verify the seeds and continue.`,
+    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} or a listed spender still lacks a seed the deployer could not send: the deployer holds too little of a token, a token's transfer policy refuses the deployer or the holder, or a listed spender is neither a card program nor the release SendSpender. Run pnpm earn verify: send each holder named under Zone router seeds 1 base unit from an account the token's policy authorizes, call warm(token) on the router for each allowance blocker (anyone may), replace any unverified spender, then re-run the same pnpm earn deploy command; it will verify the seeds and continue.`,
   async execute(options, dependencies) {
     const key = envPrivateKey(options.environment, deployerAuthority.signer)
     if (!key) return undefined
@@ -423,27 +420,16 @@ export const seedZoneRouter = defineAuthorityStep({
       )
     const plan = await zoneRouterSeedPlan(client, options.profile, options.outputs)
     const missing = await missingZoneRouterSeeds(client, plan)
-    if (missing.seeds.length === 0 && missing.warm.length === 0) return { transactions: [] }
-    const tokens = [...new Set(missing.seeds.map((entry) => entry.token))]
-    const held = await Promise.all(
-      tokens.map((token) =>
-        client.readContract({
-          address: token,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [account.address],
-        }),
-      ),
-    )
-    const needed = (token: Address) =>
-      BigInt(missing.seeds.filter((entry) => entry.token === token).length)
-    if (tokens.some((token, index) => held[index]! < needed(token))) return undefined
-    return sendAuthorityCalls(
-      client,
-      dependencies,
-      options.profile,
-      zoneRouterSeedCalls(plan, missing),
-    )
+    if (zoneRouterSeeded(plan, missing)) return { transactions: [] }
+    // Each call is simulated alone first, so a token whose policy refuses one transfer never reverts
+    // the batch: the rest go out and the step hands off what is left.
+    const sendable = await sendableZoneRouterSeedCalls(client, account.address, plan, missing)
+    const sent =
+      sendable.calls.length > 0
+        ? await sendAuthorityCalls(client, dependencies, options.profile, sendable.calls)
+        : { transactions: [] }
+    // Anything left needs someone else, so the deploy stops at this step's handoff.
+    return sendable.refused.length > 0 || plan.unverified.length > 0 ? undefined : sent
   },
 })
 

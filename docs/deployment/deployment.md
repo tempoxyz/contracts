@@ -210,12 +210,19 @@ After one is deployed, send it 1 base unit of each token it handles:
 
 For a profile's router the `seed-zone-router` activation step does this. Of the stack's private
 asset, vault asset and EarnShare it seeds and warms what the router's Earn ops handle and what its
-Portal enables for Spend, and seeds the same tokens on each listed `SendSpender` (a listed card
-program is left to its [runbook](../cards/bridge/deploy.md#6-prepare-the-program-for-low-callback-gas)). It sends only
-what is missing, from `DEPLOYER_PRIVATE_KEY`, and hands off when the deployer holds too little of a
-token. `pnpm earn verify` reports each missing unit or allowance under **Zone router seeds**
-without blocking the route. Tokens outside the stack, such as other stablecoins a Spend router
-routes, and routers or spenders deployed outside a profile, are seeded by hand.
+Portal enables for Spend (it asks the Portal about each of the three, whatever the profile), and
+seeds the same tokens on each listed spender verified as the release `SendSpender` for its
+settings, as `pnpm earn verify` verifies it. A listed card program is left to its
+[runbook](../cards/bridge/deploy.md#6-prepare-the-program-for-low-callback-gas). Any other listed
+spender gets nothing and leaves the step incomplete, reported under **Zone router seeds**, until the
+profile lists only verified spenders. A `SendSpender`'s conversion asset or par stablecoin is seeded
+only when it is one of the stack's three tokens. The step sends only what is missing, from
+`DEPLOYER_PRIVATE_KEY`, simulating each transfer and `warm` call from the deployer first: it sends
+those that succeed in one batch and hands off, naming the rest, when the deployer holds too little of
+a token or a token's TIP-403 transfer policy refuses the deployer or the holder. `pnpm earn verify`
+reports each missing unit or allowance under **Zone router seeds** without blocking the route.
+Tokens outside the stack, such as other stablecoins a Spend router routes, and routers or spenders
+deployed outside a profile, are seeded by hand.
 
 For an EarnVault whose release restarts an unbacked pool (a deposit into a pool whose supply has
 lost all backing prices at the empty-pool rate when that supply is negligible), also send each router
@@ -225,7 +232,8 @@ supply no one can exit, which is why it needs that release: if every other holde
 backing is lost, the next deposit restarts the pool instead of reverting. Check the vault's recorded
 factory release first, and never send EarnShare to a router, `SendSpender` or card program bound to
 an earlier vault. `seed-zone-router` sends EarnShare only when the vault's implementation emits
-`UnbackedPoolRestarted`.
+`UnbackedPoolRestarted`; otherwise it still warms the router's EarnShare Portal allowance, which
+moves no EarnShare, and `pnpm earn verify` notes the withheld units.
 
 Measured on real TIP-20 (`cards/test/gas/RouterTip20Gas.t.sol`, with the vault residue above), a
 router's deposit callback drops from 1.28M to 528k gas and its redeem from 998k to 498k, and its

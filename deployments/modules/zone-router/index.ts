@@ -170,6 +170,7 @@ export const zoneRouterModeModule: CapabilityModule = {
       label: 'Zone router seeds',
       status: seedBlockers.length === 0 ? 'ready' : 'blocked',
       blockers: seedBlockers,
+      ...(seedPlan.notes.length > 0 ? { details: { withheld: seedPlan.notes.join('; ') } } : {}),
     }
     if (conversion) {
       report.zoneRouterConversion = {

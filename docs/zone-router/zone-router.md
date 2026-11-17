@@ -75,9 +75,11 @@ contracts:
    `setAllowedAccount`; the Portal holds one role per account, so a router needs only one of the
    two, and after the Zone changes gateway mode either step revokes the old role and grants the new
    one in one batch), then `seed-zone-router` (the deployer sends the router and each listed
-   `SendSpender` 1 base unit of each stack token they handle and calls `warm` for each token the
-   router returns to its Zone, so no callback creates those slots; EarnShare only when the vault
-   restarts unbacked pools, see [balance residues](../deployment/deployment.md#gas-residue-after-deployment)).
+   spender verified as the release `SendSpender` 1 base unit of each stack token they handle and
+   calls `warm` for each token the router returns to its Zone, so no callback creates those slots;
+   EarnShare units only when the vault restarts unbacked pools. Each call is simulated first; calls a
+   token's transfer policy refuses, and any unverified spender, are handed off rather than sent, see
+   [balance residues](../deployment/deployment.md#gas-residue-after-deployment)).
    The lifecycle grants pool, gateway and account admission with its own keys only when it
    deployed the factory itself; for a router from a factory the profile names, each is always handed
    off, for the pool owner or the Portal administrator to check that factory's verified source

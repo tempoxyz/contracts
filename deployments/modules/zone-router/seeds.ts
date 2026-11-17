@@ -1,23 +1,33 @@
 import {
+  BaseError,
   encodeFunctionData,
   erc20Abi,
   getAbiItem,
   getAddress,
+  HttpRequestError,
   isAddress,
   parseAbi,
+  TimeoutError,
   toEventSelector,
   zeroAddress,
   type Address,
   type Hex,
   type PublicClient,
+  WebSocketRequestError,
 } from 'viem'
 
 import { earnVaultAbi, zonePortalAbi, zoneRouterAbi } from '../../abis/index.js'
 import type { EarnDeploymentProfile } from '../../core/profile.js'
 import { configuredZone } from '../earn/zone-router/profile.js'
 import { requiredOutput } from '../module.js'
-import { missingGetter } from './inspection.js'
-import { configuredZoneRouter } from './profile.js'
+import {
+  isCardProgram,
+  missingGetter,
+  releaseSendSpender,
+  type SpenderReleases,
+} from './inspection.js'
+import { configuredZoneRouter, zoneRouterFactory } from './profile.js'
+import { spenderReleases } from './releases.js'
 
 /**
  * A token whose TIP-20 balance slot a contract keeps nonzero with 1 base unit. A Zone router and a
@@ -34,12 +44,19 @@ export type ZoneRouterSeed = {
 /** A token the router returns to its Zone, whose standing Portal allowance `warm` sets. */
 export type ZoneRouterWarm = { token: Address; tokenLabel: string }
 
-/** The units the router and its SendSpenders should hold, and the tokens the router should warm. */
+/**
+ * The units the router and its SendSpenders should hold, the tokens the router should warm, the listed
+ * spenders this tooling will not seed because they are not verified, and notes on units it withholds.
+ */
 export type ZoneRouterSeedPlan = {
   router: Address
   portal: Address
   seeds: ZoneRouterSeed[]
   warm: ZoneRouterWarm[]
+  /** Why each listed spender that is neither a card program nor the release SendSpender is not seeded. */
+  unverified: string[]
+  /** Units deliberately not sent, such as EarnShare to contracts bound to an earlier vault. */
+  notes: string[]
 }
 
 type SeedClient = Pick<PublicClient, 'getCode' | 'getStorageAt' | 'readContract'>
@@ -51,16 +68,15 @@ const restartTopic = toEventSelector(
 )
   .slice(2)
   .toLowerCase()
-const spenderAbi = parseAbi([
-  'function PROVIDER() view returns (address)',
-  'function convertVault() view returns (address)',
+const sendSpenderAbi = parseAbi([
   'function convertAsset() view returns (address)',
   'function parToken() view returns (address)',
 ])
 
 /**
  * Whether the profile has the router's Portal enable EarnShare: through this mode's Earn binding, or
- * through the single-Zone router on the same Zone. Inspection reads the Portal itself.
+ * through the single-Zone router on the same Zone. Planning uses it before any chain read; inspection
+ * and seeding read the Portal itself.
  */
 export function enablesEarnShare(profile: EarnDeploymentProfile) {
   const router = profile.zoneRouter
@@ -83,14 +99,17 @@ export async function vaultRestartsUnbackedPools(client: SeedClient, vault: Addr
 
 /**
  * What the profile's router and its SendSpenders handle: an Earn router's vault asset and private
- * asset, each stack token its Portal enables for a Spend router, and each SendSpender's input tokens
- * plus the tokens it redeems or converts through. EarnShare units go only to contracts bound to a vault
- * that restarts unbacked pools; card programs follow their own runbook.
+ * asset, each stack token its Portal enables for a Spend router (EarnShare included, whatever the
+ * profile), and each release SendSpender's input tokens plus the stack tokens it redeems or converts
+ * through. EarnShare units go only to contracts bound to a vault that restarts unbacked pools, though
+ * the router still warms its EarnShare allowance; card programs follow their own runbook, and any
+ * other spender is reported as unverified and sent nothing.
  */
 export async function zoneRouterSeedPlan(
   client: SeedClient,
   profile: EarnDeploymentProfile,
   outputs: Record<string, Address>,
+  releases: SpenderReleases = spenderReleases,
 ): Promise<ZoneRouterSeedPlan> {
   const router = configuredZoneRouter(profile)
   const routerAddress = requiredOutput(outputs, 'zoneRouter')
@@ -100,11 +119,13 @@ export async function zoneRouterSeedPlan(
   const spends = router.ops.includes('spend')
 
   // Spend moves whatever its Zone withdraws; of the stack's tokens, those are the ones it enables.
+  // These are also the only tokens seeded at all: a spender's getters never add a token outside them.
   const candidates: [label: string, token: Address][] = [
     ...(router.earn ? [['private asset', router.earn.privateAsset] as [string, Address]] : []),
     ['vault asset', asset],
-    ...(enablesEarnShare(profile) ? [['EarnShare', earnShare] as [string, Address]] : []),
+    ['EarnShare', earnShare],
   ]
+  const known = new Map(candidates.map(([label, token]) => [getAddress(token), label]))
   const enabled = spends
     ? await Promise.all(
         candidates.map(([, token]) =>
@@ -120,12 +141,18 @@ export async function zoneRouterSeedPlan(
   const spendTokens = candidates.filter((_, index) => enabled[index] === true)
   const holdsEarnShare =
     router.earn !== undefined || spendTokens.some(([, token]) => token === earnShare)
-  const restarts =
-    holdsEarnShare &&
-    (await vaultRestartsUnbackedPools(client, requiredOutput(outputs, 'earnVault')))
+  const earnVault = holdsEarnShare ? requiredOutput(outputs, 'earnVault') : zeroAddress
+  const restarts = holdsEarnShare && (await vaultRestartsUnbackedPools(client, earnVault))
 
   const seeds: ZoneRouterSeed[] = []
   const warm: ZoneRouterWarm[] = []
+  const notes: string[] = []
+  const unverified: string[] = []
+  if (holdsEarnShare && !restarts) {
+    notes.push(
+      `EarnShare units withheld: EarnVault ${earnVault} does not restart unbacked pools, so nothing bound to it may hold EarnShare (its Portal allowance is still warmed)`,
+    )
+  }
   const seed = (holder: Address, holderLabel: string, token: Address, tokenLabel: string) => {
     if (token === zeroAddress) return
     if (token === earnShare && !restarts) return
@@ -150,19 +177,37 @@ export async function zoneRouterSeedPlan(
     warmUp(token, label)
   }
 
+  const factory = zoneRouterFactory(profile, outputs)
   for (const spender of spends ? (router.spenders ?? []) : []) {
-    const binding = await sendSpenderBinding(client, spender)
-    if (!binding) continue
+    // A card program's units follow its own runbook, so nothing is sent to it here.
+    if (await isCardProgram(client, spender)) continue
+    const release = await releaseSendSpender(client, { factory, spender }, releases)
+    if ('blocker' in release) {
+      unverified.push(release.blocker)
+      continue
+    }
     const label = 'SendSpender ' + spender
     for (const [tokenLabel, token] of spendTokens) seed(spender, label, token, tokenLabel)
     // An EarnShare spend redeems here when it converts or pays a virtual address.
     if (spendTokens.some(([, token]) => token === earnShare))
       seed(spender, label, asset, 'vault asset')
-    if (binding.convertVault === zeroAddress) continue
-    seed(spender, label, binding.convertAsset, 'conversion asset')
-    seed(spender, label, binding.parToken, 'par token')
+    if (release.convertVault === zeroAddress) continue
+    for (const functionName of ['convertAsset', 'parToken'] as const) {
+      const value: unknown = await client
+        .readContract({ address: spender, abi: sendSpenderAbi, functionName })
+        .catch(missingGetter)
+      if (typeof value !== 'string' || !isAddress(value)) continue
+      if (getAddress(value) === zeroAddress) continue
+      const tokenLabel = known.get(getAddress(value))
+      if (tokenLabel) seed(spender, label, getAddress(value), tokenLabel)
+      // A token outside the stack, such as another par stablecoin, is never sent automatically.
+      else
+        notes.push(
+          `${label} ${functionName} ${getAddress(value)} is not one of the profile's tokens, so it is not seeded: send it 1 base unit by hand if wanted`,
+        )
+    }
   }
-  return { router: routerAddress, portal, seeds, warm }
+  return { router: routerAddress, portal, seeds, warm, unverified, notes }
 }
 
 /** The seeds each holder lacks and the tokens whose Portal allowance the router has not set. */
@@ -200,9 +245,22 @@ export async function missingZoneRouterSeeds(
 
 export type MissingZoneRouterSeeds = Awaited<ReturnType<typeof missingZoneRouterSeeds>>
 
-/** One readiness line per missing seed or warm-up, naming the transfer or call that fixes it. */
+/** Whether the plan's holders hold every unit and allowance, with every listed spender verified. */
+export function zoneRouterSeeded(plan: ZoneRouterSeedPlan, missing: MissingZoneRouterSeeds) {
+  return plan.unverified.length === 0 && missing.seeds.length === 0 && missing.warm.length === 0
+}
+
+/**
+ * One readiness line per unverified spender and per missing seed or warm-up, naming the transfer or
+ * call that fixes it.
+ */
 export function zoneRouterSeedBlockers(plan: ZoneRouterSeedPlan, missing: MissingZoneRouterSeeds) {
   return [
+    ...plan.unverified.map(
+      (blocker) =>
+        blocker +
+        ', so seed-zone-router sends it nothing and stays incomplete until the router lists only card programs and release SendSpenders',
+    ),
     ...missing.seeds.map(
       (entry) =>
         entry.holderLabel +
@@ -229,13 +287,18 @@ export function zoneRouterSeedBlockers(plan: ZoneRouterSeedPlan, missing: Missin
   ]
 }
 
-/** The calls that fix what is missing: a 1-unit transfer per seed and one warm call per token. */
+/**
+ * The calls that fix what is missing, each with what it does: a 1-unit transfer per seed (with the token
+ * it spends) and one warm call per token.
+ */
 export function zoneRouterSeedCalls(
   plan: ZoneRouterSeedPlan,
   missing: MissingZoneRouterSeeds,
-): { to: Address; data: Hex }[] {
+): { description: string; spends?: Address; to: Address; data: Hex }[] {
   return [
     ...missing.seeds.map((entry) => ({
+      description: `1 base unit of ${entry.tokenLabel} ${entry.token} to ${entry.holderLabel} ${entry.holder}`,
+      spends: entry.token,
       to: entry.token,
       data: encodeFunctionData({
         abi: erc20Abi,
@@ -244,26 +307,89 @@ export function zoneRouterSeedCalls(
       }),
     })),
     ...missing.warm.map((entry) => ({
+      description: `warm(${entry.token}) on Zone router ${plan.router} for ${entry.tokenLabel}`,
       to: plan.router,
       data: encodeFunctionData({ abi: zoneRouterAbi, functionName: 'warm', args: [entry.token] }),
     })),
   ]
 }
 
-/** A listed spender's conversion binding when it is a SendSpender; undefined for a card program. */
-async function sendSpenderBinding(client: Pick<PublicClient, 'readContract'>, spender: Address) {
-  const read = async (functionName: (typeof spenderAbi)[number]['name']) => {
-    const value: unknown = await client
-      .readContract({ address: spender, abi: spenderAbi, functionName })
-      .catch(missingGetter)
-    return typeof value === 'string' && isAddress(value) ? getAddress(value) : undefined
+/** The seed calls the deployer can send now, and why each other one is left for someone else. */
+export type SendableZoneRouterSeedCalls = {
+  calls: { to: Address; data: Hex }[]
+  refused: string[]
+}
+
+/**
+ * Splits the calls that fix what is missing into those `account` can send and those it cannot: a
+ * transfer of a token it holds too little of, or any call that reverts when simulated from it (a
+ * TIP-403 transfer policy refusing it or the holder, say), so one refusal never reverts the batch.
+ * Transport failures still throw; only the chain's refusal is a reason to leave a call.
+ */
+export async function sendableZoneRouterSeedCalls(
+  client: Pick<PublicClient, 'call' | 'readContract'>,
+  account: Address,
+  plan: ZoneRouterSeedPlan,
+  missing: MissingZoneRouterSeeds,
+): Promise<SendableZoneRouterSeedCalls> {
+  const calls = zoneRouterSeedCalls(plan, missing)
+  const tokens = [...new Set(calls.flatMap((call) => (call.spends ? [call.spends] : [])))]
+  const held = new Map(
+    await Promise.all(
+      tokens.map(
+        async (token) =>
+          [
+            token,
+            await client.readContract({
+              address: token,
+              abi: erc20Abi,
+              functionName: 'balanceOf',
+              args: [account],
+            }),
+          ] as const,
+      ),
+    ),
+  )
+  const needed = (token: Address) => BigInt(calls.filter((call) => call.spends === token).length)
+  const outcomes = await Promise.all(
+    calls.map(async (call): Promise<string | undefined> => {
+      if (call.spends && held.get(call.spends)! < needed(call.spends))
+        return `${call.description}: the deployer ${account} holds too little of the token`
+      const reason = await simulationRefusal(client, account, call)
+      return reason === undefined
+        ? undefined
+        : `${call.description}: reverts from the deployer ${account} (${reason})`
+    }),
+  )
+  return {
+    calls: calls
+      .filter((_, index) => outcomes[index] === undefined)
+      .map(({ to, data }) => ({ to, data })),
+    refused: outcomes.filter((outcome) => outcome !== undefined),
   }
-  if (await read('PROVIDER')) return undefined
-  const [convertVault, convertAsset, parToken] = await Promise.all([
-    read('convertVault'),
-    read('convertAsset'),
-    read('parToken'),
-  ])
-  if (!convertVault || !convertAsset || !parToken) return undefined
-  return { convertVault, convertAsset, parToken }
+}
+
+/** Why `call` reverts when `account` sends it alone, or undefined when it would succeed. */
+async function simulationRefusal(
+  client: Pick<PublicClient, 'call'>,
+  account: Address,
+  call: { to: Address; data: Hex },
+) {
+  try {
+    await client.call({ account, to: call.to, data: call.data })
+    return undefined
+  } catch (error) {
+    if (
+      error instanceof BaseError &&
+      error.walk(
+        (cause) =>
+          cause instanceof HttpRequestError ||
+          cause instanceof TimeoutError ||
+          cause instanceof WebSocketRequestError,
+      ) !== null
+    )
+      throw error
+    if (error instanceof BaseError) return error.shortMessage
+    throw error
+  }
 }
