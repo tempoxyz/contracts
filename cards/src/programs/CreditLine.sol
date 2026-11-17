@@ -60,6 +60,11 @@ contract CreditLine {
     /// @notice The hold that commits a line's undrawn limit on the lender's balance, and how many it has had.
     mapping(uint64 lineId => bytes32 holdId) public commitmentOf;
     mapping(uint64 lineId => uint64) internal _commitments;
+    /// @notice Secured lines whose borrower locks shares as it borrows, instead of a fixed pledge, and the hold on the
+    ///         borrower's shares that locks them.
+    mapping(uint64 lineId => bool) public locking;
+    mapping(uint64 lineId => bytes32 holdId) public lockOf;
+    mapping(uint64 lineId => uint64) internal _locks;
 
     bool private transient _locked;
 
@@ -86,6 +91,9 @@ contract CreditLine {
     event PledgeAttached(uint64 indexed lineId, bytes32 pledgeId, uint128 shares, uint64 expiresAt);
     event PledgeReleased(uint64 indexed lineId, bytes32 pledgeId);
     event Seized(uint64 indexed lineId, bytes32 pledgeId, uint128 shares, uint256 assets, uint128 owed);
+    event LockingEnabled(uint64 indexed lineId);
+    event Locked(uint64 indexed lineId, bytes32 holdId, uint128 shares);
+    event Liquidated(uint64 indexed lineId, uint128 shares, uint256 assets, uint128 owed);
 
     error CreditExceeded(uint256 amount, uint256 available);
     error InvalidLine();
@@ -96,6 +104,7 @@ contract CreditLine {
     error NotPastDue();
     error NotProgram();
     error NothingOwed();
+    error NotUndercollateralized(uint256 owed, uint256 secured);
     error PledgeInPlace();
     error Reentrancy();
     error RepayExceedsOwed(uint256 amount, uint256 owed);
@@ -204,6 +213,7 @@ contract CreditLine {
         l.pending += amount;
         // The draw comes out of the commitment, so it frees the lender's balance first.
         _commit(lineId);
+        _lock(lineId);
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-start(reentrancy-no-eth)
         CORE.holdFrom(
@@ -239,6 +249,7 @@ contract CreditLine {
         (d.held, d.net) = (uint96(held), uint96(net));
         emit Synced(lineId, holdId, l.owed, l.pending);
         _commit(lineId);
+        _lock(lineId);
     }
 
     /// @notice Sets what draw `holdId` still reserves, as the program that drew it: an increase must fit the line's
@@ -270,6 +281,7 @@ contract CreditLine {
             d.held = uint96(amount);
             _commit(lineId);
         }
+        _lock(lineId);
         emit Synced(lineId, holdId, l.owed, l.pending);
     }
 
@@ -281,6 +293,7 @@ contract CreditLine {
         l.owed += amount;
         emit Charged(lineId, amount, l.owed);
         _commit(lineId);
+        _lock(lineId);
     }
 
     /// @notice Recommits line `lineId`'s undrawn limit on the lender's balance, renewing its hold before it expires.
@@ -297,6 +310,7 @@ contract CreditLine {
         SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
         emit Repaid(lineId, msg.sender, amount, l.owed);
         _commit(lineId);
+        _lock(lineId);
     }
 
     /// @notice The borrower attaches a pledge it placed on the core with this contract as authority: the line's
@@ -305,7 +319,7 @@ contract CreditLine {
         Line storage l = _lines[lineId];
         if (msg.sender != l.borrower) revert NotBorrower();
         IEarnVault vault = l.collateralVault;
-        if (address(vault) == address(0)) revert InvalidPledge();
+        if (address(vault) == address(0) || locking[lineId]) revert InvalidPledge();
         if (l.pledgeId != bytes32(0)) {
             (,, uint128 current,,) = CORE.lienOf(address(this), l.pledgeId);
             if (current != 0) revert PledgeInPlace();
@@ -369,6 +383,67 @@ contract CreditLine {
         emit Seized(lineId, pledgeId, shares, assets, l.owed);
     }
 
+    /// @notice The borrower secures a line by locking shares as it borrows: each draw locks shares worth what is owed
+    ///         and pending over the loan-to-value, from its free shares, which keep earning. The borrower first approves
+    ///         this contract as holder of the vault's shares. Excludes a pledge.
+    function enableLocking(uint64 lineId) external nonReentrant {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.borrower) revert NotBorrower();
+        if (address(l.collateralVault) == address(0) || l.pledgeId != bytes32(0)) revert InvalidPledge();
+        locking[lineId] = true;
+        emit LockingEnabled(lineId);
+        _lock(lineId);
+    }
+
+    /// @notice Moves line `lineId`'s share lock to what is owed and pending at today's share price, as far as the borrower's
+    ///         shares go, renewing its hold before it expires. Anyone may call it, such as a keeper after a price move.
+    function relock(uint64 lineId) external nonReentrant {
+        _lock(lineId);
+    }
+
+    /// @notice The lender sells just enough locked shares to bring a line past its loan-to-value back within it, at
+    ///         today's price, and takes the proceeds toward what is owed.
+    /// @return shares The shares sold.
+    /// @return assets What the lender received.
+    // Comparisons here are on share amounts the linter mistakes for timestamps.
+    // forge-lint: disable-next-item(block-timestamp)
+    function liquidate(uint64 lineId) external nonReentrant returns (uint128 shares, uint256 assets) {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.lender) revert NotLender();
+        if (!locking[lineId]) revert InvalidPledge();
+        _lock(lineId);
+        IEarnVault vault = l.collateralVault;
+        uint256 locked = _lockedShares(lineId);
+        uint256 value = locked == 0 ? 0 : vault.previewRedeem(locked);
+        uint256 used = uint256(l.owed) + l.pending;
+        uint256 ltv = l.ltvBps;
+        if (used * BPS <= value * ltv) revert NotUndercollateralized(used, value * ltv / BPS);
+        // Selling x restores used - x = ltv * (value - x).
+        uint256 sell = (used * BPS - value * ltv + (BPS - ltv) - 1) / (BPS - ltv);
+        if (sell > l.owed) sell = l.owed;
+        uint256 cover = vault.previewWithdraw(sell);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        shares = uint128(cover < locked ? cover : locked);
+        bytes32 id = lockOf[lineId];
+        // Every entry point holds the transient lock for this whole call.
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        CORE.capture(l.borrower, id, shares, false);
+        SafeTransferLib.safeApprove(vault.earnShare(), address(vault), shares);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        assets = vault.redeem(shares, l.lender, vault.previewRedeem(shares));
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 credited = assets < l.owed ? uint128(assets) : l.owed;
+        l.owed -= credited;
+        emit Liquidated(lineId, shares, assets, l.owed);
+        _commit(lineId);
+        _lock(lineId);
+    }
+
+    /// @notice The shares line `lineId`'s lock holds now.
+    function lockedShares(uint64 lineId) external view returns (uint256) {
+        return _lockedShares(lineId);
+    }
+
     /// @notice Credit the line can still draw: its limit, or for a secured line the lower of the limit and the
     ///         pledge's value times its loan-to-value, less what is owed and pending.
     function availableCredit(uint64 lineId) public view returns (uint256) {
@@ -401,8 +476,14 @@ contract CreditLine {
 
     /// @notice What the line's pledge is worth now in its token, zero when it is gone or would expire before the
     ///         line may seize it.
+    // forge-lint: disable-next-item(block-timestamp)
     function collateralValue(uint64 lineId) public view returns (uint256) {
         Line storage l = _lines[lineId];
+        if (locking[lineId]) {
+            // The shares locked so far and the borrower's free shares, which the next draw can lock.
+            uint256 shares = _lockedShares(lineId) + CORE.available(l.borrower, l.collateralVault.earnShare());
+            return shares == 0 ? 0 : l.collateralVault.previewRedeem(shares);
+        }
         if (l.pledgeId == bytes32(0)) return 0;
         (address owner,, uint128 shares, uint64 expiresAt,) = CORE.lienOf(address(this), l.pledgeId);
         if (owner != l.borrower || shares == 0 || expiresAt <= uint256(l.dueDate) + l.noticePeriod) return 0;
@@ -509,6 +590,61 @@ contract CreditLine {
         }
         // forge-lint: disable-next-line(unsafe-typecast)
         emit Committed(lineId, id, uint128(target));
+    }
+
+    /// @dev Moves the share lock to the shares worth what is owed and pending over the loan-to-value, at most what the
+    ///      borrower holds. Growth reverts if the borrower revoked this contract's allowance, so a draw it cannot secure
+    ///      fails.
+    function _lock(uint64 lineId) private {
+        if (!locking[lineId]) return;
+        Line storage l = _lines[lineId];
+        IEarnVault vault = l.collateralVault;
+        address share = vault.earnShare();
+        bytes32 id = lockOf[lineId];
+        IReservationCore.HoldRecord memory h;
+        bool live;
+        if (id != bytes32(0)) {
+            h = CORE.getHold(l.borrower, id);
+            live = !h.settled && h.token != address(0) && h.expiresAt > block.timestamp;
+        }
+        uint256 used = uint256(l.owed) + l.pending;
+        uint256 target = used == 0 ? 0 : vault.previewWithdraw((used * BPS + l.ltvBps - 1) / l.ltvBps);
+        uint256 have = CORE.available(l.borrower, share) + (live ? h.held : 0);
+        if (target > have) target = have;
+        uint64 expiresAt = uint64(block.timestamp + COMMITMENT_TERM);
+        bool renew = live && h.expiresAt < block.timestamp + 1 days;
+        if (live && !renew) {
+            if (target == h.held) return;
+            if (target == 0) CORE.release(l.borrower, id);
+            else CORE.adjust(l.borrower, id, uint128(target));
+        } else {
+            if (live) CORE.release(l.borrower, id);
+            else if (id != bytes32(0) && !h.settled && h.token != address(0)) CORE.releaseExpired(l.borrower, id);
+            id = bytes32(0);
+            if (target != 0) {
+                id = keccak256(abi.encode(address(this), "lock", lineId, ++_locks[lineId]));
+                CORE.holdFrom(
+                    l.borrower,
+                    IReservationCore.HoldRequest({
+                        token: share,
+                        id: id,
+                        amount: uint128(target),
+                        expiresAt: expiresAt,
+                        payee: address(this),
+                        standIn: false
+                    })
+                );
+            }
+            lockOf[lineId] = id;
+        }
+        emit Locked(lineId, id, uint128(target));
+    }
+
+    function _lockedShares(uint64 lineId) private view returns (uint256) {
+        bytes32 id = lockOf[lineId];
+        if (id == bytes32(0)) return 0;
+        IReservationCore.HoldRecord memory h = CORE.getHold(_lines[lineId].borrower, id);
+        return h.settled || h.expiresAt <= block.timestamp ? 0 : h.held;
     }
 
     function _committed(uint64 lineId) private view returns (uint256) {

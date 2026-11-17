@@ -241,6 +241,99 @@ contract CreditLineTest is ProgramsEnv {
 
     // Helpers.
 
+    // Share locks.
+
+    function test_locking_drawLocksSharesWorthUsedOverLtv() public {
+        uint64 lineId = _lockingLine(1000e6);
+        assertApproxEqAbs(credit.availableCredit(lineId), 500e6, 1);
+        _draw(lineId, 280e6);
+        uint256 locked = credit.lockedShares(lineId);
+        assertApproxEqAbs(earnVault.previewRedeem(locked), 560e6, 2);
+        assertEq(core.reserved(alice, address(earnShare)), locked);
+        // The rest of the shares stay free and keep earning.
+        assertApproxEqAbs(earnVault.previewRedeem(core.available(alice, address(earnShare))), 440e6, 2);
+        _assertCoreBalanced();
+    }
+
+    function test_locking_underCollateralizedDrawRefused() public {
+        uint64 lineId = _lockingLine(100e6);
+        vm.expectPartialRevert(CreditLine.CreditExceeded.selector);
+        credit.draw(lineId, alice, REF, 51e6, uint64(block.timestamp + 1 days));
+        // A draw up to the loan-to-value locks every share, so none can move away to borrow twice on them.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _draw(lineId, uint128(credit.availableCredit(lineId)));
+        assertEq(credit.availableCredit(lineId), 0);
+        assertLe(core.available(alice, address(earnShare)), 1);
+    }
+
+    function test_locking_revokedAllowanceRefusesTheDraw() public {
+        uint64 lineId = _lockingLine(100e6);
+        vm.prank(alice);
+        core.approveHolder(address(credit), address(earnShare), 0);
+        vm.expectRevert();
+        credit.draw(lineId, alice, REF, 10e6, uint64(block.timestamp + 1 days));
+    }
+
+    function test_locking_repayShrinksTheLock() public {
+        uint64 lineId = _lockingLine(1000e6);
+        bytes32 id = _draw(lineId, 200e6);
+        core.capture(lender, id, 200e6, true);
+        credit.sync(id);
+        uint256 before = credit.lockedShares(lineId);
+        usd.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usd.approve(address(credit), 100e6);
+        credit.repay(lineId, 100e6);
+        vm.stopPrank();
+        assertApproxEqAbs(credit.lockedShares(lineId), before / 2, 2);
+    }
+
+    function test_liquidate_onlyLender_onlyPastLtv_sellsJustEnough() public {
+        uint64 lineId = _lockingLine(1000e6);
+        bytes32 id = _draw(lineId, 400e6);
+        core.capture(lender, id, 400e6, true);
+        credit.sync(id);
+        vm.prank(lender);
+        vm.expectPartialRevert(CreditLine.NotUndercollateralized.selector);
+        credit.liquidate(lineId);
+        // The venue loses 30%: $700 of shares secure $400, past 50%.
+        uint256 loss = usd.balanceOf(address(venue)) * 3 / 10;
+        vm.prank(address(venue));
+        usd.transfer(address(0xdead), loss);
+        credit.relock(lineId);
+        assertEq(core.available(alice, address(earnShare)), 0);
+        vm.prank(alice);
+        vm.expectRevert(CreditLine.NotLender.selector);
+        credit.liquidate(lineId);
+        uint256 lenderBefore = usd.balanceOf(lender) + core.reserved(lender, address(usd));
+        vm.prank(lender);
+        (, uint256 assets) = credit.liquidate(lineId);
+        assertApproxEqAbs(assets, 100e6, 2);
+        assertEq(usd.balanceOf(lender) + core.reserved(lender, address(usd)) - lenderBefore, assets);
+        uint128 owed = credit.lineOf(lineId).owed;
+        uint256 left = earnVault.previewRedeem(earnShare.balanceOf(alice) + core.reserved(alice, address(earnShare)));
+        assertLe(uint256(owed) * 2, left + 2);
+        assertGe(uint256(owed) * 2 + 2, left);
+        _assertCoreBalanced();
+    }
+
+    function test_locking_excludesAPledge() public {
+        uint64 lineId = _lockingLine(100e6);
+        vm.prank(alice);
+        vm.expectRevert(CreditLine.InvalidPledge.selector);
+        credit.attachPledge(lineId, PLEDGE);
+    }
+
+    function _lockingLine(uint256 savings) internal returns (uint64 lineId) {
+        lineId = _line(10_000e6, IEarnVault(address(earnVault)), 5000, true);
+        usd.mint(alice, savings);
+        _depositEarn(alice, savings);
+        vm.startPrank(alice);
+        core.approveHolder(address(credit), address(earnShare), type(uint128).max);
+        credit.enableLocking(lineId);
+        vm.stopPrank();
+    }
+
     function _line(uint128 limit, IEarnVault vault, uint16 ltvBps, bool accept) internal returns (uint64 lineId) {
         vm.prank(lender);
         lineId = credit.openLine(alice, address(usd), address(this), limit, due, 7 days, vault, ltvBps);
