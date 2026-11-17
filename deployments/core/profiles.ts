@@ -60,7 +60,11 @@ if (args.network) {
   const listed = paths
     .map((path) => ({ path, profile: loadEarnProfile(path) }))
     .filter(({ profile }) => hostedEnvironment(profile.chainId)?.id === args.network)
-    .map(({ path, profile }) => ({ id: profile.id, path: relative(root, path) }))
+    .map(({ path, profile }) => ({
+      id: profile.id,
+      path: relative(root, path),
+      rpcUrl: hostedEnvironments[args.network as keyof typeof hostedEnvironments].rpcUrl,
+    }))
   const output = JSON.stringify(listed)
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `profiles=${output}\n`)
   else console.log(output)
