@@ -31,18 +31,24 @@ contract MerchantReservesTest is ProgramsEnv {
         uint64 expiry = uint64(vm.getBlockTimestamp() + 120 days);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.reserveDispute(shop, address(usd), REF, 30e6, 50e6, expiry);
+        cards.reserveDispute(
+            shop, address(usd), REF, [uint128(30e6), uint128(50e6)], [uint128(30e6), uint128(50e6)], expiry
+        );
         vm.prank(issuer);
         vm.expectRevert(CardProgram.NoTerms.selector);
-        cards.reserveDispute(other, address(usd), REF, 0, 50e6, expiry);
+        cards.reserveDispute(other, address(usd), REF, [uint128(0), uint128(50e6)], [uint128(0), uint128(50e6)], expiry);
 
         vm.prank(shop);
         cards.setDisputeReserves(true);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.ReserveTooLong.selector);
-        cards.reserveDispute(shop, address(usd), REF, 30e6, 50e6, expiry + 1 days);
+        cards.reserveDispute(
+            shop, address(usd), REF, [uint128(30e6), uint128(50e6)], [uint128(30e6), uint128(50e6)], expiry + 1 days
+        );
         vm.prank(issuer);
-        cards.reserveDispute(shop, address(usd), REF, 30e6, 50e6, expiry);
+        cards.reserveDispute(
+            shop, address(usd), REF, [uint128(30e6), uint128(50e6)], [uint128(30e6), uint128(50e6)], expiry
+        );
 
         (address owner,, uint128 amount, uint64 expiresAt, bool pledged) =
             core.lienOf(address(cards), cards.reserveId(REF, shop));
@@ -59,7 +65,9 @@ contract MerchantReservesTest is ProgramsEnv {
         // The mandate's limit bounds what the program reserves on the merchant.
         vm.prank(issuer);
         vm.expectRevert(IReservationCore.AllowanceExceeded.selector);
-        cards.reserveDispute(shop, address(usd), bytes32("purchase-2"), 21e6, 0, expiry);
+        cards.reserveDispute(
+            shop, address(usd), bytes32("purchase-2"), [uint128(21e6), uint128(0)], [uint128(21e6), uint128(0)], expiry
+        );
         _assertCoreBalanced();
     }
 

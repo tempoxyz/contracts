@@ -190,8 +190,8 @@ contract CardProgram {
         bytes32 indexed purchaseRef,
         address indexed merchant,
         address token,
-        uint128 fromMerchant,
-        uint128 fromAcquirer,
+        uint128[2] tokens,
+        uint128[2] covers,
         uint64 expiresAt
     );
     event ReserveCollected(bytes32 indexed id, address indexed to, uint128 amount);
@@ -838,25 +838,26 @@ contract CardProgram {
         _reserve(owner, token, id, amount, expiresAt);
     }
 
-    /// @notice Reserves a disputed purchase for at most the networks' dispute window: `fromMerchant` on the merchant's
-    ///         balance, under a mandate that allows dispute reserves, and `fromAcquirer` on the settlement account.
+    /// @notice Reserves a disputed purchase for at most the networks' dispute window: `tokens[0]` on the merchant's
+    ///         balance, under a mandate that allows dispute reserves, and `tokens[1]` on the settlement account.
+    ///         `covers` records what each part covers in the purchase's units.
     function reserveDispute(
         address merchant,
         address token,
         bytes32 purchaseRef,
-        uint128 fromMerchant,
-        uint128 fromAcquirer,
+        uint128[2] calldata tokens,
+        uint128[2] calldata covers,
         uint64 expiresAt
     ) external nonReentrant onlyOperator {
         if (!grants[merchant].active) revert NoTerms();
         if (!disputeReserves[merchant]) revert ReserveNotAllowed();
         // forge-lint: disable-next-line(block-timestamp)
         if (expiresAt > block.timestamp + MAX_DISPUTE_RESERVE) revert ReserveTooLong();
-        if (fromMerchant != 0) _reserve(merchant, token, reserveId(purchaseRef, merchant), fromMerchant, expiresAt);
-        if (fromAcquirer != 0) {
-            _reserve(SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), fromAcquirer, expiresAt);
+        if (tokens[0] != 0) _reserve(merchant, token, reserveId(purchaseRef, merchant), tokens[0], expiresAt);
+        if (tokens[1] != 0) {
+            _reserve(SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), tokens[1], expiresAt);
         }
-        emit DisputeReserved(purchaseRef, merchant, token, fromMerchant, fromAcquirer, expiresAt);
+        emit DisputeReserved(purchaseRef, merchant, token, tokens, covers, expiresAt);
     }
 
     /// @notice Releases a reserve before it expires.
