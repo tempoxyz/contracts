@@ -18,27 +18,29 @@ library RouterFactoryChecks {
         bytes memory expected = type(ZoneRouterFactory).runtimeCode;
         if (runtime.length != expected.length) return false;
         // Both compiler outputs must end in exactly the router and factory's recognized CBOR trailers.
-        // Preserve every other byte, including the INVALID delimiter, solc version and CBOR lengths.
+        // Preserve every other byte, including the INVALID delimiter, solar version and CBOR lengths.
         if (!_normalize(expected) || !_normalize(runtime)) return false;
         return keccak256(runtime) == keccak256(expected);
     }
 
+    /// @dev Each of the two trailers is solar's CBOR map `{ipfs: <34-byte multihash>, solar: <3-byte version>}`
+    ///      followed by its 2-byte length (0x0034), 54 bytes in all; an INVALID byte precedes each.
     function _normalize(bytes memory runtime) private pure returns (bool) {
-        if (runtime.length < 107) return false;
-        uint256 start = runtime.length - 106;
-        if (runtime[start - 1] != 0xfe) return false;
+        if (runtime.length < 110) return false;
+        uint256 start = runtime.length - 109;
+        if (runtime[start - 1] != 0xfe || runtime[start + 54] != 0xfe) return false;
         for (uint256 i; i < 2; ++i) {
-            uint256 offset = start + i * 53;
+            uint256 offset = start + i * 55;
             bytes10 prefix;
             bytes6 compilerKey;
             assembly ("memory-safe") {
                 prefix := mload(add(add(runtime, 32), offset))
                 // Read the trailer's final 32 bytes so the load never extends beyond the bytes allocation.
-                compilerKey := shl(168, mload(add(add(runtime, 53), offset)))
+                compilerKey := shl(160, mload(add(add(runtime, 54), offset)))
             }
             if (
-                prefix != hex"a2646970667358221220" || compilerKey != hex"64736f6c6343" || runtime[offset + 51] != 0x00
-                    || runtime[offset + 52] != 0x33
+                prefix != hex"a2646970667358221220" || compilerKey != hex"65736f6c6172" || runtime[offset + 48] != 0x43
+                    || runtime[offset + 52] != 0x00 || runtime[offset + 53] != 0x34
             ) return false;
             // Only the 32-byte IPFS multihash digest is mutable; the multihash type stays checked.
             assembly ("memory-safe") {

@@ -17,6 +17,7 @@ import { IBridgeSpenderClone, IBridgeSpenderFactory } from "./interfaces/IBridge
 ///      enforces, so a spend Bridge would refuse is refused before any funds move; the clone stays the
 ///      authority. It answers alike for public and private spends (`payer` and `isPrivate` are ignored), so
 ///      Bridge governance must authorize only settlement wallets shared by every cardholder.
+/// @custom:invariant address(FACTORY) != address(0) && CLONE != address(0)
 contract BridgeProvider is ICardProvider, ICardProviderPayout {
     bytes2 private constant HANDLER = "TS";
     bytes2 private constant PUBLIC_SPEND = "PS";
@@ -30,6 +31,7 @@ contract BridgeProvider is ICardProvider, ICardProviderPayout {
     error NoClone();
     error ZeroAddress();
 
+    /// @custom:ensures FACTORY == factory_ && SPENDER_ID == spenderId_
     constructor(IBridgeSpenderFactory factory_, bytes32 spenderId_) {
         if (address(factory_) == address(0)) revert ZeroAddress();
         FACTORY = factory_;
@@ -71,6 +73,7 @@ contract BridgeProvider is ICardProvider, ICardProviderPayout {
     }
 
     /// @inheritdoc ICardProviderPayout
+    /// @custom:ensures result == CLONE
     function payoutTarget() external view returns (address) {
         return CLONE;
     }
@@ -92,6 +95,9 @@ contract BridgeProvider is ICardProvider, ICardProviderPayout {
             abi.encodeCall(IBridgeSpenderClone.publicCall, (abi.encodePacked(HANDLER, PUBLIC_SPEND, abi.encode(spend))));
     }
 
+    /// @custom:ensures interfaceId == type(ICardProvider).interfaceId ==> result
+    /// @custom:ensures interfaceId == type(ICardProviderPayout).interfaceId ==> result
+    /// @custom:ensures interfaceId == type(IERC165).interfaceId ==> result
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
         return interfaceId == type(ICardProvider).interfaceId || interfaceId == type(ICardProviderPayout).interfaceId
             || interfaceId == type(IERC165).interfaceId;

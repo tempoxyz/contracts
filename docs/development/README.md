@@ -13,7 +13,10 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   less gas and executes faster. `pnpm deps` builds that revision once with cargo (Rust stable) into
   the ignored `.solar/`. Forge resolves the wrapper from its working directory: run it from `earn/`,
   or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. The Zone router and the
-  card integration compile with solc.
+  card integration use the same wrapper (`solc = "../earn/solar-solc"`) and reach Earn's and the
+  router's sources through committed `linked/` symlinks, since solar reads only files inside the
+  project directory. Only the vendored Zones runtime rebuild and Rain's fixture build keep solc,
+  because they reproduce third-party bytecode.
   CI installs that Foundry version through `.github/actions/setup` and the PropAMM fixture job, and the
   deployment tooling refuses an older Forge (`deployments/chain/foundry.ts`). A record's
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version
@@ -119,6 +122,32 @@ production receipts.
 `SingleZoneEarnRouterAbiFuzz.t.sol`, whose fuzz entry point is too deep for the stack without the
 optimizer; the router stays covered by its other suites. Tests and deployment scripts are excluded
 from the report. Coverage is informational and not a required check.
+
+## Formal specifications
+
+Earn, the Zone router and the card contracts carry formal specifications for `solar-verify`, Solar's
+deductive verifier ([paradigmxyz/solar#2530](https://github.com/paradigmxyz/solar/pull/2530)). The
+specs are NatSpec in the contracts themselves: `@custom:ensures`, `@custom:requires`,
+`@custom:invariant`, `@custom:ghost`, `@custom:trusted` and the rest, with loop invariants, asserts
+and ghost updates as `///` comments inside function bodies, written against the contracts' own
+constants and expressions. Spec-only helper functions are never called, so the specs change no
+behavior, but like any source edit they change a contract's compiled output (its metadata hash at
+least) and so the release addresses derived from it. Keep spec-only helpers inside the contract
+that uses them, not in a library or another file. The verifier reads the flattened source as it
+is, with no patches or generated files.
+
+```bash
+cd earn
+forge flatten src/core/EarnVault.sol -o /tmp/EarnVault.sol
+solar-verify --jobs 8 --timeout 120000 /tmp/EarnVault.sol                         # every function
+solar-verify --timeout 120000 --only EarnVault.contribute /tmp/EarnVault.sol      # one function
+```
+
+Build `solar-verify` from that pull request (`cargo build --release -p solar-verify`) and put Z3 on
+`PATH`; its README documents the spec language. A proof covers the flattened source under the
+trusted base the verifier documents (trusted library summaries, interfaces on external calls), not
+deployed bytecode. A function or property the verifier can't prove says so in its NatSpec
+("Not proved:"). When a change breaks a spec, fix the code or the spec in the same change.
 
 ## Test map
 

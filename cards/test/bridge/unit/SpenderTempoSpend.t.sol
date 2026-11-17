@@ -5,6 +5,7 @@ import { SpenderBase } from "bridge-spender/src/spenders/SpenderBase.sol";
 import { IAccessControl } from "openzeppelin-contracts/access/IAccessControl.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 
 import { ITempoEarnVault } from "../../../src/core/interfaces/ITempoEarnVault.sol";
 import {
@@ -108,9 +109,25 @@ contract SpenderTempoSpendTest is TempoEnv {
         _expectRevert(alice, _stable(0), abi.encodeWithSelector(SpenderBase.InvalidAmount.selector));
     }
 
-    /// @notice A token that delivers less than it was asked to cannot settle a spend.
+    /// @notice Only TIP-20s settle, so a token with fees, callbacks or rebases is refused up front.
+    function test_spendRejectsNonTip20Token() public {
+        FeeOnTransferToken token = new FeeOnTransferToken();
+        token.mint(alice, 100e6);
+        vm.prank(alice);
+        token.approve(spender, type(uint256).max);
+        Spend memory s = _stable(10e6);
+        s.token = address(token);
+        _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.UnsupportedToken.selector, address(token)));
+    }
+
+    /// @notice A token that delivers less than it was asked to cannot settle a spend, even past the TIP-20 check.
     function test_spendRejectsFeeOnTransferToken() public {
         FeeOnTransferToken token = new FeeOnTransferToken();
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(token)),
+            abi.encode(true)
+        );
         token.mint(alice, 100e6);
         vm.prank(alice);
         token.approve(spender, type(uint256).max);
@@ -489,6 +506,13 @@ contract SpenderTempoSpendTest is TempoEnv {
         bridgeFactory.governorCall(SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1)));
     }
 
+    function test_governorCallRejectsZeroVault() public {
+        vm.prank(bridgeGovernor);
+        vm.expectRevert(SpenderTempoSpend.InvalidVault.selector);
+        bridgeFactory.governorCall(SPENDER_ID, abi.encodePacked(PREFIX_TEMPO_SPEND, bytes2("UV"), uint8(1), address(0)));
+        assertFalse(_vaultAllowed(address(0)));
+    }
+
     function test_governorCallRejectsNonBooleanFlag() public {
         vm.prank(bridgeGovernor);
         vm.expectRevert(SpenderTempoSpend.ExpectedBooleanByte.selector);
@@ -541,6 +565,11 @@ contract SpenderTempoSpendTest is TempoEnv {
             ADDRESS_REGISTRY_ADDRESS, abi.encodeCall(IAddressRegistry.resolveRecipient, (virtualTo)), abi.encode(master)
         );
         VirtualAwareToken vusd = new VirtualAwareToken("VUSD");
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(vusd)),
+            abi.encode(true)
+        );
         LiteralReceiverVault vault = new LiteralReceiverVault(address(vusd));
         VirtualAwareToken share = VirtualAwareToken(vault.earnShare());
         vusd.mint(address(vault), 100e6);
@@ -565,6 +594,58 @@ contract SpenderTempoSpendTest is TempoEnv {
         assertEq(share.balanceOf(alice), 100e6 - 12e6, "burned only the cost");
         assertEq(vusd.balanceOf(spender), 0, "nothing left in the clone");
         assertEq(share.balanceOf(spender), 0);
+    }
+
+    /// @notice Allowing a master does not allow its virtual addresses: a master may hand them out as separate
+    ///         deposit accounts, so only the literal destination on the allowlist is paid.
+    function test_spendToAVirtualDestinationOfAnAllowedMasterReverts() public {
+        address virtualTo = address(uint160(0x12345678fdfDfdFdfDFdfdfdFDfD000000000002));
+        address master = makeAddr("virtual.allowed-master");
+        vm.mockCall(
+            ADDRESS_REGISTRY_ADDRESS, abi.encodeCall(IAddressRegistry.resolveRecipient, (virtualTo)), abi.encode(master)
+        );
+        vm.prank(bridgeGovernor);
+        bridgeFactory.updateSpenderDestination(SPENDER_ID, master, true);
+        Spend memory s = _stable(1e6);
+        s.destination = virtualTo;
+        _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.DestinationNotAuthorized.selector, virtualTo));
+    }
+
+    /// @notice A vault that takes more than the quote, from shares the clone held under its standing approval, is
+    ///         refused.
+    function test_spendRefusesAVaultTakingMoreThanTheQuote() public {
+        OverPullingEarnVault vault = new OverPullingEarnVault(address(usd));
+        _mintUsd(address(vault), 100e6);
+        _setVault(address(vault), true);
+        MockToken share = vault.SHARE();
+        share.mint(alice, 100e6);
+        share.mint(spender, 5e6);
+        vm.prank(alice);
+        share.approve(spender, type(uint256).max);
+        Spend memory s = _earn(10e6, 10e6, 0);
+        s.vault = address(vault);
+        _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.ShareCostExceeded.selector, 21e6, 20e6));
+    }
+
+    /// @notice A vault that burns more shares than it reports cannot make the clone refund shares it held before:
+    ///         the refund and the reported burn are measured from the clone's balance.
+    function test_spendMeasuresTheBurnNotTheVaultReport() public {
+        UnderReportingEarnVault vault = new UnderReportingEarnVault(address(usd));
+        _mintUsd(address(vault), 100e6);
+        _setVault(address(vault), true);
+        MockToken share = vault.SHARE();
+        share.mint(alice, 100e6);
+        share.mint(spender, 5e6);
+        vm.prank(alice);
+        share.approve(spender, type(uint256).max);
+
+        Spend memory s = _earn(10e6, 10e6, 0);
+        s.vault = address(vault);
+        vm.expectEmit(true, true, true, true, spender);
+        emit SpenderTempoSpend.TempoSpendExecuted(s.ref, alice, settlement, address(usd), 10e6, 0, 10e6, 20e6);
+        _spendAs(alice, s);
+        assertEq(share.balanceOf(alice), 80e6, "payer charged the quote and refunded nothing");
+        assertEq(share.balanceOf(spender), 5e6, "the clone's own shares untouched");
     }
 
     // ------------------------------------------------------------------
@@ -618,5 +699,69 @@ contract SpenderTempoSpendTest is TempoEnv {
         vm.prank(payer);
         vm.expectRevert(err);
         _cloneCall(_psCall(s));
+    }
+}
+
+/// @notice Burns the full quote but reports half of it burnt.
+contract UnderReportingEarnVault is ITempoEarnVault {
+    address public immutable override asset;
+    MockToken public immutable SHARE;
+
+    constructor(address asset_) {
+        asset = asset_;
+        SHARE = new MockToken("Under-reported EarnShare", "uES");
+    }
+
+    function earnShare() external view override returns (address) {
+        return address(SHARE);
+    }
+
+    function previewWithdraw(uint256 assets) public pure override returns (uint256) {
+        return assets * 2;
+    }
+
+    function previewRedeem(uint256 earnShares) external pure override returns (uint256) {
+        return earnShares / 2;
+    }
+
+    function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares)
+        external
+        override
+        returns (uint256)
+    {
+        uint256 cost = previewWithdraw(assets);
+        require(cost <= maxEarnShares, "max shares");
+        SHARE.transferFrom(msg.sender, address(0xdead), cost);
+        SafeTransferLib.safeTransfer(asset, receiver, assets);
+        return cost / 2;
+    }
+}
+
+/// @notice Burns one share unit (1e6) more than its quote and ignores the cap.
+contract OverPullingEarnVault is ITempoEarnVault {
+    address public immutable override asset;
+    MockToken public immutable SHARE;
+
+    constructor(address asset_) {
+        asset = asset_;
+        SHARE = new MockToken("Over-pulled EarnShare", "oES");
+    }
+
+    function earnShare() external view override returns (address) {
+        return address(SHARE);
+    }
+
+    function previewWithdraw(uint256 assets) public pure override returns (uint256) {
+        return assets * 2;
+    }
+
+    function previewRedeem(uint256 earnShares) external pure override returns (uint256) {
+        return earnShares / 2;
+    }
+
+    function withdrawExact(uint256 assets, address receiver, uint256) external override returns (uint256 burned) {
+        burned = previewWithdraw(assets) + 1e6;
+        SHARE.transferFrom(msg.sender, address(0xdead), burned);
+        SafeTransferLib.safeTransfer(asset, receiver, assets);
     }
 }

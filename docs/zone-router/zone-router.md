@@ -6,7 +6,7 @@ deposits and redemptions, and spends through spenders fixed at deployment.
 [spenders](#spenders) pay a spend: `SendSpender`, in [`src/spenders/`](../../zone-router/src/spenders/),
 to a public address, and a card program's `CardSpender`, in [`cards/`](../../cards/README.md), through
 its card provider. The router, its factory and `SendSpender` live in the
-[`zone-router/`](../../zone-router/README.md) Foundry project, built with solc, which imports only Earn's
+[`zone-router/`](../../zone-router/README.md) Foundry project, compiled with Earn's solar, which imports only Earn's
 interfaces. Card spend through it is in the [card spend design](../cards/design.md).
 
 `SingleZoneEarnRouter` ([Earn's zone router](../earn/modules/zone-router.md)) is the router Earn runs in
@@ -57,7 +57,7 @@ have: which gateways they admit.
 
 A deployment profile's [`zoneRouter`](../../profiles/README.md#zone-routers) deploys one router
 with `pnpm earn deploy` beside its Earn stack. The lifecycle runs [`zone-router/`](../../zone-router/README.md)'s
-own `script/deploy/` scripts from `zone-router/`, compiled with solc and source-verified like Earn's
+own `script/deploy/` scripts from `zone-router/`, compiled with solar and source-verified like Earn's
 contracts:
 
 1. `deploy-zone-router-factory`, unless the profile names a factory;
@@ -77,7 +77,7 @@ contracts:
    one in one batch). The lifecycle grants pool, gateway and account admission with its own keys only when it
    deployed the factory itself; for a router from a factory the profile names, each is always handed
    off, for the pool owner or the Portal administrator to check that factory's verified source
-   first. Before any automatic Portal role grant, read-only constructor simulations of the reviewed local
+   first. Before any automatic pool admission or Portal role grant, read-only constructor simulations of the reviewed local
    factory and router builds must match the deployed runtime exactly, including their immutable
    values. A matching getter or address alone is insufficient; missing evidence stops the grant.
 
@@ -222,8 +222,10 @@ registry resolves, redeems to itself and transfers to `to` (Earn's engines measu
 receiver), and reverts for an unregistered one, as the transfer would. It refuses `to`, or the master
 it resolves to, when that is itself or the calling router (`InvalidRecipient`): the router returns
 only the input token, so an output paid to it would stay there. It hands every unused unit
-back to the router and keeps no balance or allowance; tokens sent to it outside a spend stay there,
-since no call can move them. Whoever builds the callback picks `to` and
+back to the router and keeps no balance. With a conversion binding it keeps a standing maximum
+`convertAsset` approval to its immutable pool, which Tempo would otherwise charge as a new storage
+slot on every conversion; otherwise it keeps no allowance. Tokens sent to it outside a spend are not
+rescued; only that pool could pull stranded `convertAsset`. Whoever builds the callback picks `to` and
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the spender as a taker and recipient.
 It emits `Sent(ref, to, inputToken, outputToken, amount, inputConsumed, inputReturned)` and
@@ -248,7 +250,9 @@ input. Its checks are in the [card spend design](../cards/design.md#what-the-pro
    spender uses, at most the callback's `maxInput`.
 4. Conversion happens only at the pool oracle's exact par price with measured 1:1 output.
 5. No balance a callback brings stays with the router (a one-unit seed anyone sends it stays as it
-   is), and no allowance except a spend's standing approval to its own Zone's Portal.
+   is), and no allowance except a spend's standing approval to its own Zone's Portal and standing
+   maximum approvals to its immutable EarnVault and pool, which Tempo would otherwise charge as a
+   new storage slot on every op.
 6. The router never emits or stores `senderTag`.
 7. A spender pays only inside a spend from a router its factory deployed whose mode lists it.
 

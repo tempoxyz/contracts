@@ -73,8 +73,10 @@ event and set a reviewed gas limit, or estimation may choose the cheaper caught-
 For two or more providers, Tempo API submits one ordered `fundBatchExact` call that checks the supply
 bound once and settles every amount atomically; one failed or underfunded leg reverts the batch and
 never charges another wallet for its shortfall. The controller cannot mint, change EarnVault
-configuration, or withdraw backing, has no withdrawal or rescue path, retains no assets or approval
-after a call, and can be paused, replaced, or omitted without affecting ordinary Earn behavior.
+configuration, or withdraw backing, has no withdrawal or rescue path, and retains no assets after a
+call. It keeps a standing maximum asset approval to its immutable EarnVault (Tempo charges every
+zero-to-nonzero allowance as a new storage slot), so only that EarnVault could pull asset sent to the
+controller directly. It can be paused, replaced, or omitted without affecting ordinary Earn behavior.
 Providers can always call `EarnVault.contribute` directly.
 
 ## Merkle distributor
@@ -110,9 +112,9 @@ the trusted publisher keeps corrections cumulative. The settlement ID (content-a
 unused, and the expected root version is checked before any asset moves, so funding and publication
 succeed or revert together and a retry cannot pull twice or replace an unexpected root.
 
-Funding pulls from an explicit funder within its balance and allowance, approves the EarnVault for
-exactly that amount, deposits, clears the approval, checks that the distributor's base-asset balance
-did not grow, and measures the EarnShare minted. Do not send base assets directly to the
+Funding pulls from an explicit funder within its balance and allowance, keeps a standing maximum
+approval to its immutable EarnVault (Tempo charges every zero-to-nonzero allowance as a new storage
+slot), deposits, checks that the distributor's base-asset balance did not grow, and measures the EarnShare minted. Do not send base assets directly to the
 distributor: it has no base-asset rescue, and `returnUnspent` moves only EarnShare.
 
 `pushBatch` verifies the complete multiproof before any transfer and pays only each recipient's

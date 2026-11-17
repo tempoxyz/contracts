@@ -192,7 +192,7 @@ contract SendSpenderTest is EarnRouterTestBase {
         for (uint256 i = 0; i < tokens.length; i++) {
             assertEq(tokens[i].balanceOf(address(spender)), 0);
             assertEq(tokens[i].allowance(address(spender), address(earnVaultA)), 0);
-            assertEq(tokens[i].allowance(address(spender), address(pool)), 0);
+            _assertStandingOrNone(tokens[i].allowance(address(spender), address(pool)));
         }
     }
 
@@ -511,8 +511,13 @@ contract SendSpenderTest is EarnRouterTestBase {
         for (uint256 i = 0; i < tokens.length; i++) {
             assertEq(tokens[i].balanceOf(address(sends)), stray, "baseline");
             assertEq(tokens[i].allowance(address(sends), address(earnVaultA)), 0, "vault allowance");
-            assertEq(tokens[i].allowance(address(sends), address(pool)), 0, "pool allowance");
+            _assertStandingOrNone(tokens[i].allowance(address(sends), address(pool)));
             assertEq(tokens[i].balanceOf(address(sendRouter)), 0, "router balance");
         }
+    }
+
+    /// @dev An immutable spender's allowance is either none or a standing maximum, never a leftover amount.
+    function _assertStandingOrNone(uint256 allowance) internal pure {
+        assertTrue(allowance == 0 || allowance == type(uint256).max, "standing allowance");
     }
 }

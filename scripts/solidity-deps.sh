@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs a Foundry project's Solidity dependencies into <project>/lib/ at the revisions its
 # foundry.lock pins. Each project (earn/, zone-router/, cards/) pins its own; they are not Git submodules.
-# A project that compiles with solar (earn/) pins its revision in <project>/solar.lock; cargo installs
-# it into .solar/<rev>/ with a local digest receipt, where the project's solar-solc wrapper finds it.
+# Every project compiles with the solar revision earn/solar.lock pins; cargo installs it into
+# .solar/<rev>/ with a local digest receipt, where earn/solar-solc (every project's compiler) finds it.
 # Runs on bash 3.2 (macOS's /bin/bash), so it uses no associative arrays.
 # Usage: scripts/solidity-deps.sh <project>...   (idempotent; a checkout at its pin is kept)
 set -euo pipefail
@@ -57,12 +57,17 @@ install_solar() (
     exit 1
   }
   temporary=
-  trap 'if [[ -n "$temporary" ]]; then rm -rf "$temporary"; fi; rmdir "$lock"' EXIT
+  source=
+  trap 'if [[ -n "$temporary" ]]; then rm -rf "$temporary"; fi; if [[ -n "$source" ]]; then rm -rf "$source"; fi; rmdir "$lock"' EXIT
   # Another installer may have finished between the initial check and acquiring the lock.
   if solar_receipt verify "$destination" "$rev"; then exit 0; fi
   temporary=$(mktemp -d "$PWD/.solar/.build-$rev.XXXXXX")
-  cargo install --quiet --locked --git https://github.com/paradigmxyz/solar --rev "$rev" \
-    --root "$temporary" solar-compiler
+  # Build from a clone with tags: solar labels itself -dev unless its checkout is a release tag, and
+  # that label is written into every contract's metadata. cargo install --git checks out no tags.
+  source=$(mktemp -d "$PWD/.solar/.source-$rev.XXXXXX")
+  git clone --quiet --filter=blob:none https://github.com/paradigmxyz/solar "$source"
+  git -C "$source" -c advice.detachedHead=false checkout --quiet "$rev"
+  cargo install --quiet --locked --path "$source/crates/solar" --root "$temporary"
   solar_receipt write "$temporary" "$rev" || {
     echo "cargo did not produce an executable solar compiler; no installation published" >&2
     exit 1
@@ -105,8 +110,8 @@ for project in "$@"; do
       git -C "$dir" checkout -q FETCH_HEAD
       echo "$dir at $rev"
     done
-  if [[ -f "$project/solar.lock" ]]; then
-    rev=$(tr -d '[:space:]' < "$project/solar.lock")
-    install_solar "$rev"
-  fi
 done
+if [[ $# -gt 0 ]]; then
+  rev=$(tr -d '[:space:]' < earn/solar.lock)
+  install_solar "$rev"
+fi

@@ -42,7 +42,9 @@ Router invariants:
    Factory-registered Portal; every successful callback returns its complete output through that
    Portal.
 3. Conversion happens only at the pool oracle's exact par price with measured output equal to input,
-   and the router retains no operation balance or allowance after success.
+   and the router retains no operation balance after success. Its only allowances at rest are standing
+   maximums to its immutable EarnVault and pool, because Tempo charges every zero-to-nonzero allowance
+   as a new storage slot; neither can pull a balance the router does not hold.
 
 ## Authentication and callback
 
@@ -128,12 +130,11 @@ which input converts to identical output. For each conversion the router:
 
 1. selects the direction from the flow and the immutable pair;
 2. records its input and output balances;
-3. approves the pool for exactly `amountIn`;
+3. tops its standing pool allowance up to the maximum if it is below `amountIn`;
 4. calls `swapExactInput` with `minAmountOut = amountIn`, the current block as deadline, `actionId` as
    the trade ID, `parPrice()` as the expected price, zero tolerance, and no minimum observation time;
-5. clears the approval;
-6. takes `amountOut` from the measured output-balance delta and requires `amountOut == amountIn`; and
-7. requires its input balance to return to the operation baseline.
+5. takes `amountOut` from the measured output-balance delta and requires `amountOut == amountIn`; and
+6. requires its input balance to return to the operation baseline.
 
 There are no partial fills. A paused pool, revoked admission or redirected recipient, an off-par or
 (by the pool's own window) stale oracle report, or insufficient inventory reverts the callback and
@@ -287,7 +288,9 @@ Authorities and handoffs:
 - **Pool owner.** `authorize-router` executes under `DEPLOYER_PRIVATE_KEY` only when planning proves
   that key is the pool's `owner()`, or owns the `DirectPropAMMRebalanceController` that owns the pool
   (calls then go through `controller.execute`). It refuses a pool that redirects the router's
-  recipient, which admission cannot repair. Otherwise it emits a pool-owner handoff.
+  recipient, which admission cannot repair, and a router that fails the provenance check below,
+  as does the Zone router's `authorize-zone-router` for its factory and router. Otherwise it emits a
+  pool-owner handoff.
 - **Zone administrator.** When tokens or gateway registration are missing, the command still
   publishes the record and returns the administrator handoff. The administrator checks out the
   committed profile and record and reruns the same command with only `ZONE_ADMIN_PRIVATE_KEY`. That

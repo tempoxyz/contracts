@@ -1,0 +1,19 @@
+{
+  "card.earn-spend": "1235484",
+  "card.earn-spend.residue": "1235484",
+  "card.earn-spend.residue.vault-residue": "1235484",
+  "card.router-spend": "621175",
+  "card.router-spend.residue": "368975",
+  "earn-only.deposit": "1531415",
+  "earn-only.redeem": "1254994",
+  "earn-only.residue.deposit": "1282015",
+  "earn-only.residue.redeem": "1007594",
+  "earn-only.residue.vault-residue.deposit": "782415",
+  "earn-only.residue.vault-residue.redeem": "1007594",
+  "spend.warm.deposit": "1273255",
+  "spend.warm.redeem": "996834",
+  "spend.warm.residue.deposit": "1023855",
+  "spend.warm.residue.redeem": "744634",
+  "spend.warm.residue.vault-residue.deposit": "524255",
+  "spend.warm.residue.vault-residue.redeem": "744634"
+}

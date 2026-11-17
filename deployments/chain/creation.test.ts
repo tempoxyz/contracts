@@ -277,11 +277,15 @@ describe('assertVerifiedCreationTransaction', () => {
       throw error
     }
     const creationBytecode = artifact.bytecode.object
+    // The Zone router compiles with solar: each trailer names solar's version behind its own INVALID delimiter.
     const trailers = [
-      ...creationBytecode.matchAll(/a2646970667358221220[0-9a-f]{64}64736f6c6343[0-9a-f]{6}0033/gi),
+      ...creationBytecode.matchAll(
+        /a2646970667358221220[0-9a-f]{64}65736f6c617243[0-9a-f]{6}0034/gi,
+      ),
     ]
     expect(trailers).toHaveLength(2)
-    expect(trailers[0]!.index + trailers[0]![0].length).toBe(trailers[1]!.index)
+    expect(creationBytecode.slice(trailers[1]!.index - 2, trailers[1]!.index)).toBe('fe')
+    expect(trailers[0]!.index + trailers[0]![0].length + 2).toBe(trailers[1]!.index)
     expect(trailers[1]!.index + trailers[1]![0].length).toBe(creationBytecode.length)
     const cborAuxdata = Object.fromEntries(
       trailers.map((trailer, index) => [
@@ -299,7 +303,11 @@ describe('assertVerifiedCreationTransaction', () => {
       ...options,
       creationBytecode,
       constructorArgs: '0x' as const,
-      compiler: { ...compiler, version: artifact.metadata.compiler.version },
+      compiler: {
+        ...compiler,
+        // Solar records its full solc-wrapper version in metadata, as the verifier reports it.
+        version: artifact.metadata.compiler.version,
+      },
       minedTransaction: { ...options.minedTransaction, input: changed },
     }
     for (const ranges of [undefined, null, cborAuxdata])

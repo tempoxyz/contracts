@@ -10,7 +10,7 @@
       {
         "surface": "Portal, Messenger, Verifier",
         "supported": "Vendored sources rebuilt with solc 0.8.35, Osaka, viaIR and 200 optimizer runs match locked executable bytes. Startup checks both the original dumped genesis bytes and the fixture bytes applied to the running L1.",
-        "notEstablished": "The regular card Foundry build uses solc 0.8.36/Cancun and mocks signature recovery; no production attestation proof follows."
+        "notEstablished": "The regular card Foundry build uses solar (Solidity 0.8.36)/Cancun and mocks signature recovery; no production attestation proof follows."
       },
       {
         "surface": "Deposit queue and Inbox",
@@ -32,7 +32,7 @@
   "vendor": {
     "sourceCommit": "ce9998460dad466d0d36c05c971c988dc7e67582",
     "tempoStdCommit": "96f882963ce3b0e0abc7ec2b41d03d42457877bb",
-    "foundryConfigSha256": "555e8785940cc2f5829c229c688870caba7b8c44817f594329880c3b643a1fc4",
+    "foundryConfigSha256": "76a652cb491aca44dc6884ede1b4fb96b1110525c4b585688837ce36d36e8642",
     "sources": {
       "interfaces/IZone.sol": "aaafc7ed81a5074bf79db306d6a92791f22107507ea218957d7872a2471cc7cf",
       "libraries/BlockHashHistory.sol": "e4e7c34ec50507c07446208aacdc86595e276c2e433d611d565ea5673832acba",

@@ -4,12 +4,13 @@ Zone withdrawal callbacks on Tempo: `ZoneRouter`, `ZoneRouterFactory`, the `ISpe
 interface, and the spenders in `src/spenders/`. [README.md](README.md) maps the project and
 [docs/zone-router/zone-router.md](../docs/zone-router/zone-router.md) owns the design.
 
-- This is its own Foundry project, built with solc (not Earn's solar) so hosted deployments can
-  source-verify it. Run every `forge` command from `zone-router/`, after `scripts/solidity-deps.sh zone-router`
+- This is its own Foundry project, compiled with Earn's solar (`earn/solar-solc`). Run every `forge` command from `zone-router/`, after `scripts/solidity-deps.sh zone-router`
   (from the repository root). Never add its remappings or settings to `earn/foundry.toml`. Its own
   remappings feed every contract's metadata hash, so a new one moves every release address.
 - `src/` imports only Earn's interfaces, through `tempo-earn/` (`earn/src/`); tests may also use
   Earn's contracts through `tempo-earn/` and its test helpers through `earn-test/` (`earn/test/`).
+  Both remap through the committed `linked/earn` symlink: solar reads only files inside the project
+  directory, so never point a remapping at `../`.
   Never copy Earn code here.
 - Generic spenders live in `src/spenders/`, each adapting one payee system. A spender that belongs to
   another project lives there and implements `ISpender` from here, as the card project's
@@ -17,7 +18,8 @@ interface, and the spenders in `src/spenders/`. [README.md](README.md) maps the 
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical
   Messenger, Zone and Portal authentication, conversion only at exact par with measured 1:1 output,
   no balance left after a callback and no approval except a spend's standing one to its own Zone's
-  Portal, and no `senderTag` emitted or stored. A spender
+  Portal and standing maximums to the immutable EarnVault and pool (which hold none of the router's
+  tokens at rest), and no `senderTag` emitted or stored. A spender
   gets at most the callback's `maxInput`; everything else returns through the source Portal.
 - `SingleZoneEarnRouter` stays in `earn/` until its consumers move; ops 0 and 1 here must accept its
   callback data byte for byte.

@@ -19,7 +19,7 @@ import { accessMemberContracts, deploymentStep, executeAvailableAuthority } from
 import type { ChainClient, FoundryStep } from '../module.js'
 import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { zoneRouterModeModule } from './index.js'
-import { zoneRouterConstructorArgs, zoneRouterMode } from './profile.js'
+import { zoneRouterConstructorArgs, zoneRouterFactory, zoneRouterMode } from './profile.js'
 
 vi.mock(import('../earn/zone-router/provenance.js'), () => ({ requireRouterProvenance: vi.fn() }))
 
@@ -439,6 +439,10 @@ describe('Zone router steps', () => {
       `ZoneRouterFactory ${address('fac')} is source verified as zone-router/src/ZoneRouterFactory.sol`,
     )
     expect(step.handoff(cardAndEarn, outputs)).not.toContain('source verified')
+    for (const profile of [named, cardAndEarn])
+      expect(step.handoff(profile, outputs)).toContain(
+        `Confirm ZoneRouterFactory ${zoneRouterFactory(profile, outputs)}.isRouter(${outputs.zoneRouter}) and the mode in its RouterDeployed event, and verify the router's canonical implementation`,
+      )
     const authorityClient = vi.fn()
     const result = await executeAvailableAuthority(
       {
@@ -639,6 +643,43 @@ describe('Zone router steps', () => {
       functionName: 'setTakerAllowed',
       args: [outputs.zoneRouter, true],
     })
+  })
+
+  test('refuses a restored noncanonical factory or router before pool admission', async () => {
+    const deployerKey = `0x${'4'.repeat(64)}` as const
+    const deployer = privateKeyToAccount(deployerKey).address
+    const error = new Error('noncanonical router')
+    vi.mocked(requireRouterProvenance).mockRejectedValueOnce(error)
+    // Pool owner, then taker, recipient, and resolved recipient.
+    const readContract = vi
+      .fn()
+      .mockResolvedValueOnce(deployer)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(outputs.zoneRouter)
+    const sendTransactionSync = vi.fn()
+    await expect(
+      executeAvailableAuthority(
+        {
+          action: { id: 'authorize-zone-router' },
+          environment: { DEPLOYER_PRIVATE_KEY: deployerKey },
+          outputs,
+          profile: cardAndEarn,
+          rpcUrl: 'https://rpc.invalid',
+        },
+        {
+          authorityClient: ((_options: unknown, account: unknown) => ({
+            account,
+            chain: { id: 42431 },
+            getTransactionCount: async () => 0,
+            readContract,
+            sendTransactionSync,
+          })) as never,
+          fundFromFaucet: vi.fn() as never,
+        },
+      ),
+    ).rejects.toBe(error)
+    expect(sendTransactionSync).not.toHaveBeenCalled()
   })
 })
 

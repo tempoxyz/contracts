@@ -93,23 +93,28 @@ export function assertVerifiedCreationTransaction(
   const expected = `${creationBytecode}${constructorArgs.slice(2)}`.toLowerCase()
   if (input?.toLowerCase() === expected) return assertDirectCreationTransaction(options)
 
-  // Factory output can end with a child's metadata followed immediately by its own, behind one INVALID delimiter.
+  // Factory output can end with a child's metadata followed by its own: solc's adjacent behind one INVALID
+  // delimiter, solar's each behind its own. Each trailer names its compiler's version: solc's, or solar's own.
   // Read only this terminal chain from compiler output; never search executable bytes or trust verifier mask offsets.
-  const tail = /fe((?:a2646970667358221220[0-9a-f]{64}64736f6c6343[0-9a-f]{6}0033)+)$/i.exec(
-    creationBytecode,
+  const solar = compiler.version?.match(
+    /^\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.(\d+)\.(\d+)\.(\d+)$/i,
   )
-  const version = compiler.version?.match(/^(\d+)\.(\d+)\.(\d+)\+commit\.[0-9a-f]+$/i)
-  const trailers = [
-    ...(tail?.[1] ?? '').matchAll(
-      /a2646970667358221220[0-9a-f]{64}64736f6c6343([0-9a-f]{6})0033/gi,
-    ),
-  ].map((match) => {
+  const version = solar
+    ? [compiler.version!, ...solar.slice(1)]
+    : compiler.version?.match(/^(\d+)\.(\d+)\.(\d+)\+commit\.[0-9a-f]+$/i)
+  // Each match is one trailer, behind its INVALID delimiter for solar; group 1 is the trailer, group 2 its version.
+  const trailer = solar
+    ? 'fe(a2646970667358221220[0-9a-f]{64}65736f6c617243([0-9a-f]{6})0034)'
+    : '(a2646970667358221220[0-9a-f]{64}64736f6c6343([0-9a-f]{6})0033)'
+  const tail = new RegExp(`${solar ? '' : 'fe'}((?:${trailer})+)$`, 'i').exec(creationBytecode)
+  const trailers = [...(tail?.[1] ?? '').matchAll(new RegExp(trailer, 'gi'))].map((match) => {
+    // Skip solc's one shared delimiter, or the delimiter that opens each solar match.
     const start = tail!.index + 2 + match.index
     return {
       offset: (start - 2) / 2,
       digestStart: start + 'a2646970667358221220'.length,
-      value: `0x${match[0]}`.toLowerCase(),
-      version: match[1]!,
+      value: `0x${match[1]}`.toLowerCase(),
+      version: match[2]!,
     }
   })
   const ranges = cborAuxdata == null ? [] : Object.values(Object(cborAuxdata))

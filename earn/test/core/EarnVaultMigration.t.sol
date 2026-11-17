@@ -67,9 +67,16 @@ contract EarnVaultMigrateTest is Test {
     function testMigratePreservesSupplyNavAndBalancesAndReAnchors() public {
         uint256 supplyBefore = core.totalEarnShares();
         uint256 userBalBefore = share.balanceOf(user);
+        // Deposits leave a standing maximum base-asset allowance to the active engine only.
+        assertEq(asset.allowance(address(core), address(fromEngine)), type(uint256).max);
+        assertEq(asset.allowance(address(core), address(toEngine)), 0);
 
         vm.prank(operator);
         uint256 newShares = core.migrateEngine(address(toEngine), 50 ether, 100 ether);
+
+        // Migration revokes the retired engine and leaves the standing allowance with the new one.
+        assertEq(asset.allowance(address(core), address(fromEngine)), 0);
+        assertEq(asset.allowance(address(core), address(toEngine)), type(uint256).max);
 
         // Venue-share COUNT changed (100 -> 50) but TIP20 supply and user balances did NOT.
         assertEq(newShares, 50 ether);

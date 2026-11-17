@@ -254,7 +254,7 @@ The first command checks the vendored Zone source hashes and installed `tempo-st
 in a disposable directory with solc 0.8.35, Osaka, via-IR and 200 optimizer runs. Portal, Messenger
 and Verifier executable bytes must exactly match the locked fixture. Only the standard solc 0.8.35
 IPFS metadata trailer may differ; no opcodes, immutables or library addresses are masked. This
-comparison does not change the card project's solc 0.8.36/Cancun settings.
+comparison does not change the card project's solar (Solidity 0.8.36)/Cancun settings.
 
 Every localnet startup inspects the running container's image digest and recorded source labels on
 the daemon selected by Testcontainers. Before applying local genesis overrides, it requires the

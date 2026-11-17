@@ -145,15 +145,52 @@ async function currentFeeRecipients(client: ReadClient, earnFees: Address) {
 }
 
 /**
- * Refuses to remove an identity used by a required protocol member or open async claim receiver,
- * preserving share transfers and claim cancellation even when the receiver is a virtual alias.
+ * Refuses to remove an identity that any stack attaching the same TIP-403 policy still needs: the
+ * policy is shared state, so removing a member through one stack also removes it for the others.
+ * `siblings` are the other known stacks; those on another chain or policy are ignored.
  */
 export async function assertAccessRemovalSafe(
   client: LogClient,
   deployment: EarnStack,
   target: Address,
+  siblings: readonly EarnStack[] = [],
 ) {
-  requireProtectedAccess(deployment)
+  const { access } = requireProtectedAccess(deployment)
+  await assertStackRemovalSafe(client, deployment, target)
+  for (const stack of sharingPolicy(deployment, access, siblings)) {
+    try {
+      await assertStackRemovalSafe(client, stack, target)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `${detail} (for stack ${stack.id}, EarnVault ${stack.contracts.earnVault}, which shares policy ${access.transferPolicyId})`,
+        { cause: error },
+      )
+    }
+  }
+}
+
+/** The sibling stacks on the same chain that attach the same TIP-403 policy. */
+function sharingPolicy(
+  deployment: EarnStack,
+  access: ReturnType<typeof requireProtectedAccess>['access'],
+  siblings: readonly EarnStack[],
+) {
+  return siblings.filter(
+    (stack) =>
+      stack !== deployment &&
+      stack.network.chainId === deployment.network.chainId &&
+      stack.access.kind === 'tip403-whitelist' &&
+      BigInt(stack.access.transferPolicyId) === BigInt(access.transferPolicyId),
+  )
+}
+
+/**
+ * Refuses to remove an identity used by one stack's required protocol member or open async claim
+ * receiver, preserving share transfers and claim cancellation even when the receiver is a virtual
+ * alias.
+ */
+async function assertStackRemovalSafe(client: LogClient, deployment: EarnStack, target: Address) {
   const resolvedTarget = await resolveAccessAddress(client, target)
   const required = await requiredAccessMembers(client, deployment)
   const identities = await Promise.all(
@@ -221,7 +258,8 @@ export async function assertAccessRemovalSafe(
 
 /**
  * Adds or removes one whitelist member as the access administrator `wallet`, checking removal
- * safety first, and confirms the readback.
+ * safety first across `deployment` and every sibling stack sharing its policy, and confirms the
+ * readback.
  */
 export async function setAccessEligibility(parameters: {
   client: LogClient
@@ -229,11 +267,17 @@ export async function setAccessEligibility(parameters: {
   target: Address
   allowed: boolean
   wallet: Client<Transport, Chain, Account>
+  siblings?: readonly EarnStack[]
 }) {
   const { access } = requireProtectedAccess(parameters.deployment)
   const target = await resolveAccessAddress(parameters.client, parameters.target)
   if (!parameters.allowed) {
-    await assertAccessRemovalSafe(parameters.client, parameters.deployment, target)
+    await assertAccessRemovalSafe(
+      parameters.client,
+      parameters.deployment,
+      target,
+      parameters.siblings,
+    )
   }
   const whitelist = {
     policyId: BigInt(access.transferPolicyId),

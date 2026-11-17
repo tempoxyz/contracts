@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 
 import { FeeConfig } from "tempo-earn/interfaces/core/EarnFeeTypes.sol";
 
@@ -103,6 +104,22 @@ abstract contract CardSpenderBehavior is CoreEnv {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.ShareCostExceeded.selector, required, required - 1));
         program.spend(s);
+    }
+
+    /// @dev Only TIP-20s settle, publicly or privately, whichever way the program pays.
+    function test_revert_nonTip20Token() public {
+        MintableShare token = new MintableShare();
+        token.mint(alice, 10e6);
+        CardSpend memory s = _stableSpend(publicWallet, 0, 1e6, "not.tip20");
+        s.token = address(token);
+        vm.prank(alice);
+        token.approve(address(program), 1e6);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.UnsupportedToken.selector, address(token)));
+        program.spend(s);
+        vm.prank(router);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.UnsupportedToken.selector, address(token)));
+        program.spendFrom(address(token), 1e6, abi.encode(s));
     }
 
     function testFuzz_publicSpend_split(uint256 amount, uint256 fromVault) public {
@@ -239,6 +256,12 @@ abstract contract CardSpenderBehavior is CoreEnv {
     /// @dev A hand-back that reports success without moving the change leaves it behind, which is refused.
     function test_revert_residualBalance() public {
         StuckToken token = new StuckToken();
+        // Stands in for a TIP-20, so the program's own residual check is what refuses it.
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(token)),
+            abi.encode(true)
+        );
         mock.setToken(address(token), true);
         token.mint(router, 10e6);
         CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "residual");
@@ -350,6 +373,12 @@ abstract contract CardSpenderBehavior is CoreEnv {
     ///      point, and the spend still pays.
     function test_revert_reentrancy() public {
         ReentrantToken token = new ReentrantToken();
+        // Stands in for a TIP-20, so the program's own lock is what stops the callback.
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(token)),
+            abi.encode(true)
+        );
         mock.setToken(address(token), true);
         token.mint(alice, 10e6);
         token.mint(router, 10e6);
@@ -464,6 +493,67 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
 
     function test_paysDirectly() public view {
         assertEq(program.PAYOUT_TARGET(), address(0));
+    }
+
+    /// @dev A vault that reports burning more than it did leaves the unburned shares to the payer, measured by balance.
+    function test_publicSpend_overReportedBurnStillRefundsThePayer() public {
+        MisreportingVault vault = _misreportingVault(50, 100);
+        CardSpend memory s = _misreportingSpend(vault, "over.report");
+        vm.expectEmit(address(program));
+        emit CardSpender.CardSpent("over.report", alice, publicWallet, address(usd), 10e6, 10e6, 10e6, false);
+        vm.prank(alice);
+        program.spend(s);
+        assertEq(MintableShare(vault.earnShare()).balanceOf(alice), 90e6, "payer charged only the actual burn");
+        assertEq(MintableShare(vault.earnShare()).balanceOf(address(program)), 5e6, "the program keeps only its seed");
+    }
+
+    /// @dev A vault that takes more than the quote, from the program's seed under its standing approval, is refused.
+    function test_revert_publicSpend_vaultTakesMoreThanTheQuote() public {
+        MisreportingVault vault = _misreportingVault(110, 100);
+        CardSpend memory s = _misreportingSpend(vault, "over.pull");
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(CardSpender.ShareCostExceeded.selector, 22e6, 20e6));
+        program.spend(s);
+    }
+
+    function _misreportingVault(uint256 burnPct, uint256 reportPct) internal returns (MisreportingVault vault) {
+        vault = new MisreportingVault(address(usd), burnPct, reportPct);
+        mock.setVault(address(vault), true);
+        usd.mint(address(vault), 100e6);
+        MintableShare share = MintableShare(vault.earnShare());
+        share.mint(alice, 100e6);
+        share.mint(address(program), 5e6);
+        vm.prank(alice);
+        share.approve(address(program), type(uint256).max);
+    }
+
+    function _misreportingSpend(MisreportingVault vault, bytes32 ref) internal view returns (CardSpend memory s) {
+        s = _earnSpend(publicWallet, 0, 10e6, 10e6, ref);
+        s.vault = address(vault);
+        s.maxShares = 0;
+    }
+
+    /// @dev A vault that burns more shares than it reports cannot make the program refund from its own balance:
+    ///      the refund is what the program measurably still holds of the payer's shares.
+    function test_publicSpend_refundIsMeasuredNotReported() public {
+        UnderReportingVault vault = new UnderReportingVault(address(usd));
+        mock.setVault(address(vault), true);
+        usd.mint(address(vault), 100e6);
+        MintableShare share = MintableShare(vault.earnShare());
+        share.mint(alice, 100e6);
+        share.mint(address(program), 5e6);
+        CardSpend memory s = _earnSpend(publicWallet, 0, 10e6, 10e6, "under.report");
+        s.vault = address(vault);
+        s.maxShares = 0;
+        vm.prank(alice);
+        share.approve(address(program), type(uint256).max);
+        vm.expectEmit(address(program));
+        emit CardSpender.CardSpent("under.report", alice, publicWallet, address(usd), 10e6, 10e6, 20e6, false);
+        vm.prank(alice);
+        program.spend(s);
+        assertEq(usd.balanceOf(publicWallet), 10e6);
+        assertEq(share.balanceOf(alice), 80e6, "payer charged the quote and refunded nothing");
+        assertEq(share.balanceOf(address(program)), 5e6, "the program's own shares untouched");
     }
 
     /// @dev Anyone may set the program's standing EarnShare approval to an allowed vault before its first
@@ -679,6 +769,12 @@ contract CardSpenderVirtualDestinationTest is CoreEnv {
             ADDRESS_REGISTRY_ADDRESS, abi.encodeCall(IAddressRegistry.resolveRecipient, (VIRTUAL)), abi.encode(master)
         );
         vusd = new VirtualAwareToken("VUSD");
+        // Stands in for a TIP-20 that resolves virtual recipients.
+        vm.mockCall(
+            StdPrecompiles.TIP20_FACTORY_ADDRESS,
+            abi.encodeWithSignature("isTIP20(address)", address(vusd)),
+            abi.encode(true)
+        );
         vault = new LiteralReceiverVault(address(vusd));
         vusd.mint(address(vault), 1000e6);
         vusd.mint(alice, 1000e6);
@@ -768,6 +864,83 @@ contract CardSpenderVirtualDestinationTest is CoreEnv {
         vm.prank(router);
         program.spendFrom(share, 7e6, abi.encode(_spend(VIRTUAL, 3e6, 3e6)));
         assertEq(VirtualAwareToken(share).balanceOf(router), 1000e6 - 6e6, "only the cost was burned");
+    }
+}
+
+/// @dev Burns the full quote but reports half of it burnt.
+contract UnderReportingVault is ITempoEarnVault {
+    address public immutable override asset;
+    MintableShare internal immutable SHARE;
+
+    constructor(address asset_) {
+        asset = asset_;
+        SHARE = new MintableShare();
+    }
+
+    function earnShare() external view override returns (address) {
+        return address(SHARE);
+    }
+
+    function previewWithdraw(uint256 assets) public pure override returns (uint256) {
+        return assets * 2;
+    }
+
+    function previewRedeem(uint256 earnShares) external pure override returns (uint256) {
+        return earnShares / 2;
+    }
+
+    function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares)
+        external
+        override
+        returns (uint256)
+    {
+        uint256 cost = previewWithdraw(assets);
+        require(cost <= maxEarnShares, "max shares");
+        SHARE.transferFrom(msg.sender, address(0xdead), cost);
+        SafeTransferLib.safeTransfer(asset, receiver, assets);
+        return cost / 2;
+    }
+}
+
+contract MintableShare is ERC20 {
+    constructor() ERC20("Under-reported EarnShare", "uES") { }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+}
+
+/// @dev Burns `burnPct` percent of the quote, which may exceed the cap, and reports `reportPct` percent of it burnt.
+contract MisreportingVault is ITempoEarnVault {
+    address public immutable override asset;
+    MintableShare internal immutable SHARE;
+    uint256 internal immutable BURN_PCT;
+    uint256 internal immutable REPORT_PCT;
+
+    constructor(address asset_, uint256 burnPct, uint256 reportPct) {
+        asset = asset_;
+        SHARE = new MintableShare();
+        BURN_PCT = burnPct;
+        REPORT_PCT = reportPct;
+    }
+
+    function earnShare() external view override returns (address) {
+        return address(SHARE);
+    }
+
+    function previewWithdraw(uint256 assets) public pure override returns (uint256) {
+        return assets * 2;
+    }
+
+    function previewRedeem(uint256 earnShares) external pure override returns (uint256) {
+        return earnShares / 2;
+    }
+
+    function withdrawExact(uint256 assets, address receiver, uint256) external override returns (uint256) {
+        uint256 cost = previewWithdraw(assets);
+        SHARE.transferFrom(msg.sender, address(0xdead), cost * BURN_PCT / 100);
+        SafeTransferLib.safeTransfer(asset, receiver, assets);
+        return cost * REPORT_PCT / 100;
     }
 }
 
