@@ -38,7 +38,6 @@ contract CardRegistry {
     error TokenAlreadyBound();
     error InvalidProgramType();
 
-    /// @custom:ensures PROGRAM == program
     constructor(CardProgram program) {
         PROGRAM = program;
     }

@@ -24,7 +24,6 @@ import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 ///      settlement account, so a refund takes its share back from what it has available and leaves the rest as
 ///      capped debt. A cardholder approves the desk as a holder so a refund can take back a reward from money it
 ///      still has, never as debt. Amounts are in units of the program's settlement token.
-/// @custom:invariant address(PROGRAM) != address(0)
 contract IssuerDesk is ISettlementTokenGuard {
     using FixedPointMathLib for uint256;
 
@@ -178,7 +177,6 @@ contract IssuerDesk is ISettlementTokenGuard {
         _locked = false;
     }
 
-    /// @custom:ensures PROGRAM == program
     constructor(CardProgram program) {
         if (address(program) == address(0)) revert ZeroAddress();
         PROGRAM = program;

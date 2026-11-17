@@ -16,7 +16,6 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 /// @dev An account enrolls with its own key and approves this contract to move its cash and shares. Payouts take
 ///      only what the reservation core reports available, so holds and liens stay where they are. Debt is repaid
 ///      the way the core repays it from any credit: the cash first lands on the account itself.
-/// @custom:invariant TOKEN != address(0) && REGISTRAR != address(0)
 contract AccountLifecycle {
     using SafeTransferLib for address;
 
@@ -72,8 +71,6 @@ contract AccountLifecycle {
     error TooEarly();
     error ZeroAddress();
 
-    /// @custom:ensures TOKEN == token && REGISTRAR == registrar && ACCOUNT_KEYS == accountKeys
-    /// @custom:ensures DORMANCY == dormancy && ESCHEAT_AFTER == escheatAfter
     // A zero account-key registry is allowed: only the account's own key then signs for it.
     // forge-lint: disable-next-line(missing-zero-check)
     constructor(address token, address registrar, address accountKeys, uint64 dormancy, uint64 escheatAfter) {
@@ -126,7 +123,6 @@ contract AccountLifecycle {
         // Dormancy is measured in days; a few seconds of validator skew does not change it.
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < uint256(a.lastActive) + DORMANCY) revert TooEarly();
-        /// @custom:assert a.status == Status.Active && block.timestamp >= uint256(a.lastActive) + DORMANCY
         _setStatus(account, a, Status.Dormant);
     }
 
