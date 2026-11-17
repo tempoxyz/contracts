@@ -87,6 +87,8 @@ contract EarnVault is IEarnVault {
     uint256 internal constant CONVERSION_BPS = 10_000;
     /// @notice Maximum contribution-funded increase in the normalized engine-share/EarnShare rate.
     uint256 public constant override MAX_REWARD_RATE_MULTIPLIER = 100;
+    /// @dev EarnShare base units the vault may hold without counting as supply.
+    uint256 internal constant SHARE_RESIDUE = 1;
 
     /// @notice The current yield engine and sole custodian of the venue shares backing this EarnVault's
     ///         EarnShare supply. MUTABLE only through operator-authorized {migrateEngine}.
@@ -1304,10 +1306,11 @@ contract EarnVault is IEarnVault {
         return _normalizedRate(engineShareAnchor, supplyAnchor);
     }
 
-    /// @dev EarnShare this vault holds counts as burned: TIP-20 burns only the caller's balance, so the vault keeps a
-    ///      standing EarnShare residue to avoid recreating its balance slot on every exit.
+    /// @dev Up to `SHARE_RESIDUE` EarnShare this vault holds counts as burned, so a standing residue keeps its balance
+    ///      slot across exits. The cap stops transfers to the vault from shrinking supply and inflating the rate.
     function _activeSupply() internal view returns (uint256) {
-        return IEarnShare(earnShare).totalSupply() - IEarnShare(earnShare).balanceOf(address(this));
+        uint256 held = IEarnShare(earnShare).balanceOf(address(this));
+        return IEarnShare(earnShare).totalSupply() - (held < SHARE_RESIDUE ? held : SHARE_RESIDUE);
     }
 
     function totalEarnShares() public view override returns (uint256) {

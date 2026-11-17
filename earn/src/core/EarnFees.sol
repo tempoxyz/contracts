@@ -1265,8 +1265,9 @@ contract EarnFees is IEarnFees {
         timestamp;
     }
 
-    /// @dev Matches EarnVault: EarnShare the vault holds counts as burned.
+    /// @dev Matches EarnVault: up to one EarnShare base unit the vault holds counts as burned.
     function _activeSupply() internal view returns (uint256) {
-        return IEarnShare(earnShare).totalSupply() - IEarnShare(earnShare).balanceOf(earnVault);
+        uint256 held = IEarnShare(earnShare).balanceOf(earnVault);
+        return IEarnShare(earnShare).totalSupply() - (held < 1 ? held : 1);
     }
 }

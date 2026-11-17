@@ -17,9 +17,9 @@ interface, and the spenders in `src/spenders/`. [README.md](README.md) maps the 
   `CardSpender` (`cards/src/core/`) does. This project never imports from `cards/`.
 - Preserve the router's invariants: no owner or setters, a mode fixed at deployment, canonical
   Messenger, Zone and Portal authentication, conversion only at exact par with measured 1:1 output,
-  no balance left after a callback and no approval except a spend's standing one to its own Zone's
-  Portal and standing maximums to the immutable EarnVault and pool (which hold none of the router's
-  tokens at rest), and no `senderTag` emitted or stored. A spender
+  no balance left after a callback and no approval except a standing one to its own Zone's Portal
+  (which moves the router's tokens only inside a `depositEncrypted` call the router makes) and
+  standing maximums to the immutable EarnVault and pool (which pull only from `msg.sender`), and no `senderTag` emitted or stored. A spender
   gets at most the callback's `maxInput`; everything else returns through the source Portal.
 - `SingleZoneEarnRouter` stays in `earn/` until its consumers move; ops 0 and 1 here must accept its
   callback data byte for byte.

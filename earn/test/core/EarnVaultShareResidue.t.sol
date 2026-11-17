@@ -58,6 +58,36 @@ contract EarnVaultShareResidueTest is Test {
         assertTrue(core.isAccountingAligned());
     }
 
+    function testTransfersBeyondTheResidueStillCountAsSupply() public {
+        vm.prank(user);
+        uint256 minted = core.deposit(1 ether, user, 1);
+        vm.prank(user);
+        share.transfer(address(core), minted - 1);
+        assertEq(core.totalEarnShares(), minted - 1);
+
+        // The next deposit is priced at the original rate, not one inflated by the transfer.
+        vm.prank(other);
+        uint256 minted2 = core.deposit(1 ether, other, 1);
+        assertApproxEqAbs(minted2, minted, 1);
+        assertTrue(core.isAccountingAligned());
+    }
+
+    function testDonatingTheLastShareLeavesAnEnterablePool() public {
+        vm.prank(user);
+        uint256 minted = core.deposit(1 ether, user, 1);
+        vm.prank(user);
+        share.transfer(address(other), minted - 1);
+        vm.prank(user);
+        share.transfer(address(core), 1);
+        vm.prank(other);
+        share.transfer(address(core), minted - 1);
+        // Only one unit counts as burned; the rest remains supply nobody can redeem, as on any transfer to the vault.
+        assertEq(core.totalEarnShares(), minted - 1);
+        vm.prank(user);
+        assertGt(core.deposit(1 ether, user, 1), 0);
+        assertTrue(core.isAccountingAligned());
+    }
+
     function testResidueSurvivesRedeemsAndDeposits() public {
         vm.prank(user);
         core.deposit(100 ether, user, 1);
