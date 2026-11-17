@@ -18,7 +18,9 @@ src/
     CardSpender.sol           One program: public spends, and the Zone router's spender for private ones
     CardFactory.sol           Deploys programs at addresses fixed by their ID, provider and router factory
     CardSpend.sol             The one struct public and private spends settle
-    interfaces/               ICardProvider and ICardProviderPayout (the provider engine), the Earn vault subset
+    SavingsFacility.sol       Pays the issuer in cash for Earn shares a hold captured, redeems them into its float
+    interfaces/               ICardProvider and ICardProviderPayout (the provider engine), the Earn vault subset,
+                              IReservations (the account reservations precompile subset)
   providers/                Ours, one directory per card provider
     bridge/                   BridgeProvider, the "TS" handler (SpenderTempoSpend), Bridge interfaces
     rain/                     RainProvider, Rain interfaces
@@ -27,7 +29,8 @@ vendor/                     Providers' own contracts, unmodified (VENDORED.md)
   rain/                     Rain's collateral, factory and controller (verified Polygon sources)
   tempo-zones/              The Zones runtime the Bridge harness runs
 test/
-  core/                     CardSpender paying directly and through a payout target, CardFactory, mock providers
+  core/                     CardSpender paying directly and through a payout target, CardFactory, SavingsFacility,
+                            mock providers and reservations
   bridge/                   Bridge harness, rails, card scenario matrix, unit, fork and smoke tests
   rain/                     Rain harness, unit and lifecycle tests, Rain bytecode fixture
 script/

@@ -15,6 +15,7 @@ shared design; [bridge/](bridge/README.md) and [rain/](rain/README.md) own each 
 | [`CardFactory`](../../cards/src/core/CardFactory.sol)                       | None                     | Deploys a program at a CREATE2 address fixed by its ID, provider and router factory.                           |
 | [`ICardProvider`](../../cards/src/core/interfaces/ICardProvider.sol) engine | The provider's contracts | Decides destinations, Earn vaults and the provider's pause; optionally names what the program pays through.    |
 | [`ZoneRouter`](../../zone-router/src/ZoneRouter.sol) (Spend op)             | None                     | Receives the Zone withdrawal, hands `maxInput` to the program (its listed spender), returns the change.        |
+| [`SavingsFacility`](../../cards/src/core/SavingsFacility.sol)               | None (a fixed funder)    | Pays the issuer in cash for Earn shares a hold captured, then redeems them into its float.                     |
 
 | Provider | Provider contract                                                       | How the program pays                                                                       |
 | -------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -95,6 +96,36 @@ allows, so its first Earn spend does not create the standing approval to that va
 TIP-1000). Anyone may also send a program one unit of each token it handles: `spendFrom` treats what the
 program holds as its baseline and leaves it there, so a spend never creates the program's balance slot
 (about 250k gas). The Rain E2E requests 3,000,000.
+
+## Spend from savings
+
+With account reservations (TIP-1153, from T15) a card authorization is a native hold rather than an
+immediate spend, and a hold can span cash and Earn shares: the issuer's access key holds cash first, and
+holds shares for the rest in favor of the program's [`SavingsFacility`](../../cards/src/core/SavingsFacility.sol).
+Held shares stay in the cardholder's balance and keep earning. At capture the issuer captures cash first
+and shares only for the shortfall, so the facility receives the shares, and the issuer calls
+`settle(owner, id, minAssets)`:
+
+- The hold must be on the vault's share with the facility as payee; it settles once, for what the
+  precompile records as captured.
+- The facility pays the settlement account `previewRedeem(shares)` in the base asset at once, then redeems
+  the shares for at least that amount. When the vault quotes but cannot redeem at once (an illiquid
+  venue), the shares stay in the facility, the float pays meanwhile, and the funder redeems them later
+  with `redeemHeld`. Pricing needs a quote: while the vault cannot give one (an async-only engine, a
+  paused or stale price), `settle` reverts and the captured shares wait in the facility until it can.
+- A capture beyond the hold may be partly debt to the facility, which the precompile still counts as
+  captured, so no hold of an owner in share debt to the facility settles until it is repaid.
+- Share holds take no refunds; refunds go through the cash path.
+- **Payouts.** A sweep of an account by the card records precompile (TIP-1169: closure, an estate or
+  unclaimed property) may pay its shares into the facility and record the recipient. Anyone may then call
+  `payOut(owner)`, which redeems the swept shares straight to the recipient, once per share, for at least
+  their `previewRedeem` value. The float never pays a payout: while the vault cannot quote or redeem the
+  shares, `payOut` reverts and they wait in the facility. The funder may redeem or withdraw only shares
+  deferred settlements left (`heldShares`), never swept shares awaiting a payout.
+
+The facility has no setter: its vault, issuer, settlement account and funder are fixed at deployment.
+The funder supplies the float, bears redemption fees and price moves between capture and redemption, and
+may withdraw what the float holds.
 
 ## What the program checks
 
