@@ -172,6 +172,28 @@ contract RouterTip20GasTest is CoreEnv {
         _measureCard(true, true, "card.earn-spend.residue.vault-residue");
     }
 
+    function test_gasEarnOnlyRouterShareResidue() public {
+        _seedVaultShares();
+        _measureRouter(false, true, false, "earn-only.share-residue");
+    }
+
+    function test_gasSpendRouterWarmShareResidue() public {
+        _seedVaultShares();
+        _measureRouter(true, true, true, "spend.warm.share-residue");
+    }
+
+    function test_gasCardEarnSpendShareResidue() public {
+        _seedVaultShares();
+        _measureCard(true, true, "card.earn-spend.share-residue");
+    }
+
+    /// @dev Base-asset residue plus one EarnShare unit with the vault only, as the runbook sends.
+    function _seedVaultShares() internal {
+        _seedVault();
+        vm.prank(address(portal));
+        earnShare.transfer(address(earnVault), 1);
+    }
+
     /// @dev The deployment runbook's residue: one base unit with the EarnVault and its ERC-4626 engine.
     function _seedVault() internal {
         usd.mint(address(earnVault), 1);

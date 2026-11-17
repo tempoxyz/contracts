@@ -57,7 +57,7 @@ type RouterProfile = SliceProfile<ZoneRouterFields>
 
 // Immutable router and factory have no upgrade path. Bump when either's deployed runtime changes so
 // reconciliation deploys a new factory and router instead of reusing the recorded ones.
-const zoneRouterContractRelease = 1
+const zoneRouterContractRelease = 2
 
 /**
  * The `zoneRouter` slice: a `ZoneRouter` mode from `zone-router/`, the `ZoneRouterFactory` that deploys it

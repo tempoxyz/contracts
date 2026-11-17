@@ -1,6 +1,6 @@
 import { earnRouterAbi } from '@tempoxyz/contracts/abis'
 import { inspectRouterReadiness } from '@tempoxyz/contracts/deployments'
-import { erc20Abi, getAddress, maxUint256, zeroAddress, type Address } from 'viem'
+import { erc20Abi, getAddress, maxUint128, maxUint256, zeroAddress, type Address } from 'viem'
 import type { DeploymentPublicClient, E2eContext, E2eStack } from '../../harness/context.js'
 import { tokenBalance } from '../../harness/support/funding.js'
 import { assert, ZONE_CASE_AMOUNT } from '../../harness/support/utils.js'
@@ -18,7 +18,11 @@ export async function validateRouter(client: DeploymentPublicClient, deployment:
     client.readContract({ ...route, functionName: 'pool' }),
     client.readContract({ ...route, functionName: 'privateAsset' }),
     ...[0, 1, 2, 3].map((flow) =>
-      client.readContract({ ...route, functionName: 'supportsFlow', args: [flow] }),
+      client.readContract({
+        ...route,
+        functionName: 'supportsFlow',
+        args: [flow],
+      }),
     ),
   ])
   assert(flows[0]! && flows[1]!, 'EarnRouter does not support both closed-loop flows')
@@ -53,14 +57,21 @@ export async function routerIntegrity(context: E2eContext) {
   const [pool, privateAsset, [paused, admitted, atPar]] = await Promise.all([
     context.l1Public.readContract({ ...route, functionName: 'pool' }),
     context.l1Public.readContract({ ...route, functionName: 'privateAsset' }),
-    context.l1Public.readContract({ ...route, functionName: 'liquidityStatus' }),
+    context.l1Public.readContract({
+      ...route,
+      functionName: 'liquidityStatus',
+    }),
   ])
   // Hosted contexts need not have fixture assets, so read the router's actual private input.
   const [vaultAssetBalance, privateAssetBalance, earnShareBalance, allowances] = await Promise.all([
     tokenBalance(context, context.contracts.asset, router),
     tokenBalance(context, privateAsset, router),
     tokenBalance(context, context.contracts.earnShare, router),
-    routerAllowances(context.l1Public, context.deployment, { router, pool, privateAsset }),
+    routerAllowances(context.l1Public, context.deployment, {
+      router,
+      pool,
+      privateAsset,
+    }),
   ])
   // Exact equality detects residue and deficits. Snapshots cannot attribute concurrent donations:
   // they may fail equality or offset a deficit; accepting increases would weaken the check further.
@@ -80,7 +91,7 @@ export async function routerIntegrity(context: E2eContext) {
 /**
  * Checks every approval used by deposit, redemption, conversion, and return to the source Portal. The
  * immutable EarnVault and pool may hold a standing maximum (Tempo charges each zero-to-nonzero allowance
- * as a new slot); any other amount, and any Portal allowance, is a leftover.
+ * as a new slot), and so may the source Portal, drawn down by each return; any other amount is a leftover.
  */
 async function routerAllowances(
   client: DeploymentPublicClient,
@@ -94,20 +105,45 @@ async function routerAllowances(
     portal !== undefined && getAddress(portal) !== zeroAddress,
     'EarnRouter has no source Portal',
   )
-  const targets: { token: Address; spender: Address; label: string; standing: boolean }[] = [
-    { token: asset, spender: earnVault, label: 'vault asset to EarnVault', standing: true },
-    { token: earnShare, spender: earnVault, label: 'EarnShare to EarnVault', standing: true },
+  const targets: {
+    token: Address
+    spender: Address
+    label: string
+    standing: boolean
+  }[] = [
+    {
+      token: asset,
+      spender: earnVault,
+      label: 'vault asset to EarnVault',
+      standing: true,
+    },
+    {
+      token: earnShare,
+      spender: earnVault,
+      label: 'EarnShare to EarnVault',
+      standing: true,
+    },
     {
       token: privateAsset,
       spender: portal,
       label: 'private asset to source Portal',
-      standing: false,
+      standing: true,
     },
-    { token: earnShare, spender: portal, label: 'EarnShare to source Portal', standing: false },
+    {
+      token: earnShare,
+      spender: portal,
+      label: 'EarnShare to source Portal',
+      standing: true,
+    },
   ]
   if (getAddress(pool) !== zeroAddress) {
     targets.push(
-      { token: asset, spender: pool, label: 'vault asset to conversion pool', standing: true },
+      {
+        token: asset,
+        spender: pool,
+        label: 'vault asset to conversion pool',
+        standing: true,
+      },
       {
         token: privateAsset,
         spender: pool,
@@ -124,8 +160,13 @@ async function routerAllowances(
         functionName: 'allowance',
         args: [router, spender],
       })
+      // The Portal's standing maximum shrinks by what each deposit pulls, so it is only far above any amount.
+      const isStanding =
+        getAddress(spender) === getAddress(portal)
+          ? allowance > maxUint128
+          : allowance === maxUint256
       assert(
-        allowance === 0n || (standing && allowance === maxUint256),
+        allowance === 0n || (standing && isStanding),
         `EarnRouter retains an allowance at rest: ${label}`,
       )
       // A standing allowance is set by the first operation, so its value is no baseline to compare.
