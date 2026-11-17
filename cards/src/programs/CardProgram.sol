@@ -846,10 +846,15 @@ contract CardProgram {
         emit PurchaseRefunded(purchaseRef, p.card, amount, tokens[0], tokens[1], tokens[2], seq, net);
     }
 
-    /// @notice Converts `amount` of an earlier settlement token from the caller into today's at the reference rate, for
-    ///         the settlement account, such as split shares a refund takes back.
-    function convertToSettlement(address token, uint256 amount) external nonReentrant onlyOperator returns (uint256) {
-        return CardConvert.convertToSettlement(msg.sender, token, amount);
+    /// @notice Converts `amount` of an earlier settlement token from the caller into today's at the reference rate, paid
+    ///         to `to`, such as split shares or rewards a refund takes back.
+    function convertToSettlement(address token, uint256 amount, address to)
+        external
+        nonReentrant
+        onlyOperator
+        returns (uint256)
+    {
+        return CardConvert.convertToSettlement(msg.sender, token, amount, to);
     }
 
     /// @notice Records that merchant reserves paid the issuer `amount` of a purchase's refund, which settlement then

@@ -135,8 +135,15 @@ contract IssuerDesk is ISettlementTokenGuard {
     event RewardPaid(
         bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
     );
+    /// @notice A refund took back `amount` of a reward from `account`, and its funder got back `value` of today's
+    ///         settlement token for it.
     event RewardReversed(
-        bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
+        bytes32 indexed purchaseRef,
+        address indexed account,
+        address indexed funder,
+        bytes32 kind,
+        uint128 amount,
+        uint256 value
     );
     event DisputeOpened(bytes32 indexed purchaseRef, address indexed account, uint128 amount, bytes evidence);
     event ReserveCollectedFor(bytes32 indexed purchaseRef, uint128 amount);
@@ -829,8 +836,16 @@ contract IssuerDesk is ISettlementTokenGuard {
             }
             uint128 taken = share < available ? share : available;
             if (taken == 0) continue;
-            CORE.charge(s.payee, token, _nextId(), taken, s.funder, false);
-            emit RewardReversed(purchaseRef, s.payee, s.funder, s.kind, taken);
+            uint256 back = taken;
+            if (token == today) {
+                CORE.charge(s.payee, token, _nextId(), taken, s.funder, false);
+            } else {
+                // A reward paid in an earlier token comes back to its funder in today's, at the reference rate.
+                CORE.charge(s.payee, token, _nextId(), taken, address(this), false);
+                SafeTransferLib.safeApprove(token, address(PROGRAM), taken);
+                back = PROGRAM.convertToSettlement(token, taken, s.funder);
+            }
+            emit RewardReversed(purchaseRef, s.payee, s.funder, s.kind, taken, back);
         }
     }
 
@@ -846,7 +861,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         if (paid != 0) {
             CORE.charge(payee, token, _nextId(), paid, address(this), false);
             SafeTransferLib.safeApprove(token, address(PROGRAM), paid);
-            PROGRAM.convertToSettlement(token, paid);
+            PROGRAM.convertToSettlement(token, paid, SETTLEMENT);
         }
         if (owed != 0) CORE.charge(payee, token, _nextId(), owed, SETTLEMENT, false);
     }

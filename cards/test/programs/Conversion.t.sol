@@ -412,6 +412,53 @@ contract ConversionTest is ProgramsEnv {
         desk.refund(P1, 0.01e6);
     }
 
+    function test_desk_rewardOnAnEarlierTokensPurchaseReturnsToItsFunderInTodaysToken() public {
+        IssuerDesk desk = new IssuerDesk(cards);
+        address network = makeAddr("network");
+        IssuerDesk.Line[] memory lines = new IssuerDesk.Line[](1);
+        lines[0] = IssuerDesk.Line({ payee: network, bps: 100, kind: "interchange" });
+        IssuerDesk.Reward[] memory rewards = new IssuerDesk.Reward[](1);
+        rewards[0] = IssuerDesk.Reward({ funder: network, bps: 50, kind: "cashback" });
+        vm.startPrank(issuer);
+        cards.setOperator(address(desk), true);
+        desk.setTerms(lines);
+        desk.setRewards(rewards);
+        vm.stopPrank();
+        vm.startPrank(settlement);
+        usd.approve(address(desk), type(uint256).max);
+        eur.approve(address(desk), type(uint256).max);
+        vm.stopPrank();
+        vm.startPrank(network);
+        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        core.setDebtCap(settlement, address(usd), 1e6);
+        vm.stopPrank();
+        vm.prank(alice);
+        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        vm.prank(issuer);
+        desk.capture(P1, 40e6, true);
+        // The network keeps 40 cents of its split less the 20 cent reward paid to the cardholder.
+        assertEq(usd.balanceOf(network), 0.2e6);
+        (uint64 seq,,,) = cards.ledger();
+        vm.startPrank(issuer);
+        cards.acknowledgeSettlement(seq);
+        cards.setSettlementToken(address(eur));
+        vm.stopPrank();
+        uint256 cash = usd.balanceOf(alice);
+        eur.mint(settlement, 50e6);
+        vm.prank(issuer);
+        desk.refund(P1, 22e6);
+        // The refund takes back 11 cents of the reward, which reaches its funder as EUR 0.10 at the reference rate.
+        assertEq(usd.balanceOf(alice), cash + 22e6 - 0.11e6);
+        assertEq(eur.balanceOf(network), 0.1e6);
+        // Its 22 cent split share came out of the 20 cents it kept, and it owes the rest in dollars.
+        (, uint128 owed) = core.debtOf(network, address(usd));
+        assertEq(owed, 0.02e6);
+        assertEq(usd.balanceOf(address(desk)), 0);
+        assertEq(eur.balanceOf(address(desk)), 0);
+    }
+
     function test_desk_wonDisputeOnAnEarlierTokensPurchaseGivesBackItsUsage() public {
         IssuerDesk desk = new IssuerDesk(cards);
         vm.prank(issuer);
