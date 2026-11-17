@@ -186,10 +186,9 @@ stack's recorded factory release that its EarnVault implementation was built fro
 unit keeps its balance slot without ever counting as supply or claiming backing. EarnShare beyond
 that unit still counts as supply, so transfers to the vault cannot shrink supply to inflate the rate.
 
-Never send EarnShare to an EarnVault from an earlier factory release, which includes every stack
-recorded before this change. That vault cannot burn it, so supply could never return to zero: after
-every other holder exits and that unit's backing rounds to zero, deposits and whole-pool migration
-revert.
+Never send EarnShare to anything when its EarnVault predates both changes, which includes every stack
+recorded before them. That vault cannot burn it, so supply could never return to zero: after every
+other holder exits and that unit's backing rounds to zero, deposits and whole-pool migration revert.
 
 Every EarnVault and ERC-4626 engine balance check is a before/after delta, so the residue never
 counts as user assets; it stays with the contract for good. Measured on real TIP-20
@@ -205,13 +204,19 @@ unit of each token it handles:
   pool), plus each token it spends; then call `warm` for each token it returns to its Zone
 - a card program: each token it pays out
 
-Never send either one EarnShare. Their balance checks measure against what they held before the
-call, so they never redeem a residue, and unlike the vault's own, EarnShare they hold counts as active
-supply: if a loss ever rounded its backing to zero, deposits would revert for good. Measured on real
-TIP-20 (`cards/test/gas/RouterTip20Gas.t.sol`, with the vault residue above), a router's deposit
-callback drops from 1.28M to 528k gas and its redeem from 998k to 498k. A card program's router-paid
-spend drops from 621k to 369k and its Earn spend from 1.24M to 990k. Anyone can send the residue and
-call `warm`, so it also applies to routers and programs already deployed.
+For an EarnVault whose release restarts an unbacked pool (a deposit into a pool whose supply has
+lost all backing prices at the empty-pool rate when that supply is negligible), also send each router
+with Earn ops and each card program that spends Earn positions 1 unit of EarnShare. Their balance
+checks measure against what they held before the call, so the unit is never spent. It counts as
+supply no one can exit, which is why it needs that release: if every other holder exits and its
+backing is lost, the next deposit restarts the pool instead of reverting. Check the vault's recorded
+factory release first, and never send EarnShare to a router or card program bound to an earlier vault.
+
+Measured on real TIP-20 (`cards/test/gas/RouterTip20Gas.t.sol`, with the vault residue above), a
+router's deposit callback drops from 1.28M to 528k gas and its redeem from 998k to 498k, and its
+EarnShare unit takes them to 276k and 244k. A card program's router-paid spend drops from 621k to
+369k; a repeat Earn spend from a program holding its EarnShare unit costs 238k. Anyone can send the
+base-asset residue and call `warm`, so it also applies to routers and programs already deployed.
 
 ## Generated record
 

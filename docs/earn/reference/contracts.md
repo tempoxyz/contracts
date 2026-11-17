@@ -202,7 +202,7 @@ compatible asset, vault binding, interface, and output bounds. The full
 | Error                                                                                                 | Rule                                                                                         |
 | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `DepositsPaused`                                                                                      | Pause blocks deposits, in-kind entry, contributions, and absorption                          |
-| `ActiveSupplyWithoutBacking`                                                                          | No principal entry into a pool whose supply has zero-value backing                           |
+| `ActiveSupplyWithoutBacking`                                                                          | No principal entry into a pool whose zero-value supply exceeds 1 bps of the entry            |
 | `ExcessiveConversionLoss`                                                                             | Entry, request, or nonempty-pool re-entry loses more than 1 bp to rounding                   |
 | `MaxManagedAssetsExceeded`                                                                            | A voluntary inflow would exceed the managed-assets limit                                     |
 | `RewardRateLimitExceeded`                                                                             | A reward would exceed 100× the reward-rate baseline                                          |

@@ -121,7 +121,10 @@ export async function quoteEarnDeposit(
     functionName: 'previewAccruedFees',
   })
   const projectedSupply = supply + fees.totalFeeEarnShares
-  if (projectedSupply === 0n) {
+  const totalAssets = await snapshot.readContract({ ...vault, functionName: 'totalAssets' })
+  // A deposit into supply with no backing restarts the pool at the empty-pool rate, like an empty pool.
+  const restarts = projectedSupply !== 0n && totalAssets === 0n
+  if (projectedSupply === 0n || restarts) {
     const [engineScale, share] = await Promise.all([
       engineDefinitions[stack.engineKind].shareScale(snapshot, currentEngine),
       snapshot.readContract({ ...vault, functionName: 'earnShare' }),
@@ -133,7 +136,17 @@ export async function quoteEarnDeposit(
     })
     if (engineScale <= 0n || decimals > 77)
       throw new Error('Earn engine or share has an invalid scale')
-    return (engineShares * 10n ** BigInt(decimals)) / engineScale
+    const earnShares = (engineShares * 10n ** BigInt(decimals)) / engineScale
+    // The vault admits a restart only when the stranded position and the unbacked supply's dilution are
+    // each within one basis point of the entry.
+    if (
+      restarts &&
+      (held > engineShares / 10_000n ||
+        engineShares - (engineShares * earnShares) / (earnShares + projectedSupply) >
+          engineShares / 10_000n)
+    )
+      throw new Error('EarnVault has active supply without managed backing')
+    return earnShares
   }
 
   if (held === 0n) throw new Error('EarnVault has active supply without managed backing')

@@ -182,7 +182,10 @@ Any failed leg reverts the entire transaction.
 After the fee checkpoint, EarnShare supply stays unchanged. The vault maps the old managed/raw
 share ratio into the replacement denomination, rounding at most one replacement share toward
 managed backing and rejecting more than one basis point of managed-value error. Both output floors
-also apply independently to managed backing when it exists. Pre-existing replacement shares and
+also apply independently to managed backing when it exists. Managed backing of at most one basis
+point of the raw custody, such as a seed unit beside surplus, is dust: the floors apply only to the
+whole move, and the classification error is bounded by one basis point of the whole replacement
+position instead. Pre-existing replacement shares and
 the migrated unrecognized fraction remain surplus. The vault switches `engine`, re-anchors
 conversion and the reward-rate baseline, and emits `EngineMigrated`. These checks preserve accounting
 boundaries, not the safety of an operator-selected venue or valuation.
@@ -264,9 +267,14 @@ so surplus does not affect fees, quotes, deposits, or exits.
   investigate while preserving exits. A falling share price alone does not emit it.
 
 If managed backing is worth zero while EarnShare supply is nonzero, `deposit` and
-`depositVenueShares` revert with `ActiveSupplyWithoutBacking` rather than recapitalize existing
-holders from a new depositor's principal. `contribute` remains the shareless path for a funder that
-intentionally restores backing.
+`depositVenueShares` restart the pool at the empty-pool rate (worthless managed engine shares become
+surplus) and admit the entry only when those engine shares are at most one basis point of the entry's
+the engine values the entry above zero, and the unbacked supply dilutes the entrant by at most one basis point, rounding included, so an engine
+that prices a real position at zero for now keeps deposits closed. Otherwise they revert with
+`ActiveSupplyWithoutBacking` rather than recapitalize existing holders from a new depositor's
+principal. Supply no one can exit, such as an EarnShare unit an ownerless router holds, therefore never
+blocks deposits for good. `contribute` remains the shareless path for a funder that intentionally
+restores backing.
 
 ### Reward-admission limit
 

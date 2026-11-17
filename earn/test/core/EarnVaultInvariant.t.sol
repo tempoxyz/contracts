@@ -138,10 +138,22 @@ contract EarnVaultHandler is Test {
     function deposit(uint256 assets) external {
         assets = bound(assets, 1, 1e30);
         uint256 rateBefore = core.normalizedRewardRate();
+        // A deposit into supply with no backing restarts the pool at a fresh baseline, like an empty pool.
+        bool unbacked = core.totalEarnShares() != 0 && core.totalAssets() == 0;
         asset.mint(address(this), assets);
         asset.approve(address(core), assets);
-        core.deposit(assets, address(this), 1);
-        if (core.normalizedRewardRate() > rateBefore) rewardRateInvariantViolated = true;
+        try core.deposit(assets, address(this), 1) { }
+        catch (bytes memory reason) {
+            // Only a restart whose stranded supply is more than one basis point of the entry may refuse it.
+            if (!unbacked || bytes4(reason) != EarnVault.ActiveSupplyWithoutBacking.selector) {
+                assembly {
+                    revert(add(reason, 32), mload(reason))
+                }
+            }
+            return;
+        }
+        uint256 limit = unbacked ? core.rewardRateBaseline() : rateBefore;
+        if (core.normalizedRewardRate() > limit) rewardRateInvariantViolated = true;
     }
 
     function redeem(uint256 shares) external {
@@ -344,10 +356,22 @@ contract AsyncEarnVaultHandler is Test {
     function deposit(uint256 assets) external {
         assets = bound(assets, 1, 1e24);
         uint256 rateBefore = core.normalizedRewardRate();
+        // A deposit into supply with no backing restarts the pool at a fresh baseline, like an empty pool.
+        bool unbacked = core.totalEarnShares() != 0 && core.totalAssets() == 0;
         asset.mint(address(this), assets);
         asset.approve(address(core), assets);
-        core.deposit(assets, address(this), 1);
-        if (core.normalizedRewardRate() > rateBefore) rewardRateInvariantViolated = true;
+        try core.deposit(assets, address(this), 1) { }
+        catch (bytes memory reason) {
+            // Only a restart whose stranded supply is more than one basis point of the entry may refuse it.
+            if (!unbacked || bytes4(reason) != EarnVault.ActiveSupplyWithoutBacking.selector) {
+                assembly {
+                    revert(add(reason, 32), mload(reason))
+                }
+            }
+            return;
+        }
+        uint256 limit = unbacked ? core.rewardRateBaseline() : rateBefore;
+        if (core.normalizedRewardRate() > limit) rewardRateInvariantViolated = true;
     }
 
     function contribute(uint256 assets) external {

@@ -210,6 +210,29 @@ contract EarnVaultMigrateTest is Test {
         assertTrue(core.isAccountingAligned());
     }
 
+    function testMigrateMovesSeedOnlyPoolBesideSurplus() public {
+        // Everything but one EarnShare unit exits, so only a seed unit stays active beside surplus.
+        vm.prank(user);
+        core.redeem(100 ether - 1, user, 1);
+        asset.mint(user, 100 ether);
+        vm.startPrank(user);
+        asset.approve(address(venue), 100 ether);
+        venue.deposit(100 ether, user);
+        assertTrue(venue.transfer(address(fromEngine), 100 ether));
+        vm.stopPrank();
+        assertEq(core.totalEarnShares(), 1);
+        assertEq(core.engineShares(), 1);
+
+        // The total floors protect the move; the dust backing need not meet them on its own.
+        vm.prank(operator);
+        core.migrateEngine(address(toEngine), 50 ether, 100 ether);
+
+        assertEq(core.engine(), address(toEngine));
+        assertEq(core.totalEarnShares(), 1);
+        assertEq(core.engineShares(), 1);
+        assertTrue(core.isAccountingAligned());
+    }
+
     function testMigrateRejectsOldEngineAssetReturnMismatch() public {
         (CoreMockToken localAsset,, CoreMockEngine oldEngine, MockRateEngine replacement, EarnVault localCore) =
             _newMockMigrationPool();

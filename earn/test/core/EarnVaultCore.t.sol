@@ -344,6 +344,59 @@ contract EarnVaultTest is Test {
         assertTrue(core.isAccountingAligned());
     }
 
+    /// @dev A unit no one can exit, such as a seed an ownerless router holds, outlives every holder.
+    function _strandUnitThenLoseBacking(uint256 stranded) private {
+        vm.startPrank(user);
+        asset.approve(address(core), type(uint256).max);
+        share.approve(address(core), type(uint256).max);
+        uint256 minted = core.deposit(100 ether, user, 100 ether);
+        share.transfer(makeAddr("stranded"), stranded);
+        core.redeem(minted - stranded, user, 1);
+        vm.stopPrank();
+        assertEq(core.totalEarnShares(), stranded);
+        // The stranded supply's last backing is lost.
+        engine.burnShares(address(core), engine.balanceOf(address(core)));
+        assertEq(core.totalAssets(), 0);
+    }
+
+    function testDepositRestartsPoolWhoseOnlySupplyIsAnUnbackedUnit() public {
+        _strandUnitThenLoseBacking(1);
+        asset.mint(victim, 100 ether);
+
+        vm.startPrank(victim);
+        asset.approve(address(core), type(uint256).max);
+        uint256 shares = core.deposit(100 ether, victim, 1);
+        vm.stopPrank();
+
+        // Priced at the empty-pool rate; the stranded unit claims a negligible share of the new backing.
+        assertEq(shares, 100 ether);
+        assertEq(core.totalEarnShares(), 100 ether + 1);
+        assertGe(core.previewRedeem(shares), 100 ether - 100 ether / 10_000);
+        assertTrue(core.isAccountingAligned());
+
+        vm.startPrank(victim);
+        share.approve(address(core), type(uint256).max);
+        assertGe(core.redeem(shares, victim, 1), 100 ether - 100 ether / 10_000);
+        vm.stopPrank();
+    }
+
+    function testDepositStaysClosedWhenUnbackedSupplyIsMaterial() public {
+        // Enough unbacked supply that sharing a 100 ether entry with it costs the entrant over one basis point.
+        _strandUnitThenLoseBacking(uint256(100 ether) / 9_999 + 1);
+        asset.mint(victim, 100 ether);
+
+        vm.startPrank(victim);
+        asset.approve(address(core), type(uint256).max);
+        vm.expectRevert(EarnVault.ActiveSupplyWithoutBacking.selector);
+        core.deposit(100 ether, victim, 1);
+        // A larger entry dilutes the same supply below the bound and restarts the pool.
+        asset.mint(victim, 100 ether);
+        vm.expectEmit(address(core));
+        emit EarnVault.UnbackedPoolRestarted(uint256(100 ether) / 9_999 + 1, 0);
+        assertEq(core.deposit(200 ether, victim, 1), 200 ether);
+        vm.stopPrank();
+    }
+
     function testBoundedRedeemRevertsBelowMinimumAndRollsBack() public {
         vm.startPrank(user);
         asset.approve(address(core), type(uint256).max);

@@ -421,6 +421,34 @@ contract EarnVaultAsyncTest is Test {
         assertTrue(feeCore.isAccountingAligned());
     }
 
+    function testChargedCancellationIntoSeedOnlyPoolDoesNotChargeQueuedGrowthTwice() public {
+        address feeRecipient = address(0xFEE);
+        (CoreMockToken feeAsset, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore) =
+            _newFeeAsync(feeRecipient);
+
+        vm.startPrank(user);
+        feeAsset.approve(address(feeCore), type(uint256).max);
+        feeShare.approve(address(feeCore), type(uint256).max);
+        feeCore.deposit(10 ether, user, 10 ether);
+        // Only one EarnShare unit, a seed, stays active while the rest is queued.
+        bytes32 requestId = feeCore.requestRedeem(10 ether - 1, "", receiver);
+        vm.stopPrank();
+        assertEq(feeCore.totalEarnShares(), 1);
+
+        feeEngine.setRate(1.2 ether);
+        vm.prank(user);
+        feeCore.cancelRedeem(requestId, 9.8 ether);
+
+        IEarnFees feeModule = IEarnFees(feeCore.earnFees());
+        uint256 chargedFeeShares = feeModule.claimableEarnShares(feeRecipient);
+        assertGt(chargedFeeShares, 0);
+
+        // The cancellation already charged the queued growth, so a checkpoint with no new growth charges nothing.
+        feeCore.accrueFees();
+        assertEq(feeModule.claimableEarnShares(feeRecipient), chargedFeeShares);
+        assertTrue(feeCore.isAccountingAligned());
+    }
+
     function testFeeMintedSharesDoNotMakeCancellationUnderflow() public {
         address feeRecipient = address(0xFEE);
         (CoreMockToken feeAsset, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore) =

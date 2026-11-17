@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
+import { EarnVault } from "tempo-earn/core/EarnVault.sol";
 import {
     EncryptedDepositPayload,
     IZoneFactory,
@@ -185,6 +186,128 @@ contract RouterTip20GasTest is CoreEnv {
     function test_gasCardEarnSpendShareResidue() public {
         _seedVaultShares();
         _measureCard(true, true, "card.earn-spend.share-residue");
+    }
+
+    /// @dev Vault residue plus one EarnShare unit with the router, which keeps its EarnShare slot between calls.
+    function _measureRouterSeed(bool spends, string memory name) internal {
+        _seedVaultShares();
+        zr = _router(spends);
+        usd.mint(address(zr), 1);
+        vm.prank(address(portal));
+        earnShare.transfer(address(zr), 1);
+        if (spends) {
+            zr.warm(address(usd));
+            zr.warm(address(earnShare));
+        }
+        _op(zr, address(usd), 100e6, SingleZoneEarnRouter.Flow.Deposit);
+        _op(zr, address(earnShare), 50e6, SingleZoneEarnRouter.Flow.Redeem);
+        uint256 dep = _op(zr, address(usd), 100e6, SingleZoneEarnRouter.Flow.Deposit);
+        uint256 red = _op(zr, address(earnShare), 50e6, SingleZoneEarnRouter.Flow.Redeem);
+        assertEq(earnShare.balanceOf(address(zr)), 1);
+        vm.snapshotValue("router-tip20", string.concat(name, ".deposit"), dep);
+        vm.snapshotValue("router-tip20", string.concat(name, ".redeem"), red);
+    }
+
+    function test_gasEarnOnlyRouterSeed() public {
+        _measureRouterSeed(false, "earn-only.seed");
+    }
+
+    function test_gasSpendRouterWarmSeed() public {
+        _measureRouterSeed(true, "spend.warm.seed");
+    }
+
+    /// @dev A later Earn spend from a card program holding one EarnShare unit, after its standing approval exists.
+    function test_gasCardEarnSpendSeed() public {
+        _seedVaultShares();
+        usd.mint(router, 1_000_000e6);
+        _depositEarn(alice, 10_000e6);
+        usd.mint(address(program), 1);
+        vm.startPrank(alice);
+        earnShare.transfer(address(program), 1);
+        earnShare.approve(address(program), type(uint256).max);
+        program.spend(_earnSpend(pooledWallet, 0, 100e6, 100e6, bytes32(uint256(1))));
+        CardSpend memory s = _earnSpend(pooledWallet, 0, 100e6, 100e6, bytes32(uint256(2)));
+        uint256 before = gasleft();
+        program.spend(s);
+        uint256 used = before - gasleft();
+        vm.stopPrank();
+        assertEq(earnShare.balanceOf(address(program)), 1);
+        vm.snapshotValue("router-tip20", "card.earn-spend.seed.repeat", used);
+    }
+
+    /// @dev Seeds outlive every holder. After a full exit and the loss of their last backing, a deposit
+    ///      restarts the pool instead of reverting for good.
+    function test_seedsNeverBlockDeposits() public {
+        _seedVaultShares();
+        zr = _router(false);
+        vm.startPrank(address(portal));
+        earnShare.transfer(address(zr), 1);
+        earnShare.transfer(address(program), 1);
+        vm.stopPrank();
+        _exitAll(makeAddr("earn.seeder"));
+        _exitAll(address(portal));
+        assertEq(earnVault.totalEarnShares(), 2);
+        // The seeds' last backing is lost at the venue.
+        uint256 left = usd.balanceOf(address(venue));
+        vm.prank(address(venue));
+        usd.transfer(makeAddr("sink"), left);
+        assertEq(earnVault.totalAssets(), 0);
+
+        uint256 shares = _depositEarn(alice, 1000e6);
+        assertGe(earnVault.previewRedeem(shares), 1000e6 - 1000e6 / 10_000);
+        assertEq(earnVault.totalEarnShares(), shares + 2);
+    }
+
+    /// @dev A real position the venue prices at zero for now (paused or impaired) is never written off: a
+    ///      restart would move its engine shares to surplus, so even a much larger entry stays refused.
+    function test_zeroPricedPositionKeepsDepositsClosed() public {
+        _seedVaultShares();
+        uint256 left = usd.balanceOf(address(venue));
+        vm.prank(address(venue));
+        usd.transfer(makeAddr("sink"), left);
+        assertEq(earnVault.totalAssets(), 0);
+        assertGt(earnVault.engineShares(), 0);
+
+        usd.mint(alice, 100_000_000e6);
+        vm.startPrank(alice);
+        usd.approve(address(earnVault), type(uint256).max);
+        vm.expectRevert();
+        earnVault.deposit(100_000_000e6, alice, 1);
+        vm.stopPrank();
+    }
+
+    /// @dev Venue shares the engine values at zero carry no backing, so they never restart an unbacked pool.
+    function test_zeroValueInKindEntryNeverRestarts() public {
+        _seedVaultShares();
+        zr = _router(false);
+        vm.prank(address(portal));
+        earnShare.transfer(address(zr), 1);
+        // Venue shares bought before the venue's loss.
+        usd.mint(alice, 1000e6);
+        vm.startPrank(alice);
+        usd.approve(address(venue), 1000e6);
+        uint256 venueShares = venue.deposit(1000e6, alice);
+        vm.stopPrank();
+        _exitAll(makeAddr("earn.seeder"));
+        _exitAll(address(portal));
+        uint256 left = usd.balanceOf(address(venue));
+        vm.prank(address(venue));
+        usd.transfer(makeAddr("sink"), left);
+        assertEq(earnVault.totalAssets(), 0);
+
+        vm.startPrank(alice);
+        venue.approve(earnVault.engine(), venueShares);
+        vm.expectRevert(EarnVault.ActiveSupplyWithoutBacking.selector);
+        earnVault.depositVenueShares(venueShares, alice, 1);
+        vm.stopPrank();
+    }
+
+    function _exitAll(address holder) internal {
+        uint256 shares = earnShare.balanceOf(holder);
+        vm.startPrank(holder);
+        earnShare.approve(address(earnVault), shares);
+        earnVault.redeem(shares, holder, 1);
+        vm.stopPrank();
     }
 
     /// @dev Base-asset residue plus one EarnShare unit with the vault only, as the runbook sends.
