@@ -751,6 +751,9 @@ contract CardProgram {
             amount
         );
         _forward(token);
+        // Debt the charge left counts in the program's exposure, like a capture's.
+        (address creditor, uint128 owed) = CORE.debtOf(owner, token);
+        if (creditor == address(this) && owed != 0) CardFunding.noteDebtor(owner);
 
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;

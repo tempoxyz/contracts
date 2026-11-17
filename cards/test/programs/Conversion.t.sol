@@ -251,6 +251,16 @@ contract ConversionTest is ProgramsEnv {
         (address creditor, uint128 debt) = core.debtOf(alice, address(eur));
         assertEq(creditor, address(cards));
         assertEq(debt, 30e6);
+        // The debt is in the program's exposure, so the issuer keeps its token until it is repaid.
+        (, uint256 owing, uint256 debtors) = cards.outstanding();
+        assertEq(owing, 30e6);
+        assertEq(debtors, 1);
+        (uint64 seq,,,) = cards.ledger();
+        vm.startPrank(issuer);
+        cards.acknowledgeSettlement(seq);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(3)));
+        cards.setSettlementToken(address(usd));
+        vm.stopPrank();
         // Cash arriving later converts to repay the euro debt, and the issuer gets its token.
         usd.mint(alice, 50e6);
         uint256 cost = conv.quoteOut(address(usd), address(eur), 30e6);
@@ -262,6 +272,8 @@ contract ConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 50e6 - cost);
         assertEq(eur.balanceOf(alice), 0);
         assertEq(eur.balanceOf(address(cards)), 30e6);
+        (, owing,) = cards.outstanding();
+        assertEq(owing, 0);
         // Nothing owed, nothing taken.
         assertEq(cards.repayConverted(alice), 0);
         assertEq(usd.balanceOf(alice), 50e6 - cost);
