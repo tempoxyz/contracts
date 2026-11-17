@@ -1,0 +1,267 @@
+name: Deploy
+
+# Deploys the whole hosted stack from main, one network at a time: the shared factory releases, the
+# ZoneRouterFactory, then every committed profile on that network. Every step reconciles toward
+# what main describes and reuses what is already deployed, so rerunning it after a success changes
+# nothing and rerunning it after a failure resumes. A broadcast run then pushes a branch, and opens
+# its pull request, with any release registry entry or profile record it changed.
+on:
+  workflow_dispatch:
+    inputs:
+      networks:
+        description: Hosted networks; both runs Moderato first, and mainnet only after it succeeds
+        required: true
+        type: choice
+        # The deploy workflow test asserts this list matches the hosted networks.
+        options: [both, moderato, mainnet]
+        default: both
+      broadcast:
+        description: Broadcast, source verify, and record; unchecked only simulates and plans
+        required: true
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Stack on ${{ matrix.network }}${{ inputs.broadcast && ' (broadcast)' || ' (dry run)' }}
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      # One network at a time, in order; a failure stops the networks after it.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        network: ${{ fromJSON(inputs.networks == 'both' && '["moderato","mainnet"]' || format('["{0}"]', inputs.networks)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Dispatching from main is the approval: the environment has no required reviewer, accepts only
+    # main, and holds the deployer key that the releases and the committed profiles share.
+    environment: factory-release-${{ matrix.network }}
+    # Shares the network's hosted-contracts queue with the release workflows, so the deployer key
+    # never sends from two CI jobs at once. Do not broadcast with the deployer key locally meanwhile.
+    concurrency:
+      group: hosted-contracts-${{ matrix.network }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      NETWORK: ${{ matrix.network }}
+      BROADCAST: ${{ inputs.broadcast }}
+      DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+      TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+      TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+      TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          forge-cache: deploy
+          workspace: '@tempoxyz/contracts'
+
+      - name: Install the Zone router's Solidity dependencies
+        run: scripts/solidity-deps.sh zone-router
+
+      - name: Deploy the factory releases
+        run: |
+          set -euo pipefail
+          arguments=("$NETWORK" all --output "$RUNNER_TEMP/factory-release.json")
+          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
+          pnpm factory-release "${arguments[@]}"
+          # The profiles below deploy against this checkout's registry, so record verified releases first.
+          if [[ "$BROADCAST" == 'true' ]]; then
+            pnpm factory-release registry "$RUNNER_TEMP/factory-release.json" --body "$RUNNER_TEMP/registry-pr.md"
+          fi
+
+      - name: Deploy the ZoneRouterFactory
+        run: |
+          set -euo pipefail
+          arguments=("$NETWORK" zoneRouterFactory --parameters '{}' --output "$RUNNER_TEMP/zone-router-release.json")
+          if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
+          pnpm zone-router-release "${arguments[@]}"
+
+      - name: List the network's profiles
+        id: profiles
+        run: pnpm profiles --network "$NETWORK"
+
+      # A profile deploy resumes from its pending state, staging, and Forge receipts, none committed;
+      # keep them per network across runs so a rerun picks up where a failed run stopped.
+      - name: Restore profile resume state
+        if: ${{ inputs.broadcast }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            profiles/*/deployment.pending.json
+            earn/.earn/external
+            earn/broadcast
+            zone-router/broadcast
+          key: deploy-resume-${{ matrix.network }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: deploy-resume-${{ matrix.network }}-
+
+      # A broadcast reconciles every profile, then fails the job if any is short of complete: a
+      # handoff names the outside authority's action, and its published record is still kept. A dry
+      # run prints each profile's plan.
+      - name: Deploy the profiles
+        env:
+          PROFILES: ${{ steps.profiles.outputs.profiles }}
+        run: |
+          set -uo pipefail
+          mapfile -t paths < <(jq -r '.[].path' <<<"$PROFILES")
+          incomplete=0
+          for path in "${paths[@]}"; do
+            echo "::group::$path"
+            if [[ "$BROADCAST" != 'true' ]]; then
+              pnpm earn plan "$path" || incomplete=1
+              echo '::endgroup::'
+              continue
+            fi
+            output="$RUNNER_TEMP/profile-output.txt"
+            # Forge shares stdout; the result is the last top-level JSON object printed.
+            if pnpm earn deploy "$path" --json | tee "$output"; then
+              state=$(awk '/^\{$/ { result = "" } { result = result $0 "\n" } END { printf "%s", result }' "$output" | jq -r '.state + (if .instructions then ": " + .instructions else "" end)')
+            else
+              state='failed; see its output'
+            fi
+            echo '::endgroup::'
+            echo "| \`$path\` | $state |" >> "$RUNNER_TEMP/profiles.md"
+            if [[ "$state" != 'complete' ]]; then
+              echo "::error title=$path::$state"
+              incomplete=1
+            fi
+          done
+          exit "$incomplete"
+
+      # Forge records the authenticated RPC URL in its script sequences under each project's cache,
+      # which the forge cache saves for every branch to restore; remove them whatever the outcome.
+      - name: Remove Forge script sequences
+        if: ${{ always() }}
+        run: |
+          for cache in earn/cache zone-router/cache; do
+            if [[ -d "$cache" ]]; then
+              find "$cache" -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+            fi
+          done
+
+      - name: Save profile resume state
+        if: ${{ always() && inputs.broadcast }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            profiles/*/deployment.pending.json
+            earn/.earn/external
+            earn/broadcast
+            zone-router/broadcast
+          key: deploy-resume-${{ matrix.network }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # The registry and record changes this network made, for the record job to apply. Networks change
+      # separate releases.ts blocks and profiles, so their patches apply together.
+      - name: Collect the network's changes
+        if: ${{ always() && inputs.broadcast }}
+        run: git diff --binary -- deployments/core/releases.ts 'profiles/*/deployment.json' > "$RUNNER_TEMP/changes.patch"
+
+      - name: Summarize
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Stack on ${NETWORK} · $([[ "$BROADCAST" == 'true' ]] && echo broadcast || echo dry run) · ${GITHUB_SHA::7}"
+            for result in "$RUNNER_TEMP/factory-release.json" "$RUNNER_TEMP/zone-router-release.json"; do
+              [[ -f "$result" ]] || continue
+              echo
+              echo '| Release | Contract | Address | Transaction | Source match |'
+              echo '| --- | --- | --- | --- | --- |'
+              jq -r '.releases[] | .kind as $kind | .contracts[] | "| \($kind) | \(.name) | `\(.address)` | \(if .transaction then "`\(.transaction)`" else "already deployed" end) | \(.match // (if .verificationError then "not verified: \(.verificationError)" else "-" end)) |"' "$result"
+            done
+            if [[ -f "$RUNNER_TEMP/profiles.md" ]]; then
+              echo
+              echo '| Profile | State |'
+              echo '| --- | --- |'
+              cat "$RUNNER_TEMP/profiles.md"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          # One artifact per attempt, so a rerun that gets less far keeps what an earlier attempt verified.
+          name: deploy-${{ matrix.network }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/factory-release.json
+            ${{ runner.temp }}/zone-router-release.json
+            ${{ runner.temp }}/changes.patch
+            ${{ runner.temp }}/registry-pr.md
+          if-no-files-found: ignore
+
+  # Records every verified release and changed profile record, including those from a network that
+  # later failed, on a branch with its pull request; main changes only through that pull request.
+  record:
+    name: Record the deployment
+    needs: deploy
+    if: ${{ always() && inputs.broadcast && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: deploy-*
+          path: ${{ runner.temp }}/deploy
+
+      - name: Apply the networks' changes
+        id: record
+        run: |
+          set -euo pipefail
+          echo 'Records what the Deploy workflow deployed from main.' > "$RUNNER_TEMP/pr.md"
+          # Each network's latest attempt: a rerun starts from main again and reconciles everything before it.
+          for network in moderato mainnet; do
+            artifact=$(find "$RUNNER_TEMP/deploy" -mindepth 1 -maxdepth 1 -type d -name "deploy-$network-*" | sort -V | tail -n 1)
+            [[ -n "$artifact" ]] || continue
+            if [[ -s "$artifact/changes.patch" ]]; then git apply "$artifact/changes.patch"; fi
+            if [[ -s "$artifact/registry-pr.md" ]]; then
+              { echo; echo "## $network"; echo; cat "$artifact/registry-pr.md"; } >> "$RUNNER_TEMP/pr.md"
+            fi
+          done
+          if git diff --quiet -- deployments/core/releases.ts profiles; then
+            echo 'Nothing to record: the stack already matches main.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push the branch and open its pull request
+        if: ${{ steps.record.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # One branch per attempt: a rerun of failed jobs pushes its own branch.
+          branch="deploy/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          title="feat(deployments): record the deployment from run ${GITHUB_RUN_ID}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --create "$branch"
+          git add -- deployments/core/releases.ts profiles
+          git commit --message "$title"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          # Where Actions may not open pull requests, the summary links the comparison instead.
+          if url=$(gh pr create --base main --head "$branch" --title "$title" --body-file "$RUNNER_TEMP/pr.md"); then
+            echo "Opened $url with the changed releases and records." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Pushed \`$branch\`. [Open its pull request](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${branch}?expand=1)." >> "$GITHUB_STEP_SUMMARY"
+          fi

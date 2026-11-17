@@ -412,29 +412,6 @@ describe('deployFactoryRelease', () => {
   })
 })
 
-describe('factory release workflow', () => {
-  const workflow = readFileSync(
-    new URL('../../.github/workflows/factory-release.yml', import.meta.url),
-    'utf8',
-  )
-  const options = (input: string) =>
-    new RegExp(`^      ${input}:[\\s\\S]*?^        options: \\[([^\\]]*)\\]$`, 'm')
-      .exec(workflow)?.[1]
-      ?.split(/,\s*/)
-
-  test('offers every hosted network, both, every release, and all', () => {
-    expect(options('networks')?.sort()).toEqual(['both', ...Object.keys(hostedEnvironments)].sort())
-    expect(options('release')?.sort()).toEqual(['all', ...factoryReleaseKinds].sort())
-    expect(workflow).toContain('["moderato","mainnet"]')
-  })
-
-  test("releases only Earn's contracts: no parameters and nothing from the router project", () => {
-    expect(workflow).not.toMatch(/^ {6}parameters:/m)
-    expect(workflow).not.toContain('--parameters')
-    expect(workflow).not.toContain('router')
-  })
-})
-
 describe('redactRpcCredentials', () => {
   test('removes the authenticated URL and each credential, raw and encoded', () => {
     const environment = { TEMPO_RPC_USERNAME: 'release', TEMPO_RPC_PASSWORD: 'p@ss:word' }
