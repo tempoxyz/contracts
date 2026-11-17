@@ -422,8 +422,13 @@ contract CreditLine {
         uint256 sell = (used * BPS - value * ltv + (BPS - ltv) - 1) / (BPS - ltv);
         if (sell > l.owed) sell = l.owed;
         uint256 cover = vault.previewWithdraw(sell);
+        if (cover > locked) cover = locked;
+        // Rounding can leave the ratio a few units short; sell one more share at a time until it holds (bounded).
+        for (uint256 i; i < 16 && cover < locked && !_sound(vault, used, l.owed, locked, cover, ltv); ++i) {
+            ++cover;
+        }
         // forge-lint: disable-next-line(unsafe-typecast)
-        shares = uint128(cover < locked ? cover : locked);
+        shares = uint128(cover);
         bytes32 id = lockOf[lineId];
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
@@ -437,6 +442,19 @@ contract CreditLine {
         emit Liquidated(lineId, shares, assets, l.owed);
         _commit(lineId);
         _lock(lineId);
+    }
+
+    /// @dev Whether selling `sold` of `locked` shares leaves what is owed and pending within the loan-to-value of the rest.
+    // Called in a loop of at most 16 steps, reading only the line's vault.
+    // forge-lint: disable-next-item(calls-loop)
+    function _sound(IEarnVault vault, uint256 used, uint256 owed, uint256 locked, uint256 sold, uint256 ltv)
+        private
+        view
+        returns (bool)
+    {
+        uint256 proceeds = vault.previewRedeem(sold);
+        if (proceeds > owed) proceeds = owed;
+        return (used - proceeds) * BPS <= vault.previewRedeem(locked - sold) * ltv;
     }
 
     /// @notice The shares line `lineId`'s lock holds now.
