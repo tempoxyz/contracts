@@ -3,6 +3,8 @@ pragma solidity ^0.8.36;
 
 /// @dev Tempo's reservation core precompile (ASCII "RESV"), gated at T15.
 address constant RESERVATION_CORE_ADDRESS = 0x5245535600000000000000000000000000000000;
+/// @dev The longest a holder's pledge (`pledgeFrom`) may run.
+uint64 constant MAX_PLEDGE_DURATION = 400 days;
 
 /// @notice Holds, captures, refunds, capped debt and liens on TIP-20 balances, kept atomic with the balances
 ///         themselves. Card programs are holder contracts an owner approves per token; everything card-specific
@@ -71,6 +73,9 @@ interface IReservationCore {
     function seizeLien(bytes32 id, uint128 amount) external;
     /// @dev Anyone, after expiresAt.
     function releaseExpiredLien(address authority, bytes32 id) external;
+    /// @dev Holder root key, within the owner's allowance for it; the holder becomes the authority. Needs
+    ///      now < expiresAt <= now + MAX_PLEDGE_DURATION.
+    function pledgeFrom(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) external;
 
     // Views.
     function getHold(address owner, bytes32 id) external view returns (HoldRecord memory);

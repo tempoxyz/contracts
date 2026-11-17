@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
+import { IReservationCore, MAX_PLEDGE_DURATION } from "../../src/programs/interfaces/IReservationCore.sol";
 import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
 
 /// @notice The reservation core's rules as the test model keeps them: the semantics card programs are built on.
@@ -303,6 +303,69 @@ contract ReservationCoreModelTest is ProgramsEnv {
         core.seizeLien(ID, 1e6);
         vm.prank(bob);
         core.releaseExpiredLien(authority, ID);
+        assertEq(usd.balanceOf(alice), 1000e6);
+        _assertCoreBalanced();
+    }
+
+    function test_pledgeFrom_drawsAllowanceAndBoundsExpiry() public {
+        uint64 expiry = uint64(block.timestamp + 90 days);
+        vm.prank(holder);
+        vm.expectRevert(IReservationCore.Unauthorized.selector);
+        core.pledgeFrom(alice, address(usd), ID, 100e6, expiry);
+
+        _approve(150e6);
+        vm.prank(holder);
+        vm.expectRevert(IReservationCore.InvalidExpiry.selector);
+        core.pledgeFrom(alice, address(usd), ID, 100e6, uint64(block.timestamp));
+        vm.prank(holder);
+        vm.expectRevert(IReservationCore.InvalidExpiry.selector);
+        core.pledgeFrom(alice, address(usd), ID, 100e6, uint64(block.timestamp + MAX_PLEDGE_DURATION + 1));
+        vm.prank(holder);
+        core.pledgeFrom(alice, address(usd), ID, 100e6, uint64(block.timestamp + MAX_PLEDGE_DURATION));
+        vm.prank(holder);
+        vm.expectRevert(IReservationCore.AllowanceExceeded.selector);
+        core.pledgeFrom(alice, address(usd), bytes32("lien-2"), 60e6, expiry);
+
+        (address owner,, uint128 amount,, bool pledged) = core.lienOf(holder, ID);
+        assertEq(owner, alice);
+        assertEq(amount, 100e6);
+        assertTrue(pledged);
+        (, uint128 outstanding) = core.allowance(alice, holder, address(usd));
+        assertEq(outstanding, 100e6);
+        assertEq(usd.balanceOf(alice), 900e6);
+
+        // Reducing and seizing give the freed amount back to the allowance; only the holder seizes, to itself.
+        vm.prank(holder);
+        core.reduceLien(ID, 30e6);
+        vm.prank(holder);
+        core.seizeLien(ID, 20e6);
+        (, outstanding) = core.allowance(alice, holder, address(usd));
+        assertEq(outstanding, 50e6);
+        assertEq(usd.balanceOf(holder), 20e6);
+        assertEq(usd.balanceOf(alice), 930e6);
+        _assertCoreBalanced();
+    }
+
+    function test_pledgeFrom_revokedHolderStillReleasesAndExpiredNeedsRelease() public {
+        _approve(500e6);
+        vm.prank(holder);
+        core.pledgeFrom(alice, address(usd), ID, 200e6, uint64(block.timestamp + 10 days));
+        vm.prank(holder);
+        core.pledgeFrom(alice, address(usd), bytes32("lien-2"), 100e6, uint64(block.timestamp + 20 days));
+        _approve(0);
+        vm.prank(holder);
+        vm.expectRevert(IReservationCore.Unauthorized.selector);
+        core.pledgeFrom(alice, address(usd), bytes32("lien-3"), 1e6, uint64(block.timestamp + 10 days));
+
+        vm.prank(holder);
+        core.releaseLien(bytes32("lien-2"));
+        vm.warp(vm.getBlockTimestamp() + 10 days);
+        // An expired pledge stays reserved until someone releases it.
+        assertEq(core.liened(alice, address(usd)), 200e6);
+        vm.prank(bob);
+        core.releaseExpiredLien(holder, ID);
+        (, uint128 outstanding) = core.allowance(alice, holder, address(usd));
+        assertEq(outstanding, 0);
         assertEq(usd.balanceOf(alice), 1000e6);
         _assertCoreBalanced();
     }

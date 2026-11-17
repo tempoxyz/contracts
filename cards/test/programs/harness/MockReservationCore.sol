@@ -3,7 +3,7 @@ pragma solidity ^0.8.36;
 
 import { Vm } from "forge-std/Vm.sol";
 
-import { IReservationCore } from "../../../src/programs/interfaces/IReservationCore.sol";
+import { IReservationCore, MAX_PLEDGE_DURATION } from "../../../src/programs/interfaces/IReservationCore.sol";
 
 interface IBalanceToken {
     function balanceOf(address account) external view returns (uint256);
@@ -24,6 +24,7 @@ interface IBalanceToken {
 contract MockReservationCore is IReservationCore {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     uint256 private constant MAX_HOLD = 31 days;
+    uint256 private constant MAX_PLEDGE = MAX_PLEDGE_DURATION;
     uint256 private constant BPS = 10_000;
 
     struct Debt {
@@ -37,6 +38,7 @@ contract MockReservationCore is IReservationCore {
         uint128 amount;
         uint64 expiresAt;
         bool pledged;
+        bool delegated;
     }
 
     mapping(address owner => mapping(bytes32 id => HoldRecord)) private _holds;
@@ -206,12 +208,22 @@ contract MockReservationCore is IReservationCore {
 
     function lien(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) external {
         if (!hasLienRole[msg.sender]) revert Unauthorized();
-        _placeLien(owner, msg.sender, token, id, amount, expiresAt, false);
+        _placeLien(owner, msg.sender, token, id, amount, expiresAt, false, false);
     }
 
     function pledge(address authority, address token, bytes32 id, uint128 amount, uint64 expiresAt) external {
         if (expiresAt == 0) revert InvalidExpiry();
-        _placeLien(msg.sender, authority, token, id, amount, expiresAt, true);
+        _placeLien(msg.sender, authority, token, id, amount, expiresAt, true, false);
+    }
+
+    function pledgeFrom(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) external {
+        if (expiresAt <= block.timestamp || expiresAt > block.timestamp + MAX_PLEDGE) revert InvalidExpiry();
+        uint128 allowed = _allowance[owner][msg.sender][token];
+        if (allowed == 0) revert Unauthorized();
+        uint128 outstanding = _outstanding[owner][msg.sender][token];
+        if (uint256(outstanding) + amount > allowed) revert AllowanceExceeded();
+        _placeLien(owner, msg.sender, token, id, amount, expiresAt, true, true);
+        _outstanding[owner][msg.sender][token] = outstanding + amount;
     }
 
     function releaseLien(bytes32 id) external {
@@ -228,6 +240,7 @@ contract MockReservationCore is IReservationCore {
         uint128 remaining = l.amount - amount;
         l.amount = remaining;
         _liened[owner][token] -= amount;
+        if (l.delegated) _outstanding[owner][msg.sender][token] -= amount;
         _unreserveTo(owner, token, amount, owner);
         if (remaining == 0) delete _liens[msg.sender][id];
         emit LienReduced(owner, msg.sender, token, id, remaining);
@@ -244,6 +257,7 @@ contract MockReservationCore is IReservationCore {
         uint128 remaining = l.amount - amount;
         l.amount = remaining;
         _liened[owner][token] -= amount;
+        if (l.delegated) _outstanding[owner][msg.sender][token] -= amount;
         _unreserveTo(owner, token, amount, msg.sender);
         if (remaining == 0) delete _liens[msg.sender][id];
         emit LienSeized(owner, msg.sender, token, id, amount, remaining);
@@ -377,7 +391,8 @@ contract MockReservationCore is IReservationCore {
         bytes32 id,
         uint128 amount,
         uint64 expiresAt,
-        bool pledged
+        bool pledged,
+        bool delegated
     ) private {
         if (amount == 0) revert InvalidAmount();
         if (authority == address(0) || token == address(0)) revert PolicyForbids();
@@ -393,12 +408,14 @@ contract MockReservationCore is IReservationCore {
         l.amount = amount;
         l.expiresAt = expiresAt;
         l.pledged = pledged;
+        l.delegated = delegated;
         emit Liened(owner, authority, token, id, amount, expiresAt, pledged);
     }
 
     function _endLien(address authority, bytes32 id, Lien storage l, bool expired) private {
         (address owner, address token, uint128 amount) = (l.owner, l.token, l.amount);
         _liened[owner][token] -= amount;
+        if (l.delegated) _outstanding[owner][authority][token] -= amount;
         delete _liens[authority][id];
         _unreserveTo(owner, token, amount, owner);
         emit LienReleased(owner, authority, token, id, amount, expired);
