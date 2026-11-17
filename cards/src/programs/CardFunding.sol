@@ -5,6 +5,7 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
+import { CardConvert } from "./CardConvert.sol";
 import { CardProgram } from "./CardProgram.sol";
 import { CreditLine } from "./CreditLine.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
@@ -44,6 +45,8 @@ library CardFunding {
     uint8 internal constant CHARGED = 8;
     /// @dev A capture left part of the purchase as the owner's capped debt.
     uint8 internal constant DEBT = 32;
+    /// @dev Another stablecoin the owner holds; the entry's lineId is the most it may cost to convert, in basis points.
+    uint8 internal constant TOKEN = 64;
     uint8 private constant ALL_KINDS = CASH | SAVINGS | CREDIT;
 
     uint8 internal constant STEP_HOLD = 0;
@@ -120,6 +123,8 @@ library CardFunding {
             Source calldata s = order[i];
             if (s.kind == CASH) {
                 if (s.source != cashToken) revert InvalidOrder();
+            } else if (s.kind == TOKEN) {
+                if (s.source == address(0) || s.source == cashToken || s.lineId > BPS) revert InvalidOrder();
             } else if (s.kind == SAVINGS || s.kind == CREDIT) {
                 if (!program.approvedSource(s.source)) revert CardProgram.SourceNotApproved(s.source);
             } else {
@@ -254,12 +259,20 @@ library CardFunding {
                 Source memory s = order[i];
                 Leg memory leg = _leg(owner, ref, _key(order, i), s);
                 uint256 tokens;
+                uint256[6] memory cv;
+                bool converts = CardConvert.swapper(leg.token, s.kind) != address(0);
                 if (rest != 0 && allowed & s.kind != 0 && !leg.settled) {
                     uint256 units = leg.held + _free(leg, s, owner);
-                    uint256 value = _value(leg, s, units);
-                    uint256 take = rest < value ? rest : value;
+                    uint256 take;
+                    if (converts) {
+                        cv = CardConvert.price(owner, leg.token, rest, leg.held, leg.rate, leg.exists);
+                        (take, tokens, leg.rate) = (cv[0], cv[1], cv[5]);
+                    } else {
+                        uint256 value = _value(leg, s, units);
+                        take = rest < value ? rest : value;
+                        if (take != 0) tokens = _tokensFor(leg, s, take, value, units);
+                    }
                     if (take != 0) {
-                        tokens = _tokensFor(leg, s, take, value, units);
                         if (tokens > leg.held) {
                             _hold(leg, s, owner, ref, _key(order, i), tokens, p.expiresAt, false);
                             leg.exists = true;
@@ -271,10 +284,12 @@ library CardFunding {
                     }
                 }
                 if (tokens != 0 || (isFinal && leg.exists && !leg.settled)) _captureLeg(leg, s, tokens, isFinal);
+                if (cv[0] != 0) CardConvert.finish(ref, owner, leg.id, leg.token, cv, isFinal);
+                else if (tokens != 0) CardConvert.settle(ref, s.kind, s.source, leg.token, parts[i].amount);
             }
             if (rest != 0) {
                 uint256 charged;
-                (debt, charged) = _chargeDebt(p, ref, owner, cashToken, rest);
+                (debt, charged) = _chargeDebt(p, ref, owner, CardConvert.debtToken(cashToken), rest);
                 sums[0] += charged;
                 absorbed = rest - debt;
             }
@@ -420,7 +435,7 @@ library CardFunding {
         CardProgram program = CardProgram(address(this));
         for (uint256 i; i < L.debtors.length; ++i) {
             address owner = L.debtors[i];
-            address token = program.fundingOf(owner);
+            address token = CardConvert.debtToken(program.fundingOf(owner));
             if (token == address(0)) continue;
             (address creditor, uint128 owed) = CORE.debtOf(owner, token);
             if (creditor == address(this) && owed != 0) {
@@ -454,7 +469,9 @@ library CardFunding {
 
     function _allowed(Layout storage L, uint8 cardLegs) private view returns (uint8) {
         uint8 kinds = L.assets;
-        return cardLegs & (kinds == 0 ? ALL_KINDS : kinds);
+        uint8 allowed = cardLegs & (kinds == 0 ? ALL_KINDS : kinds);
+        // Other stablecoins spend wherever cash does.
+        return allowed & CASH != 0 ? allowed | TOKEN : allowed;
     }
 
     function _checkExposure(Layout storage L) private view {
@@ -479,6 +496,10 @@ library CardFunding {
             Leg memory leg = legs[i];
             if (allowed & s.kind == 0 || leg.settled) continue;
             uint256 free = _free(leg, s, p.owner);
+            if (CardConvert.swapper(leg.token, s.kind) != address(0)) {
+                rest = _regrow(p, ref, _key(order, i), s, leg, parts, i, free, rest);
+                continue;
+            }
             uint256 value = _value(leg, s, free);
             uint256 take = rest < value ? rest : value;
             if (take == 0) continue;
@@ -550,7 +571,7 @@ library CardFunding {
                 leg.rate = _rate(facility.ASSET());
             } else {
                 leg.token = s.source;
-                leg.rate = _rate(s.source);
+                leg.rate = CardConvert.rateOf(s.source, leg.id);
             }
         }
         _readHold(leg);
@@ -572,6 +593,8 @@ library CardFunding {
 
     function _value(Leg memory leg, Source memory s, uint256 units) private view returns (uint256) {
         if (units == 0) return 0;
+        // A new leg in another stablecoin is skipped while converting it costs more than the owner allows.
+        if (s.kind == TOKEN && !leg.exists && CardConvert.tooCostly(leg.token, leg.rate, s.lineId)) return 0;
         if (s.kind == SAVINGS) units = SavingsFacility(s.source).VAULT().previewRedeem(units);
         return _toSettlement(units, leg.rate);
     }
@@ -609,9 +632,11 @@ library CardFunding {
             // forge-lint: disable-next-line(unsafe-typecast)
             else line.draw(s.lineId, owner, _drawRef(ref, key), uint128(tokens), expiresAt);
         } else if (leg.exists) {
+            CardConvert.lock(leg.id, leg.token, s.kind, leg.rate);
             // forge-lint: disable-next-line(unsafe-typecast)
             CORE.adjust(owner, leg.id, uint128(tokens));
         } else {
+            CardConvert.lock(leg.id, leg.token, s.kind, leg.rate);
             if (s.kind == SAVINGS && !CardProgram(address(this)).approvedSource(s.source)) {
                 revert CardProgram.SourceNotApproved(s.source);
             }
@@ -752,6 +777,8 @@ library CardFunding {
             SafeTransferLib.safeTransferFrom(asset, msg.sender, address(this), paid);
             SafeTransferLib.safeApprove(asset, address(facility), paid);
             tokens = facility.refund(owner, leg.id, paid);
+        } else if (CardConvert.swapper(leg.token, s.kind) != address(0)) {
+            tokens = CardConvert.refund(owner, leg.id, leg.token, leg.refundable, take);
         } else {
             tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, leg.rate), leg.refundable);
             SafeTransferLib.safeTransferFrom(leg.token, msg.sender, address(this), tokens);
@@ -776,6 +803,10 @@ library CardFunding {
         uint256 value = _value(leg, s, leg.held);
         uint256 take = less < value ? less : value;
         uint256 tokens = _tokensFor(leg, s, take, value, leg.held);
+        // A converted leg keeps its share of the purchase at the locked rate, rounded up.
+        if (take < value && (s.kind == CASH || s.kind == TOKEN) && leg.rate != RATE_ONE) {
+            tokens = leg.held - uint256(leg.held).mulDivUp(value - take, value);
+        }
         if (tokens == 0) return less;
         uint256 keep = leg.held - tokens;
         if (keep == 0) {
@@ -799,7 +830,9 @@ library CardFunding {
         address to = CardProgram(address(this)).SETTLEMENT_ACCOUNT();
         if (cashToken != address(0)) _forward(cashToken, to);
         for (uint256 i; i < order.length; ++i) {
-            if (order[i].kind == CREDIT) _forward(CreditLine(order[i].source).tokenOf(order[i].lineId), to);
+            uint8 kind = order[i].kind;
+            if (kind == CREDIT) _forward(CreditLine(order[i].source).tokenOf(order[i].lineId), to);
+            else if (kind == TOKEN) _forward(order[i].source, to);
         }
     }
 
@@ -813,7 +846,7 @@ library CardFunding {
     }
 
     function _sumIndex(uint8 kind) private pure returns (uint256) {
-        return kind == CASH ? 0 : kind == SAVINGS ? 1 : 2;
+        return kind == CASH || kind == TOKEN ? 0 : kind == SAVINGS ? 1 : 2;
     }
 
     function _drawRef(bytes32 ref, uint256 key) private pure returns (bytes32) {
@@ -826,11 +859,35 @@ library CardFunding {
         return keccak256(abi.encode(address(this), ref, uint8(tag)));
     }
 
-    function _rate(address token) private view returns (uint256 rate) {
-        CardProgram program = CardProgram(address(this));
-        if (token == program.SETTLEMENT_TOKEN()) return RATE_ONE;
-        rate = program.rateOf(token);
-        if (rate == 0) revert CardProgram.TokenNotAccepted(token);
+    function _rate(address token) private view returns (uint256) {
+        return CardConvert.current(token);
+    }
+
+    /// @dev Grows a converted leg by up to rest settlement units: the whole leg re-prices at today's rate and holds
+    ///      what its old value plus the increment needs. Returns what is left to place.
+    function _regrow(
+        CardProgram.Purchase storage p,
+        bytes32 ref,
+        uint256 key,
+        Source memory s,
+        Leg memory leg,
+        Part[] memory parts,
+        uint256 i,
+        uint256 free,
+        uint256 rest
+    ) private returns (uint256) {
+        (uint256 take, uint256 total, uint256 rate) = CardConvert.growth(
+            leg.token, s.kind == TOKEN && !leg.exists ? s.lineId : BPS, leg.held, leg.rate, free, rest
+        );
+        if (take == 0) return rest;
+        leg.rate = rate;
+        _hold(leg, s, p.owner, ref, key, total, p.expiresAt, false);
+        leg.exists = true;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        leg.held = uint128(total);
+        parts[i] = _part(s, take, total);
+        p.legs |= s.kind;
+        return rest - take;
     }
 
     function _toSettlement(uint256 tokens, uint256 rate) private pure returns (uint256) {

@@ -7,6 +7,7 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
 import { AccountKeys } from "./AccountKeys.sol";
 import { CardAdjust } from "./CardAdjust.sol";
+import { CardConvert } from "./CardConvert.sol";
 import { CardFunding } from "./CardFunding.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { CreditLine } from "./CreditLine.sol";
@@ -137,6 +138,10 @@ contract CardProgram {
     address public accountKeys;
     /// @notice The identity rules new authorizations must satisfy; zero checks none.
     address public identityRules;
+    /// @notice The venue legs in other stablecoins convert through at capture; zero converts none.
+    address public conversion;
+    /// @dev The token purchases settle in now; zero for SETTLEMENT_TOKEN.
+    address internal _settlementToken;
 
     bool private transient _locked;
 
@@ -147,6 +152,8 @@ contract CardProgram {
     event LimitsSet(bytes32 indexed card, Limits limits, Limits ceiling);
     event MandateSet(address indexed owner, address indexed merchant, bool revoked, uint96 monthlyLimit);
     event RateSet(address indexed token, uint256 rate);
+    event ConversionSet(address conversion);
+    event SettlementTokenSet(address token);
     event SourceSet(address indexed source, bool approved);
     event CompanionsSet(address accountKeys, address identityRules);
     event PurchaseAuthorized(
@@ -217,6 +224,7 @@ contract CardProgram {
     error InvalidAmount();
     error InvalidCard();
     error InvalidCursor();
+    error UnsettledPurchases();
     error LimitAboveCeiling();
     error LimitExceeded(uint8 which);
     error MerchantLimitExceeded();
@@ -253,12 +261,12 @@ contract CardProgram {
         _locked = false;
     }
 
-    constructor(address issuer, address settlementToken, address settlementAccount) {
-        if (issuer == address(0) || settlementToken == address(0) || settlementAccount == address(0)) {
+    constructor(address issuer, address settlementToken_, address settlementAccount) {
+        if (issuer == address(0) || settlementToken_ == address(0) || settlementAccount == address(0)) {
             revert ZeroAddress();
         }
         ISSUER = issuer;
-        SETTLEMENT_TOKEN = settlementToken;
+        SETTLEMENT_TOKEN = settlementToken_;
         SETTLEMENT_ACCOUNT = settlementAccount;
     }
 
@@ -358,9 +366,25 @@ contract CardProgram {
 
     /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it.
     function setRate(address token, uint256 rate) external onlyIssuer {
-        if (token == SETTLEMENT_TOKEN) revert TokenNotAccepted(token);
+        if (token == settlementToken()) revert TokenNotAccepted(token);
         rateOf[token] = rate;
         emit RateSet(token, rate);
+    }
+
+    /// @notice Settles new purchases in token from now on. Refused while any purchase step is unacknowledged, so every
+    ///         purchase settles in the token it was authorized in.
+    function setSettlementToken(address token) external onlyIssuer {
+        Ledger storage l = ledger;
+        if (l.settledThrough != l.seq || l.net != l.settledNet) revert UnsettledPurchases();
+        if (token == address(0) || rateOf[token] != 0) revert TokenNotAccepted(token);
+        _settlementToken = token;
+        emit SettlementTokenSet(token);
+    }
+
+    /// @notice Sets the venue legs in other stablecoins convert through at capture (for tokens without an issuer rate).
+    function setConversion(address conversion_) external onlyIssuer {
+        conversion = conversion_;
+        emit ConversionSet(conversion_);
     }
 
     /// @notice Accepts or stops a savings facility or credit line contract as a funding source.
@@ -655,6 +679,17 @@ contract CardProgram {
 
     // Views.
 
+    /// @notice The token purchases settle in now.
+    function settlementToken() public view returns (address) {
+        address token = _settlementToken;
+        return token == address(0) ? SETTLEMENT_TOKEN : token;
+    }
+
+    /// @notice The rate a converted leg locked, settlement units per token unit scaled by 1e18; zero for none.
+    function lockedRate(bytes32 legId) external view returns (uint256) {
+        return CardConvert.lockOf(legId);
+    }
+
     function cardOf(bytes32 card) external view returns (Card memory) {
         return _cards[card];
     }
@@ -752,7 +787,7 @@ contract CardProgram {
     }
 
     function _rate(address token) private view returns (uint256 rate) {
-        if (token == SETTLEMENT_TOKEN) return RATE_ONE;
+        if (token == settlementToken()) return RATE_ONE;
         rate = rateOf[token];
         if (rate == 0) revert TokenNotAccepted(token);
     }
