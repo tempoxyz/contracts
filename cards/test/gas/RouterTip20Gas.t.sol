@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
+import { EarnVault } from "tempo-earn/core/EarnVault.sol";
 import {
     EncryptedDepositPayload,
     IZoneFactory,
@@ -272,6 +273,32 @@ contract RouterTip20GasTest is CoreEnv {
         usd.approve(address(earnVault), type(uint256).max);
         vm.expectRevert();
         earnVault.deposit(100_000_000e6, alice, 1);
+        vm.stopPrank();
+    }
+
+    /// @dev Venue shares the engine values at zero carry no backing, so they never restart an unbacked pool.
+    function test_zeroValueInKindEntryNeverRestarts() public {
+        _seedVaultShares();
+        zr = _router(false);
+        vm.prank(address(portal));
+        earnShare.transfer(address(zr), 1);
+        // Venue shares bought before the venue's loss.
+        usd.mint(alice, 1000e6);
+        vm.startPrank(alice);
+        usd.approve(address(venue), 1000e6);
+        uint256 venueShares = venue.deposit(1000e6, alice);
+        vm.stopPrank();
+        _exitAll(makeAddr("earn.seeder"));
+        _exitAll(address(portal));
+        uint256 left = usd.balanceOf(address(venue));
+        vm.prank(address(venue));
+        usd.transfer(makeAddr("sink"), left);
+        assertEq(earnVault.totalAssets(), 0);
+
+        vm.startPrank(alice);
+        venue.approve(earnVault.engine(), venueShares);
+        vm.expectRevert(EarnVault.ActiveSupplyWithoutBacking.selector);
+        earnVault.depositVenueShares(venueShares, alice, 1);
         vm.stopPrank();
     }
 

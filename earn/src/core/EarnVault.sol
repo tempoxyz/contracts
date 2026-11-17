@@ -1472,7 +1472,9 @@ contract EarnVault is IEarnVault {
     ///      basis point of the entry's, so a position an engine prices at zero only for now (a paused venue)
     ///      keeps deposits closed rather than being written off by one large entry. The entrant's claim after
     ///      the re-anchor, which the unbacked supply shares pro rata, must lose at most one basis point of the
-    ///      engine shares it brought, counting rounding and dilution together.
+    ///      engine shares it brought, counting rounding and dilution together. The entry must also carry
+    ///      backing: engine shares valued at zero, such as an impaired venue's, would only grow the
+    ///      unbacked supply. That valuation is the engine's and is not proved here.
     /// @custom:ensures strandedEngineShares <= receivedEngineShares / CONVERSION_BPS
     /// @custom:ensures _specAcceptableLoss(receivedEngineShares, receivedEngineShares * earnShares / (earnShares + unbackedSupply))
     function _requireNegligibleRestart(
@@ -1481,6 +1483,9 @@ contract EarnVault is IEarnVault {
         uint256 receivedEngineShares,
         uint256 earnShares
     ) internal {
+        if (IEarnEngine(engine).valueOf(receivedEngineShares) == 0) {
+            revert ActiveSupplyWithoutBacking();
+        }
         if (strandedEngineShares > receivedEngineShares / CONVERSION_BPS) {
             revert ActiveSupplyWithoutBacking();
         }
