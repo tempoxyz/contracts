@@ -5,10 +5,12 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
+import { AccountKeys } from "./AccountKeys.sol";
 import { CardAdjust } from "./CardAdjust.sol";
 import { CardFunding } from "./CardFunding.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { CreditLine } from "./CreditLine.sol";
+import { IdentityRules } from "./IdentityRules.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 
@@ -131,6 +133,10 @@ contract CardProgram {
     /// @notice Savings facilities and credit line contracts the issuer accepts as funding sources.
     mapping(address source => bool) public approvedSource;
     Ledger public ledger;
+    /// @notice The registry of the keys that sign cardholder card actions; zero lets only the owner's own key sign.
+    address public accountKeys;
+    /// @notice The identity rules new authorizations must satisfy; zero checks none.
+    address public identityRules;
 
     bool private transient _locked;
 
@@ -142,6 +148,7 @@ contract CardProgram {
     event MandateSet(address indexed owner, address indexed merchant, bool revoked, uint96 monthlyLimit);
     event RateSet(address indexed token, uint256 rate);
     event SourceSet(address indexed source, bool approved);
+    event CompanionsSet(address accountKeys, address identityRules);
     event PurchaseAuthorized(
         bytes32 indexed purchaseRef,
         bytes32 indexed card,
@@ -340,6 +347,15 @@ contract CardProgram {
         emit CardStatusSet(card, status);
     }
 
+    /// @notice Sets the account key registry cardholder card actions check and the identity rules authorizations check.
+    // Zero is meaningful for both: no registry means owners sign as themselves, no rules means no identity check.
+    // forge-lint: disable-next-line(missing-zero-check)
+    function setCompanions(address accountKeys_, address identityRules_) external onlyIssuer {
+        accountKeys = accountKeys_;
+        identityRules = identityRules_;
+        emit CompanionsSet(accountKeys_, identityRules_);
+    }
+
     /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it.
     function setRate(address token, uint256 rate) external onlyIssuer {
         if (token == SETTLEMENT_TOKEN) revert TokenNotAccepted(token);
@@ -478,14 +494,16 @@ contract CardProgram {
         bool standIn = flags & STAND_IN != 0;
         if (c.status == Status.None) revert InvalidCard();
         CardLimits.Grant storage g = grants[owner];
-        if (standIn) {
-            if (c.status == Status.Closed) revert CardNotActive();
-        } else {
-            if (c.status != Status.Active) revert CardNotActive();
+        // A stand-in approval is decided when it lands: a card frozen or closed meanwhile declines it.
+        if (c.status != Status.Active) revert CardNotActive();
+        if (!standIn) {
             // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
             // forge-lint: disable-next-line(block-timestamp)
             if (c.expiry <= block.timestamp) revert CardExpired();
             if (!g.active) revert NoTerms();
+            // Reverts IdentityRequired unless the owner holds a live attestation the program's policy accepts.
+            address rules = identityRules;
+            if (rules != address(0)) IdentityRules(rules).admit(owner);
         }
 
         uint256[3] memory legAmounts;
@@ -720,9 +738,13 @@ contract CardProgram {
         if (balance != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT_ACCOUNT, balance);
     }
 
+    /// @dev The card's owner acts through its own key, or through the keys it listed in the account key registry.
     function _ownedCard(bytes32 card) private view returns (Card storage c) {
         c = _cards[card];
-        if (c.owner != msg.sender || c.status == Status.None) revert NotCardOwner();
+        address owner = c.owner;
+        address keys = accountKeys;
+        bool signs = keys == address(0) ? owner == msg.sender : AccountKeys(keys).signsFor(owner, msg.sender);
+        if (!signs || c.status == Status.None) revert NotCardOwner();
     }
 
     function _legId(bytes32 purchaseRef, uint8 leg) private view returns (bytes32) {

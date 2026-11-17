@@ -740,6 +740,17 @@ contract CardProgramTest is ProgramsEnv {
         _assertCoreBalanced();
     }
 
+    function test_standIn_onFrozenCard_declinedWhenItLands() public {
+        usd.mint(alice, 30e6);
+        vm.prank(alice);
+        cards.freeze(CARD);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.CardNotActive.selector);
+        cards.authorize(CARD, P1, 20e6, merchant, uint64(block.timestamp + 1 days), 1);
+        assertEq(usd.balanceOf(alice), 30e6);
+        assertEq(cards.purchaseOf(P1).owner, address(0));
+    }
+
     function test_standIn_adjustUp_refused() public {
         usd.mint(alice, 100e6);
         vm.prank(issuer);
@@ -757,9 +768,6 @@ contract CardProgramTest is ProgramsEnv {
 
     function test_standIn_reservesWhatIsThereAndForwardsRepaidDebt() public {
         usd.mint(alice, 50e6);
-        vm.prank(alice);
-        cards.freeze(CARD);
-        // The network approved it offline: the program records it past the freeze.
         vm.prank(issuer);
         cards.authorize(CARD, P1, 80e6, merchant, uint64(block.timestamp + 1 days), 1);
         IReservationCore.HoldRecord memory h = _hold(alice, P1, CASH);
