@@ -243,7 +243,8 @@ export async function nonMemberSpenders(
 }
 
 /** Missing getters are contract evidence; transport errors must not become authentication claims. */
-function missingGetter(error: unknown): undefined {
+/** Undefined when a getter reverts or returns no data (the contract lacks it); rethrows anything else. */
+export function missingGetter(error: unknown): undefined {
   if (
     error instanceof BaseError &&
     error.walk(

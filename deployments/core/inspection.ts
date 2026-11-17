@@ -22,7 +22,7 @@ import { inspectStackBinding, readCurrentEngine } from './stack.js'
  * mismatches throw; mutable capability readiness is reported without failing inspection.
  */
 export async function inspectEarnDeployment(
-  client: Pick<PublicClient, 'getCode' | 'readContract'> & LatestBlockClient,
+  client: Pick<PublicClient, 'getCode' | 'getStorageAt' | 'readContract'> & LatestBlockClient,
   profile: EarnDeploymentProfile,
   outputs: Record<string, Address>,
   factoryDeploymentId: `0x${string}` | null = profileFactoryDeploymentId(profile),

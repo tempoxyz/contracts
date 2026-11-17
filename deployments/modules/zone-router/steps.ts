@@ -1,4 +1,12 @@
-import { encodeFunctionData, getAbiItem, getAddress, zeroAddress, type Address } from 'viem'
+import {
+  encodeFunctionData,
+  erc20Abi,
+  getAbiItem,
+  getAddress,
+  zeroAddress,
+  type Address,
+} from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
 import {
   deployZoneRouterFactoryScriptAbi,
@@ -8,6 +16,7 @@ import {
 } from '../../abis/index.js'
 import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { InspectionMismatchError } from '../../chain/inspect.js'
+import { envPrivateKey } from '../../chain/runtime.js'
 import {
   missingZoneTokens,
   zoneCallbackGatewayRegistered,
@@ -33,7 +42,9 @@ import {
   requiredOutput,
   type ChainClient,
 } from '../module.js'
+import { sendAuthorityCalls } from '../signer.js'
 import { inspectZoneRouterBinding } from './inspection.js'
+import { missingZoneRouterSeeds, zoneRouterSeedCalls, zoneRouterSeedPlan } from './seeds.js'
 import {
   configuredZoneRouter,
   zoneRouterConstructorArgs,
@@ -375,6 +386,63 @@ export const admitZoneRouterAccount = defineAuthorityStep({
     await requireModeProvenance(administrator.client, options.profile, options.outputs)
     return administrator.send(
       await portalRoleCalls(administrator.client, portal, router, 'account'),
+    )
+  },
+})
+
+/**
+ * Keeps the router's and its SendSpenders' TIP-20 balance slots, and the router's Portal allowances,
+ * nonzero so no callback pays to create them. Idempotent: it sends only what is missing.
+ */
+export const seedZoneRouter = defineAuthorityStep({
+  id: 'seed-zone-router',
+  authority: deployerAuthority,
+  execution: 'authority',
+  summary:
+    'Send the ZoneRouter and its SendSpenders 1 base unit of each token they route, and warm the router Portal allowances.',
+  handoffSummary:
+    'Verify the router and its SendSpenders hold their seed units and allowances, and emit a deployer handoff if not.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  enabled: hasZoneRouter,
+  async satisfied(client, profile, outputs) {
+    const plan = await zoneRouterSeedPlan(client, profile, outputs)
+    const missing = await missingZoneRouterSeeds(client, plan)
+    return missing.seeds.length === 0 && missing.warm.length === 0
+  },
+  handoff: (_profile, outputs) =>
+    `The deployer holds too little of a token to seed ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} and its SendSpenders: run pnpm earn verify, send each holder named under Zone router seeds 1 base unit and call warm(token) on the router for each allowance blocker (anyone may), then re-run the same pnpm earn deploy command; it will verify the seeds and continue.`,
+  async execute(options, dependencies) {
+    const key = envPrivateKey(options.environment, deployerAuthority.signer)
+    if (!key) return undefined
+    const account = privateKeyToAccount(key)
+    const client = dependencies.authorityClient(options, account)
+    if (!(await zoneRouterBound(client, options.profile, options.outputs)))
+      throw new Error(
+        `ZoneRouter ${requiredOutput(options.outputs, 'zoneRouter')} is not the profile's router; refusing to seed it`,
+      )
+    const plan = await zoneRouterSeedPlan(client, options.profile, options.outputs)
+    const missing = await missingZoneRouterSeeds(client, plan)
+    if (missing.seeds.length === 0 && missing.warm.length === 0) return { transactions: [] }
+    const tokens = [...new Set(missing.seeds.map((entry) => entry.token))]
+    const held = await Promise.all(
+      tokens.map((token) =>
+        client.readContract({
+          address: token,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [account.address],
+        }),
+      ),
+    )
+    const needed = (token: Address) =>
+      BigInt(missing.seeds.filter((entry) => entry.token === token).length)
+    if (tokens.some((token, index) => held[index]! < needed(token))) return undefined
+    return sendAuthorityCalls(
+      client,
+      dependencies,
+      options.profile,
+      zoneRouterSeedCalls(plan, missing),
     )
   },
 })

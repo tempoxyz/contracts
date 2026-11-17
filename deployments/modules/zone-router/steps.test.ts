@@ -1,16 +1,24 @@
 import {
   ContractFunctionZeroDataError,
   decodeFunctionData,
+  erc20Abi,
   getAddress,
+  toEventSelector,
   zeroAddress,
   zeroHash,
   type Address,
+  type Hex,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { Addresses } from 'viem/tempo'
 import { describe, expect, test, vi } from 'vitest'
 
-import { deployZoneRouterScriptAbi, propAMMPoolAbi, zonePortalAbi } from '../../abis/index.js'
+import {
+  deployZoneRouterScriptAbi,
+  propAMMPoolAbi,
+  zonePortalAbi,
+  zoneRouterAbi,
+} from '../../abis/index.js'
 import { planEarnDeployment } from '../../core/plan.js'
 import { parseEarnDeploymentProfile } from '../../core/profile.js'
 import { zoneFactoryAddress, zoneMessengerAddress } from '../../chain/zone.js'
@@ -20,6 +28,7 @@ import type { ChainClient, FoundryStep } from '../module.js'
 import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { zoneRouterModeModule } from './index.js'
 import { zoneRouterConstructorArgs, zoneRouterFactory, zoneRouterMode } from './profile.js'
+import { zoneRouterSeedPlan } from './seeds.js'
 
 vi.mock(import('../earn/zone-router/provenance.js'), () => ({ requireRouterProvenance: vi.fn() }))
 
@@ -107,6 +116,7 @@ function chain(profile: typeof card, overrides: Record<string, unknown> = {}) {
   )
   return {
     getCode: vi.fn(async () => '0x6080' as const),
+    getStorageAt: vi.fn(async () => zeroHash),
     readContract,
   } as unknown as ChainClient
 }
@@ -120,12 +130,14 @@ describe('Zone router steps', () => {
       'enable-zone-router-tokens',
       'register-zone-router-gateway',
       'admit-zone-router-account',
+      'seed-zone-router',
     ])
     // A named factory is used as is; Spend needs no pool admission or Earn tokens.
     expect(routerSteps(card)).toEqual([
       'deploy-zone-router',
       'register-zone-router-gateway',
       'admit-zone-router-account',
+      'seed-zone-router',
     ])
     expect(
       routerSteps(
@@ -137,6 +149,7 @@ describe('Zone router steps', () => {
       'enable-zone-router-tokens',
       'register-zone-router-gateway',
       'admit-zone-router-account',
+      'seed-zone-router',
     ])
     expect(routerSteps(profileWith(undefined))).toEqual([])
   })
@@ -774,5 +787,237 @@ describe('Zone router inspection', () => {
     await expect(
       zoneRouterModeModule.inspect!(chain(card, { predict: address('99') }), card, outputs),
     ).rejects.toThrow('router for the profile mode')
+  })
+})
+
+describe('Zone router seeds', () => {
+  const restartTopic = toEventSelector('UnbackedPoolRestarted(uint256,uint256)').slice(2)
+  const implementation = address('1e')
+  const deployerKey = `0x${'4'.repeat(64)}` as const
+  const deployer = privateKeyToAccount(deployerKey).address
+  const convertingSpender = address('5e772e')
+
+  /**
+   * The cardAndEarn chain plus token state: `balances` and `allowances` keyed by `token:holder`
+   * (zero when absent), the Portal enabling `enabled`, and a vault that restarts when `restarts`.
+   */
+  function seedChain(
+    options: {
+      allowances?: Record<string, bigint>
+      balances?: Record<string, bigint>
+      enabled?: Address[]
+      profile?: typeof card
+      restarts?: boolean
+    } = {},
+  ) {
+    const profile = options.profile ?? cardAndEarn
+    const base = chain(profile, { liquidityStatus: [false, true, true, 1n, 2n] }) as unknown as {
+      readContract: (parameters: Record<string, unknown>) => Promise<unknown>
+    }
+    const enabled = options.enabled ?? [earnBinding.privateAsset, outputs.earnShare]
+    const readContract = vi.fn(async (parameters: Record<string, unknown>) => {
+      const target = parameters.address as Address
+      const args = (parameters.args ?? []) as Address[]
+      switch (parameters.functionName) {
+        case 'balanceOf':
+          return options.balances?.[`${target}:${args[0]}`] ?? 0n
+        case 'allowance':
+          return options.allowances?.[`${target}:${args[0]}`] ?? 0n
+        case 'isTokenEnabled':
+          return enabled.includes(args[0]!)
+        case 'convertVault':
+          if (target === convertingSpender) return address('c0')
+          if (target === spender) return zeroAddress
+          break
+        case 'convertAsset':
+          if (target === convertingSpender) return address('ca')
+          if (target === spender) return zeroAddress
+          break
+        case 'parToken':
+          if (target === convertingSpender) return address('ba')
+          if (target === spender) return zeroAddress
+          break
+        case 'PROVIDER':
+          if (target === spender || target === convertingSpender)
+            throw new ContractFunctionZeroDataError({ functionName: 'PROVIDER' })
+      }
+      return base.readContract(parameters)
+    })
+    return {
+      getCode: vi.fn(async ({ address: target }: { address: Address }) =>
+        target === implementation && options.restarts ? `0x60${restartTopic}` : '0x6080',
+      ),
+      getStorageAt: vi.fn(async ({ address: target }: { address: Address }) =>
+        target === outputs.earnVault
+          ? (`0x${implementation.slice(2).toLowerCase().padStart(64, '0')}` as const)
+          : zeroHash,
+      ),
+      readContract,
+    }
+  }
+
+  const seed = (holder: Address, token: Address) => expect.objectContaining({ holder, token })
+
+  test('seeds EarnShare only where the vault restarts unbacked pools', async () => {
+    const restarted = await zoneRouterSeedPlan(
+      seedChain({ restarts: true }) as never,
+      cardAndEarn,
+      outputs,
+    )
+    expect(restarted.seeds).toEqual([
+      seed(outputs.zoneRouter, outputs.asset),
+      seed(outputs.zoneRouter, earnBinding.privateAsset),
+      seed(outputs.zoneRouter, outputs.earnShare),
+      seed(spender, earnBinding.privateAsset),
+      seed(spender, outputs.earnShare),
+      seed(spender, outputs.asset),
+    ])
+    expect(restarted.warm.map((entry) => entry.token)).toEqual([
+      outputs.earnShare,
+      earnBinding.privateAsset,
+    ])
+    // A vault without the restart could never return its supply to zero past a held unit.
+    const earlier = await zoneRouterSeedPlan(seedChain() as never, cardAndEarn, outputs)
+    expect(earlier.seeds.some((entry) => entry.token === outputs.earnShare)).toBe(false)
+    expect(earlier.warm.map((entry) => entry.token)).toContain(outputs.earnShare)
+  })
+
+  test('seeds the tokens a converting SendSpender pays through and skips card programs', async () => {
+    const converting = profileWith({
+      zoneId: 7,
+      ops: ['spend'],
+      spenders: [convertingSpender, address('ca4d')],
+    })
+    const plan = await zoneRouterSeedPlan(
+      seedChain({ profile: converting, enabled: [outputs.asset], restarts: true }) as never,
+      converting,
+      outputs,
+    )
+    expect(plan.seeds).toEqual([
+      seed(outputs.zoneRouter, outputs.asset),
+      seed(convertingSpender, outputs.asset),
+      seed(convertingSpender, address('ca')),
+      seed(convertingSpender, address('ba')),
+    ])
+    expect(plan.warm.map((entry) => entry.token)).toEqual([outputs.asset])
+  })
+
+  test('reports each unseeded holder and unwarmed token without blocking routes', async () => {
+    const client = {
+      ...seedChain({
+        balances: { [`${outputs.asset}:${outputs.zoneRouter}`]: 1n },
+        allowances: { [`${outputs.earnShare}:${outputs.zoneRouter}`]: 2n ** 256n - 1n },
+      }),
+      getBlock: async () => ({ number: 7n, timestamp: 110n }),
+    }
+    const report = await zoneRouterModeModule.inspect!(client as never, cardAndEarn, outputs)
+    expect(report?.zoneRouterSeeds).toEqual({
+      label: 'Zone router seeds',
+      status: 'blocked',
+      blockers: [
+        `Zone router ${outputs.zoneRouter} holds no private asset ${earnBinding.privateAsset}, so each callback recreates its balance slot: send it 1 base unit`,
+        `SendSpender ${spender} ${spender} holds no private asset ${earnBinding.privateAsset}, so each callback recreates its balance slot: send it 1 base unit`,
+        `SendSpender ${spender} ${spender} holds no vault asset ${outputs.asset}, so each callback recreates its balance slot: send it 1 base unit`,
+        `Zone router ${outputs.zoneRouter} has no Portal allowance for private asset ${earnBinding.privateAsset}, so its next return to the Zone sets one: call warm(${earnBinding.privateAsset})`,
+      ],
+    })
+  })
+
+  test('sends 1 base unit to each unseeded holder and warms each token once', async () => {
+    const step = deploymentStep('seed-zone-router')
+    if (step.execution !== 'authority') throw new Error('expected an authority step')
+    const reads = seedChain({
+      restarts: true,
+      balances: {
+        [`${outputs.asset}:${deployer}`]: 5n,
+        [`${earnBinding.privateAsset}:${deployer}`]: 5n,
+        [`${outputs.earnShare}:${deployer}`]: 5n,
+        [`${outputs.asset}:${outputs.zoneRouter}`]: 1n,
+      },
+    })
+    expect(await step.satisfied(reads as never, cardAndEarn, outputs)).toBe(false)
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
+    const result = await executeAvailableAuthority(
+      {
+        action: { id: 'seed-zone-router' },
+        environment: { DEPLOYER_PRIVATE_KEY: deployerKey },
+        outputs,
+        profile: cardAndEarn,
+        rpcUrl: 'https://rpc.invalid',
+      },
+      {
+        authorityClient: ((_options: unknown, account: unknown) => ({
+          ...reads,
+          account,
+          chain: { id: 42431 },
+          getTransactionCount: async () => 0,
+          sendTransactionSync,
+        })) as never,
+        fundFromFaucet: vi.fn() as never,
+      },
+    )
+    expect(result).toEqual({ transactions: [receiptHash] })
+    const calls = sendTransactionSync.mock.calls[0]![0].calls as { to: Address; data: Hex }[]
+    expect(
+      calls.map((call) =>
+        call.to === outputs.zoneRouter
+          ? ['warm', ...decodeFunctionData({ abi: zoneRouterAbi, data: call.data }).args!]
+          : [call.to, ...decodeFunctionData({ abi: erc20Abi, data: call.data }).args!],
+      ),
+    ).toEqual([
+      [earnBinding.privateAsset, outputs.zoneRouter, 1n],
+      [outputs.earnShare, outputs.zoneRouter, 1n],
+      [earnBinding.privateAsset, spender, 1n],
+      [outputs.earnShare, spender, 1n],
+      [outputs.asset, spender, 1n],
+      ['warm', outputs.earnShare],
+      ['warm', earnBinding.privateAsset],
+    ])
+  })
+
+  test('hands off when the deployer lacks a seed token and sends nothing once seeded', async () => {
+    const run = (reads: ReturnType<typeof seedChain>, sendTransactionSync = vi.fn()) =>
+      executeAvailableAuthority(
+        {
+          action: { id: 'seed-zone-router' },
+          environment: { DEPLOYER_PRIVATE_KEY: deployerKey },
+          outputs,
+          profile: cardAndEarn,
+          rpcUrl: 'https://rpc.invalid',
+        },
+        {
+          authorityClient: ((_options: unknown, account: unknown) => ({
+            ...reads,
+            account,
+            chain: { id: 42431 },
+            getTransactionCount: async () => 0,
+            sendTransactionSync,
+          })) as never,
+          fundFromFaucet: vi.fn() as never,
+        },
+      )
+    const sendTransactionSync = vi.fn()
+    await expect(run(seedChain(), sendTransactionSync)).resolves.toBeUndefined()
+    expect(sendTransactionSync).not.toHaveBeenCalled()
+
+    const holders = [outputs.zoneRouter, spender]
+    const tokens = [outputs.asset, earnBinding.privateAsset]
+    const seeded = seedChain({
+      balances: Object.fromEntries(
+        holders.flatMap((holder) => tokens.map((token) => [`${token}:${holder}`, 1n])),
+      ),
+      allowances: Object.fromEntries(
+        [outputs.earnShare, earnBinding.privateAsset].map((token) => [
+          `${token}:${outputs.zoneRouter}`,
+          1n,
+        ]),
+      ),
+    })
+    const step = deploymentStep('seed-zone-router')
+    expect(await step.satisfied(seeded as never, cardAndEarn, outputs)).toBe(true)
+    await expect(run(seeded, sendTransactionSync)).resolves.toEqual({ transactions: [] })
+    expect(sendTransactionSync).not.toHaveBeenCalled()
   })
 })

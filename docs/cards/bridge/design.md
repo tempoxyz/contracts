@@ -106,8 +106,9 @@ and expiry of the key in the protocol. The cardholder can revoke the key at any 
 
 1. The card processor asks Bridge to authorize a card payment.
 2. Bridge sends one L1 transaction from the cardholder account, signed with Bridge's access key.
-   The transaction approves the program for the exact amount (and, for Earn, the share quote), calls
-   `program.spend(CardSpend)`, and sets the approvals back to zero.
+   The transaction approves the program for the amount plus 1 base unit (and, for Earn, the share quote
+   plus 1) and calls `program.spend(CardSpend)`. It never sets the approvals back to zero, so the
+   cardholder's allowance slots stay nonzero between spends ([design](../design.md#flows)).
 3. The program checks the spend against its provider, pulls the input from the cardholder, and calls
    the clone's `publicCall "TS" "PS"` as the payer. The TS handler checks the program and the
    destination again, then pays the destination from stablecoin, from Earn shares, or from both.
@@ -125,7 +126,7 @@ sequenceDiagram
     participant D as Destination
     S->>B: Authorize card payment
     B->>A: L1 transaction, Bridge's access key
-    A->>G: approve(exact), spend, approve(0)
+    A->>G: approve(amount + 1), spend
     G->>C: publicCall TS PS
     C->>D: Pay amount
     B-->>S: Approved

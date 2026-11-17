@@ -31,8 +31,8 @@ existing card contracts. It is one provider of the [card spend project](../../..
 - Bridge spends from the cardholder's account with a Tempo access key the cardholder authorized,
   publicly and in a Zone. Public and private spend are the same `CardSpend`, paid by the same
   `CardSpender` through the same handler code in the program's clone.
-- Public: one transaction from the cardholder's account approves the exact amount to the program,
-  calls `program.spend` and clears the approval.
+- Public: one transaction from the cardholder's account approves the amount plus 1 base unit to the
+  program and calls `program.spend`, leaving the allowance nonzero.
 - Private: Bridge's Zone key withdraws to the Zone's `ZoneRouter`, which transfers the
   cardholder's `maxInput` to the program, its spender. The program settles the spend through
   the clone and hands back what it did not use, and the router returns the change to the Zone, so

@@ -19,13 +19,13 @@ a Bridge-held **access key on the cardholder's account**, not by the debitor, an
 program's `spend`, which calls the clone's `publicCall`, not `transferToDestination`, which `TS`
 reverts.
 
-|                         | Today (`EA`, `P2`, `TF`)              | `TS`, public                               | `TS`, private                                  |
-| ----------------------- | ------------------------------------- | ------------------------------------------ | ---------------------------------------------- |
-| Signer                  | Card-controllers hot wallet (debitor) | Bridge's access key, as the cardholder     | Bridge's Zone access key, as the cardholder    |
-| Sent to                 | Tempo L1                              | Tempo L1                                   | The Zone RPC                                   |
-| Call                    | `transferToDestination`               | `approve` + `program.spend` + `approve(0)` | `approve(outbox)` + `requestWithdrawal`        |
-| Bridge approves on      | Submission                            | The L1 receipt                             | The Zone receipt                               |
-| Can fail after approval | Yes (double spend)                    | No: the receipt is the settlement          | Yes: the callback can revert, the reserve pays |
+|                         | Today (`EA`, `P2`, `TF`)              | `TS`, public                            | `TS`, private                                  |
+| ----------------------- | ------------------------------------- | --------------------------------------- | ---------------------------------------------- |
+| Signer                  | Card-controllers hot wallet (debitor) | Bridge's access key, as the cardholder  | Bridge's Zone access key, as the cardholder    |
+| Sent to                 | Tempo L1                              | Tempo L1                                | The Zone RPC                                   |
+| Call                    | `transferToDestination`               | `approve(amount + 1)` + `program.spend` | `approve(outbox)` + `requestWithdrawal`        |
+| Bridge approves on      | Submission                            | The L1 receipt                          | The Zone receipt                               |
+| Can fail after approval | Yes (double spend)                    | No: the receipt is the settlement       | Yes: the callback can revert, the reserve pays |
 
 ## Enrollment
 
@@ -80,11 +80,9 @@ One Tempo transaction from the cardholder's account, signed by Bridge's access k
 fee payer:
 
 ```text
-token.approve(program, fromStable)
-earnShare.approve(program, maxShares)     only when spending from Earn
+token.approve(program, fromStable + 1)
+earnShare.approve(program, maxShares + 1)     only when spending from Earn
 program.spend(CardSpend)
-token.approve(program, 0)
-earnShare.approve(program, 0)             only when spending from Earn
 ```
 
 `CardSpend` is `program, token, amount, destination, destinationHint, vault, fromVault, maxShares, ref`:
@@ -98,8 +96,10 @@ earnShare.approve(program, 0)             only when spending from Earn
   `maxShares` (`ShareCostExceeded`), and returns any share the handler did not burn.
 
 The program pulls the input, pays through the clone's `publicCall "TS" "PS"` as the payer and
-returns what the handler did not use, so the cardholder ends with no allowance and no leftover in
-the program.
+returns what the handler did not use, so the program keeps no leftover. The extra base unit keeps the
+cardholder's allowance slot nonzero, so the next spend's `approve` does not create it again; never
+reset it to 0 ([design](../design.md#flows)). Only `spend` from the cardholder's own account can pull
+that residual, and the key's limit counts it with the approval.
 
 Approve the card on the receipt. A revert means nothing moved: decline.
 
