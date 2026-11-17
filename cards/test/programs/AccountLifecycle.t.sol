@@ -46,17 +46,17 @@ contract AccountLifecycleTest is ProgramsEnv {
     }
 
     function test_markDormant_onlyAfterDormancy_andCardActivityResetsIt() public {
-        vm.warp(block.timestamp + DORMANCY - 1);
+        vm.warp(vm.getBlockTimestamp() + DORMANCY - 1);
         vm.expectRevert(AccountLifecycle.TooEarly.selector);
         life.markDormant(alice);
 
         usd.mint(alice, 100e6);
         _authorize(P1, 10e6);
-        vm.warp(block.timestamp + 2);
+        vm.warp(vm.getBlockTimestamp() + 2);
         vm.expectRevert(AccountLifecycle.TooEarly.selector);
         life.markDormant(alice);
 
-        vm.warp(block.timestamp + DORMANCY);
+        vm.warp(vm.getBlockTimestamp() + DORMANCY);
         vm.prank(bob);
         life.markDormant(alice);
         assertEq(uint8(life.statusOf(alice)), uint8(AccountLifecycle.Status.Dormant));
@@ -66,7 +66,7 @@ contract AccountLifecycleTest is ProgramsEnv {
         vm.prank(bob);
         vm.expectRevert(AccountLifecycle.NotRegistrar.selector);
         life.setProgram(bob, true);
-        vm.warp(block.timestamp + DORMANCY);
+        vm.warp(vm.getBlockTimestamp() + DORMANCY);
         // A contract the registrar never registered cannot keep the account active.
         vm.prank(bob);
         life.noteActivity(alice);
@@ -75,7 +75,7 @@ contract AccountLifecycleTest is ProgramsEnv {
 
     function test_dormant_declinesNewHolds_untilOwnerReactivates() public {
         usd.mint(alice, 100e6);
-        vm.warp(block.timestamp + DORMANCY);
+        vm.warp(vm.getBlockTimestamp() + DORMANCY);
         life.markDormant(alice);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.AccountInactive.selector);
@@ -192,13 +192,13 @@ contract AccountLifecycleTest is ProgramsEnv {
         vm.expectRevert(abi.encodeWithSelector(AccountLifecycle.AccountState.selector, AccountLifecycle.Status.Active));
         life.escheat(alice, state, noVaults);
 
-        vm.warp(block.timestamp + DORMANCY);
+        vm.warp(vm.getBlockTimestamp() + DORMANCY);
         life.markDormant(alice);
         vm.prank(registrar);
         vm.expectRevert(AccountLifecycle.NotUnclaimed.selector);
         life.escheat(alice, state, noVaults);
 
-        vm.warp(block.timestamp + ESCHEAT);
+        vm.warp(vm.getBlockTimestamp() + ESCHEAT);
         vm.prank(bob);
         vm.expectRevert(AccountLifecycle.NotRegistrar.selector);
         life.escheat(alice, bob, noVaults);

@@ -60,7 +60,7 @@ contract IdentityRulesTest is ProgramsEnv {
         _attest(EU, uint64(block.timestamp + 365 days));
         _attest(US, uint64(block.timestamp + 1 days));
         assertTrue(rules.admits(address(cards), alice));
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(vm.getBlockTimestamp() + 2 days);
         assertFalse(rules.admits(address(cards), alice));
     }
 
@@ -118,7 +118,7 @@ contract IdentityRulesTest is ProgramsEnv {
     function test_lapsedAttestation_blocksNewPurchases_openOneStillCaptures() public {
         _attest(US, uint64(block.timestamp + 1 days));
         _authorize(P1, 10e6);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(vm.getBlockTimestamp() + 2 days);
         vm.prank(issuer);
         vm.expectRevert(IdentityRules.IdentityRequired.selector);
         cards.authorize(CARD, "p2", 10e6, merchant, uint64(block.timestamp + 7 days), 0);

@@ -111,7 +111,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         assertEq(credit.statementOf(lineId, 2).paid, 20e6);
         (,, uint32 payFrom) = credit.statementsOf(lineId);
         assertEq(payFrom, 2);
-        vm.warp(block.timestamp + 20 days);
+        vm.warp(vm.getBlockTimestamp() + 20 days);
         credit.collect(lineId);
         // Without autopay the first is paid by the repayment and the second, still short, goes past due.
         assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditLine.StatementStatus.Paid));
@@ -133,7 +133,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         assertEq(earnShare.balanceOf(alice), shares);
         assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditLine.StatementStatus.Due));
 
-        vm.warp(block.timestamp + 25 days);
+        vm.warp(vm.getBlockTimestamp() + 25 days);
         uint256 lenderBefore = usd.balanceOf(lender) + core.reserved(lender, address(usd));
         vm.expectEmit(address(credit));
         emit CreditLine.Autopaid(lineId, 1, address(earnVault), 204e6);
@@ -161,7 +161,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         _owe(80e6);
         vm.prank(lender);
         credit.closeStatement(lineId, uint64(block.timestamp + 1 days));
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         credit.collect(lineId);
         assertEq(usd.balanceOf(alice), 0);
         assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 50e6, 1);
@@ -176,7 +176,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         _owe(80e6);
         vm.prank(lender);
         credit.closeStatement(lineId, uint64(block.timestamp + 1 days));
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         credit.collect(lineId);
         CreditLine.Statement memory s = credit.statementOf(lineId, 1);
         assertEq(s.paid, 30e6);
@@ -201,7 +201,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         _owe(80e6);
         vm.prank(lender);
         credit.closeStatement(lineId, uint64(block.timestamp + 1 days));
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         credit.collect(lineId);
         assertEq(credit.statementOf(lineId, 1).paid, 40e6);
         assertEq(core.reserved(alice, address(usd)), 60e6);
@@ -230,7 +230,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         credit.closeStatement(lineId, uint64(block.timestamp + 1 days));
         // A refund after the statement lowers what is owed below its balance.
         _refundOwed(40e6);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         credit.collect(lineId);
         assertEq(credit.lineOf(lineId).owed, 0);
         assertEq(usd.balanceOf(alice), 440e6);

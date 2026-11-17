@@ -118,7 +118,7 @@ contract CreditLineTest is ProgramsEnv {
     function test_expiredDraw_freesPending() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         bytes32 id = _draw(lineId, 100e6);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         core.releaseExpired(lender, id);
         credit.sync(id);
         assertEq(credit.lineOf(lineId).pending, 0);

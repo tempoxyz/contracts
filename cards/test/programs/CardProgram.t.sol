@@ -99,7 +99,7 @@ contract CardProgramTest is ProgramsEnv {
     function test_captureAfterExpiry_refused_andAnyoneExpires() public {
         usd.mint(alice, 1000e6);
         _authorize(P1, 400e6);
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.PurchaseExpired.selector);
         cards.capture(P1, 400e6, true);
@@ -183,7 +183,7 @@ contract CardProgramTest is ProgramsEnv {
 
     function test_expiredCard_refused() public {
         usd.mint(alice, 1000e6);
-        vm.warp(block.timestamp + 366 days);
+        vm.warp(vm.getBlockTimestamp() + 366 days);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.CardExpired.selector);
         cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
@@ -313,7 +313,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.authorize(CARD, P2, 300e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         // A new day resets the daily window but not the month.
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         _authorize(P2, 400e6);
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.LimitExceeded.selector, uint8(2)));
@@ -603,7 +603,7 @@ contract CardProgramTest is ProgramsEnv {
         vm.prank(issuer);
         vm.expectRevert(CardProgram.MerchantLimitExceeded.selector);
         cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
-        vm.warp(block.timestamp + 30 days);
+        vm.warp(vm.getBlockTimestamp() + 30 days);
         _authorize(P2, 100e6);
     }
 

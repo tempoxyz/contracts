@@ -168,7 +168,7 @@ contract ReservationCoreModelTest is ProgramsEnv {
         vm.expectRevert(IReservationCore.HoldNotExpired.selector);
         core.releaseExpired(alice, ID);
 
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         vm.prank(holder);
         vm.expectRevert(IReservationCore.HoldExpired.selector);
         core.capture(alice, ID, 1e6, false);
@@ -297,7 +297,7 @@ contract ReservationCoreModelTest is ProgramsEnv {
         vm.expectRevert(IReservationCore.LienNotFound.selector);
         core.seizeLien(ID, 1e6);
 
-        vm.warp(block.timestamp + 10 days);
+        vm.warp(vm.getBlockTimestamp() + 10 days);
         vm.prank(authority);
         vm.expectRevert(IReservationCore.InvalidExpiry.selector);
         core.seizeLien(ID, 1e6);
