@@ -778,7 +778,7 @@ library CardFunding {
             SafeTransferLib.safeApprove(asset, address(facility), paid);
             tokens = facility.refund(owner, leg.id, paid);
         } else if (CardConvert.swapper(leg.token, s.kind) != address(0)) {
-            tokens = CardConvert.refund(owner, leg.id, leg.token, leg.refundable, take);
+            tokens = CardConvert.refund(ref, owner, leg.id, leg.token, leg.refundable, take);
         } else {
             tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, leg.rate), leg.refundable);
             SafeTransferLib.safeTransferFrom(leg.token, msg.sender, address(this), tokens);

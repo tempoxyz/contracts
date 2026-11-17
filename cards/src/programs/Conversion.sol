@@ -108,6 +108,8 @@ contract Conversion {
     error InvalidAmount();
     error InsufficientFloat(uint256 needed, uint256 available);
 
+    // A zero hub routes nothing through a hub, and a zero owner leaves the venues fixed.
+    // forge-lint: disable-next-item(missing-zero-check)
     constructor(address hub, address owner_) {
         HUB = hub;
         owner = owner_;
@@ -121,6 +123,8 @@ contract Conversion {
 
     // Configuration.
 
+    // Setting a zero owner fixes the venues for good.
+    // forge-lint: disable-next-item(missing-zero-check)
     function setOwner(address owner_) external onlyOwner {
         owner = owner_;
         emit OwnerSet(owner_);
@@ -303,6 +307,8 @@ contract Conversion {
         (amountIn,,) = IPropAmmPool(v.pool).quoteExactOutput(v.baseToQuote, amountOut);
     }
 
+    // The nonce only names each trade; it moves before the swap, so a reentered trade gets its own.
+    // forge-lint: disable-start(reentrancy-no-eth)
     function _swapIn(address tokenIn, address tokenOut, uint256 amountIn) private returns (uint256 out) {
         Venue memory v = _venue(tokenIn, tokenOut);
         if (v.pool == address(0)) return DEX.swapExactAmountIn(tokenIn, tokenOut, _u128(amountIn), 0);
@@ -323,6 +329,8 @@ contract Conversion {
         IPropAmmPool(v.pool)
             .swapExactOutput(v.baseToQuote, amountOut, maxIn, address(this), id, id, block.timestamp, price, 0, 0);
     }
+
+    // forge-lint: disable-end(reentrancy-no-eth)
 
     /// @dev A fresh trade and customer id per trade, so no pool rounding credit carries from one trade to the next.
     function _tradeId() private returns (bytes32) {

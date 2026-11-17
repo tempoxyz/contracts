@@ -246,7 +246,7 @@ contract ConversionTest is ProgramsEnv {
         usd.mint(alice, 100e6);
         _authorize(P1, 10e6);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.UnsettledPurchases.selector);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(1)));
         cards.setSettlementToken(address(eur));
     }
 

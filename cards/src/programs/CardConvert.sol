@@ -15,6 +15,9 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///         placed, the price a capture converts at (the lock while the market stays within the owner's tolerance,
 ///         today's quote once it moves past it), the swap that pays the issuer exactly what it captured, and refunds
 ///         that convert back at the reference rate. Runs in the program's context, like CardFunding, which calls it.
+// Loops run over a purchase's legs (at most MAX_SOURCES) and call only the fixed core, the program itself, its
+// issuer-set Conversion and issuer-approved facilities.
+// forge-lint: disable-start(calls-loop)
 library CardConvert {
     using FixedPointMathLib for uint256;
 
@@ -206,15 +209,19 @@ library CardConvert {
 
     /// @notice Refunds take settlement units onto a converted leg: the caller pays them in the settlement token, which
     ///         converts at the reference rate, and whatever exceeds what the leg can take back lands with the owner.
-    function refund(address owner, bytes32 legId, address token, uint256 refundable, uint256 take)
+    function refund(bytes32 ref, address owner, bytes32 legId, address token, uint256 refundable, uint256 take)
         external
         returns (uint256 tokens)
     {
-        address settlement = _settlement();
-        Conversion c = Conversion(CardProgram(address(this)).conversion());
-        SafeTransferLib.safeTransferFrom(settlement, msg.sender, address(this), take);
-        SafeTransferLib.safeApprove(settlement, address(c), take);
-        uint256 out = c.convertAtMid(settlement, token, take, address(this));
+        CardProgram program = CardProgram(address(this));
+        address settlement = program.settlementToken();
+        address booked = program.purchaseToken(ref);
+        Conversion c = Conversion(program.conversion());
+        // A purchase booked in an earlier settlement token refunds in its units, paid in today's at the reference rate.
+        uint256 paying = booked == settlement ? take : take.mulDivUp(c.mid(booked, settlement), RATE_ONE);
+        SafeTransferLib.safeTransferFrom(settlement, msg.sender, address(this), paying);
+        SafeTransferLib.safeApprove(settlement, address(c), paying);
+        uint256 out = c.convertAtMid(settlement, token, paying, address(this));
         tokens = _min(out, refundable);
         // forge-lint: disable-next-line(unsafe-typecast)
         if (tokens != 0) CORE.refund(owner, legId, uint128(tokens));
@@ -236,3 +243,4 @@ library CardConvert {
         }
     }
 }
+// forge-lint: disable-end(calls-loop)
