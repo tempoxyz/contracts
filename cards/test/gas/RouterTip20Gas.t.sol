@@ -257,6 +257,24 @@ contract RouterTip20GasTest is CoreEnv {
         assertEq(earnVault.totalEarnShares(), shares + 2);
     }
 
+    /// @dev A real position the venue prices at zero for now (paused or impaired) is never written off: a
+    ///      restart would move its engine shares to surplus, so even a much larger entry stays refused.
+    function test_zeroPricedPositionKeepsDepositsClosed() public {
+        _seedVaultShares();
+        uint256 left = usd.balanceOf(address(venue));
+        vm.prank(address(venue));
+        usd.transfer(makeAddr("sink"), left);
+        assertEq(earnVault.totalAssets(), 0);
+        assertGt(earnVault.engineShares(), 0);
+
+        usd.mint(alice, 100_000_000e6);
+        vm.startPrank(alice);
+        usd.approve(address(earnVault), type(uint256).max);
+        vm.expectRevert();
+        earnVault.deposit(100_000_000e6, alice, 1);
+        vm.stopPrank();
+    }
+
     function _exitAll(address holder) internal {
         uint256 shares = earnShare.balanceOf(holder);
         vm.startPrank(holder);

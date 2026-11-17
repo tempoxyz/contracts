@@ -265,8 +265,9 @@ so surplus does not affect fees, quotes, deposits, or exits.
 
 If managed backing is worth zero while EarnShare supply is nonzero, `deposit` and
 `depositVenueShares` restart the pool at the empty-pool rate (worthless managed engine shares become
-surplus) and admit the entry only when the unbacked supply is at most one basis point of the EarnShare
-it mints, the conversion loss every deposit already accepts. Otherwise they revert with
+surplus) and admit the entry only when those engine shares are at most one basis point of the entry's
+and the unbacked supply dilutes the entrant by at most one basis point, rounding included, so an engine
+that prices a real position at zero for now keeps deposits closed. Otherwise they revert with
 `ActiveSupplyWithoutBacking` rather than recapitalize existing holders from a new depositor's
 principal. Supply no one can exit, such as an EarnShare unit an ownerless router holds, therefore never
 blocks deposits for good. `contribute` remains the shareless path for a funder that intentionally

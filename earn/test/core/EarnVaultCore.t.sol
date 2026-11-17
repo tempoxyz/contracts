@@ -381,8 +381,8 @@ contract EarnVaultTest is Test {
     }
 
     function testDepositStaysClosedWhenUnbackedSupplyIsMaterial() public {
-        // One unit above the one-basis-point bound for a 100 ether entry.
-        _strandUnitThenLoseBacking(100 ether / 10_000 + 1);
+        // Enough unbacked supply that sharing a 100 ether entry with it costs the entrant over one basis point.
+        _strandUnitThenLoseBacking(uint256(100 ether) / 9_999 + 1);
         asset.mint(victim, 100 ether);
 
         vm.startPrank(victim);
@@ -391,6 +391,8 @@ contract EarnVaultTest is Test {
         core.deposit(100 ether, victim, 1);
         // A larger entry dilutes the same supply below the bound and restarts the pool.
         asset.mint(victim, 100 ether);
+        vm.expectEmit(address(core));
+        emit EarnVault.UnbackedPoolRestarted(uint256(100 ether) / 9_999 + 1, 0);
         assertEq(core.deposit(200 ether, victim, 1), 200 ether);
         vm.stopPrank();
     }

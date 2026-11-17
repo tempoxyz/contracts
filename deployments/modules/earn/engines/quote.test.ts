@@ -51,12 +51,39 @@ describe('quoteEarnDeposit', () => {
       quoteEarnDeposit(quoteClient({ engineShares: 0n }), stack, 10_000_000n),
     ).rejects.toThrow('without managed backing')
   })
+  test('quotes a restart of unbacked supply at the empty-pool rate only when it is negligible', async () => {
+    const unbacked = { totalAssets: 0n, previewAccruedFees: { totalFeeEarnShares: 0n } }
+    expect(
+      await quoteEarnDeposit(
+        quoteClient({ ...unbacked, totalEarnShares: 1n, engineShares: 0n }),
+        stack,
+        10_000_000n,
+      ),
+    ).toBe(10_000_000n)
+    // Stranded engine shares a venue prices at zero for now are never written off.
+    await expect(
+      quoteEarnDeposit(
+        quoteClient({ ...unbacked, totalEarnShares: 1n, engineShares: 5_000_000n }),
+        stack,
+        10_000_000n,
+      ),
+    ).rejects.toThrow('without managed backing')
+    // Supply that would dilute the entrant by more than one basis point keeps deposits closed.
+    await expect(
+      quoteEarnDeposit(
+        quoteClient({ ...unbacked, totalEarnShares: 2_000n, engineShares: 0n }),
+        stack,
+        10_000_000n,
+      ),
+    ).rejects.toThrow('without managed backing')
+  })
 })
 
 function quoteClient(overrides: Record<string, unknown> = {}) {
   const values: Record<string, unknown> = {
     previewDeposit: 10_000_000n,
     totalEarnShares: 100_000_000n,
+    totalAssets: 100_000_000n,
     engineShares: 100_000_000n,
     earnFees: address,
     engine: address,

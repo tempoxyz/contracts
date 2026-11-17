@@ -163,6 +163,8 @@ contract EarnVault is IEarnVault {
         bytes32 indexed requestId, address indexed receiver, uint256 earnShares, address asset, uint256 assets
     );
     event RedeemCancelled(bytes32 indexed requestId, address indexed receiver, uint256 earnShares);
+    /// @notice A deposit restarted a pool whose supply had no backing; the stranded engine shares became surplus.
+    event UnbackedPoolRestarted(uint256 unbackedSupply, uint256 strandedEngineShares);
     /// @notice Emitted when {migrateEngine} atomically re-homes custody and re-anchors accounting.
     ///         `totalEarnShares` is unchanged across the swap; `oldEngineShares`/`newEngineShares` are the managed
     ///         backing counts before/after (they differ at the new engine's rate). `assetsMoved` includes assets
@@ -590,7 +592,8 @@ contract EarnVault is IEarnVault {
         uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
         bool restarted = _isUnbacked(currentSupply, accruedFees.activeAssets);
-        if (restarted) _restartEmptyAnchor();
+        uint256 strandedEngineShares;
+        if (restarted) strandedEngineShares = _restartEmptyAnchor();
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
         // Fees are checkpointed first, so the entry is priced against the post-fee supply, and an entry into
@@ -609,7 +612,9 @@ contract EarnVault is IEarnVault {
         if (earnShares == 0) revert InsufficientOutput();
         if (earnShares < minEarnShares) revert MinimumEarnSharesNotMet(minEarnShares, earnShares);
         _requireAcceptableConversion(receivedEngineShares, earnShares);
-        if (restarted) _requireNegligibleUnbackedSupply(currentSupply, earnShares);
+        if (restarted) {
+            _requireNegligibleRestart(currentSupply, strandedEngineShares, receivedEngineShares, earnShares);
+        }
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
@@ -670,7 +675,8 @@ contract EarnVault is IEarnVault {
         uint256 supplyBefore = _activeSupply();
         (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
         bool restarted = _isUnbacked(currentSupply, accruedFees.activeAssets);
-        if (restarted) _restartEmptyAnchor();
+        uint256 strandedEngineShares;
+        if (restarted) strandedEngineShares = _restartEmptyAnchor();
         uint256 rateEngineShares = anchorEngineShares;
         uint256 rateEarnShares = anchorEarnShares;
         // Fees are checkpointed first, so the entry is priced against the post-fee supply, and an entry into
@@ -688,7 +694,9 @@ contract EarnVault is IEarnVault {
         if (earnShares == 0) revert InsufficientOutput();
         if (earnShares < minEarnShares) revert MinimumEarnSharesNotMet(minEarnShares, earnShares);
         _requireAcceptableConversion(receivedEngineShares, earnShares);
-        if (restarted) _requireNegligibleUnbackedSupply(currentSupply, earnShares);
+        if (restarted) {
+            _requireNegligibleRestart(currentSupply, strandedEngineShares, receivedEngineShares, earnShares);
+        }
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
@@ -1441,7 +1449,7 @@ contract EarnVault is IEarnVault {
     /// @dev A principal deposit must not recapitalize existing EarnShare after its active engine
     ///      position has zero base-asset value. Instead, such a pool restarts at the empty-pool rate:
     ///      its worthless managed engine shares become surplus, and the entry is then admitted only
-    ///      when the unbacked supply's claim on it is negligible ({_requireNegligibleUnbackedSupply}).
+    ///      when the restart is negligible to everyone ({_requireNegligibleRestart}).
     ///      Supply that cannot exit, such as a seed unit an ownerless router holds, can therefore never
     ///      block deposits for good. Permissionless `contribute` still restores value without a claim.
     /// @custom:ensures unbacked == (supply != 0 && (accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets) == 0)
@@ -1452,19 +1460,33 @@ contract EarnVault is IEarnVault {
 
     /// @dev Moves the worthless managed engine shares to surplus and prices the next entry at the
     ///      empty-pool rate.
+    /// @custom:ensures strandedEngineShares == old(_managedEngineShares)
     /// @custom:ensures _managedEngineShares == 0 && _specEmptyAnchor()
-    function _restartEmptyAnchor() internal {
+    function _restartEmptyAnchor() internal returns (uint256 strandedEngineShares) {
+        strandedEngineShares = _managedEngineShares;
         _managedEngineShares = 0;
         _resetEmptyAnchor(engine);
     }
 
-    /// @dev After a restart the unbacked supply shares the new entry's backing pro rata. Admit the entry
-    ///      only when that share is within the one-basis-point conversion-loss ceiling every deposit
-    ///      already accepts; larger stranded supply, such as after a real loss, keeps deposits closed.
-    /// @custom:ensures unbackedSupply * CONVERSION_BPS <= earnShares
-    /// @custom:succeeds-if unbackedSupply * CONVERSION_BPS <= earnShares
-    function _requireNegligibleUnbackedSupply(uint256 unbackedSupply, uint256 earnShares) internal pure {
-        if (unbackedSupply > earnShares / CONVERSION_BPS) revert ActiveSupplyWithoutBacking();
+    /// @dev A restart must not matter to anyone. The engine shares it moves to surplus must be at most one
+    ///      basis point of the entry's, so a position an engine prices at zero only for now (a paused venue)
+    ///      keeps deposits closed rather than being written off by one large entry. The entrant's claim after
+    ///      the re-anchor, which the unbacked supply shares pro rata, must lose at most one basis point of the
+    ///      engine shares it brought, counting rounding and dilution together.
+    /// @custom:ensures strandedEngineShares <= receivedEngineShares / CONVERSION_BPS
+    /// @custom:ensures _specAcceptableLoss(receivedEngineShares, receivedEngineShares * earnShares / (earnShares + unbackedSupply))
+    function _requireNegligibleRestart(
+        uint256 unbackedSupply,
+        uint256 strandedEngineShares,
+        uint256 receivedEngineShares,
+        uint256 earnShares
+    ) internal {
+        if (strandedEngineShares > receivedEngineShares / CONVERSION_BPS) {
+            revert ActiveSupplyWithoutBacking();
+        }
+        uint256 claim = Math.mulDiv(receivedEngineShares, earnShares, earnShares + unbackedSupply);
+        if (receivedEngineShares - claim > receivedEngineShares / CONVERSION_BPS) revert ActiveSupplyWithoutBacking();
+        emit UnbackedPoolRestarted(unbackedSupply, strandedEngineShares);
     }
 
     /// @dev Applies only to voluntary inflows. Passive yield may exceed the limit, and exit,
