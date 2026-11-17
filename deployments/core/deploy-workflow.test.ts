@@ -32,6 +32,10 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('changes-$NETWORK.patch')
     expect(workflow).toContain('-name "changes-$network.patch"')
     expect(workflow).toContain('if [[ -z "${TEMPO_RPC_URL:-}" ]]; then')
+    // Resubmission reaches the releases and every profile deploy, and only with broadcast.
+    expect(workflow).toContain('RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}')
+    expect(workflow.match(/arguments\+=\(--resubmit-verification\)/g)).toHaveLength(2)
+    expect(workflow).toContain('deploy+=(--resubmit-verification)')
   })
 
   test('runs only from main, in the release environment and hosted-contracts queue', () => {
@@ -46,7 +50,7 @@ describe('deploy workflow', () => {
       'pnpm factory-release "${arguments[@]}"',
       'pnpm zone-router-release "${arguments[@]}"',
       'pnpm profiles --network "$NETWORK"',
-      'pnpm earn deploy "$path" --json',
+      'pnpm earn "${deploy[@]}"',
     ].map((step) => workflow.indexOf(step))
     expect(steps.every((index) => index > 0)).toBe(true)
     expect([...steps].sort((a, b) => a - b)).toEqual(steps)
