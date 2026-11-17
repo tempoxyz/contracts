@@ -105,7 +105,7 @@ contract IssuerDeskTest is ProgramsEnv {
 
     function test_correct_overcharge_comesBackLikeARefund() public {
         _purchase(100e6);
-        (uint64 seq,,) = cards.ledger();
+        (uint64 seq,,,) = cards.ledger();
         usd.mint(settlement, 10e6);
         vm.prank(issuer);
         desk.correct(P1, seq, 10e6, "duplicate fee");
@@ -118,7 +118,7 @@ contract IssuerDeskTest is ProgramsEnv {
 
     function test_correct_undercharge_isChargedWithSplits() public {
         _purchase(100e6);
-        (uint64 seq,,) = cards.ledger();
+        (uint64 seq,,,) = cards.ledger();
         vm.prank(issuer);
         desk.correct(P1, seq, -10e6, "short capture");
         assertEq(usd.balanceOf(alice), 890e6, "difference charged");

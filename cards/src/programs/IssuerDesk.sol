@@ -355,7 +355,7 @@ contract IssuerDesk {
     }
 
     function _step(bytes32 purchaseRef, uint8 kind, uint128 amount) private {
-        (uint64 seq,,) = PROGRAM.ledger();
+        (uint64 seq,,,) = PROGRAM.ledger();
         steps[seq] = Step({ purchaseRef: purchaseRef, kind: kind, amount: amount, corrected: 0 });
     }
 
