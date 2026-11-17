@@ -28,6 +28,8 @@ library CardConvert {
     uint256 internal constant RATE_ONE = 1e18;
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     bytes32 private constant SLOT = keccak256("tempo.cards.CardConvert.v1");
+    /// @dev Transient: the earlier settlement token a refund in progress is booked in, which rates then read in.
+    bytes32 internal constant BOOKED_SLOT = keccak256("tempo.cards.CardConvert.booked");
 
     struct Layout {
         /// @dev The rate a converted leg locked: settlement units per token unit, scaled by 1e18.
@@ -62,6 +64,17 @@ library CardConvert {
 
     /// @notice Settlement units per token unit now, ignoring any lock.
     function current(address token) public view returns (uint256 rate) {
+        bytes32 slot = BOOKED_SLOT;
+        address booked;
+        assembly {
+            booked := tload(slot)
+        }
+        if (booked == address(0)) return _current(token);
+        // A refund on a purchase booked in an earlier token values everything in that token's units.
+        return token == booked ? RATE_ONE : _current(token).mulDiv(RATE_ONE, _current(booked));
+    }
+
+    function _current(address token) private view returns (uint256 rate) {
         CardProgram program = CardProgram(address(this));
         address settlement = program.settlementToken();
         if (token == settlement) return RATE_ONE;

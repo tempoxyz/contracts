@@ -353,6 +353,13 @@ contract ConversionTest is ProgramsEnv {
         assertEq(eur.balanceOf(settlement), 30e6);
         assertEq(eur.balanceOf(address(desk)), 0);
         assertEq(usd.balanceOf(network), 0.18e6);
+        // The rest refunds, and nothing past what it captured.
+        vm.prank(issuer);
+        desk.refund(P1, 18e6);
+        assertEq(usd.balanceOf(alice), cash + 40e6);
+        vm.prank(issuer);
+        vm.expectRevert();
+        desk.refund(P1, 0.01e6);
     }
 
     function test_setSettlementToken_issuerOnly() public {

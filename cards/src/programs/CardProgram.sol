@@ -782,7 +782,18 @@ contract CardProgram {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
+        // A purchase booked in an earlier settlement token refunds in its units: rates read in that token meanwhile.
+        address booked = _purchaseTokens[purchaseRef];
+        if (booked == address(0)) booked = SETTLEMENT_TOKEN;
+        if (booked == settlementToken()) booked = address(0);
+        bytes32 slot = CardConvert.BOOKED_SLOT;
+        assembly {
+            tstore(slot, booked)
+        }
         uint256[3] memory tokens = CardFunding.refund(p, purchaseRef, amount, fundingOf[p.owner]);
+        assembly {
+            tstore(slot, 0)
+        }
         _giveBackNow(_cards[p.card], p.owner, p.epoch, _counted(purchaseRef, amount));
 
         Ledger storage ledger_ = ledger;
