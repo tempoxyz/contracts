@@ -58,32 +58,32 @@ The funder computes the contribution offchain and pushes it. This example target
 basis points on the EarnVault's assets:
 
 ```ts
-import { erc20Abi, earnVaultAbi } from "@tempoxyz/contracts";
+import { erc20Abi, earnVaultAbi } from '@tempoxyz/contracts'
 
-const YEAR = 365n * 24n * 60n * 60n;
+const YEAR = 365n * 24n * 60n * 60n
 
 async function topUp({ client, wallet, vault, asset, rateBps, lastTopUp }) {
-  const now = BigInt(Math.floor(Date.now() / 1000));
+  const now = BigInt(Math.floor(Date.now() / 1000))
   const assets = await client.readContract({
     address: vault,
     abi: earnVaultAbi,
-    functionName: "totalAssets",
-  });
-  const amount = (assets * rateBps * (now - lastTopUp)) / (10_000n * YEAR);
-  if (amount === 0n) return lastTopUp;
+    functionName: 'totalAssets',
+  })
+  const amount = (assets * rateBps * (now - lastTopUp)) / (10_000n * YEAR)
+  if (amount === 0n) return lastTopUp
   await wallet.writeContract({
     address: asset,
     abi: erc20Abi,
-    functionName: "approve",
+    functionName: 'approve',
     args: [vault, amount],
-  });
+  })
   await wallet.writeContract({
     address: vault,
     abi: earnVaultAbi,
-    functionName: "contribute",
+    functionName: 'contribute',
     args: [amount],
-  });
-  return now;
+  })
+  return now
 }
 ```
 
