@@ -185,8 +185,14 @@ contract CardProgram {
     event ConversionSet(address conversion);
     event HoldRoundingSet(address indexed owner, uint64 increment);
     event DisputeReservesSet(address indexed owner, bool allowed);
-    event ReservePlaced(
-        bytes32 indexed id, address indexed owner, address token, uint128 amount, uint64 expiresAt, bool dispute
+    event ReservePlaced(bytes32 indexed id, address indexed owner, address token, uint128 amount, uint64 expiresAt);
+    event DisputeReserved(
+        bytes32 indexed purchaseRef,
+        address indexed merchant,
+        address token,
+        uint128 fromMerchant,
+        uint128 fromAcquirer,
+        uint64 expiresAt
     );
     event ReserveCollected(bytes32 indexed id, address indexed to, uint128 amount);
     /// @notice New purchases settle in token; limits sized in previous rescale at step, previous units per token unit
@@ -822,22 +828,35 @@ contract CardProgram {
     }
 
     /// @notice Holds back `amount` of `owner`'s `token` until `expiresAt`, as a pledge within the allowance the owner
-    ///         approved this program for. An owner other than the settlement account needs an active grant, and a
-    ///         dispute reserve also needs the owner's consent and lasts at most the networks' dispute window.
-    function reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt, bool dispute)
+    ///         approved this program for. An owner other than the settlement account needs an active grant.
+    function reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt)
         external
         nonReentrant
         onlyOperator
     {
         if (owner != SETTLEMENT_ACCOUNT && !grants[owner].active) revert NoTerms();
-        if (dispute) {
-            if (owner != SETTLEMENT_ACCOUNT && !disputeReserves[owner]) revert ReserveNotAllowed();
-            // forge-lint: disable-next-line(block-timestamp)
-            if (expiresAt > block.timestamp + MAX_DISPUTE_RESERVE) revert ReserveTooLong();
+        _reserve(owner, token, id, amount, expiresAt);
+    }
+
+    /// @notice Reserves a disputed purchase for at most the networks' dispute window: `fromMerchant` on the merchant's
+    ///         balance, under a mandate that allows dispute reserves, and `fromAcquirer` on the settlement account.
+    function reserveDispute(
+        address merchant,
+        address token,
+        bytes32 purchaseRef,
+        uint128 fromMerchant,
+        uint128 fromAcquirer,
+        uint64 expiresAt
+    ) external nonReentrant onlyOperator {
+        if (!grants[merchant].active) revert NoTerms();
+        if (!disputeReserves[merchant]) revert ReserveNotAllowed();
+        // forge-lint: disable-next-line(block-timestamp)
+        if (expiresAt > block.timestamp + MAX_DISPUTE_RESERVE) revert ReserveTooLong();
+        if (fromMerchant != 0) _reserve(merchant, token, reserveId(purchaseRef, merchant), fromMerchant, expiresAt);
+        if (fromAcquirer != 0) {
+            _reserve(SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), fromAcquirer, expiresAt);
         }
-        CORE.pledgeFrom(owner, token, id, amount, expiresAt);
-        _reserves.push(id);
-        emit ReservePlaced(id, owner, token, amount, expiresAt, dispute);
+        emit DisputeReserved(purchaseRef, merchant, token, fromMerchant, fromAcquirer, expiresAt);
     }
 
     /// @notice Releases a reserve before it expires.
@@ -855,6 +874,11 @@ contract CardProgram {
     }
 
     // Views.
+
+    /// @notice The lien ID of the reserve a dispute placed on `owner`.
+    function reserveId(bytes32 purchaseRef, address owner) public pure returns (bytes32) {
+        return keccak256(abi.encode(purchaseRef, owner));
+    }
 
     /// @notice The token purchases settle in now.
     function settlementToken() public view returns (address) {
@@ -917,6 +941,12 @@ contract CardProgram {
     }
 
     // Internals.
+
+    function _reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) private {
+        CORE.pledgeFrom(owner, token, id, amount, expiresAt);
+        _reserves.push(id);
+        emit ReservePlaced(id, owner, token, amount, expiresAt);
+    }
 
     /// @dev Reverts while a reserve is still held, dropping the ones that ended.
     function _checkReserves() private {
