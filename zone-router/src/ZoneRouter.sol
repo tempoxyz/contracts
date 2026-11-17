@@ -28,9 +28,6 @@ import {
 ///      the spender hands back the rest, and returns the change to the source Zone, so no spender can take
 ///      more than the sender allowed.
 /// @custom:reentrancy-guard locked
-/// gAllowance tracks the temporary allowances this router grants; it excludes the standing allowances to the
-/// Portal (_approvePortal) and to the immutable EarnVault and pool (_approveStanding), which outlive a call.
-/// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance
 /// gStanding records every token and spender given a standing allowance in _approveStanding.
 /// @custom:ghost mapping(address => mapping(address => bool)) gStanding
 /// @custom:ghost address gTransferToken
@@ -308,9 +305,6 @@ contract ZoneRouter is IWithdrawalReceiver {
         redeemLiquidity = IERC20Like(privateAsset).balanceOf(address(pool));
     }
 
-    /// No temporary allowance outlives the call; standing allowances (Portal, EarnVault, pool) are outside gAllowance.
-    /// @custom:requires forall address t, address s :: gAllowance[t][s] == 0
-    /// @custom:ensures forall address t, address s :: gAllowance[t][s] == 0
     /// Standing approvals (outside the Portal's) go only to the EarnVault, for the vault asset or EarnShare, or to the pool, for a route token.
     /// @custom:ensures forall address t, address s :: gStanding[t][s] && !old(gStanding[t][s]) ==> (s == earnVault && (t == vaultAsset || t == earnShare)) || (s == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset))
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS
@@ -621,20 +615,12 @@ contract ZoneRouter is IWithdrawalReceiver {
 
     /// @dev A standing maximum allowance for an immutable spender (the EarnVault or pool): Tempo charges every zero-to-nonzero allowance as a new storage slot,
     ///      and every operation returns this router's touched balances to their baseline, so none is left to pull.
-    ///      Standing allowances sit outside the temporary-allowance ghost, like the Portal's.
     function _approveStanding(address token, address spender, uint256 amount) private {
         /// @custom:ghost gStanding[token][spender] = true
         if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
             _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
         }
-    }
-
-    function _safeApprove(address token, address spender, uint256 value) private {
-        /// @custom:ghost gAllowance[token][spender] = 0
-        _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
-        /// @custom:ghost gAllowance[token][spender] = value
-        if (value != 0) _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, value)));
     }
 
     function _safeTransfer(address token, address to, uint256 value) private {
