@@ -364,6 +364,7 @@ contract ConversionTest is ProgramsEnv {
         desk.capture(P1, 40e6, true);
         assertEq(usd.balanceOf(network), 0.4e6);
         (uint64 seq,,,) = cards.ledger();
+        uint64 captured = seq;
         vm.startPrank(issuer);
         cards.acknowledgeSettlement(seq);
         cards.setSettlementToken(address(eur));
@@ -377,6 +378,10 @@ contract ConversionTest is ProgramsEnv {
         assertEq(eur.balanceOf(settlement), 30e6);
         assertEq(eur.balanceOf(address(desk)), 0);
         assertEq(usd.balanceOf(network), 0.18e6);
+        // An undercharge would draw euros for dollars, so the issuer charges it as a new purchase instead.
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.NotCorrectable.selector);
+        desk.correct(P1, captured, -1e6, "undercharge");
         // The rest refunds, and nothing past what it captured.
         vm.prank(issuer);
         desk.refund(P1, 18e6);
@@ -384,6 +389,77 @@ contract ConversionTest is ProgramsEnv {
         vm.prank(issuer);
         vm.expectRevert();
         desk.refund(P1, 0.01e6);
+    }
+
+    function test_desk_wonDisputeOnAnEarlierTokensPurchaseGivesBackItsUsage() public {
+        IssuerDesk desk = new IssuerDesk(cards);
+        vm.prank(issuer);
+        cards.setOperator(address(desk), true);
+        vm.startPrank(settlement);
+        usd.approve(address(desk), type(uint256).max);
+        eur.approve(address(desk), type(uint256).max);
+        vm.stopPrank();
+        (,,, uint64 daySpent0, uint64 monthSpent0) = cards.usageOf(alice);
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        vm.prank(issuer);
+        desk.capture(P1, 40e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.startPrank(issuer);
+        cards.acknowledgeSettlement(seq);
+        cards.setSettlementToken(address(eur));
+        vm.stopPrank();
+        eur.mint(settlement, 100e6);
+        vm.prank(issuer);
+        desk.refund(P1, 15e6);
+        vm.prank(issuer);
+        desk.openDispute(P1, 20e6, hex"c1a8");
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 20e6, "", false);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        (,,, uint64 daySpent, uint64 monthSpent) = cards.usageOf(alice);
+        assertEq(daySpent, daySpent0 + 5e6, "day: the undisputed $5 still counts");
+        assertEq(monthSpent, monthSpent0 + 5e6, "month: the undisputed $5 still counts");
+    }
+
+    function test_desk_wonDisputeOnAPurchaseBookedInAScaledTokenGivesBackItsUsage() public {
+        ITIP20Token gbp = _createToken("Pound", "GBPX");
+        IssuerDesk desk = new IssuerDesk(cards);
+        vm.prank(issuer);
+        cards.setOperator(address(desk), true);
+        vm.startPrank(settlement);
+        eur.approve(address(desk), type(uint256).max);
+        gbp.approve(address(desk), type(uint256).max);
+        vm.stopPrank();
+        (,,, uint64 daySpent0, uint64 monthSpent0) = cards.usageOf(alice);
+        _localIssuer();
+        eur.mint(alice, 100e6);
+        _tokenFirst(alice, 100);
+        _authorize(P1, 40e6);
+        vm.prank(issuer);
+        desk.capture(P1, 40e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        uint256 held = eur.balanceOf(settlement);
+        vm.prank(settlement);
+        eur.transfer(bob, held);
+        conv.setReferenceRate(address(gbp), 1.25e18);
+        vm.prank(issuer);
+        cards.setSettlementToken(address(gbp));
+        gbp.mint(settlement, 100e6);
+        vm.prank(issuer);
+        desk.openDispute(P1, 20e6, hex"c1a8");
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 20e6, "", false);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        // The EUR 20 credited gives back the $22 it counted; the undisputed EUR 20 still counts.
+        (,,, uint64 daySpent, uint64 monthSpent) = cards.usageOf(alice);
+        assertEq(daySpent, daySpent0 + 22e6, "day");
+        assertEq(monthSpent, monthSpent0 + 22e6, "month");
+        assertEq(gbp.balanceOf(alice), 17.6e6, "the provisional credit came in today's token at the reference rate");
     }
 
     function test_setSettlementToken_issuerOnly() public {
@@ -405,6 +481,30 @@ contract ConversionTest is ProgramsEnv {
     }
 
     // Helpers.
+
+    function test_refund_earlierTokensPurchase_neverPassesWhatItCaptured() public {
+        // Booked in dollars, then the issuer settles in euros: refunds stay in dollars, paid in euros at the rate.
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        _capture(P1, 40e6, true);
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        _localIssuer();
+        eur.mint(issuer, 100e6);
+        vm.prank(issuer);
+        eur.approve(address(cards), type(uint256).max);
+        vm.prank(issuer);
+        cards.refund(P1, 25e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.RefundExceedsCapture.selector, 0.01e6));
+        cards.refund(P1, 15.01e6);
+        vm.prank(issuer);
+        cards.refund(P1, 15e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.RefundExceedsCapture.selector, 0.01e6));
+        cards.refund(P1, 0.01e6);
+    }
 
     function _tokenFirst(address owner, uint64 maxCostBps) internal {
         CardFunding.Source[] memory order = new CardFunding.Source[](2);

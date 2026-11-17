@@ -114,6 +114,13 @@ contract CardProgram {
         uint128 settledNet;
     }
 
+    /// @dev What a purchase captured (charges included) and refunded, in the token it was booked in. Refunds never pass
+    ///      what it captured: legs refund at today's rate, which can leave a converted leg more than the purchase.
+    struct Booked {
+        uint128 captured;
+        uint128 refunded;
+    }
+
     /// @dev One leg's hold as a purchase step reads it.
     struct Leg {
         address holdOwner;
@@ -174,6 +181,7 @@ contract CardProgram {
     mapping(address owner => bool) public disputeReserves;
     /// @dev Reserves this program may still hold, so a settlement token change waits for them.
     bytes32[] internal _reserves;
+    mapping(bytes32 purchaseRef => Booked) internal _booked;
 
     event CardIssued(bytes32 indexed card, address indexed owner, uint40 expiry, Limits limits, uint8 legs);
     event CardExpirySet(bytes32 indexed card, uint40 expiry);
@@ -699,7 +707,10 @@ contract CardProgram {
             _giveBack(c, p.owner, p.epoch, p.day, p.month, _counted(purchaseRef, freed - fromHeld));
         }
 
-        if (amount != 0) p.captured = true;
+        if (amount != 0) {
+            p.captured = true;
+            _booked[purchaseRef].captured += amount;
+        }
         Ledger storage ledger_ = ledger;
         if (isFinal) {
             p.open = false;
@@ -752,6 +763,7 @@ contract CardProgram {
         // Debt the charge left counts in the program's exposure, like a capture's.
         (address creditor, uint128 owed) = CORE.debtOf(owner, token);
         if (creditor == address(this) && owed != 0) CardFunding.noteDebtor(owner);
+        _booked[purchaseRef].captured += amount;
 
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
@@ -778,6 +790,10 @@ contract CardProgram {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
+        Booked storage b = _booked[purchaseRef];
+        uint256 left = b.captured > b.refunded ? b.captured - b.refunded : 0;
+        if (amount > left) revert RefundExceedsCapture(amount - left);
+        b.refunded += amount;
         // A purchase booked in an earlier settlement token refunds in its units: rates read in that token meanwhile.
         address booked = _purchaseTokens[purchaseRef];
         if (booked == address(0)) booked = SETTLEMENT_TOKEN;
@@ -805,7 +821,9 @@ contract CardProgram {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (usage == 0 && net == 0) revert InvalidAmount();
-        _giveBackNow(_cards[p.card], p.owner, p.epoch, usage);
+        _booked[purchaseRef].refunded += net;
+        // Usage counted in an earlier settlement token gives back at the rate it was counted, as a refund does.
+        _giveBackNow(_follow(p), p.owner, p.epoch, _counted(purchaseRef, usage));
         Ledger storage ledger_ = ledger;
         uint64 seq = ++ledger_.seq;
         uint128 left = ledger_.net > net ? ledger_.net - net : 0;
