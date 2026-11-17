@@ -38,19 +38,46 @@ The funder approves the EarnVault and calls `EarnVault.contribute(assets)`. The 
 the assets into the engine and records them as backing without minting EarnShare, so every current
 holder's EarnShare rises pro rata. Later entrants buy in at the raised price.
 
-A plain transfer to the EarnVault or the engine does **not** raise the price: the EarnVault
-quarantines unrecorded engine shares until an operator calls `absorbEngineShareSurplus`.
+Never fund by plain transfer:
 
-Each contribution is bounded by the EarnVault's reward-rate limit (`RewardRateLimitExceeded` above
-100× the reward-rate baseline), far above any benchmark-rate program.
+- base asset sent to the EarnVault creates no engine shares, cannot be absorbed and stays stranded,
+  since no EarnVault or engine function moves it; and
+- base asset sent to the engine is quarantined surplus that `absorbEngineShareSurplus` recognizes,
+  but that function is permissionless, so anyone can deposit just before absorbing it, then redeem,
+  and capture most of it.
 
-Contributions are paid on the holdings at the moment they land, so someone who enters just before a
-contribution and exits just after captures that period's yield on their deposit. Contribute often
-(every few minutes) so each step is negligible, and use a protected EarnShare where only eligible
-accounts may hold it.
+### Limits on contributions
 
-Set the deployment's fixed fees to zero if holders should receive the full rate: fees accrue on any
-rise in value per EarnShare, contributions included.
+`contribute` reverts, and the pool earns nothing, when any of these holds:
+
+- deposits are paused (`DepositsPaused`);
+- the contribution would take `totalAssets` above a nonzero `maxManagedAssets`. Any depositor
+  can fill the remaining capacity, so leave the cap at zero or keep it well above expected balances
+  plus a year of yield;
+- the pool has no EarnShare supply (`NoEarnShares`); or
+- the EarnShare price would exceed 100× the reward-rate baseline (`RewardRateLimitExceeded`). The
+  baseline is the price when the pool last emptied (or the engine was migrated), and the limit is
+  cumulative, not per contribution. A benchmark-rate program takes centuries to reach it, but on a
+  new or dust-sized pool anyone can spend the whole headroom, for example with `deposit(1)` then
+  `contribute(99)`, and keep one unit to stop the baseline resetting.
+
+So seed every pool with a meaningful operator-held first deposit before it is opened, keep that
+seed in for the life of the pool, and use a protected EarnShare so only eligible accounts can hold
+it. If the headroom is spent anyway, migrating to a fresh engine starts a new baseline.
+
+### Fees
+
+Fees accrue on any rise in value per EarnShare, contributions included. For holders to receive the
+full funded rate, set the fixed fees to zero and leave the excess-return fee disabled: an enabled
+excess-return fee charges contribution growth above its target rate.
+
+### Timing
+
+Contributions are paid on the holdings at the moment they land, and the engine redeems 1:1 at once,
+so the funder must not pay for time nobody held. The example below pays each interval only on the
+smaller of the pool's assets at the interval's start and at its end, so a deposit made just before a
+top-up earns nothing for that interval, and time the pool sat empty is never paid. Contribute often
+(every few minutes) so each step is small.
 
 ### Example top-up loop
 
@@ -58,40 +85,56 @@ The funder computes the contribution offchain and pushes it. This example target
 basis points on the EarnVault's assets:
 
 ```ts
-import { erc20Abi, earnVaultAbi } from '@tempoxyz/contracts'
+import { erc20Abi } from 'viem'
+import { earnVaultAbi } from '@tempoxyz/contracts/abis'
 
 const YEAR = 365n * 24n * 60n * 60n
 
-async function topUp({ client, wallet, vault, asset, rateBps, lastTopUp }) {
+// state = { lastTopUp, lastAssets }, persisted between runs.
+async function topUp({ client, wallet, vault, asset, rateBps, state }) {
   const now = BigInt(Math.floor(Date.now() / 1000))
   const assets = await client.readContract({
     address: vault,
     abi: earnVaultAbi,
     functionName: 'totalAssets',
   })
-  const amount = (assets * rateBps * (now - lastTopUp)) / (10_000n * YEAR)
-  if (amount === 0n) return lastTopUp
-  await wallet.writeContract({
-    address: asset,
-    abi: erc20Abi,
-    functionName: 'approve',
-    args: [vault, amount],
-  })
-  await wallet.writeContract({
+  const held = assets < state.lastAssets ? assets : state.lastAssets
+  const amount = (held * rateBps * (now - state.lastTopUp)) / (10_000n * YEAR)
+  if (amount > 0n) {
+    const approval = await wallet.writeContract({
+      address: asset,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [vault, amount],
+    })
+    await client.waitForTransactionReceipt({ hash: approval })
+    const hash = await wallet.writeContract({
+      address: vault,
+      abi: earnVaultAbi,
+      functionName: 'contribute',
+      args: [amount],
+    })
+    const receipt = await client.waitForTransactionReceipt({ hash })
+    if (receipt.status !== 'success') throw new Error(`contribute reverted: ${hash}`)
+  }
+  const after = await client.readContract({
     address: vault,
     abi: earnVaultAbi,
-    functionName: 'contribute',
-    args: [amount],
+    functionName: 'totalAssets',
   })
-  return now
+  return { lastTopUp: now, lastAssets: after }
 }
 ```
 
 Run it on a schedule (for example every five minutes) and update `rateBps` when the benchmark moves.
-Persist `lastTopUp` so a restart neither skips nor double-pays a period.
+Persist the returned state only after the call resolves: a failed or dropped contribution throws,
+so the next run retries the same interval instead of skipping it. Start with
+`lastAssets = 0n`, so the first interval pays nothing.
 
 ## Deployment
 
-The engine has no factory: deploy it with the base asset, an owner, a name and a symbol, bind it to an
-EarnVault, and deploy the EarnVault with the engine as an existing engine. Registry, localnet and E2E
-support for a venue-less kind is not wired yet.
+The engine has no factory. Deploy it unbound with the base asset, a setup owner, a name and a
+symbol; deploy the EarnVault with it as an existing engine (`EarnFactory.deploy` rejects an engine
+that is already bound); then the setup owner calls `initializeEarnVault(earnVault, finalOwner)`.
+Seed the pool before opening it (see [Limits on contributions](#limits-on-contributions)). Registry,
+localnet and E2E support for a venue-less kind is not wired yet.
