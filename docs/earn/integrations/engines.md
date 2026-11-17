@@ -9,6 +9,7 @@ installation checks, and the recipe for a new engine kind. Each kind is a module
 | `erc4626` | `ERC4626Engine` | ERC-4626 vault     | Factory from venue, or existing | Yes           | No                     | [ERC-4626](../modules/erc4626-engine.md) |
 | `veda`    | `VedaEngine`    | BoringVault        | Existing engine                 | No            | When a Queue is active | [Veda](../modules/veda.md)               |
 | `propamm` | `PropAMMEngine` | DirectPropAMM pool | Existing engine                 | No            | No                     | [PropAMM](../modules/propamm.md)         |
+| `hold`    | `HoldEngine`    | None (holds asset) | Existing engine                 | No            | No                     | [Hold](../modules/hold.md)               |
 
 Every kind supports immediate redemption and exact withdrawal. Tooling, localnet, and E2E
 read each kind's properties from the shared
