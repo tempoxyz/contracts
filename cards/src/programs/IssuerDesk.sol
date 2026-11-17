@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { IERC20Allowance } from "tempo-earn/interfaces/external/IERC20Allowance.sol";
 
 import { CardFunding } from "./CardFunding.sol";
 import { CardProgram } from "./CardProgram.sol";
@@ -23,6 +24,7 @@ import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 ///      settlement account, so a refund takes its share back from what it has available and leaves the rest as
 ///      capped debt. A cardholder approves the desk as a holder so a refund can take back a reward from money it
 ///      still has, never as debt. Amounts are in units of the program's settlement token.
+/// @custom:invariant address(PROGRAM) != address(0)
 contract IssuerDesk is ISettlementTokenGuard {
     using FixedPointMathLib for uint256;
 
@@ -176,6 +178,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         _locked = false;
     }
 
+    /// @custom:ensures PROGRAM == program
     constructor(CardProgram program) {
         if (address(program) == address(0)) revert ZeroAddress();
         PROGRAM = program;
@@ -434,7 +437,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         address booked = PROGRAM.purchaseToken(purchaseRef);
         if (booked == token) {
             SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), amount);
-            SafeTransferLib.safeApprove(token, address(PROGRAM), amount);
+            _allowProgram(token, amount);
             PROGRAM.refund(purchaseRef, amount);
             return;
         }
@@ -442,11 +445,22 @@ contract IssuerDesk is ISettlementTokenGuard {
         // token at the reference rate; what the desk pulled beyond that goes back to the settlement account.
         uint256 paying =
             uint256(amount).mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE) + LEG_ROUNDING;
+        // What the desk already holds (a one-unit seed, sent by anyone) stays, so a refund never creates its balance.
+        uint256 baseline = SafeTransferLib.balanceOf(token, address(this));
         SafeTransferLib.safeTransferFrom(token, SETTLEMENT, address(this), paying);
-        SafeTransferLib.safeApprove(token, address(PROGRAM), paying);
+        _allowProgram(token, paying);
         PROGRAM.refund(purchaseRef, amount);
-        SafeTransferLib.safeApprove(token, address(PROGRAM), 0);
-        SafeTransferLib.safeTransfer(token, SETTLEMENT, SafeTransferLib.balanceOf(token, address(this)));
+        uint256 left = SafeTransferLib.balanceOf(token, address(this)) - baseline;
+        if (left != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT, left);
+    }
+
+    /// @dev A standing maximum allowance for the immutable program: Tempo charges every zero-to-nonzero allowance as a
+    ///      new storage slot. The program takes only what each refund pulls from the desk, which holds nothing between
+    ///      calls but a seed.
+    function _allowProgram(address token, uint256 amount) private {
+        if (IERC20Allowance(token).allowance(address(this), address(PROGRAM)) < amount) {
+            SafeTransferLib.safeApproveWithRetry(token, address(PROGRAM), type(uint256).max);
+        }
     }
 
     // Refunds amount of a purchase. The part past what it still nets once its open dispute's provisional credit counts

@@ -108,6 +108,7 @@ contract Conversion {
     error InvalidAmount();
     error InsufficientFloat(uint256 needed, uint256 available);
 
+    /// @custom:ensures HUB == hub && owner == owner_
     // A zero hub routes nothing through a hub, and a zero owner leaves the venues fixed.
     // forge-lint: disable-next-item(missing-zero-check)
     constructor(address hub, address owner_) {

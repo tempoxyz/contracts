@@ -36,6 +36,8 @@ import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 ///      adds its own limits and an optional lifetime cap. A purchase counts from authorization; captures past its
 ///      holds and late charges count when they land; releases and refunds give their amount back. The core's holder
 ///      allowance is the owner's chain-level cap over everything this program holds.
+/// @custom:reentrancy-guard _locked
+/// @custom:invariant ISSUER != address(0) && SETTLEMENT_TOKEN != address(0) && SETTLEMENT_ACCOUNT != address(0)
 contract CardProgram {
     using FixedPointMathLib for uint256;
 
@@ -296,6 +298,7 @@ contract CardProgram {
         _locked = false;
     }
 
+    /// @custom:ensures ISSUER == issuer && SETTLEMENT_TOKEN == settlementToken_ && SETTLEMENT_ACCOUNT == settlementAccount
     constructor(address issuer, address settlementToken_, address settlementAccount) {
         if (issuer == address(0) || settlementToken_ == address(0) || settlementAccount == address(0)) {
             revert ZeroAddress();
@@ -663,6 +666,7 @@ contract CardProgram {
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp >= p.expiresAt) revert PurchaseExpired();
         if (amount == 0 && !isFinal) revert InvalidAmount();
+        /// @custom:assert p.open && block.timestamp < p.expiresAt && (amount != 0 || isFinal)
         Card storage c = _follow(p);
         (uint256[3] memory tokens,, uint256 absorbed) =
             CardFunding.capture(p, purchaseRef, amount, isFinal, c.legs, fundingOf[p.owner]);

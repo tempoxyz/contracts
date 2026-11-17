@@ -17,6 +17,8 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///      both tokens to its vault and writes no storage per capture: the core records captured and refunded shares.
 ///      When the vault quotes but cannot redeem at once, the float pays the settlement account and the shares wait
 ///      here for the funder's `redeemHeld`. Without a quote a capture reverts.
+/// @custom:reentrancy-guard _locked
+/// @custom:invariant address(VAULT) != address(0) && SETTLEMENT_ACCOUNT != address(0) && FUNDER != address(0)
 contract SavingsFacility {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
 
@@ -57,6 +59,7 @@ contract SavingsFacility {
         _locked = false;
     }
 
+    /// @custom:ensures VAULT == vault && SETTLEMENT_ACCOUNT == settlementAccount && FUNDER == funder
     constructor(IEarnVault vault, address settlementAccount, address funder) {
         if (address(vault) == address(0) || settlementAccount == address(0) || funder == address(0)) {
             revert ZeroAddress();
@@ -83,6 +86,7 @@ contract SavingsFacility {
         _checkPlacer(h);
         // Nothing beyond the hold: an excess could become owner debt to this facility, which no one has paid for.
         if (shares > h.held) revert ExceedsHeld(shares, h.held);
+        /// @custom:assert shares <= h.held
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         CORE.capture(owner, id, shares, isFinal);

@@ -18,6 +18,7 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///      whoever captured, released or refunded it. The lender accrues interest on what is owed and closes statements;
 ///      a statement falling due is collected through the borrower's autopay sources. Fees and collection beyond the
 ///      pledge and autopay are the issuer's and lender's services, not this contract's.
+/// @custom:reentrancy-guard _locked
 contract CreditLine {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;

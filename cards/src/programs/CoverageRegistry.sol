@@ -10,6 +10,7 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///         shares of a vault. The registrar records each asset's scheme and cap; disclose splits an account's
 ///         positions into insured and uninsured value, counting each scheme's cap once per account across every
 ///         asset it covers, in the order the caller lists them.
+/// @custom:invariant REGISTRAR != address(0)
 contract CoverageRegistry {
     struct Coverage {
         string scheme;
@@ -36,6 +37,7 @@ contract CoverageRegistry {
     error NotRegistrar();
     error ZeroAddress();
 
+    /// @custom:ensures REGISTRAR == registrar
     constructor(address registrar) {
         if (registrar == address(0)) revert ZeroAddress();
         REGISTRAR = registrar;

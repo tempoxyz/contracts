@@ -13,6 +13,7 @@ interface IIssued {
 ///         jurisdiction, an expiry and the hash of the attester's record go on chain. A program's identity policy
 ///         names the attesters it accepts, the claim and its jurisdiction, and needs a sponsor licensed there, so one
 ///         attestation serves every program that accepts its attester.
+/// @custom:invariant GOVERNOR != address(0)
 contract IdentityRules {
     /// @notice Sets jurisdictions.
     address public immutable GOVERNOR;
@@ -64,6 +65,7 @@ contract IdentityRules {
     error InvalidAttestation();
     error IdentityRequired();
 
+    /// @custom:ensures GOVERNOR == governor
     constructor(address governor) {
         if (governor == address(0)) revert Unauthorized();
         GOVERNOR = governor;

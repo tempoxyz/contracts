@@ -60,6 +60,20 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 950e6, "refund reaches the owner");
     }
 
+    function test_refund_keepsStandingAllowance_andSeed() public {
+        _purchase(100e6);
+        usd.mint(address(desk), 1);
+        usd.mint(settlement, 100e6);
+        vm.prank(issuer);
+        desk.refund(P1, 20e6);
+        assertEq(usd.allowance(address(desk), address(cards)), type(uint256).max, "standing allowance");
+        vm.prank(issuer);
+        desk.refund(P1, 30e6);
+        assertEq(usd.allowance(address(desk), address(cards)), type(uint256).max, "still standing");
+        assertEq(usd.balanceOf(address(desk)), 1, "the seed stays");
+        assertEq(usd.balanceOf(alice), 950e6, "both refunds reach the owner");
+    }
+
     function test_refund_payeeWithoutFunds_owesTheRest() public {
         _purchase(100e6);
         vm.prank(network);
