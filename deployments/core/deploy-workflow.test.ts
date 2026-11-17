@@ -28,6 +28,10 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('["moderato","mainnet"]')
     const recorded = /for network in ([a-z ]+); do/.exec(workflow)?.[1]?.split(' ')
     expect(recorded?.sort()).toEqual(Object.keys(hostedEnvironments).sort())
+    // Records are named by network, so the record job finds them nested or flat.
+    expect(workflow).toContain('changes-$NETWORK.patch')
+    expect(workflow).toContain('-name "changes-$network.patch"')
+    expect(workflow).toContain('if [[ -z "${TEMPO_RPC_URL:-}" ]]; then')
   })
 
   test('runs only from main, in the release environment and hosted-contracts queue', () => {
@@ -83,7 +87,13 @@ describe('profiles --network', () => {
       expect(() => profiles('--profiles', join(root, 'profiles'))).toThrow()
       expect(
         JSON.parse(profiles('--profiles', join(root, 'profiles'), '--network', 'moderato')),
-      ).toEqual([{ id: 'e2e-moderato', path: 'profiles/e2e-moderato/profile.json' }])
+      ).toEqual([
+        {
+          id: 'e2e-moderato',
+          path: 'profiles/e2e-moderato/profile.json',
+          rpcUrl: hostedEnvironments.moderato.rpcUrl,
+        },
+      ])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

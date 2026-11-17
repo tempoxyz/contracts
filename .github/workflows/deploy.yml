@@ -115,6 +115,11 @@ jobs:
         run: |
           set -uo pipefail
           mapfile -t paths < <(jq -r '.[].path' <<<"$PROFILES")
+          # Profile deploys need an RPC; without the optional TEMPO_RPC_URL secret, use the network's public one.
+          if [[ -z "${TEMPO_RPC_URL:-}" ]]; then
+            TEMPO_RPC_URL=$(jq -r '.[0].rpcUrl // empty' <<<"$PROFILES")
+            export TEMPO_RPC_URL
+          fi
           incomplete=0
           for path in "${paths[@]}"; do
             echo "::group::$path"
@@ -165,7 +170,12 @@ jobs:
       # separate releases.ts blocks and profiles, so their patches apply together.
       - name: Collect the network's changes
         if: ${{ always() && inputs.broadcast }}
-        run: git diff --binary -- deployments/core/releases.ts 'profiles/*/deployment.json' > "$RUNNER_TEMP/changes.patch"
+        # Named by network, so the record job finds them whether the download nests artifacts or not.
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/changes"
+          git diff --binary -- deployments/core/releases.ts 'profiles/*/deployment.json' > "$RUNNER_TEMP/changes/changes-$NETWORK.patch"
+          if [[ -f "$RUNNER_TEMP/registry-pr.md" ]]; then cp "$RUNNER_TEMP/registry-pr.md" "$RUNNER_TEMP/changes/registry-pr-$NETWORK.md"; fi
 
       - name: Summarize
         if: ${{ always() }}
@@ -195,8 +205,7 @@ jobs:
           path: |
             ${{ runner.temp }}/factory-release.json
             ${{ runner.temp }}/zone-router-release.json
-            ${{ runner.temp }}/changes.patch
-            ${{ runner.temp }}/registry-pr.md
+            ${{ runner.temp }}/changes/
           if-no-files-found: ignore
 
   # Records every verified release and changed profile record, including those from a network that
@@ -231,11 +240,13 @@ jobs:
           echo 'Records what the Deploy workflow deployed from main.' > "$RUNNER_TEMP/pr.md"
           # Each network's latest attempt: a rerun starts from main again and reconciles everything before it.
           for network in moderato mainnet; do
-            artifact=$(find "$RUNNER_TEMP/deploy" -mindepth 1 -maxdepth 1 -type d -name "deploy-$network-*" | sort -V | tail -n 1)
-            [[ -n "$artifact" ]] || continue
-            if [[ -s "$artifact/changes.patch" ]]; then git apply "$artifact/changes.patch"; fi
-            if [[ -s "$artifact/registry-pr.md" ]]; then
-              { echo; echo "## $network"; echo; cat "$artifact/registry-pr.md"; } >> "$RUNNER_TEMP/pr.md"
+            patch=$(find "$RUNNER_TEMP/deploy" -type f -name "changes-$network.patch" | sort -V | tail -n 1)
+            [[ -n "$patch" ]] || continue
+            echo "Applying $patch"
+            if [[ -s "$patch" ]]; then git apply "$patch"; fi
+            body="$(dirname "$patch")/registry-pr-$network.md"
+            if [[ -s "$body" ]]; then
+              { echo; echo "## $network"; echo; cat "$body"; } >> "$RUNNER_TEMP/pr.md"
             fi
           done
           if git diff --quiet -- deployments/core/releases.ts profiles; then
