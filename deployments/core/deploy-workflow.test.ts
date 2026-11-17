@@ -36,6 +36,7 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}')
     expect(workflow.match(/arguments\+=\(--resubmit-verification\)/g)).toHaveLength(2)
     expect(workflow).toContain('deploy+=(--resubmit-verification)')
+    expect(workflow).toContain('ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}')
   })
 
   test('runs only from main, in the release environment and hosted-contracts queue', () => {
