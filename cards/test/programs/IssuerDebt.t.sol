@@ -46,19 +46,19 @@ contract IssuerDebtTest is ProgramsEnv {
         assertEq(usd.balanceOf(bob), 20e6);
         assertEq(usd.balanceOf(settlement), 0);
         assertEq(usd.balanceOf(address(cards)), 35e6);
-        (address creditor, uint128 debt) = core.debtOf(settlement, address(usd));
+        (address creditor, uint128 debt) = _debt(settlement, address(usd));
         assertEq(creditor, address(cards));
         assertEq(debt, 15e6);
         // What the account receives repays the program first.
         usd.mint(settlement, 10e6);
-        core.repay(settlement, address(usd));
-        (, debt) = core.debtOf(settlement, address(usd));
+        _repay(settlement, address(usd));
+        (, debt) = _debt(settlement, address(usd));
         assertEq(debt, 5e6);
         assertEq(usd.balanceOf(address(cards)), 45e6);
         // A further payout adds to what it owes.
         vm.prank(issuer);
         assertEq(cards.payOut(bob, 4e6, bytes32("credit-2")), 4e6);
-        (, debt) = core.debtOf(settlement, address(usd));
+        (, debt) = _debt(settlement, address(usd));
         assertEq(debt, 9e6);
         assertEq(usd.balanceOf(address(cards)), 41e6);
         assertEq(usd.balanceOf(bob), 24e6);
@@ -78,8 +78,8 @@ contract IssuerDebtTest is ProgramsEnv {
         // What the program forwards to the settlement account leaves its own funds in place, and repays the debt.
         usd.mint(address(cards), 7e6);
         cards.forward(address(usd));
-        core.repay(settlement, address(usd));
-        (, uint128 debt) = core.debtOf(settlement, address(usd));
+        _repay(settlement, address(usd));
+        (, uint128 debt) = _debt(settlement, address(usd));
         assertEq(debt, 13e6);
         assertEq(cards.issuerFunds(address(usd)), 37e6);
         assertEq(usd.balanceOf(address(cards)), 37e6);
@@ -91,7 +91,7 @@ contract IssuerDebtTest is ProgramsEnv {
         vm.prank(settlement);
         assertEq(cards.payOut(bob, 20e6, bytes32("credit-1")), 0);
         assertEq(usd.balanceOf(settlement), 10e6);
-        (, uint128 debt) = core.debtOf(settlement, address(usd));
+        (, uint128 debt) = _debt(settlement, address(usd));
         assertEq(debt, 0);
         assertEq(usd.balanceOf(address(cards)), 50e6);
     }
@@ -182,18 +182,18 @@ contract IssuerDebtTest is ProgramsEnv {
         assertGt(carried, 18.23e6);
         assertLt(carried, 18.25e6);
         _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
-        core.repay(settlement, address(usd));
-        (, uint128 old) = core.debtOf(settlement, address(usd));
+        _repay(settlement, address(usd));
+        (, uint128 old) = _debt(settlement, address(usd));
         assertEq(old, 0);
-        (address creditor, uint128 debt) = core.debtOf(settlement, address(eur));
+        (address creditor, uint128 debt) = _debt(settlement, address(eur));
         assertEq(creditor, address(cards));
         assertEq(debt, carried);
         // Clearing the old debt cost the program nothing: what it sent came back as repayment.
         assertEq(usd.balanceOf(address(cards)), 30e6);
         // Euros the account receives repay it.
         eur.mint(settlement, carried);
-        core.repay(settlement, address(eur));
-        (, debt) = core.debtOf(settlement, address(eur));
+        _repay(settlement, address(eur));
+        (, debt) = _debt(settlement, address(eur));
         assertEq(debt, 0);
         assertEq(eur.balanceOf(address(cards)), carried);
     }
@@ -206,7 +206,7 @@ contract IssuerDebtTest is ProgramsEnv {
         // Until the account repays the old debt, the program holds 10 dollars and retains no more.
         assertEq(usd.balanceOf(address(cards)), 10e6);
         assertEq(cards.issuerFunds(address(usd)), 10e6);
-        core.repay(settlement, address(usd));
+        _repay(settlement, address(usd));
         // The old debt is cleared and the program holds 30 dollars, which is all it can still advance.
         assertEq(usd.balanceOf(address(cards)), 30e6);
         assertEq(cards.issuerFunds(address(usd)), 30e6);
@@ -237,8 +237,7 @@ contract IssuerDebtTest is ProgramsEnv {
         bytes32 ref = bytes32("purchase-1");
         _issue(alice, _limits(500e6, 1000e6, 5000e6));
         usd.mint(alice, 10e6);
-        vm.prank(alice);
-        core.setOfflineCap(address(cards), address(usd), 100e6);
+        _setOfflineCap(alice, address(cards), address(usd), 100e6);
         // A stand-in approval of 30 the cardholder may not cover: the program's own funds stand behind it.
         uint8 standIn = cards.STAND_IN();
         vm.prank(issuer);
@@ -279,7 +278,7 @@ contract IssuerDebtTest is ProgramsEnv {
         _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         assertGe(usd.balanceOf(address(cards)), cards.issuerFunds(address(usd)));
         assertGe(eur.balanceOf(address(cards)), cards.issuerFunds(address(eur)));
-        core.repay(settlement, address(usd));
+        _repay(settlement, address(usd));
         assertGe(usd.balanceOf(address(cards)), cards.issuerFunds(address(usd)));
         withdrawn = uint64(bound(withdrawn, 0, cards.issuerFunds(address(usd))));
         if (withdrawn != 0) {
@@ -304,7 +303,7 @@ contract IssuerDebtTest is ProgramsEnv {
 
     function test_setSettlementToken_withoutIssuerDebtChargesNothing() public {
         _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
-        (, uint128 debt) = core.debtOf(settlement, address(eur));
+        (, uint128 debt) = _debt(settlement, address(eur));
         assertEq(debt, 0);
         assertEq(usd.balanceOf(address(cards)), 50e6);
     }
@@ -312,8 +311,8 @@ contract IssuerDebtTest is ProgramsEnv {
     function _allowDebt(ITIP20Token token, uint128 cap) internal {
         vm.startPrank(settlement);
         token.approve(address(cards), type(uint256).max);
-        core.approveHolder(address(cards), address(token), type(uint128).max);
-        core.setDebtCap(address(cards), address(token), cap);
+        core.approveHolder(address(cards), address(token), type(uint128).max, 0);
+        core.setPayeeTerms(address(cards), address(token), _withDebtCap(settlement, address(cards), address(token), cap));
         vm.stopPrank();
     }
 }

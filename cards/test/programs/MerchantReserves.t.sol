@@ -9,6 +9,7 @@ import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
 /// @notice Merchant reserves: an acquirer's program holds back part of a merchant's balance with holder pledges
 ///         inside the mandate the merchant granted, and collects or releases them.
 contract MerchantReservesTest is ProgramsEnv {
+    uint8 internal constant PLEDGE_KIND = 2;
     address internal shop = makeAddr("shop");
     address internal other = makeAddr("other");
     bytes32 internal constant R1 = bytes32("reserve-1");
@@ -21,12 +22,12 @@ contract MerchantReservesTest is ProgramsEnv {
         usd.mint(shop, 100e6);
         usd.mint(settlement, 100e6);
         vm.startPrank(shop);
-        core.approveHolder(address(cards), address(usd), 50e6);
+        core.approveHolder(address(cards), address(usd), 50e6, 0);
         cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
         cards.allowReserves(address(usd), 40e6, FEES);
         vm.stopPrank();
         vm.prank(settlement);
-        core.approveHolder(address(cards), address(usd), type(uint128).max);
+        core.approveHolder(address(cards), address(usd), type(uint128).max, 0);
     }
 
     function test_reserveDispute_needsConsentAndWindow() public {
@@ -52,21 +53,20 @@ contract MerchantReservesTest is ProgramsEnv {
             shop, address(usd), REF, [uint128(30e6), uint128(50e6)], [uint128(30e6), uint128(50e6)], expiry
         );
 
-        (address owner,, uint128 amount, uint64 expiresAt, bool pledged) =
-            core.lienOf(address(cards), cards.reserveId(REF, shop));
-        assertEq(owner, shop);
-        assertEq(amount, 30e6);
-        assertEq(expiresAt, expiry);
-        assertTrue(pledged);
-        (owner,, amount,,) = core.lienOf(address(cards), cards.reserveId(REF, settlement));
-        assertEq(owner, settlement);
-        assertEq(amount, 50e6);
+        // The program pledges each reserve to itself, so the core keys it by the owner and the program.
+        IReservationCore.HoldRecord memory h = core.getHold(shop, address(cards), cards.reserveId(REF, shop));
+        assertEq(h.held, 30e6);
+        assertEq(h.expiresAt, expiry);
+        assertEq(h.payee, address(cards));
+        assertEq(h.kind, PLEDGE_KIND);
+        h = core.getHold(settlement, address(cards), cards.reserveId(REF, settlement));
+        assertEq(h.held, 50e6);
         assertEq(core.available(shop, address(usd)), 70e6);
         assertEq(core.available(settlement, address(usd)), 50e6);
 
         // The mandate's limit bounds what the program reserves on the merchant.
         vm.prank(issuer);
-        vm.expectRevert(IReservationCore.AllowanceExceeded.selector);
+        vm.expectRevert(IReservationCore.BudgetExceeded.selector);
         cards.reserveDispute(
             shop, address(usd), bytes32("purchase-2"), [uint128(21e6), uint128(0)], [uint128(21e6), uint128(0)], expiry
         );
@@ -77,7 +77,7 @@ contract MerchantReservesTest is ProgramsEnv {
         uint64 expiry = uint64(vm.getBlockTimestamp() + 90 days);
         usd.mint(other, 10e6);
         vm.prank(other);
-        core.approveHolder(address(cards), address(usd), 10e6);
+        core.approveHolder(address(cards), address(usd), 10e6, 0);
         vm.prank(issuer);
         vm.expectRevert(CardProgram.NoTerms.selector);
         cards.reserve(other, address(usd), R1, 5e6, expiry, FEES);
@@ -95,7 +95,7 @@ contract MerchantReservesTest is ProgramsEnv {
         uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
         usd.mint(other, 100e6);
         vm.startPrank(other);
-        core.approveHolder(address(cards), address(usd), 100e6);
+        core.approveHolder(address(cards), address(usd), 100e6, 0);
         cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
         vm.stopPrank();
         // A grant and a holder allowance alone let no one lien the balance.
@@ -185,10 +185,8 @@ contract MerchantReservesTest is ProgramsEnv {
         assertEq(usd.balanceOf(settlement), 120e6);
         assertEq(usd.balanceOf(shop), 80e6);
         assertEq(core.available(shop, address(usd)), 80e6);
-        (,, uint128 amount,,) = core.lienOf(address(cards), R1);
-        assertEq(amount, 0);
-        (, uint128 outstanding) = core.allowance(shop, address(cards), address(usd));
-        assertEq(outstanding, 0);
+        assertEq(core.getHold(shop, address(cards), R1).held, 0);
+        assertEq(core.budget(shop, address(cards), address(usd)).outstanding, 0);
         _assertCoreBalanced();
     }
 
@@ -211,7 +209,7 @@ contract MerchantReservesTest is ProgramsEnv {
         vm.warp(vm.getBlockTimestamp() + 1 days);
         assertEq(core.available(shop, address(usd)), 70e6);
         vm.prank(other);
-        core.releaseExpiredLien(address(cards), R1);
+        core.releaseExpired(shop, address(cards), R1);
         assertEq(core.available(shop, address(usd)), 100e6);
     }
 
@@ -223,7 +221,6 @@ contract MerchantReservesTest is ProgramsEnv {
         cards.setSettlementToken(address(otherUsd));
         vm.prank(issuer);
         cards.releaseReserve(R1);
-        (,, uint128 amount,,) = core.lienOf(address(cards), R1);
-        assertEq(amount, 0);
+        assertEq(core.getHold(settlement, address(cards), R1).held, 0);
     }
 }

@@ -44,7 +44,7 @@ contract ConversionTest is ProgramsEnv {
         eur.mint(address(conv), 100_000e6);
         _setting(abi.encodeCall(cards.setConversion, (address(conv))));
         vm.startPrank(alice);
-        core.approveHolder(address(cards), address(eur), type(uint128).max);
+        core.approveHolder(address(cards), address(eur), type(uint128).max, 0);
         vm.stopPrank();
     }
 
@@ -320,11 +320,10 @@ contract ConversionTest is ProgramsEnv {
 
     function test_localIssuer_lateChargeIsOwedInItsTokenAndCashRepaysItThroughTheVenue() public {
         _localIssuer();
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(eur), 50e6);
+        _setDebtCap(alice, address(cards), address(eur), 50e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 30e6, merchant);
-        (address creditor, uint128 debt) = core.debtOf(alice, address(eur));
+        (address creditor, uint128 debt) = _debt(alice, address(eur));
         assertEq(creditor, address(cards));
         assertEq(debt, 30e6);
         // The debt is in the program's exposure, so the issuer keeps its token until it is repaid.
@@ -342,8 +341,8 @@ contract ConversionTest is ProgramsEnv {
         uint256 cost = conv.quoteOut(address(usd), address(eur), 30e6);
         cards.repayConverted(alice);
         // The node repays debt from each credit as it lands; the model does it on the next operation.
-        core.repay(alice, address(eur));
-        (, debt) = core.debtOf(alice, address(eur));
+        _repay(alice, address(eur));
+        (, debt) = _debt(alice, address(eur));
         assertEq(debt, 0);
         assertEq(usd.balanceOf(alice), 50e6 - cost);
         assertEq(eur.balanceOf(alice), 0);
@@ -363,7 +362,7 @@ contract ConversionTest is ProgramsEnv {
         cards.charge(CARD, P1, 10e6, merchant);
         assertEq(usd.balanceOf(alice), 100e6 - cost);
         assertEq(eur.balanceOf(settlement), 10e6);
-        (, uint128 debt) = core.debtOf(alice, address(eur));
+        (, uint128 debt) = _debt(alice, address(eur));
         assertEq(debt, 0);
         eur.mint(issuer, 10e6);
         vm.prank(issuer);
@@ -378,19 +377,18 @@ contract ConversionTest is ProgramsEnv {
     function test_localIssuer_refundPastDebtCapRepaysAndLandsTheRestInItsToken() public {
         _localIssuer();
         eur.mint(alice, 20e6);
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(eur), 50e6);
+        _setDebtCap(alice, address(cards), address(eur), 50e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 80e6, merchant);
         assertEq(cards.purchaseToken(P1), address(eur));
-        (, uint128 debt) = core.debtOf(alice, address(eur));
+        (, uint128 debt) = _debt(alice, address(eur));
         assertEq(debt, 50e6);
         eur.mint(issuer, 80e6);
         vm.prank(issuer);
         eur.approve(address(cards), 80e6);
         vm.prank(issuer);
         cards.refund(P1, 80e6);
-        (, debt) = core.debtOf(alice, address(eur));
+        (, debt) = _debt(alice, address(eur));
         assertEq(debt, 0);
         assertEq(core.available(alice, address(eur)), 30e6);
         assertEq(eur.balanceOf(issuer), 0);
@@ -398,15 +396,14 @@ contract ConversionTest is ProgramsEnv {
 
     function test_localIssuer_partRepaysWithWhatCashThereIs() public {
         _localIssuer();
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(eur), 50e6);
+        _setDebtCap(alice, address(cards), address(eur), 50e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 30e6, merchant);
         usd.mint(alice, 11e6);
         uint256 repaid = conv.quoteIn(address(usd), address(eur), 11e6);
         cards.repayConverted(alice);
-        core.repay(alice, address(eur));
-        (, uint128 debt) = core.debtOf(alice, address(eur));
+        _repay(alice, address(eur));
+        (, uint128 debt) = _debt(alice, address(eur));
         assertEq(debt, 30e6 - repaid);
         assertEq(usd.balanceOf(alice), 0);
     }
@@ -423,15 +420,15 @@ contract ConversionTest is ProgramsEnv {
         _localIssuer();
         eur.mint(settlement, 10e6);
         address authority = makeAddr("authority");
-        core.grantLienRole(authority, true);
+        _grantLienRole(address(eur), authority);
         vm.prank(authority);
         core.lien(settlement, address(eur), bytes32("freeze"), 5e6, 0);
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(6)));
         cards.setSettlementToken(address(usd));
         vm.prank(authority);
-        core.releaseLien(bytes32("freeze"));
-        assertEq(core.liened(settlement, address(eur)), 0);
+        core.release(settlement, authority, bytes32("freeze"));
+        assertEq(core.reserved(settlement, address(eur)), 0);
     }
 
     function test_desk_refundsAnEarlierTokensPurchaseInTodaysTokenAndConvertsItsSplitsBack() public {
@@ -448,7 +445,7 @@ contract ConversionTest is ProgramsEnv {
         eur.approve(address(desk), type(uint256).max);
         vm.stopPrank();
         vm.prank(network);
-        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
         // Booked in dollars, then the issuer settles in euros.
         usd.mint(alice, 100e6);
         _authorize(P1, 40e6);
@@ -500,11 +497,11 @@ contract ConversionTest is ProgramsEnv {
         eur.approve(address(desk), type(uint256).max);
         vm.stopPrank();
         vm.startPrank(network);
-        core.approveHolder(address(desk), address(usd), type(uint128).max);
-        core.setDebtCap(settlement, address(usd), 1e6);
+        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
+        core.setPayeeTerms(settlement, address(usd), _withDebtCap(network, settlement, address(usd), 1e6));
         vm.stopPrank();
         vm.prank(alice);
-        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
         usd.mint(alice, 100e6);
         _authorize(P1, 40e6);
         vm.prank(issuer);
@@ -523,7 +520,7 @@ contract ConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), cash + 22e6 - 0.11e6);
         assertEq(eur.balanceOf(network), 0.1e6);
         // Its 22 cent split share came out of the 20 cents it kept, and it owes the rest in dollars.
-        (, uint128 owed) = core.debtOf(network, address(usd));
+        (, uint128 owed) = _debt(network, address(usd));
         assertEq(owed, 0.02e6);
         assertEq(usd.balanceOf(address(desk)), 0);
         assertEq(eur.balanceOf(address(desk)), 0);

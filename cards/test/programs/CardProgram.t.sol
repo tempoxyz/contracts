@@ -30,11 +30,11 @@ contract CardProgramTest is ProgramsEnv {
 
         IReservationCore.HoldRecord memory h = _hold(alice, P1, CASH);
         assertEq(h.token, address(usd));
-        assertEq(h.placer, address(cards));
         assertEq(h.payee, address(cards));
         assertEq(h.held, 100e6);
+        assertEq(h.captureLimit, 100e6);
         assertEq(core.reserved(alice, address(usd)), 100e6);
-        (, uint128 outstanding) = core.allowance(alice, address(cards), address(usd));
+        uint128 outstanding = core.budget(alice, address(cards), address(usd)).outstanding;
         assertEq(outstanding, 100e6);
         CardProgram.Purchase memory p = cards.purchaseOf(P1);
         assertEq(p.legs, CASH);
@@ -65,19 +65,23 @@ contract CardProgramTest is ProgramsEnv {
         _capture(P1, 30e6, true);
         assertEq(usd.balanceOf(settlement), 70e6);
         assertEq(usd.balanceOf(alice), 930e6);
-        assertTrue(_hold(alice, P1, CASH).settled);
+        // The core deletes a hold once it settles.
+        assertEq(_hold(alice, P1, CASH).token, address(0));
     }
 
     function test_capture_tipWithinTolerance() public {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         vm.prank(issuer);
-        vm.expectRevert(IReservationCore.ToleranceExceeded.selector);
+        vm.expectRevert(IReservationCore.CaptureLimitExceeded.selector);
         cards.capture(P1, 110e6, true);
+        vm.prank(issuer);
+        cards.release(P1);
 
-        vm.prank(alice);
-        core.setCaptureTolerance(address(cards), address(usd), 2000);
-        _capture(P1, 110e6, true);
+        // A hold takes the owner's tolerance when it is placed.
+        _setTolerance(alice, address(cards), address(usd), 2000);
+        _authorize(P2, 100e6);
+        _capture(P2, 110e6, true);
         assertEq(usd.balanceOf(settlement), 110e6);
         assertEq(usd.balanceOf(alice), 890e6);
     }
@@ -92,8 +96,8 @@ contract CardProgramTest is ProgramsEnv {
         // The core refuses a second capture of the settled leg too.
         bytes32 id = cards.legId(P1, CASH);
         vm.prank(address(cards));
-        vm.expectRevert(IReservationCore.HoldSettled.selector);
-        core.capture(alice, id, 1, false);
+        vm.expectRevert(IReservationCore.HoldNotFound.selector);
+        core.capture(alice, address(cards), id, 1, false);
     }
 
     function test_captureAfterExpiry_refused_andAnyoneExpires() public {
@@ -107,7 +111,7 @@ contract CardProgramTest is ProgramsEnv {
         bytes32 id = cards.legId(P1, CASH);
         vm.prank(address(cards));
         vm.expectRevert(IReservationCore.HoldExpired.selector);
-        core.capture(alice, id, 1, false);
+        core.capture(alice, address(cards), id, 1, false);
 
         vm.prank(bob);
         cards.expire(P1);
@@ -551,12 +555,11 @@ contract CardProgramTest is ProgramsEnv {
         _setFunding(address(usd), address(0), address(0), 0);
         _authorize(P1, 50e6);
         vm.warp(vm.getBlockTimestamp() + 8 days);
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(usd), 30e6);
+        _setDebtCap(alice, address(cards), address(usd), 30e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 70e6, merchant);
         assertEq(usd.balanceOf(settlement), 50e6);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertEq(debt, 20e6);
         assertFalse(cards.purchaseOf(P1).open);
         // A refund repays the debt first.
@@ -565,7 +568,7 @@ contract CardProgramTest is ProgramsEnv {
         usd.approve(address(cards), 30e6);
         vm.prank(issuer);
         cards.refund(P1, 30e6);
-        (, debt) = core.debtOf(alice, address(usd));
+        (, debt) = _debt(alice, address(usd));
         assertEq(debt, 0);
         assertEq(usd.balanceOf(alice), 10e6);
         assertEq(usd.balanceOf(settlement), 70e6);
@@ -573,15 +576,14 @@ contract CardProgramTest is ProgramsEnv {
 
     function test_charge_pastDebtCap_issuerAbsorbsTheRest() public {
         usd.mint(alice, 50e6);
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(usd), 30e6);
+        _setDebtCap(alice, address(cards), address(usd), 30e6);
         // 50 available plus 30 of debt: the issuer carries the other 20.
         vm.expectEmit(address(cards));
         emit CardProgram.PurchaseCharged(P1, CARD, merchant, 100e6, 80e6, 20e6, 1, 100e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 100e6, merchant);
         assertEq(usd.balanceOf(settlement), 50e6);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertEq(debt, 30e6);
         // The whole amount counts toward the limits, not just what the owner paid.
         assertEq(cards.cardOf(CARD).window.daySpent, 100e6);
@@ -590,8 +592,7 @@ contract CardProgramTest is ProgramsEnv {
 
     function test_refund_pastDebtCap_repaysThenPaysWhatTheIssuerAbsorbed() public {
         usd.mint(alice, 50e6);
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(usd), 30e6);
+        _setDebtCap(alice, address(cards), address(usd), 30e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 100e6, merchant);
         usd.mint(issuer, 101e6);
@@ -603,7 +604,7 @@ contract CardProgramTest is ProgramsEnv {
         // The refund repays the debt, restores the cash and lands what the issuer carried with the owner.
         vm.prank(issuer);
         cards.refund(P1, 100e6);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertEq(debt, 0);
         assertEq(core.available(alice, address(usd)), 70e6);
         _assertCoreBalanced();
@@ -632,16 +633,16 @@ contract CardProgramTest is ProgramsEnv {
         address lender = makeAddr("lender");
         usd.mint(alice, 10e6);
         vm.startPrank(alice);
-        core.setDebtCap(address(cards), address(usd), 30e6);
-        core.setDebtCap(lender, address(usd), 5e6);
-        core.approveHolder(lender, address(usd), 100e6);
+        core.setPayeeTerms(address(cards), address(usd), _withDebtCap(alice, address(cards), address(usd), 30e6));
+        core.setPayeeTerms(lender, address(usd), _withDebtCap(alice, lender, address(usd), 5e6));
+        core.approveHolder(lender, address(usd), 100e6, 0);
         vm.stopPrank();
         // Another creditor's debt holds the owner's debt slot; this program can't add to it.
         vm.prank(lender);
         core.charge(alice, address(usd), bytes32("x"), 15e6, lender, false);
         vm.prank(issuer);
         cards.charge(CARD, P1, 20e6, merchant);
-        (address creditor, uint128 debt) = core.debtOf(alice, address(usd));
+        (address creditor, uint128 debt) = _debt(alice, address(usd));
         assertEq(creditor, lender);
         assertEq(debt, 5e6);
         assertEq(usd.balanceOf(settlement), 0);
@@ -683,7 +684,7 @@ contract CardProgramTest is ProgramsEnv {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         vm.prank(alice);
-        core.approveHolder(address(cards), address(usd), 0);
+        core.approveHolder(address(cards), address(usd), 0, 0);
         vm.prank(issuer);
         vm.expectRevert(IReservationCore.Unauthorized.selector);
         cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
@@ -695,10 +696,10 @@ contract CardProgramTest is ProgramsEnv {
     function test_holderAllowance_capsOutstanding() public {
         usd.mint(alice, 1000e6);
         vm.prank(alice);
-        core.approveHolder(address(cards), address(usd), 150e6);
+        core.approveHolder(address(cards), address(usd), 150e6, 0);
         _authorize(P1, 100e6);
         vm.prank(issuer);
-        vm.expectRevert(IReservationCore.AllowanceExceeded.selector);
+        vm.expectRevert(IReservationCore.BudgetExceeded.selector);
         cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
@@ -767,8 +768,8 @@ contract CardProgramTest is ProgramsEnv {
         CardProgram.Purchase memory p = cards.purchaseOf(P1);
         assertEq(p.legs, CASH | SAVINGS | CREDIT);
         bytes32 creditId = credit.holdIdOf(address(cards), P1);
-        IReservationCore.HoldRecord memory c = core.getHold(lender, creditId);
-        assertEq(c.placer, address(credit));
+        // The line placed the credit leg, so the core keys it by the line.
+        IReservationCore.HoldRecord memory c = core.getHold(lender, address(credit), creditId);
         assertEq(c.payee, address(cards));
         uint256 drawn = c.held;
         assertApproxEqAbs(drawn, 50e6, 2);
@@ -815,6 +816,7 @@ contract CardProgramTest is ProgramsEnv {
         _capture(P1, 100e6, true);
         uint256 sharesBefore = earnShare.balanceOf(alice);
         uint256 owed = credit.lineOf(lineId).owed;
+        uint256 cashBefore = usd.balanceOf(alice);
 
         // The issuer funds the refund; credit unwinds first, then savings.
         usd.mint(issuer, 100e6);
@@ -824,7 +826,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.refund(P1, uint128(owed + 10e6));
         assertEq(credit.lineOf(lineId).owed, 0);
         assertGt(earnShare.balanceOf(alice), sharesBefore);
-        assertEq(core.getHold(alice, cards.legId(P1, CASH)).refunded, 0);
+        assertEq(usd.balanceOf(alice), cashBefore, "nothing back to the cash leg");
 
         vm.prank(issuer);
         vm.expectPartialRevert(CardProgram.RefundExceedsCapture.selector);
@@ -852,8 +854,7 @@ contract CardProgramTest is ProgramsEnv {
 
     function test_standIn_adjustDown_keepsWhatIsHeldUpToTheNewAmount() public {
         usd.mint(alice, 30e6);
-        vm.prank(alice);
-        core.setOfflineCap(address(cards), address(usd), 50e6);
+        _setOfflineCap(alice, address(cards), address(usd), 50e6);
         vm.prank(issuer);
         cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), 1);
         assertEq(_hold(alice, P1, CASH).held, 30e6);
@@ -905,21 +906,20 @@ contract CardProgramTest is ProgramsEnv {
         IReservationCore.HoldRecord memory h = _hold(alice, P1, CASH);
         assertTrue(h.standIn);
         assertEq(h.held, 50e6);
-        assertEq(h.approved, 80e6);
+        assertEq(h.captureLimit, 80e6);
 
         vm.prank(issuer);
         vm.expectRevert(IReservationCore.DebtCapExceeded.selector);
         cards.capture(P1, 80e6, true);
-        vm.prank(alice);
-        core.setOfflineCap(address(cards), address(usd), 30e6);
+        _setOfflineCap(alice, address(cards), address(usd), 30e6);
         _capture(P1, 80e6, true);
         assertEq(usd.balanceOf(settlement), 50e6);
-        (address creditor, uint128 debt) = core.debtOf(alice, address(usd));
+        (address creditor, uint128 debt) = _debt(alice, address(usd));
         assertEq(creditor, address(cards));
         assertEq(debt, 30e6);
 
         usd.mint(alice, 40e6);
-        core.repay(alice, address(usd));
+        _repay(alice, address(usd));
         cards.forward(address(usd));
         assertEq(usd.balanceOf(settlement), 80e6);
     }
@@ -927,7 +927,7 @@ contract CardProgramTest is ProgramsEnv {
     function test_foreignCashToken_convertsAtRecordedRate() public {
         otherUsd.mint(alice, 1000e6);
         vm.startPrank(alice);
-        core.approveHolder(address(cards), address(otherUsd), type(uint128).max);
+        core.approveHolder(address(cards), address(otherUsd), type(uint128).max, 0);
         _setFunding(address(otherUsd), address(0), address(0), 0);
         vm.stopPrank();
         vm.prank(issuer);

@@ -43,7 +43,7 @@ contract CreditLineConversionTest is ProgramsEnv {
         conversion = address(conv);
         eur.mint(lender, 10_000e6);
         vm.prank(lender);
-        core.approveHolder(address(credit), address(eur), type(uint128).max);
+        core.approveHolder(address(credit), address(eur), type(uint128).max, 0);
         due = uint64(block.timestamp + 365 days);
     }
 
@@ -151,7 +151,7 @@ contract CreditLineConversionTest is ProgramsEnv {
         usd.mint(alice, 1100e6);
         _depositEarn(alice, 1100e6);
         vm.startPrank(alice);
-        core.approveHolder(address(credit), address(earnShare), type(uint128).max);
+        core.approveHolder(address(credit), address(earnShare), type(uint128).max, 0);
         credit.enableLocking(lineId);
         vm.stopPrank();
         // 1,100 dollars of shares sell for about 997 euros, so 50% lends about 498.50.
@@ -183,7 +183,7 @@ contract CreditLineConversionTest is ProgramsEnv {
         usd.mint(alice, 1100e6);
         _depositEarn(alice, 1100e6);
         vm.startPrank(alice);
-        core.approveHolder(address(credit), address(earnShare), type(uint128).max);
+        core.approveHolder(address(credit), address(earnShare), type(uint128).max, 0);
         credit.enableLocking(lineId);
         vm.stopPrank();
         _owe(lineId, 300e6);
@@ -272,7 +272,7 @@ contract CreditLineConversionTest is ProgramsEnv {
     function _owe(uint64 lineId, uint128 amount) internal {
         bytes32 ref = keccak256(abi.encode("purchase", credit.lineOf(lineId).owed, amount, block.timestamp));
         (bytes32 id,,) = credit.draw(lineId, alice, ref, amount, uint64(block.timestamp + 1 days));
-        core.capture(lender, id, amount, true);
+        credit.capture(id, amount, true);
         credit.sync(id);
     }
 }

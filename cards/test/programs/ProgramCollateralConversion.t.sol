@@ -45,7 +45,7 @@ contract ProgramCollateralConversionTest is ProgramsEnv {
         _setting(abi.encodeCall(cards.setCollateral, (address(collateral))));
         _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         vm.prank(alice);
-        core.approveHolder(address(cards), address(eur), type(uint128).max);
+        core.approveHolder(address(cards), address(eur), type(uint128).max, 0);
         CardFunding.Source[] memory order = new CardFunding.Source[](2);
         order[0] = CardFunding.Source({ kind: TOKEN, source: address(eur), lineId: 100 });
         order[1] = CardFunding.Source({ kind: CASH, source: address(usd), lineId: 0 });

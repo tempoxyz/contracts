@@ -90,8 +90,7 @@ contract CardFundingTest is ProgramsEnv {
     function test_capture_overage_takesFreeCashThenDebtThenAbsorbs() public {
         usd.mint(alice, 100e6);
         _tolerance(10_000);
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(usd), 15e6);
+        _setDebtCap(alice, address(cards), address(usd), 15e6);
         _authorize(P1, 80e6);
         // 80 held + 20 free cash + 15 debt; the issuer absorbs the last 5.
         vm.prank(issuer);
@@ -100,7 +99,7 @@ contract CardFundingTest is ProgramsEnv {
         cards.capture(P1, 120e6, true);
         // The debt is the owner's to the program: the settlement account receives what the owner had.
         assertEq(usd.balanceOf(settlement), 100e6);
-        (address creditor, uint128 debt) = core.debtOf(alice, address(usd));
+        (address creditor, uint128 debt) = _debt(alice, address(usd));
         assertEq(creditor, address(cards));
         assertEq(debt, 15e6);
         (uint256 held, uint256 owed, uint256 debtors) = cards.outstanding();
@@ -114,7 +113,7 @@ contract CardFundingTest is ProgramsEnv {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         vm.prank(issuer);
-        vm.expectRevert(IReservationCore.ToleranceExceeded.selector);
+        vm.expectRevert(IReservationCore.CaptureLimitExceeded.selector);
         cards.capture(P1, 101e6, true);
     }
 
@@ -125,7 +124,7 @@ contract CardFundingTest is ProgramsEnv {
         _savings(alice, 100e6);
         _capture(P1, 80e6, true);
         assertApproxEqAbs(usd.balanceOf(settlement), 80e6, 2);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertEq(debt, 0);
     }
 
@@ -135,19 +134,18 @@ contract CardFundingTest is ProgramsEnv {
         usd.mint(alice, 100e6);
         _savings(alice, 100e6);
         _tolerance(10_000);
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(usd), 100e6);
+        _setDebtCap(alice, address(cards), address(usd), 100e6);
         _authorize(P1, 150e6);
         // Spend the rest of the savings elsewhere so the overage becomes debt.
         _capture(P1, 230e6, true);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertApproxEqAbs(debt, 30e6, 2);
         uint256 sharesBefore = earnShare.balanceOf(alice);
 
         _fundRefunds(100e6);
         vm.prank(issuer);
         cards.refund(P1, 50e6);
-        (, debt) = core.debtOf(alice, address(usd));
+        (, debt) = _debt(alice, address(usd));
         assertEq(debt, 0);
         // The remaining 20 went back to the last drawn leg, savings.
         assertGt(earnShare.balanceOf(alice), sharesBefore);
@@ -170,13 +168,12 @@ contract CardFundingTest is ProgramsEnv {
     function test_impairedVault_captureTakesWhatTheSharesAreWorth_restBecomesDebt() public {
         _savings(alice, 101e6);
         _tolerance(0);
-        vm.prank(alice);
-        core.setDebtCap(address(cards), address(usd), 50e6);
+        _setDebtCap(alice, address(cards), address(usd), 50e6);
         _authorize(P1, 100e6);
         // The venue loses half its assets: all of Alice's shares now redeem for about 50.5.
         _impair(usd.balanceOf(address(venue)) / 2);
         _capture(P1, 100e6, true);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertApproxEqAbs(debt, 49.5e6, 2);
         assertEq(earnShare.balanceOf(alice), 0);
         assertEq(core.reserved(alice, address(earnShare)), 0);
@@ -245,8 +242,7 @@ contract CardFundingTest is ProgramsEnv {
     }
 
     function _tolerance(uint32 bps) internal {
-        vm.prank(alice);
-        core.setCaptureTolerance(address(cards), address(usd), bps);
+        _setTolerance(alice, address(cards), address(usd), uint16(bps));
     }
 
     function _fundRefunds(uint256 amount) internal {

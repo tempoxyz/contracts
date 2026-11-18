@@ -16,7 +16,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         _deployPrograms();
         usd.mint(lender, 100_000e6);
         vm.prank(lender);
-        core.approveHolder(address(credit), address(usd), type(uint128).max);
+        core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
         due = uint64(block.timestamp + 365 days);
         vm.prank(lender);
         lineId =
@@ -329,7 +329,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
     function _owe(uint128 amount) internal {
         bytes32 ref = keccak256(abi.encode("purchase", credit.lineOf(lineId).owed, amount, block.timestamp));
         (bytes32 id,,) = credit.draw(lineId, alice, ref, amount, uint64(block.timestamp + 1 days));
-        core.capture(lender, id, amount, true);
+        credit.capture(id, amount, true);
         credit.sync(id);
         lastDraw = id;
     }
@@ -337,7 +337,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
     bytes32 internal lastDraw;
 
     function _refundOwed(uint128 amount) internal {
-        core.refund(lender, lastDraw, amount);
+        credit.refund(lastDraw, amount);
         credit.sync(lastDraw);
     }
 

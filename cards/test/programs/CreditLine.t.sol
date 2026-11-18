@@ -22,7 +22,9 @@ contract CreditLineTest is ProgramsEnv {
         _deployPrograms();
         usd.mint(lender, 100_000e6);
         vm.prank(lender);
-        core.approveHolder(address(credit), address(usd), type(uint128).max);
+        core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
+        // This test is the lines' card program, which pays refunds through the line.
+        usd.approve(address(credit), type(uint256).max);
         due = uint64(block.timestamp + 60 days);
     }
 
@@ -31,8 +33,8 @@ contract CreditLineTest is ProgramsEnv {
     function test_draw_holdsTheLendersBalance() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         bytes32 id = _draw(lineId, 100e6);
-        IReservationCore.HoldRecord memory h = core.getHold(lender, id);
-        assertEq(h.placer, address(credit));
+        IReservationCore.HoldRecord memory h = core.getHold(lender, address(credit), id);
+        assertEq(h.token, address(usd));
         assertEq(h.payee, address(this));
         assertEq(h.held, 100e6);
         // The draw comes out of the commitment, so the lender's reserve stays at the limit.
@@ -46,16 +48,15 @@ contract CreditLineTest is ProgramsEnv {
     function test_sync_overCaptureCountsOnlyWithinTheAcceptedDebtBound() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         assertEq(credit.lineOf(lineId).maxDebt, 1000e6, "the limit, at a zero rate");
+        // The lender lets the program capture a tip past the draw; a hold takes the tolerance when placed.
+        _setTolerance(lender, address(this), address(usd), 2000);
         bytes32 id = _draw(lineId, 1000e6);
-        // The lender lets the program capture a tip past the draw.
-        vm.prank(lender);
-        core.setCaptureTolerance(address(this), address(usd), 2000);
-        core.capture(lender, id, 1100e6, true);
+        credit.capture(id, 1100e6, true);
         credit.sync(id);
         assertEq(credit.lineOf(lineId).owed, 1000e6, "never past what the borrower accepted");
         assertEq(credit.lineOf(lineId).pending, 0);
         // A refund of the purchase clears what was counted, and nothing more reaches the borrower.
-        core.refund(lender, id, 1100e6);
+        credit.refund(id, 1100e6);
         credit.sync(id);
         assertEq(credit.lineOf(lineId).owed, 0);
         assertEq(usd.balanceOf(alice), 0);
@@ -98,7 +99,7 @@ contract CreditLineTest is ProgramsEnv {
     function test_capture_owesWhatWasDrawn_refundAndRepay() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         bytes32 id = _draw(lineId, 100e6);
-        core.capture(lender, id, 60e6, true);
+        credit.capture(id, 60e6, true);
         credit.sync(id);
         assertEq(credit.lineOf(lineId).owed, 60e6);
         assertEq(credit.lineOf(lineId).pending, 0);
@@ -106,7 +107,7 @@ contract CreditLineTest is ProgramsEnv {
         assertEq(credit.availableCredit(lineId), 940e6);
 
         // A refund to the lender takes from what the borrower owes.
-        core.refund(lender, id, 20e6);
+        credit.refund(id, 20e6);
         credit.sync(id);
         assertEq(credit.lineOf(lineId).owed, 40e6);
 
@@ -128,10 +129,10 @@ contract CreditLineTest is ProgramsEnv {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         bytes32 id = _draw(lineId, 100e6);
         vm.prank(lender);
-        core.approveHolder(address(credit), address(usd), 0);
+        core.approveHolder(address(credit), address(usd), 0, 0);
         vm.expectRevert(IReservationCore.Unauthorized.selector);
         credit.draw(lineId, alice, bytes32("purchase-2"), 1e6, uint64(block.timestamp + 1 days));
-        core.capture(lender, id, 100e6, true);
+        credit.capture(id, 100e6, true);
         credit.sync(id);
         assertEq(credit.lineOf(lineId).owed, 100e6);
     }
@@ -140,7 +141,7 @@ contract CreditLineTest is ProgramsEnv {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         bytes32 id = _draw(lineId, 100e6);
         vm.warp(vm.getBlockTimestamp() + 1 days);
-        core.releaseExpired(lender, id);
+        core.releaseExpired(lender, address(credit), id);
         credit.sync(id);
         assertEq(credit.lineOf(lineId).pending, 0);
         assertEq(credit.lineOf(lineId).owed, 0);
@@ -213,9 +214,9 @@ contract CreditLineTest is ProgramsEnv {
 
     function test_seize_onlyPastDueAndCappedAtOwed() public {
         uint64 lineId = _securedLine(10_000e6, 500e6);
-        (,, uint128 pledged,,) = core.lienOf(address(credit), PLEDGE);
+        uint128 pledged = core.getHold(alice, alice, PLEDGE).held;
         bytes32 id = _draw(lineId, 100e6);
-        core.capture(lender, id, 100e6, true);
+        credit.capture(id, 100e6, true);
         credit.sync(id);
 
         vm.prank(lender);
@@ -238,7 +239,7 @@ contract CreditLineTest is ProgramsEnv {
         assertGe(assets, 100e6);
         assertEq(usd.balanceOf(lender), lenderBefore + assets);
         assertEq(credit.lineOf(lineId).owed, 0);
-        (,, uint128 left,,) = core.lienOf(address(credit), PLEDGE);
+        uint128 left = core.getHold(alice, alice, PLEDGE).held;
         assertEq(left, pledged - seized);
 
         vm.prank(lender);
@@ -254,12 +255,12 @@ contract CreditLineTest is ProgramsEnv {
         vm.prank(alice);
         vm.expectRevert(CreditLine.StillOwed.selector);
         credit.releasePledge(lineId);
-        core.release(lender, id);
+        core.release(lender, address(credit), id);
         credit.sync(id);
         vm.prank(alice);
         credit.releasePledge(lineId);
         assertGt(earnShare.balanceOf(alice), shares);
-        assertEq(core.liened(alice, address(earnShare)), 0);
+        assertEq(core.reserved(alice, address(earnShare)), 0);
     }
 
     // Helpers.
@@ -292,7 +293,7 @@ contract CreditLineTest is ProgramsEnv {
     function test_locking_revokedAllowanceRefusesTheDraw() public {
         uint64 lineId = _lockingLine(100e6);
         vm.prank(alice);
-        core.approveHolder(address(credit), address(earnShare), 0);
+        core.approveHolder(address(credit), address(earnShare), 0, 0);
         vm.expectRevert();
         credit.draw(lineId, alice, REF, 10e6, uint64(block.timestamp + 1 days));
     }
@@ -300,7 +301,7 @@ contract CreditLineTest is ProgramsEnv {
     function test_locking_repayShrinksTheLock() public {
         uint64 lineId = _lockingLine(1000e6);
         bytes32 id = _draw(lineId, 200e6);
-        core.capture(lender, id, 200e6, true);
+        credit.capture(id, 200e6, true);
         credit.sync(id);
         uint256 before = credit.lockedShares(lineId);
         usd.mint(alice, 100e6);
@@ -314,7 +315,7 @@ contract CreditLineTest is ProgramsEnv {
     function test_liquidate_onlyLender_onlyPastLtv_sellsJustEnough() public {
         uint64 lineId = _lockingLine(1000e6);
         bytes32 id = _draw(lineId, 400e6);
-        core.capture(lender, id, 400e6, true);
+        credit.capture(id, 400e6, true);
         credit.sync(id);
         vm.prank(lender);
         vm.expectPartialRevert(CreditLine.NotUndercollateralized.selector);
@@ -343,7 +344,7 @@ contract CreditLineTest is ProgramsEnv {
     function test_lender_cannotAddOwedOutsideADraw() public {
         uint64 lineId = _lockingLine(1000e6);
         bytes32 id = _draw(lineId, 400e6);
-        core.capture(lender, id, 400e6, true);
+        credit.capture(id, 400e6, true);
         credit.sync(id);
         // The line has no entry point for a lender to raise what the borrower owes.
         vm.prank(lender);
@@ -420,7 +421,7 @@ contract CreditLineTest is ProgramsEnv {
         assertEq(credit.lineOf(lineId).owed, 0);
         // The borrower's own repayment carries no reference and is never drawn again.
         bytes32 id = _draw(lineId, 100e6);
-        core.capture(lender, id, 100e6, true);
+        credit.capture(id, 100e6, true);
         credit.sync(id);
         usd.mint(alice, 100e6);
         vm.startPrank(alice);
@@ -448,7 +449,7 @@ contract CreditLineTest is ProgramsEnv {
     function test_repayFor_onlyTheProgramOrItsTreasuryKey() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         bytes32 id = _draw(lineId, 100e6);
-        core.capture(lender, id, 100e6, true);
+        credit.capture(id, 100e6, true);
         credit.sync(id);
         address key = makeAddr("treasury-key");
         usd.mint(key, 100e6);
@@ -478,7 +479,7 @@ contract CreditLineTest is ProgramsEnv {
         usd.mint(alice, savings);
         _depositEarn(alice, savings);
         vm.startPrank(alice);
-        core.approveHolder(address(credit), address(earnShare), type(uint128).max);
+        core.approveHolder(address(credit), address(earnShare), type(uint128).max, 0);
         credit.enableLocking(lineId);
         vm.stopPrank();
     }
@@ -486,7 +487,7 @@ contract CreditLineTest is ProgramsEnv {
     function _repaidLine() internal returns (uint64 lineId) {
         lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         bytes32 id = _draw(lineId, 400e6);
-        core.capture(lender, id, 400e6, true);
+        credit.capture(id, 400e6, true);
         credit.sync(id);
         // The program repays the line for the purchase, as a provisional credit does.
         usd.mint(address(this), 400e6);

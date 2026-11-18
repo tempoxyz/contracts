@@ -18,7 +18,7 @@ contract SavingsFacilityTest is ProgramsEnv {
         usd.mint(alice, 1000e6);
         shares = _depositEarn(alice, 1000e6);
         vm.prank(alice);
-        core.approveHolder(address(this), address(earnShare), type(uint128).max);
+        core.approveHolder(address(this), address(earnShare), type(uint128).max, 0);
     }
 
     function test_constructor_standingApprovals() public view {
@@ -35,7 +35,8 @@ contract SavingsFacilityTest is ProgramsEnv {
         assertEq(earnShare.balanceOf(address(facility)), 0);
         assertEq(facility.float(), FLOAT);
         assertEq(facility.heldShares(), 0);
-        assertEq(core.getHold(alice, ID).captured, leg);
+        // The final capture ends the leg, so the core forgets it.
+        assertEq(core.getHold(alice, address(this), ID).token, address(0));
         _assertCoreBalanced();
     }
 
@@ -50,7 +51,7 @@ contract SavingsFacilityTest is ProgramsEnv {
     function test_capture_partial() public {
         uint128 leg = _place(address(facility), 200e6);
         facility.capture(alice, ID, 50e6, false);
-        assertEq(core.getHold(alice, ID).held, leg - 50e6);
+        assertEq(core.getHold(alice, address(this), ID).held, leg - 50e6);
         facility.capture(alice, ID, 50e6, true);
         assertEq(core.reserved(alice, address(earnShare)), 0);
         assertEq(earnShare.balanceOf(alice), shares - 100e6);
@@ -101,7 +102,7 @@ contract SavingsFacilityTest is ProgramsEnv {
         vm.mockCall(address(earnVault), abi.encodeWithSignature("previewRedeem(uint256)", uint256(leg)), abi.encode(0));
         vm.expectRevert(SavingsFacility.NoQuote.selector);
         facility.capture(alice, ID, leg, true);
-        assertEq(core.getHold(alice, ID).captured, 0);
+        assertEq(core.getHold(alice, address(this), ID).held, leg);
     }
 
     function test_refund_depositsCashAndRefundsShares() public {
@@ -109,9 +110,8 @@ contract SavingsFacilityTest is ProgramsEnv {
         uint256 value = facility.capture(alice, ID, leg, true);
         usd.mint(address(this), value);
         usd.approve(address(facility), value);
-        uint256 refunded = facility.refund(alice, ID, value);
+        uint256 refunded = facility.refund(alice, ID, value, leg);
         assertApproxEqAbs(refunded, leg, 1);
-        assertEq(core.getHold(alice, ID).refunded, refunded);
         assertApproxEqAbs(earnShare.balanceOf(alice), shares, 1);
     }
 
@@ -120,19 +120,24 @@ contract SavingsFacilityTest is ProgramsEnv {
         facility.capture(alice, ID, leg, true);
         usd.mint(address(this), 1000e6);
         usd.approve(address(facility), 1000e6);
-        uint256 refunded = facility.refund(alice, ID, 1000e6);
+        // The placer bounds the refund by what it captured; the rest stays with the facility.
+        uint256 refunded = facility.refund(alice, ID, 1000e6, leg);
         assertEq(refunded, leg);
         assertGt(facility.heldShares(), 0);
         vm.expectRevert(SavingsFacility.NothingToRefund.selector);
-        facility.refund(alice, ID, 1e6);
+        facility.refund(alice, ID, 1e6, 0);
     }
 
-    function test_refund_onlyPlacer() public {
+    function test_refund_fromAnyCallerOnlyPaysTheOwner() public {
         uint128 leg = _place(address(facility), 100e6);
         facility.capture(alice, ID, leg, true);
-        vm.prank(bob);
-        vm.expectRevert(SavingsFacility.NotPlacer.selector);
-        facility.refund(alice, ID, 1e6);
+        // The core keeps no record to check a refund against: whoever pays it only gives the owner shares.
+        usd.mint(bob, 10e6);
+        vm.startPrank(bob);
+        usd.approve(address(facility), 10e6);
+        uint256 refunded = facility.refund(alice, ID, 10e6, type(uint256).max);
+        vm.stopPrank();
+        assertEq(earnShare.balanceOf(alice), shares - leg + refunded);
     }
 
     function test_funderOnly() public {

@@ -26,12 +26,12 @@ contract IssuerDeskTest is ProgramsEnv {
         for (uint256 i; i < 2; ++i) {
             address payee = i == 0 ? network : partner;
             vm.startPrank(payee);
-            core.approveHolder(address(desk), address(usd), type(uint128).max);
-            core.setDebtCap(settlement, address(usd), 1000e6);
+            core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
+            core.setPayeeTerms(settlement, address(usd), _withDebtCap(payee, settlement, address(usd), 1000e6));
             vm.stopPrank();
         }
         vm.prank(alice);
-        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
         IssuerDesk.Line[] memory lines = new IssuerDesk.Line[](2);
         lines[0] = IssuerDesk.Line({ payee: network, bps: 100, kind: "interchange" });
         lines[1] = IssuerDesk.Line({ payee: partner, bps: 200, kind: "program" });
@@ -95,7 +95,7 @@ contract IssuerDeskTest is ProgramsEnv {
         usd.mint(settlement, 100e6);
         vm.prank(issuer);
         desk.refund(P1, 100e6);
-        (address creditor, uint128 debt) = core.debtOf(network, address(usd));
+        (address creditor, uint128 debt) = _debt(network, address(usd));
         assertEq(creditor, settlement, "owed to the settlement account");
         assertEq(debt, 1e6, "the split it no longer has");
     }
@@ -110,7 +110,7 @@ contract IssuerDeskTest is ProgramsEnv {
         desk.refund(P1, 20e6);
         assertEq(usd.balanceOf(alice), 920e6, "the whole refund reaches the owner");
         assertEq(usd.balanceOf(settlement), 0.6e6, "the splits taken back");
-        (address creditor, uint128 debt) = core.debtOf(settlement, address(usd));
+        (address creditor, uint128 debt) = _debt(settlement, address(usd));
         assertEq(creditor, address(cards), "owed to the program");
         assertEq(debt, 13e6, "what the account lacked");
         assertEq(cards.issuerFunds(address(usd)), 37e6, "the program advanced it");
@@ -196,8 +196,7 @@ contract IssuerDeskTest is ProgramsEnv {
 
     function _disputed(uint128 amount) internal {
         _purchase(amount);
-        vm.prank(alice);
-        core.setDebtCap(settlement, address(usd), amount);
+        _setDebtCap(alice, settlement, address(usd), amount);
         vm.prank(issuer);
         desk.openDispute(P1, amount, hex"c1a1");
     }
@@ -212,7 +211,7 @@ contract IssuerDeskTest is ProgramsEnv {
         usd.transfer(bob, 990e6);
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
-        (address creditor, uint128 debt) = core.debtOf(alice, address(usd));
+        (address creditor, uint128 debt) = _debt(alice, address(usd));
         assertEq(creditor, settlement, "owed to the settlement account");
         assertEq(debt, 70e6, "what the cardholder no longer has");
         assertEq(usd.balanceOf(alice), 0, "the rest taken at once");
@@ -227,7 +226,7 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.prank(issuer);
         desk.disputeStep(P1, 2, 30e6, "", false);
         assertEq(usd.balanceOf(alice), 950e6, "provisional credit paid in full");
-        (address creditor, uint128 debt) = core.debtOf(settlement, address(usd));
+        (address creditor, uint128 debt) = _debt(settlement, address(usd));
         assertEq(creditor, address(cards), "owed to the program");
         assertEq(debt, 30e6 - 7e6, "what the account lacked");
     }
@@ -240,7 +239,7 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.prank(issuer);
         desk.resolveDispute(P1, true);
         assertEq(usd.balanceOf(alice), 1000e6, "the whole disputed amount comes back");
-        (address creditor, uint128 debt) = core.debtOf(settlement, address(usd));
+        (address creditor, uint128 debt) = _debt(settlement, address(usd));
         assertEq(creditor, address(cards), "owed to the program");
         assertEq(debt, 80e6 - 37.6e6, "what the account lacked");
         assertEq(usd.balanceOf(address(desk)), 0, "the desk keeps nothing");
@@ -317,8 +316,7 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.stopPrank();
         _purchase(100e6);
         assertEq(credit.lineOf(lineId).owed, 60e6, "drawn");
-        vm.prank(alice);
-        core.setDebtCap(settlement, address(usd), 100e6);
+        _setDebtCap(alice, settlement, address(usd), 100e6);
         vm.prank(issuer);
         desk.openDispute(P1, 100e6, hex"c1a1");
         usd.mint(settlement, 100e6);
@@ -339,7 +337,7 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(credit.lineOf(lineId).owed, 60e6, "drawn again");
         assertEq(usd.balanceOf(settlement), before + 100e6, "the lender pays the line's share, the cardholder the rest");
         assertEq(usd.balanceOf(alice), 0);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertEq(debt, 0);
     }
 
@@ -384,7 +382,7 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(credit.lineOf(lineId).owed, 25e6, "what the lender could fund");
         // The cardholder owes the other $75: the $40 it holds at once, the rest as debt.
         assertEq(usd.balanceOf(alice), 0);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertEq(debt, 35e6);
     }
 
@@ -401,7 +399,7 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(credit.lineOf(lineId).owed, 0, "a closed line is not drawn again");
         // The whole provisional credit comes back from the cardholder: the $40 it holds, the rest as debt.
         assertEq(usd.balanceOf(alice), 0);
-        (, uint128 debt) = core.debtOf(alice, address(usd));
+        (, uint128 debt) = _debt(alice, address(usd));
         assertEq(debt, 60e6);
     }
 
@@ -435,13 +433,13 @@ contract IssuerDeskTest is ProgramsEnv {
         usd.mint(settlement, 100e6);
         // The network already owes the issuer from an earlier refund, so recording more costs little.
         vm.prank(network);
-        core.approveHolder(address(desk), address(usd), 0);
+        core.approveHolder(address(desk), address(usd), 0, 0);
         vm.prank(issuer);
         desk.refund(P1, 10e6);
         uint256 owed = desk.payeeOwed(network, address(usd));
         assertGt(owed, 0);
         vm.prank(network);
-        core.approveHolder(address(desk), address(usd), 100e6);
+        core.approveHolder(address(desk), address(usd), 100e6, 0);
         // Searching down to the least gas the refund succeeds with, as gas estimation does: every refund that
         // succeeds takes the network's split back rather than recording it as owed.
         (uint256 low, uint256 high) = (0, 20_000_000);
@@ -462,7 +460,7 @@ contract IssuerDeskTest is ProgramsEnv {
     function test_refund_payeeRevokedApproval_stillRefunds() public {
         _purchase(100e6);
         vm.prank(network);
-        core.approveHolder(address(desk), address(usd), 0);
+        core.approveHolder(address(desk), address(usd), 0, 0);
         usd.mint(settlement, 100e6);
         vm.prank(issuer);
         desk.refund(P1, 100e6);
@@ -471,7 +469,7 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(usd.balanceOf(partner), 0, "the partner returned its split");
         assertEq(desk.payeeOwed(network, address(usd)), 1e6, "the network owes its split to the issuer");
         assertEq(desk.payeeOwed(partner, address(usd)), 0);
-        (, uint128 debt) = core.debtOf(network, address(usd));
+        (, uint128 debt) = _debt(network, address(usd));
         assertEq(debt, 0, "no debt on the core");
     }
 
@@ -481,7 +479,7 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.expectRevert();
         desk.collectPayeeOwed(network, address(usd), 1e6);
         vm.startPrank(network);
-        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
         usd.transfer(bob, 0.6e6);
         vm.stopPrank();
         uint256 before = usd.balanceOf(settlement);
@@ -505,7 +503,7 @@ contract IssuerDeskTest is ProgramsEnv {
         _purchase(100e6);
         vm.startPrank(network);
         usd.transfer(bob, 1e6);
-        core.setDebtCap(settlement, address(usd), 0);
+        core.setPayeeTerms(settlement, address(usd), _withDebtCap(network, settlement, address(usd), 0));
         vm.stopPrank();
         usd.mint(settlement, 100e6);
         vm.prank(issuer);
@@ -518,7 +516,7 @@ contract IssuerDeskTest is ProgramsEnv {
     function test_dispute_won_payeeRevokedApproval_stillResolves() public {
         _disputed(50e6);
         vm.prank(partner);
-        core.approveHolder(address(desk), address(usd), 0);
+        core.approveHolder(address(desk), address(usd), 0, 0);
         usd.mint(settlement, 50e6);
         vm.prank(issuer);
         desk.resolveDispute(P1, true);
@@ -632,8 +630,8 @@ contract IssuerDeskTest is ProgramsEnv {
     function _allowIssuerDebt(uint128 cap) internal {
         vm.startPrank(settlement);
         usd.approve(address(cards), type(uint256).max);
-        core.approveHolder(address(cards), address(usd), type(uint128).max);
-        core.setDebtCap(address(cards), address(usd), cap);
+        core.approveHolder(address(cards), address(usd), type(uint128).max, 0);
+        core.setPayeeTerms(address(cards), address(usd), _withDebtCap(settlement, address(cards), address(usd), cap));
         vm.stopPrank();
         usd.mint(address(this), 50e6);
         usd.approve(address(cards), 50e6);

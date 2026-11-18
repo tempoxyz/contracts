@@ -143,12 +143,12 @@ contract AccountLifecycleTest is ProgramsEnv {
 
     function test_payout_leavesLienedFunds() public {
         usd.mint(alice, 100e6);
-        core.grantLienRole(state, true);
+        _grantLienRole(address(usd), state);
         vm.prank(state);
         core.lien(alice, address(usd), bytes32("levy"), 30e6, 0);
         vm.prank(alice);
         assertEq(life.closeAccount(alice, heir, noVaults), 70e6);
-        assertEq(core.liened(alice, address(usd)), 30e6);
+        assertEq(core.reserved(alice, address(usd)), 30e6);
     }
 
     // Estates.

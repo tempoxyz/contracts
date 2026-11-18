@@ -12,6 +12,11 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "../../../src/program
 import { CoreEnv } from "../../core/harness/CoreEnv.sol";
 import { MockReservationCore } from "./MockReservationCore.sol";
 
+interface IMockToken {
+    function balanceOf(address account) external view returns (uint256);
+    function grantRole(bytes32 role, address account) external;
+}
+
 /// @notice The world card programs run on: real TIP-20 tokens and a real EarnVault from `CoreEnv`, the test model
 ///         of the reservation core etched at its precompile address, and one issuer's `CardProgram` with a
 ///         `SavingsFacility` and a `CreditLine` it accepts as funding sources.
@@ -62,8 +67,8 @@ abstract contract ProgramsEnv is CoreEnv {
         vm.prank(issuer);
         cards.issueCard(CARD, owner, uint40(block.timestamp + 365 days), limits, 7);
         vm.startPrank(owner);
-        core.approveHolder(address(cards), address(usd), type(uint128).max);
-        core.approveHolder(address(cards), address(earnShare), type(uint128).max);
+        core.approveHolder(address(cards), address(usd), type(uint128).max, 0);
+        core.approveHolder(address(cards), address(earnShare), type(uint128).max, 0);
         _setFunding(address(usd), address(facility), address(0), 0);
         cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
         vm.stopPrank();
@@ -87,7 +92,7 @@ abstract contract ProgramsEnv is CoreEnv {
     {
         usd.mint(lender, 100_000e6);
         vm.startPrank(lender);
-        core.approveHolder(address(credit), address(usd), type(uint128).max);
+        core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
         lineId = credit.openLine(
             borrower,
             address(usd),
@@ -143,8 +148,74 @@ abstract contract ProgramsEnv is CoreEnv {
         cards.capture(ref, amount, isFinal);
     }
 
+    /// @dev The program's leg `leg` of purchase `ref` on `owner`, which the program placed.
     function _hold(address owner, bytes32 ref, uint8 leg) internal view returns (IReservationCore.HoldRecord memory) {
-        return core.getHold(owner, cards.legId(ref, leg));
+        return core.getHold(owner, address(cards), cards.legId(ref, leg));
+    }
+
+    /// @dev What `owner` owes in `token`: its first creditor and that creditor's amount, as the old single-creditor core
+    ///      reported it. Tests with several creditors read `_owed`.
+    function _debt(address owner, address token) internal view returns (address creditor, uint128 amount) {
+        IReservationCore.Debt[] memory debts = core.debtOf(owner, token);
+        if (debts.length != 0) return (debts[0].creditor, debts[0].amount);
+    }
+
+    /// @dev What `owner` owes `creditor` in `token`.
+    function _owed(address owner, address token, address creditor) internal view returns (uint128) {
+        IReservationCore.Debt[] memory debts = core.debtOf(owner, token);
+        for (uint256 i; i < debts.length; ++i) {
+            if (debts[i].creditor == creditor) return debts[i].amount;
+        }
+        return 0;
+    }
+
+    /// @dev Repays `owner`'s debt in `token` from its whole balance, as the node does from each credit as it lands.
+    function _repay(address owner, address token) internal {
+        core.notifyCredit(token, owner, IMockToken(token).balanceOf(owner));
+    }
+
+    /// @dev Approves `holder` with an unlimited budget on the caller's `token`, with no period.
+    function _approveAll(address holder, address token) internal {
+        core.approveHolder(holder, token, type(uint128).max, 0);
+    }
+
+    /// @dev `owner`'s terms for `payee` in `token` with `debtCap` set.
+    function _withDebtCap(address owner, address payee, address token, uint128 debtCap)
+        internal
+        view
+        returns (IReservationCore.PayeeTerms memory t)
+    {
+        t = core.payeeTerms(owner, payee, token);
+        t.debtCap = debtCap;
+    }
+
+    /// @dev Sets `owner`'s debt cap for `payee` in `token`, keeping its other terms.
+    function _setDebtCap(address owner, address payee, address token, uint128 debtCap) internal {
+        IReservationCore.PayeeTerms memory t = _withDebtCap(owner, payee, token, debtCap);
+        vm.prank(owner);
+        core.setPayeeTerms(payee, token, t);
+    }
+
+    /// @dev Sets `owner`'s offline cap for `payee` in `token`, keeping its other terms.
+    function _setOfflineCap(address owner, address payee, address token, uint128 offlineCap) internal {
+        IReservationCore.PayeeTerms memory t = core.payeeTerms(owner, payee, token);
+        t.offlineCap = offlineCap;
+        vm.prank(owner);
+        core.setPayeeTerms(payee, token, t);
+    }
+
+    /// @dev Sets `owner`'s capture tolerance for `payee` in `token`, keeping its other terms. Holds placed later
+    ///      take it.
+    function _setTolerance(address owner, address payee, address token, uint16 bps) internal {
+        IReservationCore.PayeeTerms memory t = core.payeeTerms(owner, payee, token);
+        t.toleranceBps = bps;
+        vm.prank(owner);
+        core.setPayeeTerms(payee, token, t);
+    }
+
+    /// @dev Gives `account` the token's lien role.
+    function _grantLienRole(address token, address account) internal {
+        IMockToken(token).grantRole(keccak256("LIEN_ROLE"), account);
     }
 
     /// @dev The model holds every reserved token itself, so its balance must equal the total reserved.
