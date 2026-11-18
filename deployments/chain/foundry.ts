@@ -122,11 +122,15 @@ export function solarVerificationArguments(solc: string, versionOutput: string):
   return []
 }
 
-/** The solar build a solc-wrapper `--version` output names, or null for any other compiler. */
+/**
+ * The solar build a solc-wrapper `--version` output names, or null for any other compiler. A
+ * prerelease build (`0.3.0-dev`) is named like a release; the verifier rebuilds either only once it pins it.
+ */
 export function solcWrapperVersion(output: string) {
   return (
-    /^Version: (\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.\d+\.\d+\.\d+)\s*$/m.exec(output)?.[1] ??
-    null
+    /^Version: (\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\s*$/m.exec(
+      output,
+    )?.[1] ?? null
   )
 }
 

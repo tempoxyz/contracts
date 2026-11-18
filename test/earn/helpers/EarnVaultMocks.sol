@@ -130,7 +130,11 @@ contract ReentrantMockToken is CoreMockToken {
         address target = reentryTarget;
         if (target == address(0)) return;
         reentryTarget = address(0);
-        (reentrySucceeded, reentryResult) = target.call(reentryCall);
+        // Bound to locals first: solar main stores the empty bytes when a call's result goes straight to
+        // storage in a tuple assignment (fixed upstream in paradigmxyz/solar#2722).
+        (bool succeeded, bytes memory result) = target.call(reentryCall);
+        reentrySucceeded = succeeded;
+        reentryResult = result;
     }
 }
 

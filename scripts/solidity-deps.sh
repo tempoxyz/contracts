@@ -66,7 +66,15 @@ install_solar() (
   source=$(mktemp -d "$PWD/.solar/.source-$rev.XXXXXX")
   git clone --quiet --filter=blob:none https://github.com/paradigmxyz/solar "$source"
   git -C "$source" -c advice.detachedHead=false checkout --quiet "$rev"
-  cargo install --quiet --locked --path "$source/crates/solar" --root "$temporary"
+  # Build with the Rust release solar declares as its minimum when the default toolchain is older.
+  msrv=$(sed -n 's/^rust-version = "\([0-9.]*\)".*/\1/p' "$source/Cargo.toml" 2>/dev/null || true)
+  toolchain=()
+  if [[ -n "$msrv" ]] && command -v rustup >/dev/null &&
+    [[ "$(printf '%s\n' "$msrv" "$(rustc --version | cut -d' ' -f2)" | sort -V | head -1)" != "$msrv" ]]; then
+    rustup toolchain install "$msrv" --profile minimal --no-self-update >&2
+    toolchain=("+$msrv")
+  fi
+  cargo "${toolchain[@]+"${toolchain[@]}"}" install --quiet --locked --path "$source/crates/solar" --root "$temporary"
   solar_receipt write "$temporary" "$rev" || {
     echo "cargo did not produce an executable solar compiler; no installation published" >&2
     exit 1

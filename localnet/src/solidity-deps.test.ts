@@ -23,6 +23,22 @@ afterEach(() => {
 })
 
 describe('solidity-deps solar installation', () => {
+  it('builds with the Rust release solar requires when the default toolchain is older', () => {
+    const fixture = setup()
+    const result = fixture.install(false, [], '1.100')
+    expect(result.status, result.stderr).toBe(0)
+    expect(fixture.rustupCalls()).toEqual([
+      ['toolchain', 'install', '1.100', '--profile', 'minimal', '--no-self-update'],
+    ])
+    expect(fixture.calls()[0]?.[0]).toBe('+1.100')
+
+    const current = setup()
+    const unchanged = current.install(false, [], '1.98')
+    expect(unchanged.status, unchanged.stderr).toBe(0)
+    expect(current.rustupCalls()).toEqual([])
+    expect(current.calls()[0]?.[0]).toBe('install')
+  })
+
   it('records the digest only after a fresh pinned cargo installation', () => {
     const fixture = setup()
     const result = fixture.install()
@@ -183,10 +199,23 @@ if (process.env.TEST_CARGO_FAIL === '1') process.exit(33);
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(gitCallsFile)}, JSON.stringify(args) + '\\n');
-if (args[0] === 'clone') fs.mkdirSync(args[args.length - 1], { recursive: true });
+if (args[0] === 'clone') {
+  fs.mkdirSync(args[args.length - 1], { recursive: true });
+  if (process.env.TEST_SOLAR_MSRV) fs.writeFileSync(args[args.length - 1] + '/Cargo.toml', 'rust-version = "' + process.env.TEST_SOLAR_MSRV + '" # MSRV\\n');
+}
 `,
   )
   chmodSync(join(root, 'bin/git'), 0o700)
+  const rustupCallsFile = join(root, 'rustup-calls.jsonl')
+  writeFileSync(join(root, 'bin/rustc'), '#!/bin/sh\necho "rustc 1.99.1 (58cf8f9c3 2026-10-13)"\n')
+  chmodSync(join(root, 'bin/rustc'), 0o700)
+  writeFileSync(
+    join(root, 'bin/rustup'),
+    `#!/usr/bin/env node
+require('node:fs').appendFileSync(${JSON.stringify(rustupCallsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');
+`,
+  )
+  chmodSync(join(root, 'bin/rustup'), 0o700)
   const directory = join(root, '.solar', revision)
   const binary = join(directory, 'bin/solar')
   const receipt = join(directory, 'install-receipt.json')
@@ -209,7 +238,14 @@ if (args[0] === 'clone') fs.mkdirSync(args[args.length - 1], { recursive: true }
             .split('\n')
             .map((line) => JSON.parse(line) as string[])
         : [],
-    install: (fail = false, args: readonly string[] = []) =>
+    rustupCalls: () =>
+      existsSync(rustupCallsFile)
+        ? readFileSync(rustupCallsFile, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as string[])
+        : [],
+    install: (fail = false, args: readonly string[] = [], msrv = '') =>
       spawnSync('bash', ['scripts/solidity-deps.sh', ...args], {
         cwd: root,
         encoding: 'utf8',
@@ -217,6 +253,7 @@ if (args[0] === 'clone') fs.mkdirSync(args[args.length - 1], { recursive: true }
           HOME: root,
           PATH: `${join(root, 'bin')}:${process.env.PATH}`,
           TEST_CARGO_FAIL: fail ? '1' : '0',
+          TEST_SOLAR_MSRV: msrv,
         },
       }),
     seed: () => {

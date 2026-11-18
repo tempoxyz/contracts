@@ -23,30 +23,45 @@ library RouterFactoryChecks {
         return keccak256(runtime) == keccak256(expected);
     }
 
-    /// @dev Each of the two trailers is solar's CBOR map `{ipfs: <34-byte multihash>, solar: <3-byte version>}`
-    ///      followed by its 2-byte length (0x0034), 54 bytes in all; an INVALID byte precedes each.
+    /// @dev Each of the two trailers is solar's CBOR map `{ipfs: <34-byte multihash>, solar: <version>}` followed
+    ///      by its 2-byte length; an INVALID byte precedes each. The version is a CBOR byte or text string (a
+    ///      release encodes it differently from a development build), and both trailers must have one layout.
     function _normalize(bytes memory runtime) private pure returns (bool) {
-        if (runtime.length < 110) return false;
-        uint256 start = runtime.length - 109;
-        if (runtime[start - 1] != 0xfe || runtime[start + 54] != 0xfe) return false;
+        if (runtime.length < 2) return false;
+        uint256 size = 2 + (uint256(uint8(runtime[runtime.length - 2])) << 8 | uint8(runtime[runtime.length - 1]));
+        // Prefix, digest and key take 48 bytes; the version item at least one more.
+        if (size < 51 || runtime.length < 2 * size + 2) return false;
+        uint256 start = runtime.length - (2 * size + 1);
+        if (runtime[start - 1] != 0xfe || runtime[start + size] != 0xfe) return false;
         for (uint256 i; i < 2; ++i) {
-            uint256 offset = start + i * 55;
+            uint256 offset = start + i * (size + 1);
             bytes10 prefix;
             bytes6 compilerKey;
             assembly ("memory-safe") {
                 prefix := mload(add(add(runtime, 32), offset))
-                // Read the trailer's final 32 bytes so the load never extends beyond the bytes allocation.
+                // Bytes [offset + 22, offset + 54) always lie inside this trailer, so the load stays in bounds.
                 compilerKey := shl(160, mload(add(add(runtime, 54), offset)))
             }
-            if (
-                prefix != hex"a2646970667358221220" || compilerKey != hex"65736f6c6172" || runtime[offset + 48] != 0x43
-                    || runtime[offset + 52] != 0x00 || runtime[offset + 53] != 0x34
-            ) return false;
+            if (prefix != hex"a2646970667358221220" || compilerKey != hex"65736f6c6172") return false;
+            if (_versionItemLength(runtime, offset + 48) != size - 50) return false;
+            if (runtime[offset + size - 2] != runtime[runtime.length - 2]) return false;
+            if (runtime[offset + size - 1] != runtime[runtime.length - 1]) return false;
             // Only the 32-byte IPFS multihash digest is mutable; the multihash type stays checked.
             assembly ("memory-safe") {
                 mstore(add(add(runtime, 42), offset), 0)
             }
         }
         return true;
+    }
+
+    /// @dev The encoded length of the CBOR byte or text string at `at`, or zero for any other item.
+    function _versionItemLength(bytes memory runtime, uint256 at) private pure returns (uint256) {
+        uint8 head = uint8(runtime[at]);
+        uint8 major = head & 0xe0;
+        if (major != 0x40 && major != 0x60) return 0;
+        uint8 info = head & 0x1f;
+        if (info < 24) return 1 + info;
+        if (info == 24) return 2 + uint8(runtime[at + 1]);
+        return 0;
     }
 }
