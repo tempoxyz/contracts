@@ -3,21 +3,14 @@ pragma solidity ^0.8.36;
 
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
-import { CardFunding } from "../../src/programs/CardFunding.sol";
-import { CardProgram } from "../../src/programs/CardProgram.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
-import { IssuerDesk } from "../../src/programs/IssuerDesk.sol";
+import { CoreEnv } from "../core/harness/CoreEnv.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
 
-/// @notice Purchases funded in another stablecoin, and issuers settling in one: rate locks at authorization, the
-///         capture that pays the issuer exactly, slippage within the owner's tolerance, re-quotes once it lapses,
-///         reversals that keep the leg's share rounded up and refunds at the reference rate.
-contract ConversionTest is ProgramsEnv {
-    bytes32 internal constant P1 = bytes32("purchase-1");
-    bytes32 internal constant P2 = bytes32("purchase-2");
-    uint8 internal constant CASH = 1;
-    uint8 internal constant TOKEN = 64;
+/// @notice Conversion on its own: reference rates and their age, quotes and swaps through the hub, the reference
+///         floor and ceiling every swap stays within, conversion cost, owners' rate tolerances per program, and who
+///         configures it. Purchases that convert are in CashSourceConversion.t.sol.
+contract ConversionTest is CoreEnv {
     // EUR at $1.10 with a 30 bps conversion cost each way.
     uint256 internal constant BID = 1.0967e18;
     uint256 internal constant ASK = 1_103_310_000_000_000_000; // ~1.1 / 0.997
@@ -26,10 +19,10 @@ contract ConversionTest is ProgramsEnv {
     Conversion internal conv;
     FixedPricePool internal bid;
     FixedPricePool internal ask;
+    address internal trustedProgram = makeAddr("program");
 
     function setUp() public {
-        _deployPrograms();
-        _issue(alice, _limits(5000e6, 10_000e6, 50_000e6));
+        _deployCore();
         eur = _createToken("Euro", "EURX");
         conv = new Conversion(address(usd), address(this));
         bid = new FixedPricePool(address(eur), address(usd), BID);
@@ -39,13 +32,9 @@ contract ConversionTest is ProgramsEnv {
         conv.setVenue(address(eur), address(usd), address(bid), true);
         conv.setVenue(address(usd), address(eur), address(ask), false);
         conv.setReferenceRate(address(eur), 1.1e18);
-        conv.setTrusted(address(cards), true);
+        conv.setTrusted(trustedProgram, true);
         usd.mint(address(conv), 100_000e6);
         eur.mint(address(conv), 100_000e6);
-        _setting(abi.encodeCall(cards.setConversion, (address(conv))));
-        vm.startPrank(alice);
-        core.approveHolder(address(cards), address(eur), type(uint128).max, 0);
-        vm.stopPrank();
     }
 
     // Conversion on its own.
@@ -166,8 +155,8 @@ contract ConversionTest is ProgramsEnv {
 
     function test_lapsed_followsTheOwnersToleranceForTheCallingProgram() public {
         vm.prank(alice);
-        conv.setRateTolerance(address(cards), 200);
-        vm.startPrank(address(cards));
+        conv.setRateTolerance(trustedProgram, 200);
+        vm.startPrank(trustedProgram);
         assertFalse(conv.lapsed(alice, 1e18, 1.02e18));
         assertTrue(conv.lapsed(alice, 1e18, 1.0201e18));
         vm.stopPrank();
@@ -186,7 +175,7 @@ contract ConversionTest is ProgramsEnv {
         vm.expectRevert(Conversion.Unauthorized.selector);
         conv.sweep(address(eur), bob, 1);
         vm.expectRevert(Conversion.InvalidAmount.selector);
-        conv.setRateTolerance(address(cards), 10_001);
+        conv.setRateTolerance(trustedProgram, 10_001);
         vm.stopPrank();
     }
 
@@ -199,536 +188,13 @@ contract ConversionTest is ProgramsEnv {
         vm.stopPrank();
     }
 
-    // Purchases in another stablecoin, for a USD issuer.
-
-    function test_tokenLeg_locksTheRateAndPaysTheIssuerExactly() public {
-        _tokenFirst(alice, 100);
-        eur.mint(alice, 200e6);
-        _authorize(P1, 100e6);
-        assertEq(cards.lockedRate(cards.legId(P1, TOKEN)), BID);
-        uint256 held = _hold(alice, P1, TOKEN).held;
-        assertEq(held, _up(100e6, BID));
-        _capture(P1, 100e6, true);
-        assertEq(usd.balanceOf(settlement), 100e6);
-        assertEq(eur.balanceOf(alice), 200e6 - conv.quoteOut(address(eur), address(usd), 100e6));
-        assertEq(core.reserved(alice, address(eur)), 0);
-        assertEq(eur.balanceOf(address(cards)), 0, "nothing left in the program");
-        assertEq(usd.balanceOf(address(cards)), 0, "nothing left in the program");
-    }
-
-    function test_tokenLeg_skippedWhileConvertingCostsMoreThanAllowed() public {
-        _tokenFirst(alice, 20);
-        eur.mint(alice, 200e6);
-        usd.mint(alice, 100e6);
-        _authorize(P1, 50e6);
-        assertEq(_hold(alice, P1, TOKEN).held, 0);
-        assertEq(_hold(alice, P1, CASH).held, 50e6);
-    }
-
-    function test_capture_withinToleranceThePriceTheHoldLocked() public {
-        vm.prank(alice);
-        conv.setRateTolerance(address(cards), 200);
-        _tokenFirst(alice, 100);
-        eur.mint(alice, 200e6);
-        _authorize(P1, 100e6);
-        uint256 held = _hold(alice, P1, TOKEN).held;
-        // The euro falls 1%: the cardholder pays only the euros the hold locked, and the issuer carries the slippage.
-        bid.setPrice(BID * 99 / 100);
-        conv.setReferenceRate(address(eur), 1.1e18 * 99 / 100);
-        _capture(P1, 100e6, true);
-        uint256 paid = usd.balanceOf(settlement);
-        assertEq(paid, held * (BID * 99 / 100) / 1e18);
-        assertLt(paid, 100e6);
-        assertEq(eur.balanceOf(alice), 200e6 - held);
-    }
-
-    function test_capture_pastToleranceRequotesAndCostsTheCardholderMore() public {
-        vm.prank(alice);
-        conv.setRateTolerance(address(cards), 200);
-        _tokenFirst(alice, 100);
-        eur.mint(alice, 200e6);
-        _authorize(P1, 100e6);
-        uint256 held = _hold(alice, P1, TOKEN).held;
-        bid.setPrice(BID * 95 / 100);
-        conv.setReferenceRate(address(eur), 1.1e18 * 95 / 100);
-        _capture(P1, 100e6, true);
-        assertEq(usd.balanceOf(settlement), 100e6);
-        uint256 spent = 200e6 - eur.balanceOf(alice);
-        assertGt(spent, held);
-        assertEq(spent, conv.quoteOut(address(eur), address(usd), 100e6));
-    }
-
-    function test_capture_neverSpendsMoreThanTheOwnerHas() public {
-        _tokenFirst(alice, 100);
-        eur.mint(alice, 50e6);
-        _authorize(P1, 50e6);
-        vm.expectRevert();
-        _capture(P1, 100e6, true);
-    }
-
-    // An issuer settling in another stablecoin.
-
-    function test_localIssuer_cashConvertsAtCaptureAndTheIssuerGetsItsTokenExactly() public {
-        _localIssuer();
-        usd.mint(alice, 100e6);
-        _authorize(P1, 40e6);
-        uint256 held = _hold(alice, P1, CASH).held;
-        assertEq(held, _up(40e6, uint256(1e18) * 1e18 / ASK));
-        uint256 cost = conv.quoteOut(address(usd), address(eur), 40e6);
-        _capture(P1, 40e6, true);
-        assertEq(eur.balanceOf(settlement), 40e6);
-        // At the locked rate the owner pays the whole hold; the venue's rounding left over reaches the settlement account.
-        assertEq(usd.balanceOf(alice), 100e6 - held);
-        assertEq(usd.balanceOf(settlement), held - cost);
-    }
-
-    function test_localIssuer_parLegNeedsNoConversion() public {
-        _localIssuer();
-        _tokenFirst(alice, 0);
-        eur.mint(alice, 100e6);
-        _authorize(P1, 60e6);
-        assertEq(_hold(alice, P1, TOKEN).held, 60e6);
-        _capture(P1, 60e6, true);
-        assertEq(eur.balanceOf(settlement), 60e6);
-        assertEq(eur.balanceOf(alice), 40e6);
-    }
-
-    function test_localIssuer_partialReversalKeepsHalfRoundedUp() public {
-        _localIssuer();
-        usd.mint(alice, 100e6);
-        _authorize(P1, 40e6);
-        uint256 placed = _hold(alice, P1, CASH).held;
-        vm.prank(issuer);
-        cards.adjust(P1, 20e6);
-        assertEq(_hold(alice, P1, CASH).held, (placed + 1) / 2);
-    }
-
-    function test_localIssuer_refundPaysTheCardholderAtTheReferenceRate() public {
-        _localIssuer();
-        usd.mint(alice, 100e6);
-        _authorize(P1, 40e6);
-        _capture(P1, 40e6, true);
-        uint256 cash = usd.balanceOf(alice);
-        eur.mint(issuer, 20e6);
-        vm.prank(issuer);
-        eur.approve(address(cards), 20e6);
-        vm.prank(issuer);
-        cards.refund(P1, 20e6);
-        assertEq(usd.balanceOf(alice), cash + 22e6);
-        assertEq(eur.balanceOf(issuer), 0);
-    }
-
-    function test_localIssuer_lateChargeIsOwedInItsTokenAndCashRepaysItThroughTheVenue() public {
-        _localIssuer();
-        _setDebtCap(alice, address(cards), address(eur), 50e6);
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 30e6, merchant);
-        (address creditor, uint128 debt) = _debt(alice, address(eur));
-        assertEq(creditor, address(cards));
-        assertEq(debt, 30e6);
-        // The debt is in the program's exposure, so the issuer keeps its token until it is repaid.
-        (, uint256 owing, uint256 debtors) = cards.outstanding();
-        assertEq(owing, 30e6);
-        assertEq(debtors, 1);
-        (uint64 seq,,,) = cards.ledger();
-        vm.startPrank(issuer);
-        cards.acknowledgeSettlement(seq);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(3)));
-        cards.setSettlementToken(address(usd));
+    function test_convertAtMid_paysAtTheReferenceRateFromTheFloat() public {
+        usd.mint(trustedProgram, 22e6);
+        vm.startPrank(trustedProgram);
+        usd.approve(address(conv), 22e6);
+        assertEq(conv.convertAtMid(address(usd), address(eur), 22e6, bob), 20e6);
         vm.stopPrank();
-        // Cash arriving later converts to repay the euro debt, and the issuer gets its token.
-        usd.mint(alice, 50e6);
-        uint256 cost = conv.quoteOut(address(usd), address(eur), 30e6);
-        cards.repayConverted(alice);
-        // The node repays debt from each credit as it lands; the model does it on the next operation.
-        _repay(alice, address(eur));
-        (, debt) = _debt(alice, address(eur));
-        assertEq(debt, 0);
-        assertEq(usd.balanceOf(alice), 50e6 - cost);
-        assertEq(eur.balanceOf(alice), 0);
-        assertEq(eur.balanceOf(address(cards)), 30e6);
-        (, owing,) = cards.outstanding();
-        assertEq(owing, 0);
-        // Nothing owed, nothing taken.
-        assertEq(cards.repayConverted(alice), 0);
-        assertEq(usd.balanceOf(alice), 50e6 - cost);
-    }
-
-    function test_localIssuer_forcePostConvertsCashAndRefundsItAtTodaysRate() public {
-        _localIssuer();
-        usd.mint(alice, 100e6);
-        uint256 cost = conv.quoteOut(address(usd), address(eur), 10e6);
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 10e6, merchant);
-        assertEq(usd.balanceOf(alice), 100e6 - cost);
-        assertEq(eur.balanceOf(settlement), 10e6);
-        (, uint128 debt) = _debt(alice, address(eur));
-        assertEq(debt, 0);
-        eur.mint(issuer, 10e6);
-        vm.prank(issuer);
-        eur.approve(address(cards), 10e6);
-        vm.prank(issuer);
-        cards.refund(P1, 10e6);
-        // The refund gives the USD cash back at today's reference rate, not the venue's price.
-        uint256 mid = conv.mid(address(usd), address(eur));
-        assertEq(usd.balanceOf(alice), 100e6 - cost + 10e6 * 1e18 / mid);
-    }
-
-    function test_localIssuer_refundPastDebtCapRepaysAndLandsTheRestInItsToken() public {
-        _localIssuer();
-        eur.mint(alice, 20e6);
-        _setDebtCap(alice, address(cards), address(eur), 50e6);
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 80e6, merchant);
-        assertEq(cards.purchaseToken(P1), address(eur));
-        (, uint128 debt) = _debt(alice, address(eur));
-        assertEq(debt, 50e6);
-        eur.mint(issuer, 80e6);
-        vm.prank(issuer);
-        eur.approve(address(cards), 80e6);
-        vm.prank(issuer);
-        cards.refund(P1, 80e6);
-        (, debt) = _debt(alice, address(eur));
-        assertEq(debt, 0);
-        assertEq(core.available(alice, address(eur)), 30e6);
-        assertEq(eur.balanceOf(issuer), 0);
-    }
-
-    function test_localIssuer_partRepaysWithWhatCashThereIs() public {
-        _localIssuer();
-        _setDebtCap(alice, address(cards), address(eur), 50e6);
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 30e6, merchant);
-        usd.mint(alice, 11e6);
-        uint256 repaid = conv.quoteIn(address(usd), address(eur), 11e6);
-        cards.repayConverted(alice);
-        _repay(alice, address(eur));
-        (, uint128 debt) = _debt(alice, address(eur));
-        assertEq(debt, 30e6 - repaid);
-        assertEq(usd.balanceOf(alice), 0);
-    }
-
-    function test_setSettlementToken_refusedWhilePurchasesAreUnsettled() public {
-        usd.mint(alice, 100e6);
-        _authorize(P1, 10e6);
-        vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(1)));
-        cards.setSettlementToken(address(eur));
-    }
-
-    function test_setSettlementToken_refusedWhileTheSettlementBalanceIsLiened() public {
-        _localIssuer();
-        eur.mint(settlement, 10e6);
-        address authority = makeAddr("authority");
-        _grantLienRole(address(eur), authority);
-        vm.prank(authority);
-        core.lien(settlement, address(eur), bytes32("freeze"), 5e6, 0);
-        vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(6)));
-        cards.setSettlementToken(address(usd));
-        vm.prank(authority);
-        core.release(settlement, authority, bytes32("freeze"));
-        assertEq(core.reserved(settlement, address(eur)), 0);
-    }
-
-    function test_desk_refundsAnEarlierTokensPurchaseInTodaysTokenAndConvertsItsSplitsBack() public {
-        IssuerDesk desk = new IssuerDesk(cards);
-        address network = makeAddr("network");
-        IssuerDesk.Line[] memory lines = new IssuerDesk.Line[](1);
-        lines[0] = IssuerDesk.Line({ payee: network, bps: 100, kind: "interchange" });
-        vm.startPrank(issuer);
-        cards.setOperator(address(desk), 7, 1e30);
-        desk.setTerms(lines);
-        vm.stopPrank();
-        vm.startPrank(settlement);
-        usd.approve(address(desk), type(uint256).max);
-        eur.approve(address(desk), type(uint256).max);
-        vm.stopPrank();
-        vm.prank(network);
-        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
-        // Booked in dollars, then the issuer settles in euros.
-        usd.mint(alice, 100e6);
-        _authorize(P1, 40e6);
-        vm.prank(issuer);
-        desk.capture(P1, 40e6, true);
-        assertEq(usd.balanceOf(network), 0.4e6);
-        (uint64 seq,,,) = cards.ledger();
-        uint64 captured = seq;
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
-        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
-        // A $22 refund costs the issuer EUR 20 at the reference rate, and the network gives back its dollar split, which
-        // reaches the issuer as EUR 0.20 at the reference rate.
-        uint256 cash = usd.balanceOf(alice);
-        eur.mint(settlement, 50e6);
-        vm.prank(issuer);
-        desk.refund(P1, 22e6);
-        assertEq(usd.balanceOf(alice), cash + 22e6);
-        assertEq(eur.balanceOf(settlement), 30.2e6);
-        assertEq(eur.balanceOf(address(desk)), 0);
-        assertEq(usd.balanceOf(network), 0.18e6);
-        // An undercharge would draw euros for dollars, so the issuer charges it as a new purchase instead.
-        vm.prank(issuer);
-        vm.expectRevert(IssuerDesk.NotCorrectable.selector);
-        desk.correct(P1, captured, -1e6, "undercharge");
-        // The rest refunds, and nothing past what it captured.
-        vm.prank(issuer);
-        desk.refund(P1, 18e6);
-        assertEq(usd.balanceOf(alice), cash + 40e6);
-        vm.prank(issuer);
-        vm.expectRevert();
-        desk.refund(P1, 0.01e6);
-    }
-
-    function test_desk_rewardOnAnEarlierTokensPurchaseReturnsToItsFunderInTodaysToken() public {
-        IssuerDesk desk = new IssuerDesk(cards);
-        address network = makeAddr("network");
-        IssuerDesk.Line[] memory lines = new IssuerDesk.Line[](1);
-        lines[0] = IssuerDesk.Line({ payee: network, bps: 100, kind: "interchange" });
-        IssuerDesk.Reward[] memory rewards = new IssuerDesk.Reward[](1);
-        rewards[0] = IssuerDesk.Reward({ funder: network, bps: 50, kind: "cashback" });
-        vm.startPrank(issuer);
-        cards.setOperator(address(desk), 7, 1e30);
-        desk.setTerms(lines);
-        desk.setRewards(rewards);
-        vm.stopPrank();
-        vm.startPrank(settlement);
-        usd.approve(address(desk), type(uint256).max);
-        eur.approve(address(desk), type(uint256).max);
-        vm.stopPrank();
-        vm.startPrank(network);
-        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
-        core.setPayeeTerms(settlement, address(usd), _withDebtCap(network, settlement, address(usd), 1e6));
-        vm.stopPrank();
-        vm.prank(alice);
-        core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
-        usd.mint(alice, 100e6);
-        _authorize(P1, 40e6);
-        vm.prank(issuer);
-        desk.capture(P1, 40e6, true);
-        // The network keeps 40 cents of its split less the 20 cent reward paid to the cardholder.
-        assertEq(usd.balanceOf(network), 0.2e6);
-        (uint64 seq,,,) = cards.ledger();
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
-        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
-        uint256 cash = usd.balanceOf(alice);
-        eur.mint(settlement, 50e6);
-        vm.prank(issuer);
-        desk.refund(P1, 22e6);
-        // The refund takes back 11 cents of the reward, which reaches its funder as EUR 0.10 at the reference rate.
-        assertEq(usd.balanceOf(alice), cash + 22e6 - 0.11e6);
-        assertEq(eur.balanceOf(network), 0.1e6);
-        // Its 22 cent split share came out of the 20 cents it kept, and it owes the rest in dollars.
-        (, uint128 owed) = _debt(network, address(usd));
-        assertEq(owed, 0.02e6);
-        assertEq(usd.balanceOf(address(desk)), 0);
-        assertEq(eur.balanceOf(address(desk)), 0);
-    }
-
-    function test_desk_wonDisputeOnAnEarlierTokensPurchaseGivesBackItsUsage() public {
-        IssuerDesk desk = new IssuerDesk(cards);
-        vm.prank(issuer);
-        cards.setOperator(address(desk), 7, 1e30);
-        vm.startPrank(settlement);
-        usd.approve(address(desk), type(uint256).max);
-        eur.approve(address(desk), type(uint256).max);
-        vm.stopPrank();
-        (,,, uint64 daySpent0, uint64 monthSpent0) = cards.usageOf(alice);
-        usd.mint(alice, 100e6);
-        _authorize(P1, 40e6);
-        vm.prank(issuer);
-        desk.capture(P1, 40e6, true);
-        (uint64 seq,,,) = cards.ledger();
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
-        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
-        eur.mint(settlement, 100e6);
-        vm.prank(issuer);
-        desk.refund(P1, 15e6);
-        vm.prank(issuer);
-        desk.openDispute(P1, 20e6, hex"c1a8");
-        vm.prank(issuer);
-        desk.disputeStep(P1, 2, 20e6, "", false);
-        vm.prank(issuer);
-        desk.resolveDispute(P1, true);
-        (,,, uint64 daySpent, uint64 monthSpent) = cards.usageOf(alice);
-        assertEq(daySpent, daySpent0 + 5e6, "day: the undisputed $5 still counts");
-        assertEq(monthSpent, monthSpent0 + 5e6, "month: the undisputed $5 still counts");
-    }
-
-    function test_desk_wonDisputeOnAPurchaseBookedInAScaledTokenGivesBackItsUsage() public {
-        ITIP20Token gbp = _createToken("Pound", "GBPX");
-        IssuerDesk desk = new IssuerDesk(cards);
-        vm.prank(issuer);
-        cards.setOperator(address(desk), 7, 1e30);
-        vm.startPrank(settlement);
-        eur.approve(address(desk), type(uint256).max);
-        gbp.approve(address(desk), type(uint256).max);
-        vm.stopPrank();
-        (,,, uint64 daySpent0, uint64 monthSpent0) = cards.usageOf(alice);
-        _localIssuer();
-        eur.mint(alice, 100e6);
-        _tokenFirst(alice, 100);
-        _authorize(P1, 40e6);
-        vm.prank(issuer);
-        desk.capture(P1, 40e6, true);
-        (uint64 seq,,,) = cards.ledger();
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
-        uint256 held = eur.balanceOf(settlement);
-        vm.prank(settlement);
-        eur.transfer(bob, held);
-        conv.setReferenceRate(address(gbp), 1.25e18);
-        _setting(abi.encodeCall(cards.setSettlementToken, (address(gbp))));
-        gbp.mint(settlement, 100e6);
-        vm.prank(issuer);
-        desk.openDispute(P1, 20e6, hex"c1a8");
-        vm.prank(issuer);
-        desk.disputeStep(P1, 2, 20e6, "", false);
-        vm.prank(issuer);
-        desk.resolveDispute(P1, true);
-        // The EUR 20 credited gives back the $22 it counted; the undisputed EUR 20 still counts.
-        (,,, uint64 daySpent, uint64 monthSpent) = cards.usageOf(alice);
-        assertEq(daySpent, daySpent0 + 22e6, "day");
-        assertEq(monthSpent, monthSpent0 + 22e6, "month");
-        assertEq(gbp.balanceOf(alice), 17.6e6, "the provisional credit came in today's token at the reference rate");
-    }
-
-    function test_setSettlementToken_issuerOnly() public {
-        vm.prank(alice);
-        vm.expectRevert();
-        cards.setSettlementToken(address(eur));
-    }
-
-    function test_setOrder_rejectsBadTokenEntries() public {
-        CardFunding.Source[] memory order = new CardFunding.Source[](1);
-        order[0] = CardFunding.Source({ kind: TOKEN, source: address(usd), lineId: 0 });
-        vm.prank(alice);
-        vm.expectRevert(CardFunding.InvalidOrder.selector);
-        cards.setFunding(address(usd), order);
-        order[0] = CardFunding.Source({ kind: TOKEN, source: address(eur), lineId: 10_001 });
-        vm.prank(alice);
-        vm.expectRevert(CardFunding.InvalidOrder.selector);
-        cards.setFunding(address(usd), order);
-    }
-
-    // Helpers.
-
-    function test_refund_earlierTokensPurchase_neverPassesWhatItCaptured() public {
-        // Booked in dollars, then the issuer settles in euros: refunds stay in dollars, paid in euros at the rate.
-        usd.mint(alice, 100e6);
-        _authorize(P1, 40e6);
-        _capture(P1, 40e6, true);
-        (uint64 seq,,,) = cards.ledger();
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
-        _localIssuer();
-        eur.mint(issuer, 100e6);
-        vm.prank(issuer);
-        eur.approve(address(cards), type(uint256).max);
-        vm.prank(issuer);
-        cards.refund(P1, 25e6);
-        vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.RefundExceedsCapture.selector, 0.01e6));
-        cards.refund(P1, 15.01e6);
-        vm.prank(issuer);
-        cards.refund(P1, 15e6);
-        vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.RefundExceedsCapture.selector, 0.01e6));
-        cards.refund(P1, 0.01e6);
-    }
-
-    function test_refund_earlierTokensSavings_paidInTodaysTokenAtTheReferenceRate() public {
-        // Booked in dollars on $20 of cash and $25 of savings, then the issuer settles in euros.
-        usd.mint(alice, 20e6);
-        usd.mint(alice, 100e6);
-        _depositEarn(alice, 100e6);
-        _authorize(P1, 45e6);
-        _capture(P1, 45e6, true);
-        (uint64 seq,,,) = cards.ledger();
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
-        _localIssuer();
-        eur.mint(issuer, 100e6);
-        vm.prank(issuer);
-        eur.approve(address(cards), type(uint256).max);
-        vm.prank(issuer);
-        cards.refund(P1, 25e6);
-        // The savings go back into Earn first, the issuer paying euros at the reference rate, rounded up.
-        assertEq(eur.balanceOf(issuer), 100e6 - _up(25e6, 1.1e18), "the issuer pays EUR 22.727273");
-        assertEq(usd.balanceOf(issuer), 0, "and no dollars");
-        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 100e6, 2, "savings restored");
-        assertEq(usd.balanceOf(alice), 0, "the cash stays spent");
-    }
-
-    function test_operatorCap_rescalesWithTheSettlementToken() public {
-        // A EUR 100 cap; EUR 40 used before the issuer moves to GBP at $1.25.
-        FixedPricePool gbpAsk = new FixedPricePool(address(otherUsd), address(usd), 1.25e18);
-        otherUsd.mint(address(gbpAsk), 1_000_000e6);
-        conv.setVenue(address(usd), address(otherUsd), address(gbpAsk), false);
-        conv.setReferenceRate(address(otherUsd), 1.25e18);
-        _localIssuer();
-        address key = makeAddr("key");
-        vm.prank(issuer);
-        cards.setOperator(key, 7, 100e6);
-        usd.mint(alice, 500e6);
-        vm.prank(key);
-        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 7 days), 0);
-        (uint256 cap, uint256 used) = cards.operatorCap(key);
-        assertEq(cap, 100e6);
-        assertEq(used, 40e6);
-        vm.prank(key);
-        cards.capture(P1, 40e6, true);
-        (uint64 seq,,,) = cards.ledger();
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
-        _setting(abi.encodeCall(cards.setSettlementToken, (address(otherUsd))));
-        (cap, used) = cards.operatorCap(key);
-        assertEq(cap, 88e6, "the cap rescales down");
-        // Within a unit: the pound's scale is the euro's times a truncated reference rate.
-        assertApproxEqAbs(used, 35.2e6, 1, "and its use up");
-        assertGe(used, 35.2e6, "rounded up");
-        vm.prank(key);
-        vm.expectPartialRevert(CardProgram.KeyCapExceeded.selector);
-        cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), 0);
-        // A stand-in approval counts too.
-        vm.prank(key);
-        vm.expectPartialRevert(CardProgram.KeyCapExceeded.selector);
-        cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), 1);
-        vm.prank(key);
-        cards.authorize(CARD, P2, 50e6, merchant, uint64(block.timestamp + 7 days), 0);
-        // An increase counts what it adds.
-        vm.prank(key);
-        vm.expectPartialRevert(CardProgram.KeyCapExceeded.selector);
-        cards.adjust(P2, 52.81e6);
-        vm.prank(key);
-        cards.adjust(P2, 52.8e6);
-        // The issuer is not counted.
-        vm.prank(issuer);
-        cards.authorize(CARD, bytes32("purchase-3"), 100e6, merchant, uint64(block.timestamp + 7 days), 0);
-        // Removing the key clears the cap.
-        vm.prank(issuer);
-        cards.setOperator(key, 0, 0);
-        (cap,) = cards.operatorCap(key);
-        assertEq(cap, 0);
-        assertEq(cards.rolesOf(key), 0);
-    }
-
-    function _tokenFirst(address owner, uint64 maxCostBps) internal {
-        CardFunding.Source[] memory order = new CardFunding.Source[](2);
-        order[0] = CardFunding.Source({ kind: TOKEN, source: address(eur), lineId: maxCostBps });
-        order[1] = CardFunding.Source({ kind: CASH, source: address(usd), lineId: 0 });
-        vm.prank(owner);
-        cards.setFunding(address(usd), order);
-    }
-
-    function _localIssuer() internal {
-        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
-        assertEq(cards.settlementToken(), address(eur));
-    }
-
-    function _up(uint256 amount, uint256 rate) internal pure returns (uint256) {
-        return (amount * 1e18 + rate - 1) / rate;
+        assertEq(eur.balanceOf(bob), 20e6);
+        assertEq(eur.balanceOf(address(conv)), 100_000e6 - 20e6);
     }
 }
