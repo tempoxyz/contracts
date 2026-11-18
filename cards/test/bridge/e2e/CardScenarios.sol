@@ -322,8 +322,9 @@ abstract contract CardScenarios is CardProgramModel {
         if (_railCaps().noStandingAllowance) {
             assertEq(usd.allowance(alice, address(spender)), 0, "nothing approved to Bridge");
             assertEq(earnShare.allowance(alice, address(spender)), 0, "no share approval");
-            assertEq(usd.allowance(alice, address(program)), 0, "nothing approved to the program");
-            assertEq(earnShare.allowance(alice, address(program)), 0, "no share approval to the program");
+            // At most the 1 base unit a public spend keeps so its allowance slot is not recreated.
+            assertLe(usd.allowance(alice, address(program)), 1, "nothing approved to the program");
+            assertLe(earnShare.allowance(alice, address(program)), 1, "no share approval to the program");
         } else {
             // Gap: the card program can pull up to the remaining allowance at any time.
             _gap("the card program can pull up to the remaining allowance at any time");

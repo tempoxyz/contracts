@@ -66,7 +66,11 @@ function profileWith(zoneRouter: unknown, extra: Record<string, unknown> = {}) {
       zoneRouter,
       ...extra,
     },
-    { deployer: address('3'), factories: { earn: address('4'), erc4626Engine: address('1') } },
+    {
+      // The seed tests' deployer key, so the seed step accepts it as the profile's deployer.
+      deployer: privateKeyToAccount(`0x${'4'.repeat(64)}`).address,
+      factories: { earn: address('4'), erc4626Engine: address('1') },
+    },
   )
 }
 
@@ -130,6 +134,7 @@ function chain(profile: typeof card, overrides: Record<string, unknown> = {}) {
     },
   )
   return {
+    call: vi.fn(async () => ({ data: '0x' })),
     getCode: vi.fn(async () => '0x6080' as const),
     getStorageAt: vi.fn(async () => zeroHash),
     readContract,
@@ -865,15 +870,16 @@ describe('Zone router seeds', () => {
       readContract: (parameters: Record<string, unknown>) => Promise<unknown>
     }
     const enabled = options.enabled ?? [earnBinding.privateAsset, outputs.earnShare]
-    // Set once a sent batch's warm calls land, so later reads see every Portal allowance.
-    const state = { warmed: false }
+    // Set as sent batches land: their warm calls set every Portal allowance, and their transfers move
+    // 1 base unit from the deployer to each recipient.
+    const state = { balances: { ...options.balances }, warmed: false }
     const readContract = vi.fn(async (parameters: Record<string, unknown>) => {
       const target = parameters.address as Address
       const args = (parameters.args ?? []) as Address[]
       const functionName = parameters.functionName as string
       switch (functionName) {
         case 'balanceOf':
-          return options.balances?.[`${target}:${args[0]}`] ?? 0n
+          return state.balances[`${target}:${args[0]}`] ?? 0n
         case 'allowance':
           return state.warmed ? 1n : (options.allowances?.[`${target}:${args[0]}`] ?? 0n)
         case 'isTokenEnabled':
@@ -908,9 +914,23 @@ describe('Zone router seeds', () => {
     }
   }
 
-  /** Marks every Portal allowance of `reads` set, as a landed batch of warm calls would. */
-  const warmAll = (reads: ReturnType<typeof seedChain>) => {
+  /** Applies a landed batch to `reads`: every Portal allowance set and each transfer's unit moved. */
+  const warmAll = (
+    reads: ReturnType<typeof seedChain>,
+    calls: { to: Address; data: Hex }[] = [],
+  ) => {
     reads.state.warmed = true
+    for (const call of calls) {
+      if (call.to === outputs.zoneRouter) continue
+      const [recipient, amount] = decodeFunctionData({ abi: erc20Abi, data: call.data }).args as [
+        Address,
+        bigint,
+      ]
+      const from = `${call.to}:${deployer}` as const
+      reads.state.balances[from] = (reads.state.balances[from] ?? 0n) - amount
+      const to = `${call.to}:${recipient}` as const
+      reads.state.balances[to] = (reads.state.balances[to] ?? 0n) + amount
+    }
   }
 
   /** Runs the seed step as the deployer against `reads`, recording each batch it sends. */
@@ -938,7 +958,7 @@ describe('Zone router seeds', () => {
           // A landed batch sets the Portal allowances its warm calls name.
           sendTransactionSync: async (...parameters: unknown[]) => {
             const receipt = await sendTransactionSync(...parameters)
-            warmAll(reads)
+            warmAll(reads, (parameters[0] as { calls: { to: Address; data: Hex }[] }).calls)
             return receipt
           },
         })) as never,
@@ -1172,14 +1192,14 @@ describe('Zone router seeds', () => {
       ['warm', earnBinding.privateAsset],
     ])
 
-    // Every call refused: nothing is sent and the step still hands off rather than throwing.
+    // Every call refused: nothing is sendable, so the step completes without sending anything.
     const refusedAll = seedChain({
       restarts: true,
       refuse: [outputs.asset, earnBinding.privateAsset, outputs.earnShare, outputs.zoneRouter],
       balances: funded([outputs.asset, earnBinding.privateAsset, outputs.earnShare]),
     })
     const none = vi.fn()
-    await expect(run(refusedAll, cardAndEarn, none)).resolves.toBeUndefined()
+    await expect(run(refusedAll, cardAndEarn, none)).resolves.toEqual({ transactions: [] })
     expect(none).not.toHaveBeenCalled()
 
     // An unreachable RPC is not a refusal.

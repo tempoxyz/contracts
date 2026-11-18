@@ -42,14 +42,14 @@ are decisions for the Tempo handler ([`design.md`](design.md#decisions)).
 
 ## Declines and controls
 
-| Scenario                         | Situation                               | Expected                                             |
-| -------------------------------- | --------------------------------------- | ---------------------------------------------------- |
-| `decline_insufficientFunds`      | $1,500 on $1,000                        | Declined, nothing moves                              |
-| `decline_afterCardholderRevokes` | Cardholder revokes the card's authority | Declined                                             |
-| `decline_whenProgramPaused`      | Bridge pauses the program               | Declined. Private: approved, bounced, reserve pays   |
-| `spendLimit_capsSpend`           | $100 limit, two $60 auths               | Second declined                                      |
-| `spendLimit_resetsEachPeriod`    | Next 30-day period                      | Limit refreshed (gap for Bridge: lifetime allowance) |
-| `standingAllowance_betweenPulls` | After a pull                            | Nothing approved (gap for Bridge: allowance remains) |
+| Scenario                         | Situation                               | Expected                                                         |
+| -------------------------------- | --------------------------------------- | ---------------------------------------------------------------- |
+| `decline_insufficientFunds`      | $1,500 on $1,000                        | Declined, nothing moves                                          |
+| `decline_afterCardholderRevokes` | Cardholder revokes the card's authority | Declined                                                         |
+| `decline_whenProgramPaused`      | Bridge pauses the program               | Declined. Private: approved, bounced, reserve pays               |
+| `spendLimit_capsSpend`           | $100 limit, two $60 auths               | Second declined                                                  |
+| `spendLimit_resetsEachPeriod`    | Next 30-day period                      | Limit refreshed (gap for Bridge: lifetime allowance)             |
+| `standingAllowance_betweenPulls` | After a pull                            | At most 1 base unit approved (gap for Bridge: allowance remains) |
 
 ## Concurrency and failures
 

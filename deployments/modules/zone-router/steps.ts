@@ -5,6 +5,7 @@ import {
   zeroAddress,
   type Address,
   type Hex,
+  isAddressEqual,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -42,11 +43,12 @@ import {
   requiredOutput,
   type ChainClient,
 } from '../module.js'
-import { sendAuthorityCalls } from '../signer.js'
+import { privateKeyMatches, sendAuthorityCalls } from '../signer.js'
 import { inspectZoneRouterBinding } from './inspection.js'
 import {
   missingZoneRouterSeeds,
   sendableZoneRouterSeedCalls,
+  zoneRouterSeeded,
   zoneRouterWarmed,
   zoneRouterSeedPlan,
 } from './seeds.js'
@@ -410,16 +412,20 @@ export const seedZoneRouter = defineAuthorityStep({
   phase: 'activation',
   intent: ['zoneRouter'],
   enabled: hasZoneRouter,
+  signerAvailable: (profile, environment) =>
+    privateKeyMatches(environment, deployerAuthority.signer, profile.deployer),
   async satisfied(client, profile, outputs) {
     const plan = await zoneRouterSeedPlan(client, profile, outputs)
-    return zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))
+    return zoneRouterSeeded(client, profile.deployer, plan)
   },
-  handoff: (_profile, outputs) =>
-    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} still lacks a Portal allowance the deployer could not set. Run pnpm earn verify and call warm(token) on the router for each allowance listed under Zone router seeds (anyone may), then re-run the same pnpm earn deploy command; it will verify the allowances and continue. Seed units listed there save callback gas but block nothing: send each holder 1 base unit from an account the token's policy authorizes.`,
+  handoff: (profile, outputs) =>
+    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} lacks a Portal allowance, or a seed unit the deployer ${profile.deployer} could send. Run pnpm earn verify, then either re-run the same pnpm earn deploy command with that deployer's DEPLOYER_PRIVATE_KEY, or call warm(token) on the router for each allowance and send each holder listed under Zone router seeds 1 base unit (anyone may), and re-run; it will verify them and continue. Seeds the deployer cannot send block nothing.`,
   async execute(options, dependencies) {
     const key = envPrivateKey(options.environment, deployerAuthority.signer)
     if (!key) return undefined
     const account = privateKeyToAccount(key)
+    // Completion is judged by what the profile's deployer can send, so only that account seeds.
+    if (!isAddressEqual(account.address, options.profile.deployer)) return undefined
     const client = dependencies.authorityClient(options, account)
     if (!(await zoneRouterBound(client, options.profile, options.outputs)))
       throw new Error(
@@ -444,11 +450,11 @@ export const seedZoneRouter = defineAuthorityStep({
       )
       sent.transactions.push(...transactions)
     }
-    if (zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))) return sent
+    if (await zoneRouterSeeded(client, account.address, plan)) return sent
     if (sent.transactions.length === 0) return undefined
     // Sent batches cannot be recorded against an unsatisfied step, so name them before handing off.
     throw new Error(
-      `seed-zone-router sent ${sent.transactions.join(', ')} but a Portal allowance is still unset: ${sendable.refused.join('; ')}`,
+      `seed-zone-router sent ${sent.transactions.join(', ')} but a Portal allowance or sendable seed is still missing: ${sendable.refused.join('; ')}`,
     )
   },
 })

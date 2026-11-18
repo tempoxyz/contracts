@@ -79,7 +79,7 @@ sequenceDiagram
    [real-time funding](https://www.rain.xyz/resources/introducing-real-time-funding) commits it: public
    into the cardholder's collateral, private into the program's pooled collateral. From Earn, the
    program redeems exactly the amount of the vault's asset. A public spend approves the program for the
-   amount plus 1 base unit and never resets the allowance to 0, so the cardholder's
+   amount plus 1 base unit and then sets the allowance back to 1, never 0, so the cardholder's
    allowance slot is not created again on every spend ([design](../design.md#flows)).
 2. **Settlement.** Rain's daily `makePayment` moves the settled spend to its treasury, as today.
 3. **Refunds and reversals.** A collateral admin calls `withdrawAsset` with Rain's signature; for a

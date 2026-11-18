@@ -58,7 +58,7 @@ export type ZoneRouterSeedPlan = {
   notes: string[]
 }
 
-type SeedClient = Pick<PublicClient, 'getCode' | 'getStorageAt' | 'readContract'>
+type SeedClient = Pick<PublicClient, 'call' | 'getCode' | 'getStorageAt' | 'readContract'>
 
 // EIP-1967: bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1).
 const implementationSlot = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
@@ -220,7 +220,31 @@ export async function zoneRouterSeedPlan(
         )
     }
   }
-  return { router: routerAddress, portal, seeds, warm, unverified, notes }
+  // A router release that sets its Portal allowance per callback refuses warm (OpDisabled on a router
+  // without Spend), so only allowances the router can keep standing are planned.
+  const refusals = await Promise.all(
+    warm.map((entry) =>
+      simulationRefusal(client, profile.deployer, {
+        to: routerAddress,
+        data: encodeFunctionData({ abi: zoneRouterAbi, functionName: 'warm', args: [entry.token] }),
+      }),
+    ),
+  )
+  refusals.forEach((reason, index) => {
+    if (reason === undefined) return
+    const entry = warm[index]!
+    notes.push(
+      `Zone router ${routerAddress} refuses warm(${entry.token}) (${reason}), so its ${entry.tokenLabel} Portal allowance is set per callback and not warmed`,
+    )
+  })
+  return {
+    router: routerAddress,
+    portal,
+    seeds,
+    warm: warm.filter((_, index) => refusals[index] === undefined),
+    unverified,
+    notes,
+  }
 }
 
 /** The seeds each holder lacks and the tokens whose Portal allowance the router has not set. */
@@ -258,12 +282,28 @@ export async function missingZoneRouterSeeds(
 
 export type MissingZoneRouterSeeds = Awaited<ReturnType<typeof missingZoneRouterSeeds>>
 
-/**
- * Whether the router holds every Portal allowance it returns funds through. Anyone may warm one, so
- * this is the step's only requirement; seed units the deployer cannot send are reported, not required.
- */
+/** Whether the router holds every Portal allowance it returns funds through. Anyone may warm one. */
 export function zoneRouterWarmed(missing: MissingZoneRouterSeeds) {
   return missing.warm.length === 0
+}
+
+/**
+ * Whether the router is warmed and `deployer` can send no missing seed: each one it lacks the token for,
+ * or whose transfer the token's policy refuses, is reported rather than required, so it never blocks.
+ */
+export async function zoneRouterSeeded(
+  client: Pick<PublicClient, 'call' | 'readContract'>,
+  deployer: Address,
+  plan: ZoneRouterSeedPlan,
+) {
+  const missing = await missingZoneRouterSeeds(client, plan)
+  if (!zoneRouterWarmed(missing)) return false
+  if (missing.seeds.length === 0 || deployer === zeroAddress) return true
+  const sendable = await sendableZoneRouterSeedCalls(client, deployer, plan, {
+    seeds: missing.seeds,
+    warm: [],
+  })
+  return sendable.calls.length === 0
 }
 
 /**

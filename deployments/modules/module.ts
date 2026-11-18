@@ -137,7 +137,8 @@ export type CapabilityModule = {
   ): Promise<Address[]>
   /** Post-deployment inspection beyond the core stack; binding mismatches throw. */
   inspect?(
-    client: Pick<PublicClient, 'getCode' | 'getStorageAt' | 'readContract'> & LatestBlockClient,
+    client: Pick<PublicClient, 'call' | 'getCode' | 'getStorageAt' | 'readContract'> &
+      LatestBlockClient,
     profile: EarnDeploymentProfile,
     outputs: Record<string, Address>,
   ): Promise<InspectionReport | undefined>
