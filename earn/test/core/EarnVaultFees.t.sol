@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 // EarnVault-to-EarnFees economic-equivalence coverage.
 import { Test } from "forge-std/Test.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 import { Simple4626Vault } from "../../src/demo/Simple4626Vault.sol";
 import { EarnVault } from "../../src/core/EarnVault.sol";
@@ -518,6 +519,37 @@ contract EarnVaultFeesTest is Test {
         );
     }
 
+    function testFeeClaimWritesOnlyClaimBalances() public {
+        _deposit(user, 100 ether);
+        asset.mint(address(venue), 10 ether);
+        earnVault.accrueFees();
+        uint256 claimable = fees.claimableEarnShares(fixedRecipient);
+        assertGt(claimable, 0);
+
+        vm.startStateDiffRecording();
+        vm.prank(fixedRecipient);
+        fees.claim(fixedRecipient, claimable);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        // The recipient's and the total claimable balance; the reentrancy lock is transient and writes no slot.
+        assertEq(_storageWrites(accesses, address(fees)), 2);
+        assertEq(fees.claimableEarnShares(fixedRecipient), 0);
+        assertEq(fees.totalClaimableEarnShares(), 0);
+    }
+
+    function testLockedVaultCallRestoresNoStorageSlot() public {
+        _deposit(user, 100 ether);
+
+        vm.startStateDiffRecording();
+        _deposit(user, 1 ether);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        // A stored lock would be written and restored within the call; the transient lock leaves no such slot.
+        assertGt(_storageWrites(accesses, address(earnVault)), 0);
+        assertEq(_restoredSlots(accesses, address(earnVault)), 0);
+        assertEq(share.balanceOf(user), 101 ether);
+    }
+
     function _deploy(FeeConfig memory config) internal {
         _deployWithDecimals(config, 18);
     }
@@ -551,6 +583,45 @@ contract EarnVaultFeesTest is Test {
     function _fixedConfig(address recipient, uint16 rateBps) internal pure returns (FeeConfig memory config) {
         config.fixedFeeCount = 1;
         config.fixedFees[0] = FixedFeeRecipient(recipient, rateBps);
+    }
+
+    function _storageWrites(Vm.AccountAccess[] memory accesses, address account) internal pure returns (uint256 count) {
+        for (uint256 i; i < accesses.length; ++i) {
+            Vm.StorageAccess[] memory storageAccesses = accesses[i].storageAccesses;
+            for (uint256 j; j < storageAccesses.length; ++j) {
+                if (storageAccesses[j].account == account && storageAccesses[j].isWrite && !storageAccesses[j].reverted)
+                {
+                    ++count;
+                }
+            }
+        }
+    }
+
+    /// @dev Counts slots of `account` written during the recording whose final value equals their value before it.
+    function _restoredSlots(Vm.AccountAccess[] memory accesses, address account) internal pure returns (uint256 count) {
+        uint256 total = _storageWrites(accesses, account);
+        bytes32[] memory slots = new bytes32[](total);
+        bytes32[] memory before = new bytes32[](total);
+        bytes32[] memory last = new bytes32[](total);
+        uint256 distinct;
+        for (uint256 i; i < accesses.length; ++i) {
+            Vm.StorageAccess[] memory storageAccesses = accesses[i].storageAccesses;
+            for (uint256 j; j < storageAccesses.length; ++j) {
+                Vm.StorageAccess memory access = storageAccesses[j];
+                if (access.account != account || !access.isWrite || access.reverted) continue;
+                uint256 k;
+                while (k < distinct && slots[k] != access.slot) ++k;
+                if (k == distinct) {
+                    slots[k] = access.slot;
+                    before[k] = access.previousValue;
+                    ++distinct;
+                }
+                last[k] = access.newValue;
+            }
+        }
+        for (uint256 k; k < distinct; ++k) {
+            if (before[k] == last[k]) ++count;
+        }
     }
 }
 

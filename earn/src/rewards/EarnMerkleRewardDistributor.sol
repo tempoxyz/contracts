@@ -7,7 +7,6 @@ import { IERC20Allowance } from "../interfaces/external/IERC20Allowance.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title EarnMerkleRewardDistributor
 /// @notice EarnShare-only settlement rail for cumulative, offchain-computed public-holder rewards.
@@ -15,8 +14,8 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 ///      the immutable EarnVault. Only that EarnVault mints the fully backed EarnShare held here. Root-valid
 ///      pushes and claims are permissionless because every transfer is fixed to its committed recipient.
 /// Specs for solar-verify (docs/earn/modules/rewards.md, earn/src/AGENTS.md "Reward periphery"):
-/// The OpenZeppelin ReentrancyGuard lock (`_status` is 2 while entered) guards funding, pushes, claims and returns.
-/// @custom:reentrancy-guard _status == 2
+/// The transient `_entered` lock guards funding, pushes, claims and returns.
+/// @custom:reentrancy-guard _entered
 /// Ghost sum of every recipient's cumulativePaid, updated at each cumulativePaid write.
 /// @custom:ghost uint256 sumPaid
 /// Ghost record of the EarnShare balance _publishRoot measured.
@@ -52,7 +51,7 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 /// transfer's return value and do not measure the distributor's or the recipient's balance change.
 /// Not proved: the per-holder principal cap on EarnShare eligibility. It is applied offchain when the
 /// cumulative root is computed; onchain, only the root total bounds what is paid.
-contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
+contract EarnMerkleRewardDistributor is Ownable2Step {
     error OwnershipRenunciationDisabled();
     enum SkipReason {
         ZeroRecipient,
@@ -77,6 +76,8 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
 
     mapping(address recipient => uint256 cumulativeAmount) public cumulativePaid;
     mapping(bytes32 settlementId => bool consumed) public consumedSettlements;
+
+    bool private transient _entered;
 
     event AssetsFunded(address indexed funder, uint256 assets, uint256 earnShares);
     event RootPublished(
@@ -107,6 +108,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
     error PausedLiabilityIncrease();
     error RootTotalExceeded(uint256 requestedAmount, uint256 remainingEntitlement);
     error RootTotalDecreased(uint256 previousTotal, uint256 nextTotal);
+    error ReentrantCall();
     error SettlementAlreadyConsumed(bytes32 settlementId);
     error ZeroSettlementId();
     error StaleRootVersion(uint64 expected, uint64 actual);
@@ -121,6 +123,13 @@ contract EarnMerkleRewardDistributor is Ownable2Step, ReentrancyGuard {
     error ZeroMinimumEarnShares();
     error ZeroRoot();
     error ZeroStatementHash();
+
+    modifier nonReentrant() {
+        if (_entered) revert ReentrantCall();
+        _entered = true;
+        _;
+        _entered = false;
+    }
 
     /// The claim window ends in the future.
     /// @custom:ensures claimDeadline == claimDeadline_ && claimDeadline_ > block.timestamp

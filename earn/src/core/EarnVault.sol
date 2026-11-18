@@ -40,7 +40,8 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 ///      and flows.md. Spec arithmetic is over mathematical integers. The `fixed*` ghosts record what
 ///      `initialize` set, so the invariants below say those fields never change afterwards; `currentEngine`,
 ///      `currentOperator` and `currentDistributor` move only where the role handoff or migration writes them.
-///      `openCount` mirrors every write of a pending request's `open` flag.
+///      `openCount` mirrors every write of a pending request's `open` flag. `entered` mirrors the transient
+///      `_entered` lock flag in ghost state, so invariants that hold only between locked calls can name it.
 /// @custom:ghost address fixedAsset
 /// @custom:ghost address fixedEarnShare
 /// @custom:ghost address fixedEarnFees
@@ -54,22 +55,23 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 /// @custom:ghost uint256 feeCheckpoints
 /// @custom:ghost uint256 baselineEntries
 /// @custom:ghost uint256 cappedManagedShares
-/// @custom:reentrancy-guard initialized && locked == 2
-/// @custom:invariant locked <= 2 && (locked != 0 ==> initialized)
+/// @custom:ghost bool entered
+/// @custom:reentrancy-guard initialized && _entered
+/// @custom:invariant entered ==> initialized
 /// @custom:invariant !initialized ==> openCount == 0 && operator == address(0) && distributor == address(0)
 /// @custom:invariant !initialized ==> pendingOperator == address(0) && pendingDistributor == address(0)
-/// @custom:invariant locked != 2 ==> openRedeemRequestCount == openCount
-/// @custom:invariant locked != 0 ==> asset == fixedAsset && earnShare == fixedEarnShare && earnFees == fixedEarnFees
-/// @custom:invariant locked != 0 ==> earnShareScale == fixedEarnShareScale && distributorUpdateDelay == fixedDistributorUpdateDelay
-/// @custom:invariant locked != 0 ==> (engineMigrationMode == EngineMigrationMode.OperatorEnabled) == fixedOperatorMigration
-/// @custom:invariant locked != 0 ==> engine == currentEngine && operator == currentOperator && distributor == currentDistributor
-/// @custom:invariant locked != 0 ==> anchorEngineShares != 0 && anchorEarnShares != 0
-/// @custom:invariant locked != 0 ==> rewardRateBaseline != 0 && earnShareScale != 0
-/// @custom:invariant locked != 0 ==> operator != address(0)
+/// @custom:invariant !entered ==> openRedeemRequestCount == openCount
+/// @custom:invariant initialized ==> asset == fixedAsset && earnShare == fixedEarnShare && earnFees == fixedEarnFees
+/// @custom:invariant initialized ==> earnShareScale == fixedEarnShareScale && distributorUpdateDelay == fixedDistributorUpdateDelay
+/// @custom:invariant initialized ==> (engineMigrationMode == EngineMigrationMode.OperatorEnabled) == fixedOperatorMigration
+/// @custom:invariant initialized ==> engine == currentEngine && operator == currentOperator && distributor == currentDistributor
+/// @custom:invariant initialized ==> anchorEngineShares != 0 && anchorEarnShares != 0
+/// @custom:invariant initialized ==> rewardRateBaseline != 0 && earnShareScale != 0
+/// @custom:invariant initialized ==> operator != address(0)
 /// @custom:invariant (distributor == address(0)) == (distributorUpdateDelay == 0)
 /// @custom:invariant pendingDistributor != address(0) ==> distributor != address(0)
 /// @custom:invariant !_pendingDistributorFeeUpdate.pending ==> _specNoDistributorFeeUpdate()
-/// @custom:invariant locked == 1 ==> anchorEngineShares == _managedEngineShares || _specEmptyAnchor()
+/// @custom:invariant initialized && !entered ==> anchorEngineShares == _managedEngineShares || _specEmptyAnchor()
 /// @custom:invariant forall bytes32 id :: _pending[id].open ==> _specLiveRequest(id)
 /// @custom:invariant forall bytes32 id :: !_pending[id].open ==> _specClosedRequest(id)
 /// @dev Between calls the anchor is the managed engine-share count over the live supply (or the empty-pool
@@ -93,6 +95,10 @@ contract EarnVault is IEarnVault {
     /// @notice The current yield engine and sole custodian of the venue shares backing this EarnVault's
     ///         EarnShare supply. MUTABLE only through operator-authorized {migrateEngine}.
     address public override engine;
+    /// @dev Set once by {initialize}. Packed beside `engine`, which most locked calls read anyway.
+    bool private initialized;
+    /// @dev Set by the constructor on the implementation, so {initialize} runs only on a proxy.
+    bool private isImplementation;
     address public override asset;
     address public override earnShare;
     address public override earnFees;
@@ -149,8 +155,8 @@ contract EarnVault is IEarnVault {
     FixedFeeRecipient private _distributorFee;
     DistributorFeeUpdate private _pendingDistributorFeeUpdate;
 
-    uint256 private locked;
-    bool private initialized;
+    /// @dev Reentrancy lock held for the duration of each locked call. Transient storage writes no slot.
+    bool private transient _entered;
     /// @dev Active engine shares recognized as EarnShare backing. Raw shares above this count are
     ///      quarantined until explicitly absorbed through {absorbEngineShareSurplus}.
     uint256 private _managedEngineShares;
@@ -241,15 +247,16 @@ contract EarnVault is IEarnVault {
     error ZeroMinimumEarnShares();
     error ZeroMinimumEngineShares();
 
-    /// @dev Locks the standalone implementation. Each EarnVault is an ERC-1967 proxy with no upgrade
-    ///      entrypoint, initialized atomically by {EarnFactory} against this fixed implementation.
-    /// @custom:ensures initialized && locked == 0
+    /// @dev Locks the standalone implementation: {initialize} reverts on it, and its locked calls revert
+    ///      because it is never initialized. Each EarnVault is an ERC-1967 proxy with no upgrade entrypoint,
+    ///      initialized atomically by {EarnFactory} against this fixed implementation.
+    /// @custom:ensures !initialized && isImplementation
     constructor() {
-        initialized = true;
+        isImplementation = true;
     }
 
     /// @notice A fresh proxy is initialized once with its engine, EarnShare, fees module, roles and controls.
-    /// @custom:ensures !old(initialized) && initialized && locked == 1
+    /// @custom:ensures !old(initialized) && !isImplementation && initialized
     /// @custom:ensures engine == engine_ && earnShare == earnShare_ && earnFees == earnFees_ && operator == operator_
     /// @custom:ensures engine_ != address(0) && earnShare_ != address(0) && earnFees_ != address(0) && operator_ != address(0)
     /// @custom:ensures asset != address(0) && distributor == distributorInit_.distributor
@@ -266,7 +273,7 @@ contract EarnVault is IEarnVault {
         EarnVaultControls memory controlInit_,
         DistributorConfig memory distributorInit_
     ) external {
-        if (initialized) revert AlreadyInitialized();
+        if (initialized || isImplementation) revert AlreadyInitialized();
         initialized = true;
         if (engine_ == address(0) || earnShare_ == address(0) || earnFees_ == address(0) || operator_ == address(0)) {
             revert ZeroAddress();
@@ -320,8 +327,6 @@ contract EarnVault is IEarnVault {
         /// @custom:ghost currentEngine = engine
         /// @custom:ghost currentOperator = operator
         /// @custom:ghost currentDistributor = distributor
-        locked = 1;
-
         FixedFeeRecipient memory distributorFee_ = _distributorFee;
         emit EarnVaultInitialized(
             engine,
@@ -339,17 +344,23 @@ contract EarnVault is IEarnVault {
         );
     }
 
+    /// @dev Also refuses an uninitialized vault, such as the implementation itself.
     modifier nonReentrant() {
-        if (locked != 1) revert ReentrantCall();
-        locked = 2;
+        if (_entered || !initialized) revert ReentrantCall();
+        // The verifier takes transient storage as arbitrary when a call starts, so it cannot relate
+        // `_entered` to the ghost. Both are written together, so `entered` is false wherever `_entered` is.
+        /// @custom:assume !entered
+        /// @custom:ghost entered = true
+        _entered = true;
         _;
-        locked = 1;
+        /// @custom:ghost entered = false
+        _entered = false;
     }
 
     /// @notice Anyone can checkpoint fees whenever no other vault call is running.
     /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
     /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1
-    /// Not proved: it returns whenever locked == 1; that depends on the engine, EarnShare and EarnFees calls returning.
+    /// Not proved: it returns whenever the vault is initialized and unlocked; that depends on the engine, EarnShare and EarnFees calls returning.
     function accrueFees() external override nonReentrant returns (uint256 feeAssets, uint256 feeEarnShares) {
         (FeePreview memory result,,) = _accrueFees();
         return (result.totalFeeAssets, result.totalFeeEarnShares);

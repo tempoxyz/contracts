@@ -21,8 +21,8 @@ interface IContributionTarget {
 ///      permissionless contribution path. No EarnShare is minted. Reward policy and provider identity
 ///      stay outside the EarnVault, so this controller can be paused or replaced independently.
 /// Specs for solar-verify (docs/earn/modules/rewards.md):
-/// Funding entry points are nonReentrant (`locked` is 1 when free, 2 while held).
-/// @custom:reentrancy-guard locked != 1
+/// Funding entry points are nonReentrant through the transient `_entered` flag.
+/// @custom:reentrancy-guard _entered
 /// The vault and its asset are fixed and nonzero.
 /// @custom:invariant address(earnVault) != address(0) && asset != address(0)
 /// Ghost record of the last token call (set in _safeTransferFrom and _safeApprove): whether it succeeded,
@@ -44,7 +44,7 @@ contract EarnContributionController is Ownable2Step {
 
     bool public active = true;
 
-    uint256 private locked = 1;
+    bool private transient _entered;
 
     event ActiveSet(bool active);
     event Funded(address indexed funder, uint256 requestedAssets, uint256 fundedAssets);
@@ -60,10 +60,10 @@ contract EarnContributionController is Ownable2Step {
     error ZeroAmount();
 
     modifier nonReentrant() {
-        if (locked != 1) revert ReentrantCall();
-        locked = 2;
+        if (_entered) revert ReentrantCall();
+        _entered = true;
         _;
-        locked = 1;
+        _entered = false;
     }
 
     /// @custom:ensures earnVault == earnVault_ && active && owner() == owner_
@@ -88,10 +88,10 @@ contract EarnContributionController is Ownable2Step {
     /// Only the owner funds, only while active, never for the zero funder; the lock is released.
     /// @custom:ensures old(owner()) == msg.sender && old(active) && funder != address(0)
     /// @custom:ensures requestedAssets == 0 ==> fundedAssets == 0
-    /// @custom:ensures locked == 1
+    /// @custom:ensures !_entered
     /// Liveness: the owner's call while active, unlocked and for a nonzero funder always returns; a failed
     /// pull, supply check or contribution records zero funding instead of reverting.
-    /// @custom:succeeds-if msg.sender == owner() && active && locked == 1 && funder != address(0)
+    /// @custom:succeeds-if msg.sender == owner() && active && !_entered && funder != address(0)
     function fund(address funder, uint256 requestedAssets, uint256 maxEarnShareSupply)
         external
         onlyOwner
@@ -123,7 +123,7 @@ contract EarnContributionController is Ownable2Step {
     /// @custom:ensures funders.length >= 2 && funders.length == requestedAssets.length
     /// @custom:ensures forall uint256 j :: j < funders.length ==> funders[j] != address(0) && requestedAssets[j] > 0
     /// @custom:ensures totalFundedAssets >= funders.length
-    /// @custom:ensures locked == 1
+    /// @custom:ensures !_entered
     /// Not proved: liveness. The batch is all-or-nothing by design, so it also needs every funder's pull, the
     /// vault's fee accrual and every contribution to succeed, which depend on calls outside this contract.
     function fundBatchExact(address[] calldata funders, uint256[] calldata requestedAssets, uint256 maxEarnShareSupply)

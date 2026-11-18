@@ -1,9 +1,9 @@
 {
-  "deposit.new-holder": "955604",
-  "deposit.returning": "706282",
-  "deposit.returning.residue": "206688",
-  "deposit.returning.share-residue": "204978",
-  "redeem.partial": "426951",
-  "redeem.partial.residue": "426942",
-  "redeem.partial.share-residue": "172925"
+  "deposit.new-holder": "946368",
+  "deposit.returning": "697046",
+  "deposit.returning.residue": "197452",
+  "deposit.returning.share-residue": "195742",
+  "redeem.partial": "417715",
+  "redeem.partial.residue": "417706",
+  "redeem.partial.share-residue": "163689"
 }

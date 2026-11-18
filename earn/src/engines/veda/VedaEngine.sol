@@ -52,7 +52,7 @@ interface IEarnVaultPause {
 ///
 /// @dev ASYNC (when a Queue is active). `requestRedeem` files the tracking queue AS THE ENGINE
 ///      (request.user == engine, so Veda never learns end users exist), reads the canonical request
-///      back by ID, and stores only the two amounts needed for Tempo accounting. Cancellation is
+///      back by ID, and stores one slot per request: its Queue, status and fixed payout. Cancellation is
 ///      request-ID based; Tempo never reconstructs a Queue request from off-chain event data.
 ///      `forwardSolved` (FS-only) credits a MEASURED, balance-bounded per-asset settled ledger, then
 ///      finalizes each funded request by transferring its assets to the EarnVault and calling
@@ -76,6 +76,8 @@ interface IEarnVaultPause {
 /// exact-withdraw receiver's measured increase.
 /// @custom:ghost uint256 burnedShares
 /// @custom:ghost uint256 queuedShares
+/// @custom:ghost uint256 returnedShares
+/// @custom:ghost uint256 cancelledShares
 /// @custom:ghost uint256 minQueued
 /// @custom:ghost uint256 measuredReceived
 /// Solvency: an earmark is credited only within the measured base-asset balance (see _creditAndFinalize), a
@@ -130,13 +132,13 @@ contract VedaEngine is
         Cancelled
     }
 
+    /// @dev One slot per request: Tempo charges 250,000 gas for each slot written from zero, and a claim
+    ///      is never cleared because its Queue is the reused-ID record. Cancellation measures the shares
+    ///      the Queue returns instead of storing them.
     struct QueueClaim {
-        // Slot 0: the originating tracking queue plus lifecycle status.
         IBoringQueue requestQueue;
         ClaimStatus status;
-        // Slot 1: the two amounts Tempo needs for cancellation and settlement accounting.
-        uint128 amountOfShares;
-        uint128 amountOfAssets;
+        uint88 amountOfAssets;
     }
 
     mapping(bytes32 requestId => QueueClaim) private _claims;
@@ -227,6 +229,7 @@ contract VedaEngine is
     error QueueUnavailable();
     error QueueTrackingDisabled(address queue);
     error QueuedAssetsBelowMinimum(uint256 minimumAssets, uint256 actualAssets);
+    error QueuedAssetsTooLarge(uint256 amountOfAssets);
     error ReentrantCall();
     error RateChangedWithinTransaction(uint256 expected, uint256 actual);
     error RegistryEngineMismatch(address expected, address actual);
@@ -238,6 +241,7 @@ contract VedaEngine is
     error UnsupportedAccountantFreshness(address accountant);
     error UnexpectedAssetsReceived(uint256 expectedAssets, uint256 actualAssets);
     error UnexpectedVenueSharesQueued(uint256 expectedShares, uint256 actualShares);
+    error UnexpectedVenueSharesReturned(uint256 expectedShares, uint256 actualShares);
     error UnexpectedVenueSharesBurned(uint256 expectedShares, uint256 actualShares);
     error VedaRateOutOfBounds(uint256 rate, uint256 minRate, uint256 maxRate);
     error ZeroAddress();
@@ -542,13 +546,13 @@ contract VedaEngine is
 
     /// @notice File a queued exit AS THE ENGINE (request.user == engine). Approves the tracking queue on
     ///         the raw vault, requests the withdrawal, reads the canonical request back by ID, and stores
-    ///         only the amounts Tempo needs for cancellation and settlement accounting.
+    ///         its Queue, status and fixed payout, which must fit in `uint88`.
     /// Only the bound EarnVault calls it.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
-    /// The new claim was unused, is Open, bound to the Queue active at request time, for the requested shares.
+    /// The new claim was unused, is Open and bound to the Queue active at request time.
     /// @custom:ensures address(old(_claims[requestId].requestQueue)) == address(0)
     /// @custom:ensures _claims[requestId].status == ClaimStatus.Open && _claims[requestId].requestQueue == old(queue)
-    /// @custom:ensures address(old(queue)) != address(0) && _claims[requestId].amountOfShares == engineShares
+    /// @custom:ensures address(old(queue)) != address(0)
     /// The Queue took exactly the requested shares from the engine, and the assets it committed meet the
     /// holder's nonzero floor.
     /// @custom:ensures queuedShares == engineShares
@@ -592,17 +596,20 @@ contract VedaEngine is
         if (trackedRequest.amountOfAssets < request.minQueuedAssets) {
             revert QueuedAssetsBelowMinimum(request.minQueuedAssets, trackedRequest.amountOfAssets);
         }
+        if (trackedRequest.amountOfAssets > type(uint88).max) {
+            revert QueuedAssetsTooLarge(trackedRequest.amountOfAssets);
+        }
 
-        QueueClaim storage c = _claims[requestId];
         // Queue nonces are deployment-local, so a replacement Queue can derive a historical ID.
         // Never reuse an ID: the paired EarnVault also keys persistent claim accounting by requestId.
-        if (address(c.requestQueue) != address(0)) revert DuplicateRequest(requestId);
-        c.status = ClaimStatus.Open;
-        c.requestQueue = requestQueue;
+        if (address(_claims[requestId].requestQueue) != address(0)) revert DuplicateRequest(requestId);
+        // Bounded above, so the downcast cannot truncate.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint88 amountOfAssets = uint88(trackedRequest.amountOfAssets);
+        _claims[requestId] =
+            QueueClaim({ requestQueue: requestQueue, status: ClaimStatus.Open, amountOfAssets: amountOfAssets });
         openClaimsByQueue[address(requestQueue)]++;
         unresolvedClaimCount++;
-        c.amountOfShares = queueShares;
-        c.amountOfAssets = trackedRequest.amountOfAssets;
         emit RedeemRequested(requestId, request.assetOut, queueShares);
     }
 
@@ -610,9 +617,10 @@ contract VedaEngine is
     ///         EarnVault mints a measured current-value re-entry to the request's stored receiver.
     /// Only the bound EarnVault calls it.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
-    /// Only an Open claim is cancelled, returning its recorded shares.
+    /// Only an Open claim is cancelled. It returns the engine's measured share increase, which must equal
+    /// the shares in the cancelled request; requestRedeem bound that request's ID to the queued shares.
     /// @custom:ensures old(_claims[requestId].status) == ClaimStatus.Open && _claims[requestId].status == ClaimStatus.Cancelled
-    /// @custom:ensures engineShares == old(_claims[requestId].amountOfShares)
+    /// @custom:ensures engineShares == returnedShares && returnedShares == cancelledShares
     /// Not proved: the verifier does not finish this function within its time limit.
     function cancelRedeem(bytes32 requestId) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         QueueClaim storage c = _claims[requestId];
@@ -620,12 +628,19 @@ contract VedaEngine is
         if (status != ClaimStatus.Open) revert ClaimNotOpen(requestId);
         _checkpointRate();
         c.status = ClaimStatus.Cancelled;
-        c.requestQueue.cancelOnChainWithdrawUsingRequestId(requestId);
+        IBoringQueue requestQueue = c.requestQueue;
+        uint256 sharesBefore = vault.balanceOf(address(this));
+        OnChainWithdraw memory cancelledRequest = requestQueue.cancelOnChainWithdrawUsingRequestId(requestId);
+        // The ID hashes the request, so a matching record carries the shares requestRedeem verified.
+        if (requestQueue.getRequestId(cancelledRequest) != requestId) revert InvalidTrackedRequest(requestId);
+        uint128 queuedShares = cancelledRequest.amountOfShares;
+        /// @custom:ghost cancelledShares = queuedShares
+        _requireVenueSharesReturned(sharesBefore, queuedShares);
         // Cancellation returns existing shares and must not mutate the transaction's valuation.
         _checkpointRate();
         _closeClaim(c);
-        engineShares = c.amountOfShares;
-        emit RedeemCancelledOnQueue(requestId, c.amountOfShares);
+        engineShares = queuedShares;
+        emit RedeemCancelledOnQueue(requestId, queuedShares);
     }
 
     /// @notice ATOMIC credit-and-forward, called ONLY by an authorized `VedaForwardingSolver` in the same
@@ -895,6 +910,16 @@ contract VedaEngine is
         /// @custom:ghost queuedShares = actualShares
         if (sharesAfter > sharesBefore || actualShares != expectedShares) {
             revert UnexpectedVenueSharesQueued(expectedShares, actualShares);
+        }
+    }
+
+    /// @custom:ensures returnedShares == expectedShares
+    function _requireVenueSharesReturned(uint256 sharesBefore, uint256 expectedShares) private view {
+        uint256 sharesAfter = vault.balanceOf(address(this));
+        uint256 actualShares = sharesAfter >= sharesBefore ? sharesAfter - sharesBefore : 0;
+        /// @custom:ghost returnedShares = actualShares
+        if (sharesAfter < sharesBefore || actualShares != expectedShares) {
+            revert UnexpectedVenueSharesReturned(expectedShares, actualShares);
         }
     }
 

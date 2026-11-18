@@ -28,9 +28,8 @@ interface IERC4626Vault {
 /// @notice Single-EarnVault engine for an immediate-execution ERC-4626 venue.
 /// @dev The engine is the sole holder of venue shares backing its paired `EarnVault`.
 /// Specs for solar-verify (docs/earn/modules/erc4626-engine.md, docs/earn/integrations/engines.md):
-/// Every venue entry point is nonReentrant (`locked` is 1 when free and 2 while held).
-/// @custom:reentrancy-guard locked != 1
-/// @custom:invariant locked == 1 || locked == 2
+/// Every venue entry point is nonReentrant through the transient `_entered` flag.
+/// @custom:reentrancy-guard _entered
 /// Owner calls that stay open under the lock cannot unbind or rebind the EarnVault.
 /// @custom:lock-stable earnVault != address(0)
 /// The venue and its base asset are fixed and nonzero.
@@ -59,7 +58,7 @@ contract ERC4626Engine is
     string internal _symbol;
 
     address public earnVault;
-    uint256 private locked = 1;
+    bool private transient _entered;
 
     event EarnVaultInitialized(address indexed earnVault);
     event Deposited(address indexed earnVault, uint256 assets, uint256 engineShares);
@@ -87,10 +86,10 @@ contract ERC4626Engine is
     }
 
     modifier nonReentrant() {
-        if (locked != 1) revert ReentrantCall();
-        locked = 2;
+        if (_entered) revert ReentrantCall();
+        _entered = true;
         _;
-        locked = 1;
+        _entered = false;
     }
 
     /// A nonempty override wins; otherwise the vault's own name and symbol are used.
@@ -191,7 +190,7 @@ contract ERC4626Engine is
 
     /// Only the bound EarnVault calls it; the binding and the lock survive the call.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
-    /// @custom:ensures earnVault != address(0) && locked == 1
+    /// @custom:ensures earnVault != address(0) && !_entered
     /// In-kind entry pulls from a nonzero holder and credits a positive measured venue-share delta.
     /// @custom:ensures from != address(0) && engineSharesReceived > 0
     function depositInKind(uint256 venueShares, address from)
@@ -212,7 +211,7 @@ contract ERC4626Engine is
 
     /// Only the bound EarnVault calls it; the binding and the lock survive the call.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
-    /// @custom:ensures earnVault != address(0) && locked == 1
+    /// @custom:ensures earnVault != address(0) && !_entered
     /// The receiver is nonzero and its measured increase meets the caller's minimum.
     /// @custom:ensures receiver != address(0) && assets >= minAssets
     /// The venue burned exactly the requested shares, measured on the engine's balance.
@@ -242,7 +241,7 @@ contract ERC4626Engine is
 
     /// Only the bound EarnVault calls it; the binding and the lock survive the call.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
-    /// @custom:ensures earnVault != address(0) && locked == 1
+    /// @custom:ensures earnVault != address(0) && !_entered
     /// @custom:ensures receiver != address(0)
     /// The receiver's measured increase is exactly the requested assets.
     /// @custom:ensures measuredReceived == assets

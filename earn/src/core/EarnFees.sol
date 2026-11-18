@@ -30,15 +30,17 @@ interface IEarnVaultFeeContext {
 ///      here, which this contract cannot observe.
 ///      Not proved: each recipient's `claimableEarnShares` is at most `totalClaimableEarnShares` (a sum over the
 ///      mapping, which only the `sumClaimable` ghost tracks).
-/// @custom:invariant !initialized ==> (currentFeeConfigId == 0 && earnVault == address(0) && locked == 0)
-/// @custom:invariant earnVault != address(0) ==> (currentFeeConfigId >= 1 && locked != 0)
-/// @custom:invariant locked == 0 || locked == 1 || locked == 2
+/// @custom:invariant !initialized ==> (currentFeeConfigId == 0 && earnVault == address(0))
+/// @custom:invariant earnVault != address(0) ==> (currentFeeConfigId >= 1 && initialized)
 /// @custom:invariant _specWithinFeeBounds(currentFeeConfigId)
 /// @custom:invariant forall uint64 c :: _feeConfigs[c].fixedFeeCount <= MAX_FIXED_FEE_RECIPIENTS
 /// @custom:invariant forall bytes32 r :: _pendingFeeSnapshots[r].open ==> _specInstalled(_pendingFeeSnapshots[r].feeConfigId)
-/// @custom:reentrancy-guard initialized && locked == 2
+/// @custom:reentrancy-guard initialized && _entered
 contract EarnFees is IEarnFees {
     address public earnVault;
+    /// @dev Set by the constructor on the implementation and by {initialize} on a clone. Packed beside
+    ///      `earnVault`, which {initialize} writes in the same call.
+    bool private initialized;
     address public earnShare;
     uint256 public earnShareScale;
 
@@ -73,8 +75,8 @@ contract EarnFees is IEarnFees {
     bool public feeBaselinesPending;
     uint256 private _disableEpoch;
 
-    uint256 private locked;
-    bool private initialized;
+    /// @dev Reentrancy lock held for the duration of each locked call. Transient storage writes no slot.
+    bool private transient _entered;
 
     event FeesAccrued(
         uint64 indexed configId,
@@ -114,14 +116,14 @@ contract EarnFees is IEarnFees {
     }
 
     modifier nonReentrant() {
-        if (locked != 1) revert ReentrantCall();
-        locked = 2;
+        if (_entered) revert ReentrantCall();
+        _entered = true;
         _;
-        locked = 1;
+        _entered = false;
     }
 
     /// @notice A fresh clone is initialized once, paired with one vault and EarnShare, under configuration 1.
-    /// @custom:ensures !old(initialized) && initialized && locked == 1
+    /// @custom:ensures !old(initialized) && initialized
     /// @custom:ensures earnVault == earnVault_ && earnShare == earnShare_ && earnVault_ != address(0) && earnShare_ != address(0)
     /// @custom:ensures currentFeeConfigId == 1 && _specStored(1, initialConfig) && _specValidConfig(initialConfig)
     /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares)
@@ -141,7 +143,6 @@ contract EarnFees is IEarnFees {
         _validateFeeConfig(initialConfig);
         currentFeeConfigId = 1;
         _storeFeeConfig(1, initialConfig);
-        locked = 1;
         emit FeeConfigurationSet(1, keccak256(abi.encode(initialConfig)), false);
     }
 
@@ -434,7 +435,7 @@ contract EarnFees is IEarnFees {
 
     /// @notice A recipient claims its own recorded fee EarnShare to any receiver but zero, this contract or the vault.
     /// @custom:ensures to != address(0) && to != address(this) && to != old(earnVault) && earnShares != 0
-    /// @custom:ensures old(locked) == 1 && locked == 1
+    /// @custom:ensures !old(_entered) && !_entered
     function claim(address to, uint256 earnShares) external nonReentrant {
         if (to == address(0) || to == address(this) || to == earnVault) revert InvalidFeeClaimReceiver();
         if (earnShares == 0) revert ZeroAmount();

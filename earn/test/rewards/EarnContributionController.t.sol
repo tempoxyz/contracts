@@ -11,7 +11,7 @@ import { IContributionTarget, EarnContributionController } from "../../src/rewar
 import { FeeConfig, FixedFeeRecipient } from "../../src/interfaces/core/EarnFeeTypes.sol";
 import { IEarnFees } from "../../src/interfaces/core/IEarnFees.sol";
 import { EarnVaultTestDeployer } from "../helpers/EarnVaultTestDeployer.sol";
-import { FaultyMockToken, earnVaultTestNoFees } from "../helpers/EarnVaultMocks.sol";
+import { FaultyMockToken, ReentrantMockToken, earnVaultTestNoFees } from "../helpers/EarnVaultMocks.sol";
 
 contract EarnContributionControllerTest is Test {
     FaultyMockToken asset;
@@ -197,6 +197,40 @@ contract EarnContributionControllerTest is Test {
     function testExecuteFundingCanOnlyBeCalledByController() public {
         vm.expectRevert(EarnContributionController.NotSelf.selector);
         rewards.executeFunding(primaryFunder, 1 ether, 100 ether);
+    }
+
+    function testReentryDuringProviderPullReverts() public {
+        ReentrantMockToken hookAsset = new ReentrantMockToken("Asset", "AST", 18);
+        Simple4626Vault hookUnderlying = new Simple4626Vault(address(hookAsset), "Hook Vault", "hVAULT", 18);
+        ERC4626Engine hookEngine = new ERC4626Engine(IERC4626Vault(address(hookUnderlying)), address(this), "", "");
+        FaultyMockToken hookShare = new FaultyMockToken("Hook Earn Share", "HEARN", 18);
+        EarnVault hookVault =
+            EarnVaultTestDeployer.deploy(address(hookEngine), address(hookShare), address(this), earnVaultTestNoFees());
+        hookEngine.initializeEarnVault(address(hookVault));
+        EarnContributionController hooked =
+            new EarnContributionController(IContributionTarget(address(hookVault)), address(this));
+        hookAsset.mint(user, 100 ether);
+        vm.startPrank(user);
+        hookAsset.approve(address(hookVault), 100 ether);
+        hookVault.deposit(100 ether, user, 1);
+        vm.stopPrank();
+        hookAsset.mint(primaryFunder, 2 ether);
+        vm.prank(primaryFunder);
+        hookAsset.approve(address(hooked), 2 ether);
+        // The token calls back from its own address, which is not the owner, so the owner relays the reentrant call.
+        hookAsset.armReentry(address(this), abi.encodeCall(this.relayFund, (hooked)));
+
+        assertEq(hooked.fund(primaryFunder, 1 ether, 1_000 ether), 1 ether);
+
+        assertFalse(hookAsset.reentrySucceeded());
+        assertEq(hookAsset.reentryResult(), abi.encodeWithSelector(EarnContributionController.ReentrantCall.selector));
+        assertEq(hookAsset.balanceOf(primaryFunder), 1 ether);
+        assertEq(hookVault.engineShares(), 101 ether);
+    }
+
+    /// @dev Reenters as the owner from inside a token transfer.
+    function relayFund(EarnContributionController controller) external {
+        controller.fund(primaryFunder, 1 ether, 1_000 ether);
     }
 
     function _depositUnderlyingOnly(address holder, uint256 amount) private {

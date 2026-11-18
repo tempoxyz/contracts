@@ -621,6 +621,12 @@ contract EarnFactoryTest is Test {
             .initialize(address(engine), address(1), address(2), OWNER, params.controls, params.distributorConfig);
         vm.expectRevert(EarnFees.AlreadyInitialized.selector);
         EarnFees(feesImplementation).initialize(address(1), address(2), params.fees);
+
+        // The implementation is never initialized, so its locked calls refuse to run.
+        vm.expectRevert(EarnVault.ReentrantCall.selector);
+        EarnVault(vaultImplementation).deposit(1, OWNER, 1);
+        vm.expectRevert(EarnVault.ReentrantCall.selector);
+        EarnVault(vaultImplementation).accrueFees();
     }
 
     /// @dev Production setup order: the engine's setup owner deploys it, the factory wraps the unbound
