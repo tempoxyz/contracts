@@ -3,237 +3,91 @@ pragma solidity ^0.8.36;
 
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
-import { IERC20Allowance } from "tempo-earn/interfaces/external/IERC20Allowance.sol";
+import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
-import { CardFunding } from "./CardFunding.sol";
-import { CardProgram } from "./CardProgram.sol";
-import { Conversion } from "./Conversion.sol";
-import { CreditLine } from "./CreditLine.sol";
-import { CoreDebt } from "./LegBook.sol";
-import { SavingsFacility } from "./SavingsFacility.sol";
+import { CreditSource } from "./CreditSource.sol";
+import { IMidRate, IssuerTreasury } from "./IssuerTreasury.sol";
+import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
 /// @title IssuerDesk
-/// @notice An issuer's services over its CardProgram, kept off the card program and the reservation core: the
-///         program's split schedule (terms) paid to named parties out of every capture, rewards paid to cardholders
-///         out of a party's split, refunds that take back each split and reward in proportion, and corrections of
-///         processor errors linked to the step they fix. Every step emits one self-describing event, so the
-///         issuer's books rebuild from logs.
-/// @dev The issuer makes the desk an operator of its program, and the program's settlement account approves the
-///      desk for the settlement token: captures land in the settlement account and the desk pays each split from
-///      there in the same call. A split payee approves the desk as a holder on the core with a debt cap for the
-///      settlement account, so a refund takes its share back from what it has available and leaves the rest as
-///      capped debt. A cardholder approves the desk as a holder so a refund can take back a reward from money it
-///      still has, never as debt. Amounts are in units of the program's settlement token.
+/// @notice The issuer's dispute desk for one card authorization contract (PROGRAM): provisional credit from the
+///         settlement account while a dispute runs, and its recovery when the merchant wins. Provisional credit on a
+///         purchase a credit line paid repays that line, tied to the purchase so a merchant win draws it again; the
+///         rest lands as cash. A refund while a dispute runs settles provisional credit first, so the cardholder is
+///         never paid twice. Fees, splits and rewards are netted off chain from the program's events.
+/// @dev Dispute amounts are in the units the purchase was booked in; what the desk pays moves in today's settlement
+///      token at the program's reference rate.
+/// @custom:reentrancy-guard _locked
 contract IssuerDesk is ISettlementTokenGuard {
     using FixedPointMathLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
-    uint256 private constant BPS = 10_000;
-    uint256 private constant RATE_ONE = 1e18;
-    /// @dev Converted legs each round what they take up by a unit, at most one per funding source.
-    uint256 private constant LEG_ROUNDING = 8;
-
-    /// @notice Dispute states, in the order a dispute moves through them; a dispute ends won or lost.
     uint8 public constant OPENED = 1;
     uint8 public constant PROVISIONAL_CREDIT = 2;
-    uint8 public constant ARBITRATION = 5;
-    uint8 public constant WON = 6;
-    uint8 public constant LOST = 7;
+    uint8 public constant ARBITRATION = 4;
+    uint8 public constant WON = 5;
+    uint8 public constant LOST = 6;
+    uint256 private constant RATE_ONE = 1e18;
+    /// @dev The settlement-token-in-use reason for an open dispute.
+    uint8 private constant IN_USE_DISPUTES = 4;
 
-    /// @notice Step kinds a correction can fix.
-    uint8 public constant CAPTURE = 1;
-    uint8 public constant REFUND = 2;
+    ICardAuth public immutable PROGRAM;
+    /// @notice The program's credit lines, whose draws provisional credit repays.
+    CreditSource public immutable CREDIT;
+    /// @notice Advances what the settlement account lacks.
+    IssuerTreasury public immutable TREASURY;
+    /// @notice The Earn vault whose free shares a merchant win takes back after the cardholder's cash.
+    IEarnVault public immutable SAVINGS;
 
-    /// @notice A terms line: bps of every capture paid to payee, labelled kind.
-    struct Line {
-        address payee;
-        uint16 bps;
-        bytes32 kind;
-    }
-
-    /// @notice A reward: bps of every capture paid to the cardholder out of funder's split, labelled kind.
-    struct Reward {
-        address funder;
-        uint16 bps;
-        bytes32 kind;
-    }
-
-    /// @notice What one purchase paid one party: a split (funder zero) or a reward paid to the owner by funder.
-    struct Split {
-        address payee;
-        address funder;
-        bytes32 kind;
-        uint128 amount;
-        uint128 reversed;
-    }
-
-    /// @notice What a purchase captured and refunded through the desk, the base of every split's reversal.
-    struct Book {
-        uint128 captured;
-        uint128 refunded;
-    }
-
-    /// @notice A capture or refund the desk made, by the program's ledger sequence number.
-    struct Step {
-        bytes32 purchaseRef;
-        uint8 kind;
-        uint128 amount;
-        uint128 corrected;
-    }
-
-    /// @notice A dispute on a purchase: the disputed amount and the provisional credit given so far.
+    /// @notice A dispute on one purchase, in its booked units. lineRepaid and lineLanded are the credit leg's share of
+    ///         provisional credit so far: what repaid its line, and what landed as cash past what the line owed.
     struct Dispute {
         address owner;
         uint8 state;
         uint128 amount;
         uint128 provisional;
+        uint128 collected;
+        uint128 lineRepaid;
+        uint128 lineLanded;
+        bytes32 creditLeg;
     }
 
-    /// @notice What an open dispute's provisional credit repaid on one credit line its purchase drew (which a merchant
-    ///         win draws again), and the line's share that landed as cash because the line owed nothing.
-    struct LineShare {
-        uint128 repaid;
-        uint128 landed;
-    }
+    mapping(bytes32 ref => Dispute) internal _disputes;
+    uint256 public openDisputes;
+    uint64 internal _charges;
 
-    /// @dev A funding source's kind for a credit line, and the key of the first source of its kind.
-    uint8 private constant CREDIT = 4;
-    /// @dev A funding source's kind for a token held as it is.
-    uint8 private constant TOKEN_SOURCE = 64;
+    bool private transient _locked;
 
-    /// @dev A desk operator key's cumulative cap on the money it moves, and what it has used of it.
-    struct Operator {
-        uint128 cap;
-        uint128 used;
-    }
-
-    CardProgram public immutable PROGRAM;
-    address public immutable TOKEN;
-    address public immutable SETTLEMENT;
-
-    Line[] internal _terms;
-    Reward[] internal _rewards;
-    mapping(bytes32 purchaseRef => Book) public books;
-    mapping(bytes32 purchaseRef => Split[]) internal _splits;
-    mapping(uint64 seq => Step) public steps;
-    mapping(bytes32 purchaseRef => Dispute) public disputes;
-    /// @notice What the issuer collected from merchant reserves toward an open dispute.
-    mapping(bytes32 purchaseRef => uint128) public reserveCollected;
-    /// @notice Each dispute's line shares, by the index of the line in the purchase's funding order.
-    mapping(bytes32 purchaseRef => mapping(uint256 index => LineShare)) public lineShares;
-    /// @notice Disputes opened and not yet resolved, which keep the program on its settlement token.
-    uint64 public openDisputes;
-    uint64 internal _nonce;
-    bool internal _locked;
-    bytes32[] internal _disputed;
-    address[] internal _debtors;
-    mapping(address owner => bool) internal _isDebtor;
-    /// @notice What a split payee still owes the issuer for refunded splits the desk could not take back at once, by
-    ///         the token the split was paid in.
-    mapping(address payee => mapping(address token => uint256)) public payeeOwed;
-    mapping(address key => Operator) internal _operators;
-
-    /// @notice The issuer let `key` operate the desk up to `cap` of money moved in all, or removed it with a zero cap.
-    event OperatorSet(address indexed key, uint256 cap);
-    event TermsSet(Line[] lines);
-    event RewardsSet(Reward[] rewards);
-    event FeePaid(bytes32 indexed purchaseRef, address indexed payee, bytes32 kind, uint128 amount);
-    /// @notice A payee returned `amount` of a refunded purchase's split, worth `value` in today's settlement token.
-    event FeeReversed(
-        bytes32 indexed purchaseRef, address indexed payee, bytes32 kind, uint128 amount, uint128 debt, uint256 value
-    );
-    /// @notice A refund could not take back `amount` of a payee's split, which the payee now owes the issuer.
-    event PayeeOwed(bytes32 indexed purchaseRef, address indexed payee, address indexed token, uint128 amount);
-    /// @notice The issuer collected `amount` of what a payee owed it; `left` is still owed.
-    event PayeeOwedCollected(address indexed payee, address indexed token, uint128 amount, uint256 left);
-    event RewardPaid(
-        bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
-    );
-    /// @notice A refund took back `amount` of a reward from `account`, and its funder got back `value` of today's
-    ///         settlement token for it.
-    event RewardReversed(
-        bytes32 indexed purchaseRef,
-        address indexed account,
-        address indexed funder,
-        bytes32 kind,
-        uint128 amount,
-        uint256 value
-    );
-    event DisputeOpened(bytes32 indexed purchaseRef, address indexed account, uint128 amount, bytes evidence);
-    event ReserveCollectedFor(bytes32 indexed purchaseRef, uint128 amount);
+    event DisputeOpened(bytes32 indexed ref, address indexed owner, uint128 amount, bytes evidence);
+    /// @notice A step: the provisional credit it gave, what of it repaid a credit line, and what of the cash repaid
+    ///         the cardholder's debt.
     event DisputeStepped(
-        bytes32 indexed purchaseRef,
-        address indexed account,
+        bytes32 indexed ref,
         uint8 state,
         uint128 provisional,
+        uint128 onLine,
         uint128 repaid,
         bytes evidence,
         bool byMerchant
     );
+    /// @notice An end: the refund a cardholder win paid, or minus the provisional credit a merchant win took back, the
+    ///         part of it a credit line drew again, what remains the cardholder's debt, and the network chargeback.
     event DisputeResolved(
-        bytes32 indexed purchaseRef,
-        address indexed account,
-        bool won,
-        int256 amount,
-        uint128 debt,
-        uint128 repaid,
-        uint128 chargeback
+        bytes32 indexed ref, bool cardholderWins, int256 credit, uint128 redrawn, uint128 debt, uint128 chargeback
     );
-    event Corrected(bytes32 indexed purchaseRef, uint64 indexed target, int128 amount, string reason);
-    /// @notice A refund or correction past what the purchase still nets settled `amount` of provisional credit, which
-    ///         the cardholder already holds, instead of paying it again.
-    event DisputeSettled(bytes32 indexed purchaseRef, address indexed account, uint128 amount);
-    /// @notice A lost dispute took `amount` (settlement units) back from one funding source, in the funding order's
-    ///         terms: kind 1 cash, 2 a savings facility, 4 a credit line re-drawn.
-    event DisputeRecovered(
-        bytes32 indexed purchaseRef,
-        address indexed account,
-        uint8 kind,
-        address source,
-        uint64 lineId,
-        uint256 amount,
-        uint256 units
-    );
-    /// @notice Where one provisional credit went, when part of it repaid a credit line or it was paid in another token
-    ///         than the purchase's: each line, then the cash. amount is in the purchase's units, units in the source's.
-    event DisputeCredited(
-        bytes32 indexed purchaseRef,
-        address indexed account,
-        uint8 kind,
-        address source,
-        uint64 lineId,
-        uint256 amount,
-        uint256 units
-    );
+    /// @notice A refund while the dispute ran settled this much provisional credit instead of paying it again.
+    event DisputeSettled(bytes32 indexed ref, uint128 settled);
+    event ReserveCollectedFor(bytes32 indexed ref, uint128 amount);
 
-    /// @notice A split take-back ran out of gas; retry with more gas.
-    error ChargeOutOfGas();
-    error NotIssuer();
-    error ZeroAddress();
-    error InvalidTerms();
-    error InvalidRewards();
-    error NotCorrectable();
-    error CorrectionTooLarge();
-    error Reentrancy();
     error DisputeExists();
-    error NoDispute();
-    error InvalidDisputeStep();
     error DisputeTooLarge();
-    error RefundTooLarge();
-    error OperatorCapExceeded();
+    error InvalidDisputeStep();
+    error NoDispute();
+    error NotOperator();
+    error Reentrancy();
     error ReserveTooLarge();
-
-    modifier onlyIssuer() {
-        _onlyIssuer();
-        _;
-    }
-
-    modifier onlyOperator() {
-        _onlyOperator();
-        _;
-    }
 
     modifier nonReentrant() {
         if (_locked) revert Reentrancy();
@@ -242,770 +96,293 @@ contract IssuerDesk is ISettlementTokenGuard {
         _locked = false;
     }
 
-    constructor(CardProgram program) {
-        if (address(program) == address(0)) revert ZeroAddress();
-        PROGRAM = program;
-        TOKEN = program.SETTLEMENT_TOKEN();
-        SETTLEMENT = program.SETTLEMENT_ACCOUNT();
+    constructor(ICardAuth program, CreditSource credit, IssuerTreasury treasury, IEarnVault savings) {
+        (PROGRAM, CREDIT, TREASURY, SAVINGS) = (program, credit, treasury, savings);
     }
 
-    // Every entry point that moves money holds the lock for its whole call; the program and the core it calls are
-    // fixed.
+    // Every entry point that moves money holds the transient lock for its whole call; the program and the core it
+    // calls are fixed.
     // forge-lint: disable-start(reentrancy-no-eth)
 
-    /// @notice The program's issuer, who manages the desk and operates it without a cap.
-    // Kept under the program's getter name so callers read the issuer the same way from either contract.
-    // forge-lint: disable-next-line(mixed-case-function)
-    function ISSUER() public view returns (address) {
-        return PROGRAM.ISSUER();
-    }
-
-    /// @notice Lets `key` operate the desk until the money it moves through refunds, corrections, force posts, dispute
-    ///         credit and recovery, reserve collections and payee collections adds up to `cap`. A zero cap removes
-    ///         the key; what it used stays counted.
-    function setOperator(address key, uint256 cap) external onlyIssuer {
-        if (key == address(0)) revert ZeroAddress();
-        // Larger caps are clamped to the uint128 the desk counts in.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        _operators[key].cap = cap > type(uint128).max ? type(uint128).max : uint128(cap);
-        emit OperatorSet(key, cap);
-    }
-
-    /// @notice A desk operator key's cap and what it has used of it.
-    function operatorCap(address key) external view returns (uint256 cap, uint256 used) {
-        Operator storage o = _operators[key];
-        return (o.cap, o.used);
-    }
-
-    /// @notice Replaces the split schedule. Splits never add up to the whole capture.
-    function setTerms(Line[] calldata lines) external onlyIssuer {
-        uint256 total;
-        delete _terms;
-        for (uint256 i; i < lines.length; ++i) {
-            if (lines[i].payee == address(0) || lines[i].bps == 0) revert InvalidTerms();
-            total += lines[i].bps;
-            _terms.push(lines[i]);
-        }
-        if (total >= BPS) revert InvalidTerms();
-        emit TermsSet(lines);
-    }
-
-    /// @notice Replaces the rewards. A funder pays rewards only out of its own split, so its rewards never add up to
-    ///         more basis points than its terms lines.
-    function setRewards(Reward[] calldata rewards_) external onlyIssuer {
-        delete _rewards;
-        for (uint256 i; i < rewards_.length; ++i) {
-            address funder = rewards_[i].funder;
-            uint256 asked;
-            for (uint256 j; j < rewards_.length; ++j) {
-                if (rewards_[j].funder == funder) asked += rewards_[j].bps;
-            }
-            if (funder == address(0) || rewards_[i].bps == 0 || asked > _shareOf(funder)) revert InvalidRewards();
-            _rewards.push(rewards_[i]);
-        }
-        emit RewardsSet(rewards_);
-    }
-
-    /// @notice Captures through the program and pays each split and reward from the settlement account.
-    function capture(bytes32 purchaseRef, uint128 amount, bool isFinal) external nonReentrant onlyOperator {
-        PROGRAM.capture(purchaseRef, amount, isFinal);
-        _step(purchaseRef, CAPTURE, amount);
-        if (amount != 0) _charged(purchaseRef, amount);
-    }
-
-    /// @notice Posts a purchase with no hold through the program and pays each split and reward as a capture does, so
-    ///         the purchase can be refunded and disputed through the desk.
-    function charge(bytes32 card, bytes32 purchaseRef, uint128 amount, address merchant)
-        external
-        nonReentrant
-        onlyOperator
-    {
-        _use(amount);
-        PROGRAM.charge(card, purchaseRef, amount, merchant);
-        _step(purchaseRef, CAPTURE, amount);
-        _charged(purchaseRef, amount);
-    }
-
-    /// @notice Refunds through the program from the settlement account, then takes back each split's and reward's
-    ///         share of the refund.
-    function refund(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
-        Book storage b = books[purchaseRef];
-        // A won dispute counts as a refund of the purchase, so nothing it credited refunds again.
-        if (disputes[purchaseRef].state == WON && amount > b.captured - b.refunded) revert RefundTooLarge();
-        _use(amount);
-        _refundSettling(purchaseRef, amount);
-        _step(purchaseRef, REFUND, amount);
-        _reverse(purchaseRef, amount);
-    }
-
-    /// @notice An open dispute is sized in the program's settlement token, so the token waits for it to resolve.
-    function settlementTokenInUse(address) external view returns (uint8) {
-        return openDisputes != 0 ? 4 : 0;
-    }
-
-    /// @notice Opens a dispute on a captured purchase, for at most what it captured and has not refunded.
-    function openDispute(bytes32 purchaseRef, uint128 amount, bytes calldata evidence)
-        external
-        nonReentrant
-        onlyOperator
-    {
-        Book storage b = books[purchaseRef];
-        if (disputes[purchaseRef].state != 0) revert DisputeExists();
-        if (amount == 0 || amount > b.captured - b.refunded) revert DisputeTooLarge();
-        address owner = PROGRAM.purchaseOf(purchaseRef).owner;
-        disputes[purchaseRef] = Dispute({ owner: owner, state: OPENED, amount: amount, provisional: 0 });
-        _disputed.push(purchaseRef);
+    /// @notice Opens a dispute on a captured purchase for at most what it captured and has not refunded.
+    function openDispute(bytes32 ref, uint128 amount, bytes calldata evidence) external nonReentrant {
+        _operator(0);
+        Dispute storage d = _disputes[ref];
+        if (d.state != 0) revert DisputeExists();
+        (uint128 open, address owner) = _open(ref);
+        if (amount == 0 || amount > open) revert DisputeTooLarge();
+        (d.owner, d.state, d.amount, d.creditLeg) = (owner, OPENED, amount, _creditLeg(ref));
         ++openDisputes;
-        emit DisputeOpened(purchaseRef, owner, amount, evidence);
+        emit DisputeOpened(ref, owner, amount, evidence);
     }
 
-    /// @notice Moves a dispute forward, attaching evidence and giving provisional credit from the settlement account.
-    ///         Refunds and provisional credit together never return more than the purchase, nor provisional credit
-    ///         more than the dispute. Credit the cardholder receives repays its debt first.
-    function disputeStep(
-        bytes32 purchaseRef,
-        uint8 state,
-        uint128 provisional,
-        bytes calldata evidence,
-        bool byMerchant
-    ) external nonReentrant onlyOperator {
-        Dispute storage d = disputes[purchaseRef];
-        if (d.state == 0 || d.state >= WON) revert NoDispute();
+    /// @notice Moves a dispute forward with evidence, giving provisional credit from the settlement account. Refunds
+    ///         and provisional credit together never return more than the purchase, nor provisional credit more than
+    ///         the dispute. The credit leg's share repays its line; cash the cardholder receives repays its debt first.
+    function disputeStep(bytes32 ref, uint8 state, uint128 provisional, bytes calldata evidence, bool byMerchant)
+        external
+        nonReentrant
+    {
+        _operator(provisional);
+        Dispute storage d = _live(ref);
         if (state <= d.state || state < PROVISIONAL_CREDIT || state > ARBITRATION) revert InvalidDisputeStep();
-        Book storage b = books[purchaseRef];
-        uint128 open = b.captured - b.refunded;
+        (uint128 open,) = _open(ref);
         uint128 cap = d.amount < open ? d.amount : open;
-        if (provisional > 0 && d.provisional + provisional > cap) revert DisputeTooLarge();
-        _use(provisional);
+        if (d.provisional + provisional > cap) revert DisputeTooLarge();
         d.state = state;
+        uint128 onLine;
         uint128 repaid;
-        if (provisional > 0) {
-            uint128 onLines = _repayLines(purchaseRef, d, provisional, open);
+        if (provisional != 0) {
+            onLine = _repayLine(ref, d, provisional, open);
             d.provisional += provisional;
-            uint128 cash = provisional - onLines;
-            if (cash > 0) repaid = _creditCash(purchaseRef, d.owner, cash, onLines > 0);
+            uint128 cash = provisional - onLine;
+            if (cash != 0) repaid = _credit(ref, d.owner, cash);
         }
-        emit DisputeStepped(purchaseRef, d.owner, state, provisional, repaid, evidence, byMerchant);
+        emit DisputeStepped(ref, state, provisional, onLine, repaid, evidence, byMerchant);
     }
 
-    /// @notice Ends a dispute. A merchant win takes the provisional credit back at once from what the cardholder has,
-    ///         the rest as debt to the settlement account within its cap. A cardholder win counts as a refund of
-    ///         what is still unrefunded: the program refunds what the provisional credit did not cover, every split
-    ///         comes back in proportion, and the whole credited amount is charged back to the network.
-    function resolveDispute(bytes32 purchaseRef, bool cardholderWins) external nonReentrant onlyOperator {
-        Dispute storage d = disputes[purchaseRef];
-        if (d.state == 0 || d.state >= WON) revert NoDispute();
-        address owner = d.owner;
+    /// @notice Ends a dispute. A merchant win takes the provisional credit back: the line draws again what it repaid,
+    ///         then the cardholder's free settlement token, then its free savings shares, and the rest becomes its debt
+    ///         to the settlement account without a fee. A cardholder win counts as a refund of the dispute: the program
+    ///         refunds what provisional credit did not cover through the purchase's sources, the credit kept counts as
+    ///         refunded, and the network is charged back all of it but what merchant reserves already paid.
+    function resolveDispute(bytes32 ref, bool cardholderWins) external nonReentrant {
+        Dispute storage d = _live(ref);
         uint128 provisional = d.provisional;
         --openDisputes;
         if (!cardholderWins) {
+            _operator(provisional);
             d.state = LOST;
-            // Re-drawn lines and the recovery together take back the whole provisional credit.
-            _use(provisional);
-            uint256 reinstated = _redrawLines(purchaseRef, owner);
-            uint256 debt = provisional > reinstated ? _recover(purchaseRef, owner, provisional - reinstated) : 0;
-            // Below provisional, a uint128.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            emit DisputeResolved(purchaseRef, owner, false, -int256(uint256(provisional)), uint128(debt), 0, 0);
+            uint128 redrawn = _redrawLine(ref, d);
+            uint128 debt = provisional > redrawn ? _recover(ref, d.owner, provisional - redrawn) : 0;
+            emit DisputeResolved(ref, false, -int256(uint256(provisional)), redrawn, debt, 0);
             return;
         }
         d.state = WON;
-        (uint128 credited, uint128 rest) = _won(purchaseRef);
-        // What the issuer collected from merchant reserves is no longer the network's to charge back.
-        uint128 collected = reserveCollected[purchaseRef];
-        uint128 chargeback = credited > collected ? credited - collected : 0;
-        uint128 repaid;
-        if (rest > 0) {
-            _use(rest);
-            uint256 before = CoreDebt.total(owner, TOKEN);
-            _refund(purchaseRef, rest);
-            uint256 later = CoreDebt.total(owner, TOKEN);
-            // Bounded by the owner's 128-bit debt before the refund.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            repaid = before > later ? uint128(before - later) : 0;
-        }
-        // The provisional credit the cardholder keeps counts as refunded too: it frees the mandate's usage and leaves
-        // the network's side of the chargeback the refund above did not already cover.
+        (uint128 open,) = _open(ref);
+        uint128 credited = d.amount < open ? d.amount : open;
+        uint128 rest = credited > provisional ? credited - provisional : 0;
+        _operator(rest);
+        uint128 chargeback = credited > d.collected ? credited - d.collected : 0;
+        if (rest != 0) _refund(ref, rest);
+        // The credit the cardholder keeps counts as refunded too: it frees usage and settles the refund cap.
         uint128 kept = credited - rest;
-        uint128 net = chargeback > rest ? chargeback - rest : 0;
-        if (kept != 0 || net != 0) PROGRAM.creditBack(purchaseRef, kept, net);
-        // Of the refund, what the merchant's reserves paid is not the network's to return.
-        if (rest > chargeback) PROGRAM.reserveSettled(purchaseRef, rest - chargeback);
-        _reverse(purchaseRef, credited);
-        emit DisputeResolved(purchaseRef, owner, true, int256(uint256(rest)), 0, repaid, chargeback);
+        if (kept != 0) PROGRAM.creditBack(ref, kept, kept);
+        emit DisputeResolved(ref, true, int256(uint256(rest)), 0, 0, chargeback);
+    }
+
+    /// @notice Refunds units of a purchase (corrections of overcharges too). While a dispute on it runs, the part past
+    ///         what the purchase still nets once provisional credit counts settles that credit, which the cardholder
+    ///         already holds, so it moves no money and the program still counts it as refunded.
+    function refund(bytes32 ref, uint128 units) external nonReentrant {
+        _operator(units);
+        uint128 settled;
+        Dispute storage d = _disputes[ref];
+        if (d.state != 0 && d.state < WON && d.provisional != 0) {
+            (uint128 open,) = _open(ref);
+            uint256 over = uint256(units) + d.provisional;
+            if (over > open) {
+                // At most units + provisional; capped at both below.
+                // forge-lint: disable-next-line(unsafe-typecast)
+                settled = uint128(over - open);
+                if (settled > d.provisional) settled = d.provisional;
+                if (settled > units) settled = units;
+                d.provisional -= settled;
+                // A line share that settles stays repaid, so a merchant win never draws it again.
+                if (d.lineRepaid > d.provisional) d.lineRepaid = d.provisional;
+                emit DisputeSettled(ref, settled);
+            }
+        }
+        if (units > settled) _refund(ref, units - settled);
+        if (settled != 0) PROGRAM.creditBack(ref, settled, settled);
     }
 
     /// @notice Records what the issuer collected from merchant reserves toward an open dispute, which a cardholder win
-    ///         then leaves out of the chargeback. What it collects for one dispute never adds up to more than the
-    ///         dispute, nor than the purchase still has unrefunded.
-    function collectedReserve(bytes32 purchaseRef, uint128 amount) external onlyOperator {
-        Dispute storage d = disputes[purchaseRef];
-        if (d.state == 0 || d.state >= WON) revert NoDispute();
-        Book storage b = books[purchaseRef];
-        uint256 collected = uint256(reserveCollected[purchaseRef]) + amount;
-        if (collected > d.amount || collected > b.captured - b.refunded) revert ReserveTooLarge();
-        _use(amount);
+    ///         leaves out of the chargeback: never more for one dispute than the dispute, nor than the purchase still
+    ///         has unrefunded.
+    function collectedReserve(bytes32 ref, uint128 amount) external {
+        _operator(amount);
+        Dispute storage d = _live(ref);
+        (uint128 open,) = _open(ref);
+        uint256 collected = uint256(d.collected) + amount;
+        if (collected > d.amount || collected > open) revert ReserveTooLarge();
         // At most the dispute's amount, a uint128.
         // forge-lint: disable-next-line(unsafe-typecast)
-        reserveCollected[purchaseRef] = uint128(collected);
-        emit ReserveCollectedFor(purchaseRef, amount);
+        d.collected = uint128(collected);
+        emit ReserveCollectedFor(ref, amount);
     }
 
-    /// @notice Takes up to `amount` of what a payee owes the issuer for refunded splits from what the payee has available
-    ///         in that token, for the settlement account (converted into today's settlement token if it changed).
-    ///         Returns what it took.
-    function collectPayeeOwed(address payee, address token, uint128 amount)
-        external
-        nonReentrant
-        onlyOperator
-        returns (uint128 collected)
-    {
-        uint256 owed = payeeOwed[payee][token];
-        // At most amount, a uint128.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        collected = uint128(_min(_min(amount, owed), CORE.available(payee, token)));
-        if (collected == 0) return 0;
-        _use(collected);
-        payeeOwed[payee][token] = owed - collected;
-        if (token == PROGRAM.settlementToken()) {
-            CORE.charge(payee, token, _nextId(), collected, SETTLEMENT, false);
-        } else {
-            CORE.charge(payee, token, _nextId(), collected, address(this), false);
-            _convert(token, collected, SETTLEMENT);
+    function disputeOf(bytes32 ref) external view returns (Dispute memory) {
+        return _disputes[ref];
+    }
+
+    /// @notice What a cardholder win would refund now, past the provisional credit.
+    function winRefund(bytes32 ref) external view returns (uint128) {
+        Dispute storage d = _disputes[ref];
+        (uint128 open,) = _open(ref);
+        uint128 credited = d.amount < open ? d.amount : open;
+        return credited > d.provisional ? credited - d.provisional : 0;
+    }
+
+    /// @notice An open dispute is sized in the settlement token, so the token waits for it to resolve (reason 4).
+    function settlementTokenInUse(address) external view returns (uint8) {
+        return openDisputes != 0 ? IN_USE_DISPUTES : 0;
+    }
+
+    /// @dev The caller must be the issuer or a settle operator, which counts value against its cap.
+    function _operator(uint256 value) private {
+        if (msg.sender == PROGRAM.ISSUER()) return;
+        if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_SETTLE())) revert NotOperator();
+        if (value != 0) PROGRAM.useOperatorCap(msg.sender, value);
+    }
+
+    function _live(bytes32 ref) private view returns (Dispute storage d) {
+        d = _disputes[ref];
+        if (d.state == 0 || d.state >= WON) revert NoDispute();
+    }
+
+    function _open(bytes32 ref) private view returns (uint128 open, address owner) {
+        ICardAuth.PurchaseView memory p = PROGRAM.purchaseOf(ref);
+        owner = p.owner;
+        open = p.captured > p.refunded ? p.captured - p.refunded : 0;
+    }
+
+    /// @dev The purchase's leg on this desk's credit lines, if one paid part of it.
+    function _creditLeg(bytes32 ref) private view returns (bytes32) {
+        (address[] memory sources,, bytes32[] memory legIds) = PROGRAM.legsOf(ref);
+        for (uint256 i; i < sources.length; ++i) {
+            if (sources[i] == address(CREDIT)) return legIds[i];
         }
-        emit PayeeOwedCollected(payee, token, collected, owed - collected);
+        return bytes32(0);
     }
 
-    /// @notice Corrects a processor error on the capture or refund the program logged as target, by an amount
-    ///         signed toward the cardholder. Toward the cardholder it comes back like a refund; against it, it is
-    ///         charged like a capture, splits and rewards included. Corrections to one step never add up to more
-    ///         than the step moved.
-    function correct(bytes32 purchaseRef, uint64 target, int128 amount, string calldata reason)
-        external
-        nonReentrant
-        onlyOperator
-    {
-        Step storage s = steps[target];
-        if (s.kind == 0 || s.purchaseRef != purchaseRef) revert NotCorrectable();
-        // A negated int128 fits in uint128 for every value but the minimum, which no step can move.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint128 size = amount < 0 ? uint128(-amount) : uint128(amount);
-        if (size == 0 || s.corrected + size > s.amount) revert CorrectionTooLarge();
-        _use(size);
-        s.corrected += size;
-        if (amount > 0) {
-            Book storage b = books[purchaseRef];
-            if (size > b.captured - b.refunded) revert CorrectionTooLarge();
-            _refundSettling(purchaseRef, size);
-            _reverse(purchaseRef, size);
-        } else {
-            // An undercharge on a purchase booked in an earlier settlement token would draw today's token for the old
-            // one's units: the issuer charges it as a new purchase instead.
-            if (PROGRAM.purchaseToken(purchaseRef) != PROGRAM.settlementToken()) revert NotCorrectable();
-            PROGRAM.charge(PROGRAM.purchaseOf(purchaseRef).card, purchaseRef, size, address(0));
-            _charged(purchaseRef, size);
-        }
-        emit Corrected(purchaseRef, target, amount, reason);
+    /// @dev Booked units of ref in today's settlement token at the reference rate, rounded up, and that token.
+    function _today(bytes32 ref, uint256 units) private view returns (uint256, address token) {
+        token = PROGRAM.settlementToken();
+        address booked = PROGRAM.purchaseOf(ref).token;
+        if (booked == token || booked == address(0)) return (units, token);
+        return (units.mulDivUp(IMidRate(PROGRAM.conversion()).mid(booked, token), RATE_ONE), token);
     }
 
-    /// @notice The split schedule.
-    function terms() external view returns (Line[] memory) {
-        return _terms;
-    }
-
-    /// @notice The rewards.
-    function rewards() external view returns (Reward[] memory) {
-        return _rewards;
-    }
-
-    /// @notice What one purchase paid each party, and how much of it was taken back.
-    function splitsOf(bytes32 purchaseRef) external view returns (Split[] memory) {
-        return _splits[purchaseRef];
-    }
-
-    /// @notice What a cardholder win would refund from the settlement account now: the credited amount past what
-    ///         provisional credit already paid.
-    function winRefund(bytes32 purchaseRef) external view returns (uint128 rest) {
-        (, rest) = _won(purchaseRef);
-    }
-
-    /// @notice What open disputes risk (each at most what its purchase still nets) and the capped debt lost disputes
-    ///         left owed to the settlement account, in settlement units.
-    function exposure() external view returns (uint256 disputed, uint256 debt) {
-        for (uint256 i; i < _disputed.length; ++i) {
-            bytes32 ref = _disputed[i];
-            Dispute storage d = disputes[ref];
-            if (d.state >= WON) continue;
-            Book storage b = books[ref];
-            uint128 open = b.captured - b.refunded;
-            disputed += d.amount < open ? d.amount : open;
-        }
-        for (uint256 i; i < _debtors.length; ++i) {
-            // A view over the core's debt records, one read per owner a lost dispute left in debt.
-            // forge-lint: disable-next-line(calls-loop)
-            debt += CoreDebt.owedTo(_debtors[i], TOKEN, SETTLEMENT);
-        }
-    }
-
-    function _onlyIssuer() private view {
-        if (msg.sender != ISSUER()) revert NotIssuer();
-    }
-
-    function _onlyOperator() private view {
-        if (_operators[msg.sender].cap == 0 && msg.sender != ISSUER()) revert NotIssuer();
-    }
-
-    /// @dev Counts `amount` against the calling operator key's cap; the issuer has none.
-    function _use(uint256 amount) private {
-        if (amount == 0) return;
-        Operator storage o = _operators[msg.sender];
-        uint256 used = o.used + amount;
-        if (used > o.cap) {
-            if (msg.sender == ISSUER()) return;
-            revert OperatorCapExceeded();
-        }
-        // At most cap, a uint128.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        o.used = uint128(used);
-    }
-
-    function _shareOf(address payee) private view returns (uint256 share) {
-        for (uint256 i; i < _terms.length; ++i) {
-            if (_terms[i].payee == payee) share += _terms[i].bps;
-        }
-    }
-
-    // Pays the owner from the settlement account, which approved the desk; incoming credit repays its debt first.
-    // forge-lint: disable-next-item(arbitrary-send-erc20)
-    // Pays amount of provisional credit, in the purchase's units, in today's settlement token: a purchase booked in an
-    // earlier token is paid at the reference rate, rounded toward the cardholder. Returns the debt it repaid.
-    function _creditCash(bytes32 purchaseRef, address owner, uint128 amount, bool split)
-        private
-        returns (uint128 repaid)
-    {
+    /// @dev Gives the credit leg its share of all provisional credit so far, less what earlier steps gave it, so steps
+    ///      add up to one split. Only what the line owes repays it, tied to the purchase; the rest of the share lands
+    ///      as cash and still counts toward it. Returns what repaid the line.
+    function _repayLine(bytes32 ref, Dispute storage d, uint128 amount, uint128 open) private returns (uint128 pay) {
+        if (d.creditLeg == bytes32(0) || open == 0) return 0;
+        CreditSource.Leg memory leg = CREDIT.legOf(d.owner, d.creditLeg);
+        CreditSource.Line memory line = CREDIT.lineOf(leg.lineId);
         address token = PROGRAM.settlementToken();
-        address booked = PROGRAM.purchaseToken(purchaseRef);
-        uint256 units = amount;
-        if (booked != token) {
-            units = uint256(amount).mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE);
-            emit DisputeCredited(purchaseRef, owner, TOKEN_SOURCE, token, 0, amount, units);
-        } else if (split) {
-            emit DisputeCredited(purchaseRef, owner, 1, token, 0, amount, amount);
-        }
-        uint256 before = CoreDebt.total(owner, token);
-        _payFromSettlement(token, owner, units);
-        uint256 later = CoreDebt.total(owner, token);
+        // A line in an earlier settlement token takes its share as cash.
+        if (line.token != token || PROGRAM.purchaseOf(ref).token != token) return 0;
+        uint256 drawn = leg.gross;
+        uint256 given = uint256(d.lineRepaid) + d.lineLanded;
+        if (drawn <= given) return 0;
+        uint256 target = (uint256(d.provisional) + amount) * drawn / open;
+        if (target <= given) return 0;
+        uint256 share = _min(_min(target - given, drawn - given), amount);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        pay = uint128(_min(share, line.owed));
+        // Both at most amount, a uint128.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        (d.lineRepaid, d.lineLanded) = (d.lineRepaid + pay, d.lineLanded + uint128(share - pay));
+        if (pay == 0) return 0;
+        _fromSettlement(token, address(this), pay);
+        SafeTransferLib.safeApprove(token, address(CREDIT), pay);
+        CREDIT.repayFor(leg.lineId, pay, ref);
+    }
+
+    /// @dev On a merchant win, draws the line again for what provisional credit repaid on it, as far as its lender can
+    ///      fund it, the lender paying the settlement account.
+    function _redrawLine(bytes32 ref, Dispute storage d) private returns (uint128 drawn) {
+        uint128 want = d.lineRepaid;
+        if (want == 0) return 0;
+        d.lineRepaid = 0;
+        uint64 lineId = CREDIT.legOf(d.owner, d.creditLeg).lineId;
+        uint256 left = CREDIT.redrawable(lineId, ref);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (left < want) want = uint128(left);
+        if (want != 0) drawn = CREDIT.redraw(lineId, want, ref);
+    }
+
+    /// @dev Pays units of ref in today's token to owner from the settlement account (the treasury advancing what it
+    ///      lacks). Returns what repaid owner's debt, in today's token.
+    function _credit(bytes32 ref, address owner, uint128 units) private returns (uint128 repaid) {
+        (uint256 amount, address token) = _today(ref, units);
+        uint256 before = _debt(owner, token);
+        _fromSettlement(token, owner, amount);
+        uint256 later = _debt(owner, token);
         // Bounded by the owner's 128-bit debt before the payment.
         // forge-lint: disable-next-line(unsafe-typecast)
         repaid = before > later ? uint128(before - later) : 0;
     }
 
-    function _step(bytes32 purchaseRef, uint8 kind, uint128 amount) private {
-        (uint64 seq,,,) = PROGRAM.ledger();
-        steps[seq] = Step({ purchaseRef: purchaseRef, kind: kind, amount: amount, corrected: 0 });
+    /// @dev Refunds units of ref through the program, which takes today's token from this desk, funded by the
+    ///      settlement account; what the program leaves goes back to it.
+    function _refund(bytes32 ref, uint128 units) private {
+        (uint256 amount, address token) = _today(ref, units);
+        _fromSettlement(token, address(this), amount);
+        SafeTransferLib.safeApprove(token, address(PROGRAM), amount);
+        PROGRAM.refund(ref, units);
+        SafeTransferLib.safeApprove(token, address(PROGRAM), 0);
+        uint256 left = SafeTransferLib.balanceOf(token, address(this));
+        if (left != 0) SafeTransferLib.safeTransfer(token, PROGRAM.SETTLEMENT_ACCOUNT(), left);
     }
 
-    // The settlement account is the program's own, fixed at deployment, and approved the desk for its splits and
-    // refunds. The loops below call only the fixed core, once per split of one purchase.
-    // forge-lint: disable-start(arbitrary-send-erc20)
-    // forge-lint: disable-start(calls-loop)
-
-    // A win credits the disputed amount, at most what the purchase still nets; rest is what provisional credit left.
-    function _won(bytes32 purchaseRef) private view returns (uint128 credited, uint128 rest) {
-        Dispute storage d = disputes[purchaseRef];
-        Book storage b = books[purchaseRef];
-        uint128 open = b.captured - b.refunded;
-        credited = d.amount < open ? d.amount : open;
-        rest = credited > d.provisional ? credited - d.provisional : 0;
+    // Takes only from the program's settlement account, which approved this desk to pay provisional credit and refunds.
+    // forge-lint: disable-next-item(arbitrary-send-erc20)
+    function _fromSettlement(address token, address to, uint256 amount) private {
+        address account = PROGRAM.SETTLEMENT_ACCOUNT();
+        if (amount <= CORE.available(account, token)) SafeTransferLib.safeTransferFrom(token, account, to, amount);
+        else TREASURY.payOut(to, amount, bytes32(0));
     }
 
-    function _refund(bytes32 purchaseRef, uint128 amount) private {
-        address token = PROGRAM.settlementToken();
-        address booked = PROGRAM.purchaseToken(purchaseRef);
-        if (booked == token) {
-            _payFromSettlement(token, address(this), amount);
-            _allow(token, address(PROGRAM), amount);
-            PROGRAM.refund(purchaseRef, amount);
-            return;
+    /// @dev Takes units of ref back from owner in today's token: its free cash, then its free savings shares redeemed
+    ///      to the settlement account, never a credit line; the rest becomes its debt to the settlement account.
+    ///      Returns that debt.
+    // forge-lint: disable-next-item(unsafe-typecast)
+    function _recover(bytes32 ref, address owner, uint128 units) private returns (uint128 debt) {
+        (uint256 amount, address token) = _today(ref, units);
+        address account = PROGRAM.SETTLEMENT_ACCOUNT();
+        uint256 free = CORE.available(owner, token);
+        uint256 cash = free < amount ? free : amount;
+        uint256 rest = amount - cash;
+        if (rest != 0 && address(SAVINGS) != address(0) && SAVINGS.asset() == token) rest -= _takeShares(owner, rest);
+        debt = uint128(rest);
+        if (cash + rest != 0) CORE.charge(owner, token, _chargeId(), uint128(cash + rest), account, false);
+    }
+
+    /// @dev Takes up to need's worth of owner's free savings shares and redeems them to the settlement account.
+    // forge-lint: disable-next-item(reentrancy-no-eth,unsafe-typecast)
+    function _takeShares(address owner, uint256 need) private returns (uint256 taken) {
+        IEarnVault vault = SAVINGS;
+        address share = vault.earnShare();
+        uint256 shares = CORE.available(owner, share);
+        if (shares == 0) return 0;
+        uint256 value = vault.previewRedeem(shares);
+        if (value > need) {
+            uint256 wanted = vault.previewWithdraw(need);
+            if (wanted < shares) (shares, value) = (wanted, vault.previewRedeem(wanted));
         }
-        // A purchase booked in an earlier settlement token refunds in its units, which the program takes in today's
-        // token at the reference rate; what the desk pulled beyond that goes back to the settlement account.
-        uint256 paying =
-            uint256(amount).mulDivUp(Conversion(PROGRAM.conversion()).mid(booked, token), RATE_ONE) + LEG_ROUNDING;
-        // What the desk already holds (a one-unit seed, sent by anyone) stays, so a refund never creates its balance.
-        uint256 baseline = SafeTransferLib.balanceOf(token, address(this));
-        _payFromSettlement(token, address(this), paying);
-        _allow(token, address(PROGRAM), paying);
-        PROGRAM.refund(purchaseRef, amount);
-        uint256 left = SafeTransferLib.balanceOf(token, address(this)) - baseline;
-        if (left != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT, left);
+        if (shares == 0 || value == 0) return 0;
+        CORE.charge(owner, share, _chargeId(), uint128(shares), address(this), false);
+        SafeTransferLib.safeApprove(share, address(vault), shares);
+        value = vault.redeem(shares, PROGRAM.SETTLEMENT_ACCOUNT(), value);
+        taken = value < need ? value : need;
     }
 
-    /// @dev Pays `amount` of today's settlement token from the settlement account to `to`, for a refund or a credit.
-    ///      What the account lacks, the program advances as issuer debt, as it does for a payout: the account owes it to
-    ///      the program within its debt cap.
-    function _payFromSettlement(address token, address to, uint256 amount) private {
-        if (amount <= CORE.available(SETTLEMENT, token)) {
-            SafeTransferLib.safeTransferFrom(token, SETTLEMENT, to, amount);
-        } else {
-            PROGRAM.payOut(to, amount, bytes32(0));
-        }
-    }
-
-    /// @dev A standing maximum allowance for the immutable program, or a credit line it draws on: Tempo charges every
-    ///      zero-to-nonzero allowance as a new storage slot. Each takes only what one refund or repayment pulls from the
-    ///      desk, which holds nothing between calls but a seed.
-    function _allow(address token, address spender, uint256 amount) private {
-        if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
-            SafeTransferLib.safeApproveWithRetry(token, spender, type(uint256).max);
-        }
-    }
-
-    // Refunds amount of a purchase. The part past what it still nets once its open dispute's provisional credit counts
-    // settles that credit, which the cardholder already holds: it moves no money, the program still counts it.
-    function _refundSettling(bytes32 purchaseRef, uint128 amount) private {
-        uint128 settled;
-        Dispute storage d = disputes[purchaseRef];
-        if (d.state != 0 && d.state < WON && d.provisional != 0) {
-            Book storage b = books[purchaseRef];
-            uint256 over = uint256(b.refunded) + amount + d.provisional;
-            if (over > b.captured) {
-                // At most amount + provisional, both uint128; capped at provisional below.
-                // forge-lint: disable-next-line(unsafe-typecast)
-                settled = uint128(over - b.captured);
-                if (settled > d.provisional) settled = d.provisional;
-                if (settled > amount) settled = amount;
-                d.provisional -= settled;
-                _settleLines(purchaseRef, d.provisional);
-                emit DisputeSettled(purchaseRef, d.owner, settled);
-            }
-        }
-        if (amount > settled) _refund(purchaseRef, amount - settled);
-        if (settled != 0) PROGRAM.creditBack(purchaseRef, settled, settled);
-    }
-
-    // Gives each credit line the purchase drew its share of a provisional credit: its part of all provisional credit so
-    // far, less what earlier steps gave it, so several steps add up to one split. Only what the line still owes repays
-    // it; the rest of the share lands as cash and still counts toward the share, so a later step never repays a newer
-    // draw instead. A share never draws a line. Returns what repaid lines.
-    function _repayLines(bytes32 purchaseRef, Dispute storage d, uint128 amount, uint128 open)
-        private
-        returns (uint128 onLines)
-    {
-        if (open == 0 || PROGRAM.purchaseToken(purchaseRef) != TOKEN) return 0;
-        CardFunding.Source[] memory order = _orderOf(purchaseRef);
-        uint256 rest = amount;
-        for (uint256 i; i < order.length && rest != 0; ++i) {
-            if (order[i].kind != CREDIT) continue;
-            uint256 drawn = _drawn(purchaseRef, order, i);
-            LineShare storage sh = lineShares[purchaseRef][i];
-            uint256 given = uint256(sh.repaid) + sh.landed;
-            if (drawn <= given) continue;
-            uint256 target = (uint256(d.provisional) + amount) * drawn / open;
-            if (target <= given) continue;
-            uint256 share = _min(_min(target - given, drawn - given), rest);
-            rest -= share;
-            CreditLine line = CreditLine(order[i].source);
-            uint256 pay = _min(share, line.lineOf(order[i].lineId).owed);
-            // Both at most amount, a uint128.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            (sh.repaid, sh.landed) = (sh.repaid + uint128(pay), sh.landed + uint128(share - pay));
-            if (pay == 0) continue;
-            SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, address(this), pay);
-            _allow(TOKEN, address(line), pay);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            line.repayFor(order[i].lineId, uint128(pay), purchaseRef);
-            emit DisputeCredited(purchaseRef, d.owner, CREDIT, address(line), order[i].lineId, pay, pay);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            onLines += uint128(pay);
+    function _debt(address owner, address token) private view returns (uint256 sum) {
+        IReservationCore.Debt[] memory debts = CORE.debtOf(owner, token);
+        for (uint256 i; i < debts.length; ++i) {
+            sum += debts[i].amount;
         }
     }
 
-    // After a refund settled provisional credit, the cash share settles first; a line share it settles stays repaid,
-    // so a merchant win never draws it again.
-    function _settleLines(bytes32 purchaseRef, uint128 left) private {
-        CardFunding.Source[] memory order = _orderOf(purchaseRef);
-        uint256 total;
-        for (uint256 i; i < order.length; ++i) {
-            if (order[i].kind == CREDIT) total += lineShares[purchaseRef][i].repaid;
-        }
-        if (total <= left) return;
-        uint256 excess = total - left;
-        for (uint256 i; i < order.length && excess != 0; ++i) {
-            if (order[i].kind != CREDIT) continue;
-            LineShare storage sh = lineShares[purchaseRef][i];
-            uint256 take = _min(sh.repaid, excess);
-            // At most sh.repaid.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            sh.repaid -= uint128(take);
-            excess -= take;
-        }
-    }
-
-    // A merchant win draws again what provisional credit repaid on each line, as far as its lender can fund it, the
-    // lender paying the settlement account. Returns what it drew.
-    function _redrawLines(bytes32 purchaseRef, address owner) private returns (uint256 reinstated) {
-        CardFunding.Source[] memory order = _orderOf(purchaseRef);
-        for (uint256 i; i < order.length; ++i) {
-            if (order[i].kind != CREDIT) continue;
-            uint256 want = lineShares[purchaseRef][i].repaid;
-            if (want == 0) continue;
-            delete lineShares[purchaseRef][i];
-            // The line draws again only what it recorded this purchase's provisional credit repaying.
-            uint256 left = CreditLine(order[i].source).redrawable(order[i].lineId, purchaseRef);
-            if (left < want) want = left;
-            if (want == 0) continue;
-            // At most the uint128 share.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            uint128 drawn = PROGRAM.redrawLine(order[i].source, order[i].lineId, uint128(want), purchaseRef);
-            if (drawn == 0) continue;
-            emit DisputeRecovered(purchaseRef, owner, CREDIT, order[i].source, order[i].lineId, drawn, drawn);
-            reinstated += drawn;
-        }
-    }
-
-    function _orderOf(bytes32 purchaseRef) private view returns (CardFunding.Source[] memory) {
-        CardProgram.Purchase memory p = PROGRAM.purchaseOf(purchaseRef);
-        return PROGRAM.orderAt(p.owner, p.version);
-    }
-
-    // What credit source i drew for the purchase, net of refunds; nothing for a line in another token than the desk's.
-    function _drawn(bytes32 purchaseRef, CardFunding.Source[] memory order, uint256 i) private view returns (uint256) {
-        CreditLine line = CreditLine(order[i].source);
-        (, address token) = line.partiesOf(order[i].lineId);
-        if (token != TOKEN) return 0;
-        // The program's draw reference: the purchase for its first credit source, else keyed by the source's index.
-        bytes32 ref = purchaseRef;
-        for (uint256 j; j < i; ++j) {
-            if (order[j].kind == CREDIT) {
-                ref = keccak256(abi.encode(purchaseRef, i));
-                break;
-            }
-        }
-        // The line records what each draw captured less refunds, which the core forgets once the hold settles.
-        (,,, uint64 gross) = line.draws(line.holdIdOf(address(PROGRAM), ref));
-        return gross;
+    function _chargeId() private returns (bytes32) {
+        return keccak256(abi.encode("tempo.cards.desk", address(this), ++_charges));
     }
 
     function _min(uint256 a, uint256 b) private pure returns (uint256) {
         return a < b ? a : b;
     }
-
-    // Takes amount back after a lost dispute: the owner's free settlement token first, then its savings positions in
-    // its funding order, never a credit line; the rest becomes capped debt to the settlement account, without a fee.
-    function _recover(bytes32 purchaseRef, address owner, uint256 amount) private returns (uint256 debt) {
-        // Provisional credit went out in today's settlement token (no token change while a dispute is open), so it
-        // comes back in it: a purchase booked in an earlier token at the reference rate.
-        address token = PROGRAM.settlementToken();
-        address booked = PROGRAM.purchaseToken(purchaseRef);
-        uint256 original = amount;
-        uint256 rate = booked == token ? RATE_ONE : Conversion(PROGRAM.conversion()).mid(booked, token);
-        if (booked != token) amount = amount.mulDivUp(rate, RATE_ONE);
-        uint256 free = CORE.available(owner, token);
-        uint256 cash = free < amount ? free : amount;
-        if (cash != 0) {
-            // The event keeps the purchase's units beside the units of today's token that left.
-            uint256 part = cash == amount ? original : cash.mulDiv(RATE_ONE, rate);
-            emit DisputeRecovered(purchaseRef, owner, token == TOKEN ? 1 : TOKEN_SOURCE, token, 0, part, cash);
-        }
-        debt = amount - cash;
-        // Savings facilities invest the desk's own token.
-        if (debt != 0 && token == TOKEN) {
-            (, CardFunding.Source[] memory order) = PROGRAM.fundingOrderOf(owner);
-            for (uint256 i; i < order.length && debt != 0; ++i) {
-                if (order[i].kind != 2) continue;
-                uint256 taken = _takeShares(purchaseRef, owner, SavingsFacility(order[i].source), debt);
-                debt -= taken;
-            }
-        }
-        if (cash + debt != 0) {
-            // Bounded by the uint128 provisional credit.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.charge(owner, token, _nextId(), uint128(cash + debt), SETTLEMENT, false);
-        }
-        if (debt != 0 && !_isDebtor[owner]) {
-            _isDebtor[owner] = true;
-            _debtors.push(owner);
-        }
-    }
-
-    // Takes up to need (settlement units) of the owner's free shares in one savings facility's vault, redeems them to
-    // the settlement account and returns what they were worth. A vault that cannot redeem now gets the shares sent as
-    // they are.
-    function _takeShares(bytes32 purchaseRef, address owner, SavingsFacility facility, uint256 need)
-        private
-        returns (uint256 taken)
-    {
-        address share = facility.SHARE();
-        uint256 shares = CORE.available(owner, share);
-        if (shares == 0) return 0;
-        uint256 value = facility.VAULT().previewRedeem(shares);
-        if (value > need) {
-            uint256 wanted = facility.VAULT().previewWithdraw(need);
-            if (wanted < shares) {
-                shares = wanted;
-                value = facility.VAULT().previewRedeem(shares);
-            }
-        }
-        if (shares == 0 || value == 0) return 0;
-        // Shares come from 128-bit core balances.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        CORE.charge(owner, share, _nextId(), uint128(shares), address(this), false);
-        SafeTransferLib.safeApprove(share, address(facility.VAULT()), shares);
-        try facility.VAULT().redeem(shares, SETTLEMENT, value) returns (uint256 assets) {
-            value = assets;
-        } catch {
-            SafeTransferLib.safeApprove(share, address(facility.VAULT()), 0);
-            SafeTransferLib.safeTransfer(share, SETTLEMENT, shares);
-        }
-        taken = value < need ? value : need;
-        emit DisputeRecovered(purchaseRef, owner, 2, address(facility), 0, taken, taken);
-    }
-
-    // Pays every terms line its share of amount, then each reward out of its funder's share, from the settlement
-    // account: a funder gets its split less the rewards it funds, the owner the rewards.
-    function _charged(bytes32 purchaseRef, uint128 amount) private {
-        address owner = PROGRAM.purchaseOf(purchaseRef).owner;
-        address token = PROGRAM.purchaseToken(purchaseRef);
-        books[purchaseRef].captured += amount;
-        uint256 count = _terms.length;
-        uint128[] memory left = new uint128[](count);
-        for (uint256 i; i < count; ++i) {
-            Line memory line = _terms[i];
-            // Below amount, since terms add up to less than the whole.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            uint128 fee = uint128((uint256(amount) * line.bps) / BPS);
-            left[i] = fee;
-            if (fee == 0) continue;
-            _addSplit(purchaseRef, line.payee, address(0), line.kind, fee);
-            emit FeePaid(purchaseRef, line.payee, line.kind, fee);
-        }
-        uint128 rewarded;
-        for (uint256 r; r < _rewards.length; ++r) {
-            Reward memory reward = _rewards[r];
-            // forge-lint: disable-next-line(unsafe-typecast)
-            uint128 due = uint128((uint256(amount) * reward.bps) / BPS);
-            uint128 paid;
-            for (uint256 i; i < count && due != 0; ++i) {
-                if (_terms[i].payee != reward.funder) continue;
-                uint128 part = due < left[i] ? due : left[i];
-                left[i] -= part;
-                due -= part;
-                paid += part;
-            }
-            if (paid == 0) continue;
-            rewarded += paid;
-            _addSplit(purchaseRef, owner, reward.funder, reward.kind, paid);
-            emit RewardPaid(purchaseRef, owner, reward.funder, reward.kind, paid);
-        }
-        for (uint256 i; i < count; ++i) {
-            if (left[i] != 0) SafeTransferLib.safeTransferFrom(token, SETTLEMENT, _terms[i].payee, left[i]);
-        }
-        if (rewarded != 0) SafeTransferLib.safeTransferFrom(token, SETTLEMENT, owner, rewarded);
-    }
-
-    function _addSplit(bytes32 purchaseRef, address payee, address funder, bytes32 kind, uint128 amount) private {
-        Split[] storage splits = _splits[purchaseRef];
-        for (uint256 i; i < splits.length; ++i) {
-            Split storage s = splits[i];
-            if (s.payee == payee && s.funder == funder && s.kind == kind) {
-                s.amount += amount;
-                return;
-            }
-        }
-        splits.push(Split({ payee: payee, funder: funder, kind: kind, amount: amount, reversed: 0 }));
-    }
-
-    // Takes back the refunded share of every split: a payee returns its part from what it has available and owes the
-    // settlement account the rest, within its debt cap; an owner returns a reward only from money it still has, to
-    // the funder, which writes off the rest.
-    function _reverse(bytes32 purchaseRef, uint128 amount) private {
-        Book storage b = books[purchaseRef];
-        uint128 captured = b.captured;
-        if (captured == 0) return;
-        uint128 refunded = b.refunded + amount;
-        if (refunded > captured) refunded = captured;
-        b.refunded = refunded;
-        // Splits were paid, and come back, in the token the purchase was booked in; the issuer gets what returns in
-        // today's settlement token at the reference rate.
-        address token = PROGRAM.purchaseToken(purchaseRef);
-        address today = PROGRAM.settlementToken();
-        uint256 rate = token == today ? RATE_ONE : Conversion(PROGRAM.conversion()).mid(token, today);
-        Split[] storage splits = _splits[purchaseRef];
-        for (uint256 i; i < splits.length; ++i) {
-            Split storage s = splits[i];
-            // At most s.amount, since refunded never passes captured.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            uint128 due = uint128((uint256(s.amount) * refunded) / captured);
-            if (due <= s.reversed) continue;
-            uint128 share = due - s.reversed;
-            s.reversed = due;
-            if (s.funder == address(0)) {
-                // The issuer's own share was paid to its settlement account, where it already is.
-                uint128 debt = s.payee == SETTLEMENT ? 0 : _reverseFee(purchaseRef, s.payee, token, today, share);
-                emit FeeReversed(purchaseRef, s.payee, s.kind, share, debt, uint256(share).mulDiv(rate, RATE_ONE));
-                continue;
-            }
-            uint128 available = CORE.available(s.payee, token);
-            uint128 taken = share < available ? share : available;
-            if (taken == 0) continue;
-            uint256 back = taken;
-            // A reward paid in an earlier token comes back to its funder in today's, at the reference rate. A reward the
-            // owner no longer lets the desk take back is written off like one it no longer has.
-            if (!_tryCharge(s.payee, token, taken, token == today ? s.funder : address(this))) continue;
-            if (token != today) back = _convert(token, taken, s.funder);
-            emit RewardReversed(purchaseRef, s.payee, s.funder, s.kind, taken, back);
-        }
-    }
-
-    // forge-lint: disable-end(calls-loop)
-    // forge-lint: disable-end(arbitrary-send-erc20)
     // forge-lint: disable-end(reentrancy-no-eth)
-
-    /// @dev Takes `share` of a refunded split back from its payee in `token`: what it has available for the settlement
-    ///      account (converted into today's settlement token `today` if it changed), the rest as its debt to the
-    ///      settlement account within its debt cap. What the core refuses, the payee owes the issuer on the desk's
-    ///      books, so a payee never holds up a refund. Returns the debt the core recorded.
-    // Runs once per split inside the refund lock; the program and core are fixed trusted contracts.
-    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
-    function _reverseFee(bytes32 purchaseRef, address payee, address token, address today, uint128 share)
-        private
-        returns (uint128 debt)
-    {
-        uint128 available = CORE.available(payee, token);
-        uint128 taken = share < available ? share : available;
-        bool foreign = token != today;
-        bool ok = taken == 0 || _tryCharge(payee, token, taken, foreign ? address(this) : SETTLEMENT);
-        if (ok && taken != 0 && foreign) _convert(token, taken, SETTLEMENT);
-        uint128 rest = ok ? share - taken : share;
-        if (ok && rest != 0 && _tryCharge(payee, token, rest, SETTLEMENT)) (debt, rest) = (rest, 0);
-        if (rest == 0) return debt;
-        payeeOwed[payee][token] += rest;
-        emit PayeeOwed(purchaseRef, payee, token, rest);
-    }
-
-    /// @dev Charges `amount` of `token` from `owner` to `payee` through the desk's holder approval, the part past its
-    ///      balance as capped debt, and reports whether the core took it.
-    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
-    function _tryCharge(address owner, address token, uint128 amount, address payee) private returns (bool) {
-        uint256 start = gasleft();
-        try CORE.charge(owner, token, _nextId(), amount, payee, false) {
-            return true;
-        } catch {
-            // A charge that ran out of gas was not refused by the core: the whole call reverts instead.
-            if (gasleft() <= start / 64) revert ChargeOutOfGas();
-            return false;
-        }
-    }
-
-    /// @dev Converts `amount` of an earlier settlement token the desk holds into today's for `to`, at the reference rate.
-    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
-    function _convert(address token, uint128 amount, address to) private returns (uint256) {
-        SafeTransferLib.safeApprove(token, address(PROGRAM), amount);
-        return PROGRAM.convertToSettlement(token, amount, to);
-    }
-
-    function _nextId() private returns (bytes32) {
-        return keccak256(abi.encode(address(this), ++_nonce));
-    }
 }

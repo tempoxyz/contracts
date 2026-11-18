@@ -5,32 +5,27 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 import { Conversion } from "../../src/programs/Conversion.sol";
-import { CreditLine } from "../../src/programs/CreditLine.sol";
+import { CreditSource } from "../../src/programs/CreditSource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { CompCardAuth, CompEnv } from "./harness/CompStubs.sol";
 
-/// @notice Lines owed in a token other than what the borrower pays with: repayments and autopay sell the borrower's
-///         tokens through the program's conversion venue, and collateral in another token is valued and sold there.
-///         This test is the line's card program, and names the venue as its `conversion`.
-contract CreditLineConversionTest is ProgramsEnv {
+/// @notice Lines owed in the program's euro settlement token while the borrower pays with dollars: repayments and
+///         autopay sell the borrower's tokens through the program's conversion venue, and dollar collateral is valued
+///         and sold there.
+contract CreditSourceConversionTest is CompEnv {
     // EUR at $1.10 with a 30 bps conversion cost each way.
     uint256 internal constant BID = 1.0967e18;
     uint256 internal constant ASK = 1_103_310_000_000_000_000;
-
-    /// @notice The program's conversion venue, read by the line.
-    address public conversion;
-
-    /// @notice The program's settlement token, read by the line's token guard.
-    address public settlementToken;
 
     ITIP20Token internal eur;
     Conversion internal conv;
     FixedPricePool internal bid;
     FixedPricePool internal ask;
     uint64 internal due;
+    uint256 internal draws;
 
     function setUp() public {
-        _deployPrograms();
+        _deployComp();
         eur = _createToken("Euro", "EURX");
         conv = new Conversion(address(usd), address(this));
         bid = new FixedPricePool(address(eur), address(usd), BID);
@@ -40,7 +35,10 @@ contract CreditLineConversionTest is ProgramsEnv {
         conv.setVenue(address(eur), address(usd), address(bid), true);
         conv.setVenue(address(usd), address(eur), address(ask), false);
         conv.setReferenceRate(address(eur), 1.1e18);
-        conversion = address(conv);
+        // The program settles in euros through the venue.
+        auth = new CompCardAuth(issuer, settlement, address(eur));
+        auth.setConversion(address(conv));
+        credit = new CreditSource(auth);
         eur.mint(lender, 10_000e6);
         vm.prank(lender);
         core.approveHolder(address(credit), address(eur), type(uint128).max, 0);
@@ -58,7 +56,7 @@ contract CreditLineConversionTest is ProgramsEnv {
         vm.prank(alice);
         usd.approve(address(credit), type(uint256).max);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(CreditLine.ConversionExceedsMax.selector, cost, cost - 1));
+        vm.expectRevert(abi.encodeWithSelector(CreditSource.ConversionExceedsMax.selector, cost, cost - 1));
         credit.repayFrom(lineId, address(usd), 40e6, cost - 1);
         vm.prank(alice);
         assertEq(credit.repayFrom(lineId, address(usd), 40e6, cost), cost);
@@ -86,11 +84,11 @@ contract CreditLineConversionTest is ProgramsEnv {
     function test_repayFrom_needsAVenue() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0);
         _owe(lineId, 40e6);
-        conversion = address(0);
+        auth.setConversion(address(0));
         usd.mint(alice, 50e6);
         vm.startPrank(alice);
         usd.approve(address(credit), type(uint256).max);
-        vm.expectRevert(CreditLine.NoConversion.selector);
+        vm.expectRevert(CreditSource.NoConversion.selector);
         credit.repayFrom(lineId, address(usd), 40e6, 50e6);
         vm.stopPrank();
     }
@@ -111,7 +109,7 @@ contract CreditLineConversionTest is ProgramsEnv {
         uint256 cost = conv.quoteOut(address(usd), address(eur), 10e6);
         credit.collect(lineId);
         assertEq(credit.lineOf(lineId).owed, 0);
-        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditLine.StatementStatus.Paid));
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Paid));
         assertEq(usd.balanceOf(alice), 20e6 - cost);
         _assertCoreBalanced();
     }
@@ -138,11 +136,11 @@ contract CreditLineConversionTest is ProgramsEnv {
 
     function test_setAutopay_otherTokenNeedsAVenue() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0);
-        conversion = address(0);
+        auth.setConversion(address(0));
         address[] memory sources = new address[](1);
         sources[0] = address(usd);
         vm.prank(alice);
-        vm.expectRevert(CreditLine.InvalidAutopay.selector);
+        vm.expectRevert(CreditSource.InvalidAutopay.selector);
         credit.setAutopay(lineId, sources);
     }
 
@@ -201,78 +199,72 @@ contract CreditLineConversionTest is ProgramsEnv {
     }
 
     function test_openLine_otherTokenCollateralNeedsAVenue() public {
-        conversion = address(0);
+        auth.setConversion(address(0));
         vm.prank(lender);
-        vm.expectRevert(CreditLine.InvalidLine.selector);
-        credit.openLine(alice, address(eur), address(this), 1, due, 0, IEarnVault(address(earnVault)), 5000, 0, 0);
+        vm.expectRevert(CreditSource.InvalidLine.selector);
+        credit.openLine(alice, 1, due, IEarnVault(address(earnVault)), 5000, 0, 0);
     }
 
     function test_settlementTokenInUse_whileALineInTheTokenIsOpen() public {
-        settlementToken = address(eur);
-        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        auth.setToken(address(eur));
+        assertEq(credit.settlementTokenInUse(address(auth)), 0);
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0);
-        assertEq(credit.settlementTokenInUse(address(this)), 7);
-        // A line in another token, or drawn by another program, does not hold this one.
-        assertEq(credit.settlementTokenInUse(address(cards)), 0);
-        settlementToken = address(usd);
-        assertEq(credit.settlementTokenInUse(address(this)), 0);
-        settlementToken = address(eur);
+        assertEq(credit.settlementTokenInUse(address(auth)), 7);
+        // A line in another token does not hold this one.
+        auth.setToken(address(usd));
+        assertEq(credit.settlementTokenInUse(address(auth)), 0);
+        auth.setToken(address(eur));
         // Closed to a zero limit with a balance still owed, it stays open until repaid.
         _owe(lineId, 40e6);
         vm.prank(lender);
         credit.setLimit(lineId, 0);
-        assertEq(credit.settlementTokenInUse(address(this)), 7);
+        assertEq(credit.settlementTokenInUse(address(auth)), 7);
         eur.mint(alice, 40e6);
         vm.prank(alice);
         eur.approve(address(credit), 40e6);
         vm.prank(alice);
         credit.repay(lineId, 40e6);
-        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        assertEq(credit.settlementTokenInUse(address(auth)), 0);
     }
 
     function test_settlementTokenInUse_ignoresLinesTheBorrowerNeverAccepted() public {
-        settlementToken = address(eur);
+        auth.setToken(address(eur));
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
-        uint64 lineId =
-            credit.openLine(bob, address(eur), address(this), 1000e6, due, 0, IEarnVault(address(0)), 0, 0, 0);
-        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        uint64 lineId = credit.openLine(bob, 1000e6, due, IEarnVault(address(0)), 0, 0, 0);
+        assertEq(credit.settlementTokenInUse(address(auth)), 0);
         // Accepted, the line holds the token until it closes.
-        _acceptLine(bob, lineId);
-        assertEq(credit.settlementTokenInUse(address(this)), 7);
+        _accept(bob, lineId);
+        assertEq(credit.settlementTokenInUse(address(auth)), 7);
         vm.prank(bob);
         credit.closeLine(lineId);
-        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        assertEq(credit.settlementTokenInUse(address(auth)), 0);
     }
 
     function test_settlementTokenInUse_costDoesNotGrowWithLines() public {
-        settlementToken = address(eur);
+        auth.setToken(address(eur));
         uint256 gas = gasleft();
-        credit.settlementTokenInUse(address(this));
+        credit.settlementTokenInUse(address(auth));
         uint256 before = gas - gasleft();
         address stranger = makeAddr("stranger");
         for (uint160 i = 1; i <= 50; ++i) {
             vm.prank(stranger);
-            credit.openLine(
-                address(i + 0x1000), address(eur), address(this), 1e6, due, 0, IEarnVault(address(0)), 0, 0, 0
-            );
+            credit.openLine(address(i + 0x1000), 1e6, due, IEarnVault(address(0)), 0, 0, 0);
         }
         gas = gasleft();
-        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        assertEq(credit.settlementTokenInUse(address(auth)), 0);
         uint256 later = gas - gasleft();
         assertLe(later, before + 5000);
     }
 
     function _line(uint128 limit, IEarnVault vault, uint16 ltvBps) internal returns (uint64 lineId) {
         vm.prank(lender);
-        lineId = credit.openLine(alice, address(eur), address(this), limit, due, 7 days, vault, ltvBps, 0, 0);
-        _acceptLine(alice, lineId);
+        lineId = credit.openLine(alice, limit, due, vault, ltvBps, 0, 0);
+        _accept(alice, lineId);
     }
 
     function _owe(uint64 lineId, uint128 amount) internal {
-        bytes32 ref = keccak256(abi.encode("purchase", credit.lineOf(lineId).owed, amount, block.timestamp));
-        (bytes32 id,,) = credit.draw(lineId, alice, ref, amount, uint64(block.timestamp + 1 days));
-        credit.capture(id, amount, true);
-        credit.sync(id);
+        bytes32 leg = bytes32(++draws);
+        _draw(alice, lineId, leg, amount, leg);
     }
 }

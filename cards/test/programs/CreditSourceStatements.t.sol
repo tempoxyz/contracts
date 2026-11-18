@@ -3,25 +3,26 @@ pragma solidity ^0.8.36;
 
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
-import { CreditLine } from "../../src/programs/CreditLine.sol";
+import { CreditSource } from "../../src/programs/CreditSource.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { CompEnv } from "./harness/CompStubs.sol";
 
-/// @notice Credit line interest, statements and autopay, with this test as the line's card program.
-contract CreditLineStatementsTest is ProgramsEnv {
+/// @notice Credit line interest within the debt bound the borrower accepted, statements and autopay.
+contract CreditSourceStatementsTest is CompEnv {
     uint64 internal due;
     uint64 internal lineId;
+    uint256 internal draws;
+    bytes32 internal lastLeg;
 
     function setUp() public {
-        _deployPrograms();
+        _deployComp();
         usd.mint(lender, 100_000e6);
         vm.prank(lender);
         core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
         due = uint64(block.timestamp + 365 days);
         vm.prank(lender);
-        lineId =
-            credit.openLine(alice, address(usd), address(this), 1000e6, due, 7 days, IEarnVault(address(0)), 0, 0, 0);
-        _acceptLine(alice, lineId);
+        lineId = credit.openLine(alice, 1000e6, due, IEarnVault(address(0)), 0, 0, 0);
+        _accept(alice, lineId);
     }
 
     // Interest.
@@ -87,23 +88,21 @@ contract CreditLineStatementsTest is ProgramsEnv {
 
     function test_acceptLine_mustMatchTheOfferedTerms() public {
         vm.prank(lender);
-        uint64 id = credit.openLine(
-            bob, address(usd), address(this), 1000e6, due, 7 days, IEarnVault(address(0)), 0, 1500, 2000e6
-        );
+        uint64 id = credit.openLine(bob, 1000e6, due, IEarnVault(address(0)), 0, 1500, 2000e6);
         vm.startPrank(bob);
-        vm.expectRevert(CreditLine.TermsMismatch.selector);
+        vm.expectRevert(CreditSource.TermsMismatch.selector);
         credit.acceptLine(id, 1000, 2000e6);
-        vm.expectRevert(CreditLine.TermsMismatch.selector);
+        vm.expectRevert(CreditSource.TermsMismatch.selector);
         credit.acceptLine(id, 1500, 1999e6);
         credit.acceptLine(id, 1500, 2000e6);
         vm.stopPrank();
-        CreditLine.Line memory l = credit.lineOf(id);
+        CreditSource.Line memory l = credit.lineOf(id);
         assertTrue(l.accepted);
         assertEq(l.aprBps, 1500);
         assertEq(l.maxDebt, 2000e6);
         // A bound below the limit is refused.
         vm.prank(lender);
-        vm.expectRevert(CreditLine.InvalidLine.selector);
+        vm.expectRevert(CreditSource.InvalidLine.selector);
         credit.offerTerms(id, 1500, 999e6);
     }
 
@@ -113,7 +112,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         assertEq(credit.lineOf(lineId).aprBps, 0);
         // The limit stays within the accepted bound until the borrower accepts a higher one.
         vm.prank(lender);
-        vm.expectRevert(abi.encodeWithSelector(CreditLine.DebtBoundExceeded.selector, 2000e6, 1000e6));
+        vm.expectRevert(abi.encodeWithSelector(CreditSource.DebtBoundExceeded.selector, 2000e6, 1000e6));
         credit.setLimit(lineId, 2000e6);
         _owe(100e6);
         vm.warp(vm.getBlockTimestamp() + 30 days);
@@ -135,26 +134,26 @@ contract CreditLineStatementsTest is ProgramsEnv {
         vm.prank(lender);
         uint32 n = credit.closeStatement(lineId, dueAt);
         assertEq(n, 1);
-        CreditLine.Statement memory s = credit.statementOf(lineId, n);
+        CreditSource.Statement memory s = credit.statementOf(lineId, n);
         assertEq(s.balance, 204e6);
         assertEq(s.paid, 0);
         assertEq(s.dueAt, dueAt);
-        assertEq(uint8(s.status), uint8(CreditLine.StatementStatus.Due));
+        assertEq(uint8(s.status), uint8(CreditSource.StatementStatus.Due));
         // Owing nothing, a statement is paid at once.
         _repay(204e6);
         vm.prank(lender);
         n = credit.closeStatement(lineId, dueAt);
-        assertEq(uint8(credit.statementOf(lineId, n).status), uint8(CreditLine.StatementStatus.Paid));
-        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditLine.StatementStatus.Due));
+        assertEq(uint8(credit.statementOf(lineId, n).status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Due));
         assertEq(credit.statementOf(lineId, 1).paid, 204e6);
     }
 
     function test_closeStatement_onlyTheLenderAndAFutureDueDate() public {
         vm.prank(alice);
-        vm.expectRevert(CreditLine.NotLender.selector);
+        vm.expectRevert(CreditSource.NotLender.selector);
         credit.closeStatement(lineId, uint64(block.timestamp + 1 days));
         vm.prank(lender);
-        vm.expectRevert(CreditLine.InvalidStatement.selector);
+        vm.expectRevert(CreditSource.InvalidStatement.selector);
         credit.closeStatement(lineId, uint64(block.timestamp));
     }
 
@@ -173,8 +172,8 @@ contract CreditLineStatementsTest is ProgramsEnv {
         vm.warp(vm.getBlockTimestamp() + 20 days);
         credit.collect(lineId);
         // Without autopay the first is paid by the repayment and the second, still short, goes past due.
-        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditLine.StatementStatus.Paid));
-        assertEq(uint8(credit.statementOf(lineId, 2).status), uint8(CreditLine.StatementStatus.PastDue));
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(uint8(credit.statementOf(lineId, 2).status), uint8(CreditSource.StatementStatus.PastDue));
     }
 
     // Autopay.
@@ -188,16 +187,16 @@ contract CreditLineStatementsTest is ProgramsEnv {
         // Not yet due: nothing moves.
         credit.collect(lineId);
         assertEq(earnShare.balanceOf(alice), shares);
-        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditLine.StatementStatus.Due));
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Due));
 
         vm.warp(vm.getBlockTimestamp() + 25 days);
         uint256 lenderBefore = usd.balanceOf(lender) + core.reserved(lender, address(usd));
         vm.expectEmit(address(credit));
-        emit CreditLine.Autopaid(lineId, 1, address(earnVault), 204e6);
+        emit CreditSource.Autopaid(lineId, 1, address(earnVault), 204e6);
         credit.collect(lineId);
-        CreditLine.Statement memory s = credit.statementOf(lineId, 1);
+        CreditSource.Statement memory s = credit.statementOf(lineId, 1);
         assertEq(s.paid, 204e6);
-        assertEq(uint8(s.status), uint8(CreditLine.StatementStatus.Paid));
+        assertEq(uint8(s.status), uint8(CreditSource.StatementStatus.Paid));
         assertEq(credit.lineOf(lineId).owed, 51e6);
         assertEq(usd.balanceOf(lender) + core.reserved(lender, address(usd)) - lenderBefore, 204e6);
         assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 296e6, 1);
@@ -235,9 +234,9 @@ contract CreditLineStatementsTest is ProgramsEnv {
         credit.closeStatement(lineId, uint64(block.timestamp + 1 days));
         vm.warp(vm.getBlockTimestamp() + 1 days);
         credit.collect(lineId);
-        CreditLine.Statement memory s = credit.statementOf(lineId, 1);
+        CreditSource.Statement memory s = credit.statementOf(lineId, 1);
         assertEq(s.paid, 30e6);
-        assertEq(uint8(s.status), uint8(CreditLine.StatementStatus.PastDue));
+        assertEq(uint8(s.status), uint8(CreditSource.StatementStatus.PastDue));
         assertEq(credit.lineOf(lineId).owed, 50e6);
         // A past-due statement is not collected again; the borrower repays it.
         usd.mint(alice, 50e6);
@@ -274,7 +273,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
         vm.warp(next);
         credit.collect(lineId);
         assertEq(credit.lineOf(lineId).owed, 40e6);
-        assertEq(uint8(credit.statementOf(lineId, 2).status), uint8(CreditLine.StatementStatus.PastDue));
+        assertEq(uint8(credit.statementOf(lineId, 2).status), uint8(CreditSource.StatementStatus.PastDue));
     }
 
     function test_collect_paysAtMostWhatTheLineOwes() public {
@@ -291,14 +290,14 @@ contract CreditLineStatementsTest is ProgramsEnv {
         credit.collect(lineId);
         assertEq(credit.lineOf(lineId).owed, 0);
         assertEq(usd.balanceOf(alice), 440e6);
-        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditLine.StatementStatus.Paid));
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Paid));
     }
 
     function test_setAutopay_onlyTheBorrowerAndTheLinesAssets() public {
         address[] memory sources = new address[](1);
         sources[0] = address(usd);
         vm.prank(bob);
-        vm.expectRevert(CreditLine.NotBorrower.selector);
+        vm.expectRevert(CreditSource.NotBorrower.selector);
         credit.setAutopay(lineId, sources);
         sources[0] = address(earnShare);
         vm.prank(alice);
@@ -306,41 +305,33 @@ contract CreditLineStatementsTest is ProgramsEnv {
         credit.setAutopay(lineId, sources);
         sources[0] = bob;
         vm.prank(alice);
-        vm.expectRevert(CreditLine.InvalidAutopay.selector);
+        vm.expectRevert(CreditSource.InvalidAutopay.selector);
         credit.setAutopay(lineId, sources);
         address[] memory many = new address[](5);
         for (uint256 i; i < many.length; ++i) {
             many[i] = address(usd);
         }
         vm.prank(alice);
-        vm.expectRevert(CreditLine.InvalidAutopay.selector);
+        vm.expectRevert(CreditSource.InvalidAutopay.selector);
         credit.setAutopay(lineId, many);
     }
 
     // Helpers.
 
-    /// @dev The lender offers `aprBps` a year with the default debt bound and the borrower accepts.
+    /// @dev The lender offers aprBps a year with the default debt bound and the borrower accepts.
     function _terms(uint16 aprBps) internal {
         vm.prank(lender);
         credit.offerTerms(lineId, aprBps, 0);
-        _acceptLine(alice, lineId);
+        _accept(alice, lineId);
     }
 
     function _owe(uint128 amount) internal {
-        bytes32 ref = keccak256(abi.encode("purchase", credit.lineOf(lineId).owed, amount, block.timestamp));
-        (bytes32 id,,) = credit.draw(lineId, alice, ref, amount, uint64(block.timestamp + 1 days));
-        credit.capture(id, amount, true);
-        credit.sync(id);
-        lastDraw = id;
+        lastLeg = bytes32(++draws);
+        _draw(alice, lineId, lastLeg, amount, lastLeg);
     }
 
-    bytes32 internal lastDraw;
-
     function _refundOwed(uint128 amount) internal {
-        // This test is the line's card program, which pays refunds through the line.
-        usd.approve(address(credit), amount);
-        credit.refund(lastDraw, amount);
-        credit.sync(lastDraw);
+        auth.refundLeg(credit, alice, lastLeg, amount);
     }
 
     function _repay(uint128 amount) internal {

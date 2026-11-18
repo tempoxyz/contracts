@@ -1,166 +1,171 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { CardLimits } from "../../src/programs/CardLimits.sol";
-import { CardProgram } from "../../src/programs/CardProgram.sol";
+import { MerchantReserves } from "../../src/programs/MerchantReserves.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { CompEnv } from "./harness/CompStubs.sol";
 
-/// @notice Merchant reserves: an acquirer's program holds back part of a merchant's balance with holder pledges
-///         inside the mandate the merchant granted, and collects or releases them.
-contract MerchantReservesTest is ProgramsEnv {
+/// @notice Merchant reserves: pledges on balances that approved the reserves contract, for purposes the owner
+///         consented to and never collected past its cap; dispute reserves once the merchant allowed them, within the
+///         dispute window; every collection pays the program's settlement account.
+contract MerchantReservesTest is CompEnv {
     uint8 internal constant PLEDGE_KIND = 2;
-    address internal shop = makeAddr("shop");
-    address internal other = makeAddr("other");
+    bytes32 internal constant FEES = bytes32("fees");
+    bytes32 internal constant REF = bytes32("purchase-1");
     bytes32 internal constant R1 = bytes32("reserve-1");
     bytes32 internal constant R2 = bytes32("reserve-2");
-    bytes32 internal constant REF = bytes32("purchase");
-    bytes32 internal constant FEES = bytes32("fees");
+    address internal shop = makeAddr("shop");
+    address internal other = makeAddr("other");
 
     function setUp() public {
-        _deployPrograms();
+        _deployComp();
         usd.mint(shop, 100e6);
         usd.mint(settlement, 100e6);
         vm.startPrank(shop);
-        core.approveHolder(address(cards), address(usd), 50e6, 0);
-        cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
-        cards.allowReserves(address(usd), 40e6, FEES);
+        core.approveHolder(address(reserves), address(usd), 50e6, 0);
+        reserves.allowReserves(address(usd), 40e6, FEES);
         vm.stopPrank();
         vm.prank(settlement);
-        core.approveHolder(address(cards), address(usd), type(uint128).max, 0);
+        core.approveHolder(address(reserves), address(usd), type(uint128).max, 0);
     }
 
     function test_reserveDispute_needsConsentAndWindow() public {
         uint64 expiry = uint64(vm.getBlockTimestamp() + 120 days);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.reserveDispute(
+        vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
+        reserves.reserveDispute(
             shop, address(usd), REF, [uint128(30e6), uint128(50e6)], [uint128(30e6), uint128(50e6)], expiry
         );
-        vm.prank(issuer);
-        vm.expectRevert(CardProgram.NoTerms.selector);
-        cards.reserveDispute(other, address(usd), REF, [uint128(0), uint128(50e6)], [uint128(0), uint128(50e6)], expiry);
-
         vm.prank(shop);
-        cards.setDisputeReserves(true);
+        reserves.setDisputeReserves(true);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveTooLong.selector);
-        cards.reserveDispute(
+        vm.expectRevert(MerchantReserves.ReserveTooLong.selector);
+        reserves.reserveDispute(
             shop, address(usd), REF, [uint128(30e6), uint128(50e6)], [uint128(30e6), uint128(50e6)], expiry + 1 days
         );
         vm.prank(issuer);
-        cards.reserveDispute(
+        reserves.reserveDispute(
             shop, address(usd), REF, [uint128(30e6), uint128(50e6)], [uint128(30e6), uint128(50e6)], expiry
         );
-
-        // The program pledges each reserve to itself, so the core keys it by the owner and the program.
-        IReservationCore.HoldRecord memory h = core.getHold(shop, address(cards), cards.reserveId(REF, shop));
+        // Each reserve is a pledge to the reserves contract, keyed by the owner.
+        IReservationCore.HoldRecord memory h = core.getHold(shop, address(reserves), reserves.reserveId(REF, shop));
         assertEq(h.held, 30e6);
         assertEq(h.expiresAt, expiry);
-        assertEq(h.payee, address(cards));
+        assertEq(h.payee, address(reserves));
         assertEq(h.kind, PLEDGE_KIND);
-        h = core.getHold(settlement, address(cards), cards.reserveId(REF, settlement));
+        h = core.getHold(settlement, address(reserves), reserves.reserveId(REF, settlement));
         assertEq(h.held, 50e6);
         assertEq(core.available(shop, address(usd)), 70e6);
         assertEq(core.available(settlement, address(usd)), 50e6);
-
-        // The mandate's limit bounds what the program reserves on the merchant.
+        // The merchant's holder allowance bounds what is reserved on it.
         vm.prank(issuer);
         vm.expectRevert(IReservationCore.BudgetExceeded.selector);
-        cards.reserveDispute(
+        reserves.reserveDispute(
             shop, address(usd), bytes32("purchase-2"), [uint128(21e6), uint128(0)], [uint128(21e6), uint128(0)], expiry
         );
         _assertCoreBalanced();
     }
 
-    function test_reserve_needsGrantExceptSettlement() public {
+    function test_reserve_settlementAccountNeedsNoConsent_othersDo() public {
         uint64 expiry = uint64(vm.getBlockTimestamp() + 90 days);
         usd.mint(other, 10e6);
         vm.prank(other);
-        core.approveHolder(address(cards), address(usd), 10e6, 0);
+        core.approveHolder(address(reserves), address(usd), 10e6, 0);
+        // A holder allowance alone lets no one lien the balance.
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.NoTerms.selector);
-        cards.reserve(other, address(usd), R1, 5e6, expiry, FEES);
-
-        // The program's own settlement account reserves without a grant, and a reserve outside disputes runs longer.
+        vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
+        reserves.reserve(other, address(usd), R1, 5e6, expiry, FEES);
         vm.prank(issuer);
-        cards.reserve(settlement, address(usd), R1, 5e6, expiry, FEES);
+        reserves.reserve(settlement, address(usd), R1, 5e6, expiry, FEES);
+        // A reserve outside disputes may run longer than the dispute window.
         vm.prank(issuer);
-        cards.reserve(shop, address(usd), R2, 5e6, uint64(vm.getBlockTimestamp() + 200 days), FEES);
+        reserves.reserve(shop, address(usd), R2, 5e6, uint64(vm.getBlockTimestamp() + 200 days), FEES);
         assertEq(core.available(settlement, address(usd)), 95e6);
         assertEq(core.available(shop, address(usd)), 95e6);
     }
 
     function test_reserve_needsTheOwnersConsentForItsPurpose() public {
         uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
-        usd.mint(other, 100e6);
-        vm.startPrank(other);
-        core.approveHolder(address(cards), address(usd), 100e6, 0);
-        cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
-        vm.stopPrank();
-        // A grant and a holder allowance alone let no one lien the balance.
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.reserve(other, address(usd), R1, 5e6, expiry, FEES);
-        // The shop allows reserves for fees only, up to 40 dollars.
+        vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
+        reserves.reserve(shop, address(usd), R1, 5e6, expiry, bytes32("chargebacks"));
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.reserve(shop, address(usd), R1, 5e6, expiry, bytes32("chargebacks"));
+        vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
+        reserves.reserve(shop, address(usd), R1, 40e6 + 1, expiry, FEES);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.reserve(shop, address(usd), R1, 40e6 + 1, expiry, FEES);
-        vm.prank(issuer);
-        cards.reserve(shop, address(usd), R1, 40e6, expiry, FEES);
-        (uint128 cap, uint128 collected, bytes32 purpose) = cards.reserveConsent(shop, address(usd));
+        reserves.reserve(shop, address(usd), R1, 40e6, expiry, FEES);
+        (uint128 cap, uint128 collected, bytes32 purpose) = reserves.consentOf(shop, address(usd));
         assertEq(cap, 40e6);
         assertEq(collected, 0);
         assertEq(purpose, FEES);
+        // The same id cannot name a second live reserve.
+        vm.prank(issuer);
+        vm.expectRevert(MerchantReserves.ReserveExists.selector);
+        reserves.reserve(settlement, address(usd), R1, 1e6, expiry, FEES);
+    }
+
+    function test_reserve_onlyTheIssuerOrATreasuryOperatorWithinItsCap() public {
+        uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
+        vm.prank(bob);
+        vm.expectRevert(MerchantReserves.NotOperator.selector);
+        reserves.reserve(shop, address(usd), R1, 5e6, expiry, FEES);
+        auth.setRoles(operator, SETTLE, 100e6);
+        vm.prank(operator);
+        vm.expectRevert(MerchantReserves.NotOperator.selector);
+        reserves.reserve(shop, address(usd), R1, 5e6, expiry, FEES);
+        auth.setRoles(operator, TREASURY, 10e6);
+        vm.prank(operator);
+        vm.expectRevert();
+        reserves.reserve(shop, address(usd), R1, 10e6 + 1, expiry, FEES);
+        vm.prank(operator);
+        reserves.reserve(shop, address(usd), R1, 10e6, expiry, FEES);
+        // Collecting the merchant's reserve counts against the cap too.
+        vm.prank(operator);
+        vm.expectRevert();
+        reserves.collectReserve(R1, 1);
     }
 
     function test_collectReserve_neverPastTheCapAndOnlyToTheSettlementAccount() public {
         uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
-        vm.prank(issuer);
-        cards.reserve(shop, address(usd), R1, 25e6, expiry, FEES);
-        vm.prank(issuer);
-        cards.reserve(shop, address(usd), R2, 25e6, expiry, FEES);
-        vm.prank(issuer);
-        cards.collectReserve(R1, 25e6);
+        vm.startPrank(issuer);
+        reserves.reserve(shop, address(usd), R1, 25e6, expiry, FEES);
+        reserves.reserve(shop, address(usd), R2, 25e6, expiry, FEES);
+        reserves.collectReserve(R1, 25e6);
         // 15 dollars of the cap are left: the second reserve cannot be collected in full.
-        vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.collectReserve(R2, 15e6 + 1);
-        vm.prank(issuer);
-        cards.collectReserve(R2, 15e6);
-        (, uint128 collected,) = cards.reserveConsent(shop, address(usd));
+        vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
+        reserves.collectReserve(R2, 15e6 + 1);
+        reserves.collectReserve(R2, 15e6);
+        vm.stopPrank();
+        (, uint128 collected,) = reserves.consentOf(shop, address(usd));
         assertEq(collected, 40e6);
         assertEq(usd.balanceOf(settlement), 140e6);
         assertEq(usd.balanceOf(shop), 60e6);
         assertEq(usd.balanceOf(issuer), 0);
-        // With the cap spent, nothing more can be reserved.
+        assertEq(usd.balanceOf(address(reserves)), 0);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.reserve(shop, address(usd), bytes32("reserve-3"), 1, expiry, FEES);
+        vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
+        reserves.reserve(shop, address(usd), bytes32("reserve-3"), 1, expiry, FEES);
         _assertCoreBalanced();
     }
 
     function test_collectReserve_refusedOnceTheOwnerWithdrawsConsent() public {
         vm.prank(issuer);
-        cards.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
+        reserves.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
         vm.prank(shop);
-        cards.allowReserves(address(usd), 0, FEES);
+        reserves.allowReserves(address(usd), 0, FEES);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.ReserveNotAllowed.selector);
-        cards.collectReserve(R1, 1e6);
+        vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
+        reserves.collectReserve(R1, 1e6);
         vm.prank(issuer);
-        cards.collectReserve(R1, 0);
+        reserves.collectReserve(R1, 0);
         assertEq(core.available(shop, address(usd)), 100e6);
     }
 
     function test_collectReserve_disputeReservePaysTheSettlementAccount() public {
         vm.prank(shop);
-        cards.setDisputeReserves(true);
+        reserves.setDisputeReserves(true);
         vm.prank(issuer);
-        cards.reserveDispute(
+        reserves.reserveDispute(
             shop,
             address(usd),
             REF,
@@ -168,59 +173,64 @@ contract MerchantReservesTest is ProgramsEnv {
             [uint128(30e6), uint128(0)],
             uint64(vm.getBlockTimestamp() + 30 days)
         );
-        bytes32 id = cards.reserveId(REF, shop);
+        bytes32 id = reserves.reserveId(REF, shop);
         vm.prank(issuer);
-        cards.collectReserve(id, 30e6);
+        reserves.collectReserve(id, 30e6);
         assertEq(usd.balanceOf(settlement), 130e6);
         // A dispute reserve does not use the shop's reserve consent.
-        (, uint128 collected,) = cards.reserveConsent(shop, address(usd));
+        (, uint128 collected,) = reserves.consentOf(shop, address(usd));
         assertEq(collected, 0);
     }
 
     function test_collectReserve_paysAndReleasesRest() public {
         vm.prank(issuer);
-        cards.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
+        reserves.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
         vm.prank(issuer);
-        cards.collectReserve(R1, 20e6);
+        reserves.collectReserve(R1, 20e6);
         assertEq(usd.balanceOf(settlement), 120e6);
         assertEq(usd.balanceOf(shop), 80e6);
         assertEq(core.available(shop, address(usd)), 80e6);
-        assertEq(core.getHold(shop, address(cards), R1).held, 0);
-        assertEq(core.budget(shop, address(cards), address(usd)).outstanding, 0);
+        assertEq(core.getHold(shop, address(reserves), R1).held, 0);
+        assertEq(core.budget(shop, address(reserves), address(usd)).outstanding, 0);
         _assertCoreBalanced();
     }
 
-    function test_reserve_revokedMandateStillReleases() public {
+    function test_reserve_revokedAllowanceStillReleases() public {
         vm.prank(issuer);
-        cards.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
+        reserves.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
         vm.prank(shop);
-        cards.revoke();
+        core.approveHolder(address(reserves), address(usd), 0, 0);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.NoTerms.selector);
-        cards.reserve(shop, address(usd), R2, 1e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
+        vm.expectRevert();
+        reserves.reserve(shop, address(usd), R2, 1e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
         vm.prank(issuer);
-        cards.releaseReserve(R1);
+        reserves.releaseReserve(R1);
         assertEq(core.available(shop, address(usd)), 100e6);
     }
 
     function test_reserve_expiresOnlyWhenReleased() public {
         vm.prank(issuer);
-        cards.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 1 days), FEES);
+        reserves.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 1 days), FEES);
         vm.warp(vm.getBlockTimestamp() + 1 days);
         assertEq(core.available(shop, address(usd)), 70e6);
         vm.prank(other);
-        core.releaseExpired(shop, address(cards), R1);
+        core.releaseExpired(shop, address(reserves), R1);
         assertEq(core.available(shop, address(usd)), 100e6);
     }
 
-    function test_setSettlementToken_waitsForReserves() public {
+    function test_settlementTokenInUse_whileAReserveIsHeld() public {
+        assertEq(reserves.settlementTokenInUse(address(auth)), 0);
         vm.prank(issuer);
-        cards.reserve(settlement, address(usd), R1, 5e6, uint64(vm.getBlockTimestamp() + 1 days), FEES);
+        reserves.reserve(settlement, address(usd), R1, 5e6, uint64(vm.getBlockTimestamp() + 1 days), FEES);
+        assertEq(reserves.settlementTokenInUse(address(auth)), 9);
         vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardProgram.SettlementTokenInUse.selector, uint8(1)));
-        cards.setSettlementToken(address(otherUsd));
+        reserves.releaseReserve(R1);
+        assertEq(reserves.settlementTokenInUse(address(auth)), 0);
+        // Ended reserves are pruned as new ones are placed.
         vm.prank(issuer);
-        cards.releaseReserve(R1);
-        assertEq(core.getHold(settlement, address(cards), R1).held, 0);
+        reserves.reserve(settlement, address(usd), R2, 5e6, uint64(vm.getBlockTimestamp() + 1 days), FEES);
+        vm.prank(issuer);
+        reserves.collectReserve(R2, 0);
+        assertEq(reserves.settlementTokenInUse(address(auth)), 0);
     }
 }
