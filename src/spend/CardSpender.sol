@@ -302,12 +302,17 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         _callbackMaxShares = s.maxShares;
         address receiver = payee == s.destination ? s.destination : address(this);
         uint256 before = receiver == s.destination ? 0 : IERC20Like(s.token).balanceOf(address(this));
+        address share = ITempoEarnVault(s.vault).earnShare();
+        uint256 sharesHeld = IERC20Like(share).balanceOf(address(this));
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         sharesUsed =
             IEarnVaultWithdrawCallback(s.vault).withdrawExactWithCallback(s.fromVault, receiver, type(uint256).max);
         // The callback clears the vault, so a vault that skipped it cannot have burned the payer's shares.
         if (_callbackVault != address(0)) revert NothingSpent();
+        // The vault returns any quoted shares it did not burn; measured, not reported, they go back to the payer.
+        uint256 returned = IERC20Like(share).balanceOf(address(this)) - sharesHeld;
+        if (returned != 0) _refund(share, returned);
         if (receiver != s.destination) {
             if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) revert DestinationNotCredited();
             SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);

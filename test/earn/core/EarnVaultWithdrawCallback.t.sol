@@ -39,16 +39,31 @@ contract EarnVaultWithdrawCallbackTest is Test {
         assertFalse(core.supportsInterface(0xffffffff));
     }
 
-    function testBurnsExactlyWhatTheCallbackPays() public {
+    function testReturnsQuotedSharesTheBurnLeaves() public {
         engine.setWithdrawBurnOverride(2 ether);
         uint256 burned = payer.withdraw(5 ether, receiver, 5 ether);
 
         assertEq(burned, 2 ether);
-        assertEq(payer.requested(), 2 ether);
+        assertEq(payer.requested(), 5 ether);
         assertEq(asset.balanceOf(receiver), 5 ether);
         assertEq(share.balanceOf(address(payer)), 8 ether);
         assertEq(share.balanceOf(address(core)), 0);
         assertEq(core.totalEarnShares(), core.engineShares());
+    }
+
+    function testBurnAboveTheQuoteReverts() public {
+        engine.setWithdrawBurnOverride(6 ether);
+        vm.expectRevert(EarnVault.ExceedsMaxEarnShares.selector);
+        payer.withdraw(5 ether, receiver, 10 ether);
+    }
+
+    /// @dev The callback runs before the payout, so the views it can read show the settled price.
+    function testCallbackSeesTheSettledPrice() public {
+        uint256 assetsPerShare = core.previewRedeem(1 ether);
+        uint256 assetsBefore = core.totalAssets();
+        payer.withdraw(5 ether, receiver, 5 ether);
+        assertEq(payer.priceDuring(), assetsPerShare);
+        assertEq(payer.assetsDuring(), assetsBefore);
     }
 
     function testRevertsWhenTheCallbackUnderpays() public {
@@ -106,6 +121,8 @@ contract CallbackPayer is IEarnWithdrawCallback {
     EarnVault immutable vault;
     CoreMockToken immutable share;
     uint256 public requested;
+    uint256 public priceDuring;
+    uint256 public assetsDuring;
     uint256 shortfall;
     bool reenter;
 
@@ -134,6 +151,8 @@ contract CallbackPayer is IEarnWithdrawCallback {
     function earnWithdrawCallback(uint256 earnShares) external override {
         require(msg.sender == address(vault), "not vault");
         requested = earnShares;
+        priceDuring = vault.previewRedeem(1 ether);
+        assetsDuring = vault.totalAssets();
         if (reenter) vault.withdrawExactWithCallback(1, address(this), type(uint256).max);
         uint256 amount = shortfall == type(uint256).max ? earnShares + 1 : earnShares - shortfall;
         share.transfer(address(vault), amount);

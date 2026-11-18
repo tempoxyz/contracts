@@ -105,12 +105,12 @@ contract RefundReceivePolicyTest is TempoEnv {
         POLICIES.modifyPolicyWhitelist(senderPolicy, address(earnVault), true);
     }
 
-    function test_directBlockedReceivePolicyDefaultAuthorityNeedsNoRefund() public {
-        _blockedWithoutRefund(address(0));
+    function test_directBlockedRefundDefaultAuthorityRevertsAtomically() public {
+        _blocked(directProgram, address(0));
     }
 
-    function test_directBlockedReceivePolicyPayerAuthorityNeedsNoRefund() public {
-        _blockedWithoutRefund(payer);
+    function test_directBlockedRefundPayerAuthorityRevertsAtomically() public {
+        _blocked(directProgram, payer);
     }
 
     function test_payoutBlockedRefundDefaultAuthorityRevertsAtomically() public {
@@ -209,15 +209,6 @@ contract RefundReceivePolicyTest is TempoEnv {
         selected.spend(s);
         assertEq(abi.encode(_balances(selected)), abi.encode(before), "refund failure must roll back every balance");
         assertEq(earnShare.allowance(payer, address(selected)), s.maxShares, "payer approval must roll back");
-    }
-
-    /// @dev A direct program pays the vault the exact burn through its withdraw callback, so nothing returns to
-    ///      the payer and a receive policy that blocks refunds cannot stop the spend.
-    function _blockedWithoutRefund(address authority) internal {
-        vm.prank(payer);
-        POLICIES.setReceivePolicy(senderPolicy, allTokens, authority);
-        _successful(directProgram);
-        assertEq(earnShare.allowance(payer, address(directProgram)), 1e6, "only the burn is spent");
     }
 
     function _successful(CardSpender selected) internal {

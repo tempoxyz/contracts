@@ -901,11 +901,11 @@ contract EarnVault is IEarnVault {
         return _withdrawExact(assets, msg.sender, maxEarnShares);
     }
 
-    /// @notice Withdraws exact `assets` to `receiver` like {withdrawExact}, but asks the caller for the EarnShare
-    ///         once the cost is known: it calls {IEarnWithdrawCallback-earnWithdrawCallback} on the caller, which
-    ///         transfers exactly that much EarnShare to this vault, from any account it may spend from.
-    /// @dev Saves a separate {previewWithdraw} quote and a transfer through the caller. The vault burns only the
-    ///      EarnShare its balance gained during the callback, and the lock keeps the callback out of the vault.
+    /// @notice Withdraws exact `assets` to `receiver` like {withdrawExact}, but asks the caller for the quoted
+    ///         EarnShare cost: before paying out, it calls {IEarnWithdrawCallback-earnWithdrawCallback} on the
+    ///         caller, which transfers exactly that much EarnShare to this vault, from any account it may spend from.
+    /// @dev Saves a separate {previewWithdraw} quote and a transfer through the caller. The burn never exceeds the
+    ///      quote; any quoted EarnShare left unburned returns to the caller. The lock keeps the callback out of the vault.
     /// @custom:ensures earnSharesBurned != 0 && earnSharesBurned <= maxEarnShares && assets != 0
     /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
     function withdrawExactWithCallback(uint256 assets, address receiver, uint256 maxEarnShares)
@@ -946,19 +946,26 @@ contract EarnVault is IEarnVault {
         uint256 requiredEarnShares = _convertEngineSharesToEarnSharesUp(requiredEngineShares);
         if (requiredEarnShares == 0) revert InsufficientOutput();
         if (requiredEarnShares > maxEarnShares) revert ExceedsMaxEarnShares();
+        // The callback runs here, while the vault's state is settled, so no caller code ever reads it half-updated.
+        // The quoted shares count in supply until the burn, so prices stay unchanged.
+        if (callback) _collectEarnShares(requiredEarnShares, true);
 
         uint256 engineSharesBurned = IEarnEngineExactWithdraw(engine).withdraw(assets, receiver);
         if (engineSharesBurned == 0) revert InsufficientOutput();
         _decreaseManagedEngineShares(engineSharesBurned);
         earnSharesBurned = _convertEngineSharesToEarnSharesUp(engineSharesBurned);
         if (earnSharesBurned == 0) revert InsufficientOutput();
-        if (earnSharesBurned > maxEarnShares) revert ExceedsMaxEarnShares();
+        if (earnSharesBurned > (callback ? requiredEarnShares : maxEarnShares)) revert ExceedsMaxEarnShares();
         if (engineSharesBurned == engineSharesBefore && assets < engineAssetsBefore) revert ResidualBacking();
         if (earnSharesBurned == _activeSupply() && engineShares() != 0) {
             revert ResidualBacking();
         }
 
-        _collectEarnShares(earnSharesBurned, callback);
+        if (!callback) {
+            _collectEarnShares(earnSharesBurned, false);
+        } else if (requiredEarnShares != earnSharesBurned) {
+            _safeTransfer(earnShare, msg.sender, requiredEarnShares - earnSharesBurned);
+        }
         IEarnShare(earnShare).burn(earnSharesBurned);
 
         _reanchorAtRest();
