@@ -388,6 +388,23 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(debt, 35e6);
     }
 
+    function test_dispute_creditPurchase_lineClosedBeforeTheMerchantWins_recoversFromTheCardholder() public {
+        uint64 lineId = _disputedOnCredit();
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 100e6, "", false);
+        assertEq(credit.lineOf(lineId).owed, 0, "the line's share repaid it");
+        // The cardholder closes the repaid line before the dispute ends.
+        vm.prank(alice);
+        credit.closeLine(lineId);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, false);
+        assertEq(credit.lineOf(lineId).owed, 0, "a closed line is not drawn again");
+        // The whole provisional credit comes back from the cardholder: the $40 it holds, the rest as debt.
+        assertEq(usd.balanceOf(alice), 0);
+        (, uint128 debt) = core.debtOf(alice, address(usd));
+        assertEq(debt, 60e6);
+    }
+
     function test_dispute_creditPurchase_repaidLineTakesItsShareAsCash() public {
         uint64 lineId = _disputedOnCredit();
         usd.mint(alice, 60e6);

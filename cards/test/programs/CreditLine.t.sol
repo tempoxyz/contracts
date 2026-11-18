@@ -376,8 +376,11 @@ contract CreditLineTest is ProgramsEnv {
         vm.prank(lender);
         credit.closeLine(unaccepted);
         uint64 closed = _repaidLine();
+        assertEq(credit.redrawable(closed, REF), 400e6);
         vm.prank(alice);
         credit.closeLine(closed);
+        // A closed line offers nothing to draw again, so callers checking first skip it.
+        assertEq(credit.redrawable(closed, REF), 0);
         vm.expectRevert(CreditLine.LineNotOpen.selector);
         credit.redraw(closed, 100e6, REF);
         uint64 pastDue = _line(1000e6, IEarnVault(address(0)), 0, true);

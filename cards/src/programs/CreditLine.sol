@@ -577,8 +577,12 @@ contract CreditLine is ISettlementTokenGuard {
     }
 
     /// @notice What `redraw` may still draw on line `lineId` for `ref`: what `repayFor` repaid for it, less what was
-    ///         drawn again.
+    ///         drawn again. Nothing on a line that is not open (unaccepted, closed or past due), which `redraw` refuses.
     function redrawable(uint64 lineId, bytes32 ref) external view returns (uint256) {
+        Line storage l = _lines[lineId];
+        // Due dates are timestamps by design; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (!l.accepted || l.closed || block.timestamp >= l.dueDate) return 0;
         RefRepayment storage r = repaymentOf[lineId][ref];
         return r.repaid - r.redrawn;
     }
