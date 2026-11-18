@@ -95,6 +95,9 @@ library CardFunding {
         mapping(address owner => bool) isDebtor;
         /// @dev Settlement units the issuer absorbed on a purchase past its owner's debt cap that no refund paid yet.
         mapping(bytes32 ref => uint256) absorbed;
+        /// @dev Settlement units open stand-in purchases still count as held, which the core lets capture past what
+        ///      the cardholder holds.
+        uint128 standInHeld;
     }
 
     bytes32 private constant SLOT = keccak256("tempo.cards.CardFunding.v1");
@@ -220,6 +223,8 @@ library CardFunding {
         // Bounded by 64-bit purchase amounts.
         // forge-lint: disable-next-line(unsafe-typecast)
         L.held += uint128(approved);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (flags & 1 != 0) L.standInHeld += uint128(approved);
         _checkExposure(L);
         emit Funded(ref, STEP_HOLD, parts, 0, 0);
     }
@@ -249,6 +254,9 @@ library CardFunding {
             _captureLeg(leg, s, tokens, isFinal);
             parts[i] = _part(s, amount, tokens);
             sums[0] = tokens;
+            // The shortfall the core turned into debt counts in the program's exposure, like a charged one.
+            (address creditor, uint128 owed) = CORE.debtOf(owner, leg.token);
+            if (creditor == address(this) && owed != 0) noteDebtor(owner);
         } else {
             // Over-capture (tips) stays within the owner's tolerance for this program, as the core holds each leg to it.
             uint256 tolerance = cashToken == address(0) ? 0 : CORE.captureTolerance(owner, address(this), cashToken);
@@ -307,6 +315,8 @@ library CardFunding {
         uint256 fromHeld = amount < counted ? amount : counted;
         // forge-lint: disable-next-line(unsafe-typecast)
         L.held -= uint128(isFinal ? counted : fromHeld);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (p.standIn) L.standInHeld -= uint128(isFinal ? counted : fromHeld);
     }
 
     /// @notice Refunds a purchase: first the owner's debt to the program from its cash legs, then every leg in
@@ -386,6 +396,7 @@ library CardFunding {
             sums[_sumIndex(s.kind)] += leg.held;
         }
         L.held -= p.held;
+        if (p.standIn) L.standInHeld -= p.held;
         emit Funded(ref, STEP_RELEASE, parts, 0, 0);
     }
 
@@ -427,6 +438,9 @@ library CardFunding {
         // The program moves the purchase's held amount by the same difference.
         // forge-lint: disable-next-line(unsafe-typecast)
         L.held = amount > previous ? L.held + uint128(amount - previous) : L.held - uint128(previous - amount);
+        // A stand-in only comes down.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (p.standIn && amount < previous) L.standInHeld -= uint128(previous - amount);
         if (amount > previous) _checkExposure(L);
         emit Funded(ref, STEP_ADJUST, parts, 0, 0);
     }
@@ -463,6 +477,14 @@ library CardFunding {
                 ++debtors;
             }
         }
+    }
+
+    /// @notice What the program's own funds stand behind, in settlement units: open stand-in approvals, which may
+    ///         capture past what the cardholder holds, and cardholders' capped debt to the program while captures are
+    ///         still unsettled (`unsettled`), which the issuer pays the network for before the cardholder repays.
+    function committed(uint256 unsettled) external view returns (uint256) {
+        (, uint256 debt,) = outstanding();
+        return _layout().standInHeld + (debt < unsettled ? debt : unsettled);
     }
 
     /// @notice The program's live exposure (open holds, capped debt and the given unsettled captures) and the value of

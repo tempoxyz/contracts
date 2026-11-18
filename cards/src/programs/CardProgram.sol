@@ -566,9 +566,18 @@ contract CardProgram {
         CardConvert.fundIssuerDebt(token, amount);
     }
 
-    /// @notice Pays `amount` of the program's own `token` funds to the settlement account, within what it retains.
+    /// @notice Pays `amount` of the program's own `token` funds to the settlement account, within what it retains
+    ///         less what they stand behind (`committedIssuerFunds`).
     function withdrawIssuerFunds(address token, uint256 amount) external nonReentrant onlyIssuer {
-        CardConvert.withdrawIssuerFunds(token, amount);
+        CardConvert.withdrawIssuerFunds(token, amount, committedIssuerFunds(token));
+    }
+
+    /// @notice What the program's own `token` funds stand behind and stay for: in the settlement token, open stand-in
+    ///         approvals and cardholders' capped debt to the program while captures are unsettled; nothing in another.
+    function committedIssuerFunds(address token) public view returns (uint256) {
+        if (token != settlementToken()) return 0;
+        Ledger memory l = ledger;
+        return CardFunding.committed(l.net > l.settledNet ? l.net - l.settledNet : 0);
     }
 
     /// @notice What the program holds of `token` for advancing payouts.

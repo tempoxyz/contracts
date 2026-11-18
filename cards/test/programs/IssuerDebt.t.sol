@@ -233,6 +233,43 @@ contract IssuerDebtTest is ProgramsEnv {
         assertEq(cards.issuerFunds(address(usd)), 20e6);
     }
 
+    function test_withdrawIssuerFunds_keepsWhatOpenAuthorizationsAndUnsettledDebtNeed() public {
+        bytes32 ref = bytes32("purchase-1");
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        usd.mint(alice, 10e6);
+        vm.prank(alice);
+        core.setOfflineCap(address(cards), address(usd), 100e6);
+        // A stand-in approval of 30 the cardholder may not cover: the program's own funds stand behind it.
+        uint8 standIn = cards.STAND_IN();
+        vm.prank(issuer);
+        cards.authorize(CARD, ref, 30e6, merchant, uint64(block.timestamp + 1 days), standIn);
+        assertEq(cards.committedIssuerFunds(address(usd)), 30e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardConvert.IssuerFundsShort.selector, 20e6 + 1, 20e6));
+        cards.withdrawIssuerFunds(address(usd), 20e6 + 1);
+        vm.prank(issuer);
+        cards.withdrawIssuerFunds(address(usd), 20e6);
+        assertEq(cards.issuerFunds(address(usd)), 30e6);
+        // Captured, the settlement account got the 10 the cardholder held (beside the 20 withdrawn); the other 20 is
+        // the cardholder's debt, which the issuer still pays the network for until it settles.
+        _capture(ref, 30e6, true);
+        assertEq(usd.balanceOf(settlement), 30e6);
+        assertEq(cards.committedIssuerFunds(address(usd)), 20e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardConvert.IssuerFundsShort.selector, 10e6 + 1, 10e6));
+        cards.withdrawIssuerFunds(address(usd), 10e6 + 1);
+        // The issuer pays the network and acknowledges it: the rest is free.
+        vm.prank(settlement);
+        assertEq(cards.payOut(bob, 30e6, bytes32("network")), 0);
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        assertEq(cards.committedIssuerFunds(address(usd)), 0);
+        vm.prank(issuer);
+        cards.withdrawIssuerFunds(address(usd), 30e6);
+        assertEq(cards.issuerFunds(address(usd)), 0);
+    }
+
     function testFuzz_issuerFunds_neverAboveTheBalanceAfterATokenChange(uint64 paid, uint64 withdrawn) public {
         // Carrying sends the old debt from what the program still holds, so it carries at most half its funds.
         paid = uint64(bound(paid, 1, 25e6));

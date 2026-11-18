@@ -321,9 +321,10 @@ library CardConvert {
     }
 
     /// @notice Pays `amount` of the program's own `token` funds to the settlement account, within what it retains and
-    ///         holds.
-    function withdrawIssuerFunds(address token, uint256 amount) external {
+    ///         holds less `committed`, what they stand behind.
+    function withdrawIssuerFunds(address token, uint256 amount, uint256 committed) external {
         uint256 held = _min(retained(token), IERC20Like(token).balanceOf(address(this)));
+        held = held > committed ? held - committed : 0;
         if (amount > held) revert IssuerFundsShort(amount, held);
         _layout().issuerFunds[token] -= amount;
         SafeTransferLib.safeTransfer(token, CardProgram(address(this)).SETTLEMENT_ACCOUNT(), amount);
