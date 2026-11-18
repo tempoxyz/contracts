@@ -112,8 +112,9 @@ For asset-denominated withdrawal, `withdrawExact(assets, receiver, maxEarnShares
 `withdrawExactWithCallback(assets, receiver, maxEarnShares)` runs the same steps, except that right after
 step 3, before the engine pays out, it calls `earnWithdrawCallback(requiredEarnShares)` on the caller
 ([`IEarnWithdrawCallback`](../../../src/interfaces/earn/IEarnWithdrawCallback.sol)) for the quoted cost, and
-reverts with `EarnSharesNotReceived` unless its EarnShare balance rose by exactly that amount. The callback
-therefore reads only settled state, and the quoted shares count in supply until the burn. The burn may not
+reverts with `EarnSharesNotReceived` unless its EarnShare balance rose by exactly that amount. Accounting
+and fees are settled before the callback, but views read inside it are not: they may count the shares already
+moved to the EarnVault as burned, so price nothing from them there. The burn may not
 exceed the quote (`ExceedsMaxEarnShares`), and any quoted EarnShare it leaves returns to the caller in
 step 7. A contract that spends someone else's shares (a card program) uses it to move them straight
 from their owner to the EarnVault, without a separate `previewWithdraw` quote. The EarnVault reports it

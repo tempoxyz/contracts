@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 
@@ -9,6 +10,7 @@ import { FeeConfig } from "../../../src/interfaces/earn/EarnFeeTypes.sol";
 
 import { CardSpend } from "../../../src/spend/CardSpend.sol";
 import { CardSpender } from "../../../src/spend/CardSpender.sol";
+import { IEarnWithdrawCallback } from "../../../src/interfaces/earn/IEarnWithdrawCallback.sol";
 import { ICardProvider } from "../../../src/interfaces/spend/ICardProvider.sol";
 import { ITempoEarnVault } from "../../../src/interfaces/spend/ITempoEarnVault.sol";
 import { CoreEnv } from "./harness/CoreEnv.sol";
@@ -524,6 +526,11 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
         CardSpend memory s = _earnSpend(publicWallet, 0, 10e6, 10e6, "callback");
         uint256 cost = earnVault.previewWithdraw(10e6);
         uint256 programShares = earnShare.balanceOf(address(program));
+        // Ending balances match on both paths, so pin the path: the callback runs once and no share pull happens.
+        vm.expectCall(address(program), abi.encodeWithSelector(IEarnWithdrawCallback.earnWithdrawCallback.selector), 1);
+        vm.expectCall(
+            address(earnShare), abi.encodeWithSelector(IERC20.transferFrom.selector, alice, address(program)), 0
+        );
         _publicSpend(alice, s);
         assertEq(usd.balanceOf(publicWallet), 10e6);
         assertEq(earnShare.balanceOf(alice), shares - cost);
