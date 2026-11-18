@@ -11,6 +11,7 @@ import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol
 
 import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineExactWithdraw } from "../../../interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
+import { IEarnEngineHeldDeposit } from "../../../interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 import { IEarnEngineRedeem } from "../../../interfaces/earn/engines/IEarnEngineRedeem.sol";
 import { IEarnVault } from "../../../interfaces/earn/IEarnVault.sol";
 
@@ -93,7 +94,8 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
     /// Advertises ERC-165, the engine, exact withdraw and redeem, and nothing else.
     function supportsInterface(bytes4 id) external pure returns (bool) {
         return id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId
-            || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId;
+            || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId
+            || id == type(IEarnEngineHeldDeposit).interfaceId;
     }
 
     /// Raw custody: the base asset the engine holds, including any direct transfers the EarnVault quarantines.
@@ -129,6 +131,14 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
         engineShares = totalShares() - before;
         /// @custom:ghost heldAfter = before + engineShares
         if (engineShares != assets) revert InexactTransfer();
+        emit Deposited(msg.sender, assets, engineShares);
+    }
+
+    /// @notice Credits `assets` the EarnVault already transferred here; the EarnVault measures the custody increase.
+    /// @custom:ensures msg.sender == earnVault && assets > 0 && engineShares == assets
+    function depositHeld(uint256 assets) external nonReentrant onlyEarnVault returns (uint256 engineShares) {
+        if (assets == 0) revert InvalidAmount();
+        engineShares = assets;
         emit Deposited(msg.sender, assets, engineShares);
     }
 

@@ -251,6 +251,20 @@ contract ZoneRouter is IWithdrawalReceiver {
         allowedZoneId = mode.zoneId;
         portal = portal_;
         enabledOps = mode.enabledOps;
+
+        // Every Earn op's spenders are immutable, so their standing maximum approvals are set once here and
+        // ops never read an allowance: a TIP-20 never spends down a maximum allowance (TIP-1000 charges each
+        // new allowance slot, so this moves that cost from the first op to deployment).
+        if (mode.enabledOps & OP_DEPOSIT != 0) {
+            _approveStanding(vaultAsset_, mode.earnVault);
+            _approveMax(earnShare_, portal_);
+            if (mode.pool != address(0)) _approveStanding(mode.privateAsset, mode.pool);
+        }
+        if (mode.enabledOps & OP_REDEEM != 0) {
+            _approveStanding(earnShare_, mode.earnVault);
+            _approveMax(mode.privateAsset, portal_);
+            if (mode.pool != address(0)) _approveStanding(vaultAsset_, mode.pool);
+        }
     }
 
     /// @notice The spenders Spend may use, in deployment order.
@@ -444,7 +458,6 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets == amount && vaultAssets >= operation.minVaultAssets
 
-        _approveStanding(vaultAsset, earnVault, vaultAssets);
         uint256 earnShares = IEarnVault(earnVault).deposit(vaultAssets, address(this), operation.minEarnShares);
         if (earnShares == 0 || earnShares < operation.minEarnShares) revert InsufficientOutput();
         /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares
@@ -464,7 +477,6 @@ contract ZoneRouter is IWithdrawalReceiver {
         _validateSourceReturn(sourcePortal, privateAsset, zoneReturn);
         uint256 outputBalanceBefore = IERC20Like(privateAsset).balanceOf(address(this));
 
-        _approveStanding(earnShare, earnVault, amount);
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets
@@ -497,7 +509,6 @@ contract ZoneRouter is IWithdrawalReceiver {
 
         // Zero tolerance at par rejects any off-par oracle price. The pool still enforces its own
         // freshness and deviation guards.
-        _approveStanding(tokenIn, address(pool), amountIn);
         // The measured output delta below is authoritative, not the pool's reported amount.
         pool.swapExactInput(
             baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
@@ -560,8 +571,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         private
         returns (bytes32 hash)
     {
-        // Every router keeps a standing Portal approval: clearing it would recreate the allowance slot each callback.
-        _approvePortal(token, sourcePortal, amount);
+        // The constructor set the standing Portal approval for both Earn ops' return tokens.
         hash = IZonePortal(sourcePortal)
             .depositEncrypted(token, amount, zoneReturn.keyIndex, zoneReturn.encrypted, zoneReturn.refundRecipient);
     }
@@ -613,14 +623,15 @@ contract ZoneRouter is IWithdrawalReceiver {
         }
     }
 
-    /// @dev A standing maximum allowance for an immutable spender (the EarnVault or pool): Tempo charges every zero-to-nonzero allowance as a new storage slot,
-    ///      and every operation returns this router's touched balances to their baseline, so none is left to pull.
-    function _approveStanding(address token, address spender, uint256 amount) private {
+    /// @dev A standing maximum allowance for an immutable spender (the EarnVault or pool), set by the constructor:
+    ///      every operation returns this router's touched balances to their baseline, so none is left to pull.
+    function _approveStanding(address token, address spender) private {
         /// @custom:ghost gStanding[token][spender] = true
-        if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
-            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
-            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
-        }
+        _approveMax(token, spender);
+    }
+
+    function _approveMax(address token, address spender) private {
+        _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
     }
 
     function _safeTransfer(address token, address to, uint256 value) private {

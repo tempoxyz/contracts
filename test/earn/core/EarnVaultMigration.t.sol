@@ -67,8 +67,8 @@ contract EarnVaultMigrateTest is Test {
     function testMigratePreservesSupplyNavAndBalancesAndReAnchors() public {
         uint256 supplyBefore = core.totalEarnShares();
         uint256 userBalBefore = share.balanceOf(user);
-        // Deposits leave a standing maximum base-asset allowance to the active engine only.
-        assertEq(asset.allowance(address(core), address(fromEngine)), type(uint256).max);
+        // The ERC-4626 engine takes deposits the vault sends it directly, so it needs no base-asset allowance.
+        assertEq(asset.allowance(address(core), address(fromEngine)), 0);
         assertEq(asset.allowance(address(core), address(toEngine)), 0);
 
         vm.prank(operator);

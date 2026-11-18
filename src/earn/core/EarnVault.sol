@@ -17,11 +17,14 @@ import { IEarnEngine } from "../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineAsyncRedeem } from "../../interfaces/earn/engines/IEarnEngineAsyncRedeem.sol";
 import { IEarnEngineExactWithdraw } from "../../interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineFeeValuation } from "../../interfaces/earn/engines/IEarnEngineFeeValuation.sol";
+import { IEarnEngineHeldDeposit } from "../../interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 import { IEarnEngineInKindDeposit } from "../../interfaces/earn/engines/IEarnEngineInKindDeposit.sol";
 import { IEarnEngineRedeem } from "../../interfaces/earn/engines/IEarnEngineRedeem.sol";
 import { IERC20Like } from "../../interfaces/external/IERC20Like.sol";
 import { IERC20Allowance } from "../../interfaces/external/IERC20Allowance.sol";
 import { IAsyncRedeemReceiver } from "../../interfaces/earn/IAsyncRedeemReceiver.sol";
+import { IEarnVaultWithdrawCallback, IEarnWithdrawCallback } from "../../interfaces/earn/IEarnWithdrawCallback.sol";
+import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 
 /// @notice Persistent issuance, accounting, migration, and async-claim vault for one Earn deployment.
@@ -91,6 +94,11 @@ contract EarnVault is IEarnVault {
     uint256 public constant override MAX_REWARD_RATE_MULTIPLIER = 100;
     /// @dev EarnShare base units the vault may hold without counting as supply.
     uint256 internal constant SHARE_RESIDUE = 1;
+    uint8 internal constant CAP_REDEEM = 1;
+    uint8 internal constant CAP_EXACT_WITHDRAW = 2;
+    uint8 internal constant CAP_IN_KIND = 4;
+    uint8 internal constant CAP_FEE_VALUATION = 8;
+    uint8 internal constant CAP_HELD_DEPOSIT = 16;
 
     /// @notice The current yield engine and sole custodian of the venue shares backing this EarnVault's
     ///         EarnShare supply. MUTABLE only through operator-authorized {migrateEngine}.
@@ -99,6 +107,13 @@ contract EarnVault is IEarnVault {
     bool private initialized;
     /// @dev Set by the constructor on the implementation, so {initialize} runs only on a proxy.
     bool private isImplementation;
+    /// @dev The current engine's fixed ERC-165 capabilities (CAP_* bits), read by {initialize} and {migrateEngine}.
+    ///      Async redemption stays a live check: an engine may add or remove its queue.
+    uint8 private engineCapabilities;
+    /// @dev Mirrors EarnFees' {IEarnFees-feesActive}. Only this vault changes it (initialization, {setFeeConfig},
+    ///      a distributor fee update, {disableFees}), and each refreshes this copy, so a checkpoint skips the call
+    ///      while fees are off.
+    bool private feesActiveCached;
     address public override asset;
     address public override earnShare;
     address public override earnFees;
@@ -199,6 +214,7 @@ contract EarnVault is IEarnVault {
     error DuplicateRequest(bytes32 requestId);
     error EngineAssetMismatch();
     error EngineCapabilityUnsupported(bytes4 interfaceId);
+    error EarnSharesNotReceived();
     error EngineEarnVaultMismatch();
     error EngineExitUnsupported();
     error ExcessiveConversionLoss(uint256 inputShares, uint256 representedShares);
@@ -289,9 +305,11 @@ contract EarnVault is IEarnVault {
         }
 
         engine = engine_;
+        engineCapabilities = _engineCapabilities(engine_);
         asset = asset_;
         earnShare = earnShare_;
         earnFees = earnFees_;
+        feesActiveCached = IEarnFees(earnFees_).feesActive();
         operator = operator_;
         distributor = distributorInit_.distributor;
         distributorUpdateDelay = distributorInit_.updateDelay;
@@ -375,6 +393,7 @@ contract EarnVault is IEarnVault {
         _requireFreshFeeValuation();
         _accrueFees();
         configId = IEarnFees(earnFees).setFeeConfig(config);
+        _refreshFeesActive();
     }
 
     /// @notice Only the operator of a deployment without a distributor can disable fees globally.
@@ -383,6 +402,7 @@ contract EarnVault is IEarnVault {
         if (distributor != address(0)) revert GlobalFeeDisableUnavailable();
         if (msg.sender != operator) revert NotOperator();
         IEarnFees(earnFees).disableFees(msg.sender);
+        _refreshFeesActive();
     }
 
     /// @custom:ensures msg.sender == operator && newOperator != address(0) && pendingOperator == newOperator
@@ -484,6 +504,7 @@ contract EarnVault is IEarnVault {
         _distributorFee = nextFee;
         delete _pendingDistributorFeeUpdate;
         feeConfigId = IEarnFees(earnFees).setFeeConfig(proposed);
+        _refreshFeesActive();
         emit DistributorFeeUpdated(nextFee.account, nextFee.rateBps, feeConfigId);
     }
 
@@ -610,8 +631,9 @@ contract EarnVault is IEarnVault {
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
 
         uint256 supplyBefore = _activeSupply();
-        (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
-        bool restarted = _isUnbacked(currentSupply, accruedFees.activeAssets);
+        (FeePreview memory accruedFees, uint256 currentSupply, uint256 backing, uint256 rawSharesBefore) =
+            _accrueFeesRaw();
+        bool restarted = _isUnbackedHeld(currentSupply, accruedFees.activeAssets, backing);
         uint256 strandedEngineShares;
         if (restarted) strandedEngineShares = _restartEmptyAnchor();
         uint256 rateEngineShares = anchorEngineShares;
@@ -622,11 +644,7 @@ contract EarnVault is IEarnVault {
         /// @custom:assert rateEarnShares == currentSupply || rateEarnShares == earnShareScale
         /// @custom:assert currentSupply == 0 ==> rateEarnShares == earnShareScale && rateEngineShares == rewardRateBaseline
 
-        _safeTransferFrom(asset, msg.sender, address(this), assets);
-        _approveEngine(engine, assets);
-        uint256 rawSharesBefore = rawEngineShares();
-        uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
-        uint256 receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
+        (uint256 receivedEngineShares, uint256 rawSharesAfter) = _depositToEngine(assets, rawSharesBefore);
 
         earnShares = _convertEngineSharesToEarnShares(receivedEngineShares);
         if (earnShares == 0) revert InsufficientOutput();
@@ -638,12 +656,12 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
-        _reanchorAfterEntry(rateEngineShares, rateEarnShares);
+        _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter);
         _requireWithinManagedAssetsLimit();
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (supplyBefore == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
-            IEarnFees(earnFees).initializeBaselines();
+            _initializeFeeBaselines();
         }
         // The first entry into an empty pool always updates the fee baselines.
         /// @custom:assert supplyBefore == 0 ==> baselineEntries == old(baselineEntries) + 1
@@ -705,7 +723,7 @@ contract EarnVault is IEarnVault {
         /// @custom:assert rateEarnShares == currentSupply || rateEarnShares == earnShareScale
         /// @custom:assert currentSupply == 0 ==> rateEarnShares == earnShareScale && rateEngineShares == rewardRateBaseline
 
-        _requireCapability(engine, type(IEarnEngineInKindDeposit).interfaceId);
+        _requireEngineCapability(CAP_IN_KIND, type(IEarnEngineInKindDeposit).interfaceId);
         uint256 engineSharesBefore = rawEngineShares();
         uint256 reportedEngineShares = IEarnEngineInKindDeposit(engine).depositInKind(venueShares, msg.sender);
         uint256 receivedEngineShares = _recordEngineShareIncrease(engineSharesBefore, reportedEngineShares);
@@ -725,7 +743,7 @@ contract EarnVault is IEarnVault {
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (supplyBefore == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
-            IEarnFees(earnFees).initializeBaselines();
+            _initializeFeeBaselines();
         }
         // The first entry into an empty pool always updates the fee baselines.
         /// @custom:assert supplyBefore == 0 ==> baselineEntries == old(baselineEntries) + 1
@@ -760,11 +778,7 @@ contract EarnVault is IEarnVault {
 
         // Gains up to here are checkpointed before the contribution enters.
         /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
-        _safeTransferFrom(asset, msg.sender, address(this), assets);
-        _approveEngine(engine, assets);
-        uint256 rawSharesBefore = rawEngineShares();
-        uint256 reportedEngineShares = IEarnEngine(engine).deposit(assets);
-        receivedEngineShares = _recordEngineShareIncrease(rawSharesBefore, reportedEngineShares);
+        (receivedEngineShares,) = _depositToEngine(assets, rawEngineShares());
         /// @custom:ghost cappedManagedShares = _managedEngineShares
         _requireWithinManagedAssetsLimit();
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
@@ -838,7 +852,7 @@ contract EarnVault is IEarnVault {
         if (earnShares == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
         if (minAssets == 0) revert ZeroMinimumAssets();
-        _requireCapability(engine, type(IEarnEngineRedeem).interfaceId);
+        _requireEngineCapability(CAP_REDEEM, type(IEarnEngineRedeem).interfaceId);
 
         _accrueFees();
 
@@ -887,13 +901,41 @@ contract EarnVault is IEarnVault {
         return _withdrawExact(assets, msg.sender, maxEarnShares);
     }
 
+    /// @notice Withdraws exact `assets` to `receiver` like {withdrawExact}, but asks the caller for the EarnShare
+    ///         once the cost is known: it calls {IEarnWithdrawCallback-earnWithdrawCallback} on the caller, which
+    ///         transfers exactly that much EarnShare to this vault, from any account it may spend from.
+    /// @dev Saves a separate {previewWithdraw} quote and a transfer through the caller. The vault burns only the
+    ///      EarnShare its balance gained during the callback, and the lock keeps the callback out of the vault.
+    /// @custom:ensures earnSharesBurned != 0 && earnSharesBurned <= maxEarnShares && assets != 0
+    /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
+    function withdrawExactWithCallback(uint256 assets, address receiver, uint256 maxEarnShares)
+        external
+        override
+        nonReentrant
+        returns (uint256 earnSharesBurned)
+    {
+        return _withdrawExactFrom(assets, receiver, maxEarnShares, true);
+    }
+
+    /// @notice ERC-165: this vault has {IEarnVaultWithdrawCallback}.
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnVaultWithdrawCallback).interfaceId;
+    }
+
     function _withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares)
+        internal
+        returns (uint256 earnSharesBurned)
+    {
+        return _withdrawExactFrom(assets, receiver, maxEarnShares, false);
+    }
+
+    function _withdrawExactFrom(uint256 assets, address receiver, uint256 maxEarnShares, bool callback)
         internal
         returns (uint256 earnSharesBurned)
     {
         if (assets == 0) revert ZeroAmount();
         if (receiver == address(0)) revert ZeroAddress();
-        _requireCapability(engine, type(IEarnEngineExactWithdraw).interfaceId);
+        _requireEngineCapability(CAP_EXACT_WITHDRAW, type(IEarnEngineExactWithdraw).interfaceId);
 
         _accrueFees();
 
@@ -916,7 +958,7 @@ contract EarnVault is IEarnVault {
             revert ResidualBacking();
         }
 
-        _safeTransferFrom(earnShare, msg.sender, address(this), earnSharesBurned);
+        _collectEarnShares(earnSharesBurned, callback);
         IEarnShare(earnShare).burn(earnSharesBurned);
 
         _reanchorAtRest();
@@ -1183,7 +1225,7 @@ contract EarnVault is IEarnVault {
         if (oldRawEngineShares != 0) {
             if (minNewEngineShares == 0) revert ZeroMinimumEngineShares();
             if (minAssetsRetained == 0) revert ZeroMinimumAssets();
-            _requireCapability(oldEngine, type(IEarnEngineRedeem).interfaceId);
+            _requireEngineCapability(CAP_REDEEM, type(IEarnEngineRedeem).interfaceId);
             // Leg 1 — pull ALL raw custody out of the old engine to the EarnVault. A dry/queue-only venue that
             // cannot honor a full immediate redemption reverts here and the whole migration rolls back.
             uint256 assetBalanceBefore = IERC20Like(asset).balanceOf(address(this));
@@ -1248,6 +1290,7 @@ contract EarnVault is IEarnVault {
         _safeApprove(asset, oldEngine, 0);
         /// @custom:ghost currentEngine = newEngine
         engine = newEngine;
+        engineCapabilities = _engineCapabilities(newEngine);
         _managedEngineShares = newEngineShares;
 
         // Re-anchor from the recognized count. Pre-existing replacement shares and the migrated
@@ -1283,7 +1326,7 @@ contract EarnVault is IEarnVault {
     ///      before execution.
     function previewRedeem(uint256 earnShares) public view override returns (uint256 assets) {
         if (earnShares == 0) return 0;
-        _requireCapability(engine, type(IEarnEngineRedeem).interfaceId);
+        _requireEngineCapability(CAP_REDEEM, type(IEarnEngineRedeem).interfaceId);
         (uint256 engineShareAnchor, uint256 supplyAnchor) = _previewConversionAnchor();
         uint256 engineSharesToRedeem = Math.mulDiv(earnShares, engineShareAnchor, supplyAnchor);
         if (engineSharesToRedeem == 0) return 0;
@@ -1291,7 +1334,7 @@ contract EarnVault is IEarnVault {
     }
 
     function previewWithdraw(uint256 assets) external view override returns (uint256 earnShares) {
-        _requireCapability(engine, type(IEarnEngineExactWithdraw).interfaceId);
+        _requireEngineCapability(CAP_EXACT_WITHDRAW, type(IEarnEngineExactWithdraw).interfaceId);
         uint256 engineSharesToWithdraw = IEarnEngineExactWithdraw(engine).previewWithdraw(assets);
         (uint256 engineShareAnchor, uint256 supplyAnchor) = _previewConversionAnchor();
         if (engineShareAnchor == 0) revert ActiveSupplyWithoutBacking();
@@ -1326,7 +1369,7 @@ contract EarnVault is IEarnVault {
     ///      engine advertises the capability and applies its configured Accountant report-age policy.
     function isFeeValuationFresh() public view override returns (bool) {
         address currentEngine = engine;
-        if (!ERC165Checker.supportsInterface(currentEngine, type(IEarnEngineFeeValuation).interfaceId)) return true;
+        if (engineCapabilities & CAP_FEE_VALUATION == 0) return true;
         return IEarnEngineFeeValuation(currentEngine).isFeeValuationFresh();
     }
 
@@ -1473,7 +1516,7 @@ contract EarnVault is IEarnVault {
         engineShareAnchor = anchorEngineShares;
         supplyAnchor = anchorEarnShares;
 
-        uint256 feeEarnShares = IEarnFees(earnFees).previewAccruedFees().totalFeeEarnShares;
+        uint256 feeEarnShares = feesActiveCached ? IEarnFees(earnFees).previewAccruedFees().totalFeeEarnShares : 0;
         uint256 projectedSupply = _activeSupply() + feeEarnShares;
         uint256 held = engineShares();
         if (projectedSupply == 0) {
@@ -1496,6 +1539,17 @@ contract EarnVault is IEarnVault {
     ///      Not proved: a nonzero accruedActiveAssets is the engine's valuation of the managed shares.
     function _isUnbacked(uint256 supply, uint256 accruedActiveAssets) internal view returns (bool unbacked) {
         return supply != 0 && (accruedActiveAssets == 0 ? totalAssets() : accruedActiveAssets) == 0;
+    }
+
+    /// @dev {_isUnbacked} with the managed backing the fee checkpoint just reconciled, which equals
+    ///      engineShares() there, so it skips a second raw share read.
+    function _isUnbackedHeld(uint256 supply, uint256 accruedActiveAssets, uint256 held)
+        internal
+        view
+        returns (bool unbacked)
+    {
+        if (supply == 0 || accruedActiveAssets != 0) return false;
+        return held == 0 || IEarnEngine(engine).valueOf(held) == 0;
     }
 
     /// @dev Moves the worthless managed engine shares to surplus and prices the next entry at the
@@ -1552,8 +1606,12 @@ contract EarnVault is IEarnVault {
     /// @custom:ensures (supply == 0 || held == 0) ==> _specEmptyAnchor()
     /// @custom:ensures (old(rewardRateBaseline) != 0 ==> rewardRateBaseline != 0) && earnShareScale == old(earnShareScale)
     function _reanchorAtRest() internal returns (uint256 supply, uint256 held) {
+        return _reanchorAtRestRaw(rawEngineShares());
+    }
+
+    /// @dev {_reanchorAtRest} with the engine's raw share count the caller just read.
+    function _reanchorAtRestRaw(uint256 raw) internal returns (uint256 supply, uint256 held) {
         supply = _activeSupply();
-        uint256 raw = rawEngineShares();
         uint256 managed = _managedEngineShares;
         held = managed;
         if (managed > raw) {
@@ -1587,10 +1645,18 @@ contract EarnVault is IEarnVault {
         internal
         returns (uint256 supply, uint256 held)
     {
+        return _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawEngineShares());
+    }
+
+    /// @dev {_reanchorAfterEntry} with the engine's raw share count the caller just read.
+    function _reanchorAfterEntryRaw(uint256 rateEngineShares, uint256 rateEarnShares, uint256 raw)
+        internal
+        returns (uint256 supply, uint256 held)
+    {
         supply = _activeSupply();
         uint256 represented = Math.mulDiv(supply, rateEngineShares, rateEarnShares);
         if (_managedEngineShares > represented) _managedEngineShares = represented;
-        return _reanchorAtRest();
+        return _reanchorAtRestRaw(raw);
     }
 
     /// @dev Empty pools use whole-share units instead of a raw-unit 1:1 rate. This keeps the first
@@ -1741,14 +1807,67 @@ contract EarnVault is IEarnVault {
     /// @dev No contract of its own: it calls out mid-update, so the verifier inlines it into each caller, which
     ///      holds the lock and the invariants. _reanchorAtRest's contract gives the anchor facts.
     function _accrueFees() internal returns (FeePreview memory result, uint256 supply, uint256 backing) {
+        (result, supply, backing,) = _accrueFeesRaw();
+    }
+
+    /// @dev {_accrueFees}, also returning the engine's raw share count it read. While fees are off EarnFees
+    ///      would return an empty result, so the call is skipped.
+    function _accrueFeesRaw()
+        internal
+        returns (FeePreview memory result, uint256 supply, uint256 backing, uint256 raw)
+    {
         /// @custom:ghost feeCheckpoints = feeCheckpoints + 1
-        result = IEarnFees(earnFees).accrueFees();
-        if (result.totalFeeEarnShares != 0) {
-            IEarnShare(earnShare).mint(earnFees, result.totalFeeEarnShares);
+        if (feesActiveCached) {
+            result = IEarnFees(earnFees).accrueFees();
+            if (result.totalFeeEarnShares != 0) {
+                IEarnShare(earnShare).mint(earnFees, result.totalFeeEarnShares);
+            }
         }
         // Reconcile the conversion anchor even when no fee shares were minted. Unsolicited positive
         // engine-share drift remains quarantined, while a custody shortfall reduces managed backing.
-        (supply, backing) = _reanchorAtRest();
+        raw = rawEngineShares();
+        (supply, backing) = _reanchorAtRestRaw(raw);
+    }
+
+    /// @dev EarnFees ratchets baselines only while fees are active, so the call is skipped otherwise.
+    function _initializeFeeBaselines() internal {
+        if (feesActiveCached) IEarnFees(earnFees).initializeBaselines();
+    }
+
+    /// @dev Moves `assets` from the caller into the engine and records the measured engine-share increase.
+    ///      An engine with {IEarnEngineHeldDeposit} receives the assets straight from the caller.
+    function _depositToEngine(uint256 assets, uint256 rawSharesBefore)
+        internal
+        returns (uint256 receivedEngineShares, uint256 rawSharesAfter)
+    {
+        address engine_ = engine;
+        uint256 reportedEngineShares;
+        if (engineCapabilities & CAP_HELD_DEPOSIT != 0) {
+            _safeTransferFrom(asset, msg.sender, engine_, assets);
+            reportedEngineShares = IEarnEngineHeldDeposit(engine_).depositHeld(assets);
+        } else {
+            _safeTransferFrom(asset, msg.sender, address(this), assets);
+            _approveEngine(engine_, assets);
+            reportedEngineShares = IEarnEngine(engine_).deposit(assets);
+        }
+        rawSharesAfter = rawEngineShares();
+        if (rawSharesAfter <= rawSharesBefore) revert InsufficientOutput();
+        receivedEngineShares = rawSharesAfter - rawSharesBefore;
+        if (reportedEngineShares != receivedEngineShares) revert InsufficientOutput();
+        _managedEngineShares += receivedEngineShares;
+    }
+
+    /// @dev Takes `earnShares` of EarnShare from the caller, through its callback when asked for one.
+    function _collectEarnShares(uint256 earnShares, bool callback) internal {
+        if (!callback) {
+            _safeTransferFrom(earnShare, msg.sender, address(this), earnShares);
+            return;
+        }
+        uint256 heldBefore = IEarnShare(earnShare).balanceOf(address(this));
+        IEarnWithdrawCallback(msg.sender).earnWithdrawCallback(earnShares);
+        if (IEarnShare(earnShare).balanceOf(address(this)) != heldBefore + earnShares) {
+            revert EarnSharesNotReceived();
+        }
     }
 
     /// @dev No contract of its own: it calls out after recording, so the verifier inlines it into each caller,
@@ -1770,7 +1889,7 @@ contract EarnVault is IEarnVault {
         pending.requester = requester;
         /// @custom:ghost openCount = openCount + 1
         pending.open = true;
-        if (IEarnFees(earnFees).feesActive() && isFeeValuationFresh()) {
+        if (feesActiveCached && isFeeValuationFresh()) {
             uint256 requestValue = IEarnEngine(engine).valueOf(engineShares_);
             IEarnFees(earnFees).recordRedeemRequest(requestId, earnShares, requestValue);
         }
@@ -1780,6 +1899,29 @@ contract EarnVault is IEarnVault {
         if (!ERC165Checker.supportsInterface(candidate, interfaceId)) {
             revert EngineCapabilityUnsupported(interfaceId);
         }
+    }
+
+    function _requireEngineCapability(uint8 capability, bytes4 interfaceId) internal view {
+        if (engineCapabilities & capability == 0) revert EngineCapabilityUnsupported(interfaceId);
+    }
+
+    /// @dev The engine's fixed capabilities as CAP_* bits, so locked calls skip the ERC-165 round trips.
+    function _engineCapabilities(address engine_) internal view returns (uint8 capabilities) {
+        bytes4[] memory ids = new bytes4[](5);
+        ids[0] = type(IEarnEngineRedeem).interfaceId;
+        ids[1] = type(IEarnEngineExactWithdraw).interfaceId;
+        ids[2] = type(IEarnEngineInKindDeposit).interfaceId;
+        ids[3] = type(IEarnEngineFeeValuation).interfaceId;
+        ids[4] = type(IEarnEngineHeldDeposit).interfaceId;
+        bool[] memory supported = ERC165Checker.getSupportedInterfaces(engine_, ids);
+        /// @custom:invariant i <= 5
+        for (uint256 i = 0; i < 5; i++) {
+            if (supported[i]) capabilities |= uint8(1 << i);
+        }
+    }
+
+    function _refreshFeesActive() internal {
+        feesActiveCached = IEarnFees(earnFees).feesActive();
     }
 
     function _requireExitCapability(address candidate) internal view {

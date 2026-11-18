@@ -516,6 +516,30 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
         program.spend(s);
     }
 
+    /// @dev An EarnVault with the withdraw callback burns the payer's shares straight from the payer: the program's
+    ///      share balance never moves and the payer pays exactly the burn.
+    function test_publicSpend_callbackVaultTakesSharesFromThePayer() public {
+        uint256 shares = _depositEarn(alice, 100e6);
+        CardSpend memory s = _earnSpend(publicWallet, 0, 10e6, 10e6, "callback");
+        uint256 cost = earnVault.previewWithdraw(10e6);
+        uint256 programShares = earnShare.balanceOf(address(program));
+        _publicSpend(alice, s);
+        assertEq(usd.balanceOf(publicWallet), 10e6);
+        assertEq(earnShare.balanceOf(alice), shares - cost);
+        assertEq(earnShare.balanceOf(address(program)), programShares);
+        _assertEmpty();
+    }
+
+    /// @dev Only the vault of a spend in progress may ask the program for shares.
+    function test_revert_withdrawCallbackOutsideASpend() public {
+        vm.prank(address(earnVault));
+        vm.expectRevert(CardSpender.NotVault.selector);
+        program.earnWithdrawCallback(1);
+        vm.prank(alice);
+        vm.expectRevert(CardSpender.NotVault.selector);
+        program.earnWithdrawCallback(1);
+    }
+
     function _misreportingVault(uint256 burnPct, uint256 reportPct) internal returns (MisreportingVault vault) {
         vault = new MisreportingVault(address(usd), burnPct, reportPct);
         mock.setVault(address(vault), true);
