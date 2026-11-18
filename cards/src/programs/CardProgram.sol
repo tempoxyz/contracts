@@ -1052,6 +1052,19 @@ contract CardProgram {
         emit ReserveCollected(id, SETTLEMENT_ACCOUNT, amount);
     }
 
+    /// @notice Draws up to `amount` on line `lineId` of the approved credit source `line` again, which pays the
+    ///         settlement account. What it drew counts against the caller's cap. Returns what it drew.
+    function redrawLine(address line, uint64 lineId, uint128 amount)
+        external
+        nonReentrant
+        onlyRole(ROLE_TREASURY)
+        returns (uint128 drawn)
+    {
+        if (!approvedSource[line]) revert SourceNotApproved(line);
+        drawn = CreditLine(line).redraw(lineId, amount);
+        _useKey(_valueOf(CreditLine(line).tokenOf(lineId), drawn));
+    }
+
     // Views.
 
     /// @notice The lien ID of the reserve a dispute placed on `owner`.

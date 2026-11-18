@@ -745,7 +745,7 @@ contract IssuerDesk is ISettlementTokenGuard {
             uint128 want = lineShares[purchaseRef][i].repaid;
             if (want == 0) continue;
             delete lineShares[purchaseRef][i];
-            uint128 drawn = CreditLine(order[i].source).redraw(order[i].lineId, want);
+            uint128 drawn = PROGRAM.redrawLine(order[i].source, order[i].lineId, want);
             if (drawn == 0) continue;
             emit DisputeRecovered(purchaseRef, owner, CREDIT, order[i].source, order[i].lineId, drawn, drawn);
             reinstated += drawn;

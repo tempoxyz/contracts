@@ -343,6 +343,34 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(debt, 0);
     }
 
+    function test_redrawLine_needsTheTreasuryRoleAnApprovedLineAndRoomUnderTheCap() public {
+        uint64 lineId = _disputedOnCredit();
+        vm.prank(issuer);
+        desk.disputeStep(P1, 2, 100e6, "", false);
+        address key = makeAddr("redraw-key");
+        uint8 authorizer = cards.ROLE_AUTHORIZE();
+        uint8 treasury = cards.ROLE_TREASURY();
+        vm.prank(issuer);
+        cards.setOperator(key, authorizer, 1000e6);
+        vm.prank(key);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.redrawLine(address(credit), lineId, 10e6);
+        vm.prank(issuer);
+        cards.setOperator(key, treasury, 25e6);
+        vm.prank(key);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.SourceNotApproved.selector, bob));
+        cards.redrawLine(bob, lineId, 10e6);
+        vm.prank(key);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.KeyCapExceeded.selector, 25e6));
+        cards.redrawLine(address(credit), lineId, 30e6);
+        uint256 before = usd.balanceOf(settlement);
+        vm.prank(key);
+        assertEq(cards.redrawLine(address(credit), lineId, 20e6), 20e6);
+        assertEq(usd.balanceOf(settlement), before + 20e6);
+        (, uint256 used) = cards.operatorCap(key);
+        assertEq(used, 20e6);
+    }
+
     function test_dispute_creditPurchase_merchantWinDrawsOnlyWhatTheLenderCanFund() public {
         uint64 lineId = _disputedOnCredit();
         vm.prank(issuer);
