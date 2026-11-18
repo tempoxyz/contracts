@@ -200,6 +200,8 @@ library CardLimits {
     ///         Returns whether it is the owner's first grant.
     function grant(Grant storage g, Usage storage u, Terms calldata given, uint256 scale) external returns (bool) {
         Terms memory t = given;
+        // _toBase reverts above 64 bits, so these casts keep every bit.
+        // forge-lint: disable-start(unsafe-typecast)
         (t.limit, t.perPurchase, t.daily, t.monthly) =
         (
             uint64(_toBase(t.limit, scale)),
@@ -207,6 +209,7 @@ library CardLimits {
             uint64(_toBase(t.daily, scale)),
             uint64(_toBase(t.monthly, scale))
         );
+        // forge-lint: disable-end(unsafe-typecast)
         (g.terms, g.active) = (t, true);
         uint32 epoch = ++g.epoch;
         (u.committed, u.day, u.month, u.daySpent, u.monthSpent) = (0, 0, 0, 0, 0);
@@ -247,6 +250,8 @@ library CardLimits {
         Limits memory l = c.limits;
         (day,) = _spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], total, amount, enforce);
         if (merchant != address(0)) _useMandate(m, g.terms.utcOffset, amount);
+        // Purchases record the low 8 bits of the epoch and compare them only to it.
+        // forge-lint: disable-next-line(unsafe-typecast)
         epoch = uint8(g.epoch);
     }
 
@@ -262,11 +267,16 @@ library CardLimits {
         Status was = c.status;
         if (was == Status.None) revert InvalidCard();
         if (what == 0) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             c.window.cap = uint64(_toBase(value, scale));
             emit CardCapSet(card, c.window.cap);
         } else if (what == 1) {
+            if (value > type(uint40).max) revert InvalidCard();
+            // Checked to fit just above.
+            // forge-lint: disable-start(unsafe-typecast)
             c.expiry = uint40(value);
             emit CardExpirySet(card, uint40(value));
+            // forge-lint: disable-end(unsafe-typecast)
         } else {
             if (was == Status.Closed || value == 0 || value > uint8(Status.Closed)) revert CardNotActive();
             c.status = Status(value);
@@ -308,12 +318,14 @@ library CardLimits {
     function setMandate(Mandate storage m, address merchant, bool revoked, uint256 monthlyLimit, uint256 scale)
         external
     {
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint96 limit = uint96(_toBase(monthlyLimit, scale));
         (m.revoked, m.monthlyLimit) = (revoked, limit);
         emit MandateSet(msg.sender, merchant, revoked, limit);
     }
 
     function _baseLimits(Limits calldata l, uint256 scale) private pure returns (Limits memory) {
+        // forge-lint: disable-next-item(unsafe-typecast)
         return Limits(
             uint80(_toBase(l.perPurchase, scale)), uint80(_toBase(l.daily, scale)), uint80(_toBase(l.monthly, scale))
         );

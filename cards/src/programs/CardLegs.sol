@@ -13,7 +13,8 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 /// @dev Linked as an external library so CardAuth keeps its runtime code small; it runs in CardAuth's context, so the
 ///      sources see CardAuth as the caller. Leg sets are bitmasks over order entries.
 // Sources are contracts the issuer approved; every call here runs inside a role-gated purchase step.
-// forge-lint: disable-start(reentrancy-no-eth, calls-loop)
+// Packed purchase fields are read at the widths CardAuth stores them, and a new scale is checked to fit 96 bits.
+// forge-lint: disable-start(reentrancy-no-eth, calls-loop, unsafe-typecast)
 library CardLegs {
     /// @notice Source kinds.
     uint8 internal constant CASH = 1;
@@ -363,4 +364,4 @@ library CardLegs {
         return a < b ? a : b;
     }
 }
-// forge-lint: disable-end(reentrancy-no-eth, calls-loop)
+// forge-lint: disable-end(reentrancy-no-eth, calls-loop, unsafe-typecast)

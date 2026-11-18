@@ -6,6 +6,7 @@ import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, MAX_CREDITORS, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
+import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
@@ -26,6 +27,7 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 // forge-lint: disable-start(reentrancy-no-eth, calls-loop)
 contract CashSource is ISource {
     using FixedPointMathLib for uint256;
+    using SafeCastLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 internal constant ONE = 1e18;
@@ -183,7 +185,7 @@ contract CashSource is ISource {
         if (token == settlement) {
             taken = _excessRoom(owner, token, standIn, units, true);
             if (taken == 0) return 0;
-            CORE.charge(owner, token, legId, uint128(taken), address(this), standIn);
+            CORE.charge(owner, token, legId, taken.toUint128(), address(this), standIn);
             _forward(settlement);
             return taken;
         }
@@ -193,7 +195,7 @@ contract CashSource is ISource {
         uint256 tokens = c.quoteOut(token, settlement, units);
         uint256 most = _excessRoom(owner, token, false, tokens, false);
         if (most == 0) return 0;
-        CORE.charge(owner, token, legId, uint128(most), address(this), false);
+        CORE.charge(owner, token, legId, most.toUint128(), address(this), false);
         taken = _swap(c, token, settlement, legId, units, most);
         // A refund converts back at today's reference rate, which the leg keeps.
         lockedRate[legId] = c.mid(token, settlement);
@@ -215,7 +217,7 @@ contract CashSource is ISource {
                 ? c.convertAtMid(settlement, token, units, address(this))
                 : c.swapExactIn(settlement, token, units, 0, address(this));
         }
-        if (tokens != 0) CORE.refund(owner, token, address(this), legId, uint128(tokens));
+        if (tokens != 0) CORE.refund(owner, token, address(this), legId, tokens.toUint128());
     }
 
     /// @notice Pays what this source holds of `token` (debt repaid to it) on to the settlement account.
@@ -250,7 +252,7 @@ contract CashSource is ISource {
             if (tokens > h.captureLimit) tokens = h.captureLimit;
         }
         if (tokens == 0) return 0;
-        CORE.capture(owner, address(this), legId, uint128(tokens), false);
+        CORE.capture(owner, address(this), legId, tokens.toUint128(), false);
         return _swap(c, token, settlement, legId, units, tokens);
     }
 
@@ -285,8 +287,8 @@ contract CashSource is ISource {
     ) private {
         uint256 extra = amount > h.captureLimit ? amount - h.captureLimit : 0;
         amount -= extra;
-        if (amount != 0 || isFinal) CORE.capture(owner, address(this), legId, uint128(amount), isFinal);
-        if (extra != 0) CORE.charge(owner, token, legId, uint128(extra), address(this), h.standIn);
+        if (amount != 0 || isFinal) CORE.capture(owner, address(this), legId, amount.toUint128(), isFinal);
+        if (extra != 0) CORE.charge(owner, token, legId, extra.toUint128(), address(this), h.standIn);
     }
 
     /// @dev What a capture or charge may take past a hold, up to `want`: the owner's free balance, the owner's budget
@@ -345,7 +347,7 @@ contract CashSource is ISource {
 
     function _resize(address owner, bytes32 legId, uint256 tokens) private {
         if (tokens == 0) _release(owner, legId);
-        else CORE.adjust(owner, address(this), legId, uint128(tokens));
+        else CORE.adjust(owner, address(this), legId, tokens.toUint128());
     }
 
     function _release(address owner, bytes32 legId) private {
@@ -363,7 +365,7 @@ contract CashSource is ISource {
         view
         returns (IReservationCore.HoldRequest memory)
     {
-        return IReservationCore.HoldRequest(token, legId, uint128(tokens), expiresAt, address(this), standIn);
+        return IReservationCore.HoldRequest(token, legId, tokens.toUint128(), expiresAt, address(this), standIn);
     }
 
     function _conversion() private view returns (Conversion) {

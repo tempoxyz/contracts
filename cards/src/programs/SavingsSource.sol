@@ -6,6 +6,7 @@ import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
+import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
@@ -24,6 +25,7 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 // forge-lint: disable-start(reentrancy-no-eth, calls-loop)
 contract SavingsSource is ISource {
     using FixedPointMathLib for uint256;
+    using SafeCastLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
 
@@ -125,10 +127,10 @@ contract SavingsSource is ISource {
         }
         if (!live) {
             CORE.holdFrom(
-                owner, IReservationCore.HoldRequest(SHARE, legId, uint128(shares), expiresAt, address(this), false)
+                owner, IReservationCore.HoldRequest(SHARE, legId, shares.toUint128(), expiresAt, address(this), false)
             );
         } else if (shares != h.held) {
-            CORE.adjust(owner, address(this), legId, uint128(shares));
+            CORE.adjust(owner, address(this), legId, shares.toUint128());
         }
         return units;
     }
@@ -149,7 +151,7 @@ contract SavingsSource is ISource {
         }
         if (shares > most) shares = most;
         if (shares == 0 && !isFinal) return 0;
-        CORE.capture(owner, address(this), legId, uint128(shares), isFinal);
+        CORE.capture(owner, address(this), legId, shares.toUint128(), isFinal);
         if (shares == 0) return 0;
         paid = _redeem(owner, legId, shares, units);
     }
@@ -173,7 +175,7 @@ contract SavingsSource is ISource {
                 : c.swapExactIn(settlement, ASSET, units, 0, address(this));
         }
         uint256 shares = VAULT.deposit(assets, address(this), 1);
-        CORE.refund(owner, SHARE, address(this), legId, uint128(shares));
+        CORE.refund(owner, SHARE, address(this), legId, shares.toUint128());
         emit Refunded(owner, legId, assets, shares);
     }
 

@@ -16,7 +16,9 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 /// @dev Not upgradeable. Amounts are settlement-token units; limits and operator caps are kept in base units (the
 ///      program's first settlement token) so they survive a change of settlement token.
 // Sources are contracts the issuer approved; each call into one runs inside a role-gated purchase step.
-// forge-lint: disable-start(reentrancy-no-eth, calls-loop)
+// Amounts are checked against MAX_AMOUNT (48 bits) on entry, packed fields are read at their stored widths, and base
+// units are checked to fit before they are cast.
+// forge-lint: disable-start(reentrancy-no-eth, calls-loop, unsafe-typecast)
 contract CardAuth is ICardAuth {
     using FixedPointMathLib for uint256;
 
@@ -195,6 +197,8 @@ contract CardAuth is ICardAuth {
     function setCompanion(address account, bool active) external {
         _onlyIssuer();
         if (!_settle(!active)) return;
+        // The event follows on the next line.
+        // forge-lint: disable-next-line(missing-events-access-control)
         isCompanion[account] = active;
         emit CompanionSet(account, active);
     }
@@ -221,6 +225,8 @@ contract CardAuth is ICardAuth {
     // forge-lint: disable-next-item(missing-zero-check)
     function transferIssuer(address next) external {
         _onlyIssuer();
+        // The event follows on the next line.
+        // forge-lint: disable-next-line(missing-events-access-control)
         pendingIssuer = next;
         emit IssuerOffered(msg.sender, next);
     }
@@ -228,6 +234,8 @@ contract CardAuth is ICardAuth {
     function acceptIssuer() external {
         if (msg.sender != pendingIssuer) revert NotIssuer();
         emit IssuerTransferred(_issuer, msg.sender);
+        // The event follows on the next line.
+        // forge-lint: disable-next-line(missing-events-access-control)
         _issuer = msg.sender;
         delete pendingIssuer;
     }
@@ -721,4 +729,4 @@ contract CardAuth is ICardAuth {
         p.flags = w >> 248;
     }
 }
-// forge-lint: disable-end(reentrancy-no-eth, calls-loop)
+// forge-lint: disable-end(reentrancy-no-eth, calls-loop, unsafe-typecast)
