@@ -234,10 +234,11 @@ contract CardAuth is ICardAuth {
     function acceptIssuer() external {
         if (msg.sender != pendingIssuer) revert NotIssuer();
         emit IssuerTransferred(_issuer, msg.sender);
-        // The event follows on the next line.
-        // forge-lint: disable-next-line(missing-events-access-control)
+        // IssuerTransferred, just above, records both changes.
+        // forge-lint: disable-start(missing-events-access-control)
         _issuer = msg.sender;
         delete pendingIssuer;
+        // forge-lint: disable-end(missing-events-access-control)
     }
 
     /// @notice Acknowledges purchase steps through `throughSeq` as settled off chain.
