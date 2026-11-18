@@ -97,6 +97,21 @@ contract EarnVaultMigrateTest is Test {
         assertEq(asset.balanceOf(address(toEngine)), 100 ether);
     }
 
+    /// @dev An engine that pulls deposits holds a real standing allowance, which migrating away must clear.
+    function testMigrationRevokesARetiredPullEngineAllowance() public {
+        vm.prank(operator);
+        core.migrateEngine(address(toEngine), 50 ether, 100 ether);
+        assertEq(asset.allowance(address(core), address(toEngine)), type(uint256).max);
+
+        MockRateEngine nextEngine = new MockRateEngine(asset, TO_RATE_WAD);
+        nextEngine.initializeEarnVault(address(core));
+        vm.prank(operator);
+        core.migrateEngine(address(nextEngine), 1, 1);
+
+        assertEq(asset.allowance(address(core), address(toEngine)), 0);
+        assertEq(asset.allowance(address(core), address(nextEngine)), type(uint256).max);
+    }
+
     function testMigrationResetsFixedRewardRateBaselineForNewShareDenomination() public {
         assertEq(core.rewardRateBaseline(), 1 ether);
 
