@@ -85,8 +85,34 @@ contract IssuerSettingsTest is ProgramsEnv {
         assertEq(cards.conversion(), address(0));
         assertEq(cards.accountKeys(), address(0));
         assertEq(cards.lifecycle(), address(0));
-        assertNotEq(cards.pendingSetting(keccak256(abi.encodeCall(cards.setTokenGuards, (guards)))), 0);
+        assertEq(cards.tokenGuards(0), source, "appending a guard applies at once");
         assertNotEq(cards.pendingSetting(keccak256(abi.encodeCall(cards.setCollateral, (source)))), 0);
+    }
+
+    function test_setTokenGuards_appendsAtOnceButReplacingWaits() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        address other = makeAddr("other-guard");
+        address[] memory one = new address[](1);
+        one[0] = source;
+        address[] memory two = new address[](2);
+        two[0] = source;
+        two[1] = other;
+        vm.startPrank(issuer);
+        cards.setTokenGuards(one);
+        cards.setTokenGuards(two);
+        assertEq(cards.tokenGuards(1), other);
+        // Dropping a guard, or putting another in its place, waits the delay.
+        address[] memory replaced = new address[](1);
+        replaced[0] = other;
+        cards.setTokenGuards(replaced);
+        assertEq(cards.tokenGuards(0), source);
+        assertEq(cards.tokenGuards(1), other);
+        assertNotEq(cards.pendingSetting(keccak256(abi.encodeCall(cards.setTokenGuards, (replaced)))), 0);
+        address[] memory none = new address[](0);
+        cards.setTokenGuards(none);
+        assertNotEq(cards.pendingSetting(keccak256(abi.encodeCall(cards.setTokenGuards, (none)))), 0);
+        vm.stopPrank();
+        assertEq(cards.tokenGuards(1), other);
     }
 
     function test_cancelSetting_dropsTheProposal() public {

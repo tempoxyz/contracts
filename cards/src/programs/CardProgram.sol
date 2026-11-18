@@ -521,8 +521,15 @@ contract CardProgram {
     }
 
     /// @notice Contracts sizing money in the settlement token that a change must wait for (an issuer desk, credit lines).
+    ///         Appending guards to the current list applies at once, since a guard can only hold a token change back.
     function setTokenGuards(address[] calldata guards) external onlyIssuer {
-        if (!_settle(false)) return;
+        address[] storage current = tokenGuards;
+        uint256 n = current.length;
+        bool appends = guards.length >= n;
+        for (uint256 i; appends && i < n; ++i) {
+            appends = guards[i] == current[i];
+        }
+        if (!_settle(appends)) return;
         tokenGuards = guards;
     }
 
