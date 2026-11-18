@@ -322,8 +322,8 @@ contract CardAuth is ICardAuth {
 
     /// @notice Authorizes `amount` on `card` under the new reference `ref`, holding it across the owner's
     ///         sources in order. With PARTIAL it approves what the sources hold; with STAND_IN (approved offline)
-    ///         the owner's first cash source holds all of it, the shortfall becoming debt when captured. Returns what
-    ///         it approved.
+    ///         the owner's first cash source holds all of it, the shortfall becoming debt when captured, and the
+    ///         limits it passed offline count without refusing it. Returns what it approved.
     function authorize(bytes32 card, bytes32 ref, uint128 amount, address merchant, uint64 expiresAt, uint8 flags)
         external
         returns (uint256 approved)
@@ -339,7 +339,8 @@ contract CardAuth is ICardAuth {
         uint256 legs;
         (approved, legs) = CardLegs.place(order, sourceKind, ref, owner, c.kinds, amount, expiresAt, standIn);
         if (approved == 0 || (approved < amount && flags & PARTIAL == 0)) revert InsufficientAvailable();
-        (uint32 day, uint8 epoch) = _spend(c, owner, merchant, approved, approved, true);
+        // A stand-in already passed the limits offline: it counts against them without being refused.
+        (uint32 day, uint8 epoch) = _spend(c, owner, merchant, approved, approved, !standIn);
         _purchases[ref] = _pack(
             Purchase(
                 c.index,

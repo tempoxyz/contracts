@@ -502,6 +502,16 @@ contract CardAuthTest is AuthEnv {
         cards.authorize(CARD, P1, 60e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
+    /// @dev A stand-in passed the limits offline: it lands past them and counts against them.
+    function test_terms_perPurchase_standInLandsPastIt() public {
+        usd.mint(alice, 1000e6);
+        _grant(0, 50e6, 0, 0, 0);
+        vm.prank(issuer);
+        cards.authorize(CARD, P1, 60e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
+        assertEq(cards.purchaseOf(P1).held, 60e6);
+        assertEq(cards.cardOf(CARD).window.daySpent, 60e6);
+    }
+
     function test_cardCap() public {
         usd.mint(alice, 1000e6);
         vm.prank(issuer);
