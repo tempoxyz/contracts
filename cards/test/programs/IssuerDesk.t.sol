@@ -455,6 +455,84 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(usd.balanceOf(network), 0, "the network returned its split");
     }
 
+    function test_programOperator_isNotADeskOperator() public {
+        address key = makeAddr("swipeKey");
+        vm.prank(issuer);
+        cards.setOperator(key, true);
+        _authorize(P1, 100e6);
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.NotIssuer.selector);
+        desk.capture(P1, 100e6, true);
+        vm.prank(issuer);
+        desk.capture(P1, 100e6, true);
+        usd.mint(settlement, 100e6);
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.NotIssuer.selector);
+        desk.refund(P1, 100e6);
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.NotIssuer.selector);
+        desk.openDispute(P1, 100e6, "");
+    }
+
+    function test_setOperator_onlyIssuer_andZeroCapRemoves() public {
+        address key = makeAddr("deskKey");
+        vm.prank(bob);
+        vm.expectRevert(IssuerDesk.NotIssuer.selector);
+        desk.setOperator(key, 1);
+        vm.expectEmit(address(desk));
+        emit IssuerDesk.OperatorSet(key, 10e6);
+        vm.prank(issuer);
+        desk.setOperator(key, 10e6);
+        (uint256 cap, uint256 used) = desk.operatorCap(key);
+        assertEq(cap, 10e6);
+        assertEq(used, 0);
+        assertEq(desk.ISSUER(), issuer);
+        _authorize(P1, 100e6);
+        vm.prank(key);
+        desk.capture(P1, 100e6, true);
+        vm.prank(issuer);
+        desk.setOperator(key, 0);
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.NotIssuer.selector);
+        desk.openDispute(P1, 50e6, "");
+    }
+
+    function test_cappedOperator_cannotCreditOrRecoverPastItsCap() public {
+        address key = makeAddr("deskKey");
+        vm.prank(issuer);
+        desk.setOperator(key, 50e6);
+        _disputed(80e6);
+        usd.mint(settlement, 80e6);
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.OperatorCapExceeded.selector);
+        desk.disputeStep(P1, 2, 60e6, "", false);
+        vm.prank(key);
+        desk.disputeStep(P1, 2, 30e6, "", false);
+        (, uint256 used) = desk.operatorCap(key);
+        assertEq(used, 30e6);
+        // Taking the 30 back would bring it to 60, past its cap of 50.
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.OperatorCapExceeded.selector);
+        desk.resolveDispute(P1, false);
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.OperatorCapExceeded.selector);
+        desk.collectedReserve(P1, 21e6);
+        vm.prank(key);
+        desk.collectedReserve(P1, 20e6);
+        vm.prank(key);
+        vm.expectRevert(IssuerDesk.OperatorCapExceeded.selector);
+        desk.refund(P1, 1e6);
+        // Raising the cap lets it finish; the issuer itself is never capped.
+        vm.prank(issuer);
+        desk.setOperator(key, 80e6);
+        vm.prank(key);
+        desk.resolveDispute(P1, false);
+        (, used) = desk.operatorCap(key);
+        assertEq(used, 80e6);
+        vm.prank(issuer);
+        desk.refund(P1, 80e6);
+    }
+
     function _allowIssuerDebt(uint128 cap) internal {
         vm.startPrank(settlement);
         usd.approve(address(cards), type(uint256).max);

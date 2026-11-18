@@ -102,8 +102,13 @@ contract IssuerDesk is ISettlementTokenGuard {
     /// @dev A funding source's kind for a token held as it is.
     uint8 private constant TOKEN_SOURCE = 64;
 
+    /// @dev A desk operator key's cumulative cap on the money it moves, and what it has used of it.
+    struct Operator {
+        uint128 cap;
+        uint128 used;
+    }
+
     CardProgram public immutable PROGRAM;
-    address public immutable ISSUER;
     address public immutable TOKEN;
     address public immutable SETTLEMENT;
 
@@ -127,7 +132,10 @@ contract IssuerDesk is ISettlementTokenGuard {
     /// @notice What a split payee still owes the issuer for refunded splits the desk could not take back at once, by
     ///         the token the split was paid in.
     mapping(address payee => mapping(address token => uint256)) public payeeOwed;
+    mapping(address key => Operator) internal _operators;
 
+    /// @notice The issuer let `key` operate the desk up to `cap` of money moved in all, or removed it with a zero cap.
+    event OperatorSet(address indexed key, uint256 cap);
     event TermsSet(Line[] lines);
     event RewardsSet(Reward[] rewards);
     event FeePaid(bytes32 indexed purchaseRef, address indexed payee, bytes32 kind, uint128 amount);
@@ -211,6 +219,7 @@ contract IssuerDesk is ISettlementTokenGuard {
     error InvalidDisputeStep();
     error DisputeTooLarge();
     error RefundTooLarge();
+    error OperatorCapExceeded();
 
     modifier onlyIssuer() {
         _onlyIssuer();
@@ -232,7 +241,6 @@ contract IssuerDesk is ISettlementTokenGuard {
     constructor(CardProgram program) {
         if (address(program) == address(0)) revert ZeroAddress();
         PROGRAM = program;
-        ISSUER = program.ISSUER();
         TOKEN = program.SETTLEMENT_TOKEN();
         SETTLEMENT = program.SETTLEMENT_ACCOUNT();
     }
@@ -240,6 +248,30 @@ contract IssuerDesk is ISettlementTokenGuard {
     // Every entry point that moves money holds the lock for its whole call; the program and the core it calls are
     // fixed.
     // forge-lint: disable-start(reentrancy-no-eth)
+
+    /// @notice The program's issuer, who manages the desk and operates it without a cap.
+    // Kept under the program's getter name so callers read the issuer the same way from either contract.
+    // forge-lint: disable-next-line(mixed-case-function)
+    function ISSUER() public view returns (address) {
+        return PROGRAM.ISSUER();
+    }
+
+    /// @notice Lets `key` operate the desk until the money it moves through refunds, corrections, force posts, dispute
+    ///         credit and recovery, reserve collections and payee collections adds up to `cap`. A zero cap removes
+    ///         the key; what it used stays counted.
+    function setOperator(address key, uint256 cap) external onlyIssuer {
+        if (key == address(0)) revert ZeroAddress();
+        // Larger caps are clamped to the uint128 the desk counts in.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _operators[key].cap = cap > type(uint128).max ? type(uint128).max : uint128(cap);
+        emit OperatorSet(key, cap);
+    }
+
+    /// @notice A desk operator key's cap and what it has used of it.
+    function operatorCap(address key) external view returns (uint256 cap, uint256 used) {
+        Operator storage o = _operators[key];
+        return (o.cap, o.used);
+    }
 
     /// @notice Replaces the split schedule. Splits never add up to the whole capture.
     function setTerms(Line[] calldata lines) external onlyIssuer {
@@ -284,6 +316,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         nonReentrant
         onlyOperator
     {
+        _use(amount);
         PROGRAM.charge(card, purchaseRef, amount, merchant);
         _step(purchaseRef, CAPTURE, amount);
         _charged(purchaseRef, amount);
@@ -295,6 +328,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         Book storage b = books[purchaseRef];
         // A won dispute counts as a refund of the purchase, so nothing it credited refunds again.
         if (disputes[purchaseRef].state == WON && amount > b.captured - b.refunded) revert RefundTooLarge();
+        _use(amount);
         _refundSettling(purchaseRef, amount);
         _step(purchaseRef, REFUND, amount);
         _reverse(purchaseRef, amount);
@@ -338,6 +372,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 open = b.captured - b.refunded;
         uint128 cap = d.amount < open ? d.amount : open;
         if (provisional > 0 && d.provisional + provisional > cap) revert DisputeTooLarge();
+        _use(provisional);
         d.state = state;
         uint128 repaid;
         if (provisional > 0) {
@@ -361,6 +396,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         --openDisputes;
         if (!cardholderWins) {
             d.state = LOST;
+            // Re-drawn lines and the recovery together take back the whole provisional credit.
+            _use(provisional);
             uint256 reinstated = _redrawLines(purchaseRef, owner);
             uint256 debt = provisional > reinstated ? _recover(purchaseRef, owner, provisional - reinstated) : 0;
             // Below provisional, a uint128.
@@ -375,6 +412,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 chargeback = credited > collected ? credited - collected : 0;
         uint128 repaid;
         if (rest > 0) {
+            _use(rest);
             (, uint128 before) = CORE.debtOf(owner, TOKEN);
             _refund(purchaseRef, rest);
             (, uint128 later) = CORE.debtOf(owner, TOKEN);
@@ -396,6 +434,7 @@ contract IssuerDesk is ISettlementTokenGuard {
     function collectedReserve(bytes32 purchaseRef, uint128 amount) external onlyOperator {
         Dispute storage d = disputes[purchaseRef];
         if (d.state == 0 || d.state >= WON) revert NoDispute();
+        _use(amount);
         reserveCollected[purchaseRef] += amount;
         emit ReserveCollectedFor(purchaseRef, amount);
     }
@@ -414,6 +453,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         collected = uint128(_min(_min(amount, owed), CORE.available(payee, token)));
         if (collected == 0) return 0;
+        _use(collected);
         payeeOwed[payee][token] = owed - collected;
         if (token == PROGRAM.settlementToken()) {
             CORE.charge(payee, token, _nextId(), collected, SETTLEMENT, false);
@@ -439,6 +479,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 size = amount < 0 ? uint128(-amount) : uint128(amount);
         if (size == 0 || s.corrected + size > s.amount) revert CorrectionTooLarge();
+        _use(size);
         s.corrected += size;
         if (amount > 0) {
             Book storage b = books[purchaseRef];
@@ -496,11 +537,25 @@ contract IssuerDesk is ISettlementTokenGuard {
     }
 
     function _onlyIssuer() private view {
-        if (msg.sender != ISSUER) revert NotIssuer();
+        if (msg.sender != ISSUER()) revert NotIssuer();
     }
 
     function _onlyOperator() private view {
-        if (msg.sender != ISSUER && !PROGRAM.operators(msg.sender)) revert NotIssuer();
+        if (_operators[msg.sender].cap == 0 && msg.sender != ISSUER()) revert NotIssuer();
+    }
+
+    /// @dev Counts `amount` against the calling operator key's cap; the issuer has none.
+    function _use(uint256 amount) private {
+        if (amount == 0) return;
+        Operator storage o = _operators[msg.sender];
+        uint256 used = o.used + amount;
+        if (used > o.cap) {
+            if (msg.sender == ISSUER()) return;
+            revert OperatorCapExceeded();
+        }
+        // At most cap, a uint128.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        o.used = uint128(used);
     }
 
     function _shareOf(address payee) private view returns (uint256 share) {
