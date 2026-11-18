@@ -35,14 +35,15 @@ library CardLimits {
     }
 
     /// @notice A card's windows and what it committed over its life, under an optional lifetime cap.
+    /// @dev Everything a purchase updates shares one slot, so a card's first purchase creates one slot, not two.
     struct Window {
         uint32 day;
         uint32 month;
-        uint96 daySpent;
-        uint96 monthSpent;
+        uint64 daySpent;
+        uint64 monthSpent;
+        uint64 committed;
         /// @dev Zero means no lifetime cap.
         uint64 cap;
-        uint64 committed;
     }
 
     struct Mandate {
@@ -126,6 +127,9 @@ library CardLimits {
         if (owner == address(0) || expiry <= block.timestamp || kinds == 0 || kinds > 7) revert InvalidCard();
         (c.owner, c.expiry, c.status, c.kinds, c.index) = (owner, expiry, Status.Active, kinds, index);
         (c.limits, c.ceiling) = (limits, limits);
+        // Starting the window here makes issuance, not the card's first swipe, create its slot. A window counts only
+        // on the day and month it names, so naming the UTC ones with nothing spent changes no limit.
+        (c.window.day, c.window.month) = calendar(0);
         emit CardIssued(card, owner, expiry, limits, kinds);
     }
 
@@ -212,7 +216,9 @@ library CardLimits {
         // forge-lint: disable-end(unsafe-typecast)
         (g.terms, g.active) = (t, true);
         uint32 epoch = ++g.epoch;
-        (u.committed, u.day, u.month, u.daySpent, u.monthSpent) = (0, 0, 0, 0, 0);
+        // Today's windows with nothing spent count like empty ones, and keep the slot, so the first swipe creates none.
+        (uint32 day, uint32 month) = calendar(t.utcOffset);
+        (u.committed, u.day, u.month, u.daySpent, u.monthSpent) = (0, day, month, 0, 0);
         emit Granted(msg.sender, t, epoch);
         return epoch == 1;
     }
@@ -384,7 +390,7 @@ library CardLimits {
         (u.committed, u.day, u.month, u.daySpent, u.monthSpent) =
         (uint64(committed), day, month, uint64(daySpent), uint64(monthSpent));
         (w.committed, w.day, w.month, w.daySpent, w.monthSpent) =
-        (uint64(cardCommitted), day, month, uint96(cardDay), uint96(cardMonth));
+        (uint64(cardCommitted), day, month, uint64(cardDay), uint64(cardMonth));
         // forge-lint: disable-end(unsafe-typecast)
     }
 
@@ -419,8 +425,8 @@ library CardLimits {
             if (u.month == month) u.monthSpent = uint64(_less(u.monthSpent, amount));
         }
         w.committed = uint64(_less(w.committed, amount));
-        if (w.day == day) w.daySpent = uint96(_less(w.daySpent, amount));
-        if (w.month == month) w.monthSpent = uint96(_less(w.monthSpent, amount));
+        if (w.day == day) w.daySpent = uint64(_less(w.daySpent, amount));
+        if (w.month == month) w.monthSpent = uint64(_less(w.monthSpent, amount));
         // forge-lint: disable-end(unsafe-typecast)
     }
 

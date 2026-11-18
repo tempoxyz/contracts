@@ -12,6 +12,7 @@ import { IReservationCore } from "../../src/programs/interfaces/IReservationCore
 import { ISource } from "../../src/programs/interfaces/ISource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 /// @notice Card authorization over its funding sources: cards, limits, mandates, and purchases held across cash,
 ///         savings and credit legs by the sources themselves, captured, released and refunded in one call each.
@@ -1261,7 +1262,7 @@ contract CardAuthTest is AuthEnv {
     }
 
     /// @dev Measured with vm.record over CardAuth's own storage (linked library calls run in its context): a second
-    ///      authorize writes _purchases[ref], usageOf[owner] (one slot), the card's window (two slots), _state (held)
+    ///      authorize writes _purchases[ref], usageOf[owner] (one slot), the card's window (one slot), _state (held)
     ///      and _ledger (seq), and _purchases[ref] is the only slot that goes from zero to non-zero. Capture
     ///      rewrites the same slots and no new one.
     function test_storage_oneSlotPerPurchase() public {
@@ -1270,15 +1271,16 @@ contract CardAuthTest is AuthEnv {
 
         bytes32 purchase = keccak256(abi.encode(P2, PURCHASES_SLOT));
         bytes32 cardBase = keccak256(abi.encode(CARD, CARDS_SLOT));
-        bytes32[6] memory expected = [
+        bytes32[5] memory expected = [
             purchase,
             keccak256(abi.encode(alice, USAGE_SLOT)),
             bytes32(uint256(cardBase) + 3),
-            bytes32(uint256(cardBase) + 4),
             bytes32(STATE_SLOT),
             bytes32(LEDGER_SLOT)
         ];
-        for (uint256 i = 1; i < 6; ++i) {
+        // The card has no lifetime cap, so the slot after its window stays empty.
+        assertEq(vm.load(address(cards), bytes32(uint256(cardBase) + 4)), 0);
+        for (uint256 i = 1; i < 5; ++i) {
             assertTrue(vm.load(address(cards), expected[i]) != 0, "already non-zero");
         }
         assertEq(vm.load(address(cards), purchase), 0);
@@ -1287,7 +1289,7 @@ contract CardAuthTest is AuthEnv {
         _authorize(P2, 20e6);
         (, bytes32[] memory writes) = vm.accesses(address(cards));
         assertEq(_outside(writes, expected), 0, "authorize writes only the expected slots");
-        assertEq(_distinct(writes), 6, "authorize writes six distinct slots");
+        assertEq(_distinct(writes), 5, "authorize writes five distinct slots");
         uint256 word = uint256(vm.load(address(cards), purchase));
         // The slot packs the card number and the amount.
         assertEq(uint32(word), cards.cardOf(CARD).index);
@@ -1348,6 +1350,38 @@ contract CardAuthTest is AuthEnv {
         cards.refund(ref, amount);
     }
 
+    /// @dev Issuance starts a card's window and the grant starts the owner's usage, so a purchase, even a new card's
+    ///      first, creates one slot in CardAuth: the purchase word.
+    function test_storage_firstPurchaseOfCardCreatesOnlyThePurchase() public {
+        bytes32 second = keccak256("second card");
+        vm.prank(issuer);
+        cards.issueCard(second, alice, uint40(block.timestamp + 365 days), _limits(500e6, 1000e6, 5000e6), 7);
+        bytes32 window = bytes32(uint256(keccak256(abi.encode(second, CARDS_SLOT))) + 3);
+        assertTrue(vm.load(address(cards), window) != 0, "issuance starts the window");
+        assertEq(vm.load(address(cards), bytes32(uint256(window) + 1)), 0, "no cap, so no second window slot");
+        assertTrue(vm.load(address(cards), keccak256(abi.encode(alice, USAGE_SLOT))) != 0, "the grant starts usage");
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 10e6);
+
+        vm.startStateDiffRecording();
+        vm.prank(issuer);
+        cards.authorize(second, P2, 20e6, merchant, uint64(block.timestamp + 7 days), 0);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        bytes32 purchase = keccak256(abi.encode(P2, PURCHASES_SLOT));
+        uint256 created;
+        for (uint256 i; i < accesses.length; ++i) {
+            for (uint256 j; j < accesses[i].storageAccesses.length; ++j) {
+                Vm.StorageAccess memory a = accesses[i].storageAccesses[j];
+                if (a.account != address(cards) || !a.isWrite || a.reverted) continue;
+                if (a.previousValue != 0 || a.newValue == 0) continue;
+                assertEq(a.slot, purchase, "only the purchase word is new");
+                ++created;
+            }
+        }
+        assertEq(created, 1);
+        assertEq(cards.cardOf(second).window.daySpent, 20e6);
+    }
+
     function _distinct(bytes32[] memory slots) internal pure returns (uint256 n) {
         for (uint256 i; i < slots.length; ++i) {
             bool seen;
@@ -1358,10 +1392,10 @@ contract CardAuthTest is AuthEnv {
         }
     }
 
-    function _outside(bytes32[] memory slots, bytes32[6] memory allowed) internal pure returns (uint256 n) {
+    function _outside(bytes32[] memory slots, bytes32[5] memory allowed) internal pure returns (uint256 n) {
         for (uint256 i; i < slots.length; ++i) {
             bool ok;
-            for (uint256 j; j < 6 && !ok; ++j) {
+            for (uint256 j; j < 5 && !ok; ++j) {
                 ok = slots[i] == allowed[j];
             }
             if (!ok) ++n;

@@ -136,13 +136,13 @@ contract AuthGasTest is AuthEnv {
         cards.refund("p0", 1e6);
         vm.stopPrank();
 
-        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, P1, 100e6, merchant, _expiry(), 0)), 7, 1, "authorize");
+        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, P1, 100e6, merchant, _expiry(), 0)), 6, 1, "authorize");
         _assertSlots(key, abi.encodeCall(cards.capture, (P1, 40e6, false)), 3, 0, "capture partial");
         _assertSlots(key, abi.encodeCall(cards.capture, (P1, 60e6, true)), 3, 0, "capture final");
-        _assertSlots(key, abi.encodeCall(cards.refund, (P1, 50e6)), 5, 0, "refund");
-        _assertSlots(key, abi.encodeCall(cards.charge, (CARD, "p2", 10e6, merchant)), 6, 1, "charge");
-        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, "p3", 10e6, merchant, _expiry(), 0)), 7, 1, "auth2");
-        _assertSlots(key, abi.encodeCall(cards.release, ("p3")), 6, 0, "release");
+        _assertSlots(key, abi.encodeCall(cards.refund, (P1, 50e6)), 4, 0, "refund");
+        _assertSlots(key, abi.encodeCall(cards.charge, (CARD, "p2", 10e6, merchant)), 5, 1, "charge");
+        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, "p3", 10e6, merchant, _expiry(), 0)), 6, 1, "auth2");
+        _assertSlots(key, abi.encodeCall(cards.release, ("p3")), 5, 0, "release");
     }
 
     function _expiry() internal view returns (uint64) {
