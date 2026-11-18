@@ -20,10 +20,12 @@ src/
     CardSpend.sol             The one struct public and private spends settle
     interfaces/               ICardProvider and ICardProviderPayout (the provider engine), the Earn vault subset
   programs/                 Ours, card programs on the reservation core
-    CardProgram.sol           An issuer's cards, limits, mandates and funding order; purchases as one to three holds
-    SavingsFacility.sol       Payee of savings legs: captures Earn shares, redeems them, pays the settlement account
-    CreditLine.sol            Lender lines whose draws are holds on the lender's balance, optionally pledge-secured
-    interfaces/               IReservationCore (the reservation core precompile)
+    CardAuth.sol              An issuer's cards, limits, mandates, operators and purchases over funding sources
+    CashSource.sol            Cash legs: holds on stablecoins, debt within caps, stand-ins, locked-rate conversion
+    SavingsSource.sol         Savings legs: holds on Earn shares, redeemed and paid to the settlement account
+    CreditSource.sol          Credit legs: holds on lenders' balances, statements, optionally share-secured
+    IssuerTreasury.sol        Issuer funds behind the program's exposure; the settlement token change
+    interfaces/               IReservationCore (the reservation core precompile), ISource, ICardAuth
   providers/                Ours, one directory per card provider
     bridge/                   BridgeProvider, the "TS" handler (SpenderTempoSpend), Bridge interfaces
     rain/                     RainProvider, Rain interfaces
@@ -33,7 +35,7 @@ vendor/                     Providers' own contracts, unmodified (VENDORED.md)
   tempo-zones/              The Zones runtime the Bridge harness runs
 test/
   core/                     CardSpender paying directly and through a payout target, CardFactory, mock providers
-  programs/                 Card programs, the savings facility and credit lines on a model of the reservation core
+  programs/                 Card authorization, its funding sources and companions on a model of the reservation core
   bridge/                   Bridge harness, rails, card scenario matrix, unit, fork and smoke tests
   rain/                     Rain harness, unit and lifecycle tests, Rain bytecode fixture
 script/
@@ -48,9 +50,9 @@ script/
   and the Zone's router point at: `spend` for a public spend, `spendFrom` for a private one, which only a
   router its `ZoneRouterFactory` deployed and that lists it may call. It never changes; a provider replaces
   it with a new one. [docs/cards/design.md](../docs/cards/design.md).
-- **Card programs.** `CardProgram` is an issuer's holder contract on the reservation core: it keeps card
-  records and limits and turns a purchase into holds on the cardholder's cash and Earn shares and a draw on a
-  `CreditLine`, captured, released and refunded in one call each.
+- **Card programs.** `CardAuth` is an issuer's card authorization contract on the reservation core: it keeps
+  cards, limits and purchases, and funds each purchase across the sources its owner listed (`CashSource`,
+  `SavingsSource`, `CreditSource`), each holding, capturing, releasing and refunding its own core holds.
   [docs/cards/design.md](../docs/cards/design.md#card-programs).
 - **Bridge.** `BridgeProvider` has the program pay through its Bridge spender clone and the "TS" handler, so
   Bridge's factory governs every spend. [docs/cards/bridge/](../docs/cards/bridge/README.md).

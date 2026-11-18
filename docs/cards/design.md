@@ -106,46 +106,55 @@ the program is wrong. Programs read the core through
 [`IReservationCore`](../../cards/src/programs/interfaces/IReservationCore.sol); tests run them on a model
 of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservationCore.sol).
 
-| Contract                                                          | Admin                     | Function                                                                                              |
-| ----------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------- |
-| [`CardProgram`](../../cards/src/programs/CardProgram.sol)         | The issuer, within owners | Card records, limits, mandates and funding order; one purchase as one to three holds; settlement log. |
-| [`SavingsFacility`](../../cards/src/programs/SavingsFacility.sol) | None (a fixed funder)     | Payee of savings legs: captures Earn shares, redeems them and pays the settlement account.            |
-| [`CreditLine`](../../cards/src/programs/CreditLine.sol)           | Each line's lender        | Lender lines whose draws are holds on the lender's balance; optional pledge-secured credit.           |
+| Contract                                                            | Admin                     | Function                                                                                                    |
+| ------------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [`CardAuth`](../../cards/src/programs/CardAuth.sol)                 | The issuer, within owners | Cards, limits, mandates, operators, funding orders and purchases (one slot each); a waterfall over sources. |
+| [`CashSource`](../../cards/src/programs/CashSource.sol)             | None                      | Cash legs: holds on a stablecoin, debt within the owner's caps, stand-ins, conversion at a locked rate.     |
+| [`SavingsSource`](../../cards/src/programs/SavingsSource.sol)       | None (a fixed funder)     | Savings legs: holds on Earn shares, redeemed at capture and paid to the settlement account.                 |
+| [`CreditSource`](../../cards/src/programs/CreditSource.sol)         | Each line's lender        | Credit legs: holds on the lender's balance, statements and autopay, optionally secured by locked shares.    |
+| [`IssuerTreasury`](../../cards/src/programs/IssuerTreasury.sol)     | The issuer                | Issuer funds that advance payouts within the program's exposure; the settlement token change.               |
+| [`IssuerDesk`](../../cards/src/programs/IssuerDesk.sol)             | The issuer                | Provisional credit while a dispute runs, and its recovery when the merchant wins.                           |
+| [`MerchantReserves`](../../cards/src/programs/MerchantReserves.sol) | The issuer                | Reserves held back on merchants' balances as core pledges, collected to the settlement account.             |
 
-- **Cards.** A card has an owner, a status (active, frozen, closed), an expiry, the legs it may use
-  (cash, savings, credit) and limits per purchase, per day and per 30-day month in settlement-token
-  units. The owner freezes, unfreezes and closes it, lowers its limits and sets the ceiling the issuer
-  may raise them to; the issuer issues, replaces and raises within that ceiling. Owners revoke merchants
-  or cap a merchant's monthly spend, and set their funding order: a cash token, a savings facility, a
-  credit line. A token other than the settlement token converts at the rate the issuer recorded for it.
-- **Authorize.** The issuer's `authorize(card, purchaseRef, amount, merchant, expiresAt, standIn)` checks
-  the card, its windows and the mandate on the whole amount, then places the legs in funding order in
-  the same call through `holdFrom`: cash up to what is available, Earn shares (payee: the facility) for
-  the rest, then a credit-line draw. Any failure reverts every leg. Leg ids are
-  `keccak256(program, purchaseRef, leg)`. A stand-in records an offline approval as one cash stand-in
-  hold; the core reserves what is there and caps the shortfall at the owner's offline cap.
-- **Capture, release, refund.** `capture(purchaseRef, amount, isFinal)` takes cash first, then shares
-  through the facility, then credit, and a tip beyond the holds on the cash leg within the owner's
-  capture tolerance; the program is payee of the cash and credit legs and forwards them to the settlement
-  account in the same call. `release` (issuer) and `expire` (anyone, after expiry) free every leg and,
-  when nothing was captured, give the amount back to the card's windows. `refund` unwinds legs in
-  reverse order with funds the issuer provides; the facility deposits cash back into the vault and
-  refunds the minted shares. After its expiry a leg can only be released.
-- **Settlement log.** Every step emits one event with the purchase reference, the card, each leg's
-  amount, the settlement-unit amount and a sequence number; captures and refunds also carry the running
-  net. The issuer's `acknowledgeSettlement(throughSeq)` moves a settled-through cursor, so what is owed
-  rebuilds from events with no off-chain state.
-- **Savings.** The facility captures only legs whose placer calls it, never beyond what the hold
-  reserves, so no share debt arises; it writes no storage per capture and keeps standing approvals to its
-  vault. When the vault quotes but cannot redeem, the float pays and the shares wait for the funder.
-- **Credit.** A lender opens a line for a borrower and one program, and approves the `CreditLine` as holder
-  of the line's token; the borrower accepts it. Each draw is a hold on the lender's balance payable to the
-  program, so every approved line part is backed. `sync` turns the core's captured and refunded totals
-  into what the borrower owes; `repay` pays the lender. A secured line caps credit at the pledge's value
-  times its loan-to-value, computed on chain at each draw from a core pledge to the line that outlives the
-  due date plus notice; the lender may seize it only after both, for at most what is owed.
-- **Out of scope.** Disputes, provisional credit, interest, fees, escheat and estates are issuer
-  services, built from plain transfers, holds and charges.
+- **Cards.** A card has an owner, a status (active, frozen, closed), an expiry, the source kinds it may
+  draw on (cash, savings, credit) and limits per purchase, per day and per 30-day month. The owner
+  freezes, unfreezes and closes it, lowers its limits and sets the ceiling the issuer may raise them to;
+  the issuer issues, replaces and raises within that ceiling. Owners revoke merchants or cap a merchant's
+  monthly spend, and grant the program terms across their cards. Limits and operator caps are kept in the
+  program's first settlement token, so they survive a change of settlement token.
+- **Funding order.** Each owner lists up to four entries, each a source the issuer approved and a
+  position at it: for cash the token and the most a conversion may cost, for credit the line. A purchase
+  keeps the order it was placed under. A source implements
+  [`ISource`](../../cards/src/programs/interfaces/ISource.sol) and places, captures, releases and
+  refunds its own core holds (it is their placer and payee), paying what it takes to the settlement
+  account in the same call.
+- **Authorize.** `authorize(card, ref, amount, merchant, expiresAt, flags)` checks the card, its windows
+  and the mandate on the amount the sources hold, asking each entry in order to hold what is still
+  missing; with `PARTIAL` it approves less. Any failure reverts every leg. A purchase is one storage
+  slot, never deleted, so a reference never repeats; a leg's id is `keccak256(ref, entry)`. A stand-in
+  approved offline is one cash hold: the core reserves what is there and captures the shortfall as debt
+  within the owner's offline cap.
+- **Capture, release, refund.** `capture(ref, amount, isFinal)` takes each leg's hold in order; what the
+  holds lack comes from the first cash leg's free funds and then debt within the owner's caps, and the
+  issuer absorbs the rest. A capture past the open amount stays within the owner's capture tolerance.
+  `release` frees every leg (the issuer at any time, anyone after expiry). `refund` pays credit legs back up
+  to what each captured, in reverse order, and the cash or savings leg the rest, never past what the
+  sources covered; debt the owner owes a source is forgiven first. `charge` posts with no hold: the
+  owner's cash sources cover it, debt included, and the issuer absorbs the rest.
+- **Conversion.** A cash leg in a stablecoin other than the settlement token locks the rate when placed
+  and converts what it captures through the program's `Conversion`: at the locked rate while the market
+  stays within the owner's tolerance, at today's price past it, never past the owner's maximum cost and
+  always above the conversion's slippage floor. Converted legs never create debt.
+- **Settlement log.** Every step emits one event with the purchase reference and a sequence number;
+  captures, charges and refunds carry what the sources covered. The issuer's
+  `acknowledgeSettlement(throughSeq)` moves a settled-through cursor, so what is owed rebuilds from events.
+  `exposure()` reports what open purchases hold, the stand-in part, and the unacknowledged net, which the
+  issuer treasury keeps funds behind.
+- **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus
+  the owner's budget, so no share debt arises; it keeps standing approvals to its vault. When the vault
+  quotes but cannot redeem, the float pays and the shares wait for the funder.
+- **Out of scope.** Interest beyond credit lines' simple rate, fees, rewards, escheat and estates are
+  issuer services, built from plain transfers, holds and charges.
 
 ## What the program checks
 
