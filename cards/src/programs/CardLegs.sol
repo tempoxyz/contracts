@@ -20,6 +20,8 @@ library CardLegs {
     uint8 internal constant CASH = 1;
     uint256 internal constant BPS = 10_000;
     uint256 internal constant NONE = type(uint256).max;
+    /// @dev One cent in settlement units (six decimals).
+    uint256 internal constant CENT = 1e4;
 
     /// @notice An owner's order entry: a source and what it draws on there.
     struct Funding {
@@ -127,13 +129,26 @@ library CardLegs {
         uint64 expiresAt,
         bool standIn
     ) external returns (uint256 held, uint256 legs) {
+        uint256[MAX_LEGS] memory placed;
         for (uint256 i; i < order.length && held < amount; ++i) {
             Funding memory f = order[i];
             uint8 kind = kindOf[address(f.source)];
             if (kind & kinds == 0 || (standIn && kind != CASH)) continue;
             uint256 h = f.source.hold(owner, f.position, legId(ref, i), amount - held, expiresAt, standIn);
-            if (h != 0) (held, legs) = (held + h, legs | 1 << i);
+            if (h != 0) (held, legs, placed[i]) = (held + h, legs | 1 << i, h);
             if (standIn) break;
+        }
+        // A partial approval is whole cents: the last legs give back the fraction of a cent.
+        if (standIn || held >= amount) return (held, legs);
+        uint256 cut = held % CENT;
+        for (uint256 i = order.length; cut != 0 && i != 0;) {
+            if (legs >> --i & 1 == 0) continue;
+            Funding memory f = order[i];
+            uint256 take = _min(placed[i], cut);
+            if (f.source.hold(owner, f.position, legId(ref, i), placed[i] - take, expiresAt, false) == 0) {
+                legs &= ~(1 << i);
+            }
+            (held, cut) = (held - take, cut - take);
         }
     }
 

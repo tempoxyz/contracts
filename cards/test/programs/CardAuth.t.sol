@@ -529,6 +529,20 @@ contract CardAuthTest is AuthEnv {
         cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
+    function test_partialApproval_wholeCents() public {
+        usd.mint(alice, 40_005_000);
+        vm.prank(alice);
+        _setFunding(true, false, false);
+        vm.prank(issuer);
+        uint256 approved = cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), PARTIAL);
+        assertEq(approved, 40e6);
+        assertEq(cards.purchaseOf(P1).held, 40e6);
+        assertEq(_hold(alice, P1, CASH_LEG).held, 40e6);
+        // A request the sources cover in full keeps its fraction of a cent.
+        vm.prank(issuer);
+        assertEq(cards.authorize(CARD, P2, 5000, merchant, uint64(block.timestamp + 1 days), PARTIAL), 5000);
+    }
+
     function test_operator() public {
         usd.mint(alice, 1000e6);
         address key = makeAddr("key");
