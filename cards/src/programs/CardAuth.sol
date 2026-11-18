@@ -355,7 +355,7 @@ contract CardAuth is ICardAuth {
             _spend(c, owner, address(0), amount, want, true);
             legs = CardLegs.grow(order, sourceKind, ref, owner, c.kinds, want, legs, p.expiresAt);
         } else {
-            CardLegs.shrink(order, ref, owner, legs, p.amount - amount, amount - p.captured, standIn, p.expiresAt);
+            CardLegs.shrink(order, ref, owner, legs, amount - p.captured, standIn, p.expiresAt);
             _giveBack(c, owner, p, p.amount - amount);
         }
         _moveHeld(int256(uint256(amount)) - int256(p.amount), standIn);

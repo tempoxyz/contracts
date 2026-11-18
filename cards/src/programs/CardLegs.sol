@@ -160,20 +160,19 @@ library CardLegs {
         return legs;
     }
 
-    /// @notice Returns `less` of what the legs hold, from the last leg first. A stand-in keeps what it holds up to
-    ///         `open`.
+    /// @notice Shrinks what the legs hold to `open` in total: the first legs keep what they hold up to what is still
+    ///         open, so the last give back first. Legs are sized against what they hold now, so a leg whose value
+    ///         drifted since it was placed never releases more than the purchase gives up. A stand-in holds `open`.
     function shrink(
         Funding[] storage order,
         bytes32 ref,
         address owner,
         uint256 legs,
-        uint256 less,
         uint256 open,
         bool standIn,
         uint64 expiresAt
     ) external {
-        for (uint256 i = order.length; i != 0 && less != 0;) {
-            --i;
+        for (uint256 i; i < order.length; ++i) {
             if (legs >> i & 1 == 0) continue;
             Funding memory f = order[i];
             bytes32 id = legId(ref, i);
@@ -182,9 +181,9 @@ library CardLegs {
                 return;
             }
             uint256 cur = f.source.held(owner, f.position, id);
-            uint256 cut = _min(cur, less);
-            if (cut != 0) f.source.hold(owner, f.position, id, cur - cut, expiresAt, false);
-            less -= cut;
+            uint256 keep = _min(cur, open);
+            if (keep < cur) f.source.hold(owner, f.position, id, keep, expiresAt, false);
+            open -= keep;
         }
     }
 
