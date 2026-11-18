@@ -835,7 +835,7 @@ describe('Zone router seeds', () => {
   const spenders: Record<Address, Record<string, unknown>> = {
     [spender]: releaseSettings(spender, zeroAddress),
     [convertingSpender]: {
-      ...releaseSettings(convertingSpender, address('c0')),
+      ...releaseSettings(convertingSpender, outputs.earnVault),
       convertAsset: outputs.asset,
       parToken: address('ba'),
     },
@@ -1052,7 +1052,10 @@ describe('Zone router seeds', () => {
       spenders: [convertingSpender, cardProgram],
     })
     const plan = await zoneRouterSeedPlan(
-      seedChain({ profile: converting, enabled: [earnBinding.privateAsset] }) as never,
+      seedChain({
+        profile: converting,
+        enabled: [earnBinding.privateAsset, outputs.earnShare],
+      }) as never,
       converting,
       outputs,
     )
@@ -1342,7 +1345,8 @@ describe('Zone router seeds', () => {
     const client = {
       ...reads,
       readContract: vi.fn(async (parameters: Record<string, unknown>) => {
-        if (parameters.functionName === 'balanceOf') throw new Error('balance read failed')
+        if (parameters.functionName === 'balanceOf')
+          throw new HttpRequestError({ status: 500, url: 'https://rpc.test/key-1234' })
         return reads.readContract(parameters)
       }),
       getBlock: async () => ({ number: 7n, timestamp: 110n }),
@@ -1352,7 +1356,9 @@ describe('Zone router seeds', () => {
       label: 'Zone router seeds',
       status: 'ready',
       blockers: [],
-      details: { unread: 'balance read failed' },
+      details: { unread: 'HTTP request failed.' },
     })
+    // A request URL, which may carry credentials, never reaches the report.
+    expect(JSON.stringify(report)).not.toContain('key-1234')
   })
 })

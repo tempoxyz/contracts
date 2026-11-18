@@ -177,8 +177,9 @@ export async function zoneRouterSeedPlan(
     seed(routerAddress, 'Zone router', asset, 'vault asset')
     seed(routerAddress, 'Zone router', router.earn.privateAsset, 'private asset')
     seed(routerAddress, 'Zone router', earnShare, 'EarnShare')
-    warmUp(earnShare, 'EarnShare')
-    warmUp(router.earn.privateAsset, 'private asset')
+    // Deposit returns EarnShare to the Zone and Redeem returns the private asset.
+    if (router.ops.includes('deposit')) warmUp(earnShare, 'EarnShare')
+    if (router.ops.includes('redeem')) warmUp(router.earn.privateAsset, 'private asset')
   }
   for (const [label, token] of spendTokens) {
     seed(routerAddress, 'Zone router', token, label)
@@ -205,7 +206,13 @@ export async function zoneRouterSeedPlan(
     // An EarnShare spend redeems here when it converts or pays a virtual address.
     if (spendTokens.some(([, token]) => token === earnShare))
       seed(spender, label, asset, 'vault asset')
-    if (release.convertVault === zeroAddress) continue
+    // Only a spend of the bound vault's EarnShare reaches the conversion branch.
+    if (
+      release.convertVault === zeroAddress ||
+      !spendTokens.some(([, token]) => token === earnShare) ||
+      getAddress(release.convertVault) !== getAddress(earnVault)
+    )
+      continue
     for (const functionName of ['convertAsset', 'parToken'] as const) {
       const value: unknown = await client
         .readContract({ address: spender, abi: sendSpenderAbi, functionName })

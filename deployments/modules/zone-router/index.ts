@@ -1,4 +1,4 @@
-import { getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
+import { BaseError, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
 import { Addresses } from 'viem/tempo'
 
 import { zoneRouterAbi, zoneRouterFactoryAbi } from '../../abis/index.js'
@@ -174,7 +174,13 @@ export const zoneRouterModeModule: CapabilityModule = {
         if (seedPlan.notes.length > 0) details.withheld = seedPlan.notes.join('; ')
         return details
       } catch (error) {
-        return { unread: error instanceof Error ? error.message : String(error) }
+        // viem's short message names the failure without the request URL, which may carry credentials.
+        return {
+          unread:
+            error instanceof BaseError
+              ? error.shortMessage
+              : 'seed state could not be read from the chain',
+        }
       }
     })()
     report.zoneRouterSeeds = {

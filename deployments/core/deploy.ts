@@ -58,6 +58,7 @@ import {
   type EarnDeploymentRecord,
 } from './record.js'
 import { rpcClient } from '../chain/runtime.js'
+import { redactRpcCredentials } from '../chain/rpc-credentials.js'
 import { isHostedDeploymentChain } from '../chain/tempo.js'
 import {
   componentDeploymentIntentHashes,
@@ -390,20 +391,36 @@ export async function reconcileEarnProfileActions(
   },
 ): Promise<Extract<ReconciliationStep, { kind: 'complete' | 'handoff' }>> {
   const compilersChecked = new Set<string>()
+  const attempted = new Set<string>()
   for (;;) {
-    const step = await prepareLifecycleStep(options)
+    const step = await prepareLifecycleStep({ ...options, attempted })
     if (step.kind === 'complete') return step
     if (step.kind === 'handoff') {
-      const execution = await executeAvailableAuthority({
+      const authority = {
         action: step.action,
         environment: options.environment,
         outputs: step.pending.outputs,
         profile: options.profile,
         rpcUrl: options.rpcUrl,
-      })
-      // An already-satisfied step whose best-effort work found no signer is recorded as found.
-      if (!execution && !step.optional) return step
-      await recordAuthorityAction({ ...options, step, transactions: execution?.transactions ?? [] })
+      }
+      if (step.optional) {
+        // Best-effort work on a satisfied step never fails the deploy; the next prepare records the
+        // step as found if this run sent nothing.
+        attempted.add(step.action.id)
+        const execution = await executeAvailableAuthority(authority).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          console.warn(
+            `${step.action.id} left for a later run: ${redactRpcCredentials(message, options.rpcUrl, options.environment)}`,
+          )
+          return undefined
+        })
+        if (execution && !step.pending.actions[step.action.id])
+          await recordAuthorityAction({ ...options, step, transactions: execution.transactions })
+        continue
+      }
+      const execution = await executeAvailableAuthority(authority)
+      if (!execution) return step
+      await recordAuthorityAction({ ...options, step, transactions: execution.transactions })
       continue
     }
 

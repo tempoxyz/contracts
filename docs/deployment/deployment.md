@@ -209,17 +209,20 @@ After one is deployed, send it 1 base unit of each token it handles:
 - a card program: each token it pays out
 
 For a profile's router the `seed-zone-router` activation step does this. Of the stack's private
-asset, vault asset and EarnShare it seeds and warms what the router's Earn ops handle and what its
-Portal enables for Spend (it asks the Portal about each of the three, whatever the profile), and
+asset, vault asset and EarnShare it seeds what the router's Earn ops handle, warms the allowance each
+Earn op returns to its Zone (EarnShare for Deposit, the private asset for Redeem), and seeds and
+warms what its Portal enables for Spend (it asks the Portal about each of the three, whatever the profile), and
 seeds the same tokens on each listed spender verified as the release `SendSpender` for its
 settings, as `pnpm earn verify` verifies it. A listed card program is left to its
 [runbook](../cards/bridge/deploy.md#6-prepare-the-program-for-low-callback-gas). Any other listed
 spender gets nothing, noted under **Zone router seeds**; **Zone router spenders** blocks it. A `SendSpender`'s conversion asset or par stablecoin is seeded
-only when it is one of the stack's three tokens. The step sends only what is missing, from
+only when it is one of the stack's three tokens and the router spends the EarnShare of the vault it
+converts for, the only input that converts. The step sends only what is missing, from
 `DEPLOYER_PRIVATE_KEY`, simulating each transfer and `warm` call from the deployer first: it sends
 those that succeed in batches of at most 48 calls. Only the profile's deployer seeds. The step
-requires only the router's Portal allowances, which stay set once warmed, and runs its sends once
-even when they are already set; units it cannot send (it holds too little of a token, or a token's
+requires only the router's Portal allowances, which stay set once warmed, and every deploy run that
+holds the deployer's key runs its sends once, even when they are already set, without failing the
+deploy if they fail; units it cannot send (it holds too little of a token, or a token's
 TIP-403 transfer policy refuses the deployer or the holder) block nothing and are sent by hand. A
 router release that sets its Portal allowance on each callback refuses `warm` with `OpDisabled`, so
 those allowances are noted rather than required; any other `warm` revert stays required and hands
