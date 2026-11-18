@@ -496,6 +496,55 @@ contract CardProgramTest is ProgramsEnv {
         cards.adjust(P1, 350e6);
     }
 
+    function test_charge_forcePostCountsAgainstTheCardsLimits() public {
+        usd.mint(alice, 10_000e6);
+        // Per purchase: the card allows 500 dollars.
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardLimits.LimitExceeded.selector, uint8(0)));
+        cards.charge(CARD, P1, 500e6 + 1, merchant);
+        // Daily: 1,000 dollars across authorizations and force posts.
+        _authorize(P1, 500e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P2, 400e6, merchant);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardLimits.LimitExceeded.selector, uint8(1)));
+        cards.charge(CARD, bytes32("purchase-3"), 100e6 + 1, merchant);
+        vm.prank(issuer);
+        cards.charge(CARD, bytes32("purchase-3"), 100e6, merchant);
+        // A refund of a force post gives its room back.
+        usd.mint(issuer, 50e6);
+        vm.prank(issuer);
+        usd.approve(address(cards), 50e6);
+        vm.prank(issuer);
+        cards.refund(P2, 50e6);
+        vm.prank(issuer);
+        cards.charge(CARD, bytes32("purchase-4"), 50e6, merchant);
+    }
+
+    function test_charge_forcePostCountsAgainstTermsCapAndMandate() public {
+        usd.mint(alice, 10_000e6);
+        _grant(150e6, 100e6, 0, 0, 0);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardLimits.LimitExceeded.selector, uint8(0)));
+        cards.charge(CARD, P1, 100e6 + 1, merchant);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardLimits.LimitExceeded.selector, uint8(3)));
+        cards.charge(CARD, P2, 50e6 + 1, merchant);
+        _grant(0, 0, 0, 0, 0);
+        vm.prank(issuer);
+        cards.setCardCap(CARD, 120e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardLimits.LimitExceeded.selector, uint8(4)));
+        cards.charge(CARD, P2, 20e6 + 1, merchant);
+        vm.prank(alice);
+        cards.setMandate(merchant, true, 0);
+        vm.prank(issuer);
+        vm.expectRevert(CardLimits.MerchantRevoked.selector);
+        cards.charge(CARD, P2, 1e6, merchant);
+    }
+
     function test_charge_afterExpiry_paysAndTakesDebtWithinCap() public {
         usd.mint(alice, 50e6);
         vm.prank(alice);

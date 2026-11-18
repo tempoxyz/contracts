@@ -67,9 +67,10 @@ library CardAdjust {
     }
 
     /// @notice Charges `amount` settlement units for purchase `p` as one core charge `id` on the owner's cash token,
-    ///         paid to the program, and counts the whole amount toward the owner's limits. The charge takes what the
-    ///         owner has available plus what the debt cap the owner set for the program still allows; the issuer
-    ///         absorbs the rest. Returns the tokens charged and the settlement units absorbed.
+    ///         paid to the program, after counting `counted` (its SETTLEMENT_TOKEN units) toward the owner's terms and
+    ///         the card's limits, which must allow it as they would an authorization. The charge takes what the owner
+    ///         has available plus what the debt cap the owner set for the program still allows; the issuer absorbs the
+    ///         rest. Returns the tokens charged and the settlement units absorbed.
     function charge(
         IReservationCore core,
         CardProgram.Purchase storage p,
@@ -80,11 +81,17 @@ library CardAdjust {
         uint256 rate,
         bytes32 id,
         uint128 amount,
+        uint256 counted,
         bytes32 ref
     ) external returns (uint256 tokens, uint256 absorbed) {
         // A late charge on an authorized purchase needs only past terms; one that opens a purchase (a force post) needs
         // the owner's grant to be active, as an authorization does.
         if (g.epoch == 0 || (p.epoch == 0 && !g.active)) revert CardProgram.NoTerms();
+        CardProgram.Limits memory l = c.limits;
+        (p.day, p.month) =
+            CardLimits.spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], counted, counted, true);
+        // A force post counts under the owner's current grant, so a refund gives its usage back there.
+        if (p.epoch == 0) p.epoch = g.epoch;
         address owner = p.owner;
         uint256 wanted = _toTokenUp(amount, rate);
         // An owner whose cash converts into the settlement token pays from that cash first, as a capture would.
@@ -108,8 +115,6 @@ library CardAdjust {
             absorbed = amount - paid;
         }
         p.captured = true;
-        CardProgram.Limits memory l = c.limits;
-        CardLimits.spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], 0, amount, false);
     }
 
     /// @dev What a charge of `wanted` tokens can take from `owner`: its available balance, then the program's debt cap

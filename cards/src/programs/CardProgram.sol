@@ -817,7 +817,8 @@ contract CardProgram {
     /// @notice Charges `amount` settlement units for a purchase presented without a live hold (a late presentment
     ///         or a force post), as one core charge on the owner's cash token: available balance first, then debt
     ///         within the cap the owner set for this program. The issuer absorbs what neither covers; the event
-    ///         reports it. An expired open purchase is released first.
+    ///         reports it. An expired open purchase is released first. The charge must fit the owner's terms, the
+    ///         card's limits and the merchant's mandate, as an authorization must.
     function charge(bytes32 card, bytes32 purchaseRef, uint128 amount, address merchant)
         external
         nonReentrant
@@ -843,7 +844,9 @@ contract CardProgram {
             }
         }
         address owner = p.owner;
-        _useKey(_counted(purchaseRef, amount));
+        uint256 counted = _counted(purchaseRef, amount);
+        _useKey(counted);
+        CardLimits.useMandate(mandates[owner][merchant], grants[owner].terms.utcOffset, counted);
         // A late charge is owed like capture debt: in the settlement token where the owner's cash converts into it.
         address token = CardConvert.debtToken(fundingOf[owner]);
         Card storage card_ = _follow(p);
@@ -858,6 +861,7 @@ contract CardProgram {
             _rate(token),
             _legId(purchaseRef, CHARGED),
             amount,
+            counted,
             purchaseRef
         );
         _forward(token);
