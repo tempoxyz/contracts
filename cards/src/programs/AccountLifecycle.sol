@@ -385,6 +385,7 @@ contract AccountLifecycle {
         uint256 received = toDebt > toDebtAfter ? toDebt - toDebtAfter : 0;
         if (paid != 0 || repaid != 0 || savings != 0) emit PaidOut(account, to, paid, repaid, received, savings);
     }
+
     // forge-lint: disable-end(arbitrary-send-erc20)
 
     /// @dev What `owner` owes every creditor in `token`.

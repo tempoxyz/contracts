@@ -1,8 +1,0 @@
-{
-  "authorize_singleCashLeg": "3430420",
-  "capture_finalCashLeg": "221814",
-  "capture_partialCashLeg": "715821",
-  "charge_cash": "2408310",
-  "refund_cashLeg": "462157",
-  "refund_charge": "664538"
-}

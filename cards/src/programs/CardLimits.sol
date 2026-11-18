@@ -201,7 +201,12 @@ library CardLimits {
     function grant(Grant storage g, Usage storage u, Terms calldata given, uint256 scale) external returns (bool) {
         Terms memory t = given;
         (t.limit, t.perPurchase, t.daily, t.monthly) =
-            (uint64(_toBase(t.limit, scale)), uint64(_toBase(t.perPurchase, scale)), uint64(_toBase(t.daily, scale)), uint64(_toBase(t.monthly, scale)));
+        (
+            uint64(_toBase(t.limit, scale)),
+            uint64(_toBase(t.perPurchase, scale)),
+            uint64(_toBase(t.daily, scale)),
+            uint64(_toBase(t.monthly, scale))
+        );
         (g.terms, g.active) = (t, true);
         uint32 epoch = ++g.epoch;
         (u.committed, u.day, u.month, u.daySpent, u.monthSpent) = (0, 0, 0, 0, 0);
@@ -309,7 +314,9 @@ library CardLimits {
     }
 
     function _baseLimits(Limits calldata l, uint256 scale) private pure returns (Limits memory) {
-        return Limits(uint80(_toBase(l.perPurchase, scale)), uint80(_toBase(l.daily, scale)), uint80(_toBase(l.monthly, scale)));
+        return Limits(
+            uint80(_toBase(l.perPurchase, scale)), uint80(_toBase(l.daily, scale)), uint80(_toBase(l.monthly, scale))
+        );
     }
 
     function _lower(Limits memory a, Limits memory b) private pure returns (Limits memory) {

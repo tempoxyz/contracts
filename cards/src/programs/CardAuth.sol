@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { AccountKeys } from "./AccountKeys.sol";
+import { CardLegs } from "./CardLegs.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
-import { CardLegs } from "./CardLegs.sol";
 import { ISource } from "./interfaces/ISource.sol";
+import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
 /// @title CardAuth
 /// @notice A card program's authorization contract: its cards, the owners' grants and limits, merchant mandates,
@@ -62,9 +62,6 @@ contract CardAuth is ICardAuth {
         uint120 used;
     }
 
-
-
-
     address public immutable SETTLEMENT_ACCOUNT;
 
     address internal _issuer;
@@ -96,7 +93,9 @@ contract CardAuth is ICardAuth {
     );
     event PurchaseAdjusted(bytes32 indexed ref, uint256 amount, uint256 legs, uint64 seq);
     /// @notice `amount` was captured or charged; the sources covered `covered` and the issuer absorbed the rest.
-    event PurchaseCaptured(bytes32 indexed ref, uint256 amount, uint256 covered, bool isFinal, bool charged, uint64 seq);
+    event PurchaseCaptured(
+        bytes32 indexed ref, uint256 amount, uint256 covered, bool isFinal, bool charged, uint64 seq
+    );
     event PurchaseReleased(bytes32 indexed ref, uint256 released, uint64 seq);
     /// @notice `amount` was refunded in the purchase's token, `paid` in today's settlement token.
     event PurchaseRefunded(bytes32 indexed ref, uint256 amount, uint256 paid, uint64 seq);
@@ -617,10 +616,14 @@ contract CardAuth is ICardAuth {
 
     /// @dev Counts `amount` toward the owner's and card's limits (checking them on `total` when `enforce`) and a
     ///      merchant's mandate. Returns the owner's local day and grant epoch.
-    function _spend(CardLimits.Card storage c, address owner, address merchant, uint256 total, uint256 amount, bool enforce)
-        private
-        returns (uint32 day, uint8 epoch)
-    {
+    function _spend(
+        CardLimits.Card storage c,
+        address owner,
+        address merchant,
+        uint256 total,
+        uint256 amount,
+        bool enforce
+    ) private returns (uint32 day, uint8 epoch) {
         return CardLimits.use(
             c, grants[owner], usageOf[owner], mandates[owner][merchant], merchant, _base(total), _base(amount), enforce
         );
@@ -701,8 +704,8 @@ contract CardAuth is ICardAuth {
 
     function _pack(Purchase memory p) private pure returns (uint256 w) {
         w = uint256(p.index) | p.amount << 32 | p.captured << 80 | p.refunded << 128 | uint256(p.expiresAt) << 176
-            | uint256(p.day & 0xffff) << 208 | uint256(p.epoch) << 224 | uint256(p.version) << 232
-            | uint256(p.era) << 240 | p.flags << 248;
+            | uint256(p.day & 0xffff) << 208 | uint256(p.epoch) << 224 | uint256(p.version) << 232 | uint256(p.era)
+            << 240 | p.flags << 248;
     }
 
     function _unpack(uint256 w) private pure returns (Purchase memory p) {
@@ -717,6 +720,5 @@ contract CardAuth is ICardAuth {
         p.era = uint8(w >> 240);
         p.flags = w >> 248;
     }
-
 }
 // forge-lint: disable-end(reentrancy-no-eth, calls-loop)

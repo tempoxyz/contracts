@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
-import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
-import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
-import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { Conversion } from "./Conversion.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
+import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
+import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
+import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
 /// @title SavingsSource
 /// @notice A card program's savings funding source: holds on a cardholder's Tempo Earn shares in the core, placed and
@@ -249,7 +249,8 @@ contract SavingsSource is ISource {
     /// @dev Shares that redeem for at least `units` settlement units now.
     function _sharesFor(uint256 units) private view returns (uint256) {
         address settlement = PROGRAM.settlementToken();
-        uint256 assets = settlement == ASSET ? units : Conversion(PROGRAM.conversion()).quoteOut(ASSET, settlement, units);
+        uint256 assets =
+            settlement == ASSET ? units : Conversion(PROGRAM.conversion()).quoteOut(ASSET, settlement, units);
         return VAULT.previewWithdraw(assets);
     }
 

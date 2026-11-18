@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
-import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
-import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { Conversion } from "./Conversion.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, MAX_CREDITORS, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
+import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
+import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
+import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
 /// @title CashSource
 /// @notice A card program's cash funding source: holds on a cardholder's stablecoin balance in the core, placed and
@@ -275,9 +275,14 @@ contract CashSource is ISource {
     /// @dev Takes `amount` for a leg: a capture up to the hold's capture limit, and a charge for the rest. The core
     ///      bounds a hold's overage by its own tolerance, but a purchase spread across legs takes its overage on this
     ///      leg, which CardAuth checked against the purchase's tolerance. Only settlement-token legs take it.
-    function _take(address owner, address token, bytes32 legId, IReservationCore.HoldRecord memory h, uint256 amount, bool isFinal)
-        private
-    {
+    function _take(
+        address owner,
+        address token,
+        bytes32 legId,
+        IReservationCore.HoldRecord memory h,
+        uint256 amount,
+        bool isFinal
+    ) private {
         uint256 extra = amount > h.captureLimit ? amount - h.captureLimit : 0;
         amount -= extra;
         if (amount != 0 || isFinal) CORE.capture(owner, address(this), legId, uint128(amount), isFinal);

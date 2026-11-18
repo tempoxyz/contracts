@@ -514,7 +514,6 @@ contract AccountLifecycleTest is AuthEnv {
     function _grantLienRole(address token, address account) internal {
         IMockToken(token).grantRole(keccak256("LIEN_ROLE"), account);
     }
-
 }
 
 contract FakeVault {
