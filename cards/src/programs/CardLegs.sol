@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
@@ -25,15 +26,75 @@ library CardLegs {
         bytes32 position;
     }
 
+    /// @notice A settlement token the program used, and how many of its units one base unit is worth (18 decimals).
+    struct Era {
+        address token;
+        uint96 scale;
+    }
+
+    /// @notice A program's current settlement era, card count, owners that ever granted terms, and what open
+    ///         purchases hold (the stand-in part apart).
+    struct State {
+        uint8 era;
+        uint32 cards;
+        uint64 grantedOwners;
+        uint64 held;
+        uint64 standIn;
+    }
+
+    /// @notice Purchase steps so far and the last one the issuer acknowledged, with net covered units now and at
+    ///         that acknowledgement.
+    struct Ledger {
+        uint64 seq;
+        uint64 settledThrough;
+        int128 net;
+        int128 settledNet;
+    }
+
     /// @notice Most order entries an owner may list.
     uint256 internal constant MAX_LEGS = 4;
 
     event FundingSet(address indexed owner, uint8 version, Funding[] order);
 
+    event SettlementAcknowledged(uint64 throughSeq, uint64 previous);
+    event SettlementTokenSet(address token, uint256 scale, uint8 era);
+
     error CaptureLimitExceeded();
     error InsufficientAvailable();
     error InvalidAmount();
+    error InvalidCursor();
     error InvalidOrder();
+    error Unsettled();
+
+    /// @notice Acknowledges purchase steps through `throughSeq` as settled.
+    function acknowledge(Ledger storage l, uint64 throughSeq) external {
+        uint64 previous = l.settledThrough;
+        if (throughSeq <= previous || throughSeq > l.seq) revert InvalidCursor();
+        l.settledThrough = throughSeq;
+        if (throughSeq == l.seq) l.settledNet = l.net;
+        emit SettlementAcknowledged(throughSeq, previous);
+    }
+
+    /// @notice Switches to settlement token `token`, worth `scale` units per unit of the current one (18 decimals).
+    ///         Refused while purchases hold anything or steps are unacknowledged.
+    function switchToken(
+        mapping(uint8 => Era) storage eras,
+        State storage s,
+        Ledger storage l,
+        address token,
+        uint256 scale
+    ) external {
+        uint8 era = s.era;
+        if (s.held != 0 || l.net != l.settledNet || l.seq != l.settledThrough) revert Unsettled();
+        uint256 next = FixedPointMathLib.mulDiv(eras[era].scale, scale, 1e18);
+        if (token == address(0) || era == type(uint8).max || next == 0 || next > type(uint96).max) {
+            revert InvalidAmount();
+        }
+        eras[++era] = Era(token, uint96(next));
+        s.era = era;
+        (l.net, l.settledNet) = (0, 0);
+        emit SettlementTokenSet(token, scale, era);
+    }
 
     /// @notice Replaces `list` with `order`, every entry an approved source.
     function setOrder(
@@ -272,6 +333,7 @@ library CardLegs {
     }
 
     /// @notice The ABI encoding of an order.
+    // forge-lint: disable-next-line(mixed-case-function)
     function encode(Funding[] storage order) external view returns (bytes memory) {
         Funding[] memory copy = order;
         return abi.encode(copy);

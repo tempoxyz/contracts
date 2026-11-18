@@ -62,26 +62,8 @@ contract CardAuth is ICardAuth {
         uint120 used;
     }
 
-    /// @notice A settlement token the program used, and how many of its units one base unit is worth (18 decimals).
-    struct Era {
-        address token;
-        uint96 scale;
-    }
 
-    struct State {
-        uint8 era;
-        uint32 cards;
-        uint64 grantedOwners;
-        uint64 held;
-        uint64 standIn;
-    }
 
-    struct Ledger {
-        uint64 seq;
-        uint64 settledThrough;
-        int128 net;
-        int128 settledNet;
-    }
 
     address public immutable SETTLEMENT_ACCOUNT;
 
@@ -91,9 +73,9 @@ contract CardAuth is ICardAuth {
     address public identityRules;
     address public lifecycle;
     address public conversion;
-    State internal _state;
-    Ledger internal _ledger;
-    mapping(uint8 era => Era) public eras;
+    CardLegs.State internal _state;
+    CardLegs.Ledger internal _ledger;
+    mapping(uint8 era => CardLegs.Era) public eras;
     mapping(bytes32 id => uint64 eta) public pendingSetting;
     mapping(address key => Operator) internal _operators;
     /// @notice The kind of each source the issuer approved; zero for one it did not or stopped.
@@ -120,8 +102,6 @@ contract CardAuth is ICardAuth {
     event PurchaseRefunded(bytes32 indexed ref, uint256 amount, uint256 paid, uint64 seq);
     event CreditedBack(bytes32 indexed ref, uint256 usage, uint256 net);
     event ReserveSettled(bytes32 indexed ref, uint256 amount, uint64 seq);
-    event SettlementAcknowledged(uint64 throughSeq, uint64 previous);
-    event SettlementTokenSet(address token, uint256 scale, uint8 era);
     event Revoked(address indexed owner);
     event OperatorSet(address indexed key, uint8 roles, uint256 cap);
     event SourceSet(address indexed source, uint8 kind);
@@ -135,7 +115,6 @@ contract CardAuth is ICardAuth {
     error CaptureLimitExceeded();
     error InsufficientAvailable();
     error InvalidAmount();
-    error InvalidCursor();
     error InvalidOrder();
     error NotCardOwner();
     error NotCompanion();
@@ -146,7 +125,6 @@ contract CardAuth is ICardAuth {
     error PurchaseNotOpen();
     error SettingPending(uint64 eta);
     error Unauthorized();
-    error Unsettled();
 
     /// @param issuer The program's issuer.
     /// @param settlementAccount Where the sources pay what they take.
@@ -157,7 +135,7 @@ contract CardAuth is ICardAuth {
         }
         _issuer = issuer;
         SETTLEMENT_ACCOUNT = settlementAccount;
-        eras[0] = Era(settlementToken, uint96(ONE));
+        eras[0] = CardLegs.Era(settlementToken, uint96(ONE));
     }
 
     // Issuer.
@@ -258,12 +236,7 @@ contract CardAuth is ICardAuth {
     /// @notice Acknowledges purchase steps through `throughSeq` as settled off chain.
     function acknowledgeSettlement(uint64 throughSeq) external {
         _onlyIssuer();
-        Ledger storage l = _ledger;
-        uint64 previous = l.settledThrough;
-        if (throughSeq <= previous || throughSeq > l.seq) revert InvalidCursor();
-        l.settledThrough = throughSeq;
-        if (throughSeq == l.seq) l.settledNet = l.net;
-        emit SettlementAcknowledged(throughSeq, previous);
+        CardLegs.acknowledge(_ledger, throughSeq);
     }
 
     // Companions.
@@ -275,18 +248,7 @@ contract CardAuth is ICardAuth {
 
     function setSettlementToken(address token, uint256 scale) external {
         if (!isCompanion[msg.sender]) revert NotCompanion();
-        State memory s = _state;
-        Ledger memory l = _ledger;
-        if (s.held != 0 || l.net != l.settledNet || l.seq != l.settledThrough) revert Unsettled();
-        uint256 next = uint256(eras[s.era].scale).mulDiv(scale, ONE);
-        if (token == address(0) || s.era == type(uint8).max || next == 0 || next > type(uint96).max) {
-            revert InvalidAmount();
-        }
-        uint8 era = s.era + 1;
-        eras[era] = Era(token, uint96(next));
-        _state.era = era;
-        (_ledger.net, _ledger.settledNet) = (0, 0);
-        emit SettlementTokenSet(token, scale, era);
+        CardLegs.switchToken(eras, _state, _ledger, token, scale);
     }
 
     // Cardholder.
@@ -437,19 +399,21 @@ contract CardAuth is ICardAuth {
         emit PurchaseCaptured(ref, amount, covered, isFinal, false, _step());
     }
 
-    /// @notice Ends an open purchase, releasing every hold. Authorize role.
+    /// @notice Ends an open purchase, releasing every hold: the authorize role at any time, anyone once it expired.
     function release(bytes32 ref) external {
-        _role(ROLE_AUTHORIZE, 0);
-        _end(ref);
-    }
-
-    /// @notice Ends an open purchase whose hold expired. Anyone may call it.
-    function expire(bytes32 ref) external {
         Purchase memory p = _unpack(_purchases[ref]);
+        if (p.flags & OPEN == 0) revert PurchaseNotOpen();
         // Expiries are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
-        if (p.flags & OPEN == 0 || block.timestamp < p.expiresAt) revert PurchaseNotOpen();
-        _end(ref);
+        if (block.timestamp < p.expiresAt) _role(ROLE_AUTHORIZE, 0);
+        (CardLimits.Card storage c, address owner) = _card(p);
+        CardLegs.release(_funding[owner][p.version], ref, owner, p.flags >> 3);
+        uint256 released = p.amount - p.captured;
+        _giveBack(c, owner, p, released);
+        _moveHeld(-int256(released), p.flags & STANDIN != 0);
+        (p.amount, p.flags) = (p.captured, p.flags & ~OPEN);
+        _purchases[ref] = _pack(p);
+        emit PurchaseReleased(ref, released, _step());
     }
 
     /// @notice Charges `amount` with no hold: a force post under a new reference, or a late charge on a purchase
@@ -470,7 +434,7 @@ contract CardAuth is ICardAuth {
         } else {
             p = _unpack(word);
             if (p.flags & OPEN != 0) revert PurchaseExists();
-            if (p.era != _state.era) revert Unsettled();
+            if (p.era != _state.era) revert CardLegs.Unsettled();
             (c, owner) = _card(p);
             _spend(c, owner, address(0), 0, amount, false);
             p.flags |= CHARGED;
@@ -584,13 +548,13 @@ contract CardAuth is ICardAuth {
     }
 
     function exposure() external view returns (uint256 held, uint256 standIn, uint256 unsettled) {
-        State memory s = _state;
-        Ledger memory l = _ledger;
+        CardLegs.State memory s = _state;
+        CardLegs.Ledger memory l = _ledger;
         return (s.held, s.standIn, l.net > l.settledNet ? uint256(int256(l.net - l.settledNet)) : 0);
     }
 
     function ledger() external view returns (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet) {
-        Ledger memory l = _ledger;
+        CardLegs.Ledger memory l = _ledger;
         return (l.seq, l.settledThrough, l.net, l.settledNet);
     }
 
@@ -681,19 +645,6 @@ contract CardAuth is ICardAuth {
         owner = c.owner;
     }
 
-    function _end(bytes32 ref) private {
-        Purchase memory p = _unpack(_purchases[ref]);
-        if (p.flags & OPEN == 0) revert PurchaseNotOpen();
-        (CardLimits.Card storage c, address owner) = _card(p);
-        CardLegs.release(_funding[owner][p.version], ref, owner, p.flags >> 3);
-        uint256 released = p.amount - p.captured;
-        _giveBack(c, owner, p, released);
-        _moveHeld(-int256(released), p.flags & STANDIN != 0);
-        (p.amount, p.flags) = (p.captured, p.flags & ~OPEN);
-        _purchases[ref] = _pack(p);
-        emit PurchaseReleased(ref, released, _step());
-    }
-
     function _giveBack(CardLimits.Card storage c, address owner, Purchase memory p, uint256 amount) private {
         if (amount == 0) return;
         uint256 base = amount.mulDiv(ONE, eras[p.era].scale);
@@ -721,7 +672,7 @@ contract CardAuth is ICardAuth {
 
     function _moveHeld(int256 delta, bool standIn) private {
         if (delta == 0) return;
-        State storage s = _state;
+        CardLegs.State storage s = _state;
         // Held totals are sums of 48-bit purchase amounts.
         s.held = uint64(uint256(int256(uint256(s.held)) + delta));
         if (standIn) s.standIn = uint64(uint256(int256(uint256(s.standIn)) + delta));
