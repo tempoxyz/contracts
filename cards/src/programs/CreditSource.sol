@@ -360,7 +360,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
                     // forge-lint: disable-next-line(unsafe-typecast)
                     amount: uint128(heldUnits),
                     expiresAt: expiresAt,
-                    payee: PROGRAM.SETTLEMENT_ACCOUNT(),
+                    payee: _payee(l.lender),
                     standIn: false
                 })
             );
@@ -415,6 +415,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         g.gross = uint64(gross);
         // forge-lint: disable-next-line(unsafe-typecast)
         CORE.capture(l.lender, address(this), id, uint128(units), flags & CAPTURE_FINAL != 0);
+        _forward(l, units);
         // forge-lint: disable-end(reentrancy-no-eth)
         // forge-lint: disable-next-line(unsafe-typecast)
         _apply(lineId, id, uint64(gross));
@@ -539,7 +540,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             // forge-lint: disable-next-line(unsafe-typecast)
             else CORE.adjust(l.lender, address(this), id, uint128(keep));
         }
-        CORE.charge(l.lender, l.token, _chargeId(), drawn, payee, false);
+        CORE.charge(l.lender, l.token, _chargeId(), drawn, _payee(l.lender), false);
+        _forward(l, drawn);
         // forge-lint: disable-end(reentrancy-no-eth)
         l.owed += drawn;
         emit Redrawn(lineId, ref, payee, drawn, l.owed);
@@ -748,6 +750,18 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     function _holdId(address owner, bytes32 legId) private pure returns (bytes32) {
         return keccak256(abi.encode(owner, legId));
+    }
+
+    /// @dev Who a line's draws pay: the settlement account, or this source when the settlement account lends on its own
+    ///      line, since the core never pays an account from itself.
+    function _payee(address lender) private view returns (address) {
+        address settlement = PROGRAM.SETTLEMENT_ACCOUNT();
+        return lender == settlement ? address(this) : settlement;
+    }
+
+    /// @dev Passes a draw on an own line, which paid this source, back to the settlement account.
+    function _forward(Line storage l, uint256 amount) private {
+        if (amount != 0 && _payee(l.lender) == address(this)) SafeTransferLib.safeTransfer(l.token, l.lender, amount);
     }
 
     function _chargeId() private returns (bytes32) {

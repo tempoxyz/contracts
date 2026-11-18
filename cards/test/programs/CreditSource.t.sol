@@ -35,6 +35,25 @@ contract CreditSourceTest is CompEnv {
         _assertCoreBalanced();
     }
 
+    /// @dev The settlement account lending on its own line: a draw liens its balance and the capture leaves it whole,
+    ///      since the core never pays an account from itself and this source passes the draw straight back.
+    function test_ownLine_drawLeavesTheSettlementBalanceWhole() public {
+        usd.mint(settlement, 1000e6);
+        vm.startPrank(settlement);
+        core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
+        uint64 lineId =
+            credit.openLine(alice, 500e6, uint64(block.timestamp + 60 days), IEarnVault(address(0)), 0, 0, 0);
+        vm.stopPrank();
+        _accept(alice, lineId);
+        assertEq(core.reserved(settlement, address(usd)), 500e6);
+        _draw(alice, lineId, LEG, 300e6, REF);
+        assertEq(usd.balanceOf(settlement) + core.reserved(settlement, address(usd)), 1000e6);
+        assertEq(usd.balanceOf(address(credit)), 0);
+        assertEq(credit.lineOf(lineId).owed, 300e6);
+        assertEq(core.reserved(settlement, address(usd)), 200e6);
+        _assertCoreBalanced();
+    }
+
     function test_hold_onlyTheProgram() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         vm.expectRevert(CreditSource.NotProgram.selector);
