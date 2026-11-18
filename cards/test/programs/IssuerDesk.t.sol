@@ -109,11 +109,12 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.prank(issuer);
         desk.refund(P1, 20e6);
         assertEq(usd.balanceOf(alice), 920e6, "the whole refund reaches the owner");
-        assertEq(usd.balanceOf(settlement), 0.6e6, "the splits taken back");
+        // The splits taken back reach the settlement account, and the core repays its debt from them at once.
+        assertEq(usd.balanceOf(settlement), 0, "the splits taken back repay the debt");
         (address creditor, uint128 debt) = _debt(settlement, address(usd));
         assertEq(creditor, address(cards), "owed to the program");
-        assertEq(debt, 13e6, "what the account lacked");
-        assertEq(cards.issuerFunds(address(usd)), 37e6, "the program advanced it");
+        assertEq(debt, 13e6 - 0.6e6, "what the account lacked, less the splits taken back");
+        assertEq(cards.issuerFunds(address(usd)), 37e6 + 0.6e6, "the program advanced it, less what came back");
         assertEq(usd.balanceOf(address(desk)), 0, "the desk keeps nothing");
     }
 
@@ -139,7 +140,11 @@ contract IssuerDeskTest is ProgramsEnv {
         vm.prank(issuer);
         desk.refund(P1, 100e6);
         assertEq(usd.balanceOf(alice), 1000e6, "reward taken back with the refund");
-        assertEq(usd.balanceOf(partner), 1.5e6, "the reward returns to its funder");
+        // The partner's fee came back in full, past what it kept, as debt to the settlement account; the reward
+        // returning to the partner repays that debt at once.
+        assertEq(usd.balanceOf(partner), 0, "the reward returns to its funder and repays its debt");
+        (, uint128 partnerDebt) = _debt(partner, address(usd));
+        assertEq(partnerDebt, 0, "the partner owes nothing");
     }
 
     function test_rewards_aboveFunderSplit_refused() public {
@@ -241,7 +246,8 @@ contract IssuerDeskTest is ProgramsEnv {
         assertEq(usd.balanceOf(alice), 1000e6, "the whole disputed amount comes back");
         (address creditor, uint128 debt) = _debt(settlement, address(usd));
         assertEq(creditor, address(cards), "owed to the program");
-        assertEq(debt, 80e6 - 37.6e6, "what the account lacked");
+        // The splits taken back (2.4) reach the settlement account and repay its debt at once.
+        assertEq(debt, 80e6 - 37.6e6 - 2.4e6, "what the account lacked, less the splits taken back");
         assertEq(usd.balanceOf(address(desk)), 0, "the desk keeps nothing");
     }
 

@@ -86,8 +86,12 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         bytes32 id = pledgeId(program, pos.count + 1);
         // The settlement account placed the pledge itself, so the core keys it by the account as owner and placer.
         IReservationCore.HoldRecord memory h = CORE.getHold(account, account, id);
-        // forge-lint: disable-next-line(block-timestamp)
-        if (h.token != token || h.kind != PLEDGE || h.payee != address(this) || h.held == 0 || h.expiresAt <= block.timestamp) {
+        // Expiries are timestamps by design; a few seconds of validator skew does not change them.
+        // forge-lint: disable-start(block-timestamp)
+        bool missing = h.token != token || h.kind != PLEDGE || h.payee != address(this) || h.held == 0
+            || h.expiresAt <= block.timestamp;
+        // forge-lint: disable-end(block-timestamp)
+        if (missing) {
             revert PledgeMissing(id);
         }
         ++pos.count;

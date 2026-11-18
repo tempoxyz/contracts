@@ -337,6 +337,8 @@ contract CreditLineStatementsTest is ProgramsEnv {
     bytes32 internal lastDraw;
 
     function _refundOwed(uint128 amount) internal {
+        // This test is the line's card program, which pays refunds through the line.
+        usd.approve(address(credit), amount);
         credit.refund(lastDraw, amount);
         credit.sync(lastDraw);
     }

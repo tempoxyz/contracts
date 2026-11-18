@@ -1,0 +1,6 @@
+ProgramGasTest:test_gas_authorize_singleCashLeg() (gas: 3443118)
+ProgramGasTest:test_gas_capture_finalCashLeg() (gas: 3665766)
+ProgramGasTest:test_gas_capture_partialCashLeg() (gas: 4159783)
+ProgramGasTest:test_gas_charge_cash() (gas: 2421154)
+ProgramGasTest:test_gas_refund_cashLeg() (gas: 4128694)
+ProgramGasTest:test_gas_refund_charge() (gas: 3086357)

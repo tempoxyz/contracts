@@ -1104,9 +1104,7 @@ contract CardProgram {
             _reserve(merchant, token, id, tokens[0], expiresAt, false);
         }
         if (tokens[1] != 0) {
-            _reserve(
-                SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), tokens[1], expiresAt, false
-            );
+            _reserve(SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), tokens[1], expiresAt, false);
         }
         emit DisputeReserved(purchaseRef, merchant, token, tokens, covers, expiresAt);
     }
@@ -1242,9 +1240,9 @@ contract CardProgram {
         uint256 i = _reserves.length;
         while (i != 0) {
             --i;
+            bytes32 id = _reserves[i];
             // Each reserve the program placed is one core read; the list only holds reserves still to end.
             // forge-lint: disable-next-line(calls-loop)
-            bytes32 id = _reserves[i];
             if (CORE.getHold(_reserveOf[id].owner, address(this), id).held != 0) {
                 revert SettlementTokenInUse(IN_USE_HOLDS);
             }

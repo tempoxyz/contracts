@@ -58,6 +58,8 @@ library CoreDebt {
         view
         returns (uint128 amount, uint256 creditors)
     {
+        // One read of the core; callers that loop over owners bound their own loops.
+        // forge-lint: disable-next-line(calls-loop)
         IReservationCore.Debt[] memory debts = CORE.debtOf(owner, token);
         creditors = debts.length;
         for (uint256 i; i < debts.length; ++i) {

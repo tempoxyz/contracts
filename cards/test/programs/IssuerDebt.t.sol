@@ -312,7 +312,9 @@ contract IssuerDebtTest is ProgramsEnv {
         vm.startPrank(settlement);
         token.approve(address(cards), type(uint256).max);
         core.approveHolder(address(cards), address(token), type(uint128).max, 0);
-        core.setPayeeTerms(address(cards), address(token), _withDebtCap(settlement, address(cards), address(token), cap));
+        core.setPayeeTerms(
+            address(cards), address(token), _withDebtCap(settlement, address(cards), address(token), cap)
+        );
         vm.stopPrank();
     }
 }

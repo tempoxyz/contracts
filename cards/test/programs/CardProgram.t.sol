@@ -908,8 +908,9 @@ contract CardProgramTest is ProgramsEnv {
         assertEq(h.held, 50e6);
         assertEq(h.captureLimit, 80e6);
 
+        // Without an offline cap the core can't cover the gap with debt.
         vm.prank(issuer);
-        vm.expectRevert(IReservationCore.DebtCapExceeded.selector);
+        vm.expectRevert(IReservationCore.InsufficientAvailable.selector);
         cards.capture(P1, 80e6, true);
         _setOfflineCap(alice, address(cards), address(usd), 30e6);
         _capture(P1, 80e6, true);

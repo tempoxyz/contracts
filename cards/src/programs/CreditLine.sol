@@ -451,14 +451,10 @@ contract CreditLine is ISettlementTokenGuard {
         // A refund past what the borrower owes (it repaid the purchase already) reached the lender; it is the
         // borrower's.
         if (excess != 0) {
-            CORE.charge(
-                l.lender,
-                l.token,
-                keccak256(abi.encode(address(this), "overpaid", holdId, net)),
-                excess,
-                l.borrower,
-                false
-            );
+            bytes32 id = keccak256(abi.encode(address(this), "overpaid", holdId, net));
+            // Every entry point holds the transient lock for this whole call.
+            // forge-lint: disable-next-line(reentrancy-no-eth)
+            CORE.charge(l.lender, l.token, id, excess, l.borrower, false);
             emit Overpaid(lineId, holdId, excess);
         }
         emit Synced(lineId, holdId, l.owed, l.pending);
