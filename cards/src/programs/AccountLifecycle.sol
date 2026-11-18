@@ -11,11 +11,20 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 /// @notice An account's standing across every card program on one settlement token: active, dormant, closed or an
 ///         estate. Programs read it at authorization and report card activity to it. It pays out what an account
 ///         can release (available cash, plus the available shares of the vaults the caller names, redeemed): the
-///         account's debt first, then the payee. The owner closes its own account; the registrar marks estates and
-///         remits unclaimed property; the executor settles an estate.
+///         account's debt first, then the payee. The owner closes its own account; the registrar records estates and
+///         remits unclaimed property, each only after a notice period the owner can end by acting; the executor
+///         settles an estate to itself.
 /// @dev An account enrolls with its own key and approves this contract to move its cash and shares. Payouts take
 ///      only what the reservation core reports available, so holds and liens stay where they are. Debt is repaid
 ///      the way the core repays it from any credit: the cash first lands on the account itself.
+///
+///      Owner activity the lifecycle sees, which ends a pending notice: the owner's own calls here (enroll,
+///      reactivate, nameExecutor, and closeAccount for a dormant account, signed by the account or a key AccountKeys
+///      lists for it). Card
+///      activity reported by counted programs (noteActivity) keeps an account from turning dormant and voids an
+///      escheat notice given before it; it does not end an estate notice, since programs report issuer-driven events
+///      such as merchant authorizations. Other transactions the account sends are not seen: Tempo's protocol nonce
+///      cannot be read from a contract.
 contract AccountLifecycle {
     using SafeTransferLib for address;
 
@@ -27,21 +36,35 @@ contract AccountLifecycle {
         Estate
     }
 
+    /// @param status The account's standing.
+    /// @param lastActive When the account last showed activity: enrollment, an owner call or counted card activity.
+    /// @param executor The estate's executor, recorded when the registrar starts the estate notice.
+    /// @param noticeAt When the pending estate or escheat notice started; zero for none.
+    /// @param namedExecutor The executor the owner accepts for its estate while the account is active.
+    /// @param authority Where an escheat pays, fixed when the escheat notice started.
     struct Account {
         Status status;
         uint64 lastActive;
         address executor;
+        uint64 noticeAt;
+        address namedExecutor;
+        address authority;
     }
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
 
+    /// @notice Seconds between the registrar recording an estate and the executor settling it.
+    uint64 public constant ESTATE_NOTICE = 30 days;
+    /// @notice Seconds between an escheat notice and the remittance it allows.
+    uint64 public constant ESCHEAT_NOTICE = 90 days;
+
     /// @notice The settlement token whose balances and debt the lifecycle pays out.
     address public immutable TOKEN;
-    /// @notice The registrar: marks estates and remits unclaimed property.
+    /// @notice The registrar: records estates and remits unclaimed property.
     address public immutable REGISTRAR;
     /// @notice The registry of keys that sign for an account; zero lets only the account's own key sign.
     address public immutable ACCOUNT_KEYS;
-    /// @notice Seconds without card activity after which anyone may mark an account dormant.
+    /// @notice Seconds without activity after which anyone may mark an account dormant.
     uint64 public immutable DORMANCY;
     /// @notice Seconds without activity after which a dormant account's money is unclaimed property.
     uint64 public immutable ESCHEAT_AFTER;
@@ -49,10 +72,19 @@ contract AccountLifecycle {
     mapping(address account => Account) internal _accounts;
     /// @notice Card programs whose card activity keeps accounts active.
     mapping(address program => bool) public programs;
+    /// @notice The unclaimed property authority a dormancy mark names in its escheat notice; zero names none.
+    address public escheatAuthority;
 
     event Enrolled(address indexed account);
     event StatusSet(address indexed account, Status status);
-    event EstateSet(address indexed account, address indexed executor);
+    event ExecutorNamed(address indexed account, address indexed executor);
+    /// @notice The registrar recorded an estate; its executor may settle it from settlesAt.
+    event EstateSet(address indexed account, address indexed executor, uint64 settlesAt);
+    /// @notice An escheat notice naming authority; the account may be remitted from dueAt, once also idle long enough.
+    event EscheatNoticed(address indexed account, address indexed authority, uint64 dueAt);
+    /// @notice The owner acted, ending the pending estate or escheat notice.
+    event NoticeCancelled(address indexed account);
+    event EscheatAuthoritySet(address indexed authority);
     event ProgramSet(address indexed program, bool counted);
     /// @notice One payout: repaid of the account's debt, then amount to the payee, which repaid received of its own
     ///         debt on landing. Savings is what the redeemed shares added.
@@ -64,7 +96,9 @@ contract AccountLifecycle {
     error HoldsOpen();
     error InvalidPayee();
     error InvalidVault(address vault);
+    error NoNotice();
     error NotExecutor();
+    error NotNamedExecutor();
     error NotOwner();
     error NotRegistrar();
     error NotUnclaimed();
@@ -93,9 +127,7 @@ contract AccountLifecycle {
     function enroll() external {
         Account storage a = _accounts[msg.sender];
         if (a.status != Status.None) revert AccountState(a.status);
-        // Timestamps fit 64 bits for billions of years.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        a.lastActive = uint64(block.timestamp);
+        a.lastActive = _now();
         emit Enrolled(msg.sender);
         _setStatus(msg.sender, a, Status.Active);
     }
@@ -106,17 +138,24 @@ contract AccountLifecycle {
         emit ProgramSet(program, counted);
     }
 
+    /// @notice The registrar sets the authority later dormancy marks name in their escheat notice; zero names none.
+    // Zero is how the registrar stops naming a default authority.
+    // forge-lint: disable-next-line(missing-zero-check)
+    function setEscheatAuthority(address authority) external onlyRegistrar {
+        escheatAuthority = authority;
+        emit EscheatAuthoritySet(authority);
+    }
+
     /// @notice Records card activity on an account and returns its status. Only a registered program counts; any
-    ///         other caller reads the status unchanged.
+    ///         other caller reads the status unchanged. Activity after an escheat notice voids that notice.
     function noteActivity(address account) external returns (Status) {
         Account storage a = _accounts[account];
-        // Timestamps fit 64 bits for billions of years.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        if (programs[msg.sender]) a.lastActive = uint64(block.timestamp);
+        if (programs[msg.sender]) a.lastActive = _now();
         return a.status;
     }
 
-    /// @notice Marks an active account dormant once it has been idle for the dormancy period. Anyone may call it.
+    /// @notice Marks an active account dormant once it has been idle for the dormancy period, which starts an escheat
+    ///         notice naming the registrar's escheat authority. Anyone may call it.
     function markDormant(address account) external {
         Account storage a = _accounts[account];
         if (a.status != Status.Active) revert AccountState(a.status);
@@ -124,44 +163,76 @@ contract AccountLifecycle {
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < uint256(a.lastActive) + DORMANCY) revert TooEarly();
         _setStatus(account, a, Status.Dormant);
+        address authority = escheatAuthority;
+        if (authority != address(0) && authority != account) _notice(account, a, authority);
     }
 
-    /// @notice The owner brings a dormant account back, which counts as activity.
+    /// @notice The owner brings a dormant account back, or cancels an estate still in its notice period. Either counts
+    ///         as activity and ends the pending notice.
     function reactivate(address account) external {
         _requireOwner(account);
         Account storage a = _accounts[account];
-        if (a.status != Status.Dormant) revert AccountState(a.status);
-        // Timestamps fit 64 bits for billions of years.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        a.lastActive = uint64(block.timestamp);
+        if (a.status != Status.Dormant && a.status != Status.Estate) revert AccountState(a.status);
+        _ownerActs(account, a);
         _setStatus(account, a, Status.Active);
     }
 
+    /// @notice The owner names the executor it accepts for its estate, or zero for none. Like any owner call it counts
+    ///         as activity: it brings back a dormant account and cancels an estate still in its notice period.
+    // Zero is how the owner withdraws its consent.
+    // forge-lint: disable-next-line(missing-zero-check)
+    function nameExecutor(address account, address executor) external {
+        _requireOwner(account);
+        if (executor == account) revert InvalidPayee();
+        Account storage a = _accounts[account];
+        Status was = _ownerActs(account, a);
+        a.namedExecutor = executor;
+        emit ExecutorNamed(account, executor);
+        if (was != Status.Active) _setStatus(account, a, Status.Active);
+    }
+
     /// @notice The owner closes its account and pays out what it can release. Later calls pay out what expiries,
-    ///         refunds and lien releases freed since. An estate closes only through its executor.
+    ///         refunds and lien releases freed since. An estate does not close this way: during its notice period the
+    ///         owner first cancels it with reactivate, and after it only the executor settles it.
     function closeAccount(address account, address to, address[] calldata vaults) external returns (uint256 paid) {
         _requireOwner(account);
         Account storage a = _accounts[account];
-        if (a.status == Status.Estate) revert AccountState(a.status);
-        if (a.status != Status.Closed) _setStatus(account, a, Status.Closed);
+        Status status = a.status;
+        if (status == Status.Estate) revert AccountState(status);
+        if (status != Status.Closed) {
+            _clearNotice(account, a);
+            _setStatus(account, a, Status.Closed);
+        }
         return _payOut(account, to, vaults);
     }
 
-    /// @notice The registrar records the account holder's death: new holds stop and only the executor settles it.
+    /// @notice The registrar records the account holder's death, naming the executor: the executor the owner named
+    ///         for an active account, or anyone for a dormant one. New holds stop at once; the executor settles the
+    ///         estate after the notice period, unless the owner acts first.
     function setEstate(address account, address executor) external onlyRegistrar {
         if (executor == address(0)) revert ZeroAddress();
+        if (executor == account) revert InvalidPayee();
         Account storage a = _accounts[account];
-        if (a.status == Status.Closed) revert AccountState(a.status);
+        if (a.status == Status.Active) {
+            if (executor != a.namedExecutor) revert NotNamedExecutor();
+        } else if (a.status != Status.Dormant) {
+            revert AccountState(a.status);
+        }
+        uint64 at = _now();
         a.executor = executor;
-        emit EstateSet(account, executor);
+        a.noticeAt = at;
+        a.authority = address(0);
+        emit EstateSet(account, executor, at + ESTATE_NOTICE);
         _setStatus(account, a, Status.Estate);
     }
 
-    /// @notice The executor settles the estate once no hold is open: the account's debts, then the payee. It closes.
-    function settleEstate(address account, address to, address[] calldata vaults) external returns (uint256 paid) {
+    /// @notice The executor settles the estate to itself once the notice period has passed and no hold is open: the
+    ///         account's debts, then the executor. It closes.
+    function settleEstate(address account, address[] calldata vaults) external returns (uint256 paid) {
         Account storage a = _accounts[account];
         if (a.status != Status.Estate) revert AccountState(a.status);
-        if (msg.sender != a.executor) revert NotExecutor();
+        address executor = a.executor;
+        if (msg.sender != executor) revert NotExecutor();
         if (_holding(account, TOKEN)) revert HoldsOpen();
         // The executor names the vaults; each read only checks the estate has no open hold.
         // forge-lint: disable-start(calls-loop)
@@ -169,21 +240,42 @@ contract AccountLifecycle {
             if (_holding(account, IEarnVault(vaults[i]).earnShare())) revert HoldsOpen();
         }
         // forge-lint: disable-end(calls-loop)
-        paid = _payOut(account, to, vaults);
+        // Notice periods are measured in days; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < uint256(a.noticeAt) + ESTATE_NOTICE) revert TooEarly();
+        a.noticeAt = 0;
+        paid = _payOut(account, executor, vaults);
         _setStatus(account, a, Status.Closed);
     }
 
-    /// @notice The registrar remits a dormant account idle past the escheat period to the authority.
-    function escheat(address account, address authority, address[] calldata vaults)
-        external
-        onlyRegistrar
-        returns (uint256 paid)
-    {
+    /// @notice The registrar gives a dormant account an escheat notice naming the authority, replacing any earlier
+    ///         notice; the escheat it allows waits the notice period from now.
+    function noticeEscheat(address account, address authority) external onlyRegistrar {
+        if (authority == address(0)) revert ZeroAddress();
+        if (authority == account) revert InvalidPayee();
         Account storage a = _accounts[account];
         if (a.status != Status.Dormant) revert AccountState(a.status);
-        // Escheat periods are measured in years; a few seconds of validator skew does not change them.
-        // forge-lint: disable-next-line(block-timestamp)
+        _notice(account, a, authority);
+    }
+
+    /// @notice The registrar remits a dormant account to the authority its escheat notice named, once the notice
+    ///         period has passed and the account has been idle past the escheat period. The notice is used up: a
+    ///         later remittance needs a new one.
+    function escheat(address account, address[] calldata vaults) external onlyRegistrar returns (uint256 paid) {
+        Account storage a = _accounts[account];
+        if (a.status != Status.Dormant) revert AccountState(a.status);
+        uint64 noticeAt = a.noticeAt;
+        address authority = a.authority;
+        // Card activity after the notice voids it.
+        if (noticeAt == 0 || authority == address(0) || a.lastActive > noticeAt) revert NoNotice();
+        // Notice and escheat periods are measured in days and years; a few seconds of validator skew does not change
+        // them.
+        // forge-lint: disable-start(block-timestamp)
+        if (block.timestamp < uint256(noticeAt) + ESCHEAT_NOTICE) revert TooEarly();
         if (block.timestamp < uint256(a.lastActive) + ESCHEAT_AFTER) revert NotUnclaimed();
+        // forge-lint: disable-end(block-timestamp)
+        a.noticeAt = 0;
+        a.authority = address(0);
         return _payOut(account, authority, vaults);
     }
 
@@ -204,6 +296,43 @@ contract AccountLifecycle {
         emit StatusSet(account, status);
     }
 
+    /// @dev Starts an escheat notice naming authority.
+    function _notice(address account, Account storage a, address authority) private {
+        uint64 at = _now();
+        a.noticeAt = at;
+        a.authority = authority;
+        emit EscheatNoticed(account, authority, at + ESCHEAT_NOTICE);
+    }
+
+    /// @dev The owner acted on an active or dormant account, or an estate still in its notice period: records the
+    ///      activity and ends the pending notice. Returns the status it found.
+    function _ownerActs(address account, Account storage a) private returns (Status status) {
+        status = a.status;
+        if (status == Status.Estate) {
+            // Notice periods are measured in days; a few seconds of validator skew does not change them.
+            // forge-lint: disable-next-line(block-timestamp)
+            if (block.timestamp >= uint256(a.noticeAt) + ESTATE_NOTICE) revert AccountState(status);
+            a.executor = address(0);
+        } else if (status != Status.Active && status != Status.Dormant) {
+            revert AccountState(status);
+        }
+        a.lastActive = _now();
+        _clearNotice(account, a);
+    }
+
+    function _clearNotice(address account, Account storage a) private {
+        if (a.noticeAt == 0) return;
+        a.noticeAt = 0;
+        a.authority = address(0);
+        emit NoticeCancelled(account);
+    }
+
+    function _now() private view returns (uint64) {
+        // Timestamps fit 64 bits for billions of years.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint64(block.timestamp);
+    }
+
     function _requireOwner(address account) private view {
         if (msg.sender == account) return;
         address keys = ACCOUNT_KEYS;
@@ -217,8 +346,8 @@ contract AccountLifecycle {
         return CORE.reserved(account, token) > CORE.liened(account, token);
     }
 
-    /// @dev Whoever calls already chooses the payee, so the vaults they name give them no further reach over the
-    ///      account's money. Moves only what the core reports available.
+    /// @dev The payee is the owner's choice, the recorded executor or the noticed authority, so the vaults the caller
+    ///      names give it no further reach over the account's money. Moves only what the core reports available.
     // Moves from the account it pays out, which approved this contract when it enrolled; every caller is checked.
     // forge-lint: disable-start(arbitrary-send-erc20)
     function _payOut(address account, address to, address[] calldata vaults) private returns (uint256 paid) {
