@@ -7,13 +7,13 @@ import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
 /// @title Rewards
-/// @notice Card rewards and their claw-back: the issuer pays a purchase's cardholder a reward (cashback) in one fixed
-///         token from its funder, and when the purchase is refunded or written off takes it back from what the
-///         cardholder still holds, never past what that purchase's rewards paid and never into debt.
+/// @notice Card rewards and their claw-back: the issuer pays a purchase's cardholder a reward (cashback) from its funder
+///         in the token the purchase settled in, and when the purchase is refunded or written off takes it back from
+///         what the cardholder still holds, never past what that purchase's rewards paid and never into debt.
 /// @dev A companion of one CardAuth: the settle role pays and claws back, and an operator's payments count against
-///      its cap. A cardholder approves this contract as a holder of the reward token so claw-backs can charge it.
+///      its cap. A cardholder approves this contract as a holder of each settlement token so claw-backs can charge it.
 ///      Claw-backs pay the funder. One slot per rewarded purchase. Not upgradeable.
-/// @custom:reentrancy-guard none: it calls only the fixed core, its program and its fixed token.
+/// @custom:reentrancy-guard none: it calls only the fixed core, its program and the program's settlement tokens.
 contract Rewards {
     using SafeCastLib for uint256;
 
@@ -26,8 +26,6 @@ contract Rewards {
     }
 
     ICardAuth public immutable PROGRAM;
-    /// @notice The token rewards are paid in.
-    address public immutable TOKEN;
     /// @notice Pays rewards (approving this contract) and receives what is clawed back.
     address public immutable FUNDER;
 
@@ -41,20 +39,20 @@ contract Rewards {
     error UnknownPurchase();
     error ZeroAddress();
 
-    constructor(ICardAuth program, address token, address funder) {
-        if (address(program) == address(0) || token == address(0) || funder == address(0)) revert ZeroAddress();
-        (PROGRAM, TOKEN, FUNDER) = (program, token, funder);
+    constructor(ICardAuth program, address funder) {
+        if (address(program) == address(0) || funder == address(0)) revert ZeroAddress();
+        (PROGRAM, FUNDER) = (program, funder);
     }
 
     /// @notice Pays purchase `ref`'s cardholder a reward of `amount` from the funder. Settle role.
     function pay(bytes32 ref, uint256 amount) external {
-        address owner = _settle(ref, amount);
+        (address owner, address token) = _settle(ref, amount);
         if (amount == 0) revert InvalidAmount();
         Reward storage r = rewardOf[ref];
         r.paid = (r.paid + amount).toUint128();
         // The funder is fixed at deployment and approves this contract for rewards only.
         // forge-lint: disable-next-line(arbitrary-send-erc20)
-        SafeTransferLib.safeTransferFrom(TOKEN, FUNDER, owner, amount);
+        SafeTransferLib.safeTransferFrom(token, FUNDER, owner, amount);
         emit RewardPaid(ref, owner, amount);
     }
 
@@ -63,25 +61,27 @@ contract Rewards {
     ///         nor past the cardholder's free balance or the budget they gave this contract. Settle role. Returns what
     ///         it took.
     function clawBack(bytes32 ref, uint256 amount) external returns (uint256 taken) {
-        address owner = _settle(ref, 0);
+        (address owner, address token) = _settle(ref, 0);
         Reward memory r = rewardOf[ref];
         taken = _min(amount, r.paid - r.clawed);
-        taken = _min(taken, CORE.available(owner, TOKEN));
-        IReservationCore.Budget memory b = CORE.budget(owner, address(this), TOKEN);
+        taken = _min(taken, CORE.available(owner, token));
+        IReservationCore.Budget memory b = CORE.budget(owner, address(this), token);
         uint256 used = uint256(b.spent) + b.outstanding;
         taken = _min(taken, b.limit > used ? b.limit - used : 0);
         if (taken == 0) return 0;
         rewardOf[ref].clawed = r.clawed + taken.toUint128();
-        CORE.charge(owner, TOKEN, keccak256(abi.encode(ref, r.clawed)), taken.toUint128(), address(this), false);
-        SafeTransferLib.safeTransfer(TOKEN, FUNDER, taken);
+        CORE.charge(owner, token, keccak256(abi.encode(ref, r.clawed)), taken.toUint128(), address(this), false);
+        SafeTransferLib.safeTransfer(token, FUNDER, taken);
         emit RewardClawedBack(ref, owner, taken);
     }
 
-    /// @dev Requires the settle role (counting `value` against an operator's cap) and returns the purchase's owner.
-    function _settle(bytes32 ref, uint256 value) private returns (address owner) {
+    /// @dev Requires the settle role (counting `value` against an operator's cap) and returns the purchase's owner and
+    ///      the token it settled in.
+    function _settle(bytes32 ref, uint256 value) private returns (address owner, address token) {
         if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_SETTLE())) revert Unauthorized();
         if (value != 0) PROGRAM.useOperatorCap(msg.sender, value);
-        owner = PROGRAM.purchaseOf(ref).owner;
+        ICardAuth.PurchaseView memory p = PROGRAM.purchaseOf(ref);
+        (owner, token) = (p.owner, p.token);
         if (owner == address(0)) revert UnknownPurchase();
     }
 

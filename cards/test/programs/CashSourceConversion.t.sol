@@ -7,6 +7,7 @@ import { CardAuth } from "../../src/programs/CardAuth.sol";
 import { CardLegs } from "../../src/programs/CardLegs.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
+import { Rewards } from "../../src/programs/Rewards.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
 import { ISource } from "../../src/programs/interfaces/ISource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
@@ -242,6 +243,23 @@ contract CashSourceConversionTest is AuthEnv {
     }
 
     // An issuer settling in another stablecoin.
+
+    /// @dev Rewards pay in the token the purchase settled in: a euro issuer's reward on a dollar-funded purchase is euros.
+    function test_rewards_payInThePurchasesToken() public {
+        Rewards rewards = new Rewards(cards, funder);
+        _setting(abi.encodeCall(cards.setCompanion, (address(rewards), true)));
+        _localIssuer();
+        _usdCash(100);
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        _capture(P1, 40e6, true);
+        eur.mint(funder, 1e6);
+        vm.prank(funder);
+        eur.approve(address(rewards), 1e6);
+        vm.prank(issuer);
+        rewards.pay(P1, 1e6);
+        assertEq(eur.balanceOf(alice), 1e6);
+    }
 
     function test_localIssuer_cashConvertsAtCaptureAndTheIssuerGetsItsTokenExactly() public {
         _localIssuer();

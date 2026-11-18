@@ -13,7 +13,7 @@ contract RewardsTest is AuthEnv {
     function setUp() public {
         _deployPrograms();
         _issue(alice, _limits(500e6, 1000e6, 5000e6));
-        rewards = new Rewards(cards, address(usd), funder);
+        rewards = new Rewards(cards, funder);
         _setting(abi.encodeCall(cards.setCompanion, (address(rewards), true)));
         usd.mint(funder, 1000e6);
         vm.prank(funder);
