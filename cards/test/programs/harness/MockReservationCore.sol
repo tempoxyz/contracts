@@ -2,278 +2,324 @@
 pragma solidity ^0.8.36;
 
 import { Vm } from "forge-std/Vm.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
-import { IReservationCore, MAX_PLEDGE_DURATION } from "../../../src/programs/interfaces/IReservationCore.sol";
+import {
+    IReservationCore,
+    KIND_HOLD,
+    KIND_LIEN,
+    KIND_PLEDGE,
+    MAX_CREDITORS,
+    MAX_DEBT_TERM,
+    MAX_HOLD_DURATION,
+    MAX_PLEDGE_DURATION
+} from "../../../src/programs/interfaces/IReservationCore.sol";
 
-interface IBalanceToken {
+interface IMockCoreToken {
     function balanceOf(address account) external view returns (uint256);
-    function transfer(address to, uint256 amount) external returns (bool);
+    function paused() external view returns (bool);
+    function transferPolicyId() external view returns (uint64);
+    function hasRole(address account, bytes32 role) external view returns (bool);
 }
 
 /// @title MockReservationCore
 /// @notice TEST MODEL ONLY of the reservation core precompile at 0x5245535600000000000000000000000000000000, which
-///         the test EVM's hardfork predates. Tests etch it at that address and allow it cheatcodes. It keeps the
-///         node's rules (placer, payee and holder rights, outstanding allowance, hard expiry, capture tolerance,
-///         stand-in cap, capped debt, refunds, liens) against real token balances.
-/// @dev Where the node moves amounts between an owner's balance slot and its reserved position, this model moves
-///      the tokens between the owner and its own address, so the owner's balance is exactly the balance slot and
-///      this contract's balance of a token equals the token's total reserved (`totalReserved`). Differences from
-///      the node, all test-only: it cannot tell a root key from an access key, so "root key only" means the owner;
-///      `LIEN_ROLE` is granted with `grantLienRole`; debt is repaid from the owner's balance at the start of the
-///      next operation on that owner and token, or by `repay`, rather than from each incoming credit as it lands.
+///         the test EVM's hardfork predates. Tests etch it at that address and allow it cheatcodes. It follows the
+///         node's rules: records keyed by (owner, placer, id) and deleted on settlement; hold, pledge and lien kinds;
+///         holder budgets with periods; payee terms; up to four lapsing creditors per owner and token; refunds that
+///         forgive the caller's debt first; and the token's pause and TIP-403 checks on every payment.
+/// @dev Where the node moves amounts between an owner's balance slot and its reserved position, this model moves the
+///      token balance between the owner and this contract by writing the token's balance slots, so an owner's
+///      `balanceOf` is exactly the node's balance slot (`available`), and this contract's balance of a token equals
+///      the token's total reserved (`totalReserved`). The node's `balanceOf` also counts reserved amounts; this one
+///      does not. Other differences, all test-only:
+///      - It cannot tell a root key from an access key, so "root key only" checks pass for every caller, and access
+///        key spending limits are not applied.
+///      - Debt is repaid from each credit the core itself makes (captures, charges, refunds). A credit made by the
+///        token directly (a transfer or mint in a test) repays debt only when the test calls `notifyCredit`, as the
+///        node's token does on every credit.
+///      - Burning reserved balance (the node's unbacked shortfall) is not modeled.
+///      - Token rewards accounting is untouched by reservations.
 contract MockReservationCore is IReservationCore {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
-    uint256 private constant MAX_HOLD = 31 days;
-    uint256 private constant MAX_PLEDGE = MAX_PLEDGE_DURATION;
+    /// @notice The token role allowed to place and seize liens.
+    bytes32 public constant LIEN_ROLE = keccak256("LIEN_ROLE");
+    /// @dev Storage slot of the TIP-20 precompile's `balances` mapping.
+    uint256 private constant BALANCES_SLOT = 9;
     uint256 private constant BPS = 10_000;
+    bytes12 private constant TIP20_PREFIX = 0x20c000000000000000000000;
 
-    struct Debt {
-        address creditor;
-        uint128 amount;
-    }
+    error InvalidToken();
+    error InvalidRecipient();
 
-    struct Lien {
-        address owner;
+    struct Record {
         address token;
-        uint128 amount;
-        uint64 expiresAt;
-        bool pledged;
-        bool delegated;
+        uint64 held;
+        uint32 expiresAt;
+        address payee;
+        uint64 captureLimit;
+        uint16 toleranceBps;
+        uint8 kind;
+        bool standIn;
     }
 
-    mapping(address owner => mapping(bytes32 id => HoldRecord)) private _holds;
-    mapping(address owner => mapping(address token => uint128)) private _reserved;
-    mapping(address owner => mapping(address token => uint128)) private _liened;
-    mapping(address owner => mapping(address holder => mapping(address token => uint128))) private _allowance;
-    mapping(address owner => mapping(address holder => mapping(address token => uint128))) private _outstanding;
-    mapping(address owner => mapping(address creditor => mapping(address token => uint128))) private _debtCap;
-    mapping(address owner => mapping(address token => Debt)) private _debt;
-    mapping(address owner => mapping(address payee => mapping(address token => uint32))) private _tolerance;
-    mapping(address owner => mapping(address payee => mapping(address token => uint128))) private _offlineCap;
-    mapping(address authority => mapping(bytes32 id => Lien)) private _liens;
+    struct Hold {
+        address owner;
+        address placer;
+        bytes32 id;
+        Record r;
+    }
 
-    /// @notice Everything reserved in `token` across owners: holds and liens. Equals this contract's balance.
+    struct BudgetState {
+        uint64 limit;
+        uint64 spent;
+        uint64 outstanding;
+        uint32 period;
+        uint32 periodStart;
+    }
+
+    struct Terms {
+        uint64 debtCap;
+        uint64 offlineCap;
+        uint16 toleranceBps;
+        uint32 debtTerm;
+    }
+
+    struct DebtEntry {
+        address creditor;
+        uint64 amount;
+        uint32 lapsesAt;
+    }
+
+    mapping(address owner => mapping(address placer => mapping(bytes32 id => Record))) private _records;
+    mapping(address owner => mapping(address token => uint128)) private _reserved;
+    mapping(address owner => mapping(address holder => mapping(address token => BudgetState))) private _budgets;
+    mapping(address owner => mapping(address payee => mapping(address token => Terms))) private _terms;
+    mapping(address owner => mapping(address token => DebtEntry[])) private _debts;
+
+    /// @notice Everything reserved in `token` across owners. Equals this contract's balance of `token`.
     mapping(address token => uint256) public totalReserved;
-    /// @notice Accounts holding `LIEN_ROLE`.
-    mapping(address account => bool) public hasLienRole;
 
     // Test hooks.
 
-    function grantLienRole(address account, bool granted) external {
-        hasLienRole[account] = granted;
-    }
-
-    /// @notice Repays `owner`'s debt in `token` from its balance, as the node does when credits arrive.
-    function repay(address owner, address token) external {
-        _repay(owner, token);
+    /// @notice Repays `to`'s debt in `token` from a credit of `amount` the token made outside the core, as the
+    ///         node's token does on every transfer and mint. Call it after crediting an account that may owe debt.
+    function notifyCredit(address token, address to, uint256 amount) external {
+        _repay(to, token, amount);
     }
 
     // Owner settings.
 
-    function approveHolder(address holder, address token, uint128 allowance_) external {
-        _allowance[msg.sender][holder][token] = allowance_;
-        emit HolderApproved(msg.sender, holder, token, allowance_);
+    function approveHolder(address holder, address token, uint128 limit, uint32 period) external {
+        address owner = msg.sender;
+        if (holder == address(0) || holder == owner) revert Unauthorized();
+        _tip20(token);
+        uint64 now_ = _now();
+        BudgetState memory b = _budgets[owner][holder][token];
+        _roll(b, now_);
+        b.limit = _sat64(limit);
+        if (b.period != period) {
+            b.period = period;
+            b.periodStart = _ts32(now_);
+        }
+        _budgets[owner][holder][token] = b;
+        emit HolderApproved(owner, holder, token, b.limit, period);
     }
 
-    function setDebtCap(address creditor, address token, uint128 cap) external {
-        _debtCap[msg.sender][creditor][token] = cap;
+    function setPayeeTerms(address payee, address token, PayeeTerms calldata terms) external {
+        address owner = msg.sender;
+        address resolved = _counterparty(owner, payee, token);
+        if (terms.debtTerm > MAX_DEBT_TERM) revert InvalidExpiry();
+        Terms memory t = Terms({
+            debtCap: _sat64(terms.debtCap),
+            offlineCap: _sat64(terms.offlineCap),
+            toleranceBps: terms.toleranceBps,
+            debtTerm: terms.debtTerm
+        });
+        _terms[owner][resolved][token] = t;
+        emit PayeeTermsSet(owner, resolved, token, _termsAbi(t));
     }
 
-    function setCaptureTolerance(address payee, address token, uint32 toleranceBps) external {
-        _tolerance[msg.sender][payee][token] = toleranceBps;
-    }
-
-    function setOfflineCap(address payee, address token, uint128 cap) external {
-        _offlineCap[msg.sender][payee][token] = cap;
-    }
-
-    // Holds.
+    // Placing.
 
     function hold(HoldRequest calldata request) external {
         _place(msg.sender, msg.sender, request);
     }
 
     function holdFrom(address owner, HoldRequest calldata request) external {
-        _place(owner, msg.sender, request);
-    }
-
-    function adjust(address owner, bytes32 id, uint128 amount) external {
-        HoldRecord storage h = _live(owner, id);
-        if (msg.sender != h.placer) revert Unauthorized();
-        uint128 held = h.held;
-        if (amount > held) {
-            uint128 delta = amount - held;
-            if (h.standIn && h.captured + amount > h.approved) revert InvalidAmount();
-            _repay(owner, h.token);
-            if (_balance(h.token, owner) < delta) revert InsufficientAvailable();
-            if (h.placer != owner) _useAllowance(owner, h.placer, h.token, delta, delta);
-            _reserve(owner, h.token, delta);
-            // The approval is the high-water mark of what was authorized, so an incremental increase raises the cap.
-            if (!h.standIn && h.captured + amount > h.approved) h.approved = h.captured + amount;
-        } else if (amount < held) {
-            uint128 delta = held - amount;
-            if (h.placer != owner) _outstanding[owner][h.placer][h.token] -= delta;
-            _unreserveTo(owner, h.token, delta, owner);
-        }
-        h.held = amount;
-        emit HoldAdjusted(owner, id, h.token, amount);
-    }
-
-    function capture(address owner, bytes32 id, uint128 amount, bool isFinal) external {
-        HoldRecord storage h = _live(owner, id);
-        address token = h.token;
-        address payee = h.payee;
-        if (msg.sender != h.placer && msg.sender != payee) revert Unauthorized();
-        if (amount == 0 && !isFinal) revert InvalidAmount();
-        uint256 cap = uint256(h.approved) + uint256(h.approved) * _tolerance[owner][payee][token] / BPS;
-        if (uint256(h.captured) + amount > cap) revert ToleranceExceeded();
-
-        uint128 fromHeld = amount < h.held ? amount : h.held;
-        h.held -= fromHeld;
-        if (h.placer != owner) _outstanding[owner][h.placer][token] -= fromHeld;
-        _unreserveTo(owner, token, fromHeld, payee);
-
-        uint128 debt;
-        uint128 excess = amount - fromHeld;
-        if (excess != 0) {
-            _repay(owner, token);
-            uint256 balance = _balance(token, owner);
-            uint128 fromBalance = excess < balance ? excess : uint128(balance);
-            _move(token, owner, payee, fromBalance);
-            debt = excess - fromBalance;
-            if (debt != 0) _addDebt(owner, payee, token, debt, h.standIn);
-        }
-        h.captured += amount;
-
-        if (isFinal) {
-            uint128 rest = h.held;
-            h.held = 0;
-            h.settled = true;
-            if (h.placer != owner) _outstanding[owner][h.placer][token] -= rest;
-            _unreserveTo(owner, token, rest, owner);
-        }
-        emit HoldCaptured(owner, id, token, payee, amount, debt, isFinal);
-    }
-
-    function release(address owner, bytes32 id) external {
-        HoldRecord storage h = _open(owner, id);
-        if (msg.sender != h.placer && msg.sender != h.payee) revert Unauthorized();
-        _end(owner, id, h, block.timestamp >= h.expiresAt);
-    }
-
-    function releaseExpired(address owner, bytes32 id) external {
-        HoldRecord storage h = _open(owner, id);
-        if (block.timestamp < h.expiresAt) revert HoldNotExpired();
-        _end(owner, id, h, true);
-    }
-
-    function refund(address owner, bytes32 id, uint128 amount) external {
-        HoldRecord storage h = _holds[owner][id];
-        if (h.placer == address(0)) revert HoldNotFound();
-        if (msg.sender != h.payee) revert Unauthorized();
-        if (amount == 0) revert InvalidAmount();
-        if (uint256(h.refunded) + amount > h.captured) revert RefundExceedsCapture();
-        h.refunded += amount;
-        _move(h.token, msg.sender, owner, amount);
-        emit Refunded(owner, id, h.token, msg.sender, amount);
-        _repay(owner, h.token);
-    }
-
-    function charge(address owner, address token, bytes32 id, uint128 amount, address payee, bool standIn) external {
-        if (amount == 0) revert InvalidAmount();
-        if (token == address(0) || payee == address(0)) revert PolicyForbids();
-        HoldRecord storage h = _holds[owner][id];
-        if (h.placer != address(0)) revert HoldExists();
-        // A charge counts against the holder's allowance for its own call only: nothing stays outstanding.
-        if (msg.sender != owner) _useAllowance(owner, msg.sender, token, amount, 0);
-
-        _repay(owner, token);
-        uint256 balance = _balance(token, owner);
-        uint128 fromBalance = amount < balance ? amount : uint128(balance);
-        _move(token, owner, payee, fromBalance);
-        uint128 debt = amount - fromBalance;
-        if (debt != 0) _addDebt(owner, payee, token, debt, standIn);
-
-        h.token = token;
-        h.placer = msg.sender;
-        h.payee = payee;
-        h.approved = amount;
-        h.captured = amount;
-        h.standIn = standIn;
-        h.settled = true;
-        emit Charged(owner, id, token, payee, amount, debt);
-    }
-
-    // Liens.
-
-    function lien(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) external {
-        if (!hasLienRole[msg.sender]) revert Unauthorized();
-        _placeLien(owner, msg.sender, token, id, amount, expiresAt, false, false);
+        _place(msg.sender, owner, request);
     }
 
     function pledge(address authority, address token, bytes32 id, uint128 amount, uint64 expiresAt) external {
-        if (expiresAt == 0) revert InvalidExpiry();
-        _placeLien(msg.sender, authority, token, id, amount, expiresAt, true, false);
+        address resolved = _counterparty(msg.sender, authority, token);
+        _placePledge(msg.sender, msg.sender, resolved, token, id, amount, expiresAt);
     }
 
     function pledgeFrom(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) external {
-        if (expiresAt <= block.timestamp || expiresAt > block.timestamp + MAX_PLEDGE) revert InvalidExpiry();
-        uint128 allowed = _allowance[owner][msg.sender][token];
-        if (allowed == 0) revert Unauthorized();
-        uint128 outstanding = _outstanding[owner][msg.sender][token];
-        if (uint256(outstanding) + amount > allowed) revert AllowanceExceeded();
-        _placeLien(owner, msg.sender, token, id, amount, expiresAt, true, true);
-        _outstanding[owner][msg.sender][token] = outstanding + amount;
+        if (msg.sender == owner) revert Unauthorized();
+        _placePledge(msg.sender, owner, msg.sender, token, id, amount, expiresAt);
     }
 
-    function releaseLien(bytes32 id) external {
-        Lien storage l = _liens[msg.sender][id];
-        if (l.owner == address(0)) revert LienNotFound();
-        _endLien(msg.sender, id, l, false);
+    function lien(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) external {
+        address authority = msg.sender;
+        _tip20(token);
+        if (!IMockCoreToken(token).hasRole(authority, LIEN_ROLE)) revert Unauthorized();
+        if (expiresAt != 0 && (expiresAt <= _now() || expiresAt > type(uint32).max)) revert InvalidExpiry();
+        uint64 amt = _amount64(amount);
+        address resolvedOwner = _payee(owner);
+        if (resolvedOwner == authority) revert Unauthorized();
+        _ensureVacant(resolvedOwner, authority, id);
+        if (amt > _available(token, resolvedOwner)) revert InsufficientAvailable();
+        _reserve(token, resolvedOwner, amt);
+        _records[resolvedOwner][authority][id] = Record({
+            token: token,
+            held: amt,
+            expiresAt: _ts32(expiresAt),
+            payee: authority,
+            captureLimit: amt,
+            toleranceBps: 0,
+            kind: KIND_LIEN,
+            standIn: false
+        });
+        emit HoldPlaced(resolvedOwner, authority, token, id, KIND_LIEN, authority, amt, amt, amt, expiresAt, false);
     }
 
-    function reduceLien(bytes32 id, uint128 amount) external {
-        Lien storage l = _liens[msg.sender][id];
-        if (l.owner == address(0)) revert LienNotFound();
-        if (amount == 0 || amount > l.amount) revert InvalidAmount();
-        (address owner, address token) = (l.owner, l.token);
-        uint128 remaining = l.amount - amount;
-        l.amount = remaining;
-        _liened[owner][token] -= amount;
-        if (l.delegated) _outstanding[owner][msg.sender][token] -= amount;
-        _unreserveTo(owner, token, amount, owner);
-        if (remaining == 0) delete _liens[msg.sender][id];
-        emit LienReduced(owner, msg.sender, token, id, remaining);
+    // Settling.
+
+    function adjust(address owner, address placer, bytes32 id, uint128 amount) external {
+        Hold memory h = _liveHold(owner, placer, id);
+        uint64 amt = _amount64(amount);
+        uint64 held = h.r.held;
+        if (h.r.kind == KIND_HOLD) {
+            if (msg.sender != h.placer) revert Unauthorized();
+        } else if (msg.sender != h.r.payee) {
+            revert Unauthorized();
+        } else if (amt > held) {
+            revert InvalidAmount();
+        }
+        address token = h.r.token;
+        _tip20(token);
+        if (amt > held) {
+            uint64 increase = amt - held;
+            uint64 wanted = _withTolerance(amt, h.r.toleranceBps);
+            uint64 raise = wanted > h.r.captureLimit ? wanted - h.r.captureLimit : 0;
+            if (raise != 0 && h.r.standIn) revert InvalidAmount();
+            _ensureAllowed(token, owner, h.r.payee, false);
+            if (increase > _available(token, owner)) revert InsufficientAvailable();
+            if (_budgeted(h)) _drawBudget(owner, h.placer, token, increase, increase, 0);
+            _reserve(token, owner, increase);
+            if (raise != 0) h.r.captureLimit = wanted;
+        } else if (amt < held) {
+            uint64 decrease = held - amt;
+            _unreserve(token, owner, decrease);
+            if (_budgeted(h)) _settleBudget(owner, h.placer, token, 0, decrease, 0);
+            if (h.r.kind != KIND_HOLD) h.r.captureLimit = amt;
+        }
+        h.r.held = amt;
+        _records[owner][h.placer][id] = h.r;
+        emit HoldAdjusted(owner, h.placer, token, id, amt, h.r.captureLimit);
     }
 
-    function seizeLien(bytes32 id, uint128 amount) external {
-        Lien storage l = _liens[msg.sender][id];
-        if (l.owner == address(0)) revert LienNotFound();
-        if (!l.pledged && !hasLienRole[msg.sender]) revert Unauthorized();
-        // Past its expiry a lien can only be released, as a hold can.
-        if (l.expiresAt != 0 && block.timestamp >= l.expiresAt) revert InvalidExpiry();
-        if (amount == 0 || amount > l.amount) revert InvalidAmount();
-        (address owner, address token) = (l.owner, l.token);
-        uint128 remaining = l.amount - amount;
-        l.amount = remaining;
-        _liened[owner][token] -= amount;
-        if (l.delegated) _outstanding[owner][msg.sender][token] -= amount;
-        _unreserveTo(owner, token, amount, msg.sender);
-        if (remaining == 0) delete _liens[msg.sender][id];
-        emit LienSeized(owner, msg.sender, token, id, amount, remaining);
+    function capture(address owner, address placer, bytes32 id, uint128 amount, bool isFinal) external {
+        Hold memory h = _liveHold(owner, placer, id);
+        address payee = h.r.payee;
+        address token = h.r.token;
+        _tip20(token);
+        uint8 k = h.r.kind;
+        if (k == KIND_HOLD) {
+            if (msg.sender != h.placer && msg.sender != payee) revert Unauthorized();
+        } else if (msg.sender != payee) {
+            revert Unauthorized();
+        } else if (k == KIND_LIEN && !IMockCoreToken(token).hasRole(msg.sender, LIEN_ROLE)) {
+            revert Unauthorized();
+        }
+        if (amount == 0 && !isFinal) revert InvalidAmount();
+        if (amount > h.r.captureLimit) revert CaptureLimitExceeded();
+        uint64 amt = uint64(amount);
+        uint64 held = h.r.held;
+        uint64 fromHold = amt < held ? amt : held;
+        uint64 excess = amt - fromHold;
+        uint64 rest = isFinal ? held - fromHold : 0;
+        bool senderExempt = (k == KIND_HOLD && excess == 0) || k == KIND_LIEN;
+        _ensureAllowed(token, owner, payee, senderExempt);
+        if (_budgeted(h)) _settleBudget(owner, h.placer, token, fromHold, rest, excess);
+        uint128 paid;
+        uint128 debt;
+        if (k == KIND_HOLD) {
+            _unreserve(token, owner, uint128(fromHold) + rest);
+            debt = _pay(token, owner, payee, amt, h.r.standIn, senderExempt);
+            paid = amt - debt;
+        } else {
+            _unreserve(token, owner, fromHold);
+            _transfer(token, owner, payee, fromHold, senderExempt);
+            _unreserve(token, owner, rest);
+            paid = fromHold;
+        }
+        h.r.held -= fromHold + rest;
+        h.r.captureLimit = k == KIND_HOLD ? h.r.captureLimit - amt : h.r.held;
+        bool settled = isFinal || (k != KIND_HOLD && h.r.held == 0);
+        if (settled) delete _records[owner][h.placer][id];
+        else _records[owner][h.placer][id] = h.r;
+        emit HoldCaptured(owner, h.placer, token, id, payee, paid, debt, settled);
     }
 
-    function releaseExpiredLien(address authority, bytes32 id) external {
-        Lien storage l = _liens[authority][id];
-        if (l.owner == address(0)) revert LienNotFound();
-        if (l.expiresAt == 0 || block.timestamp < l.expiresAt) revert LienNotExpired();
-        _endLien(authority, id, l, true);
+    function release(address owner, address placer, bytes32 id) external {
+        Hold memory h = _loadHold(owner, placer, id);
+        bool allowed = msg.sender == h.r.payee || (h.r.kind == KIND_HOLD && msg.sender == h.placer);
+        if (!allowed) revert Unauthorized();
+        _endHold(h, false);
+    }
+
+    function releaseExpired(address owner, address placer, bytes32 id) external {
+        Hold memory h = _loadHold(owner, placer, id);
+        if (!_expired(h.r, _now())) revert HoldNotExpired();
+        _endHold(h, true);
+    }
+
+    function charge(address owner, address token, bytes32 id, uint128 amount, address payee, bool standIn) external {
+        address resolved = _payee(payee);
+        uint64 amt = _amount64(amount);
+        _tip20(token);
+        _ensureAllowed(token, owner, resolved, false);
+        if (msg.sender != owner) _drawBudget(owner, msg.sender, token, amt, 0, amt);
+        uint128 debt = _pay(token, owner, resolved, amt, standIn, false);
+        emit Charged(owner, msg.sender, token, id, resolved, amt, debt);
+    }
+
+    function refund(address owner, address token, address placer, bytes32 id, uint128 amount) external {
+        if (amount == 0) revert InvalidAmount();
+        address resolved = _payee(owner);
+        _tip20(token);
+        _ensureAllowed(token, msg.sender, resolved, false);
+        uint128 forgiven = _forgive(resolved, token, msg.sender, amount);
+        uint128 paid = amount - forgiven;
+        if (paid != 0) {
+            if (paid > _available(token, msg.sender)) revert InsufficientAvailable();
+            _transfer(token, msg.sender, resolved, paid, false);
+        }
+        emit Refunded(resolved, msg.sender, token, placer, id, amount, forgiven);
+    }
+
+    function clearLapsedDebt(address owner, address token) external {
+        if (_debts[owner][token].length == 0) return;
+        _storeDebts(owner, token, _liveDebts(owner, token));
     }
 
     // Views.
 
-    function getHold(address owner, bytes32 id) external view returns (HoldRecord memory) {
-        return _holds[owner][id];
+    function getHold(address owner, address placer, bytes32 id) external view returns (HoldRecord memory record) {
+        Record memory r = _records[owner][placer][id];
+        if (r.token == address(0)) return record;
+        record = HoldRecord({
+            token: r.token,
+            payee: r.payee,
+            held: r.held,
+            captureLimit: r.captureLimit,
+            expiresAt: r.expiresAt,
+            kind: r.kind,
+            standIn: r.standIn
+        });
     }
 
     function reserved(address owner, address token) external view returns (uint128) {
@@ -281,195 +327,409 @@ contract MockReservationCore is IReservationCore {
     }
 
     function available(address owner, address token) external view returns (uint128) {
-        uint256 balance = _balance(token, owner);
-        uint256 debt = _debt[owner][token].amount;
-        return balance > debt ? uint128(balance - debt) : 0;
+        _tip20(token);
+        return _available(token, owner);
     }
 
-    function allowance(address owner, address holder, address token)
-        external
-        view
-        returns (uint128 allowance_, uint128 outstanding)
-    {
-        return (_allowance[owner][holder][token], _outstanding[owner][holder][token]);
+    function budget(address owner, address holder, address token) external view returns (Budget memory) {
+        BudgetState memory b = _budgets[owner][holder][token];
+        _roll(b, _now());
+        return Budget({
+            limit: b.limit, spent: b.spent, outstanding: b.outstanding, period: b.period, periodStart: b.periodStart
+        });
     }
 
-    function debtOf(address owner, address token) external view returns (address creditor, uint128 amount) {
-        Debt storage d = _debt[owner][token];
-        return (d.creditor, d.amount);
+    function payeeTerms(address owner, address payee, address token) external view returns (PayeeTerms memory) {
+        address resolved = StdPrecompiles.ADDRESS_REGISTRY.resolveRecipient(payee);
+        return _termsAbi(_terms[owner][resolved][token]);
     }
 
-    function debtCap(address owner, address creditor, address token) external view returns (uint128) {
-        return _debtCap[owner][creditor][token];
-    }
-
-    function captureTolerance(address owner, address payee, address token) external view returns (uint32) {
-        return _tolerance[owner][payee][token];
-    }
-
-    function offlineCap(address owner, address payee, address token) external view returns (uint128) {
-        return _offlineCap[owner][payee][token];
-    }
-
-    function lienOf(address authority, bytes32 id)
-        external
-        view
-        returns (address owner, address token, uint128 amount, uint64 expiresAt, bool pledged)
-    {
-        Lien storage l = _liens[authority][id];
-        return (l.owner, l.token, l.amount, l.expiresAt, l.pledged);
-    }
-
-    function liened(address owner, address token) external view returns (uint128) {
-        return _liened[owner][token];
-    }
-
-    // Internals.
-
-    function _place(address owner, address placer, HoldRequest calldata r) private {
-        if (r.amount == 0) revert InvalidAmount();
-        if (r.token == address(0) || r.payee == address(0)) revert PolicyForbids();
-        if (r.expiresAt <= block.timestamp || r.expiresAt > block.timestamp + MAX_HOLD) revert InvalidExpiry();
-        HoldRecord storage h = _holds[owner][r.id];
-        if (h.placer != address(0)) revert HoldExists();
-
-        _repay(owner, r.token);
-        uint256 balance = _balance(r.token, owner);
-        uint128 held = r.amount;
-        if (r.standIn) {
-            // A stand-in records what was approved offline and reserves only what is there.
-            if (balance < held) held = uint128(balance);
-        } else if (balance < held) {
-            revert InsufficientAvailable();
+    function debtOf(address owner, address token) external view returns (Debt[] memory debts) {
+        DebtEntry[] storage stored = _debts[owner][token];
+        uint64 now_ = _now();
+        uint256 live;
+        for (uint256 i; i < stored.length; ++i) {
+            if (now_ < stored[i].lapsesAt) ++live;
         }
-        if (placer != owner) _useAllowance(owner, placer, r.token, r.amount, held);
-        _reserve(owner, r.token, held);
-
-        h.token = r.token;
-        h.placer = placer;
-        h.payee = r.payee;
-        h.held = held;
-        h.approved = r.amount;
-        h.expiresAt = r.expiresAt;
-        h.standIn = r.standIn;
-        emit HoldPlaced(owner, r.id, r.token, placer, r.payee, r.amount, held, r.expiresAt, r.standIn);
+        debts = new Debt[](live);
+        uint256 j;
+        for (uint256 i; i < stored.length; ++i) {
+            DebtEntry memory e = stored[i];
+            if (now_ < e.lapsesAt) debts[j++] = Debt({ creditor: e.creditor, amount: e.amount, lapsesAt: e.lapsesAt });
+        }
     }
 
-    /// @dev Checks `amount` against the holder's allowance, then keeps `kept` of it outstanding.
-    function _useAllowance(address owner, address holder, address token, uint128 amount, uint128 kept) private {
-        uint128 allowed = _allowance[owner][holder][token];
-        if (allowed == 0) revert Unauthorized();
-        uint128 outstanding = _outstanding[owner][holder][token];
-        if (uint256(outstanding) + amount > allowed) revert AllowanceExceeded();
-        _outstanding[owner][holder][token] = outstanding + kept;
+    // Placement internals.
+
+    function _place(address placer, address owner, HoldRequest calldata request) private {
+        uint64 amt = _amount64(request.amount);
+        uint64 now_ = _now();
+        if (
+            request.expiresAt <= now_ || request.expiresAt > now_ + MAX_HOLD_DURATION
+                || request.expiresAt > type(uint32).max
+        ) revert InvalidExpiry();
+        _ensureVacant(owner, placer, request.id);
+        address payee = _payee(request.payee);
+        address token = request.token;
+        _tip20(token);
+        _ensureAllowed(token, owner, payee, false);
+        uint128 free = _available(token, owner);
+        uint64 held;
+        if (request.standIn) {
+            held = free < amt ? uint64(free) : amt;
+        } else if (amt > free) {
+            revert InsufficientAvailable();
+        } else {
+            held = amt;
+        }
+        uint16 tolerance = _terms[owner][payee][token].toleranceBps;
+        uint64 captureLimit = _withTolerance(amt, tolerance);
+        if (placer != owner) _drawBudget(owner, placer, token, amt, held, 0);
+        _reserve(token, owner, held);
+        _records[owner][placer][request.id] = Record({
+            token: token,
+            held: held,
+            expiresAt: _ts32(request.expiresAt),
+            payee: payee,
+            captureLimit: captureLimit,
+            toleranceBps: tolerance,
+            kind: KIND_HOLD,
+            standIn: request.standIn
+        });
+        emit HoldPlaced(
+            owner,
+            placer,
+            token,
+            request.id,
+            KIND_HOLD,
+            payee,
+            request.amount,
+            held,
+            captureLimit,
+            request.expiresAt,
+            request.standIn
+        );
     }
 
-    function _live(address owner, bytes32 id) private view returns (HoldRecord storage h) {
-        h = _open(owner, id);
-        if (block.timestamp >= h.expiresAt) revert HoldExpired();
-    }
-
-    function _open(address owner, bytes32 id) private view returns (HoldRecord storage h) {
-        h = _holds[owner][id];
-        if (h.placer == address(0)) revert HoldNotFound();
-        if (h.settled) revert HoldSettled();
-    }
-
-    function _end(address owner, bytes32 id, HoldRecord storage h, bool expired) private {
-        uint128 rest = h.held;
-        h.held = 0;
-        h.settled = true;
-        if (h.placer != owner) _outstanding[owner][h.placer][h.token] -= rest;
-        _unreserveTo(owner, h.token, rest, owner);
-        emit HoldReleased(owner, id, h.token, rest, expired);
-    }
-
-    function _placeLien(
+    function _placePledge(
+        address placer,
         address owner,
         address authority,
         address token,
         bytes32 id,
         uint128 amount,
-        uint64 expiresAt,
-        bool pledged,
-        bool delegated
+        uint64 expiresAt
     ) private {
-        if (amount == 0) revert InvalidAmount();
-        if (authority == address(0) || token == address(0)) revert PolicyForbids();
-        if (expiresAt != 0 && expiresAt <= block.timestamp) revert InvalidExpiry();
-        Lien storage l = _liens[authority][id];
-        if (l.owner != address(0)) revert LienExists();
-        _repay(owner, token);
-        if (_balance(token, owner) < amount) revert InsufficientAvailable();
-        _reserve(owner, token, amount);
-        _liened[owner][token] += amount;
-        l.owner = owner;
-        l.token = token;
-        l.amount = amount;
-        l.expiresAt = expiresAt;
-        l.pledged = pledged;
-        l.delegated = delegated;
-        emit Liened(owner, authority, token, id, amount, expiresAt, pledged);
-    }
-
-    function _endLien(address authority, bytes32 id, Lien storage l, bool expired) private {
-        (address owner, address token, uint128 amount) = (l.owner, l.token, l.amount);
-        _liened[owner][token] -= amount;
-        if (l.delegated) _outstanding[owner][authority][token] -= amount;
-        delete _liens[authority][id];
-        _unreserveTo(owner, token, amount, owner);
-        emit LienReleased(owner, authority, token, id, amount, expired);
-    }
-
-    function _addDebt(address owner, address creditor, address token, uint128 amount, bool standIn) private {
-        Debt storage d = _debt[owner][token];
-        // One creditor at a time per owner and token.
-        if (d.amount != 0 && d.creditor != creditor) revert DebtCapExceeded();
-        uint128 cap = _debtCap[owner][creditor][token];
-        if (standIn) {
-            uint128 offline = _offlineCap[owner][creditor][token];
-            if (offline > cap) cap = offline;
+        uint64 amt = _amount64(amount);
+        uint64 now_ = _now();
+        if (expiresAt <= now_ || expiresAt > now_ + MAX_PLEDGE_DURATION || expiresAt > type(uint32).max) {
+            revert InvalidExpiry();
         }
-        if (uint256(d.amount) + amount > cap) revert DebtCapExceeded();
-        d.creditor = creditor;
-        d.amount += amount;
+        _ensureVacant(owner, placer, id);
+        _tip20(token);
+        _ensureAllowed(token, owner, authority, false);
+        if (amt > _available(token, owner)) revert InsufficientAvailable();
+        if (placer != owner) _drawBudget(owner, placer, token, amt, amt, 0);
+        _reserve(token, owner, amt);
+        _records[owner][placer][id] = Record({
+            token: token,
+            held: amt,
+            expiresAt: _ts32(expiresAt),
+            payee: authority,
+            captureLimit: amt,
+            toleranceBps: 0,
+            kind: KIND_PLEDGE,
+            standIn: false
+        });
+        emit HoldPlaced(owner, placer, token, id, KIND_PLEDGE, authority, amt, amt, amt, expiresAt, false);
     }
 
-    function _repay(address owner, address token) private {
-        Debt storage d = _debt[owner][token];
-        uint128 debt = d.amount;
-        if (debt == 0) return;
-        uint256 balance = _balance(token, owner);
-        if (balance == 0) return;
-        uint128 paid = debt < balance ? debt : uint128(balance);
-        d.amount = debt - paid;
-        address creditor = d.creditor;
-        _move(token, owner, creditor, paid);
-        emit DebtRepaid(owner, token, creditor, paid);
+    function _ensureVacant(address owner, address placer, bytes32 id) private view {
+        if (_records[owner][placer][id].token != address(0)) revert HoldExists();
     }
 
-    function _reserve(address owner, address token, uint128 amount) private {
+    function _loadHold(address owner, address placer, bytes32 id) private view returns (Hold memory h) {
+        h = Hold({ owner: owner, placer: placer, id: id, r: _records[owner][placer][id] });
+        if (h.r.token == address(0)) revert HoldNotFound();
+    }
+
+    function _liveHold(address owner, address placer, bytes32 id) private view returns (Hold memory h) {
+        h = _loadHold(owner, placer, id);
+        if (_expired(h.r, _now())) revert HoldExpired();
+    }
+
+    function _endHold(Hold memory h, bool expired) private {
+        uint64 held = h.r.held;
+        if (held != 0) {
+            _unreserve(h.r.token, h.owner, held);
+            if (_budgeted(h)) _settleBudget(h.owner, h.placer, h.r.token, 0, held, 0);
+        }
+        delete _records[h.owner][h.placer][h.id];
+        emit HoldReleased(h.owner, h.placer, h.r.token, h.id, held, expired);
+    }
+
+    function _budgeted(Hold memory h) private pure returns (bool) {
+        return h.placer != h.owner && h.r.kind != KIND_LIEN;
+    }
+
+    function _expired(Record memory r, uint64 now_) private pure returns (bool) {
+        return r.expiresAt != 0 && now_ >= r.expiresAt;
+    }
+
+    // Budgets.
+
+    function _roll(BudgetState memory b, uint64 now_) private pure {
+        if (b.period == 0) return;
+        uint64 start = b.periodStart;
+        uint64 period = b.period;
+        if (now_ >= start + period) {
+            uint64 elapsed = (now_ - start) / period * period;
+            b.periodStart = _ts32(start + elapsed);
+            b.spent = 0;
+        }
+    }
+
+    function _admitWithinLimit(BudgetState memory b, uint64 amount) private pure {
+        if (uint256(b.spent) + b.outstanding + amount > b.limit) revert BudgetExceeded();
+    }
+
+    function _drawBudget(address owner, address holder, address token, uint64 check, uint64 outstanding, uint64 spent)
+        private
+    {
+        BudgetState memory b = _budgets[owner][holder][token];
+        _roll(b, _now());
+        if (b.limit == 0) revert Unauthorized();
+        _admitWithinLimit(b, check);
+        b.outstanding += outstanding;
+        b.spent += spent;
+        _budgets[owner][holder][token] = b;
+    }
+
+    function _settleBudget(address owner, address holder, address token, uint64 paid, uint64 released, uint64 excess)
+        private
+    {
+        if (paid == 0 && released == 0 && excess == 0) return;
+        BudgetState memory b = _budgets[owner][holder][token];
+        _roll(b, _now());
+        b.outstanding -= paid + released;
+        b.spent = uint256(b.spent) + paid > type(uint64).max ? type(uint64).max : b.spent + paid;
+        if (excess != 0) {
+            _admitWithinLimit(b, excess);
+            b.spent += excess;
+        }
+        _budgets[owner][holder][token] = b;
+    }
+
+    // Payments and debt.
+
+    /// @dev Pays `amount` from `owner`'s free balance, recording what it cannot cover as debt to `payee`.
+    function _pay(address token, address owner, address payee, uint64 amount, bool offline, bool senderExempt)
+        private
+        returns (uint128 debt)
+    {
+        uint128 free = _available(token, owner);
+        uint128 paid = amount < free ? amount : free;
+        debt = amount - paid;
+        if (debt != 0) _addDebt(owner, token, payee, debt, offline);
+        _transfer(token, owner, payee, paid, senderExempt);
+    }
+
+    function _addDebt(address owner, address token, address creditor, uint128 amount, bool offline) private {
+        Terms memory t = _terms[owner][creditor][token];
+        uint64 cap = offline && t.offlineCap > t.debtCap ? t.offlineCap : t.debtCap;
+        DebtEntry[] memory entries = _liveDebts(owner, token);
+        bool found;
+        for (uint256 i; i < entries.length; ++i) {
+            if (entries[i].creditor != creditor) continue;
+            uint256 owed = uint256(entries[i].amount) + amount;
+            if (owed > cap) _refuseDebt(cap);
+            entries[i].amount = uint64(owed);
+            found = true;
+            break;
+        }
+        if (!found) {
+            if (amount > cap) _refuseDebt(cap);
+            if (entries.length >= MAX_CREDITORS) revert TooManyCreditors();
+            uint64 term = t.debtTerm == 0 || t.debtTerm > MAX_DEBT_TERM ? MAX_DEBT_TERM : t.debtTerm;
+            DebtEntry[] memory grown = new DebtEntry[](entries.length + 1);
+            for (uint256 i; i < entries.length; ++i) {
+                grown[i] = entries[i];
+            }
+            grown[entries.length] =
+                DebtEntry({ creditor: creditor, amount: uint64(amount), lapsesAt: _ts32(_now() + term) });
+            entries = grown;
+        }
+        _storeDebts(owner, token, entries);
+    }
+
+    function _refuseDebt(uint64 cap) private pure {
+        if (cap == 0) revert InsufficientAvailable();
+        revert DebtCapExceeded();
+    }
+
+    function _forgive(address owner, address token, address creditor, uint128 amount)
+        private
+        returns (uint128 forgiven)
+    {
+        if (_debts[owner][token].length == 0) return 0;
+        DebtEntry[] memory entries = _liveDebts(owner, token);
+        for (uint256 i; i < entries.length; ++i) {
+            if (entries[i].creditor != creditor) continue;
+            uint64 cut = amount < entries[i].amount ? uint64(amount) : entries[i].amount;
+            entries[i].amount -= cut;
+            forgiven = cut;
+            break;
+        }
+        _storeDebts(owner, token, entries);
+    }
+
+    /// @dev The node's repayment on credit: pays `owner`'s creditors in order from a credit of `received`,
+    ///      skipping creditors a payment from `owner` could not reach.
+    function _repay(address owner, address token, uint256 received) private {
+        if (_debts[owner][token].length == 0) return;
+        DebtEntry[] memory entries = _liveDebts(owner, token);
+        uint64 left = received > type(uint64).max ? type(uint64).max : uint64(received);
+        for (uint256 i; i < entries.length && left != 0; ++i) {
+            if (!_paymentAllowed(token, owner, entries[i].creditor, false)) continue;
+            uint64 repaid = left < entries[i].amount ? left : entries[i].amount;
+            left -= repaid;
+            entries[i].amount -= repaid;
+            emit DebtRepaid(owner, entries[i].creditor, token, repaid);
+            _move(token, owner, entries[i].creditor, repaid);
+        }
+        _storeDebts(owner, token, entries);
+    }
+
+    /// @dev The stored entries without lapsed ones, emitting `DebtLapsed` for each one dropped.
+    function _liveDebts(address owner, address token) private returns (DebtEntry[] memory kept) {
+        DebtEntry[] storage stored = _debts[owner][token];
+        uint64 now_ = _now();
+        kept = new DebtEntry[](stored.length);
+        uint256 n;
+        for (uint256 i; i < stored.length; ++i) {
+            DebtEntry memory e = stored[i];
+            if (now_ >= e.lapsesAt) emit DebtLapsed(owner, e.creditor, token, e.amount);
+            else kept[n++] = e;
+        }
+        assembly ("memory-safe") {
+            mstore(kept, n)
+        }
+    }
+
+    /// @dev Stores `entries` in order, dropping settled (zero) ones.
+    function _storeDebts(address owner, address token, DebtEntry[] memory entries) private {
+        DebtEntry[] storage stored = _debts[owner][token];
+        while (stored.length != 0) {
+            stored.pop();
+        }
+        for (uint256 i; i < entries.length; ++i) {
+            if (entries[i].amount != 0) stored.push(entries[i]);
+        }
+    }
+
+    // Policy.
+
+    function _ensureAllowed(address token, address from, address to, bool senderExempt) private view {
+        if (!_paymentAllowed(token, from, to, senderExempt)) revert PolicyForbids();
+    }
+
+    /// @dev The node's check for a payment the core makes: pause, the token's TIP-403 policy (the recipient only when
+    ///      the sender is exempt) and the recipient's receive policy.
+    function _paymentAllowed(address token, address from, address to, bool senderExempt) private view returns (bool) {
+        if (
+            to == address(0) || to == from || bytes12(bytes20(to)) == TIP20_PREFIX
+                || to == StdPrecompiles.RECEIVE_POLICY_GUARD_ADDRESS || IMockCoreToken(token).paused()
+        ) return false;
+        ITIP403Registry registry = StdPrecompiles.TIP403_REGISTRY;
+        uint64 policy = IMockCoreToken(token).transferPolicyId();
+        bool authorized = senderExempt
+            ? registry.isAuthorizedRecipient(policy, to)
+            : registry.isAuthorizedSender(policy, from) && registry.isAuthorizedRecipient(policy, to);
+        if (!authorized) return false;
+        (bool receivable,) = registry.validateReceivePolicy(token, from, to);
+        return receivable;
+    }
+
+    // Balances.
+
+    function _available(address token, address owner) private view returns (uint128) {
+        uint256 balance = IMockCoreToken(token).balanceOf(owner);
+        return balance > type(uint128).max ? type(uint128).max : uint128(balance);
+    }
+
+    function _reserve(address token, address owner, uint128 amount) private {
         if (amount == 0) return;
-        _move(token, owner, address(this), amount);
         _reserved[owner][token] += amount;
         totalReserved[token] += amount;
+        _move(token, owner, address(this), amount);
     }
 
-    function _unreserveTo(address owner, address token, uint128 amount, address to) private {
+    function _unreserve(address token, address owner, uint128 amount) private {
         if (amount == 0) return;
         _reserved[owner][token] -= amount;
         totalReserved[token] -= amount;
-        if (!IBalanceToken(token).transfer(to, amount)) revert InsufficientAvailable();
+        _move(token, address(this), owner, amount);
     }
 
-    /// @dev Moves an account's own tokens as the node's balance internals would, without its approval.
-    function _move(address token, address from, address to, uint128 amount) private {
+    /// @dev A core payment: checks policy, moves the balance and repays the recipient's debt from the credit.
+    function _transfer(address token, address from, address to, uint128 amount, bool senderExempt) private {
+        _ensureAllowed(token, from, to, senderExempt);
         if (amount == 0) return;
-        VM.prank(from);
-        if (!IBalanceToken(token).transfer(to, amount)) revert InsufficientAvailable();
+        _move(token, from, to, amount);
+        _repay(to, token, amount);
     }
 
-    function _balance(address token, address account) private view returns (uint256) {
-        return IBalanceToken(token).balanceOf(account);
+    /// @dev Moves a balance between two accounts' slots, without the token's own checks.
+    function _move(address token, address from, address to, uint256 amount) private {
+        if (amount == 0) return;
+        bytes32 fromSlot = keccak256(abi.encode(from, BALANCES_SLOT));
+        bytes32 toSlot = keccak256(abi.encode(to, BALANCES_SLOT));
+        VM.store(token, fromSlot, bytes32(uint256(VM.load(token, fromSlot)) - amount));
+        VM.store(token, toSlot, bytes32(uint256(VM.load(token, toSlot)) + amount));
+    }
+
+    // Validation.
+
+    function _tip20(address token) private pure {
+        if (bytes12(bytes20(token)) != TIP20_PREFIX) revert InvalidToken();
+    }
+
+    function _payee(address account) private view returns (address resolved) {
+        resolved = StdPrecompiles.ADDRESS_REGISTRY.resolveRecipient(account);
+        if (resolved == address(0) || bytes12(bytes20(resolved)) == TIP20_PREFIX) revert InvalidRecipient();
+    }
+
+    function _counterparty(address owner, address account, address token) private view returns (address resolved) {
+        resolved = StdPrecompiles.ADDRESS_REGISTRY.resolveRecipient(account);
+        if (resolved == address(0) || resolved == owner) revert Unauthorized();
+        _tip20(token);
+    }
+
+    function _amount64(uint128 amount) private pure returns (uint64) {
+        if (amount == 0 || amount > type(uint64).max) revert InvalidAmount();
+        return uint64(amount);
+    }
+
+    function _withTolerance(uint64 amount, uint16 bps) private pure returns (uint64) {
+        uint256 limit = uint256(amount) * (BPS + bps) / BPS;
+        return limit > type(uint64).max ? type(uint64).max : uint64(limit);
+    }
+
+    function _sat64(uint128 value) private pure returns (uint64) {
+        return value > type(uint64).max ? type(uint64).max : uint64(value);
+    }
+
+    function _ts32(uint64 timestamp) private pure returns (uint32) {
+        return timestamp > type(uint32).max ? type(uint32).max : uint32(timestamp);
+    }
+
+    function _termsAbi(Terms memory t) private pure returns (PayeeTerms memory) {
+        return PayeeTerms({
+            debtCap: t.debtCap, offlineCap: t.offlineCap, toleranceBps: t.toleranceBps, debtTerm: t.debtTerm
+        });
+    }
+
+    function _now() private view returns (uint64) {
+        return uint64(VM.getBlockTimestamp());
     }
 }
