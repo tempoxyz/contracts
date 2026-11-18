@@ -133,6 +133,25 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).refunded, 100e6 - paid, "the issuer absorbs the slippage");
     }
 
+    /// @dev A part capture pays at the lock; the rest of the leg is held again at today's rate, as a new lock.
+    function test_partCapture_relocksTheRestAtTodaysRate() public {
+        vm.prank(alice);
+        conv.setRateTolerance(address(cash), 200);
+        _tokenFirst(100);
+        eur.mint(alice, 200e6);
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        uint256 first = cash.lockedRate(leg);
+        bid.setPrice(BID * 99 / 100);
+        conv.setReferenceRate(address(eur), 1.1e18 * 99 / 100);
+        _capture(P1, 40e6, false);
+        uint256 rate = cash.lockedRate(leg);
+        assertLt(rate, first);
+        assertApproxEqAbs(cash.held(alice, _position(address(eur), 100), leg), 60e6, 1);
+        assertEq(_cashHold(P1, TOKEN_LEG).held, _up(60e6, rate));
+        _assertCoreBalanced();
+    }
+
     function test_capture_pastToleranceRequotesAndCostsTheCardholderMore() public {
         vm.prank(alice);
         conv.setRateTolerance(address(cash), 200);

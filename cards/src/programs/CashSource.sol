@@ -16,7 +16,8 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 ///         captured by this contract, which is also their payee. Captures past a hold take the owner's free balance
 ///         and then core debt to this contract within the caps the owner set for it (the offline cap for a stand-in);
 ///         charges do the same with no hold. A leg in a stablecoin other than the program's settlement token locks
-///         the conversion rate when it is placed and converts what it captures through the program's Conversion: at
+///         the conversion rate when it is placed, and again for its rest after a part capture, and converts what it
+///         captures through the program's Conversion: at
 ///         the locked rate while the market stays within the owner's tolerance (the issuer absorbing any shortfall),
 ///         at today's price once it moves past it, never past the owner's maximum cost, and always above the
 ///         Conversion's slippage floor. Converted legs never create debt.
@@ -199,6 +200,33 @@ contract CashSource is ISource, ISettlementTokenGuard {
             owner, token, settlement, legId, h, units, rate, flags & (CAPTURE_BEYOND | CAPTURE_FREE) != 0
         );
         if (isFinal && (beyond || covered >= units)) _release(owner, legId);
+        else if (!isFinal) _relock(owner, position, settlement, legId, uint256(h.held).mulDiv(rate, ONE), covered);
+    }
+
+    /// @dev After a part capture the rest of a converted leg is planned again at today's rate, as a new lock, within
+    ///      what the owner holds; a rate past the owner's maximum cost keeps the old lock.
+    function _relock(
+        address owner,
+        bytes32 position,
+        address settlement,
+        bytes32 legId,
+        uint256 before,
+        uint256 covered
+    ) private {
+        if (covered >= before) return;
+        (address token, uint256 maxCost) = _decode(position);
+        IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
+        if (h.token == address(0)) return;
+        (uint256 rate, bool ok) = _rate(token, settlement, maxCost);
+        if (!ok) return;
+        uint256 rest = before - covered;
+        uint256 tokens = _tokensFor(token, settlement, rest, rate);
+        if (tokens > rest.mulDivUp(ONE, rate)) rate = rest.mulDivUp(ONE, tokens);
+        uint256 cap = h.held + CORE.available(owner, token);
+        if (tokens > cap) tokens = cap;
+        if (tokens == 0) return;
+        if (tokens != h.held) _resize(owner, legId, tokens);
+        _lock(legId, rate, false);
     }
 
     function charge(address owner, bytes32 position, bytes32 legId, uint256 units, bool standIn)
