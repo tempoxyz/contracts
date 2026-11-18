@@ -69,6 +69,10 @@ contract CompCardAuth is ICardAuthCompanion {
         conversion = venue;
     }
 
+    function setToken(address token) external {
+        settlementToken = token;
+    }
+
     function setTreasury(address t) external {
         treasury = t;
     }
