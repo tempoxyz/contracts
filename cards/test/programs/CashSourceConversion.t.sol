@@ -261,6 +261,31 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(eur.balanceOf(alice), 1e6);
     }
 
+    /// @dev A reward clawed back after the settlement token changed is taken in the purchase's token and valued in
+    ///      today's at the mid rate, which is what its funder is owed.
+    function test_rewards_clawBackValuedInTodaysToken() public {
+        Rewards rewards = new Rewards(cards, funder);
+        _setting(abi.encodeCall(cards.setCompanion, (address(rewards), true)));
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        _capture(P1, 40e6, true);
+        usd.mint(funder, 1e6);
+        vm.prank(funder);
+        usd.approve(address(rewards), 1e6);
+        vm.prank(issuer);
+        rewards.pay(P1, 1e6);
+        vm.prank(alice);
+        core.approveHolder(address(rewards), address(usd), type(uint128).max, 0);
+        _acknowledge();
+        cards.setSettlementToken(address(eur), EUR_SCALE);
+        uint256 today = 1e6 * conv.mid(address(usd), address(eur)) / 1e18;
+        vm.expectEmit(address(rewards));
+        emit Rewards.RewardClawedBack(P1, alice, 1e6, today);
+        vm.prank(issuer);
+        assertEq(rewards.clawBack(P1, 1e6), 1e6);
+        assertEq(usd.balanceOf(funder), 1e6);
+    }
+
     function test_localIssuer_cashConvertsAtCaptureAndTheIssuerGetsItsTokenExactly() public {
         _localIssuer();
         _usdCash(100);

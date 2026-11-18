@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { IMidRate } from "./IssuerTreasury.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
+import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
@@ -16,8 +18,10 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 /// @custom:reentrancy-guard none: it calls only the fixed core, its program and the program's settlement tokens.
 contract Rewards {
     using SafeCastLib for uint256;
+    using FixedPointMathLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
+    uint256 private constant RATE_ONE = 1e18;
 
     /// @notice What a purchase's rewards paid and what was clawed back of it.
     struct Reward {
@@ -32,7 +36,9 @@ contract Rewards {
     mapping(bytes32 ref => Reward) public rewardOf;
 
     event RewardPaid(bytes32 indexed ref, address indexed owner, uint256 amount);
-    event RewardClawedBack(bytes32 indexed ref, address indexed owner, uint256 amount);
+    /// @notice `amount` was taken back in the purchase's token, worth `today` in today's settlement token at the mid rate,
+    ///         which is what the funder's share of it is owed.
+    event RewardClawedBack(bytes32 indexed ref, address indexed owner, uint256 amount, uint256 today);
 
     error InvalidAmount();
     error Unauthorized();
@@ -72,7 +78,10 @@ contract Rewards {
         rewardOf[ref].clawed = r.clawed + taken.toUint128();
         CORE.charge(owner, token, keccak256(abi.encode(ref, r.clawed)), taken.toUint128(), address(this), false);
         SafeTransferLib.safeTransfer(token, FUNDER, taken);
-        emit RewardClawedBack(ref, owner, taken);
+        address current = PROGRAM.settlementToken();
+        uint256 today =
+            current == token ? taken : taken.mulDiv(IMidRate(PROGRAM.conversion()).mid(token, current), RATE_ONE);
+        emit RewardClawedBack(ref, owner, taken, today);
     }
 
     /// @dev Requires the settle role (counting `value` against an operator's cap) and returns the purchase's owner and
