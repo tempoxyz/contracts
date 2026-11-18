@@ -4,7 +4,7 @@ pragma solidity ^0.8.36;
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { ReceiveSweep } from "../../src/programs/ReceiveSweep.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { AuthEnv } from "./harness/AuthEnv.sol";
 
 /// @notice A token whose credits repay a fixed debt to a creditor first, as the core does on Tempo.
 contract RepayingToken {
@@ -42,7 +42,7 @@ contract RepayingToken {
     }
 }
 
-contract ReceiveSweepTest is ProgramsEnv {
+contract ReceiveSweepTest is AuthEnv {
     ReceiveSweep internal sweep;
     address internal payer = makeAddr("payer");
 

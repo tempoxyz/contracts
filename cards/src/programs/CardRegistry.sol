@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { CardProgram } from "./CardProgram.sol";
+import { CardAuth } from "./CardAuth.sol";
+import { CardLimits } from "./CardLimits.sol";
 
 /// @title CardRegistry
 /// @notice What a card program's issuer records about each card beyond what authorization reads: the hash of a
@@ -22,7 +23,7 @@ contract CardRegistry {
         string holder;
     }
 
-    CardProgram public immutable PROGRAM;
+    CardAuth public immutable PROGRAM;
 
     mapping(bytes32 card => Metadata) internal _metadata;
     /// @notice The card a network token reference was bound to. It follows the card's replacements, which the
@@ -38,12 +39,12 @@ contract CardRegistry {
     error TokenAlreadyBound();
     error InvalidProgramType();
 
-    constructor(CardProgram program) {
+    constructor(CardAuth program) {
         PROGRAM = program;
     }
 
     modifier onlyIssuer() {
-        if (msg.sender != PROGRAM.ISSUER() && PROGRAM.rolesOf(msg.sender) & 1 == 0) revert NotIssuer();
+        if (msg.sender != PROGRAM.ISSUER() && !PROGRAM.hasRoles(msg.sender, 1)) revert NotIssuer();
         _;
     }
 
@@ -78,6 +79,6 @@ contract CardRegistry {
     }
 
     function _requireCard(bytes32 card) private view {
-        if (PROGRAM.cardOf(card).status == CardProgram.Status.None) revert UnknownCard();
+        if (PROGRAM.cardOf(card).status == CardLimits.Status.None) revert UnknownCard();
     }
 }

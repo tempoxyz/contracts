@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { CardProgram } from "../../src/programs/CardProgram.sol";
+import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { CardRegistry } from "../../src/programs/CardRegistry.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { AuthEnv } from "./harness/AuthEnv.sol";
 
-contract CardRegistryTest is ProgramsEnv {
+contract CardRegistryTest is AuthEnv {
     CardRegistry internal registry;
     bytes32 internal constant TOKEN = keccak256("network-token-ref");
     bytes32 internal constant NEXT = bytes32("card-2");
@@ -82,21 +83,21 @@ contract CardRegistryTest is ProgramsEnv {
         usd.mint(alice, 100e6);
         uint40 expiry = uint40(block.timestamp + 1 hours);
         vm.expectEmit(address(cards));
-        emit CardProgram.CardExpirySet(CARD, expiry);
+        emit CardLimits.CardExpirySet(CARD, expiry);
         vm.prank(issuer);
-        cards.setExpiry(CARD, expiry);
+        cards.setCard(CARD, 1, expiry);
         assertEq(cards.cardOf(CARD).expiry, expiry);
         vm.prank(issuer);
         cards.authorize(CARD, bytes32("p1"), 10e6, merchant, uint64(block.timestamp + 1 days), 0);
         vm.warp(expiry);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.CardExpired.selector);
+        vm.expectRevert(CardLimits.CardExpired.selector);
         cards.authorize(CARD, bytes32("p2"), 10e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
     function test_setExpiry_onlyIssuer() public {
         vm.prank(alice);
-        vm.expectRevert(CardProgram.NotIssuer.selector);
-        cards.setExpiry(CARD, uint40(block.timestamp + 10 days));
+        vm.expectRevert(CardAuth.NotIssuer.selector);
+        cards.setCard(CARD, 1, uint40(block.timestamp + 10 days));
     }
 }

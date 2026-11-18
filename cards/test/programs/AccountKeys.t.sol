@@ -2,10 +2,11 @@
 pragma solidity ^0.8.36;
 
 import { AccountKeys } from "../../src/programs/AccountKeys.sol";
-import { CardProgram } from "../../src/programs/CardProgram.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardLimits } from "../../src/programs/CardLimits.sol";
+import { AuthEnv } from "./harness/AuthEnv.sol";
 
-contract AccountKeysTest is ProgramsEnv {
+contract AccountKeysTest is AuthEnv {
     AccountKeys internal keys;
     address internal phone = makeAddr("phone");
     address internal laptop = makeAddr("laptop");
@@ -26,7 +27,7 @@ contract AccountKeysTest is ProgramsEnv {
         (g2, g2Key) = makeAddrAndKey("g2");
         (g3, g3Key) = makeAddrAndKey("g3");
         (stranger, strangerKey) = makeAddrAndKey("stranger");
-        _setting(abi.encodeCall(cards.setCompanions, (address(keys), address(0))));
+        _setting(abi.encodeCall(cards.setCompanions, (address(keys), address(0), address(0), address(0))));
     }
 
     function _guardians() internal view returns (address[] memory list) {
@@ -66,10 +67,10 @@ contract AccountKeysTest is ProgramsEnv {
         assertFalse(keys.signsFor(alice, alice));
         // The card program follows the registry: the old key no longer freezes the card, the listed one does.
         vm.prank(alice);
-        vm.expectRevert(CardProgram.NotCardOwner.selector);
-        cards.freeze(CARD);
+        vm.expectRevert(CardAuth.NotCardOwner.selector);
+        cards.setOwnStatus(CARD, 1);
         vm.prank(phone);
-        cards.freeze(CARD);
+        cards.setOwnStatus(CARD, 1);
     }
 
     function test_configure_refusesStrangersAndBadLists() public {
@@ -103,10 +104,10 @@ contract AccountKeysTest is ProgramsEnv {
         assertFalse(keys.signsFor(alice, phone));
         assertEq(usd.balanceOf(alice), 100e6);
         vm.prank(phone);
-        vm.expectRevert(CardProgram.NotCardOwner.selector);
-        cards.freeze(CARD);
+        vm.expectRevert(CardAuth.NotCardOwner.selector);
+        cards.setOwnStatus(CARD, 1);
         vm.prank(laptop);
-        cards.freeze(CARD);
+        cards.setOwnStatus(CARD, 1);
     }
 
     function test_recover_belowThreshold_reverts() public {
@@ -157,7 +158,7 @@ contract AccountKeysTest is ProgramsEnv {
 
     function test_setCompanions_onlyIssuer() public {
         vm.prank(alice);
-        vm.expectRevert(CardProgram.NotIssuer.selector);
-        cards.setCompanions(address(0), address(0));
+        vm.expectRevert(CardAuth.NotIssuer.selector);
+        cards.setCompanions(address(0), address(0), address(0), address(0));
     }
 }

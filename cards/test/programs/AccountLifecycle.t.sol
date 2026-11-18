@@ -2,10 +2,11 @@
 pragma solidity ^0.8.36;
 
 import { AccountLifecycle } from "../../src/programs/AccountLifecycle.sol";
-import { CardProgram } from "../../src/programs/CardProgram.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardLimits } from "../../src/programs/CardLimits.sol";
+import { AuthEnv, IMockToken } from "./harness/AuthEnv.sol";
 
-contract AccountLifecycleTest is ProgramsEnv {
+contract AccountLifecycleTest is AuthEnv {
     AccountLifecycle internal life;
     address internal registrar = makeAddr("registrar");
     address internal executor = makeAddr("executor");
@@ -24,7 +25,7 @@ contract AccountLifecycleTest is ProgramsEnv {
     function setUp() public {
         _deployPrograms();
         life = new AccountLifecycle(address(usd), registrar, address(0), DORMANCY, ESCHEAT);
-        _setting(abi.encodeCall(cards.setLifecycle, (address(life))));
+        _setting(abi.encodeCall(cards.setCompanions, (address(0), address(0), address(life), address(0))));
         vm.prank(registrar);
         life.setProgram(address(cards), true);
         _issue(alice, _limits(500e6, 1000e6, 5000e6));
@@ -78,7 +79,7 @@ contract AccountLifecycleTest is ProgramsEnv {
         vm.warp(vm.getBlockTimestamp() + DORMANCY);
         life.markDormant(alice);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.AccountInactive.selector);
+        vm.expectRevert(CardLimits.AccountInactive.selector);
         cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         vm.prank(bob);
@@ -110,10 +111,10 @@ contract AccountLifecycleTest is ProgramsEnv {
         assertApproxEqAbs(usd.balanceOf(heir), 90e6, 1);
         assertEq(earnShare.balanceOf(alice), 0);
         assertEq(core.reserved(alice, address(usd)), 10e6);
-        assertEq(uint8(cards.cardOf(CARD).status), uint8(CardProgram.Status.Closed));
+        assertEq(uint8(cards.cardOf(CARD).status), uint8(CardLimits.Status.Closed));
 
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.CardsClosed.selector);
+        vm.expectRevert(CardLimits.CardsClosed.selector);
         cards.authorize(CARD, P2, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         // The hold's release is paid out by a later close.
@@ -227,9 +228,9 @@ contract AccountLifecycleTest is ProgramsEnv {
         vm.prank(registrar);
         life.setEstate(alice, executor);
         uint256 start = vm.getBlockTimestamp();
-        assertEq(uint8(cards.cardOf(CARD).status), uint8(CardProgram.Status.Frozen));
+        assertEq(uint8(cards.cardOf(CARD).status), uint8(CardLimits.Status.Frozen));
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.CardsClosed.selector);
+        vm.expectRevert(CardLimits.CardsClosed.selector);
         cards.authorize(CARD, bytes32("purchase-3"), 1e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         // Nobody but the executor settles it, and the executor only once holds end and the notice period passed.
@@ -492,12 +493,12 @@ contract AccountLifecycleTest is ProgramsEnv {
         cards.replaceCard(bytes32("card-2"), bytes32("card-3"), uint40(block.timestamp + 700 days));
         vm.stopPrank();
         vm.prank(alice);
-        cards.freeze(bytes32("card-3"));
+        cards.setOwnStatus(bytes32("card-3"), 1);
         vm.prank(issuer);
-        vm.expectRevert(CardProgram.CardNotActive.selector);
+        vm.expectRevert(CardLimits.CardNotActive.selector);
         cards.adjust(P1, 200e6);
         vm.prank(alice);
-        cards.unfreeze(bytes32("card-3"));
+        cards.setOwnStatus(bytes32("card-3"), 2);
         vm.prank(issuer);
         cards.adjust(P1, 200e6);
         assertEq(cards.purchaseOf(P1).card, bytes32("card-3"));
@@ -506,8 +507,14 @@ contract AccountLifecycleTest is ProgramsEnv {
     function test_lifecycle_onlyIssuerSetsIt() public {
         vm.prank(bob);
         vm.expectRevert();
-        cards.setLifecycle(address(0));
+        cards.setCompanions(address(0), address(0), address(0), address(0));
     }
+
+    /// @dev Gives `account` the token's lien role.
+    function _grantLienRole(address token, address account) internal {
+        IMockToken(token).grantRole(keccak256("LIEN_ROLE"), account);
+    }
+
 }
 
 contract FakeVault {

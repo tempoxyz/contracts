@@ -5,7 +5,6 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { AccountKeys } from "./AccountKeys.sol";
-import { CoreDebt } from "./LegBook.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 
 /// @title AccountLifecycle
@@ -354,8 +353,8 @@ contract AccountLifecycle {
     function _payOut(address account, address to, address[] calldata vaults) private returns (uint256 paid) {
         if (to == address(0) || to == account) revert InvalidPayee();
         address token = TOKEN;
-        uint256 debt = CoreDebt.total(account, token);
-        uint256 toDebt = CoreDebt.total(to, token);
+        uint256 debt = _totalDebt(account, token);
+        uint256 toDebt = _totalDebt(to, token);
 
         // Shares redeem to the account itself, so the core repays its debt from them as from any credit.
         uint256 savings;
@@ -374,17 +373,25 @@ contract AccountLifecycle {
         // forge-lint: disable-end(calls-loop)
 
         // Cash moved onto the account itself is a credit the core repays debt from first.
-        uint256 owed = CoreDebt.total(account, token);
+        uint256 owed = _totalDebt(account, token);
         uint256 free = CORE.available(account, token);
         if (owed != 0 && free != 0) token.safeTransferFrom(account, account, owed < free ? owed : free);
         paid = CORE.available(account, token);
         if (paid != 0) token.safeTransferFrom(account, to, paid);
 
-        uint256 debtAfter = CoreDebt.total(account, token);
-        uint256 toDebtAfter = CoreDebt.total(to, token);
+        uint256 debtAfter = _totalDebt(account, token);
+        uint256 toDebtAfter = _totalDebt(to, token);
         uint256 repaid = debt > debtAfter ? debt - debtAfter : 0;
         uint256 received = toDebt > toDebtAfter ? toDebt - toDebtAfter : 0;
         if (paid != 0 || repaid != 0 || savings != 0) emit PaidOut(account, to, paid, repaid, received, savings);
     }
     // forge-lint: disable-end(arbitrary-send-erc20)
+
+    /// @dev What `owner` owes every creditor in `token`.
+    function _totalDebt(address owner, address token) private view returns (uint256 sum) {
+        IReservationCore.Debt[] memory debts = CORE.debtOf(owner, token);
+        for (uint256 i; i < debts.length; ++i) {
+            sum += debts[i].amount;
+        }
+    }
 }

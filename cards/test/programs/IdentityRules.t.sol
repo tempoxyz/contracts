@@ -2,9 +2,9 @@
 pragma solidity ^0.8.36;
 
 import { IdentityRules } from "../../src/programs/IdentityRules.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { AuthEnv } from "./harness/AuthEnv.sol";
 
-contract IdentityRulesTest is ProgramsEnv {
+contract IdentityRulesTest is AuthEnv {
     IdentityRules internal rules;
     address internal governor = makeAddr("governor");
     address internal sponsor = makeAddr("sponsor");
@@ -27,7 +27,7 @@ contract IdentityRulesTest is ProgramsEnv {
         rules.setJurisdiction(US, 10_000e6, sponsors);
         vm.prank(attester);
         rules.setKey(attesterKey, true);
-        _setting(abi.encodeCall(cards.setCompanions, (address(0), address(rules))));
+        _setting(abi.encodeCall(cards.setCompanions, (address(0), address(rules), address(0), address(0))));
         vm.startPrank(issuer);
         rules.setPolicy(address(cards), _attesters(), KYC, US, sponsor);
         vm.stopPrank();

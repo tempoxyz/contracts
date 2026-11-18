@@ -2,9 +2,9 @@
 pragma solidity ^0.8.36;
 
 import { CoverageRegistry } from "../../src/programs/CoverageRegistry.sol";
-import { ProgramsEnv } from "./harness/ProgramsEnv.sol";
+import { AuthEnv } from "./harness/AuthEnv.sol";
 
-contract CoverageRegistryTest is ProgramsEnv {
+contract CoverageRegistryTest is AuthEnv {
     CoverageRegistry internal registry;
     address internal registrar = makeAddr("registrar");
     address[] internal vaults;
