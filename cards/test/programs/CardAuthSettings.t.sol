@@ -171,4 +171,71 @@ contract CardAuthSettingsTest is AuthEnv {
         assertTrue(cards.hasRoles(next, 7));
         assertFalse(cards.hasRoles(issuer, 1));
     }
+
+    function test_operatorRoles_authorizerCannotRefundOrSettle() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        usd.mint(alice, 100e6);
+        address key = makeAddr("key");
+        uint8 authorizer = cards.ROLE_AUTHORIZE();
+        uint8 treasury = cards.ROLE_TREASURY();
+        vm.prank(issuer);
+        cards.setOperator(key, authorizer, 1000e6);
+        assertEq(cards.operatorOf(key).roles, authorizer);
+        vm.startPrank(key);
+        cards.authorize(CARD, "purchase-1", 10e6, merchant, uint64(block.timestamp + 1 days), 0);
+        cards.capture("purchase-1", 10e6, true);
+        vm.expectRevert(CardAuth.Unauthorized.selector);
+        cards.refund("purchase-1", 1e6);
+        vm.expectRevert(CardAuth.Unauthorized.selector);
+        cards.creditBack("purchase-1", 1e6, 1e6);
+        vm.expectRevert(CardAuth.Unauthorized.selector);
+        cards.reserveSettled("purchase-1", 1e6);
+        vm.expectRevert(CardAuth.NotIssuer.selector);
+        cards.setOperator(key, 7, 1e6);
+        vm.stopPrank();
+        // A key needs a cap, and zero roles remove it.
+        vm.prank(issuer);
+        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        cards.setOperator(key, treasury, 0);
+        vm.prank(issuer);
+        cards.setOperator(key, 0, 0);
+        assertEq(cards.operatorOf(key).roles, 0);
+        vm.prank(key);
+        vm.expectRevert(CardAuth.Unauthorized.selector);
+        cards.authorize(CARD, "purchase-2", 1e6, merchant, uint64(block.timestamp + 1 days), 0);
+    }
+
+    function test_operatorCap_countsAuthorizeChargeAndCompanionUseTogether() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        usd.mint(alice, 100e6);
+        _setting(abi.encodeCall(cards.setCompanion, (companion, true)));
+        address key = makeAddr("key");
+        vm.prank(issuer);
+        cards.setOperator(key, 7, 100e6);
+        vm.prank(key);
+        cards.authorize(CARD, "purchase-1", 40e6, merchant, uint64(block.timestamp + 1 days), 0);
+        vm.prank(key);
+        cards.charge(CARD, "purchase-2", 30e6, merchant);
+        // A companion (the treasury paying out) counts what the operator moved through it.
+        vm.prank(companion);
+        cards.useOperatorCap(key, 20e6);
+        CardAuth.Operator memory op = cards.operatorOf(key);
+        assertEq(op.cap, 100e6);
+        assertEq(op.used, 90e6);
+        vm.prank(companion);
+        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        cards.useOperatorCap(key, 10e6 + 1);
+        vm.prank(key);
+        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        cards.charge(CARD, "purchase-3", 10e6 + 1, merchant);
+        // An increment counts only what it adds.
+        vm.prank(key);
+        cards.adjust("purchase-1", 50e6);
+        assertEq(cards.operatorOf(key).used, 100e6);
+        // The issuer itself has no cap.
+        vm.prank(companion);
+        cards.useOperatorCap(issuer, 1000e6);
+        vm.prank(issuer);
+        cards.charge(CARD, "purchase-4", 1e6, merchant);
+    }
 }
