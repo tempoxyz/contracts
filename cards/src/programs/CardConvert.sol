@@ -320,6 +320,15 @@ library CardConvert {
         _layout().issuerFunds[token] += amount;
     }
 
+    /// @notice Pays `amount` of the program's own `token` funds to the settlement account, within what it retains and
+    ///         holds.
+    function withdrawIssuerFunds(address token, uint256 amount) external {
+        uint256 held = _min(retained(token), IERC20Like(token).balanceOf(address(this)));
+        if (amount > held) revert IssuerFundsShort(amount, held);
+        _layout().issuerFunds[token] -= amount;
+        SafeTransferLib.safeTransfer(token, CardProgram(address(this)).SETTLEMENT_ACCOUNT(), amount);
+    }
+
     /// @notice What the program holds of `token` for advancing payouts, which sweeps leave in place: its funds less
     ///         what the settlement account owes it.
     function retained(address token) public view returns (uint256) {
@@ -378,8 +387,11 @@ library CardConvert {
         // What the program sends comes straight back as repayment, which clears the debt in `current`.
         SafeTransferLib.safeTransfer(current, account, owed);
         if (!_tryChargeIssuer(account, next, carried)) revert CardProgram.SettlementTokenInUse(IN_USE_ISSUER_DEBT);
-        // The claim moves to `next`; in `current` the program now holds all its funds.
-        _layout().issuerFunds[next] += carried;
+        // The claim moves to `next`: the program's funds in `current` drop by what it sent, so what it retains there
+        // stays what it holds once the old debt is repaid.
+        Layout storage L = _layout();
+        L.issuerFunds[current] -= owed;
+        L.issuerFunds[next] += carried;
         emit IssuerDebtCarried(current, owed, next, carried);
     }
 

@@ -135,6 +135,62 @@ contract IssuerDebtTest is ProgramsEnv {
         assertEq(eur.balanceOf(address(cards)), carried);
     }
 
+    function test_carryIssuerDebt_leavesIssuerFundsAtWhatTheProgramHolds() public {
+        vm.prank(settlement);
+        cards.payOut(bob, 20e6, bytes32("credit-1"));
+        _allowDebt(eur, type(uint128).max);
+        vm.prank(issuer);
+        cards.setSettlementToken(address(eur));
+        // Until the account repays the old debt, the program holds 10 dollars and retains no more.
+        assertEq(usd.balanceOf(address(cards)), 10e6);
+        assertEq(cards.issuerFunds(address(usd)), 10e6);
+        core.repay(settlement, address(usd));
+        // The old debt is cleared and the program holds 30 dollars, which is all it can still advance.
+        assertEq(usd.balanceOf(address(cards)), 30e6);
+        assertEq(cards.issuerFunds(address(usd)), 30e6);
+        assertGe(usd.balanceOf(address(cards)), cards.issuerFunds(address(usd)));
+        // Nothing of the program's dollars goes on to the settlement account.
+        cards.forward(address(usd));
+        assertEq(usd.balanceOf(address(cards)), 30e6);
+    }
+
+    function test_withdrawIssuerFunds_paysTheSettlementAccountWithinWhatIsRetained() public {
+        vm.prank(settlement);
+        cards.payOut(bob, 20e6, bytes32("credit-1"));
+        vm.prank(bob);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.withdrawIssuerFunds(address(usd), 1e6);
+        // 30 dollars stay retained while the account owes 20.
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(CardConvert.IssuerFundsShort.selector, 30e6 + 1, 30e6));
+        cards.withdrawIssuerFunds(address(usd), 30e6 + 1);
+        vm.prank(issuer);
+        cards.withdrawIssuerFunds(address(usd), 10e6);
+        assertEq(usd.balanceOf(settlement), 10e6);
+        assertEq(usd.balanceOf(address(cards)), 20e6);
+        assertEq(cards.issuerFunds(address(usd)), 20e6);
+    }
+
+    function testFuzz_issuerFunds_neverAboveTheBalanceAfterATokenChange(uint64 paid, uint64 withdrawn) public {
+        // Carrying sends the old debt from what the program still holds, so it carries at most half its funds.
+        paid = uint64(bound(paid, 1, 25e6));
+        vm.prank(settlement);
+        cards.payOut(bob, paid, bytes32("credit-1"));
+        _allowDebt(eur, type(uint128).max);
+        vm.prank(issuer);
+        cards.setSettlementToken(address(eur));
+        assertGe(usd.balanceOf(address(cards)), cards.issuerFunds(address(usd)));
+        assertGe(eur.balanceOf(address(cards)), cards.issuerFunds(address(eur)));
+        core.repay(settlement, address(usd));
+        assertGe(usd.balanceOf(address(cards)), cards.issuerFunds(address(usd)));
+        withdrawn = uint64(bound(withdrawn, 0, cards.issuerFunds(address(usd))));
+        if (withdrawn != 0) {
+            vm.prank(issuer);
+            cards.withdrawIssuerFunds(address(usd), withdrawn);
+        }
+        assertGe(usd.balanceOf(address(cards)), cards.issuerFunds(address(usd)));
+    }
+
     function test_setSettlementToken_refusedWhenTheIssuerCannotOweInTheNewToken() public {
         vm.prank(settlement);
         cards.payOut(bob, 20e6, bytes32("credit-1"));

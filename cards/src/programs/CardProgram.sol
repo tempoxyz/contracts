@@ -500,6 +500,11 @@ contract CardProgram {
         CardConvert.fundIssuerDebt(token, amount);
     }
 
+    /// @notice Pays `amount` of the program's own `token` funds to the settlement account, within what it retains.
+    function withdrawIssuerFunds(address token, uint256 amount) external nonReentrant onlyIssuer {
+        CardConvert.withdrawIssuerFunds(token, amount);
+    }
+
     /// @notice What the program holds of `token` for advancing payouts.
     function issuerFunds(address token) external view returns (uint256) {
         return CardConvert.retained(token);
