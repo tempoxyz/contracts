@@ -6,6 +6,7 @@ import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 import { Conversion } from "../../src/programs/Conversion.sol";
 import { IssuerTreasury } from "../../src/programs/IssuerTreasury.sol";
+import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { CompEnv } from "./harness/CompStubs.sol";
 
@@ -278,6 +279,33 @@ contract IssuerTreasuryTest is CompEnv {
         vm.prank(issuer);
         treasury.setTokenGuards(fewer);
         assertEq(treasury.tokenGuardsLength(), 3);
+    }
+
+    function test_setSettlementToken_refusedWhileTheSettlementBalanceIsHeld() public {
+        // A hold on the settlement account's balance that no guard explains still keeps the token.
+        usd.mint(settlement, 10e6);
+        vm.startPrank(settlement);
+        core.approveHolder(bob, address(usd), 10e6, 0);
+        vm.stopPrank();
+        vm.prank(bob);
+        core.holdFrom(
+            settlement,
+            IReservationCore.HoldRequest({
+                token: address(usd),
+                id: bytes32("hold"),
+                amount: 10e6,
+                expiresAt: uint64(vm.getBlockTimestamp() + 1 days),
+                payee: bob,
+                standIn: false
+            })
+        );
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.SettlementTokenInUse.selector, uint8(6)));
+        treasury.setSettlementToken(address(eur));
+        vm.prank(bob);
+        core.release(settlement, bob, bytes32("hold"));
+        _setting(abi.encodeCall(treasury.setSettlementToken, (address(eur))));
+        assertEq(auth.settlementToken(), address(eur));
     }
 
     function test_setSettlementToken_needsAVenueAndANewToken() public {

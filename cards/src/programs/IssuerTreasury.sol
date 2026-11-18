@@ -32,6 +32,7 @@ contract IssuerTreasury {
     uint256 public constant MAX_PLEDGES = 16;
     /// @dev Settlement-token-in-use reasons this contract reports itself.
     uint8 private constant IN_USE_COLLATERAL = 5;
+    uint8 private constant IN_USE_HELD = 6;
     uint8 private constant IN_USE_ISSUER_DEBT = 8;
     uint8 private constant PLEDGE = 2;
 
@@ -329,7 +330,8 @@ contract IssuerTreasury {
         if (c.count == 0 || msg.sender != c.sponsor) revert NotSponsor();
     }
 
-    /// @dev Reverts while a guard or posted collateral still sizes money in the settlement token.
+    /// @dev Reverts while a guard, posted collateral or any other hold on the settlement account's balance still sizes
+    ///      money in the settlement token. A guard names the reason first, as it explains a held balance.
     // At most the guards the issuer set.
     // forge-lint: disable-next-item(calls-loop)
     function _checkUnused() private view {
@@ -339,6 +341,9 @@ contract IssuerTreasury {
             if (reason != 0) revert SettlementTokenInUse(reason);
         }
         if (unitsOf() != 0) revert SettlementTokenInUse(IN_USE_COLLATERAL);
+        if (CORE.reserved(PROGRAM.SETTLEMENT_ACCOUNT(), PROGRAM.settlementToken()) != 0) {
+            revert SettlementTokenInUse(IN_USE_HELD);
+        }
     }
 
     /// @dev Moves what the settlement account owes the issuer in current into next: the units of next that buy it back
