@@ -15,7 +15,7 @@ export const validateAccess = defineFoundryStep({
   summary: 'Validate the policy definition and EarnShare binding.',
   phase: 'deployment',
   intent: ['core'],
-  script: 'script/deploy/AttachEarnSharePolicy.s.sol:AttachEarnSharePolicyScript',
+  script: 'script/earn/deploy/AttachEarnSharePolicy.s.sol:AttachEarnSharePolicyScript',
   enabled: (profile) => profile.access.kind === 'tip403-whitelist',
   input(profile, outputs) {
     if (profile.access.kind !== 'tip403-whitelist') throw new Error(`Profile ${profile.id} is open`)

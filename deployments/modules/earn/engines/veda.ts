@@ -51,7 +51,7 @@ export function vedaPeriphery(contracts: Pick<DeploymentContracts, 'periphery'>)
 export const veda = defineEngine({
   label: 'Veda',
   engineContract: 'VedaEngine',
-  engineSource: 'src/engines/veda/VedaEngine.sol',
+  engineSource: 'src/earn/engines/veda/VedaEngine.sol',
   venueLabel: 'BoringVault',
   periphery: vedaPeripheryContracts,
   exitSolver: 'VedaForwardingSolver',

@@ -20,8 +20,8 @@ vi.mock(import('../../../chain/zone.js'), async (original) => ({
 }))
 
 const repositoryRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)))
-/** Earn's Foundry project, where verification reads its build. */
-const root = resolve(repositoryRoot, 'earn')
+/** The Foundry project (the repository root), where verification reads its build. */
+const root = repositoryRoot
 const profilePath = (id: string) => resolve(repositoryRoot, 'profiles', id, 'profile.json')
 // The profile alone: a router release bump leaves the hosted record stale until it redeploys.
 const profile = loadEarnProfileForRead(profilePath('e2e-moderato'))

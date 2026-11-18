@@ -6,7 +6,7 @@ data, deployment, authorities, and tests. The shared engine contract is in
 [yield engines](../integrations/engines.md). The three contracts are in the Sigma Prime PropAMM &
 Earn review and unchanged since ([audits](../audit/README.md)).
 
-`VedaEngine` ([source](../../../earn/src/engines/veda/VedaEngine.sol)) holds BoringVault shares for one
+`VedaEngine` ([source](../../../src/earn/engines/veda/VedaEngine.sol)) holds BoringVault shares for one
 EarnVault and drives the Teller, optional Queue, and Accountant that the BoringVault owner publishes.
 Veda is an `IEarnEngine` backend, not a separate Earn deployment type: the Veda side delivers a
 reviewed, unbound `VedaEngine`, and the profile lifecycle deploys the standard core around it. No
@@ -46,7 +46,7 @@ together with the EarnVault operator, the forwarding solver owner, and the Veda 
 
 ### VedaPeripheryRegistry
 
-[`VedaPeripheryRegistry`](../../../earn/src/engines/veda/VedaPeripheryRegistry.sol) is ownerless and
+[`VedaPeripheryRegistry`](../../../src/earn/engines/veda/VedaPeripheryRegistry.sol) is ownerless and
 immutable to one BoringVault and base asset. Only the current `BoringVault.owner()` may publish a
 Teller, optional Queue, and Accountant tuple (`setVedaPeriphery`) and bind the registry exactly once
 to one engine (`bindEngine`). Teller and Accountant are required; a zero Queue selects
@@ -59,7 +59,7 @@ cannot bind its EarnVault until the registry points back to it, and the binding 
 
 ### VedaForwardingSolver
 
-[`VedaForwardingSolver`](../../../earn/src/engines/veda/VedaForwardingSolver.sol) combines the stock Veda
+[`VedaForwardingSolver`](../../../src/earn/engines/veda/VedaForwardingSolver.sol) combines the stock Veda
 solve with Earn finalization. It is immutable to one stock solver, tracking Queue, Teller, and
 engine. `solveAndForward(requestIds, coverDeficit)` is restricted to owner-authorized solvers
 (`setAuthorizedSolver`). It reads each request from its Queue by ID, checks the engine recorded that
@@ -329,7 +329,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
 
 ## Tests
 
-- Foundry, under [`test/engines/veda/`](../../../earn/test/engines/veda/): accounting, async request,
+- Foundry, under [`test/earn/engines/veda/`](../../../test/earn/engines/veda/): accounting, async request,
   cancellation and settlement, fee freshness, periphery rotation, the forwarding solver, and an
   invariant suite. Rate mutation, periphery rotation, deficit funding, and external-solver recovery
   are covered only here.
@@ -342,7 +342,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
 ### Test stacks
 
 Tempo-owned test stacks run over Veda-compatible fixtures
-([`LocalVeda.sol`](../../../earn/script/local/contracts/LocalVeda.sol)); they prove nothing about release
+([`LocalVeda.sol`](../../../script/earn/local/contracts/LocalVeda.sol)); they prove nothing about release
 compatibility and never stand in for a production venue. The fixture BoringVault doubles as a
 RolesAuthority that allows every call, the test deployer owns the BoringVault (and so controls the
 ownerless registry), the `VedaEngine`, the `VedaForwardingSolver`, and every fixture, and a hosted

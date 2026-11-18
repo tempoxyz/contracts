@@ -5,13 +5,15 @@ deployment lifecycle, the E2E harness and the development toolchain are shared. 
 canonical page; other pages link to it rather than restating it, so a behavior change needs one
 documentation edit.
 
-## Projects
+## Domains
 
-| Project                                 | Start here                                                                                                                                 |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| [Tempo Earn](../earn/README.md)         | [Earn documentation](earn/README.md): architecture, engines, modules, integrations, audits, glossary                                       |
-| [Zone router](../zone-router/README.md) | [Zone router](zone-router/zone-router.md): `ZoneRouter`, its factory and spenders                                                          |
-| [Card spend](../cards/README.md)        | [Design](cards/design.md): the provider-agnostic core; providers: [Bridge](cards/bridge/README.md#documents), [Rain](cards/rain/README.md) |
+The repository is one Foundry project; each domain keeps its documentation here.
+
+| Domain                         | Start here                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| [Tempo Earn](earn/overview.md) | [Earn documentation](earn/README.md): architecture, engines, modules, integrations, audits, glossary                                       |
+| [Zone router](zone/README.md)  | [Zone router](zone/zone-router.md): `ZoneRouter`, its factory and spenders                                                                 |
+| [Card spend](spend/README.md)  | [Design](spend/design.md): the provider-agnostic core; providers: [Bridge](spend/bridge/README.md#documents), [Rain](spend/rain/README.md) |
 
 ## Document ownership
 
@@ -47,4 +49,4 @@ Shared topics. Each project's index above owns its own topics.
   visibility, and public amount/timing leakage.
 - **Removing an integration removes every reference to it.**
 
-Projects add their own rules, such as [Earn's](earn/README.md#documentation-rules).
+Domains add their own rules, such as [Earn's](earn/README.md#documentation-rules).

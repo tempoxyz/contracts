@@ -130,6 +130,16 @@ describe('solidity-deps solar installation', () => {
     },
   )
 
+  it('rejects project arguments before installing anything', () => {
+    const fixture = setup()
+    const result = fixture.install(false, ['earn'])
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('usage: scripts/solidity-deps.sh')
+    expect(fixture.calls()).toEqual([])
+    expect(fixture.gitCalls()).toEqual([])
+    expect(existsSync(join(fixture.root, '.solar'))).toBe(false)
+  })
+
   it('does not publish a compiler or receipt from a failed first installation', () => {
     const fixture = setup()
     const result = fixture.install(true)
@@ -144,13 +154,13 @@ describe('solidity-deps solar installation', () => {
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'solidity-deps-'))
   roots.push(root)
-  for (const path of ['scripts', 'bin', 'earn']) mkdirSync(join(root, path))
+  for (const path of ['scripts', 'bin']) mkdirSync(join(root, path))
   copyFileSync(
     new URL('../../scripts/solidity-deps.sh', import.meta.url),
     join(root, 'scripts/solidity-deps.sh'),
   )
-  writeFileSync(join(root, 'earn/foundry.lock'), '{}')
-  writeFileSync(join(root, 'earn/solar.lock'), `${revision}\n`)
+  writeFileSync(join(root, 'foundry.lock'), '{}')
+  writeFileSync(join(root, 'solar.lock'), `${revision}\n`)
   const callsFile = join(root, 'cargo-calls.jsonl')
   writeFileSync(
     join(root, 'bin/cargo'),
@@ -199,8 +209,8 @@ if (args[0] === 'clone') fs.mkdirSync(args[args.length - 1], { recursive: true }
             .split('\n')
             .map((line) => JSON.parse(line) as string[])
         : [],
-    install: (fail = false) =>
-      spawnSync('bash', ['scripts/solidity-deps.sh', 'earn'], {
+    install: (fail = false, args: readonly string[] = []) =>
+      spawnSync('bash', ['scripts/solidity-deps.sh', ...args], {
         cwd: root,
         encoding: 'utf8',
         env: {

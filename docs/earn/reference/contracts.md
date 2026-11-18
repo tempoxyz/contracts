@@ -29,7 +29,7 @@ scope is in [audits](../audit/README.md#scope).
 
 ## EarnFactory
 
-[`EarnFactory`](../../../earn/src/core/EarnFactory.sol) is constructed with the canonical `ITIP20Factory`,
+[`EarnFactory`](../../../src/earn/core/EarnFactory.sol) is constructed with the canonical `ITIP20Factory`,
 one locked `EarnVault` implementation, and one locked `EarnFees` implementation, all immutable.
 
 `deploy(DeployParams)` accepts:
@@ -73,7 +73,7 @@ different or missing binding or an unexpected engine owner.
 
 ## EarnVault
 
-[`EarnVault`](../../../earn/src/core/EarnVault.sol) is the persistent public integration point. Its
+[`EarnVault`](../../../src/earn/core/EarnVault.sol) is the persistent public integration point. Its
 `initialize` runs once, from the factory, and emits `EarnVaultInitialized` with the engine,
 EarnShare, fee module, operator, emergency seats, asset limit, migration mode, distributor, update
 delay, and distributor fee. The factory's later `EarnStackDeployed` is the signal that issuer and
@@ -138,7 +138,7 @@ distinct selectors, for [scoped access keys](../integrations/client.md#delegated
 
 They behave exactly like the explicit-receiver variants with `receiver = msg.sender`. A contract
 receiver of an async claim may implement
-[`IAsyncRedeemReceiver`](../../../earn/src/interfaces/core/IAsyncRedeemReceiver.sol); the EarnVault calls
+[`IAsyncRedeemReceiver`](../../../src/interfaces/earn/IAsyncRedeemReceiver.sol); the EarnVault calls
 `onRedeemFinalized` or `onRedeemCancelled` after paying it and ignores a revert.
 
 ### Fee and role entrypoints
@@ -221,7 +221,7 @@ The complete list is in the source; client handling is in
 
 ## EarnFees
 
-[`EarnFees`](../../../earn/src/core/EarnFees.sol) is an ownerless deterministic clone initialized once with
+[`EarnFees`](../../../src/earn/core/EarnFees.sol) is an ownerless deterministic clone initialized once with
 one EarnVault, one EarnShare, and the initial configuration (ID `1`). `earnVault()` is the only
 caller allowed to mutate fee state, `earnShare()` is the only token it holds for claims, and there is
 no owner, issuer authority, rescue method, or configuration bypass.
@@ -262,5 +262,5 @@ supplies the accounting context and separately mints any fee EarnShare they retu
 configuration hash and whether it re-enabled fees), `FeeDustWaived`, `FeesDisabled`, and
 `FeeBaselinesInitialized`.
 
-Fee types are in [`EarnFeeTypes.sol`](../../../earn/src/interfaces/core/EarnFeeTypes.sol) and the pure
-waterfall in [`EarnFeeMath.sol`](../../../earn/src/core/EarnFeeMath.sol).
+Fee types are in [`EarnFeeTypes.sol`](../../../src/interfaces/earn/EarnFeeTypes.sol) and the pure
+waterfall in [`EarnFeeMath.sol`](../../../src/earn/core/EarnFeeMath.sol).

@@ -9,8 +9,8 @@ Use it when an operator funds yield from its own balance sheet, for example payi
 such as SOFR plus a spread on stablecoin balances, and wants every holder, including private Zone
 holders, to receive it without per-account claims.
 
-Contract: [`HoldEngine.sol`](../../../earn/src/engines/hold/HoldEngine.sol). Tests:
-[`HoldEngine.t.sol`](../../../earn/test/engines/hold/HoldEngine.t.sol).
+Contract: [`HoldEngine.sol`](../../../src/earn/engines/hold/HoldEngine.sol). Tests:
+[`HoldEngine.t.sol`](../../../test/earn/engines/hold/HoldEngine.t.sol).
 
 ## Accounting
 

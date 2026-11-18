@@ -35,7 +35,6 @@ import { stepSignerAvailable } from '../modules/module.js'
 import {
   assertFoundryProjectEnvironment,
   foundryProcessEnvironment,
-  foundryProjectRoot,
   foundryRpcEnvironment,
 } from '../chain/foundry.js'
 import {
@@ -72,7 +71,7 @@ export type ReconciliationStep =
   | {
       kind: 'foundry'
       action: EarnDeploymentAction
-      /** The Foundry project directory Forge runs in: Earn's, or the sibling `FoundryStep.project`. */
+      /** The Foundry project directory Forge runs in: the repository root. */
       root: string
       arguments: string[]
       environment: Record<string, string>
@@ -265,7 +264,7 @@ export async function prepareLifecycleStep(
     savePendingDeployment(profilePath, profile, pending)
     stageFoundryOutputs(options.root, profilePath)
     const calldata = step.input(profile, pending.outputs, outputPath)
-    const root = foundryProjectRoot(options.root, step.project)
+    const root = options.root
     assertFoundryProjectEnvironment(root)
     return {
       kind: 'foundry',
@@ -280,8 +279,8 @@ export async function prepareLifecycleStep(
         'tempo',
         '--broadcast',
       ],
-      // Only the deployer key reaches Forge; every other input is typed calldata. A sibling project's
-      // receipts go to `<root>/broadcast` too, where they are read back.
+      // Only the deployer key reaches Forge; every other input is typed calldata. Receipts go
+      // to `<root>/broadcast` too, where they are read back.
       environment: {
         ...foundryRpcEnvironment(foundryProcessEnvironment(options.environment), options.rpcUrl),
         FOUNDRY_BROADCAST: foundryBroadcastPath(options.root, profilePath),

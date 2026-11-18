@@ -63,9 +63,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    defaults:
-      run:
-        working-directory: cards
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -76,17 +73,15 @@ jobs:
 
       - uses: ./.github/actions/solar-cache
 
-      # CardSpender imports the spender interface from zone-router/src/ and Earn's from earn/src/, which need
-      # no dependency of their own.
-      - name: Install the cards project's Solidity dependencies
-        working-directory: .
-        run: scripts/solidity-deps.sh cards
+      - name: Install Solidity dependencies
+        run: scripts/solidity-deps.sh
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v1.8.6
 
-      # Inputs reach the script only through the environment; release.sh validates them.
+      # Inputs reach the script only through the environment; release.sh validates them and selects
+      # the spend profile, whose Tempo hardfork the card contracts need.
       - name: Deploy and verify
         env:
           NETWORK: ${{ inputs.network }}
@@ -103,10 +98,11 @@ jobs:
           set -euo pipefail
           arguments=("$NETWORK" "$CONTRACT")
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
-          RESULT="$RUNNER_TEMP/bridge-release.json" script/bridge/deploy/release.sh "${arguments[@]}"
+          RESULT="$RUNNER_TEMP/bridge-release.json" script/spend/bridge/deploy/release.sh "${arguments[@]}"
 
-      # Forge records the authenticated RPC URL in its script sequences under cards/cache; the script
-      # deletes them, and this removes any it could not, whatever the outcome.
+      # Forge records the authenticated RPC URL in its script sequences under the profile's cache
+      # directory in cache/; the script deletes them, and this removes any it could not, whatever the
+      # outcome.
       - name: Remove Forge script sequences
         if: ${{ always() }}
         run: find cache -mindepth 1 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
@@ -139,7 +135,7 @@ jobs:
               echo '| --- | --- | --- |'
               jq -r '"| Admin (timelock) | `setSpenderHandler(\"TS\", handler)` | `\(.output.adminRegisterHandler)` |"' "$result"
               jq -r '.output | if (.governanceGateHandler // "0x") != "0x" then "| Governance | `updateSpenderHandlerStatus(\"TS\", Gated)` | `\(.governanceGateHandler)` |" else empty end' "$result"
-              jq -r '.output | if .status then "\nThe prefix was `\(.status)` before this deploy; docs/cards/bridge/deploy.md says when governance gates it." else "\nA broadcast also writes the governance gate call when the factory needs one." end' "$result"
+              jq -r '.output | if .status then "\nThe prefix was `\(.status)` before this deploy; docs/spend/bridge/deploy.md says when governance gates it." else "\nA broadcast also writes the governance gate call when the factory needs one." end' "$result"
             fi
             if jq -e '.error' "$result" >/dev/null; then
               echo
@@ -154,5 +150,5 @@ jobs:
           name: bridge-release-${{ inputs.network }}-${{ inputs.contract }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/bridge-release.json
-            cards/broadcast/
+            broadcast/
           if-no-files-found: ignore

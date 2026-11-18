@@ -5,7 +5,6 @@ import { isHostedDeploymentChain } from '../chain/tempo.js'
 import { assertCreationReceipt, assertDirectCreationTransaction } from '../chain/creation.js'
 import {
   assertFoundryProjectEnvironment,
-  foundryProjectRoot,
   foundryVerificationEnvironment,
 } from '../chain/foundry.js'
 import type { FoundryStep } from '../modules/module.js'
@@ -76,7 +75,7 @@ export async function assertStepCreation(
     if (!step.source) throw new Error(`Direct creation source is not declared for ${step.id}`)
     const creationBytecode = (
       dependencies.creationBytecode ?? defaultDependencies.creationBytecode
-    )(foundryProjectRoot(options.root, step.project), step.source.contract, options.environment)
+    )(options.root, step.source.contract, options.environment)
     const minedTransaction = await client.getTransaction({ hash: transaction }).catch(() => {
       throw new Error(
         `Cannot validate creation transaction for ${transaction}; retry when the RPC transaction is available`,

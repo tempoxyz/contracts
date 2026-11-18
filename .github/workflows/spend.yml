@@ -1,0 +1,221 @@
+name: Spend
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - 'src/**'
+      - 'test/spend/**'
+      - 'script/spend/**'
+      - 'script/DeterministicRelease.sol'
+      - 'vendor/**'
+      - 'snapshots/**'
+      - 'foundry.toml'
+      - 'foundry.lock'
+      - 'solar.lock'
+      - 'solar-solc'
+      - 'scripts/solidity-deps.sh'
+      - 'localnet/**'
+      - 'e2e/spend/**'
+      - 'e2e/harness/**'
+      - 'e2e/package.json'
+      - 'docs/spend/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/actions/setup/**'
+      - '.github/actions/solar-cache/**'
+      - '.github/workflows/spend.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'test/spend/**'
+      - 'script/spend/**'
+      - 'script/DeterministicRelease.sol'
+      - 'vendor/**'
+      - 'snapshots/**'
+      - 'foundry.toml'
+      - 'foundry.lock'
+      - 'solar.lock'
+      - 'solar-solc'
+      - 'scripts/solidity-deps.sh'
+      - 'localnet/**'
+      - 'e2e/spend/**'
+      - 'e2e/harness/**'
+      - 'e2e/package.json'
+      - 'docs/spend/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/actions/setup/**'
+      - '.github/actions/solar-cache/**'
+      - '.github/workflows/spend.yml'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Card spend on Tempo: the provider-agnostic contracts (src/spend/) and each provider's (Bridge, Rain),
+# which import Earn and the Zone router from the same Foundry project. Its tests and scripts need
+# Tempo's precompiles, so they run under the spend profiles (hardfork tempo:T8); Verify owns the
+# project's format, lint, and build. Not a required check: it runs only when the contracts, the spend
+# scripts, tests, vendored code or docs, e2e/spend/, localnet/ (with its pinned images) or the shared
+# build configuration change.
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Required by tempoxyz/gh-actions secure-runner.
+      id-token: write
+    env:
+      FOUNDRY_PROFILE: spend
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/solar-cache
+
+      - name: Install Solidity dependencies
+        run: scripts/solidity-deps.sh
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - name: Contract sizes
+        run: forge build --sizes src/spend
+
+      # The committed Rain bytecode is what vendor/rain builds to with Rain's own compiler settings,
+      # apart from the metadata hashes, which name each checkout's absolute paths.
+      - name: Rain fixture is current
+        run: script/spend/rain/build-fixture.sh --check
+
+      - name: Test
+        env:
+          FOUNDRY_PROFILE: spend-ci
+        run: forge test
+
+      - name: Bridge matrix is current
+        run: |
+          python3 script/spend/bridge/matrix.py --out reports/matrix.md
+          diff -u docs/spend/bridge/matrix.md reports/matrix.md
+
+  # Public and private card spend end to end, from pathUSD and from Earn shares, with Rain as the
+  # provider, on a disposable Tempo L1 and Zone started by the shared localnet.
+  e2e:
+    name: Rain E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Runners are discarded after the job, so the testcontainers reaper is unneeded.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/solar-cache
+
+      - name: Install Solidity dependencies
+        run: scripts/solidity-deps.sh
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: e2e
+
+      - name: Build contracts
+        env:
+          FOUNDRY_PROFILE: spend
+        run: forge build
+
+      - name: Run
+        run: pnpm e2e:cards -- --provider rain --earn
+
+  # A private spend end to end, from pathUSD and from Earn shares, on a disposable Tempo L1 and Zone
+  # started by the shared localnet, from the images localnet/fixtures/runtime-lock.json pins.
+  bridge-zone-e2e:
+    name: Bridge Zone E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Runners are discarded after the job, so the testcontainers reaper is unneeded.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/solar-cache
+
+      - name: Install Solidity dependencies
+        run: scripts/solidity-deps.sh
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: e2e
+
+      - name: Build contracts
+        env:
+          FOUNDRY_PROFILE: spend
+        run: forge build
+
+      # --earn also deploys Tempo Earn's e2e-moderato stack locally, so the Earn spend steps run.
+      - name: Run
+        run: pnpm e2e:bridge -- --earn
+
+  # Public pulls and Bridge's access key on a disposable Tempo dev node. The script selects the spend
+  # profile itself.
+  bridge-smoke:
+    name: Bridge smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/solar-cache
+
+      - name: Install Solidity dependencies
+        run: scripts/solidity-deps.sh
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v1.8.6
+
+      - name: Bridge smoke
+        run: bash script/spend/bridge/smoke.sh

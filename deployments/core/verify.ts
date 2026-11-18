@@ -16,7 +16,6 @@ import {
 
 import {
   assertFoundryProjectEnvironment,
-  foundryProjectRoot,
   foundryRpcEnvironment,
   foundryVerificationEnvironment,
   sourceVerificationCompilerArguments,
@@ -235,7 +234,7 @@ export async function verifyRecordedStepCreation(
       },
     }
     const observed = await verifySource(context, {
-      root: foundryProjectRoot(options.root, step.project),
+      root: options.root,
       address,
       constructorArgs: step.source.constructorArgs(options.profile, addresses),
       contract: step.source.contract,
@@ -372,7 +371,7 @@ async function inspectDeploymentSources(
   const created = deploymentSteps
     .flatMap((step) =>
       step.execution === 'foundry' && step.source && step.enabled(options.profile)
-        ? [{ id: step.id, project: step.project, ...step.source }]
+        ? [{ id: step.id, ...step.source }]
         : [],
     )
     .sort(
@@ -380,9 +379,9 @@ async function inspectDeploymentSources(
         deploymentAddressKeys.indexOf(left.output) - deploymentAddressKeys.indexOf(right.output),
     )
   const prepared = []
-  for (const { id, project, output, contract, constructorArgs } of created) {
+  for (const { id, output, contract, constructorArgs } of created) {
     const verify = await prepareSource(context, {
-      root: foundryProjectRoot(options.root, project),
+      root: options.root,
       address: requiredOutput(addresses, output),
       constructorArgs: constructorArgs(options.profile, addresses),
       contract,
@@ -857,7 +856,7 @@ function requireRecordedRepairSources(context: VerificationContext, target: Sour
 
 function checkedSourcePath(context: VerificationContext, projectRoot: string, path: string) {
   const localPath = resolve(projectRoot, path)
-  const fromRoot = relative(resolve(context.root, '..'), localPath)
+  const fromRoot = relative(context.root, localPath)
   if (fromRoot === '' || fromRoot.startsWith('..') || isAbsolute(fromRoot))
     throw new Error(`Verifier source path ${path} escapes the repository root`)
   return localPath
@@ -887,8 +886,8 @@ function requireCanonicalSources(
   if (!sources || !sources[sourcePath]) {
     throw new Error(`Verifier did not return canonical source ${sourcePath}`)
   }
-  // Source paths are relative to the contract's Foundry project, and a sibling project may import
-  // Earn's sources (`../earn/src/...`); every one must resolve inside this checkout.
+  // Source paths are relative to the repository root, the Foundry project; every one must resolve
+  // inside this checkout.
   const entries = Object.entries(sources)
   const recorded = recordedSource(context, { address: getAddress(contract.address) })
   if (!recorded) {
@@ -963,7 +962,7 @@ async function creationTransactionFor(
     const verifyFactory = await prepareExistingSource(
       {
         ...context,
-        root: foundryProjectRoot(options.root, factory.source.project),
+        root: options.root,
         recordedSources: previous
           ? new Map([[factory.address.toLowerCase(), { kind: 'source', ...previous }]])
           : undefined,

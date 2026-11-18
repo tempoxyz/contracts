@@ -111,13 +111,11 @@ describe('card runtime provenance', () => {
   })
 
   it('binds the vendor commit, complete Solidity source inventory, and compile inputs', () => {
-    const documentation = readText('cards/vendor/VENDORED.md').split('## Zones runtime')[1]
+    const documentation = readText('vendor/VENDORED.md').split('## Zones runtime')[1]
     expect(documentation?.match(/`([0-9a-f]{40})`/)?.[1]).toBe(provenance.vendor.sourceCommit)
-    expect(readJson('cards/foundry.lock')['lib/tempo-std'].rev).toBe(
-      provenance.vendor.tempoStdCommit,
-    )
-    expect(sha256(readFile('cards/foundry.toml'))).toBe(provenance.vendor.foundryConfigSha256)
-    const directory = 'cards/vendor/tempo-zones/src/runtime'
+    expect(readJson('foundry.lock')['lib/tempo-std'].rev).toBe(provenance.vendor.tempoStdCommit)
+    expect(sha256(readFile('foundry.toml'))).toBe(provenance.vendor.foundryConfigSha256)
+    const directory = 'vendor/tempo-zones/src/runtime'
     const sources = readdirSync(resolve(Config.root, directory), {
       recursive: true,
       encoding: 'utf8',

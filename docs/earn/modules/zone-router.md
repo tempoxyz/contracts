@@ -6,14 +6,14 @@ integration, failure handling, tests, and the Zone go-live gate. Readers are int
 private deposits and redemptions, operators activating a router, and reviewers.
 
 A profile's separate `zoneRouter` field deploys a different contract beside this one, the
-factory-made [`ZoneRouter`](../../zone-router/zone-router.md).
+factory-made [`ZoneRouter`](../../zone/zone-router.md).
 
 Zones are external infrastructure. Audit coverage is in [audits](../audit/README.md#scope). Hosted Zone stacks are listed in
 [hosted environments](../../deployment/hosted-environments.md).
 
 ## Router contract
 
-[`SingleZoneEarnRouter`](../../../earn/src/router/SingleZoneEarnRouter.sol) lets an account inside a Zone
+[`SingleZoneEarnRouter`](../../../src/earn/router/SingleZoneEarnRouter.sol) lets an account inside a Zone
 deposit into, or redeem from, one EarnVault on the parent chain and receive the result back in the
 same Zone. Each instance is ownerless and immutable to one Zone ID, EarnVault, and private asset;
 the vault asset and EarnShare are read from the EarnVault at construction. The private asset decides
@@ -176,7 +176,7 @@ external trust boundaries: exact par, measured output, and bounds prevent underd
 repricing but do not make a compromised pool owner or an insolvent token safe.
 
 Test environments that build only Earn's `src/`, such as the Earn Zone integration in
-`tempoxyz/tempo`, can use [`src/demo/DemoParPool.sol`](../../../earn/src/demo/DemoParPool.sol), which
+`tempoxyz/tempo`, can use [`src/demo/DemoParPool.sol`](../../../src/demo/DemoParPool.sol), which
 implements only the pool surface the router calls, acts as its own always-fresh par oracle, and
 converts 1:1 from owner-funded inventory. Earn's localnet uses the
 [pinned DirectPropAMM fixture](propamm.md#pinned-directpropamm-fixture).
@@ -263,7 +263,7 @@ core is bound:
 
 | Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                              |
 | ----------------------- | ---------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                      |
+| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/earn/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                 |
 | `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself                                            |
 | `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                         |
 | `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router has callback and return-deposit admission: gateway role when restricted, Account role when gateways are open and access is enforced |
@@ -310,7 +310,7 @@ administrator or pool owner key.
 
 ## Tests
 
-- Foundry, under [`test/router/`](../../../earn/test/router/): callback authentication and flows
+- Foundry, under [`test/earn/router/`](../../../test/earn/router/): callback authentication and flows
   (`SingleZoneEarnRouter.t.sol`), par conversion including off-par and stale-oracle rejection
   (`SingleZoneEarnRouterConversion.t.sol`), custody and residual balances
   (`SingleZoneEarnRouterCustody.t.sol`), the same-asset mode (`SingleZoneEarnRouterSameAsset.t.sol`),

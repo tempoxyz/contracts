@@ -79,7 +79,7 @@ export const deployRouter = defineFoundryStep({
   summary: 'Deploy the immutable single-Zone router.',
   phase: 'deployment',
   intent: ['zone'],
-  script: 'script/deploy/DeployEarnRouter.s.sol:DeployEarnRouterScript',
+  script: 'script/earn/deploy/DeployEarnRouter.s.sol:DeployEarnRouterScript',
   rawGasEstimate: true,
   enabled: hasZone,
   input(profile, outputs, outputPath) {
@@ -92,7 +92,7 @@ export const deployRouter = defineFoundryStep({
   },
   source: {
     output: 'earnRouter',
-    contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+    contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
     accessMember: true,
     constructorArgs(profile, outputs) {
       const { zoneId, earnVault, privateAsset, route } = routerArgs(profile, outputs)
@@ -157,8 +157,7 @@ export const authorizeRouter = defineAuthorityStep({
       (client) =>
         requireRouterProvenance(client, {
           address: requiredOutput(options.outputs, 'earnRouter'),
-          project: 'earn',
-          contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+          contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
           constructorArgs: deployRouter.source!.constructorArgs(options.profile, options.outputs),
         }),
     ),
@@ -317,8 +316,7 @@ export const registerZoneGateway = defineAuthorityStep({
     if (gateway && deposits) return { transactions: [] }
     await requireRouterProvenance(client, {
       address: router,
-      project: 'earn',
-      contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+      contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
       constructorArgs: deployRouter.source!.constructorArgs(options.profile, options.outputs),
     })
     return send(

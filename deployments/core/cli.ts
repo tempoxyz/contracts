@@ -53,7 +53,7 @@ type Output = Pick<Console, 'log' | 'warn'>
 export async function main(
   argv: string[] = process.argv.slice(2),
   output: Output = console,
-  repositoryRoot = resolve(fileURLToPath(new URL('../../earn', import.meta.url))),
+  repositoryRoot = resolve(fileURLToPath(new URL('../..', import.meta.url))),
 ) {
   const help = argv.includes('--help') || argv.includes('-h')
   const capabilityCommand = capabilityCommands.find((command) => command.name === argv[0])

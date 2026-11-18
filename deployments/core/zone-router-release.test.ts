@@ -46,13 +46,12 @@ const spendMode = { zoneId: 7, enabledOps: 4, spenders: [address('5e771e')] }
 const routerParameters = { factory: address('f1'), mode: spendMode }
 
 describe('planRouterRelease', () => {
-  test('the router releases run from the zone-router project and name no registry entry', () => {
+  test('the router releases name no registry entry', () => {
     const factory = planRouterRelease('zoneRouterFactory', 4217)
     expect(factory).toMatchObject({
-      project: 'zone-router',
-      script: 'script/deploy/DeployRouterRelease.s.sol:DeployRouterReleaseScript',
+      script: 'script/zone/deploy/DeployRouterRelease.s.sol:DeployRouterReleaseScript',
       contracts: [
-        { name: 'ZoneRouterFactory', contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory' },
+        { name: 'ZoneRouterFactory', contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory' },
       ],
       forgeArguments: [],
     })
@@ -89,7 +88,6 @@ describe('planRouterRelease', () => {
       ],
     })
     for (const plan of [factory, spender, router]) {
-      expect(plan.project).toBe('zone-router')
       expect(plan.registryKey).toBeUndefined()
     }
   })
@@ -239,7 +237,7 @@ describe('predictRelease for router releases', () => {
         opcode: 'CREATE2',
         from: create2Deployer,
         salt: releaseSalt,
-        bytecode: bytecode('src/ZoneRouterFactory.sol:ZoneRouterFactory'),
+        bytecode: bytecode('src/zone/ZoneRouterFactory.sol:ZoneRouterFactory'),
       }),
     )
     const args = encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
@@ -254,7 +252,7 @@ describe('predictRelease for router releases', () => {
         opcode: 'CREATE2',
         from: create2Deployer,
         salt: releaseSalt,
-        bytecode: concatHex([bytecode('src/spenders/SendSpender.sol:SendSpender'), args]),
+        bytecode: concatHex([bytecode('src/zone/spenders/SendSpender.sol:SendSpender'), args]),
       }),
     )
     expect(poolless!.constructorArgs).toBe(
@@ -297,7 +295,10 @@ describe('predictRelease for router releases', () => {
         customerId: zeroHash,
       },
     ])
-    expect(router).toMatchObject({ name: 'ZoneRouter', contract: 'src/ZoneRouter.sol:ZoneRouter' })
+    expect(router).toMatchObject({
+      name: 'ZoneRouter',
+      contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
+    })
     expect(router!.constructorArgs).toBe(modeArgs)
     // ZoneRouterFactory salts with keccak256(abi.encode(mode)).
     expect(router!.address).toBe(
@@ -305,7 +306,7 @@ describe('predictRelease for router releases', () => {
         opcode: 'CREATE2',
         from: routerParameters.factory,
         salt: keccak256(modeArgs),
-        bytecode: concatHex([bytecode('src/ZoneRouter.sol:ZoneRouter'), modeArgs]),
+        bytecode: concatHex([bytecode('src/zone/ZoneRouter.sol:ZoneRouter'), modeArgs]),
       }),
     )
     expect(router).not.toHaveProperty('creator')
@@ -341,7 +342,7 @@ describe('createdContracts for a contract created inside a call', () => {
     expect(createdContracts(plan, deployCall(), [router!], new Set(), true)).toEqual([
       {
         name: 'ZoneRouter',
-        contract: 'src/ZoneRouter.sol:ZoneRouter',
+        contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
         address: router!.address,
         transaction: hash(0),
         constructorArgs: router!.constructorArgs,
@@ -408,12 +409,12 @@ describe('deployRouterRelease', () => {
     network: 'mainnet',
     kind: 'zoneRouterFactory',
     broadcast: true,
-    root: '/repo/earn',
+    root: '/repo',
     environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
     ...overrides,
   })
 
-  test('runs a Zone router release from the zone-router project and records its parameters', async () => {
+  test('runs a Zone router release from the repository root and records its parameters', async () => {
     const plan = planRouterRelease('zoneRouter', 42431, routerParameters)
     const [router] = predictRelease(plan, bytecode)
     const dependencies = runtime()
@@ -436,26 +437,24 @@ describe('deployRouterRelease', () => {
       options({ network: 'moderato', kind: 'zoneRouter', parameters: routerParameters }),
       dependencies,
     )
-    expect(dependencies.preflight.mock.calls[0]![0]).toBe('/repo/zone-router')
+    expect(dependencies.preflight.mock.calls[0]![0]).toBe('/repo')
     expect(dependencies.creationBytecode.mock.calls[0]!.slice(0, 2)).toEqual([
-      '/repo/zone-router',
-      'src/ZoneRouter.sol:ZoneRouter',
+      '/repo',
+      'src/zone/ZoneRouter.sol:ZoneRouter',
     ])
     const [forgeArguments, , cwd] = dependencies.forge.mock.calls[0]!
-    expect(cwd).toBe('/repo/zone-router')
+    expect(cwd).toBe('/repo')
     expect(forgeArguments.slice(0, 3)).toEqual(['script', plan.script, '--root'])
-    expect(forgeArguments[3]).toBe('/repo/zone-router')
-    expect(dependencies.readFile).toHaveBeenCalledWith(
-      broadcastPath('/repo/zone-router', plan, 42431, true),
-    )
+    expect(forgeArguments[3]).toBe('/repo')
+    expect(dependencies.readFile).toHaveBeenCalledWith(broadcastPath('/repo', plan, 42431, true))
     expect(dependencies.removeScriptCache).toHaveBeenCalledWith(
-      '/repo/zone-router',
+      '/repo',
       'DeployRouterRelease.s.sol',
     )
     expect(dependencies.verify.mock.calls[0]![0]).toMatchObject({
-      root: '/repo/zone-router',
+      root: '/repo',
       address: router!.address,
-      contract: 'src/ZoneRouter.sol:ZoneRouter',
+      contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
       constructorArgs: router!.constructorArgs,
     })
     expect(result).toMatchObject({
@@ -520,14 +519,14 @@ describe('router release workflow', () => {
 describe('router release CLI', () => {
   test("refuses Earn's factory releases and invalid parameters before deploying anything", async () => {
     for (const kind of ['all', ...factoryReleaseKinds]) {
-      await expect(main(['moderato', kind], '/nonexistent/earn')).rejects.toThrow(
+      await expect(main(['moderato', kind], '/nonexistent')).rejects.toThrow(
         "Earn's factory releases run with pnpm factory-release",
       )
     }
     await expect(
-      main(['moderato', 'zoneRouter', '--parameters', 'not json'], '/nonexistent/earn'),
+      main(['moderato', 'zoneRouter', '--parameters', 'not json'], '/nonexistent'),
     ).rejects.toThrow('--parameters must be a JSON object')
-    await expect(main(['moderato', 'zoneRouter', 'extra'], '/nonexistent/earn')).rejects.toThrow(
+    await expect(main(['moderato', 'zoneRouter', 'extra'], '/nonexistent')).rejects.toThrow(
       'Usage: pnpm zone-router-release',
     )
   })
@@ -597,6 +596,6 @@ function releaseClient(chainId: number, binding?: Address) {
 
 test('router release CLI routes verifier repair to its broadcast guard', async () => {
   await expect(
-    main(['moderato', 'zoneRouterFactory', '--resubmit-verification'], '/nonexistent/earn'),
+    main(['moderato', 'zoneRouterFactory', '--resubmit-verification'], '/nonexistent'),
   ).rejects.toThrow('--resubmit-verification requires --broadcast')
 })

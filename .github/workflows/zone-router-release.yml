@@ -1,6 +1,6 @@
 name: Zone Router Release
 
-# Deploys one of the Zone router project's parameterized ownerless contracts (zone-router/) from main on the
+# Deploys one of the Zone router's parameterized ownerless contracts (src/zone/) from main on the
 # hosted networks: a SendSpender (bound to the release ZoneRouterFactory unless its parameters name another
 # factory; the release deploys that factory first when it is missing), or a ZoneRouter its factory creates. A Bridge card program's CardSpender
 # releases with the Bridge Release (bridge-release.yml). Each lands at its deterministic address, and
@@ -73,12 +73,11 @@ jobs:
         with:
           workspace: '@tempoxyz/contracts'
 
-      # zone-router/ is a separate Foundry project with its own pinned dependencies; it compiles with Earn's
-      # solar but needs no Forge build cache.
+      # The release compiles with the pinned solar but needs no Forge build cache.
       - uses: ./.github/actions/solar-cache
 
-      - name: Install the Zone router's Solidity dependencies
-        run: scripts/solidity-deps.sh zone-router
+      - name: Install Solidity dependencies
+        run: scripts/solidity-deps.sh
 
       - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -101,13 +100,14 @@ jobs:
           if [[ "$BROADCAST" == 'true' ]]; then arguments+=(--broadcast); fi
           pnpm zone-router-release "${arguments[@]}"
 
-      # Forge records the authenticated RPC URL in its script sequences under zone-router/cache; the command
-      # deletes them, and this removes any it could not, whatever the outcome.
+      # Forge records the authenticated RPC URL in its script sequences under the profile's cache
+      # directory in cache/; the command deletes them, and this removes any it could not, whatever the
+      # outcome.
       - name: Remove Forge script sequences
         if: ${{ always() }}
         run: |
-          if [[ -d zone-router/cache ]]; then
-            find zone-router/cache -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+          if [[ -d cache ]]; then
+            find cache -mindepth 1 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
           fi
 
       - name: Summarize
@@ -143,5 +143,5 @@ jobs:
           name: zone-router-release-${{ matrix.network }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/zone-router-release.json
-            zone-router/broadcast/
+            broadcast/
           if-no-files-found: ignore

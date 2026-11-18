@@ -12,10 +12,10 @@ const provenance = JSON.parse(
   readFileSync(resolve(Config.root, 'localnet/fixtures/card-runtime-provenance.json'), 'utf8'),
 )
 const sha256 = (value: Buffer) => createHash('sha256').update(value).digest('hex')
-const vendor = resolve(Config.root, 'cards/vendor/tempo-zones/src/runtime')
+const vendor = resolve(Config.root, 'vendor/tempo-zones/src/runtime')
 for (const [path, digest] of Object.entries(provenance.vendor.sources))
   assert.equal(sha256(readFileSync(resolve(vendor, path))), digest, `Unreviewed vendor ${path}`)
-const std = resolve(Config.root, 'cards/lib/tempo-std')
+const std = resolve(Config.root, 'lib/tempo-std')
 assert.equal(
   execFileSync('git', ['rev-parse', 'HEAD'], { cwd: std, encoding: 'utf8' }).trim(),
   provenance.vendor.tempoStdCommit,

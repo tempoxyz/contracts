@@ -159,7 +159,7 @@ export async function inspectPropAMMEngine(
 export const propamm = defineEngine({
   label: 'PropAMM',
   engineContract: 'PropAMMEngine',
-  engineSource: 'src/engines/propamm/PropAMMEngine.sol',
+  engineSource: 'src/earn/engines/propamm/PropAMMEngine.sol',
   venueLabel: 'PropAMM base token',
   periphery: [],
   capabilities: {

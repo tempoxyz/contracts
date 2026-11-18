@@ -237,7 +237,7 @@ describe('deployEarnProfile adopted engine admission', () => {
             : 'Existing engine runtime does not match this checkout',
         )
         expect(compiler.mock.calls.map(([, parameters]) => parameters?.[1])).toContain(
-          'src/engines/ERC4626Engine.sol:ERC4626Engine',
+          'src/earn/engines/erc4626/ERC4626Engine.sol:ERC4626Engine',
         )
         expect(compiler).toHaveBeenCalledTimes(pinned ? 1 : 4)
         expect(broadcast).not.toHaveBeenCalled()
@@ -736,7 +736,7 @@ describe('retained historical direct creation', () => {
             return Response.json({
               ...((await response.json()) as object),
               sources: {
-                'src/rewards/EarnContributionController.sol': { content: 'changed source' },
+                'src/earn/rewards/EarnContributionController.sol': { content: 'changed source' },
               },
             })
           })
@@ -831,7 +831,7 @@ describe('retained historical direct creation', () => {
             return Response.json({
               ...((await response.json()) as object),
               sources: {
-                'src/rewards/EarnContributionController.sol': { content: 'corrupt source' },
+                'src/earn/rewards/EarnContributionController.sol': { content: 'corrupt source' },
               },
             })
           })
@@ -1145,7 +1145,7 @@ function pendingSourceDeployment({
     environment: {},
     profile,
     profilePath: join(directory, 'profiles', profile.id, 'profile.json'),
-    root: join(directory, 'earn'),
+    root: directory,
     rpcUrl: 'https://chain.test',
     trustedIdentity: { deployer: profile.deployer, factories: profile.factories },
   }
@@ -1160,7 +1160,7 @@ function pendingSourceDeployment({
   vi.spyOn(ChildProcess, 'execFileSync').mockImplementation((command, parameters) => {
     if (
       command !== 'forge' ||
-      parameters?.[1] !== 'src/engines/veda/VedaEngine.sol:VedaEngine' ||
+      parameters?.[1] !== 'src/earn/engines/veda/VedaEngine.sol:VedaEngine' ||
       parameters?.[2] !== 'deployedBytecode'
     )
       throw new Error('Unexpected compiler invocation')
@@ -1467,8 +1467,8 @@ function pendingSourceDeployment({
     [
       addresses.engine.toLowerCase(),
       provisionEngine
-        ? 'src/engines/ERC4626Engine.sol:ERC4626Engine'
-        : 'src/engines/veda/VedaEngine.sol:VedaEngine',
+        ? 'src/earn/engines/erc4626/ERC4626Engine.sol:ERC4626Engine'
+        : 'src/earn/engines/veda/VedaEngine.sol:VedaEngine',
     ],
     [
       addresses.earnVault.toLowerCase(),
@@ -1478,20 +1478,20 @@ function pendingSourceDeployment({
   if (retainedController) {
     contracts.set(
       addresses.earnContributionController!.toLowerCase(),
-      'src/rewards/EarnContributionController.sol:EarnContributionController',
+      'src/earn/rewards/EarnContributionController.sol:EarnContributionController',
     )
     contracts.set(
       addresses.earnMerkleRewardDistributor!.toLowerCase(),
-      'src/rewards/EarnMerkleRewardDistributor.sol:EarnMerkleRewardDistributor',
+      'src/earn/rewards/EarnMerkleRewardDistributor.sol:EarnMerkleRewardDistributor',
     )
   }
   if (retainedRouter) {
     contracts.set(
       addresses.zoneRouterFactory!.toLowerCase(),
-      'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+      'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
     )
-    contracts.set(addresses.zoneRouter!.toLowerCase(), 'src/ZoneRouter.sol:ZoneRouter')
-    contracts.set(nextRouter.toLowerCase(), 'src/ZoneRouter.sol:ZoneRouter')
+    contracts.set(addresses.zoneRouter!.toLowerCase(), 'src/zone/ZoneRouter.sol:ZoneRouter')
+    contracts.set(nextRouter.toLowerCase(), 'src/zone/ZoneRouter.sol:ZoneRouter')
     // Activation owns live access policy, not creation or retained-source admission.
     vi.spyOn(Plan, 'activationActions').mockReturnValue([])
   }

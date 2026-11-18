@@ -397,7 +397,7 @@ total fee      = $2.625 + $17.375                         = $20
 
 Holders keep exactly the $1,030 target, which becomes the $1.030 high-water mark
 (`testFixedAndExcessReturnFeesFollowWaterfall` in
-[`EarnVaultFees.t.sol`](../../../earn/test/core/EarnVaultFees.t.sol)).
+[`EarnVaultFees.t.sol`](../../../test/earn/core/EarnVaultFees.t.sol)).
 
 ### Depositing during a drawdown
 

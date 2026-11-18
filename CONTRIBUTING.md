@@ -13,7 +13,7 @@ Node.js 22, and pnpm 11. Local end-to-end runs also need Docker.
 git clone https://github.com/tempoxyz/contracts
 cd contracts
 pnpm install
-pnpm deps   # each project's Solidity dependencies at its foundry.lock revisions, and Earn's solar
+pnpm deps   # Solidity dependencies at the foundry.lock revisions, and the solar compiler
 ```
 
 The clone needs no private access: Solidity dependencies are public repositories, and contract tests
@@ -21,13 +21,13 @@ and local stacks deploy a committed [DirectPropAMM fixture](docs/earn/modules/pr
 
 ## Work on one area
 
-| Area                                                                  | Commands                                                                           |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Earn contracts ([`earn/src/`](earn/src/), [`earn/test/`](earn/test/)) | `pnpm test:contracts`, or `forge test --match-path <path> -vvv` in `earn/`         |
-| Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/contracts test --run`, `check`, and `typecheck`           |
-| Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`                                                                   |
-| Zone router ([`zone-router/`](zone-router/))                          | `forge test` in `zone-router/`; see [zone-router/AGENTS.md](zone-router/AGENTS.md) |
-| Card spend ([`cards/`](cards/))                                       | `forge test` in `cards/`; see [cards/AGENTS.md](cards/AGENTS.md)                   |
+| Area                                                                  | Commands                                                                               |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Earn contracts ([`src/earn/`](src/earn/), [`test/earn/`](test/earn/)) | `pnpm test:contracts`, or `forge test --match-path <path> -vvv`                        |
+| Deployment tooling ([`deployments/`](deployments/))                   | `pnpm --filter @tempoxyz/contracts test --run`, `check`, and `typecheck`               |
+| Local end-to-end ([`e2e/`](e2e/), [`localnet/`](localnet/)), Docker   | `pnpm e2e:local`                                                                       |
+| Zone router ([`src/zone/`](src/zone/), [`test/zone/`](test/zone/))    | `forge test --match-path 'test/zone/**'`; see [src/zone/AGENTS.md](src/zone/AGENTS.md) |
+| Card spend ([`src/spend/`](src/spend/), [`test/spend/`](test/spend/)) | `FOUNDRY_PROFILE=spend forge test`; see [src/spend/AGENTS.md](src/spend/AGENTS.md)     |
 
 The local commands need no credentials.
 The [test map](docs/development/README.md#test-map) shows where existing coverage lives, and
@@ -50,7 +50,7 @@ The [test map](docs/development/README.md#test-map) shows where existing coverag
 
 Pull requests run the secretless verification, security scan, and local end-to-end workflows
 described in [continuous integration](docs/development/README.md#continuous-integration), and a pull
-request from a fork can pass every required check. A change to `earn/test/fixtures/propamm/` from a fork fails CI until a maintainer re-verifies it from a branch in
+request from a fork can pass every required check. A change to `test/earn/fixtures/propamm/` from a fork fails CI until a maintainer re-verifies it from a branch in
 this repository.
 
 ## Commits and pull requests
