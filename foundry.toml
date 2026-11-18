@@ -87,7 +87,7 @@ out = "out/deploy"
 # `forge lint` runs as its own step in `pnpm verify` and CI.
 # Spend tests were never linted (that project linted only its sources), and vendored code is not ours.
 lint_on_build = false
-ignore = ["test/spend/**", "vendor/**"]
+ignore = ["test/spend/**", "script/spend/**", "vendor/**"]
 # Every finding these produce on the audited contracts was triaged as a false positive or accepted:
 # - block-timestamp, unsafe-typecast: timestamps gate oracle staleness, timelocks, and reward windows,
 #   and `uint40(block.timestamp)` cannot truncate for tens of thousands of years.

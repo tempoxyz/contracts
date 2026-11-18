@@ -4,6 +4,7 @@ import {
   encodeEventTopics,
   getAbiItem,
   keccak256,
+  stringToBytes,
   type Abi,
   type Address,
   type Log,
@@ -994,6 +995,46 @@ describe('deployment source verification', () => {
 
     await expect(verifyRecordedDeploymentSources(run({ source }), runtime)).resolves.toBeUndefined()
     expect(runtime.readSource).not.toHaveBeenCalled()
+  })
+
+  test('accepts a recorded deployment verified under its path before the single-project layout', async () => {
+    const legacyPath = 'src/engines/veda/VedaEngine.sol'
+    const legacy = () => {
+      const runtime = dependencies()
+      runtime.fetch = vi.fn(async (input) => {
+        const url = String(input)
+        if (!url.toLowerCase().includes(engine.toLowerCase())) return dependencies().fetch(input)
+        return Response.json({
+          ...verifiedContract(engine, 'VedaEngine'),
+          fullyQualifiedName: `${legacyPath}:VedaEngine`,
+          sources: { [legacyPath]: { content: 'historical engine source' } },
+        })
+      }) as unknown as typeof fetch
+      return runtime
+    }
+    await expect(verifyDeploymentSources(run(), legacy())).rejects.toThrow(
+      'expected src/earn/engines/veda/VedaEngine.sol:VedaEngine',
+    )
+
+    const verified = await verifyDeploymentSources(run(), dependencies())
+    const sourceInputsHash = keccak256(
+      stringToBytes(
+        JSON.stringify([[legacyPath, keccak256(stringToBytes('historical engine source'))]]),
+      ),
+    )
+    const recorded = (hash: Hex) => ({
+      ...verified,
+      contracts: {
+        ...verified.contracts,
+        engine: { ...verified.contracts.engine!, sourceInputsHash: hash },
+      },
+    })
+    await expect(
+      verifyRecordedDeploymentSources(run({ source: recorded(sourceInputsHash) }), legacy()),
+    ).resolves.toBeUndefined()
+    await expect(
+      verifyRecordedDeploymentSources(run({ source: recorded(`0x${'b'.repeat(64)}`) }), legacy()),
+    ).rejects.toThrow('does not match current provenance')
   })
 
   test('rejects a record-selected verifier instead of contacting it', async () => {

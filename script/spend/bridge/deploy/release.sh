@@ -155,14 +155,14 @@ record hardfork "$FOUNDRY_HARDFORK"
 names=() sources=() fields=() args=() creators=() addresses=() inits=()
 add() { names+=("$1") sources+=("$2") fields+=("$3") args+=("$4") creators+=("$5"); }
 if [[ "$contract" == tempoSpend ]]; then
-  add SpenderTempoSpend src/providers/bridge/SpenderTempoSpend.sol:SpenderTempoSpend handler \
+  add SpenderTempoSpend src/spend/providers/bridge/SpenderTempoSpend.sol:SpenderTempoSpend handler \
     "$(cast abi-encode "f(address)" "$FACTORY")" deployer
 else
-  add CardFactory src/core/CardFactory.sol:CardFactory cardFactory \
+  add CardFactory src/spend/CardFactory.sol:CardFactory cardFactory \
     "$(cast abi-encode "f(address)" "$ROUTER_FACTORY")" deployer
-  add BridgeProvider src/providers/bridge/BridgeProvider.sol:BridgeProvider provider \
+  add BridgeProvider src/spend/providers/bridge/BridgeProvider.sol:BridgeProvider provider \
     "$(cast abi-encode "f(address,bytes32)" "$FACTORY" "$SPENDER_ID")" deployer
-  add CardSpender src/core/CardSpender.sol:CardSpender program '' cardFactory
+  add CardSpender src/spend/CardSpender.sol:CardSpender program '' cardFactory
 fi
 
 # Each address, from this checkout's compiled creation code.

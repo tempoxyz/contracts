@@ -34,6 +34,8 @@ def run_forge():
         ["forge", "test", "--match-path", "test/spend/bridge/e2e/Matrix.t.sol", "--json", "-vv"],
         capture_output=True,
         text=True,
+        # The matrix runs on Tempo's real precompiles, which only the spend profile enables.
+        env={**os.environ, "FOUNDRY_PROFILE": os.environ.get("FOUNDRY_PROFILE", "spend")},
     )
     start = proc.stdout.find("{")
     if start < 0:

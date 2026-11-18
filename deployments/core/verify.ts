@@ -749,7 +749,18 @@ function sourceMatch(
       `Verifier identified ${target.address} as ${contract.name ?? 'unknown'}, expected ${target.name}`,
     )
   }
-  if (contract.fullyQualifiedName !== target.contract) {
+  // A recorded deployment keeps the source path it was verified under, which may predate the
+  // single-project layout; fresh verification requires today's path.
+  const legacy = recordedSource(context, { address: getAddress(contract.address) })
+    ? legacySource(target.contract)
+    : undefined
+  const verifiedUnder =
+    contract.fullyQualifiedName === target.contract
+      ? { contract: target.contract, root: target.root ?? context.root }
+      : legacy && contract.fullyQualifiedName === legacy.contract
+        ? { contract: legacy.contract, root: resolve(target.root ?? context.root, legacy.project) }
+        : undefined
+  if (!verifiedUnder) {
     throw new Error(
       `Verifier identified ${target.address} as ${contract.fullyQualifiedName ?? 'unknown source'}, expected ${target.contract}`,
     )
@@ -765,8 +776,8 @@ function sourceMatch(
   const sourceInputsHash = requireCanonicalSources(
     context,
     contract,
-    target.contract,
-    target.root ?? context.root,
+    verifiedUnder.contract,
+    verifiedUnder.root,
   )
   const recorded = recordedSource(context, target)
   if (
@@ -852,6 +863,23 @@ function requireRecordedRepairSources(context: VerificationContext, target: Sour
       { cause },
     )
   }
+}
+
+/**
+ * The fully qualified name a contract had before the repository became one Foundry project, and
+ * the project directory its verified source paths are relative to.
+ */
+function legacySource(contract: string): { contract: string; project: string } | undefined {
+  const rules: [prefix: string, project: string, replacement: string][] = [
+    ['src/earn/engines/erc4626/', 'earn', 'src/engines/'],
+    ['src/earn/', 'earn', 'src/'],
+    ['src/demo/', 'earn', 'src/demo/'],
+    ['src/zone/', 'zone-router', 'src/'],
+  ]
+  const rule = rules.find(([prefix]) => contract.startsWith(prefix))
+  if (!rule) return undefined
+  const [prefix, project, replacement] = rule
+  return { contract: replacement + contract.slice(prefix.length), project }
 }
 
 function checkedSourcePath(context: VerificationContext, projectRoot: string, path: string) {
