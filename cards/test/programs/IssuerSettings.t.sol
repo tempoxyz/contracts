@@ -158,6 +158,27 @@ contract IssuerSettingsTest is ProgramsEnv {
         assertEq(cards.rateOf(address(otherUsd)), 1.2375e18);
     }
 
+    function test_setRate_afterStoppingStepsFromTheLastNonzeroRate() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        _setting(abi.encodeCall(cards.setRate, (address(otherUsd), 1.25e18)));
+        // Stopping applies at once.
+        vm.prank(issuer);
+        cards.setRate(address(otherUsd), 0);
+        assertEq(cards.rateOf(address(otherUsd)), 0);
+        assertEq(cards.lastNonzeroRate(address(otherUsd)), 1.25e18);
+        // Re-enabling moves at most MAX_RATE_STEP_BPS from the rate it had before it stopped.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.RateStep.selector);
+        cards.setRate(address(otherUsd), 6.25e18);
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.RateStep.selector);
+        cards.setRate(address(otherUsd), 1.125e18 - 1);
+        assertEq(cards.rateOf(address(otherUsd)), 0);
+        _setting(abi.encodeCall(cards.setRate, (address(otherUsd), 1.375e18)));
+        assertEq(cards.rateOf(address(otherUsd)), 1.375e18);
+        assertEq(cards.lastNonzeroRate(address(otherUsd)), 1.375e18);
+    }
+
     function test_transferIssuer_takesTwoSteps() public {
         address key = makeAddr("key");
         vm.prank(alice);

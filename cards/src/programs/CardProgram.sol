@@ -184,6 +184,8 @@ contract CardProgram {
     mapping(bytes32 purchaseRef => Purchase) internal _purchases;
     /// @notice Settlement units per unit of a token other than the settlement token, scaled by 1e18.
     mapping(address token => uint256) public rateOf;
+    /// @notice The last nonzero rate recorded for each token, which a rate set after stopping it steps from.
+    mapping(address token => uint256) public lastNonzeroRate;
     /// @notice Savings facilities and credit line contracts the issuer accepts as funding sources.
     mapping(address source => bool) public approvedSource;
     Ledger public ledger;
@@ -507,16 +509,18 @@ contract CardProgram {
     }
 
     /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it at once; a
-    ///         nonzero rate moves at most MAX_RATE_STEP_BPS from a nonzero one and waits SETTINGS_DELAY.
+    ///         nonzero rate moves at most MAX_RATE_STEP_BPS from the last nonzero one, even after a stop, and waits
+    ///         SETTINGS_DELAY.
     function setRate(address token, uint256 rate) external onlyIssuer {
         if (token == settlementToken()) revert TokenNotAccepted(token);
-        uint256 last = rateOf[token];
+        uint256 last = lastNonzeroRate[token];
         if (rate != 0 && last != 0) {
             uint256 step = last.mulDiv(MAX_RATE_STEP_BPS, 10_000);
             if (rate > last + step || rate < last - step) revert RateStep();
         }
         if (!_settle(rate == 0)) return;
         rateOf[token] = rate;
+        if (rate != 0) lastNonzeroRate[token] = rate;
         emit RateSet(token, rate);
     }
 
