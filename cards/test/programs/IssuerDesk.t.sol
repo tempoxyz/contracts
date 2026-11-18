@@ -533,6 +533,28 @@ contract IssuerDeskTest is ProgramsEnv {
         desk.refund(P1, 80e6);
     }
 
+    function test_collectedReserve_boundedByTheDisputeAndWhatStaysUnrefunded() public {
+        _purchase(100e6);
+        vm.prank(issuer);
+        desk.openDispute(P1, 60e6, "");
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.ReserveTooLarge.selector);
+        desk.collectedReserve(P1, 1_000_000e6);
+        vm.prank(issuer);
+        desk.collectedReserve(P1, 40e6);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.ReserveTooLarge.selector);
+        desk.collectedReserve(P1, 20e6 + 1);
+        // A refund leaves 30 of the purchase unrefunded, below the dispute and what was already collected.
+        usd.mint(settlement, 70e6);
+        vm.prank(issuer);
+        desk.refund(P1, 70e6);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.ReserveTooLarge.selector);
+        desk.collectedReserve(P1, 1);
+        assertEq(desk.reserveCollected(P1), 40e6);
+    }
+
     function _allowIssuerDebt(uint128 cap) internal {
         vm.startPrank(settlement);
         usd.approve(address(cards), type(uint256).max);

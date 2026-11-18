@@ -220,6 +220,7 @@ contract IssuerDesk is ISettlementTokenGuard {
     error DisputeTooLarge();
     error RefundTooLarge();
     error OperatorCapExceeded();
+    error ReserveTooLarge();
 
     modifier onlyIssuer() {
         _onlyIssuer();
@@ -430,12 +431,18 @@ contract IssuerDesk is ISettlementTokenGuard {
     }
 
     /// @notice Records what the issuer collected from merchant reserves toward an open dispute, which a cardholder win
-    ///         then leaves out of the chargeback.
+    ///         then leaves out of the chargeback. What it collects for one dispute never adds up to more than the
+    ///         dispute, nor than the purchase still has unrefunded.
     function collectedReserve(bytes32 purchaseRef, uint128 amount) external onlyOperator {
         Dispute storage d = disputes[purchaseRef];
         if (d.state == 0 || d.state >= WON) revert NoDispute();
+        Book storage b = books[purchaseRef];
+        uint256 collected = uint256(reserveCollected[purchaseRef]) + amount;
+        if (collected > d.amount || collected > b.captured - b.refunded) revert ReserveTooLarge();
         _use(amount);
-        reserveCollected[purchaseRef] += amount;
+        // At most the dispute's amount, a uint128.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        reserveCollected[purchaseRef] = uint128(collected);
         emit ReserveCollectedFor(purchaseRef, amount);
     }
 
