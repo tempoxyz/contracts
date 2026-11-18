@@ -251,3 +251,15 @@ contract LiteralReceiverVault is ITempoEarnVault {
         require(ERC20(asset).balanceOf(receiver) == before + assets, "receiver not credited");
     }
 }
+
+/// @notice A vault without the withdraw callback whose fallback answers 1 to every call, ERC-165 probes included.
+contract PermissiveFallbackVault is LiteralReceiverVault {
+    constructor(address asset_) LiteralReceiverVault(asset_) { }
+
+    fallback() external {
+        assembly ("memory-safe") {
+            mstore(0, 1)
+            return(0, 32)
+        }
+    }
+}

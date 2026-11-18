@@ -21,6 +21,7 @@ import {
     MockProvider,
     MockRouter,
     NotAProvider,
+    PermissiveFallbackVault,
     ReentrantToken,
     VirtualAwareToken
 } from "./harness/Mocks.sol";
@@ -815,6 +816,18 @@ contract CardSpenderVirtualDestinationTest is CoreEnv {
         assertEq(vusd.balanceOf(master), 6e6 + 2e6 + 3e6);
         assertEq(vusd.balanceOf(address(program)), 0);
         assertEq(VirtualAwareToken(vault.earnShare()).balanceOf(address(program)), 0);
+    }
+
+    /// @dev A vault whose fallback answers true to every ERC-165 probe still takes the plain withdraw path.
+    function test_direct_permissiveFallbackVaultTakesThePlainPath() public {
+        PermissiveFallbackVault permissive = new PermissiveFallbackVault(address(vusd));
+        vusd.mint(address(permissive), 1000e6);
+        VirtualAwareToken(permissive.earnShare()).mint(alice, 1000e6);
+        vault = permissive;
+        _program(false);
+        _publicSplit();
+        assertEq(vusd.balanceOf(master), 6e6);
+        assertEq(VirtualAwareToken(permissive.earnShare()).balanceOf(address(program)), 0);
     }
 
     function test_payout_paysVirtualDestinations() public {

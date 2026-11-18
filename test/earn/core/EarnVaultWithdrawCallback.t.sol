@@ -100,15 +100,33 @@ contract EarnVaultWithdrawCallbackTest is Test {
     }
 
     function testCostAboveTheCapRevertsBeforeTheCallback() public {
+        // A reverted call rolls back state, so count calls instead of reading what the callback wrote.
+        vm.expectCall(address(payer), abi.encodeWithSelector(IEarnWithdrawCallback.earnWithdrawCallback.selector), 0);
         vm.expectRevert(EarnVault.ExceedsMaxEarnShares.selector);
         payer.withdraw(5 ether, receiver, 4 ether);
-        assertEq(payer.requested(), 0);
     }
 
     function testCallbackCannotReenterTheVault() public {
         payer.setReenter(true);
-        vm.expectRevert();
+        vm.expectRevert(EarnVault.ReentrantCall.selector);
         payer.withdraw(5 ether, receiver, 5 ether);
+    }
+
+    function testHeldDepositRefusesAShortCredit() public {
+        ShortCreditToken heldAsset = new ShortCreditToken();
+        CoreMockToken heldShare = new CoreMockToken("Held Share", "HSH", 18);
+        Simple4626Vault venue = new Simple4626Vault(address(heldAsset), "Venue", "VEN", 18);
+        ERC4626Engine heldEngine = new ERC4626Engine(IERC4626Vault(address(venue)), address(this), "", "");
+        EarnVault heldCore =
+            EarnVaultTestDeployer.deploy(address(heldEngine), address(heldShare), operator, earnVaultTestNoFees());
+        heldEngine.initializeEarnVault(address(heldCore));
+
+        // Stray assets on the engine would otherwise cover the shortfall.
+        heldAsset.mint(address(heldEngine), 1 ether);
+        heldAsset.mint(address(this), 3 ether);
+        heldAsset.approve(address(heldCore), type(uint256).max);
+        vm.expectRevert(EarnVault.InsufficientOutput.selector);
+        heldCore.deposit(3 ether, receiver, 1);
     }
 
     function testHeldDepositSkipsTheVaultAllowance() public {
@@ -131,7 +149,7 @@ contract EarnVaultWithdrawCallbackTest is Test {
         assertEq(heldAsset.balanceOf(address(heldEngine)), 0);
         assertEq(heldCore.engineShares(), venue.balanceOf(address(heldEngine)));
 
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(ERC4626Engine.NotEarnVault.selector, address(this)));
         IEarnEngineHeldDeposit(address(heldEngine)).depositHeld(1);
     }
 }
@@ -172,8 +190,23 @@ contract CallbackPayer is IEarnWithdrawCallback {
         requested = earnShares;
         priceDuring = vault.previewRedeem(1 ether);
         assetsDuring = vault.totalAssets();
-        if (reenter) vault.withdrawExactWithCallback(1, address(this), type(uint256).max);
+        if (reenter) {
+            // Re-enter once, so a missing lock shows up as a different result rather than running out of gas.
+            reenter = false;
+            vault.withdrawExactWithCallback(1, address(this), type(uint256).max);
+        }
         uint256 amount = shortfall == type(uint256).max ? earnShares + 1 : earnShares - shortfall;
         share.transfer(address(vault), amount);
+    }
+}
+
+/// @notice Credits the recipient one unit less than a {transferFrom} moves.
+contract ShortCreditToken is CoreMockToken {
+    constructor() CoreMockToken("Short", "SHT", 18) { }
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        super.transferFrom(from, to, value);
+        balanceOf[to] -= 1;
+        return true;
     }
 }

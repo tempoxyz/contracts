@@ -906,6 +906,7 @@ contract EarnVault is IEarnVault {
     ///         caller, which transfers exactly that much EarnShare to this vault, from any account it may spend from.
     /// @dev Saves a separate {previewWithdraw} quote and a transfer through the caller. The burn never exceeds the
     ///      quote; any quoted EarnShare left unburned returns to the caller. The lock keeps the callback out of the vault.
+    ///      Views read during the callback are not settled: they may count the transferred EarnShare as burned.
     /// @custom:ensures earnSharesBurned != 0 && earnSharesBurned <= maxEarnShares && assets != 0
     /// @custom:ensures openRedeemRequestCount == old(openRedeemRequestCount) && engine == old(engine)
     function withdrawExactWithCallback(uint256 assets, address receiver, uint256 maxEarnShares)
@@ -1851,7 +1852,11 @@ contract EarnVault is IEarnVault {
         address engine_ = engine;
         uint256 reportedEngineShares;
         if (engineCapabilities & CAP_HELD_DEPOSIT != 0) {
-            _safeTransferFrom(asset, msg.sender, engine_, assets);
+            // The engine deposits from its own balance, so it must be credited exactly `assets`.
+            address asset_ = asset;
+            uint256 engineHeld = IERC20Like(asset_).balanceOf(engine_);
+            _safeTransferFrom(asset_, msg.sender, engine_, assets);
+            if (IERC20Like(asset_).balanceOf(engine_) != engineHeld + assets) revert InsufficientOutput();
             reportedEngineShares = IEarnEngineHeldDeposit(engine_).depositHeld(assets);
         } else {
             _safeTransferFrom(asset, msg.sender, address(this), assets);

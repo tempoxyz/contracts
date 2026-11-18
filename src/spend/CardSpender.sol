@@ -343,7 +343,10 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     function _hasWithdrawCallback(address vault) private view returns (bool) {
         (bool ok, uint256 word) =
             _readWord(vault, abi.encodeWithSelector(0x01ffc9a7, type(IEarnVaultWithdrawCallback).interfaceId));
-        return ok && word == 1;
+        if (!ok || word != 1) return false;
+        // ERC-165 requires 0xffffffff to read false, which rules out a fallback answering true to everything.
+        (ok, word) = _readWord(vault, abi.encodeWithSelector(0x01ffc9a7, bytes4(0xffffffff)));
+        return ok && word == 0;
     }
 
     /// @dev A direct private spend, from the `maxInput` the router sent. The vault prices shares itself and
