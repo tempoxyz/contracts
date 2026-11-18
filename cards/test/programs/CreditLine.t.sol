@@ -16,6 +16,7 @@ contract CreditLineTest is ProgramsEnv {
     address internal immutable SETTLE = makeAddr("settlement-account");
     address internal immutable operatorKey = makeAddr("operator-key");
     mapping(address => bool) internal operatorKeys;
+    mapping(address => bool) internal treasuryKeys;
 
     function setUp() public {
         _deployPrograms();
@@ -55,8 +56,7 @@ contract CreditLineTest is ProgramsEnv {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, false);
         vm.expectRevert(CreditLine.LineNotOpen.selector);
         credit.draw(lineId, alice, REF, 1e6, uint64(block.timestamp + 1 days));
-        vm.prank(alice);
-        credit.acceptLine(lineId);
+        _acceptLine(alice, lineId);
         vm.prank(lender);
         credit.closeLine(lineId);
         vm.expectRevert(CreditLine.LineNotOpen.selector);
@@ -136,11 +136,13 @@ contract CreditLineTest is ProgramsEnv {
     function test_openLine_rejectsBadTerms() public {
         vm.startPrank(lender);
         vm.expectRevert(CreditLine.InvalidLine.selector);
-        credit.openLine(alice, address(usd), address(this), 1, uint64(block.timestamp), 0, IEarnVault(address(0)), 0);
+        credit.openLine(
+            alice, address(usd), address(this), 1, uint64(block.timestamp), 0, IEarnVault(address(0)), 0, 0, 0
+        );
         vm.expectRevert(CreditLine.InvalidLine.selector);
-        credit.openLine(alice, address(usd), address(this), 1, due, 0, IEarnVault(address(earnVault)), 0);
+        credit.openLine(alice, address(usd), address(this), 1, due, 0, IEarnVault(address(earnVault)), 0, 0, 0);
         vm.expectRevert(CreditLine.InvalidLine.selector);
-        credit.openLine(alice, address(otherUsd), address(this), 1, due, 0, IEarnVault(address(earnVault)), 5000);
+        credit.openLine(alice, address(otherUsd), address(this), 1, due, 0, IEarnVault(address(earnVault)), 5000, 0, 0);
         vm.stopPrank();
     }
 
@@ -343,37 +345,104 @@ contract CreditLineTest is ProgramsEnv {
         operatorKeys[operatorKey] = true;
         vm.prank(operatorKey);
         vm.expectRevert(CreditLine.NotProgram.selector);
-        credit.redraw(lineId, 100e6);
+        credit.redraw(lineId, 100e6, REF);
         vm.prank(makeAddr("stranger"));
         vm.expectRevert();
-        credit.redraw(lineId, 100e6);
+        credit.redraw(lineId, 100e6, REF);
     }
 
     function test_redraw_refusedOnAClosedUnacceptedOrPastDueLine() public {
         uint64 unaccepted = _line(1000e6, IEarnVault(address(0)), 0, false);
         vm.expectRevert(CreditLine.LineNotOpen.selector);
-        credit.redraw(unaccepted, 100e6);
+        credit.redraw(unaccepted, 100e6, REF);
         vm.prank(lender);
         credit.closeLine(unaccepted);
         uint64 closed = _repaidLine();
         vm.prank(alice);
         credit.closeLine(closed);
         vm.expectRevert(CreditLine.LineNotOpen.selector);
-        credit.redraw(closed, 100e6);
+        credit.redraw(closed, 100e6, REF);
         uint64 pastDue = _line(1000e6, IEarnVault(address(0)), 0, true);
         vm.warp(due);
         vm.expectRevert(CreditLine.LineNotOpen.selector);
-        credit.redraw(pastDue, 100e6);
+        credit.redraw(pastDue, 100e6, REF);
     }
 
-    function test_redraw_boundedByTheUndrawnLimit_andPaysTheSettlementAccount() public {
+    function test_redraw_boundedByWhatTheRefRepaid_andPaysTheSettlementAccount() public {
         uint64 lineId = _repaidLine();
-        uint128 drawn = credit.redraw(lineId, 5000e6);
-        assertEq(drawn, 1000e6);
-        assertEq(credit.lineOf(lineId).owed, 1000e6);
-        assertEq(usd.balanceOf(SETTLE), 1000e6);
-        // Nothing is left of the limit to draw again.
-        assertEq(credit.redraw(lineId, 1), 0);
+        assertEq(credit.redrawable(lineId, REF), 400e6);
+        uint128 drawn = credit.redraw(lineId, 5000e6, REF);
+        assertEq(drawn, 400e6, "only what the reference repaid");
+        assertEq(credit.lineOf(lineId).owed, 400e6);
+        assertEq(usd.balanceOf(SETTLE), 400e6);
+        assertEq(credit.redrawable(lineId, REF), 0);
+        // Nothing is left of the reference's repayment to draw again.
+        vm.expectRevert(CreditLine.NothingToRedraw.selector);
+        credit.redraw(lineId, 1, REF);
+    }
+
+    function test_redraw_boundedByTheUndrawnLimit() public {
+        uint64 lineId = _repaidLine();
+        vm.prank(lender);
+        credit.setLimit(lineId, 150e6);
+        assertEq(credit.redraw(lineId, 300e6, REF), 150e6);
+        // Nothing is left of the limit; the rest of the reference's repayment stays.
+        assertEq(credit.redraw(lineId, 1, REF), 0);
+        assertEq(credit.redrawable(lineId, REF), 250e6);
+    }
+
+    function test_redraw_withoutARecordedRepaymentReverts() public {
+        uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
+        // Nothing was repaid for the reference: the line cannot be drawn for the settlement account.
+        vm.expectRevert(CreditLine.NothingToRedraw.selector);
+        credit.redraw(lineId, 500e6, REF);
+        assertEq(credit.lineOf(lineId).owed, 0);
+        // The borrower's own repayment carries no reference and is never drawn again.
+        bytes32 id = _draw(lineId, 100e6);
+        core.capture(lender, id, 100e6, true);
+        credit.sync(id);
+        usd.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usd.approve(address(credit), 100e6);
+        credit.repay(lineId, 100e6);
+        vm.stopPrank();
+        vm.expectRevert(CreditLine.NothingToRedraw.selector);
+        credit.redraw(lineId, 100e6, REF);
+        vm.expectRevert(CreditLine.NothingToRedraw.selector);
+        credit.redraw(lineId, 100e6, bytes32(0));
+    }
+
+    function test_redraw_cumulativeForARefNeverExceedsWhatItRepaid() public {
+        uint64 lineId = _repaidLine();
+        assertEq(credit.redraw(lineId, 300e6, REF), 300e6);
+        assertEq(credit.redraw(lineId, 300e6, REF), 100e6, "the rest of the reference's repayment");
+        vm.expectRevert(CreditLine.NothingToRedraw.selector);
+        credit.redraw(lineId, 1, REF);
+        // Another reference's repayment is its own.
+        vm.expectRevert(CreditLine.NothingToRedraw.selector);
+        credit.redraw(lineId, 1, bytes32("purchase-2"));
+        assertEq(credit.lineOf(lineId).owed, 400e6);
+    }
+
+    function test_repayFor_onlyTheProgramOrItsTreasuryKey() public {
+        uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
+        bytes32 id = _draw(lineId, 100e6);
+        core.capture(lender, id, 100e6, true);
+        credit.sync(id);
+        address key = makeAddr("treasury-key");
+        usd.mint(key, 100e6);
+        vm.prank(key);
+        usd.approve(address(credit), 100e6);
+        vm.prank(key);
+        vm.expectRevert(CreditLine.NotProgram.selector);
+        credit.repayFor(lineId, 50e6, REF);
+        treasuryKeys[key] = true;
+        vm.prank(key);
+        credit.repayFor(lineId, 50e6, REF);
+        (uint128 repaid, uint128 redrawn) = credit.repaymentOf(lineId, REF);
+        assertEq(repaid, 50e6);
+        assertEq(redrawn, 0);
+        assertEq(credit.lineOf(lineId).owed, 50e6);
     }
 
     function test_locking_excludesAPledge() public {
@@ -398,11 +467,10 @@ contract CreditLineTest is ProgramsEnv {
         bytes32 id = _draw(lineId, 400e6);
         core.capture(lender, id, 400e6, true);
         credit.sync(id);
-        usd.mint(alice, 400e6);
-        vm.startPrank(alice);
+        // The program repays the line for the purchase, as a provisional credit does.
+        usd.mint(address(this), 400e6);
         usd.approve(address(credit), 400e6);
-        credit.repay(lineId, 400e6);
-        vm.stopPrank();
+        credit.repayFor(lineId, 400e6, REF);
         assertEq(credit.lineOf(lineId).owed, 0);
     }
 
@@ -411,16 +479,19 @@ contract CreditLineTest is ProgramsEnv {
         return SETTLE;
     }
 
+    function rolesOf(address key) external view returns (uint8) {
+        return treasuryKeys[key] ? 4 : 0;
+    }
+
     function operators(address key) external view returns (bool) {
         return operatorKeys[key];
     }
 
     function _line(uint128 limit, IEarnVault vault, uint16 ltvBps, bool accept) internal returns (uint64 lineId) {
         vm.prank(lender);
-        lineId = credit.openLine(alice, address(usd), address(this), limit, due, 7 days, vault, ltvBps);
+        lineId = credit.openLine(alice, address(usd), address(this), limit, due, 7 days, vault, ltvBps, 0, 0);
         if (accept) {
-            vm.prank(alice);
-            credit.acceptLine(lineId);
+            _acceptLine(alice, lineId);
         }
     }
 

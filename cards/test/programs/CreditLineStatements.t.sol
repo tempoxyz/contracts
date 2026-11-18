@@ -19,53 +19,112 @@ contract CreditLineStatementsTest is ProgramsEnv {
         core.approveHolder(address(credit), address(usd), type(uint128).max);
         due = uint64(block.timestamp + 365 days);
         vm.prank(lender);
-        lineId = credit.openLine(alice, address(usd), address(this), 1000e6, due, 7 days, IEarnVault(address(0)), 0);
-        vm.prank(alice);
-        credit.acceptLine(lineId);
+        lineId =
+            credit.openLine(alice, address(usd), address(this), 1000e6, due, 7 days, IEarnVault(address(0)), 0, 0, 0);
+        _acceptLine(alice, lineId);
     }
 
     // Interest.
 
-    function test_accrue_addsInterestOnWhatIsOwed() public {
+    function test_accrue_addsTheAcceptedYearlyRateOverTimeElapsed() public {
+        _terms(1000);
         _owe(200e6);
-        vm.prank(lender);
-        credit.accrue(lineId, 200);
+        vm.warp(vm.getBlockTimestamp() + 73 days);
+        assertEq(credit.owedNow(lineId), 204e6);
+        // Anyone may accrue: the rate and the time decide the interest.
+        vm.prank(bob);
+        credit.accrue(lineId);
         assertEq(credit.lineOf(lineId).owed, 204e6);
         // Interest comes out of the undrawn limit, and the commitment follows it.
         assertEq(credit.availableCredit(lineId), 796e6);
         assertEq(credit.committed(lineId), 796e6);
+        // No time elapsed, no interest.
+        credit.accrue(lineId);
+        assertEq(credit.lineOf(lineId).owed, 204e6);
         _assertCoreBalanced();
     }
 
-    function test_accrue_roundsUpToTheSmallestUnit() public {
-        _owe(1);
-        vm.prank(lender);
-        credit.accrue(lineId, 1);
-        assertEq(credit.lineOf(lineId).owed, 2);
-        _owe(9998);
-        vm.prank(lender);
-        credit.accrue(lineId, 1);
-        // 10_000 owed at 1 bp is exactly 1.
-        assertEq(credit.lineOf(lineId).owed, 10_001);
-    }
-
-    function test_accrue_nothingOwedAddsNothing() public {
-        vm.prank(lender);
-        credit.accrue(lineId, 500);
-        assertEq(credit.lineOf(lineId).owed, 0);
-    }
-
-    function test_accrue_onlyTheLenderAndAValidRate() public {
+    function test_accrue_lenderCannotChooseTheRateOrRepeatIt() public {
+        _terms(1000);
         _owe(100e6);
-        vm.prank(alice);
-        vm.expectRevert(CreditLine.NotLender.selector);
-        credit.accrue(lineId, 100);
         vm.startPrank(lender);
-        vm.expectRevert(CreditLine.InvalidRate.selector);
-        credit.accrue(lineId, 0);
-        vm.expectRevert(CreditLine.InvalidRate.selector);
-        credit.accrue(lineId, 10_001);
+        (bool ok,) = address(credit).call(abi.encodeWithSignature("accrue(uint64,uint16)", lineId, uint16(10_000)));
+        assertFalse(ok);
+        for (uint256 i; i < 3; ++i) {
+            credit.accrue(lineId);
+        }
         vm.stopPrank();
+        assertEq(credit.lineOf(lineId).owed, 100e6, "no time elapsed");
+    }
+
+    function test_accrue_carriesTimeTooShortForAUnit() public {
+        _terms(1000);
+        _owe(1e6);
+        uint64 start = credit.lineOf(lineId).lastAccrued;
+        // At 10% a year, 1e6 earns one unit every 315.36 seconds.
+        vm.warp(vm.getBlockTimestamp() + 200);
+        credit.accrue(lineId);
+        assertEq(credit.lineOf(lineId).owed, 1e6);
+        assertEq(credit.lineOf(lineId).lastAccrued, start, "the time carries");
+        vm.warp(vm.getBlockTimestamp() + 200);
+        credit.accrue(lineId);
+        assertEq(credit.lineOf(lineId).owed, 1e6 + 1);
+        assertEq(credit.lineOf(lineId).lastAccrued, start + 316, "only the time the unit paid for");
+    }
+
+    function test_accrue_cappedAtTheAcceptedDebtBound() public {
+        _terms(1000);
+        assertEq(credit.lineOf(lineId).maxDebt, 1100e6, "the limit plus a year of interest");
+        _owe(1000e6);
+        vm.warp(vm.getBlockTimestamp() + 730 days);
+        credit.accrue(lineId);
+        assertEq(credit.lineOf(lineId).owed, 1100e6);
+        vm.warp(vm.getBlockTimestamp() + 365 days);
+        credit.accrue(lineId);
+        assertEq(credit.lineOf(lineId).owed, 1100e6);
+        assertEq(credit.availableCredit(lineId), 0);
+    }
+
+    function test_acceptLine_mustMatchTheOfferedTerms() public {
+        vm.prank(lender);
+        uint64 id = credit.openLine(
+            bob, address(usd), address(this), 1000e6, due, 7 days, IEarnVault(address(0)), 0, 1500, 2000e6
+        );
+        vm.startPrank(bob);
+        vm.expectRevert(CreditLine.TermsMismatch.selector);
+        credit.acceptLine(id, 1000, 2000e6);
+        vm.expectRevert(CreditLine.TermsMismatch.selector);
+        credit.acceptLine(id, 1500, 1999e6);
+        credit.acceptLine(id, 1500, 2000e6);
+        vm.stopPrank();
+        CreditLine.Line memory l = credit.lineOf(id);
+        assertTrue(l.accepted);
+        assertEq(l.aprBps, 1500);
+        assertEq(l.maxDebt, 2000e6);
+        // A bound below the limit is refused.
+        vm.prank(lender);
+        vm.expectRevert(CreditLine.InvalidLine.selector);
+        credit.offerTerms(id, 1500, 999e6);
+    }
+
+    function test_offerTerms_applyOnlyOnceTheBorrowerAccepts() public {
+        vm.prank(lender);
+        credit.offerTerms(lineId, 2000, 3000e6);
+        assertEq(credit.lineOf(lineId).aprBps, 0);
+        // The limit stays within the accepted bound until the borrower accepts a higher one.
+        vm.prank(lender);
+        vm.expectRevert(abi.encodeWithSelector(CreditLine.DebtBoundExceeded.selector, 2000e6, 1000e6));
+        credit.setLimit(lineId, 2000e6);
+        _owe(100e6);
+        vm.warp(vm.getBlockTimestamp() + 30 days);
+        credit.accrue(lineId);
+        assertEq(credit.lineOf(lineId).owed, 100e6, "no interest at the accepted rate of zero");
+        vm.prank(alice);
+        credit.acceptLine(lineId, 2000, 3000e6);
+        assertEq(credit.lineOf(lineId).aprBps, 2000);
+        vm.prank(lender);
+        credit.setLimit(lineId, 2000e6);
+        assertEq(credit.lineOf(lineId).limit, 2000e6);
     }
 
     // Statements.
@@ -122,9 +181,7 @@ contract CreditLineStatementsTest is ProgramsEnv {
 
     function test_collect_autopayFromSavingsPaysTheStatementOnly() public {
         uint256 shares = _savings(500e6);
-        _owe(200e6);
-        vm.prank(lender);
-        credit.accrue(lineId, 200);
+        _owe(204e6);
         vm.prank(lender);
         credit.closeStatement(lineId, uint64(block.timestamp + 25 days));
         _owe(51e6);
@@ -261,6 +318,13 @@ contract CreditLineStatementsTest is ProgramsEnv {
     }
 
     // Helpers.
+
+    /// @dev The lender offers `aprBps` a year with the default debt bound and the borrower accepts.
+    function _terms(uint16 aprBps) internal {
+        vm.prank(lender);
+        credit.offerTerms(lineId, aprBps, 0);
+        _acceptLine(alice, lineId);
+    }
 
     function _owe(uint128 amount) internal {
         bytes32 ref = keccak256(abi.encode("purchase", credit.lineOf(lineId).owed, amount, block.timestamp));

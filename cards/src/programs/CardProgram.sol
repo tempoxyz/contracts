@@ -1129,16 +1129,17 @@ contract CardProgram {
         emit ReserveCollected(id, SETTLEMENT_ACCOUNT, amount);
     }
 
-    /// @notice Draws up to `amount` on line `lineId` of the approved credit source `line` again, which pays the
-    ///         settlement account. What it drew counts against the caller's cap. Returns what it drew.
-    function redrawLine(address line, uint64 lineId, uint128 amount)
+    /// @notice Draws up to `amount` on line `lineId` of the approved credit source `line` again for `ref`, which pays
+    ///         the settlement account, within what the line received as repayment for `ref`. What it drew counts
+    ///         against the caller's cap. Returns what it drew.
+    function redrawLine(address line, uint64 lineId, uint128 amount, bytes32 ref)
         external
         nonReentrant
         onlyRole(ROLE_TREASURY)
         returns (uint128 drawn)
     {
         if (!approvedSource[line]) revert SourceNotApproved(line);
-        drawn = CreditLine(line).redraw(lineId, amount);
+        drawn = CreditLine(line).redraw(lineId, amount, ref);
         _useKey(_valueOf(CreditLine(line).tokenOf(lineId), drawn));
     }
 

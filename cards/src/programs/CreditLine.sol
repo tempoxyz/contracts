@@ -9,6 +9,10 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
 /// @dev The account a card program settles through, which a line's redraws pay.
+interface IProgramRoles {
+    function rolesOf(address key) external view returns (uint8);
+}
+
 interface IProgramSettlementAccount {
     // The program's own name for it.
     // forge-lint: disable-next-line(mixed-case-function)
@@ -29,15 +33,20 @@ interface IProgramSettlementToken {
 ///         loan-to-value, and may seize the pledge for what is owed once the due date and notice period have passed.
 ///         Specified in docs/cards/design.md (Card programs).
 /// @dev Owed and pending amounts follow the core's records: `sync` reads a draw's hold and applies what changed,
-///      whoever captured, released or refunded it. The lender accrues interest on what is owed and closes statements;
+///      whoever captured, released or refunded it. What is owed earns simple interest at the yearly rate the borrower
+///      accepted, and what is owed and pending never passes the debt bound it accepted. The lender closes statements;
 ///      a statement falling due is collected through the borrower's autopay sources. Fees and collection beyond the
 ///      pledge and autopay are the issuer's and lender's services, not this contract's.
 /// @custom:reentrancy-guard _locked
 contract CreditLine is ISettlementTokenGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 private constant BPS = 10_000;
+    /// @dev The program role whose keys may repay a line for a reference (CardProgram.ROLE_TREASURY).
+    uint8 private constant ROLE_TREASURY = 4;
     /// @dev How long one commitment hold lasts; the core caps holds at 31 days.
     uint256 private constant COMMITMENT_TERM = 30 days;
+    /// @dev The year interest rates are quoted over.
+    uint256 private constant YEAR = 365 days;
 
     struct Line {
         address lender;
@@ -59,6 +68,25 @@ contract CreditLine is ISettlementTokenGuard {
         /// @dev Zero for an unsecured line.
         IEarnVault collateralVault;
         bytes32 pledgeId;
+        /// @dev The yearly interest rate the borrower accepted, in basis points: simple interest on what is owed.
+        uint16 aprBps;
+        /// @dev When interest was last added.
+        uint64 lastAccrued;
+        /// @dev The most the borrower agreed to owe and have pending, interest included.
+        uint128 maxDebt;
+    }
+
+    /// @dev Terms the lender offers and the borrower accepts.
+    struct Terms {
+        uint16 aprBps;
+        uint128 maxDebt;
+    }
+
+    /// @dev What the program, or a treasury key of it, repaid on a line for one reference, and what was drawn again
+    ///      for that reference since.
+    struct RefRepayment {
+        uint128 repaid;
+        uint128 redrawn;
     }
 
     /// @dev What `sync` last read from a draw's hold.
@@ -115,6 +143,11 @@ contract CreditLine is ISettlementTokenGuard {
 
     /// @dev Re-draws so far, which number their charges on the lender.
     uint64 internal _redraws;
+    /// @notice The terms each line's lender offers, which the borrower accepts to apply them.
+    mapping(uint64 lineId => Terms) public offerOf;
+    /// @notice What each line received as repayment for each reference through `repayFor`, and what `redraw` drew
+    ///         again for it.
+    mapping(uint64 lineId => mapping(bytes32 ref => RefRepayment)) public repaymentOf;
 
     /// @dev Accepted, open lines each program draws on in each token that still have a limit, a balance owed or a live
     ///      hold, and whether each line is one of them.
@@ -135,16 +168,19 @@ contract CreditLine is ISettlementTokenGuard {
         address collateralVault,
         uint16 ltvBps
     );
-    event LineAccepted(uint64 indexed lineId);
+    event LineAccepted(uint64 indexed lineId, uint16 aprBps, uint128 maxDebt);
+    event TermsOffered(uint64 indexed lineId, uint16 aprBps, uint128 maxDebt);
     event LineClosed(uint64 indexed lineId);
     event LimitSet(uint64 indexed lineId, uint128 limit);
     event Drawn(uint64 indexed lineId, bytes32 indexed holdId, bytes32 ref, uint128 amount, uint64 expiresAt);
     event Synced(uint64 indexed lineId, bytes32 indexed holdId, uint128 owed, uint128 pending);
     event Repaid(uint64 indexed lineId, address indexed payer, uint128 amount, uint128 owed);
+    /// @notice A repayment from the program or its treasury key tied to `ref`, which `redraw` may draw again.
+    event RepaidFor(uint64 indexed lineId, bytes32 indexed ref, uint128 amount);
     /// @notice A refund past what the line owed, passed from the lender to the borrower.
     event Overpaid(uint64 indexed lineId, bytes32 holdId, uint128 amount);
     /// @notice The lender paid `payee` `amount` on the borrower's behalf, which the borrower now owes.
-    event Redrawn(uint64 indexed lineId, address indexed payee, uint128 amount, uint128 owed);
+    event Redrawn(uint64 indexed lineId, bytes32 indexed ref, address indexed payee, uint128 amount, uint128 owed);
     event Committed(uint64 indexed lineId, bytes32 holdId, uint128 amount);
     event PledgeAttached(uint64 indexed lineId, bytes32 pledgeId, uint128 shares, uint64 expiresAt);
     event PledgeReleased(uint64 indexed lineId, bytes32 pledgeId);
@@ -152,7 +188,7 @@ contract CreditLine is ISettlementTokenGuard {
     event LockingEnabled(uint64 indexed lineId);
     event Locked(uint64 indexed lineId, bytes32 holdId, uint128 shares);
     event Liquidated(uint64 indexed lineId, uint128 shares, uint256 assets, uint128 owed);
-    event InterestAccrued(uint64 indexed lineId, uint16 bps, uint128 interest, uint128 owed);
+    event InterestAccrued(uint64 indexed lineId, uint16 aprBps, uint128 interest, uint128 owed);
     event StatementClosed(uint64 indexed lineId, uint32 indexed n, uint128 balance, uint64 dueAt);
     event StatementCollected(
         uint64 indexed lineId, uint32 indexed n, uint128 balance, uint128 paid, StatementStatus status
@@ -161,6 +197,7 @@ contract CreditLine is ISettlementTokenGuard {
     event Autopaid(uint64 indexed lineId, uint32 indexed n, address source, uint128 amount);
 
     error CreditExceeded(uint256 amount, uint256 available);
+    error DebtBoundExceeded(uint256 amount, uint256 maxDebt);
     error ConversionExceedsMax(uint256 cost, uint256 maxIn);
     error NoConversion();
     error InvalidAutopay();
@@ -174,11 +211,13 @@ contract CreditLine is ISettlementTokenGuard {
     error NotPastDue();
     error NotProgram();
     error NothingOwed();
+    error NothingToRedraw();
     error NotUndercollateralized(uint256 owed, uint256 secured);
     error PledgeInPlace();
     error Reentrancy();
     error RepayExceedsOwed(uint256 amount, uint256 owed);
     error StillOwed();
+    error TermsMismatch();
     error UnknownDraw();
 
     modifier nonReentrant() {
@@ -188,8 +227,10 @@ contract CreditLine is ISettlementTokenGuard {
         _locked = false;
     }
 
-    /// @notice Opens a line from the caller (the lender) to `borrower`, drawn on by `program` only. The
-    ///         borrower must accept it before any draw. `collateralVault` zero makes it unsecured.
+    /// @notice Opens a line from the caller (the lender) to `borrower`, drawn on by `program` only, offering simple
+    ///         interest of `aprBps` a year on what is owed and a bound of `maxDebt` on what is owed and pending, zero
+    ///         meaning the limit plus a year of interest on it. The borrower must accept these terms before any draw.
+    ///         `collateralVault` zero makes it unsecured.
     function openLine(
         address borrower,
         address token,
@@ -198,9 +239,13 @@ contract CreditLine is ISettlementTokenGuard {
         uint64 dueDate,
         uint32 noticePeriod,
         IEarnVault collateralVault,
-        uint16 ltvBps
+        uint16 ltvBps,
+        uint16 aprBps,
+        uint128 maxDebt
     ) external returns (uint64 lineId) {
-        if (borrower == address(0) || token == address(0) || program == address(0)) revert InvalidLine();
+        if (borrower == address(0) || token == address(0) || program == address(0)) {
+            revert InvalidLine();
+        }
         // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (dueDate <= block.timestamp) revert InvalidLine();
@@ -228,21 +273,39 @@ contract CreditLine is ISettlementTokenGuard {
         emit LineOpened(
             lineId, msg.sender, borrower, token, program, limit, dueDate, noticePeriod, address(collateralVault), ltvBps
         );
+        _offer(lineId, l, aprBps, maxDebt);
     }
 
-    /// @notice The borrower agrees to owe what the line's program draws.
-    function acceptLine(uint64 lineId) external {
+    /// @notice The lender offers new terms for line `lineId`, which apply once the borrower accepts them; until then
+    ///         the accepted terms stay. `maxDebt` zero means the limit plus a year of interest on it.
+    function offerTerms(uint64 lineId, uint16 aprBps, uint128 maxDebt) external {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.lender) revert NotLender();
+        _offer(lineId, l, aprBps, maxDebt);
+    }
+
+    /// @notice The borrower accepts the terms the lender offers, which must be `aprBps` and `maxDebt`, and agrees to
+    ///         owe what the line's program draws within them. Interest so far accrues at the earlier rate first.
+    function acceptLine(uint64 lineId, uint16 aprBps, uint128 maxDebt) external nonReentrant {
         Line storage l = _lines[lineId];
         if (msg.sender != l.borrower) revert NotBorrower();
-        l.accepted = true;
-        emit LineAccepted(lineId);
+        Terms memory o = offerOf[lineId];
+        if (aprBps != o.aprBps || maxDebt != o.maxDebt || maxDebt < l.limit) revert TermsMismatch();
+        _accrue(lineId, false);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        (l.accepted, l.aprBps, l.maxDebt, l.lastAccrued) = (true, aprBps, maxDebt, uint64(block.timestamp));
+        emit LineAccepted(lineId, aprBps, maxDebt);
         _commit(lineId);
+        _lock(lineId);
     }
 
-    /// @notice The lender sets the line's limit; draws already placed stay.
+    /// @notice The lender sets the line's limit, at most the debt bound the borrower accepted (or, before it
+    ///         accepts, the one offered); draws already placed stay.
     function setLimit(uint64 lineId, uint128 limit) external {
         Line storage l = _lines[lineId];
         if (msg.sender != l.lender) revert NotLender();
+        uint128 bound = l.accepted ? l.maxDebt : offerOf[lineId].maxDebt;
+        if (limit > bound) revert DebtBoundExceeded(limit, bound);
         l.limit = limit;
         emit LimitSet(lineId, limit);
         _commit(lineId);
@@ -274,6 +337,7 @@ contract CreditLine is ISettlementTokenGuard {
         // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (!l.accepted || l.closed || block.timestamp >= l.dueDate) revert LineNotOpen();
+        _accrue(lineId, false);
         uint256 credit = availableCredit(lineId);
         if (amount > credit) revert CreditExceeded(amount, credit);
         // Draws fit in a Draw record: credit is bounded by the limit, so this only guards an unusual limit.
@@ -306,6 +370,7 @@ contract CreditLine is ISettlementTokenGuard {
         uint64 lineId = d.lineId;
         if (lineId == 0) revert UnknownDraw();
         Line storage l = _lines[lineId];
+        _accrue(lineId, false);
         IReservationCore.HoldRecord memory h = CORE.getHold(l.lender, holdId);
         uint128 held = h.held;
         uint128 net = h.captured - h.refunded;
@@ -350,6 +415,7 @@ contract CreditLine is ISettlementTokenGuard {
         if (msg.sender != l.program) revert NotProgram();
         uint128 held = CORE.getHold(l.lender, holdId).held;
         if (amount > held) {
+            _accrue(lineId, false);
             uint256 more = amount - held;
             uint256 credit = availableCredit(lineId);
             if (more > credit) revert CreditExceeded(more, credit);
@@ -376,18 +442,25 @@ contract CreditLine is ISettlementTokenGuard {
     /// @notice Draws up to `amount` on line `lineId` again for its program (a merchant's win on a purchase that
     ///         provisional credit repaid), paying the program's settlement account from what the lender can fund: its
     ///         free balance, then its commitment. Only the line's program may call it, on an accepted, open line before
-    ///         its due date, and it draws at most the credit still available. Returns what it drew.
-    function redraw(uint64 lineId, uint128 amount) external nonReentrant returns (uint128 drawn) {
+    ///         its due date, and it draws at most the credit still available and what `repayFor` repaid for `ref` less
+    ///         what was drawn again for it already. Returns what it drew.
+    function redraw(uint64 lineId, uint128 amount, bytes32 ref) external nonReentrant returns (uint128 drawn) {
         Line storage l = _lines[lineId];
         if (msg.sender != l.program) revert NotProgram();
         // Due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (!l.accepted || l.closed || block.timestamp >= l.dueDate) revert LineNotOpen();
+        RefRepayment storage r = repaymentOf[lineId][ref];
+        uint256 left = r.repaid - r.redrawn;
+        if (left == 0) revert NothingToRedraw();
+        _accrue(lineId, false);
         uint256 credit = availableCredit(lineId);
+        if (left < credit) credit = left;
         // At most amount, a uint128.
         // forge-lint: disable-next-line(unsafe-typecast)
         drawn = uint128(amount < credit ? amount : credit);
         if (drawn == 0) return 0;
+        r.redrawn += drawn;
         address payee = IProgramSettlementAccount(l.program).SETTLEMENT_ACCOUNT();
         uint256 free = CORE.available(l.lender, l.token);
         // availableCredit is bounded by the free balance plus the commitment, so the commitment covers the rest. The
@@ -406,7 +479,7 @@ contract CreditLine is ISettlementTokenGuard {
         // forge-lint: disable-end(reentrancy-no-eth)
         // forge-lint: disable-end(block-timestamp)
         l.owed += drawn;
-        emit Redrawn(lineId, payee, drawn, l.owed);
+        emit Redrawn(lineId, ref, payee, drawn, l.owed);
         _commit(lineId);
         _lock(lineId);
     }
@@ -422,6 +495,22 @@ contract CreditLine is ISettlementTokenGuard {
         Line storage l = _lines[lineId];
         _repay(lineId, l, amount);
         SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
+        _afterRepay(lineId, l, amount);
+    }
+
+    /// @notice Repays `amount` of what the borrower owes from the caller to the lender, as the line's program or a key
+    ///         holding its treasury role, tied to `ref` (a purchase or recovery) so `redraw` may draw it again for
+    ///         that reference.
+    function repayFor(uint64 lineId, uint128 amount, bytes32 ref) external nonReentrant {
+        Line storage l = _lines[lineId];
+        address program = l.program;
+        if (msg.sender != program && IProgramRoles(program).rolesOf(msg.sender) & ROLE_TREASURY == 0) {
+            revert NotProgram();
+        }
+        _repay(lineId, l, amount);
+        repaymentOf[lineId][ref].repaid += amount;
+        SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
+        emit RepaidFor(lineId, ref, amount);
         _afterRepay(lineId, l, amount);
     }
 
@@ -451,6 +540,7 @@ contract CreditLine is ISettlementTokenGuard {
     }
 
     function _repay(uint64 lineId, Line storage l, uint128 amount) private {
+        _accrue(lineId, false);
         if (amount == 0 || amount > l.owed) revert RepayExceedsOwed(amount, l.owed);
         l.owed -= amount;
         _payStatements(lineId, amount);
@@ -462,23 +552,26 @@ contract CreditLine is ISettlementTokenGuard {
         _lock(lineId);
     }
 
-    /// @notice Adds interest of `bps` basis points on what line `lineId` owes, as its lender, rounding up to the
-    ///         token's smallest unit. Like a purchase, it comes out of the line's undrawn limit.
-    function accrue(uint64 lineId, uint16 bps) external nonReentrant {
-        if (bps == 0 || bps > BPS) revert InvalidRate();
-        Line storage l = _lines[lineId];
-        if (msg.sender != l.lender) revert NotLender();
-        uint256 owed = l.owed;
-        if (owed == 0) return;
-        uint256 interest = (owed * bps + BPS - 1) / BPS;
-        if (owed + interest > type(uint128).max) revert InvalidRate();
-        // Both are bounded by the check above.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        l.owed = uint128(owed + interest);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        emit InterestAccrued(lineId, bps, uint128(interest), l.owed);
+    /// @notice Adds the interest line `lineId` has earned since it last did: simple interest on what it owes at the
+    ///         yearly rate the borrower accepted, over the time elapsed, rounded down, up to the accepted debt bound.
+    ///         Anyone may call it.
+    function accrue(uint64 lineId) external nonReentrant {
+        _accrue(lineId, true);
         _commit(lineId);
         _lock(lineId);
+    }
+
+    /// @notice What line `lineId` owes with the interest it has earned since it last accrued.
+    function owedNow(uint64 lineId) external view returns (uint256 owed) {
+        (owed,) = _interest(_lines[lineId]);
+        owed += _lines[lineId].owed;
+    }
+
+    /// @notice What `redraw` may still draw on line `lineId` for `ref`: what `repayFor` repaid for it, less what was
+    ///         drawn again.
+    function redrawable(uint64 lineId, bytes32 ref) external view returns (uint256) {
+        RefRepayment storage r = repaymentOf[lineId][ref];
+        return r.repaid - r.redrawn;
     }
 
     /// @notice Snapshots what line `lineId` owes as a statement due at `dueAt`, as its lender. Repayments pay the
@@ -490,6 +583,7 @@ contract CreditLine is ISettlementTokenGuard {
         // Due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (dueAt <= block.timestamp) revert InvalidStatement();
+        _accrue(lineId, false);
         Statements storage s = statementsOf[lineId];
         n = ++s.count;
         if (s.collectFrom == 0) (s.collectFrom, s.payFrom) = (n, n);
@@ -523,6 +617,7 @@ contract CreditLine is ISettlementTokenGuard {
     ///         is past due. Anyone may call it.
     function collect(uint64 lineId) external nonReentrant {
         Line storage l = _lines[lineId];
+        _accrue(lineId, false);
         Statements storage s = statementsOf[lineId];
         uint32 count = s.count;
         uint32 n = s.collectFrom;
@@ -773,6 +868,7 @@ contract CreditLine is ISettlementTokenGuard {
         // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < uint256(l.dueDate) + l.noticePeriod) revert NotPastDue();
+        _accrue(lineId, false);
         uint128 owed = l.owed;
         if (owed == 0) revert NothingOwed();
         bytes32 pledgeId = l.pledgeId;
@@ -824,6 +920,7 @@ contract CreditLine is ISettlementTokenGuard {
         Line storage l = _lines[lineId];
         if (msg.sender != l.lender) revert NotLender();
         if (!locking[lineId]) revert InvalidPledge();
+        _accrue(lineId, false);
         _lock(lineId);
         IEarnVault vault = l.collateralVault;
         uint256 locked = _lockedShares(lineId);
@@ -871,11 +968,11 @@ contract CreditLine is ISettlementTokenGuard {
         return _lockedShares(lineId);
     }
 
-    /// @notice Credit the line can still draw: its limit, or for a secured line the lower of the limit and the
-    ///         pledge's value times its loan-to-value, less what is owed and pending.
+    /// @notice Credit the line can still draw: its limit (at most the accepted debt bound), or for a secured line the
+    ///         lower of that and the pledge's value times its loan-to-value, less what is owed and pending.
     function availableCredit(uint64 lineId) public view returns (uint256) {
         Line storage l = _lines[lineId];
-        uint256 cap = l.limit;
+        uint256 cap = l.limit < l.maxDebt ? l.limit : l.maxDebt;
         if (address(l.collateralVault) != address(0)) {
             uint256 secured = collateralValue(lineId) * l.ltvBps / BPS;
             if (secured < cap) cap = secured;
@@ -945,6 +1042,52 @@ contract CreditLine is ISettlementTokenGuard {
         return keccak256(abi.encode(address(this), program, ref));
     }
 
+    /// @dev Records offered terms, defaulting the debt bound to the limit plus a year of interest on it.
+    function _offer(uint64 lineId, Line storage l, uint16 aprBps, uint128 maxDebt) private {
+        uint256 limit = l.limit;
+        if (maxDebt == 0) {
+            uint256 bound = limit + limit * aprBps / BPS;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            maxDebt = bound > type(uint128).max ? type(uint128).max : uint128(bound);
+        }
+        if (maxDebt < limit) revert InvalidLine();
+        offerOf[lineId] = Terms(aprBps, maxDebt);
+        emit TermsOffered(lineId, aprBps, maxDebt);
+    }
+
+    /// @dev Interest line `l` has earned since it last accrued, within its debt bound, and whether that bound capped it.
+    // Interest runs on timestamps by design; a few seconds of validator skew changes it by a few seconds of interest.
+    // forge-lint: disable-next-item(block-timestamp)
+    function _interest(Line storage l) private view returns (uint256 interest, bool capped) {
+        uint256 owed = l.owed;
+        if (!l.accepted || owed == 0 || l.aprBps == 0 || block.timestamp <= l.lastAccrued) return (0, false);
+        interest = owed * l.aprBps * (block.timestamp - l.lastAccrued) / (YEAR * BPS);
+        uint256 used = owed + l.pending;
+        uint256 room = l.maxDebt > used ? l.maxDebt - used : 0;
+        if (interest >= room) (interest, capped) = (room, true);
+    }
+
+    /// @dev Adds the interest earned since the line last accrued. With `carry`, what is owed stays the same afterwards,
+    ///      so time too short to earn a whole unit carries to the next accrual; otherwise the clock restarts now, as
+    ///      what is owed is about to change.
+    // forge-lint: disable-next-item(block-timestamp,unsafe-typecast)
+    function _accrue(uint64 lineId, bool carry) private {
+        Line storage l = _lines[lineId];
+        if (!l.accepted) return;
+        (uint256 interest, bool capped) = _interest(l);
+        uint256 owed = l.owed;
+        uint64 last = uint64(block.timestamp);
+        if (carry && !capped && owed != 0 && l.aprBps != 0) {
+            // The time the interest paid for, rounded up so the borrower never pays twice for the same second.
+            uint256 rate = owed * l.aprBps;
+            last = uint64(l.lastAccrued + (interest * YEAR * BPS + rate - 1) / rate);
+        }
+        l.lastAccrued = last;
+        if (interest == 0) return;
+        l.owed = uint128(owed + interest);
+        emit InterestAccrued(lineId, l.aprBps, uint128(interest), l.owed);
+    }
+
     // _commit runs only inside nonReentrant entry points, against the fixed core; holds expire by timestamp by design,
     // and every amount it casts is bounded by a 128-bit line limit.
     // forge-lint: disable-start(reentrancy-no-eth)
@@ -968,7 +1111,8 @@ contract CreditLine is ISettlementTokenGuard {
         // forge-lint: disable-next-line(block-timestamp)
         if (l.accepted && !l.closed && block.timestamp < l.dueDate) {
             uint256 used = uint256(l.owed) + l.pending;
-            target = l.limit > used ? l.limit - used : 0;
+            uint256 cap = l.limit < l.maxDebt ? l.limit : l.maxDebt;
+            target = cap > used ? cap - used : 0;
             uint256 backed = CORE.available(l.lender, l.token) + (live ? h.held : 0);
             if (target > backed) target = backed;
         }
@@ -1054,6 +1198,8 @@ contract CreditLine is ISettlementTokenGuard {
             live = !h.settled && h.token != address(0) && h.expiresAt > block.timestamp;
         }
         uint256 used = uint256(l.owed) + l.pending;
+        // Locks only for what the borrower agreed to owe, at the loan-to-value it accepted.
+        if (used > l.maxDebt) used = l.maxDebt;
         uint256 target = used == 0 ? 0 : vault.previewWithdraw(_assetsFor(l, (used * BPS + l.ltvBps - 1) / l.ltvBps));
         uint256 have = CORE.available(l.borrower, share) + (live ? h.held : 0);
         if (target > have) target = have;

@@ -89,11 +89,26 @@ abstract contract ProgramsEnv is CoreEnv {
         vm.startPrank(lender);
         core.approveHolder(address(credit), address(usd), type(uint128).max);
         lineId = credit.openLine(
-            borrower, address(usd), address(cards), limit, uint64(block.timestamp + 60 days), 7 days, vault, ltvBps
+            borrower,
+            address(usd),
+            address(cards),
+            limit,
+            uint64(block.timestamp + 60 days),
+            7 days,
+            vault,
+            ltvBps,
+            0,
+            0
         );
         vm.stopPrank();
+        _acceptLine(borrower, lineId);
+    }
+
+    /// @dev Accepts line `lineId` as `borrower` on the terms its lender offers.
+    function _acceptLine(address borrower, uint64 lineId) internal {
+        (uint16 aprBps, uint128 maxDebt) = credit.offerOf(lineId);
         vm.prank(borrower);
-        credit.acceptLine(lineId);
+        credit.acceptLine(lineId, aprBps, maxDebt);
     }
 
     /// @dev Calls a program setting as the issuer and, when it waits SETTINGS_DELAY, applies it once the delay passes,

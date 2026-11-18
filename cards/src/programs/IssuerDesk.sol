@@ -708,7 +708,7 @@ contract IssuerDesk is ISettlementTokenGuard {
             SafeTransferLib.safeTransferFrom(TOKEN, SETTLEMENT, address(this), pay);
             _allow(TOKEN, address(line), pay);
             // forge-lint: disable-next-line(unsafe-typecast)
-            line.repay(order[i].lineId, uint128(pay));
+            line.repayFor(order[i].lineId, uint128(pay), purchaseRef);
             emit DisputeCredited(purchaseRef, d.owner, CREDIT, address(line), order[i].lineId, pay, pay);
             // forge-lint: disable-next-line(unsafe-typecast)
             onLines += uint128(pay);
@@ -742,10 +742,16 @@ contract IssuerDesk is ISettlementTokenGuard {
         CardFunding.Source[] memory order = _orderOf(purchaseRef);
         for (uint256 i; i < order.length; ++i) {
             if (order[i].kind != CREDIT) continue;
-            uint128 want = lineShares[purchaseRef][i].repaid;
+            uint256 want = lineShares[purchaseRef][i].repaid;
             if (want == 0) continue;
             delete lineShares[purchaseRef][i];
-            uint128 drawn = PROGRAM.redrawLine(order[i].source, order[i].lineId, want);
+            // The line draws again only what it recorded this purchase's provisional credit repaying.
+            uint256 left = CreditLine(order[i].source).redrawable(order[i].lineId, purchaseRef);
+            if (left < want) want = left;
+            if (want == 0) continue;
+            // At most the uint128 share.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint128 drawn = PROGRAM.redrawLine(order[i].source, order[i].lineId, uint128(want), purchaseRef);
             if (drawn == 0) continue;
             emit DisputeRecovered(purchaseRef, owner, CREDIT, order[i].source, order[i].lineId, drawn, drawn);
             reinstated += drawn;
