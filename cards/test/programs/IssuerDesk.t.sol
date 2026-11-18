@@ -76,19 +76,30 @@ contract IssuerDeskTest is CompEnv {
     }
 
     function test_dispute_steps_onlyForward_andProvisionalCapped() public {
+        (uint8 representment, uint8 preArbitration, uint8 arbitration, uint8 won) =
+            (desk.REPRESENTMENT(), desk.PRE_ARBITRATION(), desk.ARBITRATION(), desk.WON());
         _disputed(50e6);
         usd.mint(settlement, 100e6);
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.DisputeTooLarge.selector);
         desk.disputeStep(P1, 3, 51e6, "", false);
         vm.prank(issuer);
-        desk.disputeStep(P1, 3, 50e6, "", true);
+        desk.disputeStep(P1, representment, 50e6, "", true);
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.InvalidDisputeStep.selector);
         desk.disputeStep(P1, 2, 0, "", false);
+        // Pre-arbitration and arbitration follow representment, each once; a step never resolves the dispute.
+        vm.prank(issuer);
+        desk.disputeStep(P1, preArbitration, 0, "", false);
         vm.prank(issuer);
         vm.expectRevert(IssuerDesk.InvalidDisputeStep.selector);
-        desk.disputeStep(P1, 5, 0, "", false);
+        desk.disputeStep(P1, preArbitration, 0, "", false);
+        vm.prank(issuer);
+        desk.disputeStep(P1, arbitration, 0, "", true);
+        assertEq(desk.disputeOf(P1).state, arbitration);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerDesk.InvalidDisputeStep.selector);
+        desk.disputeStep(P1, won, 0, "", false);
     }
 
     function test_openDispute_aboveWhatStaysUnrefunded_refused() public {

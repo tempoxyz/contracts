@@ -26,9 +26,11 @@ contract IssuerDesk is ISettlementTokenGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint8 public constant OPENED = 1;
     uint8 public constant PROVISIONAL_CREDIT = 2;
-    uint8 public constant ARBITRATION = 4;
-    uint8 public constant WON = 5;
-    uint8 public constant LOST = 6;
+    uint8 public constant REPRESENTMENT = 3;
+    uint8 public constant PRE_ARBITRATION = 4;
+    uint8 public constant ARBITRATION = 5;
+    uint8 public constant WON = 6;
+    uint8 public constant LOST = 7;
     uint256 private constant RATE_ONE = 1e18;
     /// @dev The settlement-token-in-use reason for an open dispute.
     uint8 private constant IN_USE_DISPUTES = 4;
