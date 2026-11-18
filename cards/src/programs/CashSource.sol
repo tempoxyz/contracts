@@ -137,6 +137,9 @@ contract CashSource is ISource, ISettlementTokenGuard {
                 (rate, ok) = _rate(token, settlement, maxCost);
                 if (!ok) return live ? uint256(h.held).mulDiv(locked, ONE) : 0;
                 tokens = _tokensFor(token, settlement, units, rate);
+                // When the venue asks more than the rate implies, the lock is the price the hold reserved, so a
+                // capture within it takes what the hold holds.
+                if (tokens > units.mulDivUp(ONE, rate)) rate = units.mulDivUp(ONE, tokens);
             }
         }
         if (standIn) {

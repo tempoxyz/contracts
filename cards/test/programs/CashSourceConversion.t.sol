@@ -11,6 +11,7 @@ import { IReservationCore } from "../../src/programs/interfaces/IReservationCore
 import { ISource } from "../../src/programs/interfaces/ISource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
+import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
 /// @notice Purchases funded in another stablecoin through the cash source, and issuers settling in one: rate locks at
 ///         authorization, the capture that pays the issuer exactly, slippage within the owner's tolerance, re-quotes
@@ -76,6 +77,27 @@ contract CashSourceConversionTest is AuthEnv {
         _assertSourcesEmpty();
         assertEq(eur.balanceOf(address(cash)), 0, "nothing left in the source");
         assertEq(eur.balanceOf(address(cards)), 0, "nothing left in the program");
+    }
+
+    /// @dev A venue asking a unit more than the rate implies sets the lock at the price the hold reserved, so the
+    ///      capture spends exactly the hold.
+    function test_tokenLeg_venueAskingMore_locksThePriceTheHoldReserved() public {
+        _tokenFirst(100);
+        eur.mint(alice, 200e6);
+        uint256 asked = _up(100e6, BID) + 1;
+        vm.mockCall(
+            address(conv), abi.encodeCall(conv.quoteOut, (address(eur), address(usd), 100e6)), abi.encode(asked)
+        );
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        assertEq(_cashHold(P1, TOKEN_LEG).held, asked);
+        assertEq(cash.lockedRate(leg), FixedPointMathLib.mulDivUp(100e6, 1e18, asked));
+        assertEq(cash.held(alice, _position(address(eur), 100), leg), 100e6);
+        _capture(P1, 100e6, true);
+        vm.clearMockedCalls();
+        assertEq(eur.balanceOf(alice), 200e6 - asked);
+        assertEq(usd.balanceOf(settlement), 100e6);
+        assertEq(core.reserved(alice, address(eur)), 0);
     }
 
     function test_tokenLeg_skippedWhileConvertingCostsMoreThanAllowed() public {
