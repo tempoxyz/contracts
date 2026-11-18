@@ -317,6 +317,24 @@ contract CreditLineTest is ProgramsEnv {
         _assertCoreBalanced();
     }
 
+    function test_lender_cannotAddOwedOutsideADraw() public {
+        uint64 lineId = _lockingLine(1000e6);
+        bytes32 id = _draw(lineId, 400e6);
+        core.capture(lender, id, 400e6, true);
+        credit.sync(id);
+        // The line has no entry point for a lender to raise what the borrower owes.
+        vm.prank(lender);
+        (bool ok,) = address(credit).call(abi.encodeWithSignature("charge(uint64,uint128)", lineId, uint128(5000e6)));
+        assertFalse(ok);
+        assertEq(credit.lineOf(lineId).owed, 400e6);
+        // Drawn within the limit and covered by the locked shares, the line cannot be liquidated.
+        uint256 locked = credit.lockedShares(lineId);
+        vm.prank(lender);
+        vm.expectPartialRevert(CreditLine.NotUndercollateralized.selector);
+        credit.liquidate(lineId);
+        assertEq(credit.lockedShares(lineId), locked);
+    }
+
     function test_locking_excludesAPledge() public {
         uint64 lineId = _lockingLine(100e6);
         vm.prank(alice);

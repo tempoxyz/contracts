@@ -134,7 +134,6 @@ contract CreditLine is ISettlementTokenGuard {
     event Drawn(uint64 indexed lineId, bytes32 indexed holdId, bytes32 ref, uint128 amount, uint64 expiresAt);
     event Synced(uint64 indexed lineId, bytes32 indexed holdId, uint128 owed, uint128 pending);
     event Repaid(uint64 indexed lineId, address indexed payer, uint128 amount, uint128 owed);
-    event Charged(uint64 indexed lineId, uint128 amount, uint128 owed);
     /// @notice A refund past what the line owed, passed from the lender to the borrower.
     event Overpaid(uint64 indexed lineId, bytes32 holdId, uint128 amount);
     /// @notice The lender paid `payee` `amount` on the borrower's behalf, which the borrower now owes.
@@ -365,17 +364,6 @@ contract CreditLine is ISettlementTokenGuard {
         }
         _lock(lineId);
         emit Synced(lineId, holdId, l.owed, l.pending);
-    }
-
-    /// @notice Adds `amount` to what the borrower owes, as the lender (interest, or a re-drawn disputed purchase). It
-    ///         comes out of the line's undrawn limit like a draw.
-    function charge(uint64 lineId, uint128 amount) external nonReentrant {
-        Line storage l = _lines[lineId];
-        if (msg.sender != l.lender) revert NotLender();
-        l.owed += amount;
-        emit Charged(lineId, amount, l.owed);
-        _commit(lineId);
-        _lock(lineId);
     }
 
     /// @notice Draws up to `amount` on line `lineId` again for its program (a merchant's win on a purchase that
