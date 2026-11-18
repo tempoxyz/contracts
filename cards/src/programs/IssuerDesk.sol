@@ -207,6 +207,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint256 units
     );
 
+    /// @notice A split take-back ran out of gas; retry with more gas.
+    error ChargeOutOfGas();
     error NotIssuer();
     error ZeroAddress();
     error InvalidTerms();
@@ -981,9 +983,12 @@ contract IssuerDesk is ISettlementTokenGuard {
     ///      balance as capped debt, and reports whether the core took it.
     // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
     function _tryCharge(address owner, address token, uint128 amount, address payee) private returns (bool) {
+        uint256 start = gasleft();
         try CORE.charge(owner, token, _nextId(), amount, payee, false) {
             return true;
         } catch {
+            // A charge that ran out of gas was not refused by the core: the whole call reverts instead.
+            if (gasleft() <= start / 64) revert ChargeOutOfGas();
             return false;
         }
     }

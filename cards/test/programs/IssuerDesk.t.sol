@@ -430,6 +430,35 @@ contract IssuerDeskTest is ProgramsEnv {
         desk.openDispute(P1, 51e6, "");
     }
 
+    function test_refund_atTheLeastGasItSucceedsWith_takesEverySplitBack() public {
+        _purchase(100e6);
+        usd.mint(settlement, 100e6);
+        // The network already owes the issuer from an earlier refund, so recording more costs little.
+        vm.prank(network);
+        core.approveHolder(address(desk), address(usd), 0);
+        vm.prank(issuer);
+        desk.refund(P1, 10e6);
+        uint256 owed = desk.payeeOwed(network, address(usd));
+        assertGt(owed, 0);
+        vm.prank(network);
+        core.approveHolder(address(desk), address(usd), 100e6);
+        // Searching down to the least gas the refund succeeds with, as gas estimation does: every refund that
+        // succeeds takes the network's split back rather than recording it as owed.
+        (uint256 low, uint256 high) = (0, 20_000_000);
+        while (high - low > 1) {
+            uint256 g = (low + high) / 2;
+            uint256 snapshot = vm.snapshotState();
+            vm.prank(issuer);
+            try desk.refund{ gas: g }(P1, 50e6) {
+                high = g;
+                assertEq(desk.payeeOwed(network, address(usd)), owed, "network");
+            } catch {
+                low = g;
+            }
+            vm.revertToStateAndDelete(snapshot);
+        }
+    }
+
     function test_refund_payeeRevokedApproval_stillRefunds() public {
         _purchase(100e6);
         vm.prank(network);
