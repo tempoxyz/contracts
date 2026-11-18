@@ -12,7 +12,8 @@ interface IIssued {
 ///         providers) record that an account passed a check, signed by a key they registered; only the claim, the
 ///         jurisdiction, an expiry and the hash of the attester's record go on chain. A program's identity policy
 ///         names the attesters it accepts, the claim and its jurisdiction, and needs a sponsor licensed there, so one
-///         attestation serves every program that accepts its attester.
+///         attestation serves every program that accepts its attester. Each attester keeps one attestation per
+///         account, replaced by its next, so admitting an account reads only the policy's attesters.
 /// @custom:invariant GOVERNOR != address(0)
 contract IdentityRules {
     /// @notice Sets jurisdictions.
@@ -43,7 +44,10 @@ contract IdentityRules {
 
     mapping(bytes32 code => Jurisdiction) internal _jurisdictions;
     mapping(address attester => mapping(address key => bool)) public isKey;
-    mapping(address account => Attestation[]) internal _attestations;
+    /// @dev Each attester's current attestation of each account.
+    mapping(address account => mapping(address attester => Attestation)) internal _attestations;
+    /// @dev The attesters that have attested each account, in first-attested order, for `attestationsOf` only.
+    mapping(address account => address[]) internal _attestersOf;
     mapping(address program => Policy) internal _policies;
 
     event JurisdictionSet(bytes32 indexed code, uint128 reportThreshold, address[] sponsors);
@@ -87,8 +91,9 @@ contract IdentityRules {
         emit AttesterKeySet(msg.sender, key, active);
     }
 
-    /// @notice Records that `account` passed `claim` under `jurisdiction`, until `expiresAt`. The caller is one of
-    ///         `attester`'s active keys; copying a trusted attester's address and record hash records nothing.
+    /// @notice Records that `account` passed `claim` under `jurisdiction`, until `expiresAt`, replacing `attester`'s
+    ///         earlier attestation of `account`. The caller is one of `attester`'s active keys; copying a trusted
+    ///         attester's address and record hash records nothing.
     function attest(
         address attester,
         address account,
@@ -101,7 +106,11 @@ contract IdentityRules {
         // Expiries are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
         if (account == address(0) || claim == bytes32(0) || expiresAt <= block.timestamp) revert InvalidAttestation();
-        _attestations[account].push(Attestation(attester, claim, jurisdiction, expiresAt, hash));
+        Attestation storage a = _attestations[account][attester];
+        if (a.attester == address(0)) _attestersOf[account].push(attester);
+        // Attested, emitted next, records every write here.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        _attestations[account][attester] = Attestation(attester, claim, jurisdiction, expiresAt, hash);
         emit Attested(account, attester, claim, jurisdiction, expiresAt, hash);
     }
 
@@ -126,19 +135,20 @@ contract IdentityRules {
         if (!admits(msg.sender, account)) revert IdentityRequired();
     }
 
-    /// @notice Whether `program` admits `account`: always without a policy, else with a live matching attestation.
+    /// @notice Whether `program` admits `account`: always without a policy, else with a live attestation of the
+    ///         policy's claim and jurisdiction from one of its attesters. Reads at most `MAX_ENTRIES` attestations.
     function admits(address program, address account) public view returns (bool) {
         Policy storage policy = _policies[program];
         address[] storage attesters = policy.attesters;
-        if (attesters.length == 0) return true;
-        Attestation[] storage list = _attestations[account];
-        for (uint256 i; i < list.length; ++i) {
-            Attestation storage a = list[i];
+        uint256 n = attesters.length;
+        if (n == 0) return true;
+        mapping(address attester => Attestation) storage held = _attestations[account];
+        (bytes32 claim, bytes32 jurisdiction) = (policy.claim, policy.jurisdiction);
+        for (uint256 i; i < n; ++i) {
+            Attestation storage a = held[attesters[i]];
+            // Expiries are timestamps by design.
             // forge-lint: disable-next-line(block-timestamp)
-            if (a.claim != policy.claim || a.jurisdiction != policy.jurisdiction || a.expiresAt <= block.timestamp) {
-                continue;
-            }
-            if (_contains(attesters, a.attester)) return true;
+            if (a.claim == claim && a.jurisdiction == jurisdiction && a.expiresAt > block.timestamp) return true;
         }
         return false;
     }
@@ -154,8 +164,18 @@ contract IdentityRules {
         return (j.reportThreshold, j.sponsors);
     }
 
-    function attestationsOf(address account) external view returns (Attestation[] memory) {
-        return _attestations[account];
+    /// @notice Each attester's current attestation of `account`, in the order they first attested it.
+    function attestationsOf(address account) external view returns (Attestation[] memory list) {
+        address[] storage attesters = _attestersOf[account];
+        list = new Attestation[](attesters.length);
+        for (uint256 i; i < list.length; ++i) {
+            list[i] = _attestations[account][attesters[i]];
+        }
+    }
+
+    /// @notice `attester`'s current attestation of `account`, empty if it has none.
+    function attestationOf(address account, address attester) external view returns (Attestation memory) {
+        return _attestations[account][attester];
     }
 
     function policyOf(address program) external view returns (Policy memory) {

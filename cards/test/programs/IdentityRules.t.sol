@@ -126,6 +126,50 @@ contract IdentityRulesTest is ProgramsEnv {
         assertEq(usd.balanceOf(settlement), 10e6);
     }
 
+    function test_admits_strangersAttestationsDoNotChangeCostOrResult() public {
+        address carol = makeAddr("carol");
+        address dave = makeAddr("dave");
+        // One stranger attests over and over, and many strangers attest once each, in the policy's claim and
+        // jurisdiction, before the accepted attester does.
+        vm.prank(other);
+        rules.setKey(other, true);
+        for (uint256 i; i < 30; ++i) {
+            vm.prank(other);
+            rules.attest(other, carol, KYC, US, uint64(block.timestamp + 1 days + i), bytes32(i));
+        }
+        for (uint160 i = 1; i <= 20; ++i) {
+            address stranger = address(0x5000 + i);
+            vm.startPrank(stranger);
+            rules.setKey(stranger, true);
+            rules.attest(stranger, carol, KYC, US, uint64(block.timestamp + 1 days), bytes32(0));
+            vm.stopPrank();
+        }
+        // None of theirs admits.
+        assertFalse(rules.admits(address(cards), carol));
+        vm.startPrank(attesterKey);
+        rules.attest(attester, carol, KYC, US, uint64(block.timestamp + 365 days), keccak256("record"));
+        rules.attest(attester, dave, KYC, US, uint64(block.timestamp + 365 days), keccak256("record"));
+        vm.stopPrank();
+        // Admitting the account strangers piled onto costs what admitting one nobody else attested does (the first
+        // read warms the policy for both).
+        assertFalse(rules.admits(address(cards), alice));
+        uint256 gas = gasleft();
+        assertTrue(rules.admits(address(cards), dave));
+        uint256 plain = gas - gasleft();
+        gas = gasleft();
+        assertTrue(rules.admits(address(cards), carol));
+        assertEq(gas - gasleft(), plain);
+    }
+
+    function test_attest_sameAttesterOverwritesInPlace() public {
+        _attest(US, uint64(block.timestamp + 1 days));
+        _attest(US, uint64(block.timestamp + 30 days));
+        IdentityRules.Attestation[] memory list = rules.attestationsOf(alice);
+        assertEq(list.length, 1);
+        assertEq(list[0].expiresAt, uint64(block.timestamp + 30 days));
+        assertEq(rules.attestationOf(alice, attester).expiresAt, uint64(block.timestamp + 30 days));
+    }
+
     function test_noPolicy_admitsEveryone() public view {
         assertTrue(rules.admits(address(0xBEEF), alice));
     }
