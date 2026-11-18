@@ -207,6 +207,26 @@ contract CashSourceTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).refunded, 30e6);
     }
 
+    function test_capture_overage_multiLeg_takesTheCashLegsDebtUpToThePurchasesTolerance() public {
+        // Cash holds 1 and savings 99; the owner allows 100% on cash and a 200 debt cap.
+        _setTolerance(alice, address(cash), address(usd), 10_000);
+        _setDebtCap(alice, address(cash), address(usd), 200e6);
+        usd.mint(alice, 100e6 + 2);
+        _depositEarn(alice, 99e6 + 2);
+        uint256 spare = usd.balanceOf(alice) - 1e6;
+        vm.prank(alice);
+        usd.transfer(bob, spare);
+        _authorize(P1, 100e6);
+        assertEq(_hold(alice, P1, CASH_LEG).held, 1e6);
+        uint256 before = usd.balanceOf(settlement);
+        _capture(P1, 150e6, true);
+        // The 50 past the purchase's holds lands on the cash leg as debt, within the purchase's tolerance.
+        assertEq(_owed(alice, address(usd), address(cash)), 50e6);
+        assertEq(cards.purchaseOf(P1).refunded, 0, "nothing absorbed");
+        assertApproxEqAbs(usd.balanceOf(settlement) - before, 100e6, 2);
+        _assertCoreBalanced();
+    }
+
     function test_capture_overTolerance_refused() public {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);

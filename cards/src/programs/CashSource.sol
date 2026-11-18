@@ -162,11 +162,8 @@ contract CashSource is ISource {
         uint256 rate = lockedRate[legId];
         if (rate == 0) {
             uint256 amount = units < h.held ? units : h.held;
-            if (beyond && units > h.held) {
-                amount = h.held + _excessRoom(owner, token, h.standIn, units - h.held, true);
-                if (amount > h.captureLimit) amount = h.captureLimit;
-            }
-            if (amount != 0 || isFinal) CORE.capture(owner, address(this), legId, uint128(amount), isFinal);
+            if (beyond && units > h.held) amount = h.held + _excessRoom(owner, token, h.standIn, units - h.held, true);
+            _take(owner, token, legId, h, amount, isFinal);
             _forward(settlement);
             return amount;
         }
@@ -249,6 +246,7 @@ contract CashSource is ISource {
         uint256 tokens = needed < h.held ? needed : h.held;
         if (beyond && needed > h.held) {
             tokens = h.held + _excessRoom(owner, token, false, needed - h.held, false);
+            // Tokens past the hold are bounded by the hold's own tolerance: a lapsed rate never costs the owner more.
             if (tokens > h.captureLimit) tokens = h.captureLimit;
         }
         if (tokens == 0) return 0;
@@ -272,6 +270,18 @@ contract CashSource is ISource {
             paid = c.swapExactIn(token, settlement, tokens, 0, SETTLEMENT_ACCOUNT);
         }
         emit Converted(legId, token, tokens, paid);
+    }
+
+    /// @dev Takes `amount` for a leg: a capture up to the hold's capture limit, and a charge for the rest. The core
+    ///      bounds a hold's overage by its own tolerance, but a purchase spread across legs takes its overage on this
+    ///      leg, which CardAuth checked against the purchase's tolerance. Only settlement-token legs take it.
+    function _take(address owner, address token, bytes32 legId, IReservationCore.HoldRecord memory h, uint256 amount, bool isFinal)
+        private
+    {
+        uint256 extra = amount > h.captureLimit ? amount - h.captureLimit : 0;
+        amount -= extra;
+        if (amount != 0 || isFinal) CORE.capture(owner, address(this), legId, uint128(amount), isFinal);
+        if (extra != 0) CORE.charge(owner, token, legId, uint128(extra), address(this), h.standIn);
     }
 
     /// @dev What a capture or charge may take past a hold, up to `want`: the owner's free balance, the owner's budget
