@@ -196,13 +196,40 @@ counts as user assets; it stays with the contract for good. Measured on real TIP
 vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The residue is a plain transfer outside the
 recorded deployment actions, so it adds no step to existing deployment records.
 
-Zone routers and card programs (`CardSpender`) hold a token only while a call runs, so each callback
-or spend recreates the balance slot of every token it handles. After one is deployed, send it 1 base
-unit of each token it handles:
+Zone routers, their `SendSpender`s and card programs (`CardSpender`) hold a token only while a call
+runs, so each callback or spend recreates the balance slot of every token it handles. Tempo charges
+250,000 gas for a slot written from zero, unless a TIP-1060 storage credit from a slot the same
+account cleared covers it, and the Zone callback's gas limit, which the user pays, must cover it.
+After one is deployed, send it 1 base unit of each token it handles:
 
 - a Zone router with Earn ops: its vault asset (its private asset too, when it converts through a
   pool), plus each token it spends; then call `warm` for each token it returns to its Zone
+- a `SendSpender` a router lists: each token it receives, the vault asset an EarnShare send redeems
+  to, and, with a conversion binding, that binding's asset and par stablecoin
 - a card program: each token it pays out
+
+For a profile's router the `seed-zone-router` activation step does this. Of the stack's private
+asset, vault asset and EarnShare it seeds what the router's Earn ops handle, warms the allowance each
+Earn op returns to its Zone (EarnShare for Deposit, the private asset for Redeem), and seeds and
+warms what its Portal enables for Spend (it asks the Portal about each of the three, whatever the profile), and
+seeds the same tokens on each listed spender verified as the release `SendSpender` for its
+settings, as `pnpm earn verify` verifies it. A listed card program is left to its
+[runbook](../cards/bridge/deploy.md#6-prepare-the-program-for-low-callback-gas). Any other listed
+spender gets nothing, noted under **Zone router seeds**; **Zone router spenders** blocks it. A `SendSpender`'s conversion asset or par stablecoin is seeded
+only when it is one of the stack's three tokens and the router spends the EarnShare of the vault it
+converts for, the only input that converts. The step sends only what is missing, from
+`DEPLOYER_PRIVATE_KEY`, simulating each transfer and `warm` call from the deployer first: it sends
+those that succeed in batches of at most 48 calls. Only the profile's deployer seeds. The step
+requires only the router's Portal allowances, which stay set once warmed, and every deploy run that
+holds the deployer's key runs its sends once, even when they are already set, without failing the
+deploy if they fail; units it cannot send (it holds too little of a token, or a token's
+TIP-403 transfer policy refuses the deployer or the holder) block nothing and are sent by hand. A
+router release that sets its Portal allowance on each callback refuses `warm` with `OpDisabled`, so
+those allowances are noted rather than required; any other `warm` revert stays required and hands
+off. `pnpm earn verify` notes each missing unit or allowance under **Zone router seeds**, which is
+always ready, even when it cannot read them.
+Tokens outside the stack, such as other stablecoins a Spend router routes, and routers or spenders
+deployed outside a profile, are seeded by hand.
 
 For an EarnVault whose release restarts an unbacked pool (a deposit into a pool whose supply has
 lost all backing prices at the empty-pool rate when that supply is negligible), also send each router
@@ -210,7 +237,10 @@ with Earn ops and each card program that spends Earn positions 1 unit of EarnSha
 checks measure against what they held before the call, so the unit is never spent. It counts as
 supply no one can exit, which is why it needs that release: if every other holder exits and its
 backing is lost, the next deposit restarts the pool instead of reverting. Check the vault's recorded
-factory release first, and never send EarnShare to a router or card program bound to an earlier vault.
+factory release first, and never send EarnShare to a router, `SendSpender` or card program bound to
+an earlier vault. `seed-zone-router` sends EarnShare only when the vault's implementation emits
+`UnbackedPoolRestarted`; otherwise it still warms the router's EarnShare Portal allowance, which
+moves no EarnShare, and `pnpm earn verify` notes the withheld units.
 
 Measured on real TIP-20 (`cards/test/gas/RouterTip20Gas.t.sol`, with the vault residue above), a
 router's deposit callback drops from 1.28M to 528k gas and its redeem from 998k to 498k, and its
@@ -436,6 +466,7 @@ the reward treasury.
 | `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
 | `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
 | `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
+| `seed-zone-router`               | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Zone router](../zone-router/zone-router.md#deployment)                         |
 
 Deployment scripts receive only `DEPLOYER_PRIVATE_KEY`; Forge never receives another authority
 key. Read-only version, build, provenance, source-verification, and formatting subprocesses receive

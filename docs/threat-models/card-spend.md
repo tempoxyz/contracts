@@ -289,6 +289,17 @@ The design accepts these risks. They are decisions, not gaps.
   can take up to twice its periodic limit, and another key with `requestWithdrawal` on the same account
   can use an approval it did not make. Bridge sends both calls in one transaction for the exact amount;
   removing the need for the approval needs an outbox or scope change outside this repository.
+- **One base unit left approved.** A public spend sets the cardholder's allowance to the program back to
+  1 base unit of each token it approved, never 0, so the allowance slot is not created again on the next
+  spend ([design](../cards/design.md#flows)). `spend` pulls only from its caller
+  (`cards/src/core/CardSpender.sol`: `_payDirect`, `_payThroughPublic`), so only a transaction from the
+  cardholder's own account can use that unit, and the key's limit counted it when it was approved.
+- **Seed units held between spends.** Deployment sends 1 base unit of each token a router, its
+  SendSpenders and a program handle, so a callback does not create their balance slots again
+  ([deployment](../deployment/deployment.md)). A program measures a private spend against its balance
+  before the router's transfer (`CARDSPEND-PRIVATE-BASELINE`) and the router a callback against its
+  balance before it (`CARDSPEND-ROUTER-EMPTY`), so the seed never pays a spend and no spend can leave
+  input behind. At worst a seed is lost, and later callbacks pay to create the slot again.
 - **A leaked public key.** It can spend a cardholder's funds, up to the key's limit, only to the
   program's destinations: its scope names the program's `spend`.
 - **No on-chain idempotency.** The provider removes duplicate spends off chain, by its own reference.

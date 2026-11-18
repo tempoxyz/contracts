@@ -31,8 +31,9 @@ existing card contracts. It is one provider of the [card spend project](../../..
 - Bridge spends from the cardholder's account with a Tempo access key the cardholder authorized,
   publicly and in a Zone. Public and private spend are the same `CardSpend`, paid by the same
   `CardSpender` through the same handler code in the program's clone.
-- Public: one transaction from the cardholder's account approves the exact amount to the program,
-  calls `program.spend` and clears the approval.
+- Public: one transaction from the cardholder's account approves the amount plus 1 base unit to the
+  program, calls `program.spend` and sets the approval back to 1 base unit, leaving the allowance
+  nonzero.
 - Private: Bridge's Zone key withdraws to the Zone's `ZoneRouter`, which transfers the
   cardholder's `maxInput` to the program, its spender. The program settles the spend through
   the clone and hands back what it did not use, and the router returns the change to the Zone, so
@@ -55,7 +56,7 @@ failures: 5 Bridge setups and 6 Tempo setups. The full table is in [`docs/cards/
 | Spend from Earn shares                                             | TF, EV                                  | pass       | pass        |
 | Share cost bounded against a quote                                 | no                                      | pass       | pass        |
 | Periodic spend limit on chain                                      | no (lifetime allowance)                 | pass       | pass        |
-| No standing allowance                                              | no                                      | pass       | pass        |
+| No standing allowance beyond 1 base unit                           | no                                      | pass       | pass        |
 | Settlement names no cardholder                                     | n/a                                     | n/a        | pass        |
 
 Three behaviors are decisions, not defects, and the matrix lists them so they stay visible:

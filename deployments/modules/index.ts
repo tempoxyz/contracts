@@ -34,6 +34,7 @@ import {
   enableZoneRouterTokens,
   registerZoneRouterGateway,
   admitZoneRouterAccount,
+  seedZoneRouter,
 } from './zone-router/steps.js'
 import {
   authorizeRouter,
@@ -63,6 +64,7 @@ const steps = [
   enableZoneRouterTokens,
   registerZoneRouterGateway,
   admitZoneRouterAccount,
+  seedZoneRouter,
 ] as const
 
 unique(

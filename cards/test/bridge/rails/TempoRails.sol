@@ -58,9 +58,9 @@ abstract contract TempoRailBase is RailDefaults {
 }
 
 /// @notice Public spend through the program's `CardSpender`, signed by Bridge's access key as the
-///         cardholder. Each pull approves the program for the exact amount, calls `spend`, which pays
-///         through the clone's "TS" handler, and clears the approval in one transaction. The protocol
-///         enforces the periodic limit.
+///         cardholder. Each pull approves the program for the amount plus 1 base unit, calls `spend`,
+///         which pays through the clone's "TS" handler, and sets the approval back to 1 base unit in one
+///         transaction, so the allowance slot stays nonzero. The protocol enforces the periodic limit.
 abstract contract TempoAccessKeyRail is TempoRailBase {
     function _railName() internal pure override returns (string memory) {
         return "tempo.ts-public (access key)";
@@ -111,17 +111,18 @@ abstract contract TempoAccessKeyRail is TempoRailBase {
         TxCall[] memory calls = new TxCall[](5);
         uint256 n;
         if (stableApproval != 0) {
-            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (to, stableApproval)));
+            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (to, stableApproval + 1)));
         }
         if (shareApproval != 0) {
-            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (to, shareApproval)));
+            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (to, shareApproval + 1)));
         }
         calls[n++] = TxCall(to, 0, call_);
+        // Back to 1 base unit, never 0: the slot stays, and no quote tolerance stays spendable.
         if (stableApproval != 0) {
-            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (to, 0)));
+            calls[n++] = TxCall(address(usd), 0, abi.encodeCall(ITIP20.approve, (to, 1)));
         }
         if (shareApproval != 0) {
-            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (to, 0)));
+            calls[n++] = TxCall(address(earnShare), 0, abi.encodeCall(ITIP20.approve, (to, 1)));
         }
         assembly {
             mstore(calls, n)

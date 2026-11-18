@@ -66,7 +66,7 @@ sequenceDiagram
     participant D as Provider destination
     Note over P,A: Public
     P->>A: L1 tx, provider access key
-    A->>C: approve(exact), spend, approve(0)
+    A->>C: approve(amount + 1), spend, approve(1)
     C->>D: pay directly, or through T
     Note over P,Z: Private
     P->>Z: Zone tx, provider Zone key
@@ -79,8 +79,17 @@ sequenceDiagram
 
 - **Public.** The provider sends one L1 transaction from the cardholder's account, signed with an access
   key the cardholder scoped to `token.approve(recipient = program)` and `program.spend`, with a periodic
-  limit. It approves the exact amount (and, for Earn, the share quote), spends and clears the approval.
-  The provider approves the card on the L1 receipt.
+  limit. It approves the amount plus 1 base unit (and, for Earn, the share quote plus 1), spends, and
+  sets each approval back to 1 base unit. The provider approves the card on the L1 receipt.
+- **Keep the public allowance nonzero.** `spend` pulls with `transferFrom`, so an approval of the exact
+  amount, or a reset to 0 afterwards, clears the cardholder's TIP-20 allowance slot, and the next
+  approval creates it again (250,000 gas unless a TIP-1060 storage credit covers it). After `spend`, set
+  the allowance back to 1 base unit, never 0. The key's limit counts each approval's increase over the
+  current allowance, so the first spend from a zero allowance needs headroom for the extra unit; without
+  it, approve the exact amount for that spend. Never leave more than 1 unit approved: the key's limit
+  counts only approvals, so anything left, such as an unused share tolerance, could be pulled by a later
+  spend past the period's limit. Only `spend` can pull the 1 unit, from `msg.sender`: the cardholder's
+  own account, in a transaction its key signs.
 - **Private.** The provider sends one Zone transaction from the cardholder's Zone account, signed with a
   Zone key scoped to the outbox, that withdraws `maxInput` plus change to the router with Spend callback
   data naming the program as spender. The provider approves the card on the Zone receipt; the L1 settles

@@ -74,7 +74,13 @@ contracts:
    router returns funds as an ordinary depositor, so the Portal administrator admits it with
    `setAllowedAccount`; the Portal holds one role per account, so a router needs only one of the
    two, and after the Zone changes gateway mode either step revokes the old role and grants the new
-   one in one batch). The lifecycle grants pool, gateway and account admission with its own keys only when it
+   one in one batch), then `seed-zone-router` (the deployer sends the router and each listed
+   spender verified as the release `SendSpender` 1 base unit of each stack token they handle and
+   calls `warm` for each token the router returns to its Zone, so no callback creates those slots;
+   EarnShare units only when the vault restarts unbacked pools. Each call is simulated first; units a
+   token's transfer policy refuses, or an unverified spender's, are noted rather than sent, see
+   [balance residues](../deployment/deployment.md#gas-residue-after-deployment)).
+   The lifecycle grants pool, gateway and account admission with its own keys only when it
    deployed the factory itself; for a router from a factory the profile names, each is always handed
    off, for the pool owner or the Portal administrator to check that factory's verified source
    first. Before any automatic pool admission or Portal role grant, read-only constructor simulations of the reviewed local
@@ -87,7 +93,7 @@ spenders when the route is intended to move EarnShare, as
 includes Earn operations, a same-Zone sibling private Earn router, or a Portal that already enables
 EarnShare; unrelated Spend-only modes do not require those memberships.
 `pnpm earn verify` rechecks the factory provenance and mode and reports gateway, account,
-token and conversion readiness, and for each spender: that its `ROUTER_FACTORY()` is the router's
+token, seed and conversion readiness, and for each spender: that its `ROUTER_FACTORY()` is the router's
 factory, that it is a `CardSpender` the release `CardFactory` for that factory deployed or the
 release `SendSpender` for its settings (both predicted from this checkout's builds), and, on a
 protected EarnShare the route is intended to move, that the policy admits it. A profile deploys no spender: it lists deployed ones in

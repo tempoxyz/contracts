@@ -31,6 +31,7 @@ import {
 } from './releases.js'
 import { inspectEarnDeployment } from './inspection.js'
 import { readCurrentEngine } from './stack.js'
+import { stepSignerAvailable } from '../modules/module.js'
 import {
   assertFoundryProjectEnvironment,
   foundryProcessEnvironment,
@@ -65,6 +66,8 @@ export type ReconciliationStep =
       action: EarnDeploymentAction
       instructions: string
       pending: PendingDeployment
+      /** Set when the step is already satisfied and only its best-effort execution is offered. */
+      optional?: true
     }
   | {
       kind: 'foundry'
@@ -94,6 +97,8 @@ export async function prepareLifecycleStep(
     environment: NodeJS.ProcessEnv
     actions?: EarnDeploymentAction[] | undefined
     discoveredOutputs?: Record<string, `0x${string}`> | undefined
+    /** Best-effort steps this run already offered, so each is offered at most once per run. */
+    attempted?: ReadonlySet<string> | undefined
   },
   dependencies: Partial<CreationDependencies> = {},
 ): Promise<ReconciliationStep> {
@@ -142,6 +147,21 @@ export async function prepareLifecycleStep(
         : undefined
     if (await step.satisfied(client, profile, pending.outputs)) {
       const recorded = pending.actions[action.id]
+      // A satisfied step with best-effort work is offered to every run that can sign it, once per run,
+      // so a run without its signer records it and a later run with the signer still does the work.
+      if (
+        step.execution === 'authority' &&
+        step.attemptWhenSatisfied &&
+        !options.attempted?.has(action.id) &&
+        stepSignerAvailable(step, profile, options.environment, false)
+      )
+        return {
+          kind: 'handoff',
+          action,
+          instructions: step.handoff(profile, pending.outputs),
+          pending,
+          optional: true,
+        }
       // Earlier resumes may have cached the bindings before Forge saved a creation receipt.
       const recoverCreation = createsContracts && recorded?.transactions.length === 0
       if (!recorded || recoverCreation) {
