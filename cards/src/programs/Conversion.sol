@@ -63,6 +63,8 @@ contract Conversion {
     uint256 internal constant BPS = 10_000;
     /// @notice How long a reference rate prices conversions after it was set.
     uint64 public constant MAX_RATE_AGE = 7 days;
+    /// @notice How far below the reference rates a swap may pay out, or above them it may spend, in basis points.
+    uint256 public constant MAX_SLIPPAGE_BPS = 100;
     /// @dev Amount a rate is measured on; venues price linearly, so a large probe keeps rounding out of the rate.
     uint256 internal constant PROBE = 1e10;
     IStablecoinDEX internal constant DEX = IStablecoinDEX(0xDEc0000000000000000000000000000000000000);
@@ -111,6 +113,7 @@ contract Conversion {
     /// @notice The token's reference rate is older than MAX_RATE_AGE.
     error RateStale(address token);
     error Slippage(uint256 amount, uint256 bound);
+    error MinOutTooLow(uint256 minOut, uint256 floor);
     error InvalidAmount();
     error InsufficientFloat(uint256 needed, uint256 available);
 
@@ -195,24 +198,42 @@ contract Conversion {
         return referenceRate(tokenIn).mulDiv(RATE_ONE, referenceRate(tokenOut));
     }
 
+    /// @notice The least amountIn of tokenIn may fetch in tokenOut in a swap: its value at the reference rates less
+    ///         MAX_SLIPPAGE_BPS, rounded up.
+    function minOutFor(address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256) {
+        if (tokenIn == tokenOut) return amountIn;
+        return amountIn.mulDiv(referenceRate(tokenIn), referenceRate(tokenOut)).mulDivUp(BPS - MAX_SLIPPAGE_BPS, BPS);
+    }
+
+    /// @notice The most exactly amountOut of tokenOut may cost in tokenIn in a swap: its cost at the reference rates
+    ///         plus MAX_SLIPPAGE_BPS, rounded down.
+    function maxInFor(address tokenIn, address tokenOut, uint256 amountOut) public view returns (uint256) {
+        if (tokenIn == tokenOut) return amountOut;
+        return amountOut.mulDivUp(referenceRate(tokenOut), referenceRate(tokenIn)).mulDiv(BPS + MAX_SLIPPAGE_BPS, BPS);
+    }
+
     /// @notice Whether the pair converts, directly or through the hub.
     function converts(address tokenIn, address tokenOut) public view returns (bool) {
         if (tokenIn == tokenOut || venues[tokenIn][tokenOut].exists) return true;
         return tokenIn != HUB && tokenOut != HUB && venues[tokenIn][HUB].exists && venues[HUB][tokenOut].exists;
     }
 
-    /// @notice What exactly amountIn of tokenIn fetches in tokenOut.
+    /// @notice What exactly amountIn of tokenIn fetches in tokenOut: the venue's quote, at most its value at the
+    ///         reference rates, so nothing values it above them.
     function quoteIn(address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256) {
         if (tokenIn == tokenOut || amountIn == 0) return amountIn;
-        if (venues[tokenIn][tokenOut].exists) return _quoteIn(tokenIn, tokenOut, amountIn);
-        return _quoteIn(HUB, tokenOut, _quoteIn(tokenIn, HUB, amountIn));
+        uint256 out = _routeIn(tokenIn, tokenOut, amountIn);
+        uint256 fair = amountIn.mulDiv(referenceRate(tokenIn), referenceRate(tokenOut));
+        return out < fair ? out : fair;
     }
 
-    /// @notice What tokenIn exactly amountOut of tokenOut costs.
+    /// @notice What tokenIn exactly amountOut of tokenOut costs: the venue's quote, at least its cost at the reference
+    ///         rates.
     function quoteOut(address tokenIn, address tokenOut, uint256 amountOut) public view returns (uint256) {
         if (tokenIn == tokenOut || amountOut == 0) return amountOut;
-        if (venues[tokenIn][tokenOut].exists) return _quoteOut(tokenIn, tokenOut, amountOut);
-        return _quoteOut(tokenIn, HUB, _quoteOut(HUB, tokenOut, amountOut));
+        uint256 cost = _routeOut(tokenIn, tokenOut, amountOut);
+        uint256 fair = amountOut.mulDivUp(referenceRate(tokenOut), referenceRate(tokenIn));
+        return cost > fair ? cost : fair;
     }
 
     /// @notice Units of tokenOut one unit of tokenIn fetches now, with 18 decimals.
@@ -242,11 +263,15 @@ contract Conversion {
     // Swaps.
 
     /// @notice Spends exactly amountIn of the caller's tokenIn for at least minOut of tokenOut, paid to recipient.
+    ///         minOut zero takes `minOutFor`; a nonzero minOut below it is refused.
     function swapExactIn(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, address recipient)
         external
         returns (uint256 out)
     {
         if (amountIn == 0) return 0;
+        uint256 floor = minOutFor(tokenIn, tokenOut, amountIn);
+        if (minOut == 0) minOut = floor;
+        else if (minOut < floor) revert MinOutTooLow(minOut, floor);
         SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
         if (tokenIn == tokenOut) {
             out = amountIn;
@@ -266,7 +291,9 @@ contract Conversion {
         returns (uint256 spent)
     {
         if (amountOut == 0) return 0;
-        spent = quoteOut(tokenIn, tokenOut, amountOut);
+        uint256 ceiling = maxInFor(tokenIn, tokenOut, amountOut);
+        if (maxIn > ceiling) maxIn = ceiling;
+        spent = _routeOut(tokenIn, tokenOut, amountOut);
         if (spent > maxIn) revert Slippage(spent, maxIn);
         SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), spent);
         if (tokenIn == tokenOut) {
@@ -274,7 +301,7 @@ contract Conversion {
         } else if (venues[tokenIn][tokenOut].exists) {
             _swapOut(tokenIn, tokenOut, amountOut, spent);
         } else {
-            uint256 hub = quoteOut(HUB, tokenOut, amountOut);
+            uint256 hub = _quoteOut(HUB, tokenOut, amountOut);
             _swapOut(tokenIn, HUB, hub, spent);
             _swapOut(HUB, tokenOut, amountOut, hub);
         }
@@ -307,6 +334,16 @@ contract Conversion {
     function _venue(address tokenIn, address tokenOut) private view returns (Venue memory v) {
         v = venues[tokenIn][tokenOut];
         if (!v.exists) revert NoVenue(tokenIn, tokenOut);
+    }
+
+    function _routeIn(address tokenIn, address tokenOut, uint256 amountIn) private view returns (uint256) {
+        if (venues[tokenIn][tokenOut].exists) return _quoteIn(tokenIn, tokenOut, amountIn);
+        return _quoteIn(HUB, tokenOut, _quoteIn(tokenIn, HUB, amountIn));
+    }
+
+    function _routeOut(address tokenIn, address tokenOut, uint256 amountOut) private view returns (uint256) {
+        if (venues[tokenIn][tokenOut].exists) return _quoteOut(tokenIn, tokenOut, amountOut);
+        return _quoteOut(tokenIn, HUB, _quoteOut(HUB, tokenOut, amountOut));
     }
 
     function _quoteIn(address tokenIn, address tokenOut, uint256 amountIn) private view returns (uint256 out) {

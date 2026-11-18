@@ -25,14 +25,16 @@ contract CreditLineConversionTest is ProgramsEnv {
 
     ITIP20Token internal eur;
     Conversion internal conv;
+    FixedPricePool internal bid;
+    FixedPricePool internal ask;
     uint64 internal due;
 
     function setUp() public {
         _deployPrograms();
         eur = _createToken("Euro", "EURX");
         conv = new Conversion(address(usd), address(this));
-        FixedPricePool bid = new FixedPricePool(address(eur), address(usd), BID);
-        FixedPricePool ask = new FixedPricePool(address(eur), address(usd), ASK);
+        bid = new FixedPricePool(address(eur), address(usd), BID);
+        ask = new FixedPricePool(address(eur), address(usd), ASK);
         usd.mint(address(bid), 1_000_000e6);
         eur.mint(address(ask), 1_000_000e6);
         conv.setVenue(address(eur), address(usd), address(bid), true);
@@ -174,6 +176,28 @@ contract CreditLineConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(address(credit)), 0);
         assertEq(eur.balanceOf(address(credit)), 0);
         _assertCoreBalanced();
+    }
+
+    function test_liquidate_refusesSellingFarBelowTheReferenceRate() public {
+        uint64 lineId = _line(600e6, IEarnVault(address(earnVault)), 5000);
+        usd.mint(alice, 1100e6);
+        _depositEarn(alice, 1100e6);
+        vm.startPrank(alice);
+        core.approveHolder(address(credit), address(earnShare), type(uint128).max);
+        credit.enableLocking(lineId);
+        vm.stopPrank();
+        _owe(lineId, 300e6);
+        uint256 loss = usd.balanceOf(address(venue)) / 2;
+        vm.prank(address(venue));
+        usd.transfer(address(0xdead), loss);
+        // The venue sells dollars for a tenth of their reference value: the sale is refused, nothing is sold.
+        ask.setPrice(11e18);
+        uint256 locked = credit.lockedShares(lineId);
+        vm.prank(lender);
+        vm.expectPartialRevert(Conversion.Slippage.selector);
+        credit.liquidate(lineId);
+        assertEq(credit.lockedShares(lineId), locked);
+        assertEq(credit.lineOf(lineId).owed, 300e6);
     }
 
     function test_openLine_otherTokenCollateralNeedsAVenue() public {

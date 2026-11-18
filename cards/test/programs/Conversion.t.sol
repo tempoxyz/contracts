@@ -70,6 +70,7 @@ contract ConversionTest is ProgramsEnv {
         FixedPricePool gbpAsk = new FixedPricePool(address(otherUsd), address(usd), 1.25e18);
         otherUsd.mint(address(gbpAsk), 1_000_000e6);
         conv.setVenue(address(usd), address(otherUsd), address(gbpAsk), false);
+        conv.setReferenceRate(address(otherUsd), 1.25e18);
         assertTrue(conv.converts(address(eur), address(otherUsd)));
         assertFalse(conv.converts(address(otherUsd), address(eur)));
         uint256 out = conv.quoteIn(address(eur), address(otherUsd), 100e6);
@@ -102,6 +103,60 @@ contract ConversionTest is ProgramsEnv {
         vm.expectRevert(abi.encodeWithSelector(Conversion.Slippage.selector, cost, cost - 1));
         conv.swapExactOut(address(eur), address(usd), 50e6, cost - 1, bob);
         vm.stopPrank();
+    }
+
+    function test_swapExactIn_zeroMinOutTakesTheReferenceFloor() public {
+        // The venue pays half the reference rate: a sale with no bound is refused.
+        bid.setPrice(0.55e18);
+        eur.mint(bob, 100e6);
+        vm.startPrank(bob);
+        eur.approve(address(conv), 100e6);
+        uint256 floor = conv.minOutFor(address(eur), address(usd), 100e6);
+        assertEq(floor, 108.9e6, "the reference value less MAX_SLIPPAGE_BPS");
+        vm.expectRevert(abi.encodeWithSelector(Conversion.Slippage.selector, 55e6, floor));
+        conv.swapExactIn(address(eur), address(usd), 100e6, 0, bob);
+        vm.stopPrank();
+        assertEq(eur.balanceOf(bob), 100e6);
+    }
+
+    function test_swapExactIn_refusesABoundBelowTheReferenceFloor() public {
+        bid.setPrice(0.55e18);
+        eur.mint(bob, 100e6);
+        vm.startPrank(bob);
+        eur.approve(address(conv), 100e6);
+        vm.expectRevert(abi.encodeWithSelector(Conversion.MinOutTooLow.selector, 1, 108.9e6));
+        conv.swapExactIn(address(eur), address(usd), 100e6, 1, bob);
+        vm.stopPrank();
+        // Within the floor the venue's price stands.
+        bid.setPrice(BID);
+        vm.startPrank(bob);
+        assertEq(conv.swapExactIn(address(eur), address(usd), 100e6, 0, bob), 109.67e6);
+        vm.stopPrank();
+    }
+
+    function test_swapExactOut_refusesPayingPastTheReferenceCeiling() public {
+        ask.setPrice(2.2e18);
+        usd.mint(bob, 1000e6);
+        vm.startPrank(bob);
+        usd.approve(address(conv), 1000e6);
+        uint256 ceiling = conv.maxInFor(address(usd), address(eur), 100e6);
+        assertEq(ceiling, 111.1e6, "the reference cost plus MAX_SLIPPAGE_BPS");
+        vm.expectRevert(abi.encodeWithSelector(Conversion.Slippage.selector, 220e6, ceiling));
+        conv.swapExactOut(address(usd), address(eur), 100e6, 1000e6, bob);
+        vm.stopPrank();
+    }
+
+    function test_quotes_boundedByTheReferenceRateAndStale() public {
+        // A venue quoting above the reference rate values nothing above it.
+        bid.setPrice(2e18);
+        assertEq(conv.quoteIn(address(eur), address(usd), 100e6), 110e6);
+        ask.setPrice(0.5e18);
+        assertEq(conv.quoteOut(address(usd), address(eur), 100e6), 110e6);
+        vm.warp(vm.getBlockTimestamp() + conv.MAX_RATE_AGE() + 1);
+        vm.expectRevert(abi.encodeWithSelector(Conversion.RateStale.selector, address(eur)));
+        conv.quoteIn(address(eur), address(usd), 100e6);
+        vm.expectRevert(abi.encodeWithSelector(Conversion.RateStale.selector, address(eur)));
+        conv.quoteOut(address(usd), address(eur), 100e6);
     }
 
     function test_costBps_measuresAgainstTheReferenceRate() public view {
@@ -179,6 +234,7 @@ contract ConversionTest is ProgramsEnv {
         uint256 held = _hold(alice, P1, TOKEN).held;
         // The euro falls 1%: the cardholder pays only the euros the hold locked, and the issuer carries the slippage.
         bid.setPrice(BID * 99 / 100);
+        conv.setReferenceRate(address(eur), 1.1e18 * 99 / 100);
         _capture(P1, 100e6, true);
         uint256 paid = usd.balanceOf(settlement);
         assertEq(paid, held * (BID * 99 / 100) / 1e18);
@@ -194,6 +250,7 @@ contract ConversionTest is ProgramsEnv {
         _authorize(P1, 100e6);
         uint256 held = _hold(alice, P1, TOKEN).held;
         bid.setPrice(BID * 95 / 100);
+        conv.setReferenceRate(address(eur), 1.1e18 * 95 / 100);
         _capture(P1, 100e6, true);
         assertEq(usd.balanceOf(settlement), 100e6);
         uint256 spent = 200e6 - eur.balanceOf(alice);

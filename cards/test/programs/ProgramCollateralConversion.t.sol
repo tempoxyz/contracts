@@ -23,6 +23,8 @@ contract ProgramCollateralConversionTest is ProgramsEnv {
 
     ITIP20Token internal eur;
     Conversion internal conv;
+    FixedPricePool internal bid;
+    FixedPricePool internal ask;
     ProgramCollateral internal collateral;
     address internal sponsor = makeAddr("sponsor");
 
@@ -31,8 +33,8 @@ contract ProgramCollateralConversionTest is ProgramsEnv {
         _issue(alice, _limits(5000e6, 10_000e6, 50_000e6));
         eur = _createToken("Euro", "EURX");
         conv = new Conversion(address(usd), address(this));
-        FixedPricePool bid = new FixedPricePool(address(eur), address(usd), BID);
-        FixedPricePool ask = new FixedPricePool(address(eur), address(usd), ASK);
+        bid = new FixedPricePool(address(eur), address(usd), BID);
+        ask = new FixedPricePool(address(eur), address(usd), ASK);
         usd.mint(address(bid), 1_000_000e6);
         eur.mint(address(ask), 1_000_000e6);
         conv.setVenue(address(eur), address(usd), address(bid), true);
@@ -90,6 +92,20 @@ contract ProgramCollateralConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(address(collateral)), 0);
         assertEq(earnShare.balanceOf(address(collateral)), 0);
         assertApproxEqAbs(collateral.valueOf(address(cards)), before - 100e6, 2);
+    }
+
+    function test_seize_refusesSellingFarBelowTheReferenceRate() public {
+        _postShares(330e6);
+        _authorize(P1, 100e6);
+        uint256 before = collateral.valueOf(address(cards));
+        ask.setPrice(11e18);
+        vm.prank(sponsor);
+        vm.expectPartialRevert(Conversion.Slippage.selector);
+        collateral.seize(address(cards), 100e6);
+        assertEq(eur.balanceOf(sponsor), 0);
+        // At the market price before the venue moved, seizing what the venue now values goes through.
+        ask.setPrice(ASK);
+        assertEq(collateral.valueOf(address(cards)), before);
     }
 
     function test_post_refusedWithoutAVenue() public {
