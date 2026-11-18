@@ -946,8 +946,9 @@ contract EarnVault is IEarnVault {
         uint256 requiredEarnShares = _convertEngineSharesToEarnSharesUp(requiredEngineShares);
         if (requiredEarnShares == 0) revert InsufficientOutput();
         if (requiredEarnShares > maxEarnShares) revert ExceedsMaxEarnShares();
+        // Read before the callback: shares it pays in would otherwise fill the vault's one-unit residue allowance.
+        uint256 supply = _activeSupply();
         // The callback runs here, while the vault's state is settled, so no caller code ever reads it half-updated.
-        // The quoted shares count in supply until the burn, so prices stay unchanged.
         if (callback) _collectEarnShares(requiredEarnShares, true);
 
         uint256 engineSharesBurned = IEarnEngineExactWithdraw(engine).withdraw(assets, receiver);
@@ -957,7 +958,7 @@ contract EarnVault is IEarnVault {
         if (earnSharesBurned == 0) revert InsufficientOutput();
         if (earnSharesBurned > (callback ? requiredEarnShares : maxEarnShares)) revert ExceedsMaxEarnShares();
         if (engineSharesBurned == engineSharesBefore && assets < engineAssetsBefore) revert ResidualBacking();
-        if (earnSharesBurned == _activeSupply() && engineShares() != 0) {
+        if (earnSharesBurned == supply && engineShares() != 0) {
             revert ResidualBacking();
         }
 

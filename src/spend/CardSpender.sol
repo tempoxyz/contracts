@@ -48,6 +48,9 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     address private transient _callbackVault;
     address private transient _callbackPayer;
     uint256 private transient _callbackMaxShares;
+    /// @dev The spend's EarnShare token and the shares {earnWithdrawCallback} moved from the payer.
+    address private transient _callbackShare;
+    uint256 private transient _callbackTaken;
 
     error DestinationNotAuthorized(address destination);
     error DestinationNotCredited();
@@ -303,16 +306,18 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         address receiver = payee == s.destination ? s.destination : address(this);
         uint256 before = receiver == s.destination ? 0 : IERC20Like(s.token).balanceOf(address(this));
         address share = ITempoEarnVault(s.vault).earnShare();
+        _callbackShare = share;
         uint256 sharesHeld = IERC20Like(share).balanceOf(address(this));
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        sharesUsed =
-            IEarnVaultWithdrawCallback(s.vault).withdrawExactWithCallback(s.fromVault, receiver, type(uint256).max);
+        IEarnVaultWithdrawCallback(s.vault).withdrawExactWithCallback(s.fromVault, receiver, type(uint256).max);
         // The callback clears the vault, so a vault that skipped it cannot have burned the payer's shares.
         if (_callbackVault != address(0)) revert NothingSpent();
         // The vault returns any quoted shares it did not burn; measured, not reported, they go back to the payer.
         uint256 returned = IERC20Like(share).balanceOf(address(this)) - sharesHeld;
         if (returned != 0) _refund(share, returned);
+        // Measured: what the callback took from the payer, less what came back, whatever the vault reports.
+        sharesUsed = _callbackTaken - returned;
         if (receiver != s.destination) {
             if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) revert DestinationNotCredited();
             SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);
@@ -327,9 +332,10 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         uint256 maxShares = _callbackMaxShares;
         if (maxShares != 0 && earnShares > maxShares) revert ShareCostExceeded(earnShares, maxShares);
         _callbackVault = address(0);
+        _callbackTaken = earnShares;
         // The payer is the direct spend's own caller, stored for this call only, so it pays only its own shares.
         // forge-lint: disable-next-line(arbitrary-send-erc20)
-        SafeTransferLib.safeTransferFrom(ITempoEarnVault(vault).earnShare(), _callbackPayer, vault, earnShares);
+        SafeTransferLib.safeTransferFrom(_callbackShare, _callbackPayer, vault, earnShares);
     }
 
     /// @dev Whether `vault` reports {IEarnVaultWithdrawCallback}; a vault deployed before it has no
