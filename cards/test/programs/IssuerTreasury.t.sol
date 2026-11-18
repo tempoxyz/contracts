@@ -216,6 +216,23 @@ contract IssuerTreasuryTest is CompEnv {
         treasury.setSettlementToken(address(eur));
     }
 
+    /// @dev Open holds and unsettled steps refuse the change when proposed, not only when it applies.
+    function test_setSettlementToken_proposalRefusedWhileTheProgramHoldsOrIsUnsettled() public {
+        auth.setGranted(1);
+        auth.setExposure(10e6, 0, 0);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.SettlementTokenInUse.selector, uint8(1)));
+        treasury.setSettlementToken(address(eur));
+        auth.setExposure(0, 0, 10e6);
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.SettlementTokenInUse.selector, uint8(2)));
+        treasury.setSettlementToken(address(eur));
+        auth.setExposure(0, 0, 0);
+        vm.prank(issuer);
+        treasury.setSettlementToken(address(eur));
+        assertNotEq(treasury.pendingSetting(keccak256(abi.encodeCall(treasury.setSettlementToken, (address(eur))))), 0);
+    }
+
     function test_setSettlementToken_withoutIssuerDebtChargesNothing() public {
         _setting(abi.encodeCall(treasury.setSettlementToken, (address(eur))));
         assertEq(_owed(settlement, address(eur), address(treasury)), 0);

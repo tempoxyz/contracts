@@ -32,6 +32,8 @@ contract IssuerTreasury is IExposureGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 public constant MAX_PLEDGES = 16;
     /// @dev Settlement-token-in-use reasons this contract reports itself.
+    uint8 private constant IN_USE_HOLDS = 1;
+    uint8 private constant IN_USE_UNSETTLED = 2;
     uint8 private constant IN_USE_COLLATERAL = 5;
     uint8 private constant IN_USE_HELD = 6;
     uint8 private constant IN_USE_ISSUER_DEBT = 8;
@@ -346,6 +348,11 @@ contract IssuerTreasury is IExposureGuard {
     // At most the guards the issuer set.
     // forge-lint: disable-next-item(calls-loop)
     function _checkUnused() private view {
+        // The program's own holds and unsettled steps, which a proposal checks too, so it refuses rather than waiting.
+        (uint256 held,,) = PROGRAM.exposure();
+        if (held != 0) revert SettlementTokenInUse(IN_USE_HOLDS);
+        (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet) = PROGRAM.ledger();
+        if (seq != settledThrough || net != settledNet) revert SettlementTokenInUse(IN_USE_UNSETTLED);
         address[] storage guards = tokenGuards;
         for (uint256 i; i < guards.length; ++i) {
             uint8 reason = ISettlementTokenGuard(guards[i]).settlementTokenInUse(address(PROGRAM));
