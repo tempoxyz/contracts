@@ -39,11 +39,9 @@ contract ProgramCollateralConversionTest is ProgramsEnv {
         conv.setVenue(address(usd), address(eur), address(ask), false);
         conv.setReferenceRate(address(eur), 1.1e18);
         collateral = new ProgramCollateral();
-        vm.startPrank(issuer);
-        cards.setConversion(address(conv));
-        cards.setCollateral(address(collateral));
-        cards.setSettlementToken(address(eur));
-        vm.stopPrank();
+        _setting(abi.encodeCall(cards.setConversion, (address(conv))));
+        _setting(abi.encodeCall(cards.setCollateral, (address(collateral))));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         vm.prank(alice);
         core.approveHolder(address(cards), address(eur), type(uint128).max);
         CardFunding.Source[] memory order = new CardFunding.Source[](2);
@@ -95,8 +93,7 @@ contract ProgramCollateralConversionTest is ProgramsEnv {
     }
 
     function test_post_refusedWithoutAVenue() public {
-        vm.prank(issuer);
-        cards.setConversion(address(0));
+        _setting(abi.encodeCall(cards.setConversion, (address(0))));
         uint256 shares = _deposit(100e6);
         bytes32 id = collateral.pledgeId(address(cards), 1);
         vm.prank(settlement);

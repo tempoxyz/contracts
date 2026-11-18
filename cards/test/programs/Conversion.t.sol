@@ -42,8 +42,7 @@ contract ConversionTest is ProgramsEnv {
         conv.setTrusted(address(cards), true);
         usd.mint(address(conv), 100_000e6);
         eur.mint(address(conv), 100_000e6);
-        vm.prank(issuer);
-        cards.setConversion(address(conv));
+        _setting(abi.encodeCall(cards.setConversion, (address(conv))));
         vm.startPrank(alice);
         core.approveHolder(address(cards), address(eur), type(uint128).max);
         vm.stopPrank();
@@ -401,10 +400,9 @@ contract ConversionTest is ProgramsEnv {
         assertEq(usd.balanceOf(network), 0.4e6);
         (uint64 seq,,,) = cards.ledger();
         uint64 captured = seq;
-        vm.startPrank(issuer);
+        vm.prank(issuer);
         cards.acknowledgeSettlement(seq);
-        cards.setSettlementToken(address(eur));
-        vm.stopPrank();
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         // A $22 refund costs the issuer EUR 20 at the reference rate, and the network gives back its dollar split, which
         // reaches the issuer as EUR 0.20 at the reference rate.
         uint256 cash = usd.balanceOf(alice);
@@ -457,10 +455,9 @@ contract ConversionTest is ProgramsEnv {
         // The network keeps 40 cents of its split less the 20 cent reward paid to the cardholder.
         assertEq(usd.balanceOf(network), 0.2e6);
         (uint64 seq,,,) = cards.ledger();
-        vm.startPrank(issuer);
+        vm.prank(issuer);
         cards.acknowledgeSettlement(seq);
-        cards.setSettlementToken(address(eur));
-        vm.stopPrank();
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         uint256 cash = usd.balanceOf(alice);
         eur.mint(settlement, 50e6);
         vm.prank(issuer);
@@ -489,10 +486,9 @@ contract ConversionTest is ProgramsEnv {
         vm.prank(issuer);
         desk.capture(P1, 40e6, true);
         (uint64 seq,,,) = cards.ledger();
-        vm.startPrank(issuer);
+        vm.prank(issuer);
         cards.acknowledgeSettlement(seq);
-        cards.setSettlementToken(address(eur));
-        vm.stopPrank();
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         eur.mint(settlement, 100e6);
         vm.prank(issuer);
         desk.refund(P1, 15e6);
@@ -530,8 +526,7 @@ contract ConversionTest is ProgramsEnv {
         vm.prank(settlement);
         eur.transfer(bob, held);
         conv.setReferenceRate(address(gbp), 1.25e18);
-        vm.prank(issuer);
-        cards.setSettlementToken(address(gbp));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(gbp))));
         gbp.mint(settlement, 100e6);
         vm.prank(issuer);
         desk.openDispute(P1, 20e6, hex"c1a8");
@@ -634,8 +629,7 @@ contract ConversionTest is ProgramsEnv {
         (uint64 seq,,,) = cards.ledger();
         vm.prank(issuer);
         cards.acknowledgeSettlement(seq);
-        vm.prank(issuer);
-        cards.setSettlementToken(address(otherUsd));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(otherUsd))));
         (cap, used) = cards.operatorCap(key);
         assertEq(cap, 88e6, "the cap rescales down");
         // Within a unit: the pound's scale is the euro's times a truncated reference rate.
@@ -676,8 +670,7 @@ contract ConversionTest is ProgramsEnv {
     }
 
     function _localIssuer() internal {
-        vm.prank(issuer);
-        cards.setSettlementToken(address(eur));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         assertEq(cards.settlementToken(), address(eur));
     }
 

@@ -156,7 +156,12 @@ contract CardProgram {
         uint256 value;
     }
 
-    address public immutable ISSUER;
+    /// @notice How long a setting that moves money waits between the issuer proposing it and applying it, once any
+    ///         owner has granted the program.
+    uint64 public constant SETTINGS_DELAY = 2 days;
+    /// @notice The most a rate may move from the last nonzero rate in one change, in basis points.
+    uint256 public constant MAX_RATE_STEP_BPS = 1000;
+
     address public immutable SETTLEMENT_TOKEN;
     address public immutable SETTLEMENT_ACCOUNT;
 
@@ -167,6 +172,14 @@ contract CardProgram {
     /// @dev Each operator key's roles, cap and use, in SETTLEMENT_TOKEN units so a settlement token change rescales
     ///      the cap and use alike.
     mapping(address key => KeyCap) internal _keyCaps;
+    /// @dev The issuer: it runs the program and holds every operator role without a cap.
+    address internal _issuer;
+    /// @notice The address the issuer offered its role to, which takes it with acceptIssuer.
+    address public pendingIssuer;
+    /// @notice How many owners have ever granted the program; while none has, settings apply at once.
+    uint64 public grantedOwners;
+    /// @notice When each proposed setting (keyed by the hash of its call) may be applied; zero when none is pending.
+    mapping(bytes32 id => uint64 eta) public pendingSetting;
     mapping(address owner => address) public fundingOf;
     mapping(bytes32 purchaseRef => Purchase) internal _purchases;
     /// @notice Settlement units per unit of a token other than the settlement token, scaled by 1e18.
@@ -289,6 +302,10 @@ contract CardProgram {
     event Granted(address indexed owner, CardLimits.Terms terms, uint32 epoch);
     event Revoked(address indexed owner);
     event OperatorSet(address indexed key, uint8 roles, uint256 cap);
+    event IssuerOffered(address indexed issuer, address indexed next);
+    event IssuerTransferred(address indexed previous, address indexed next);
+    event SettingProposed(bytes32 indexed id, bytes data, uint64 eta);
+    event SettingCancelled(bytes32 indexed id);
     event CardCapSet(bytes32 indexed card, uint64 cap);
     event PurchaseAdjusted(bytes32 indexed purchaseRef, bytes32 indexed card, uint256 amount, uint256 cash, uint64 seq);
     event PurchaseCharged(
@@ -332,7 +349,9 @@ contract CardProgram {
     error PurchaseNotExpired();
     error PurchaseNotOpen();
     error Reentrancy();
+    error RateStep();
     error RefundExceedsCapture(uint256 excess);
+    error SettingPending(uint64 eta);
     error ReserveNotAllowed();
     error ReserveTooLong();
     error SourceNotApproved(address source);
@@ -341,7 +360,7 @@ contract CardProgram {
     error ZeroAddress();
 
     modifier onlyIssuer() {
-        if (msg.sender != ISSUER) revert NotIssuer();
+        if (msg.sender != _issuer) revert NotIssuer();
         _;
     }
 
@@ -361,7 +380,7 @@ contract CardProgram {
         if (issuer == address(0) || settlementToken_ == address(0) || settlementAccount == address(0)) {
             revert ZeroAddress();
         }
-        ISSUER = issuer;
+        _issuer = issuer;
         SETTLEMENT_TOKEN = settlementToken_;
         SETTLEMENT_ACCOUNT = settlementAccount;
     }
@@ -472,6 +491,7 @@ contract CardProgram {
     // Zero is meaningful for both: no registry means owners sign as themselves, no rules means no identity check.
     // forge-lint: disable-next-line(missing-zero-check)
     function setCompanions(address accountKeys_, address identityRules_) external onlyIssuer {
+        if (!_settle(false)) return;
         accountKeys = accountKeys_;
         identityRules = identityRules_;
         emit CompanionsSet(accountKeys_, identityRules_);
@@ -481,19 +501,28 @@ contract CardProgram {
     // Zero is how the issuer stops following a lifecycle.
     // forge-lint: disable-next-line(missing-zero-check)
     function setLifecycle(address lifecycle_) external onlyIssuer {
+        if (!_settle(false)) return;
         lifecycle = lifecycle_;
         emit LifecycleSet(lifecycle_);
     }
 
-    /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it.
+    /// @notice Records the rate for `token`: settlement units per token unit, scaled by 1e18. Zero stops it at once; a
+    ///         nonzero rate moves at most MAX_RATE_STEP_BPS from a nonzero one and waits SETTINGS_DELAY.
     function setRate(address token, uint256 rate) external onlyIssuer {
         if (token == settlementToken()) revert TokenNotAccepted(token);
+        uint256 last = rateOf[token];
+        if (rate != 0 && last != 0) {
+            uint256 step = last.mulDiv(MAX_RATE_STEP_BPS, 10_000);
+            if (rate > last + step || rate < last - step) revert RateStep();
+        }
+        if (!_settle(rate == 0)) return;
         rateOf[token] = rate;
         emit RateSet(token, rate);
     }
 
     /// @notice Contracts sizing money in the settlement token that a change must wait for (an issuer desk, credit lines).
     function setTokenGuards(address[] calldata guards) external onlyIssuer {
+        if (!_settle(false)) return;
         tokenGuards = guards;
     }
 
@@ -513,6 +542,8 @@ contract CardProgram {
         if (token == address(0) || token == current || rateOf[token] != 0) revert TokenNotAccepted(token);
         // The new token's scale follows from the old one's at today's reference rate, without conversion cost.
         uint256 step = Conversion(conversion).mid(token, current);
+        // Every check above runs again when the change applies.
+        if (!_settle(false)) return;
         CardConvert.carryIssuerDebt(current, token);
         _scales[token] = _scaleOf(current).mulDiv(step, RATE_ONE);
         _settlementToken = token;
@@ -553,12 +584,14 @@ contract CardProgram {
     // Zero turns conversion off: legs then convert only at an issuer rate.
     // forge-lint: disable-next-item(missing-zero-check)
     function setConversion(address conversion_) external onlyIssuer {
+        if (!_settle(false)) return;
         conversion = conversion_;
         emit ConversionSet(conversion_);
     }
 
     /// @notice Accepts or stops a savings facility or credit line contract as a funding source.
     function setSource(address source, bool approved) external onlyIssuer {
+        if (!_settle(!approved)) return;
         approvedSource[source] = approved;
         emit SourceSet(source, approved);
     }
@@ -570,7 +603,39 @@ contract CardProgram {
 
     /// @notice Sets the contract that values the sponsor's collateral; purchases then stay within it. Zero removes it.
     function setCollateral(address collateral) external onlyIssuer {
+        if (!_settle(false)) return;
         CardFunding.setCollateral(collateral);
+    }
+
+    /// @notice Drops the pending setting `id`.
+    function cancelSetting(bytes32 id) external onlyIssuer {
+        delete pendingSetting[id];
+        emit SettingCancelled(id);
+    }
+
+    /// @notice Offers the issuer role to `next`, which takes it with acceptIssuer; zero withdraws the offer.
+    // Zero is how the issuer withdraws an offer.
+    // forge-lint: disable-next-line(missing-zero-check)
+    function transferIssuer(address next) external onlyIssuer {
+        // IssuerOffered reports the change.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        pendingIssuer = next;
+        emit IssuerOffered(msg.sender, next);
+    }
+
+    /// @notice Takes the issuer role offered to the caller; the previous issuer loses it.
+    function acceptIssuer() external {
+        if (msg.sender != pendingIssuer) revert NotIssuer();
+        emit IssuerTransferred(_issuer, msg.sender);
+        _issuer = msg.sender;
+        // IssuerTransferred reports the change.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        delete pendingIssuer;
+    }
+
+    /// @notice The issuer, which runs the program.
+    function ISSUER() external view returns (address) {
+        return _issuer;
     }
 
     /// @notice Moves the settled-through cursor to purchase step `throughSeq`.
@@ -656,6 +721,7 @@ contract CardProgram {
         g.terms = terms;
         g.active = true;
         uint32 epoch = ++g.epoch;
+        if (epoch == 1) ++grantedOwners;
         delete usageOf[msg.sender];
         emit Granted(msg.sender, terms, epoch);
     }
@@ -1230,14 +1296,35 @@ contract CardProgram {
         return increment == 0 ? amount : (amount + increment - 1) / increment * increment;
     }
 
+    /// @dev Whether the issuer's setting call applies now: at once when `immediate` or no owner has granted the
+    ///      program, else on the same call SETTINGS_DELAY after the first, which records it and returns false.
+    function _settle(bool immediate) private returns (bool) {
+        if (immediate || grantedOwners == 0) return true;
+        bytes32 id = keccak256(msg.data);
+        uint64 eta = pendingSetting[id];
+        if (eta == 0) {
+            // Timestamps fit 64 bits for billions of years.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            eta = uint64(block.timestamp) + SETTINGS_DELAY;
+            pendingSetting[id] = eta;
+            emit SettingProposed(id, msg.data, eta);
+            return false;
+        }
+        // Setting delays are days long; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < eta) revert SettingPending(eta);
+        delete pendingSetting[id];
+        return true;
+    }
+
     /// @dev Reverts unless the caller is the issuer or a key holding `role`.
     function _onlyRole(uint8 role) private view {
-        if (msg.sender != ISSUER && _keyCaps[msg.sender].roles & role == 0) revert NotIssuer();
+        if (msg.sender != _issuer && _keyCaps[msg.sender].roles & role == 0) revert NotIssuer();
     }
 
     /// @dev Counts `counted` SETTLEMENT_TOKEN units against the calling key's cap; the issuer has none.
     function _useKey(uint256 counted) private {
-        if (msg.sender == ISSUER) return;
+        if (msg.sender == _issuer) return;
         KeyCap storage k = _keyCaps[msg.sender];
         uint256 cap = k.cap;
         uint256 used = k.used + counted;

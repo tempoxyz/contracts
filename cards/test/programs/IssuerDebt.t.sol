@@ -31,8 +31,7 @@ contract IssuerDebtTest is ProgramsEnv {
         conv.setVenue(address(eur), address(usd), address(bid), true);
         conv.setVenue(address(usd), address(eur), address(ask), false);
         conv.setReferenceRate(address(eur), 1.1e18);
-        vm.prank(issuer);
-        cards.setConversion(address(conv));
+        _setting(abi.encodeCall(cards.setConversion, (address(conv))));
         _allowDebt(usd, 100e6);
         // The program's own funds, which advance what the settlement account lacks.
         usd.mint(address(this), 50e6);
@@ -182,8 +181,7 @@ contract IssuerDebtTest is ProgramsEnv {
         // About 18.24 euros buy back 20 dollars after the venue's cost.
         assertGt(carried, 18.23e6);
         assertLt(carried, 18.25e6);
-        vm.prank(issuer);
-        cards.setSettlementToken(address(eur));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         core.repay(settlement, address(usd));
         (, uint128 old) = core.debtOf(settlement, address(usd));
         assertEq(old, 0);
@@ -204,8 +202,7 @@ contract IssuerDebtTest is ProgramsEnv {
         vm.prank(settlement);
         cards.payOut(bob, 20e6, bytes32("credit-1"));
         _allowDebt(eur, type(uint128).max);
-        vm.prank(issuer);
-        cards.setSettlementToken(address(eur));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         // Until the account repays the old debt, the program holds 10 dollars and retains no more.
         assertEq(usd.balanceOf(address(cards)), 10e6);
         assertEq(cards.issuerFunds(address(usd)), 10e6);
@@ -242,8 +239,7 @@ contract IssuerDebtTest is ProgramsEnv {
         vm.prank(settlement);
         cards.payOut(bob, paid, bytes32("credit-1"));
         _allowDebt(eur, type(uint128).max);
-        vm.prank(issuer);
-        cards.setSettlementToken(address(eur));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         assertGe(usd.balanceOf(address(cards)), cards.issuerFunds(address(usd)));
         assertGe(eur.balanceOf(address(cards)), cards.issuerFunds(address(eur)));
         core.repay(settlement, address(usd));
@@ -270,8 +266,7 @@ contract IssuerDebtTest is ProgramsEnv {
     }
 
     function test_setSettlementToken_withoutIssuerDebtChargesNothing() public {
-        vm.prank(issuer);
-        cards.setSettlementToken(address(eur));
+        _setting(abi.encodeCall(cards.setSettlementToken, (address(eur))));
         (, uint128 debt) = core.debtOf(settlement, address(eur));
         assertEq(debt, 0);
         assertEq(usd.balanceOf(address(cards)), 50e6);

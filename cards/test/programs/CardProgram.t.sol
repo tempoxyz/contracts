@@ -751,8 +751,7 @@ contract CardProgramTest is ProgramsEnv {
 
     function test_unapprovedFacility_refused() public {
         _savings(alice, 100e6);
-        vm.prank(issuer);
-        cards.setSource(address(facility), false);
+        _setting(abi.encodeCall(cards.setSource, (address(facility), false)));
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardProgram.SourceNotApproved.selector, address(facility)));
         cards.authorize(CARD, P1, 50e6, merchant, uint64(block.timestamp + 1 days), 0);
@@ -936,8 +935,7 @@ contract CardProgramTest is ProgramsEnv {
         cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         // One unit of the token is worth 1.25 settlement units.
-        vm.prank(issuer);
-        cards.setRate(address(otherUsd), 1.25e18);
+        _setting(abi.encodeCall(cards.setRate, (address(otherUsd), 1.25e18)));
         _authorize(P1, 100e6);
         assertEq(_hold(alice, P1, CASH).held, 80e6);
         _capture(P1, 100e6, true);

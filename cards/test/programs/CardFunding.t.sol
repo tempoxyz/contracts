@@ -219,8 +219,7 @@ contract CardFundingTest is ProgramsEnv {
     function test_exposure_overCollateral_refused() public {
         usd.mint(alice, 1000e6);
         StaticCollateral c = new StaticCollateral(100e6);
-        vm.prank(issuer);
-        cards.setCollateral(address(c));
+        _setting(abi.encodeCall(cards.setCollateral, (address(c))));
         _authorize(P1, 80e6);
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(CardFunding.OverExposure.selector, uint256(110e6), uint256(100e6)));

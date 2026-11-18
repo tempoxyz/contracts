@@ -96,6 +96,28 @@ abstract contract ProgramsEnv is CoreEnv {
         credit.acceptLine(lineId);
     }
 
+    /// @dev Calls a program setting as the issuer and, when it waits SETTINGS_DELAY, applies it once the delay passes,
+    ///      then sets the clock back so the test's timeline is unchanged.
+    function _setting(bytes memory data) internal {
+        _issuerCall(data);
+        uint64 eta = cards.pendingSetting(keccak256(data));
+        if (eta == 0) return;
+        uint256 at = vm.getBlockTimestamp();
+        vm.warp(eta);
+        _issuerCall(data);
+        vm.warp(at);
+    }
+
+    function _issuerCall(bytes memory data) private {
+        vm.prank(issuer);
+        (bool ok, bytes memory result) = address(cards).call(data);
+        if (!ok) {
+            assembly ("memory-safe") {
+                revert(add(result, 32), mload(result))
+            }
+        }
+    }
+
     function _authorize(bytes32 ref, uint128 amount) internal {
         vm.prank(issuer);
         cards.authorize(CARD, ref, amount, merchant, uint64(block.timestamp + 7 days), 0);

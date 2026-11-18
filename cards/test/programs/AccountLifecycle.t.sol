@@ -24,8 +24,7 @@ contract AccountLifecycleTest is ProgramsEnv {
     function setUp() public {
         _deployPrograms();
         life = new AccountLifecycle(address(usd), registrar, address(0), DORMANCY, ESCHEAT);
-        vm.prank(issuer);
-        cards.setLifecycle(address(life));
+        _setting(abi.encodeCall(cards.setLifecycle, (address(life))));
         vm.prank(registrar);
         life.setProgram(address(cards), true);
         _issue(alice, _limits(500e6, 1000e6, 5000e6));

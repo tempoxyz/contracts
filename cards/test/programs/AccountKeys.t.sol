@@ -26,8 +26,7 @@ contract AccountKeysTest is ProgramsEnv {
         (g2, g2Key) = makeAddrAndKey("g2");
         (g3, g3Key) = makeAddrAndKey("g3");
         (stranger, strangerKey) = makeAddrAndKey("stranger");
-        vm.prank(issuer);
-        cards.setCompanions(address(keys), address(0));
+        _setting(abi.encodeCall(cards.setCompanions, (address(keys), address(0))));
     }
 
     function _guardians() internal view returns (address[] memory list) {

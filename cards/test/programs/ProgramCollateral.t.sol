@@ -18,8 +18,7 @@ contract ProgramCollateralTest is ProgramsEnv {
         _deployPrograms();
         _issue(alice, _limits(5000e6, 10_000e6, 50_000e6));
         collateral = new ProgramCollateral();
-        vm.prank(issuer);
-        cards.setCollateral(address(collateral));
+        _setting(abi.encodeCall(cards.setCollateral, (address(collateral))));
     }
 
     function test_cash_postedValueBoundsExposure() public {

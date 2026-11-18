@@ -27,8 +27,8 @@ contract IdentityRulesTest is ProgramsEnv {
         rules.setJurisdiction(US, 10_000e6, sponsors);
         vm.prank(attester);
         rules.setKey(attesterKey, true);
+        _setting(abi.encodeCall(cards.setCompanions, (address(0), address(rules))));
         vm.startPrank(issuer);
-        cards.setCompanions(address(0), address(rules));
         rules.setPolicy(address(cards), _attesters(), KYC, US, sponsor);
         vm.stopPrank();
     }
