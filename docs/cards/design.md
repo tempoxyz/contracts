@@ -146,7 +146,8 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   stays within the owner's tolerance, at today's price past it, never past the owner's maximum cost and
   always above the conversion's slippage floor. Converted legs never create debt.
 - **Settlement log.** Every step emits one event with the purchase reference and a sequence number;
-  captures, charges and refunds carry what the sources covered. The issuer's
+  captures, charges and refunds carry what the sources covered, and credit a won dispute keeps
+  (`creditBack`) counts as a refund. The issuer's
   `acknowledgeSettlement(throughSeq)` moves a settled-through cursor, so what is owed rebuilds from events.
   `exposure()` reports what open purchases hold, the stand-in part, and the unacknowledged net, which the
   issuer treasury keeps funds behind. With the treasury registered as its exposure guard
