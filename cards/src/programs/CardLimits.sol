@@ -333,8 +333,17 @@ library CardLimits {
     function _baseLimits(Limits calldata l, uint256 scale) private pure returns (Limits memory) {
         // forge-lint: disable-next-item(unsafe-typecast)
         return Limits(
-            uint80(_toBase(l.perPurchase, scale)), uint80(_toBase(l.daily, scale)), uint80(_toBase(l.monthly, scale))
+            uint80(_limitToBase(l.perPurchase, scale)),
+            uint80(_limitToBase(l.daily, scale)),
+            uint80(_limitToBase(l.monthly, scale))
         );
+    }
+
+    // A limit past what base units hold limits nothing, so it saturates rather than refusing a settlement token whose
+    // units are worth less than a dollar.
+    function _limitToBase(uint256 amount, uint256 scale) private pure returns (uint256 base) {
+        base = scale == 1e18 ? amount : amount * 1e18 / scale;
+        if (base > type(uint64).max) base = type(uint64).max;
     }
 
     function _lower(Limits memory a, Limits memory b) private pure returns (Limits memory) {

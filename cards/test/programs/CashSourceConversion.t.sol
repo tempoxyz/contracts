@@ -5,6 +5,7 @@ import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
 import { CardLegs } from "../../src/programs/CardLegs.sol";
+import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
 import { ISource } from "../../src/programs/interfaces/ISource.sol";
@@ -358,6 +359,18 @@ contract CashSourceConversionTest is AuthEnv {
         _acknowledge();
         cards.setSettlementToken(address(eur), EUR_SCALE);
         assertEq(cards.settlementToken(), address(eur));
+    }
+
+    /// @dev A limit past what base units hold limits nothing: in a token worth less than a dollar it saturates.
+    function test_issueCard_unlimitedInACheaperToken() public {
+        cards.setSettlementToken(address(eur), EUR_SCALE);
+        uint80 max = type(uint64).max;
+        bytes32 card = keccak256("eur card");
+        vm.prank(issuer);
+        cards.issueCard(card, alice, uint40(block.timestamp + 365 days), CardLimits.Limits(max, max, max), 7);
+        CardLimits.Limits memory limits = cards.cardOf(card).limits;
+        assertEq(limits.perPurchase, type(uint64).max);
+        assertEq(limits.monthly, type(uint64).max);
     }
 
     function test_setSettlementToken_companionOnly() public {
