@@ -10,23 +10,6 @@ import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
-/// @notice What the issuer's companions read and call on a card authorization contract beyond ICardAuth.
-interface ICardAuthCompanion is ICardAuth {
-    /// @notice Settlement units the program may still owe the network (open holds and unsettled captures), and what of
-    ///         it the issuer's own funds stand behind (stand-in beyond what legs hold, cardholder debt still unsettled).
-    function exposure() external view returns (uint256 total, uint256 committed);
-    /// @notice How many owners ever held a grant; settings wait SETTINGS_DELAY once one has.
-    function grantedOwners() external view returns (uint256);
-    /// @notice The program's conversion venue.
-    function conversion() external view returns (address);
-    /// @notice Settles new purchases in token, step new units per old unit; only the program's treasury calls it.
-    function setSettlementToken(address token, uint256 step) external;
-    /// @notice Refunds units of a purchase through its sources; only a settle-role operator.
-    function refund(address owner, bytes32 ref, uint256 units) external;
-    /// @notice Counts net as refunded on a purchase and gives usage back to its limits without moving money.
-    function creditBack(address owner, bytes32 ref, uint256 usage, uint256 net) external;
-}
-
 interface IMidRate {
     function mid(address tokenIn, address tokenOut) external view returns (uint256);
 }
@@ -46,15 +29,13 @@ contract IssuerTreasury {
     using FixedPointMathLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
-    uint8 public constant ROLE_TREASURY = 4;
-    uint64 public constant SETTINGS_DELAY = 2 days;
     uint256 public constant MAX_PLEDGES = 16;
     /// @dev Settlement-token-in-use reasons this contract reports itself.
     uint8 private constant IN_USE_COLLATERAL = 5;
     uint8 private constant IN_USE_ISSUER_DEBT = 8;
     uint8 private constant PLEDGE = 2;
 
-    ICardAuthCompanion public immutable PROGRAM;
+    ICardAuth public immutable PROGRAM;
 
     /// @dev What the issuer put in, per token, before what the settlement account owes back.
     mapping(address token => uint256) internal _funds;
@@ -84,7 +65,7 @@ contract IssuerTreasury {
     event IssuerDebtCarried(address indexed from, uint256 owed, address indexed to, uint256 carried);
     event SettingProposed(bytes32 indexed id, bytes data, uint64 eta);
     event SettingCanceled(bytes32 indexed id);
-    event SettlementTokenSet(address indexed token, address indexed previous, uint256 step);
+    event SettlementTokenSet(address indexed token, address indexed previous, uint256 scale);
     event TokenGuardsSet(address[] guards);
     event CollateralPosted(address indexed sponsor, bytes32 pledgeId, uint128 units);
     event CollateralReleased(uint256 value, uint256 units);
@@ -118,7 +99,7 @@ contract IssuerTreasury {
         _;
     }
 
-    constructor(ICardAuthCompanion program) {
+    constructor(ICardAuth program) {
         PROGRAM = program;
     }
 
@@ -148,7 +129,7 @@ contract IssuerTreasury {
     function payOut(address to, uint256 amount, bytes32 memo) external nonReentrant returns (uint256 advanced) {
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
         if (msg.sender != account && msg.sender != PROGRAM.ISSUER()) {
-            if (!PROGRAM.hasRoles(msg.sender, ROLE_TREASURY)) revert NotIssuer();
+            if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_TREASURY())) revert NotIssuer();
             PROGRAM.useOperatorCap(msg.sender, amount);
         }
         address token = PROGRAM.settlementToken();
@@ -169,7 +150,7 @@ contract IssuerTreasury {
         emit IssuerPaid(to, token, amount, advanced, memo);
     }
 
-    /// @notice Settles new purchases in token from now on, after SETTINGS_DELAY once the program granted anyone.
+    /// @notice Settles new purchases in token from now on, after the program's settings delay once it granted anyone.
     ///         Refused while anything is still sized in the old token: what a token guard reports, or posted sponsor
     ///         collateral, or issuer debt the settlement account cannot owe in the new token. The program refuses it
     ///         too while its own purchases are open or unsettled. What the account owes the issuer moves into the new
@@ -180,13 +161,13 @@ contract IssuerTreasury {
         _checkUnused();
         address venue = PROGRAM.conversion();
         if (venue == address(0)) revert NoConversion();
-        // The new token's scale follows from the old one's at today's reference rate, without conversion cost.
-        uint256 step = IMidRate(venue).mid(token, current);
+        // Units of the new token one old unit is worth at today's reference rates, without conversion cost.
+        uint256 scale = IMidRate(venue).mid(current, token);
         // Every check above runs again when the change applies.
         if (!_settle(false)) return;
         _carryIssuerDebt(ILineVenue(venue), current, token);
-        PROGRAM.setSettlementToken(token, step);
-        emit SettlementTokenSet(token, current, step);
+        PROGRAM.setSettlementToken(token, scale);
+        emit SettlementTokenSet(token, current, scale);
     }
 
     /// @notice Contracts sizing money in the settlement token that a change must wait for. Appending to the current
@@ -217,11 +198,21 @@ contract IssuerTreasury {
         return funds > owed ? funds - owed : 0;
     }
 
-    /// @notice What the issuer's own token funds stand behind and keep for: in the settlement token, the program's
-    ///         committed exposure; nothing in another.
-    function committedIssuerFunds(address token) public view returns (uint256 committed) {
+    /// @notice What the issuer's own funds of token stand behind and keep for, in the settlement token only: stand-in
+    ///         approvals open purchases hold beyond the cardholders' funds, and what the settlement account still owes
+    ///         the network for captures but cannot pay from its free balance.
+    function committedIssuerFunds(address token) public view returns (uint256) {
         if (token != PROGRAM.settlementToken()) return 0;
-        (, committed) = PROGRAM.exposure();
+        (, uint256 standIn, uint256 unsettled) = PROGRAM.exposure();
+        uint256 free = CORE.available(PROGRAM.SETTLEMENT_ACCOUNT(), token);
+        return standIn + (unsettled > free ? unsettled - free : 0);
+    }
+
+    /// @notice What the program may still owe the network: what open purchases hold and unsettled captures. Sponsor
+    ///         collateral is released and seized against it.
+    function exposure() public view returns (uint256) {
+        (uint256 held,, uint256 unsettled) = PROGRAM.exposure();
+        return held + unsettled;
     }
 
     function tokenGuardsLength() external view returns (uint256) {
@@ -259,8 +250,8 @@ contract IssuerTreasury {
         Collateral storage c = _sponsored();
         uint256 current = valueOf();
         uint256 remaining = current > value ? current - value : 0;
-        (uint256 exposure,) = PROGRAM.exposure();
-        if (remaining < exposure) revert BelowExposure(remaining, exposure);
+        uint256 due = exposure();
+        if (remaining < due) revert BelowExposure(remaining, due);
         uint256 units = _unitsDown(c, value);
         _take(c, units, false);
         emit CollateralReleased(value, units);
@@ -270,9 +261,9 @@ contract IssuerTreasury {
     ///         exposure: what was seized before counts against it, until the exposure drops below it.
     function seize(uint256 value) external nonReentrant {
         Collateral storage c = _sponsored();
-        (uint256 exposure,) = PROGRAM.exposure();
-        uint256 covered = seized > exposure ? exposure : seized;
-        if (value > exposure - covered) revert AboveExposure(value, exposure - covered);
+        uint256 due = exposure();
+        uint256 covered = seized > due ? due : seized;
+        if (value > due - covered) revert AboveExposure(value, due - covered);
         seized = covered + value;
         address to = c.sponsor;
         uint256 units = _take(c, _unitsDown(c, value), true);
@@ -293,8 +284,8 @@ contract IssuerTreasury {
     /// @notice Lowers what counts as seized to the program's exposure now, so a later exposure can be seized once.
     ///         Anyone.
     function sync() external {
-        (uint256 exposure,) = PROGRAM.exposure();
-        if (seized > exposure) seized = exposure;
+        uint256 due = exposure();
+        if (seized > due) seized = due;
     }
 
     /// @notice The core id of the settlement account's nth collateral pledge.
@@ -377,7 +368,7 @@ contract IssuerTreasury {
         uint64 eta = pendingSetting[id];
         if (eta == 0) {
             // forge-lint: disable-next-line(unsafe-typecast)
-            eta = uint64(block.timestamp) + SETTINGS_DELAY;
+            eta = uint64(block.timestamp) + PROGRAM.SETTINGS_DELAY();
             pendingSetting[id] = eta;
             emit SettingProposed(id, msg.data, eta);
             return false;

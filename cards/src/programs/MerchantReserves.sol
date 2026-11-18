@@ -16,8 +16,6 @@ import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 /// @custom:reentrancy-guard _locked
 contract MerchantReserves is ISettlementTokenGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
-    /// @notice The program role whose operators place, release and collect reserves.
-    uint8 public constant ROLE_TREASURY = 4;
     /// @notice The longest a dispute reserve holds, the networks' dispute window.
     uint256 public constant MAX_DISPUTE_RESERVE = 120 days;
     /// @dev The settlement-token-in-use reason for a reserve still held.
@@ -187,7 +185,7 @@ contract MerchantReserves is ISettlementTokenGuard {
     /// @dev The caller must be the issuer or a treasury operator, which counts value against its cap.
     function _operator(uint256 value) private {
         if (msg.sender == PROGRAM.ISSUER()) return;
-        if (!PROGRAM.hasRoles(msg.sender, ROLE_TREASURY)) revert NotOperator();
+        if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_TREASURY())) revert NotOperator();
         if (value != 0) PROGRAM.useOperatorCap(msg.sender, value);
     }
 

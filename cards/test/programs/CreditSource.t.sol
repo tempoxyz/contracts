@@ -20,7 +20,7 @@ contract CreditSourceTest is CompEnv {
     function test_hold_holdsTheLendersBalancePayableToTheSettlementAccount() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         assertEq(credit.committed(lineId), 1000e6);
-        assertEq(credit.coverable(alice, _pos(lineId), 0), 1000e6);
+        assertEq(credit.coverable(alice, _pos(lineId)), 1000e6);
         assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 300e6, false), 300e6);
         assertEq(credit.held(alice, _pos(lineId), LEG), 300e6);
         assertEq(credit.lineOf(lineId).pending, 300e6);
@@ -40,7 +40,7 @@ contract CreditSourceTest is CompEnv {
         vm.expectRevert(CreditSource.NotProgram.selector);
         credit.hold(alice, _pos(lineId), LEG, 1e6, uint64(block.timestamp + 1 days), false);
         vm.expectRevert(CreditSource.NotProgram.selector);
-        credit.capture(alice, _pos(lineId), LEG, 1e6, true);
+        credit.capture(alice, _pos(lineId), LEG, 1e6, 1);
     }
 
     function test_hold_needsAnAcceptedOpenLineInTheSettlementToken() public {
@@ -49,7 +49,7 @@ contract CreditSourceTest is CompEnv {
         core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
         uint64 lineId = credit.openLine(alice, 500e6, uint64(block.timestamp + 30 days), IEarnVault(address(0)), 0, 0, 0);
         vm.stopPrank();
-        assertEq(credit.coverable(alice, _pos(lineId), 0), 0);
+        assertEq(credit.coverable(alice, _pos(lineId)), 0);
         vm.expectRevert(CreditSource.LineNotOpen.selector);
         auth.hold(credit, alice, _pos(lineId), LEG, 1e6, false);
         _accept(alice, lineId);
@@ -70,9 +70,16 @@ contract CreditSourceTest is CompEnv {
         vm.expectRevert(abi.encodeWithSelector(CreditSource.CreditExceeded.selector, 101e6, 100e6));
         auth.hold(credit, alice, _pos(lineId), LEG, 101e6, false);
         assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 101e6, true), 100e6);
-        // A capture past what the leg holds needs credit the line no longer has.
+        // Without CAPTURE_BEYOND a capture takes only what the leg holds; with it, past that it needs credit the line
+        // no longer has.
         vm.expectRevert(abi.encodeWithSelector(CreditSource.CreditExceeded.selector, 1e6, 0));
-        auth.capture(credit, alice, LEG, 101e6, true, REF);
+        auth.captureBeyond(credit, alice, LEG, 101e6);
+        assertEq(auth.capture(credit, alice, LEG, 101e6, true, REF), 100e6);
+        // A settled leg covers nothing more, and releasing it does nothing.
+        assertEq(auth.capture(credit, alice, LEG, 1e6, true, REF), 0);
+        auth.release(credit, alice, LEG);
+        assertEq(credit.charge(alice, _pos(lineId), LEG, 1e6, true), 0);
+        assertEq(credit.KIND(), 4);
     }
 
     function test_capture_owesWhatWasCaptured_refundAndRepay() public {
@@ -81,7 +88,7 @@ contract CreditSourceTest is CompEnv {
         assertEq(credit.availableCredit(lineId), 600e6);
         // A refund puts the program's tokens back on the leg: the lender has them and the borrower owes less.
         uint256 lenderBefore = usd.balanceOf(lender) + core.reserved(lender, address(usd));
-        assertEq(auth.refundLeg(credit, alice, LEG, 150e6), 150e6);
+        auth.refundLeg(credit, alice, LEG, 150e6);
         assertEq(credit.lineOf(lineId).owed, 250e6);
         assertEq(usd.balanceOf(lender) + core.reserved(lender, address(usd)) - lenderBefore, 150e6);
         usd.mint(alice, 250e6);
@@ -100,7 +107,9 @@ contract CreditSourceTest is CompEnv {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         _draw(alice, lineId, LEG, 100e6, REF);
         uint256 before = usd.balanceOf(address(auth));
-        assertEq(auth.refundLeg(credit, alice, LEG, 130e6), 100e6);
+        assertEq(credit.refundable(alice, _pos(lineId), LEG), 100e6);
+        auth.refundLeg(credit, alice, LEG, 130e6);
+        assertEq(credit.refundable(alice, _pos(lineId), LEG), 0);
         assertEq(before - usd.balanceOf(address(auth)), 100e6);
         assertEq(usd.balanceOf(address(credit)), 0);
     }
@@ -117,6 +126,15 @@ contract CreditSourceTest is CompEnv {
         auth.refundLeg(credit, alice, LEG, 40e6);
         assertEq(core.available(alice, address(usd)), 40e6);
         assertEq(credit.lineOf(lineId).owed, 0);
+        _assertCoreBalanced();
+    }
+
+    function test_capture_beyondTheHoldGrowsItWithinTheCredit() public {
+        uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
+        auth.hold(credit, alice, _pos(lineId), LEG, 100e6, false);
+        assertEq(auth.captureBeyond(credit, alice, LEG, 130e6), 130e6);
+        assertEq(credit.lineOf(lineId).owed, 130e6);
+        assertEq(usd.balanceOf(settlement), 130e6);
         _assertCoreBalanced();
     }
 
@@ -153,7 +171,7 @@ contract CreditSourceTest is CompEnv {
         auth.release(credit, alice, LEG);
         assertEq(credit.lineOf(lineId).pending, 0);
         assertEq(credit.availableCredit(lineId), 1000e6);
-        vm.expectRevert(CreditSource.UnknownLeg.selector);
+        // An unknown leg releases as a no-op.
         auth.release(credit, alice, bytes32("nope"));
         _assertCoreBalanced();
     }
@@ -252,6 +270,8 @@ contract CreditSourceTest is CompEnv {
         vm.expectRevert(CreditSource.NotProgram.selector);
         credit.repayFor(lineId, 50e6, REF);
         vm.stopPrank();
+        // A registered companion of the program may (the desk is one).
+        assertTrue(auth.isCompanion(address(desk)));
         auth.setRoles(operator, SETTLE, type(uint256).max);
         vm.prank(operator);
         vm.expectRevert(CreditSource.NotProgram.selector);

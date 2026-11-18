@@ -6,11 +6,11 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { CreditSource } from "../../../src/programs/CreditSource.sol";
 import { IssuerDesk } from "../../../src/programs/IssuerDesk.sol";
-import { ICardAuthCompanion, IssuerTreasury } from "../../../src/programs/IssuerTreasury.sol";
+import { IssuerTreasury } from "../../../src/programs/IssuerTreasury.sol";
 import { MerchantReserves } from "../../../src/programs/MerchantReserves.sol";
 import { ICardAuth } from "../../../src/programs/interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "../../../src/programs/interfaces/IReservationCore.sol";
-import { ISource } from "../../../src/programs/interfaces/ISource.sol";
+import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "../../../src/programs/interfaces/ISource.sol";
 import { CoreEnv } from "../../core/harness/CoreEnv.sol";
 import { MockReservationCore } from "./MockReservationCore.sol";
 
@@ -19,35 +19,40 @@ interface ICompToken {
     function mint(address to, uint256 amount) external;
 }
 
-/// @notice A stand-in for the card authorization contract that the companions read and call: its settings, roles
-///         and operator caps, the exposure and purchases tests set, and a driver that runs one source's legs as the
-///         program does. It holds settlement tokens of its own to refund with.
-contract CompCardAuth is ICardAuthCompanion {
+/// @notice A stand-in for the card authorization contract that the companions read and call: its settings, roles,
+///         companions and operator caps, the exposure and purchases tests set, and a driver that runs one source's
+///         legs as the program does. Refunds take today's token from the caller, as the program does, and pay the
+///         purchase's owner.
+contract CompCardAuth is ICardAuth {
+    uint8 public constant ROLE_AUTHORIZE = 1;
+    uint8 public constant ROLE_SETTLE = 2;
+    uint8 public constant ROLE_TREASURY = 4;
+    uint64 public constant SETTINGS_DELAY = 2 days;
     address public immutable ISSUER;
     address public immutable SETTLEMENT_ACCOUNT;
     address public settlementToken;
     address public conversion;
-    address public treasury;
-    uint256 public grantedOwners;
-    uint256 internal _total;
-    uint256 internal _committed;
-    uint256 public lastStep;
-
-    struct Purchase {
-        uint64 captured;
-        uint64 refunded;
-        bool open;
-    }
+    uint64 public grantedOwners;
+    uint256 internal _held;
+    uint256 internal _standIn;
+    uint256 internal _unsettled;
+    uint256 public lastScale;
 
     mapping(address operator => uint8) public rolesOf;
     mapping(address operator => uint256) public capOf;
     mapping(address operator => uint256) public usedOf;
-    mapping(address owner => mapping(bytes32 ref => Purchase)) internal _purchases;
-    /// @notice What creditBack counted per purchase: usage freed and net refunded.
-    mapping(address owner => mapping(bytes32 ref => uint256)) public creditedBack;
+    mapping(address account => bool) public isCompanion;
+    mapping(bytes32 ref => PurchaseView) internal _purchases;
+    mapping(bytes32 ref => address[]) internal _sources;
+    mapping(bytes32 ref => bytes32[]) internal _legIds;
+    /// @notice What creditBack counted per purchase.
+    mapping(bytes32 ref => uint256) public creditedBack;
+    /// @notice What refunds per purchase paid out.
+    mapping(bytes32 ref => uint256) public refundedOut;
 
     error CapExceeded();
-    error NotTreasury();
+    error NotCompanion();
+    error NotSettle();
 
     constructor(address issuer, address settlement, address token) {
         (ISSUER, SETTLEMENT_ACCOUNT, settlementToken) = (issuer, settlement, token);
@@ -57,11 +62,15 @@ contract CompCardAuth is ICardAuthCompanion {
         (rolesOf[operator], capOf[operator], usedOf[operator]) = (roles, cap, 0);
     }
 
-    function setExposure(uint256 total, uint256 committed) external {
-        (_total, _committed) = (total, committed);
+    function setCompanion(address account, bool on) external {
+        isCompanion[account] = on;
     }
 
-    function setGranted(uint256 n) external {
+    function setExposure(uint256 held_, uint256 standIn, uint256 unsettled) external {
+        (_held, _standIn, _unsettled) = (held_, standIn, unsettled);
+    }
+
+    function setGranted(uint64 n) external {
         grantedOwners = n;
     }
 
@@ -73,49 +82,71 @@ contract CompCardAuth is ICardAuthCompanion {
         settlementToken = token;
     }
 
-    function setTreasury(address t) external {
-        treasury = t;
+    /// @dev Records a purchase of owner booked in today's token, with one leg on source.
+    function setPurchase(bytes32 ref, address owner, uint64 captured, uint64 refunded) external {
+        PurchaseView storage p = _purchases[ref];
+        (p.owner, p.token, p.captured, p.refunded) = (owner, settlementToken, captured, refunded);
     }
 
-    function setPurchase(address owner, bytes32 ref, uint64 captured, uint64 refunded) external {
-        _purchases[owner][ref] = Purchase(captured, refunded, false);
+    function setLeg(bytes32 ref, address source, bytes32 legId) external {
+        _sources[ref].push(source);
+        _legIds[ref].push(legId);
     }
 
     function hasRoles(address operator, uint8 roles) external view returns (bool) {
-        return rolesOf[operator] & roles == roles && roles != 0;
+        if (operator == ISSUER) return true;
+        return roles != 0 && rolesOf[operator] & roles == roles;
     }
 
     function useOperatorCap(address operator, uint256 value) external {
+        if (!isCompanion[msg.sender]) revert NotCompanion();
+        if (operator == ISSUER) return;
         uint256 used = usedOf[operator] + value;
         if (used > capOf[operator]) revert CapExceeded();
         usedOf[operator] = used;
     }
 
-    function exposure() external view returns (uint256, uint256) {
-        return (_total, _committed);
+    function exposure() external view returns (uint256, uint256, uint256) {
+        return (_held, _standIn, _unsettled);
     }
 
-    function setSettlementToken(address token, uint256 step) external {
-        if (msg.sender != treasury) revert NotTreasury();
-        (settlementToken, lastStep) = (token, step);
+    function ledger() external pure returns (uint64, uint64, uint128, uint128) {
+        return (0, 0, 0, 0);
     }
 
-    function purchaseOf(address owner, bytes32 ref) external view returns (uint64, uint64, bool) {
-        Purchase memory p = _purchases[owner][ref];
-        return (p.captured, p.refunded, p.open);
+    function setSettlementToken(address token, uint256 scale) external {
+        if (!isCompanion[msg.sender]) revert NotCompanion();
+        (settlementToken, lastScale) = (token, scale);
     }
 
-    /// @dev Refunds units of a purchase to its owner from this contract's own tokens.
-    function refund(address owner, bytes32 ref, uint256 units) external {
-        // forge-lint: disable-next-line(unsafe-typecast)
-        _purchases[owner][ref].refunded += uint64(units);
-        SafeTransferLib.safeTransfer(settlementToken, owner, units);
+    function purchaseOf(bytes32 ref) external view returns (PurchaseView memory) {
+        return _purchases[ref];
     }
 
-    function creditBack(address owner, bytes32 ref, uint256, uint256 net) external {
-        // forge-lint: disable-next-line(unsafe-typecast)
-        _purchases[owner][ref].refunded += uint64(net);
-        creditedBack[owner][ref] += net;
+    function legsOf(bytes32 ref) external view returns (address[] memory, bytes32[] memory, bytes32[] memory) {
+        address[] memory sources = _sources[ref];
+        return (sources, new bytes32[](sources.length), _legIds[ref]);
+    }
+
+    function capture(bytes32, uint128, bool) external pure { }
+
+    function charge(bytes32, bytes32, uint128, address) external pure { }
+
+    function reserveSettled(bytes32, uint128) external pure { }
+
+    /// @dev Takes amount of today's token from the caller and pays the purchase's owner.
+    function refund(bytes32 ref, uint128 amount) external {
+        if (!this.hasRoles(msg.sender, ROLE_SETTLE)) revert NotSettle();
+        PurchaseView storage p = _purchases[ref];
+        p.refunded += uint64(amount);
+        refundedOut[ref] += amount;
+        SafeTransferLib.safeTransferFrom(settlementToken, msg.sender, p.owner, amount);
+    }
+
+    function creditBack(bytes32 ref, uint128, uint128 net) external {
+        if (!this.hasRoles(msg.sender, ROLE_SETTLE)) revert NotSettle();
+        _purchases[ref].refunded += uint64(net);
+        creditedBack[ref] += net;
     }
 
     // Driver: runs a source's legs as the program.
@@ -130,11 +161,21 @@ contract CompCardAuth is ICardAuthCompanion {
 
     function capture(ISource source, address owner, bytes32 legId, uint256 units, bool isFinal, bytes32 ref)
         external
-        returns (uint256 paid)
+        returns (uint256 taken)
     {
-        (paid,) = source.capture(owner, bytes32(0), legId, units, isFinal);
+        taken = source.capture(owner, bytes32(0), legId, units, isFinal ? CAPTURE_FINAL : 0);
+        PurchaseView storage p = _purchases[ref];
+        if (p.owner == address(0)) {
+            (p.owner, p.token) = (owner, settlementToken);
+            _sources[ref].push(address(source));
+            _legIds[ref].push(legId);
+        }
         // forge-lint: disable-next-line(unsafe-typecast)
-        _purchases[owner][ref].captured += uint64(units);
+        p.captured += uint64(taken);
+    }
+
+    function captureBeyond(ISource source, address owner, bytes32 legId, uint256 units) external returns (uint256) {
+        return source.capture(owner, bytes32(0), legId, units, CAPTURE_FINAL | CAPTURE_BEYOND);
     }
 
     function release(ISource source, address owner, bytes32 legId) external {
@@ -142,9 +183,9 @@ contract CompCardAuth is ICardAuthCompanion {
     }
 
     /// @dev Sends units of its own tokens to the source and refunds them onto the leg.
-    function refundLeg(ISource source, address owner, bytes32 legId, uint256 units) external returns (uint256 taken) {
+    function refundLeg(ISource source, address owner, bytes32 legId, uint256 units) external {
         SafeTransferLib.safeTransfer(settlementToken, address(source), units);
-        taken = source.refund(owner, bytes32(0), legId, units);
+        source.refund(owner, bytes32(0), legId, units);
     }
 }
 
@@ -176,8 +217,11 @@ abstract contract CompEnv is CoreEnv {
         treasury = new IssuerTreasury(auth);
         reserves = new MerchantReserves(auth);
         desk = new IssuerDesk(auth, credit, treasury, IEarnVault(address(earnVault)));
-        auth.setTreasury(address(treasury));
-        // The desk repays and redraws lines and pays out as a treasury and settle operator.
+        auth.setCompanion(address(treasury), true);
+        auth.setCompanion(address(reserves), true);
+        auth.setCompanion(address(desk), true);
+        auth.setCompanion(address(credit), true);
+        // The desk refunds and credits back as a settle operator and pays out through the treasury.
         auth.setRoles(address(desk), SETTLE | TREASURY, type(uint256).max);
         usd.mint(address(auth), 1_000_000e6);
         vm.prank(settlement);

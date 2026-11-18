@@ -8,7 +8,7 @@ import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
-import { ISource } from "./interfaces/ISource.sol";
+import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
 
 /// @title CreditSource
 /// @notice Lenders' credit lines as one funding source of a card authorization contract (its PROGRAM). Each leg is a
@@ -23,9 +23,9 @@ import { ISource } from "./interfaces/ISource.sol";
 /// @custom:reentrancy-guard _locked
 contract CreditSource is ISource, ISettlementTokenGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
+    /// @inheritdoc ISource
+    uint8 public constant KIND = 4;
     uint256 private constant BPS = 10_000;
-    /// @dev The program role whose keys and companions repay lines for a reference and draw them again.
-    uint8 private constant ROLE_TREASURY = 4;
     /// @dev The settlement-token-in-use reason for open credit lines.
     uint8 private constant IN_USE_LINES = 7;
     /// @dev How long one commitment or lock hold lasts; the core caps holds at 31 days.
@@ -287,7 +287,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
 
     /// @inheritdoc ISource
-    function coverable(address owner, bytes32 position, uint16) external view returns (uint256) {
+    function coverable(address owner, bytes32 position) external view returns (uint256) {
         uint64 lineId = _lineIdOf(position);
         Line storage l = _lines[lineId];
         if (owner != l.borrower || !_open(l) || l.token != PROGRAM.settlementToken()) return 0;
@@ -300,6 +300,11 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         uint64 lineId = _legs[id].lineId;
         if (lineId == 0) return 0;
         return CORE.getHold(_lines[lineId].lender, address(this), id).held;
+    }
+
+    /// @inheritdoc ISource
+    function refundable(address owner, bytes32, bytes32 legId) external view returns (uint256) {
+        return _legs[_holdId(owner, legId)].gross;
     }
 
     /// @inheritdoc ISource
@@ -357,18 +362,22 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     /// @inheritdoc ISource
-    function capture(address owner, bytes32, bytes32 legId, uint256 units, bool isFinal)
+    function capture(address owner, bytes32, bytes32 legId, uint256 units, uint8 flags)
         external
         nonReentrant
         onlyProgram
-        returns (uint256 paid, uint256 tokens)
+        returns (uint256)
     {
         bytes32 id = _holdId(owner, legId);
         Leg storage g = _legs[id];
         uint64 lineId = g.lineId;
         if (lineId == 0) revert UnknownLeg();
         Line storage l = _lines[lineId];
-        uint256 h = CORE.getHold(l.lender, address(this), id).held;
+        IReservationCore.HoldRecord memory r = CORE.getHold(l.lender, address(this), id);
+        // A settled leg covers nothing more.
+        if (r.token == address(0)) return 0;
+        uint256 h = r.held;
+        if (units > h && flags & CAPTURE_BEYOND == 0) units = h;
         // forge-lint: disable-start(reentrancy-no-eth)
         if (units > h) {
             // Past what the leg holds: grow it within the line's credit first, or the capture reverts.
@@ -385,11 +394,17 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         g.gross = uint64(gross);
         // forge-lint: disable-next-line(unsafe-typecast)
-        CORE.capture(l.lender, address(this), id, uint128(units), isFinal);
+        CORE.capture(l.lender, address(this), id, uint128(units), flags & CAPTURE_FINAL != 0);
         // forge-lint: disable-end(reentrancy-no-eth)
         // forge-lint: disable-next-line(unsafe-typecast)
         _apply(lineId, id, uint64(gross));
-        return (units, units);
+        return units;
+    }
+
+    /// @inheritdoc ISource
+    /// @dev Credit never charges without a hold.
+    function charge(address, bytes32, bytes32, uint256, bool) external pure returns (uint256) {
+        return 0;
     }
 
     /// @inheritdoc ISource
@@ -397,33 +412,26 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         bytes32 id = _holdId(owner, legId);
         Leg storage g = _legs[id];
         uint64 lineId = g.lineId;
-        if (lineId == 0) revert UnknownLeg();
+        if (lineId == 0) return;
         Line storage l = _lines[lineId];
         IReservationCore.HoldRecord memory h = CORE.getHold(l.lender, address(this), id);
+        if (h.token == address(0)) return;
         // Expiry is a timestamp by design.
-        // forge-lint: disable-next-line(block-timestamp)
-        if (h.token != address(0)) {
-            // forge-lint: disable-next-line(block-timestamp,reentrancy-no-eth)
-            if (h.expiresAt <= block.timestamp) CORE.releaseExpired(l.lender, address(this), id);
-            else CORE.release(l.lender, address(this), id);
-        }
+        // forge-lint: disable-next-line(block-timestamp,reentrancy-no-eth)
+        if (h.expiresAt <= block.timestamp) CORE.releaseExpired(l.lender, address(this), id);
+        else CORE.release(l.lender, address(this), id);
         _apply(lineId, id, g.gross);
     }
 
     /// @inheritdoc ISource
-    function refund(address owner, bytes32, bytes32 legId, uint256 units)
-        external
-        nonReentrant
-        onlyProgram
-        returns (uint256 taken)
-    {
+    function refund(address owner, bytes32, bytes32 legId, uint256 units) external nonReentrant onlyProgram {
         bytes32 id = _holdId(owner, legId);
         Leg storage g = _legs[id];
         uint64 lineId = g.lineId;
         if (lineId == 0) revert UnknownLeg();
         Line storage l = _lines[lineId];
         uint64 gross = g.gross;
-        taken = units < gross ? units : gross;
+        uint256 taken = units < gross ? units : gross;
         // forge-lint: disable-next-line(unsafe-typecast)
         gross -= uint64(taken);
         g.gross = gross;
@@ -445,8 +453,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _afterRepay(lineId, l, amount);
     }
 
-    /// @notice Repays amount from the caller to the lender, as the program or a key or companion holding its treasury
-    ///         role, tied to ref (a purchase) so redraw may draw it again for that reference only.
+    /// @notice Repays amount from the caller to the lender, as the program, one of its companions or a key holding its
+    ///         treasury role, tied to ref (a purchase) so redraw may draw it again for that reference only.
     function repayFor(uint64 lineId, uint128 amount, bytes32 ref) external nonReentrant {
         _onlyTreasury();
         Line storage l = _lines[lineId];
@@ -484,7 +492,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     /// @notice Draws up to amount on the line again for ref (a merchant's win on a purchase whose provisional credit
     ///         repaid the line), paying the program's settlement account from the lender's free balance, then its
     ///         commitment. At most what repayFor repaid for ref less what was drawn again for it, and the credit
-    ///         still available. Program or treasury role only. Returns what it drew.
+    ///         still available. The program, its companions or its treasury role only. Returns what it drew.
     function redraw(uint64 lineId, uint128 amount, bytes32 ref) external nonReentrant returns (uint128 drawn) {
         _onlyTreasury();
         Line storage l = _lines[lineId];
@@ -703,7 +711,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
 
     function _onlyTreasury() private view {
-        if (msg.sender != address(PROGRAM) && !PROGRAM.hasRoles(msg.sender, ROLE_TREASURY)) revert NotProgram();
+        if (msg.sender == address(PROGRAM) || PROGRAM.isCompanion(msg.sender)) return;
+        if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_TREASURY())) revert NotProgram();
     }
 
     function _open(Line storage l) private view returns (bool) {

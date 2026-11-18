@@ -96,6 +96,7 @@ contract IssuerTreasuryTest is CompEnv {
         vm.expectRevert(IssuerTreasury.NotIssuer.selector);
         treasury.payOut(bob, 1e6, bytes32("credit-1"));
         auth.setRoles(operator, TREASURY, 30e6);
+        assertEq(auth.ROLE_TREASURY(), TREASURY);
         usd.mint(settlement, 100e6);
         vm.prank(operator);
         treasury.payOut(bob, 20e6, bytes32("credit-1"));
@@ -127,7 +128,7 @@ contract IssuerTreasuryTest is CompEnv {
 
     function test_withdrawIssuerFunds_keepsWhatTheProgramsCommittedExposureNeeds() public {
         // A stand-in approval of 30 the cardholder may not cover: the issuer's funds stand behind it.
-        auth.setExposure(30e6, 30e6);
+        auth.setExposure(30e6, 30e6, 0);
         assertEq(treasury.committedIssuerFunds(address(usd)), 30e6);
         assertEq(treasury.committedIssuerFunds(address(eur)), 0);
         vm.prank(issuer);
@@ -135,13 +136,15 @@ contract IssuerTreasuryTest is CompEnv {
         treasury.withdrawIssuerFunds(address(usd), 20e6 + 1);
         vm.prank(issuer);
         treasury.withdrawIssuerFunds(address(usd), 20e6);
-        // Captured, what remains the cardholder's unsettled debt still holds 20.
-        auth.setExposure(30e6, 20e6);
+        // Captured as cardholder debt: the settlement account owes the network 30 and holds the 20 withdrawn, so the
+        // issuer's funds keep the other 10.
+        auth.setExposure(0, 0, 30e6);
+        assertEq(treasury.committedIssuerFunds(address(usd)), 10e6);
         vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.IssuerFundsShort.selector, 10e6 + 1, 10e6));
-        treasury.withdrawIssuerFunds(address(usd), 10e6 + 1);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.IssuerFundsShort.selector, 20e6 + 1, 20e6));
+        treasury.withdrawIssuerFunds(address(usd), 20e6 + 1);
         // Settled, the rest is free.
-        auth.setExposure(0, 0);
+        auth.setExposure(0, 0, 0);
         vm.prank(issuer);
         treasury.withdrawIssuerFunds(address(usd), 30e6);
         assertEq(treasury.issuerFunds(address(usd)), 0);
@@ -157,7 +160,7 @@ contract IssuerTreasuryTest is CompEnv {
         assertLt(carried, 18.25e6);
         _setting(abi.encodeCall(treasury.setSettlementToken, (address(eur))));
         assertEq(auth.settlementToken(), address(eur));
-        assertEq(auth.lastStep(), conv.mid(address(eur), address(usd)));
+        assertEq(auth.lastScale(), conv.mid(address(usd), address(eur)));
         _repayDebt(settlement, address(usd));
         assertEq(_owed(settlement, address(usd), address(treasury)), 0);
         assertEq(_owed(settlement, address(eur), address(treasury)), carried);
@@ -226,7 +229,7 @@ contract IssuerTreasuryTest is CompEnv {
         assertEq(auth.settlementToken(), address(usd));
         bytes32 id = keccak256(abi.encodeCall(treasury.setSettlementToken, (address(eur))));
         uint64 eta = treasury.pendingSetting(id);
-        assertEq(eta, block.timestamp + treasury.SETTINGS_DELAY());
+        assertEq(eta, block.timestamp + auth.SETTINGS_DELAY());
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.SettingPending.selector, eta));
         treasury.setSettlementToken(address(eur));
@@ -311,7 +314,7 @@ contract IssuerTreasuryTest is CompEnv {
 
     function test_release_onlySponsor_andNeverBelowExposure() public {
         _postCash(150e6);
-        auth.setExposure(100e6, 0);
+        auth.setExposure(100e6, 0, 0);
         vm.prank(issuer);
         vm.expectRevert(IssuerTreasury.NotSponsor.selector);
         treasury.release(10e6);
@@ -326,7 +329,7 @@ contract IssuerTreasuryTest is CompEnv {
 
     function test_seize_cappedAtExposure_andPaysTheSponsor() public {
         _postCash(150e6);
-        auth.setExposure(100e6, 0);
+        auth.setExposure(100e6, 0, 0);
         vm.prank(sponsor);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(101e6), uint256(100e6)));
         treasury.seize(101e6);
@@ -342,7 +345,7 @@ contract IssuerTreasuryTest is CompEnv {
 
     function test_seize_repeatedCallsTakeNoMoreThanTheExposure() public {
         _postCash(1000e6);
-        auth.setExposure(100e6, 0);
+        auth.setExposure(100e6, 0, 0);
         vm.startPrank(sponsor);
         treasury.seize(60e6);
         treasury.seize(40e6);
@@ -356,14 +359,14 @@ contract IssuerTreasuryTest is CompEnv {
 
     function test_seize_coverFollowsTheExposureDown() public {
         _postCash(1000e6);
-        auth.setExposure(100e6, 0);
+        auth.setExposure(100e6, 0, 0);
         vm.prank(sponsor);
         treasury.seize(100e6);
         // The exposure the seizure covered closes; once synced, a new exposure can be seized, once.
-        auth.setExposure(0, 0);
+        auth.setExposure(0, 0, 0);
         treasury.sync();
         assertEq(treasury.seized(), 0);
-        auth.setExposure(50e6, 0);
+        auth.setExposure(50e6, 0, 0);
         vm.prank(sponsor);
         treasury.seize(50e6);
         vm.prank(sponsor);
@@ -374,10 +377,10 @@ contract IssuerTreasuryTest is CompEnv {
 
     function test_seize_withoutASync_aLowerExposureStaysCovered() public {
         _postCash(1000e6);
-        auth.setExposure(100e6, 0);
+        auth.setExposure(100e6, 0, 0);
         vm.prank(sponsor);
         treasury.seize(100e6);
-        auth.setExposure(50e6, 0);
+        auth.setExposure(50e6, 0, 0);
         vm.prank(sponsor);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(1), uint256(0)));
         treasury.seize(1);
@@ -421,7 +424,7 @@ contract IssuerTreasuryTest is CompEnv {
         auth.setToken(address(eur));
         uint256 value = treasury.valueOf();
         assertEq(value, conv.quoteIn(address(usd), address(eur), earnVault.previewRedeem(shares)));
-        auth.setExposure(100e6, 0);
+        auth.setExposure(100e6, 0, 0);
         vm.prank(sponsor);
         treasury.seize(100e6);
         assertApproxEqAbs(eur.balanceOf(sponsor), 100e6, 2);
