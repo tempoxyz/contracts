@@ -27,20 +27,19 @@ runs every capability module's inspection, is exported from `/node` only.
 `@tempoxyz/contracts/abis` is the only place TypeScript gets a contract ABI; never hand-write one.
 `abis/generate.ts` writes `abis/generated.ts` from this repository's Foundry artifacts:
 
-- every deployable contract under `earn/src/` (not an interface, library, or abstract contract) as
+- every deployable contract under `src/earn/` and `src/demo/` (not an interface, library, or abstract contract) as
   `<name>Abi`, ordered by source directory with `EarnVault`, `EarnFees`, and `EarnFactory` first.
   Its only tables are the directory order, one alias (`SingleZoneEarnRouter` exports
   `earnRouterAbi`), and the Foundry-only contracts it excludes, so a new contract needs no entry; a
-  contract in a new `earn/src/` directory fails generation until the directory joins the order;
+  contract in a new `src/earn/` directory fails generation until the directory joins the order;
 - the state-changing entry points of every deployment and localnet fixture script as
   `<name>ScriptAbi`; and
 - the derived `earnEngineBindingAbi`; and
 - `zoneRouterAbi`, `zoneRouterFactoryAbi`, the `sendSpenderAbi` spender, and
-  the `zone-router/` deployment scripts' `<name>ScriptAbi`, from the separate
-  [`zone-router/`](../zone-router/README.md) project.
+  the Zone router deployment scripts' (`script/zone/deploy/`) `<name>ScriptAbi`, from the
+  [Zone router](../docs/zone/README.md).
 
-After a contract interface change, run `forge build src script test` in `earn/` and
-`forge build src script` in `zone-router/`, then
+After a contract interface change, run `forge build src script test` from the repository root, then
 `pnpm --filter @tempoxyz/contracts abis`, and commit the result; `abis:check` fails on drift.
 `abis/external.ts` hand-maintains contracts built elsewhere: Tempo Zone predeploys, the PropAMM
 pool, oracle, and controller, the Veda periphery, the Morpho fee wrapper, and the Safe. Use
@@ -52,11 +51,11 @@ The root holds the three deployment entry points (`index.ts`, `node.ts`, `operat
 and the documentation link test (`docs.test.ts`). Everything else lives in one of three layers;
 the `./tempo/zone` entry is `chain/zone.ts`.
 
-| Directory  | Ownership                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chain/`   | Chain plumbing with no Earn policy: RPC transport and credentials (`runtime.ts`), the Foundry version and process environment (`foundry.ts`), Tempo chain identity and the hosted network table (`tempo.ts`), canonical Zone predeploys and discovery (`zone.ts`), and shared onchain assertions (`inspect.ts`)                                                                                                                                     |
-| `core/`    | The capability-neutral lifecycle: the strict parser kit (`parse.ts`), the profile envelope and its hashes, intent components, records, pending state, the profile bundle and its dotenv, reviewed factory releases and their runtime-hash review (`releases.ts`), plan, reconcile, deploy, verify, the `EarnStack` model, and the `pnpm earn` CLI                                                                                                   |
-| `modules/` | One directory per capability: under `earn/`, `core/` and `engines/` steps, `zone-router/`, `access-policy/`, and `rewards/`; and `zone-router/`, the `ZoneRouter` from the `zone-router/` project. `module.ts` defines the slice, capability-module, and step interfaces; `slices.ts` registers the browser-safe slices, `index.ts` the steps in execution order and the lifecycle modules, and `commands.ts` the Node-only `pnpm earn` subcommands |
+| Directory  | Ownership                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `chain/`   | Chain plumbing with no Earn policy: RPC transport and credentials (`runtime.ts`), the Foundry version and process environment (`foundry.ts`), Tempo chain identity and the hosted network table (`tempo.ts`), canonical Zone predeploys and discovery (`zone.ts`), and shared onchain assertions (`inspect.ts`)                                                                                                                      |
+| `core/`    | The capability-neutral lifecycle: the strict parser kit (`parse.ts`), the profile envelope and its hashes, intent components, records, pending state, the profile bundle and its dotenv, reviewed factory releases and their runtime-hash review (`releases.ts`), plan, reconcile, deploy, verify, the `EarnStack` model, and the `pnpm earn` CLI                                                                                    |
+| `modules/` | One directory per capability: under `earn/`, `core/` and `engines/` steps, `zone-router/`, `access-policy/`, and `rewards/`; and `zone-router/`, the `ZoneRouter` from `src/zone/`. `module.ts` defines the slice, capability-module, and step interfaces; `slices.ts` registers the browser-safe slices, `index.ts` the steps in execution order and the lifecycle modules, and `commands.ts` the Node-only `pnpm earn` subcommands |
 
 `core/` and `chain/` name no capability. A capability declares itself in two registered objects:
 
@@ -86,9 +85,9 @@ Node-only code.
 - **A deployment step** is one `defineFoundryStep` or `defineAuthorityStep` object in its
   capability's `steps.ts` (such as `modules/earn/rewards/` or `modules/zone-router/`), listed in execution
   order in `modules/index.ts`; its literal ID becomes an `EarnDeploymentActionId`. A contract it creates is declared by its `source`,
-  with `source.accessMember` (and any principals it pays) when it moves EarnShare or the asset. A
-  step whose script and contract belong to a sibling Foundry project, such as `zone-router/`, names it
-  in `project`; Forge then runs, and source verification compiles, from that project. A step that
+  with `source.accessMember` (and any principals it pays) when it moves EarnShare or the asset. Every
+  step's script and contract belong to the one Foundry project at the repository root, where Forge
+  runs and source verification compiles. A step that
   calls a permissionless factory, which returns a contract another deployer already created for the
   same inputs, declares `adopt` to record that contract and its creation transaction instead, as
   `deploy-zone-router` does with the factory's `RouterDeployed` event.
@@ -107,7 +106,7 @@ Node-only code.
   module in `modules/earn/engines/`; the cross-workspace recipe is
   [adding an engine](../docs/earn/integrations/engines.md#adding-an-engine).
 - **A new contract or script** needs no ABI entry: [generation](#exports) picks up every deployable
-  `earn/src/` contract and every `.s.sol` deployment or fixture script.
+  `src/earn/` or `src/demo/` contract and every `.s.sol` deployment or fixture script.
 
 Records, resume, source verification, access membership, stacks, and E2E derive from these
 declarations, so none of them gains a step-ID, per-contract, or engine-kind branch. Localnet's

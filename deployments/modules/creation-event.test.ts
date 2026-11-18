@@ -66,7 +66,7 @@ describe('creationEvent', () => {
       event: getAbiItem({ abi: zoneRouterFactoryAbi, name: 'RouterDeployed' }),
       argument: 'router',
       output: 'zoneRouter',
-      source: { project: 'zone-router', contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory' },
+      source: { contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory' },
     })
   })
 

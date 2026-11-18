@@ -238,13 +238,8 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
     /** Recorded output the factory event must prove was created. */
     output: DeploymentAddressKey
     /** Canonical source admission for an external factory not covered by the deployment's own source targets. */
-    source?: { project: string; contract: string }
+    source?: { contract: string }
   }
-  /**
-   * The Foundry project beside `earn/` that compiles and runs the script and the contract it
-   * creates, such as `zone-router`, which builds with solc; Earn's own project when omitted.
-   */
-  project?: string
   /** `path:Contract` of the script, or the profile's script when it depends on the profile. */
   script: string | ((profile: EarnDeploymentProfile) => string)
   /** Calldata for the script's typed `run(Input)`; Forge receives it with `--sig`. */

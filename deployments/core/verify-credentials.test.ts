@@ -26,7 +26,7 @@ const options = {
   constructorArgs: '0x' as const,
   contract,
   environment,
-  root: '/repo/earn',
+  root: '/repo',
   rpcUrl,
 }
 const exposed = [
@@ -288,7 +288,7 @@ function deploymentOptions(): Parameters<typeof verifyRecordedDeploymentSources>
       addresses: { engine: address, earnVault: address, earnFees: address },
       source: { contractVerification: 'verified', contracts: {}, verifierUrl: tempoVerifierUrl },
     } as unknown as EarnDeploymentRecord,
-    root: '/repo/earn',
+    root: '/repo',
     rpcUrl,
   }
 }

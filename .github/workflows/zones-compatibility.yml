@@ -2,13 +2,15 @@ name: Zones Compatibility
 
 on:
   workflow_dispatch:
-  # Tempo builds only Earn's contracts (`forge build --skip test --skip script`).
+  # Tempo builds this repository's contracts without tests or scripts (`forge build --skip test
+  # --skip script`), then runs its Earn Zone integration against the Earn and demo artifacts.
   push:
     branches: [main]
     paths:
-      - 'earn/src/**'
-      - 'earn/foundry.*'
-      - 'earn/solar*'
+      - 'src/**'
+      - 'vendor/**'
+      - 'foundry.*'
+      - 'solar*'
       - 'scripts/solidity-deps.sh'
       - '.github/workflows/zones-compatibility.yml'
       - '.github/actions/publish-remediation-event/**'
@@ -36,20 +38,20 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      - name: Checkout Earn
+      - name: Checkout contracts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: earn
+          path: contracts
           persist-credentials: false
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: earn/.solar
-          key: solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/earn/solar.lock') }}
+          path: contracts/.solar
+          key: solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('contracts/solar.lock') }}
 
-      - name: Install Earn's Solidity dependencies and solar
-        working-directory: earn
-        run: scripts/solidity-deps.sh earn
+      - name: Install Solidity dependencies and solar
+        working-directory: contracts
+        run: scripts/solidity-deps.sh
 
       - name: Checkout Tempo main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,7 +65,7 @@ jobs:
       - name: Record revisions
         id: revisions
         run: |
-          echo "earn=$(git -C earn rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "earn=$(git -C contracts rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tempo=$(git -C tempo rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
@@ -92,10 +94,11 @@ jobs:
         id: solidity
         working-directory: tempo
         env:
-          # Earn's Foundry project inside this repository's checkout.
-          EARN_ROOT: ${{ github.workspace }}/earn/earn
-        # Tempo's script builds Earn first so the Zones contracts own the final IZone ABI. It passes
-        # Earn's solar-solc as FOUNDRY_SOLC to that build only; the Zones contracts keep their solc.
+          # This repository's Foundry project, at the root of its checkout.
+          EARN_ROOT: ${{ github.workspace }}/contracts
+        # Tempo's script builds this project first so the Zones contracts own the final IZone ABI. It
+        # passes the project's solar-solc as FOUNDRY_SOLC to that build only; the Zones contracts keep
+        # their solc.
         run: |
           bash scripts/build-zones-test-artifacts.sh
           test -s crates/zones/contracts/out/DemoParPool.sol/DemoParPool.json

@@ -263,17 +263,14 @@ describe('assertVerifiedCreationTransaction', () => {
     try {
       artifact = JSON.parse(
         readFileSync(
-          new URL(
-            '../../zone-router/out/ZoneRouterFactory.sol/ZoneRouterFactory.json',
-            import.meta.url,
-          ),
+          new URL('../../out/ZoneRouterFactory.sol/ZoneRouterFactory.json', import.meta.url),
           'utf8',
         ),
       )
     } catch (error) {
       // Full verification builds this artifact; TypeScript-only checkouts may not have compiled Solidity.
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-        skip('Run forge build src in zone-router for the compiled factory regression')
+        skip('Run forge build src from the repository root for the compiled factory regression')
       throw error
     }
     const creationBytecode = artifact.bytecode.object

@@ -9,7 +9,7 @@ contract is in [yield engines](../integrations/engines.md).
 
 ## Contract
 
-[`PropAMMEngine`](../../../earn/src/engines/propamm/PropAMMEngine.sol) puts one fixed Tempo DirectPropAMM
+[`PropAMMEngine`](../../../src/earn/engines/propamm/PropAMMEngine.sol) puts one fixed Tempo DirectPropAMM
 pool behind the persistent EarnVault and EarnShare. The engine holds the pool's base token directly
 (not LP shares); its `asset` is the pool's quote token. Deposits buy the base token, redemptions sell
 an exact base quantity, and exact withdrawals sell enough base to deliver the requested quote
@@ -69,7 +69,7 @@ final engine owner, EarnVault operator, maximum oracle age, and route identifier
 and oracle decimals are supported and that the pool's base and quote direction matches them, and
 review the pool's token policy and recipient registry, not just its address.
 
-1. Deploy and source-verify `src/engines/propamm/PropAMMEngine.sol:PropAMMEngine` from the current
+1. Deploy and source-verify `src/earn/engines/propamm/PropAMMEngine.sol:PropAMMEngine` from the current
    repository. An existing deployment does not gain new behavior when the repository changes;
    replace it rather than editing a record.
 2. Write a profile whose engine is `{ "kind": "propamm", "address": "0x…" }`
@@ -121,7 +121,7 @@ force an exit.
 ## Tests
 
 ```bash
-forge test --match-path 'test/engines/propamm/*'
+forge test --match-path 'test/earn/engines/propamm/*'
 pnpm --filter @tempoxyz/contracts abis:check
 pnpm e2e:local -- --variant propamm --all
 ```
@@ -148,24 +148,24 @@ them through the engine definition and the generated ABIs in `@tempoxyz/contract
 ### Pinned DirectPropAMM fixture
 
 Contract tests and localnet deploy `DirectPropAMM` from the committed
-[`test/fixtures/propamm/DirectPropAMM.json`](../../../earn/test/fixtures/propamm/DirectPropAMM.json), which
+[`test/earn/fixtures/propamm/DirectPropAMM.json`](../../../test/earn/fixtures/propamm/DirectPropAMM.json), which
 holds only its ABI, creation bytecode, and runtime bytecode from an unmodified solc `0.8.30` build.
 Building and testing Earn never needs the PropAMM source repository.
-[`source.json`](../../../earn/test/fixtures/propamm/source.json) records the repository, full commit,
+[`source.json`](../../../test/earn/fixtures/propamm/source.json) records the repository, full commit,
 contract, and compiler of that build.
 
 To move the pin, change `commit` in `source.json` and regenerate the fixture with
-[`update.sh`](../../../earn/test/fixtures/propamm/update.sh), which needs Git, Foundry, `jq`, and read
+[`update.sh`](../../../test/earn/fixtures/propamm/update.sh), which needs Git, Foundry, `jq`, and read
 access to the source repository:
 
 ```bash
-test/fixtures/propamm/update.sh                       # clone the pinned commit with your Git credentials
-test/fixtures/propamm/update.sh ../propAMM            # or build a clean checkout already at that commit
-test/fixtures/propamm/update.sh --check [../propAMM]  # fail on any difference, rewriting nothing
+test/earn/fixtures/propamm/update.sh                       # clone the pinned commit with your Git credentials
+test/earn/fixtures/propamm/update.sh ../propAMM            # or build a clean checkout already at that commit
+test/earn/fixtures/propamm/update.sh --check [../propAMM]  # fail on any difference, rewriting nothing
 ```
 
 The `PropAMM fixture` job in the Verify workflow runs the `--check` form for same-repository pull
-requests and `main`. A fork pull request that leaves `test/fixtures/propamm/` unchanged skips the
+requests and `main`. A fork pull request that leaves `test/earn/fixtures/propamm/` unchanged skips the
 rebuild; one that changes it fails until a maintainer re-verifies it from a branch in this
 repository ([CI](../../development/README.md#continuous-integration)).
 

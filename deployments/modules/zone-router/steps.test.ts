@@ -174,10 +174,8 @@ describe('Zone router steps', () => {
     expect(routerSteps(profileWith(undefined))).toEqual([])
   })
 
-  test('runs its Forge steps in the router project and deploys the mode through the factory', () => {
+  test('deploys the mode through the factory', () => {
     const step = deploymentStep('deploy-zone-router') as FoundryStep
-    expect(step.project).toBe('zone-router')
-    expect(deploymentStep('deploy-zone-router-factory')).toMatchObject({ project: 'zone-router' })
     const input = decodeFunctionData({
       abi: deployZoneRouterScriptAbi,
       data: step.input(card, outputs, '/tmp/out.json'),
@@ -348,7 +346,7 @@ describe('Zone router steps', () => {
       `setGateway(${outputs.zoneRouter}, true) on ${outputs.zoneRouterPortal}`,
     )
     expect(handoff).toContain(
-      `${address('fac')} is source verified as zone-router/src/ZoneRouterFactory.sol`,
+      `${address('fac')} is source verified as src/zone/ZoneRouterFactory.sol`,
     )
   })
 
@@ -469,7 +467,7 @@ describe('Zone router steps', () => {
     expect(step.signerAvailable!(named, environment, true)).toBe(false)
     expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
     expect(step.handoff(named, outputs)).toContain(
-      `ZoneRouterFactory ${address('fac')} is source verified as zone-router/src/ZoneRouterFactory.sol`,
+      `ZoneRouterFactory ${address('fac')} is source verified as src/zone/ZoneRouterFactory.sol`,
     )
     expect(step.handoff(cardAndEarn, outputs)).not.toContain('source verified')
     for (const profile of [named, cardAndEarn])
@@ -558,7 +556,7 @@ describe('Zone router steps', () => {
     expect(step.signerAvailable!(card, environment, true)).toBe(false)
     expect(step.signerAvailable!(cardAndEarn, environment, true)).toBe(true)
     const handoff = step.handoff(card, outputs)
-    expect(handoff).toContain('is source verified as zone-router/src/ZoneRouterFactory.sol')
+    expect(handoff).toContain('is source verified as src/zone/ZoneRouterFactory.sol')
     expect(handoff).toContain(
       `setAllowedAccount(${outputs.zoneRouter}, true) on ${outputs.zoneRouterPortal}`,
     )

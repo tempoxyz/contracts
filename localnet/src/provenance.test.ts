@@ -48,21 +48,21 @@ describe('cleanSourceRevision', () => {
     expect(() => cleanSourceRevision(root)).toThrow('clean source checkout')
   })
 
-  it.each(['earn', 'zone-router'])('rejects modified pinned %s dependency sources', (project) => {
+  it.each(['fixture', 'second'])('rejects modified pinned lib/%s dependency sources', (name) => {
     const { root, dependency } = checkout()
-    writeFileSync(join(dependency(project), 'library.sol'), 'modified\n')
+    writeFileSync(join(dependency(name), 'library.sol'), 'modified\n')
     expect(() => cleanSourceRevision(root)).toThrow('dependency')
   })
 
   it.each(['added.sol', 'ignored.sol'])('rejects unpublished dependency input %s', (file) => {
     const { root, dependency } = checkout()
-    writeFileSync(join(dependency('earn'), file), 'new input\n')
+    writeFileSync(join(dependency('fixture'), file), 'new input\n')
     expect(() => cleanSourceRevision(root)).toThrow('dependency')
   })
 
   it('rejects a clean dependency at a different revision', () => {
     const { root, dependency, git } = checkout()
-    const directory = dependency('earn')
+    const directory = dependency('fixture')
     writeFileSync(join(directory, 'library.sol'), 'another revision\n')
     git(directory, 'add', '.')
     git(directory, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'unreviewed')
@@ -71,20 +71,23 @@ describe('cleanSourceRevision', () => {
 
   it('rejects a missing dependency rather than accepting the parent Git checkout', () => {
     const { root, dependency } = checkout()
-    rmSync(join(dependency('earn'), '.git'), { recursive: true, force: true })
+    rmSync(join(dependency('fixture'), '.git'), { recursive: true, force: true })
     expect(() => cleanSourceRevision(root)).toThrow('dependency')
   })
 
   it('rejects a missing installed library', () => {
     const { root, dependency } = checkout()
-    rmSync(dependency('earn'), { recursive: true, force: true })
+    rmSync(dependency('fixture'), { recursive: true, force: true })
     expect(() => cleanSourceRevision(root)).toThrow('dependency')
   })
 
   it('rejects a dependency symlink even when its target is at the pin', () => {
     const { root, dependency } = checkout()
-    rmSync(dependency('earn'), { recursive: true, force: true })
-    symlinkSync(dependency('zone-router'), dependency('earn'))
+    // The link target is a copy of the library at its pinned commit, outside lib/.
+    const pinned = join(root, '.solar/pinned-copy')
+    cpSync(dependency('fixture'), pinned, { recursive: true })
+    rmSync(dependency('fixture'), { recursive: true, force: true })
+    symlinkSync(pinned, dependency('fixture'))
     expect(() => cleanSourceRevision(root)).toThrow('dependency')
   })
 
@@ -113,8 +116,8 @@ describe('cleanSourceRevision', () => {
 
   it('rejects an unpinned library alongside locked dependencies', () => {
     const { root } = checkout()
-    mkdirSync(join(root, 'earn/lib/unpinned'))
-    writeFileSync(join(root, 'earn/lib/unpinned/library.sol'), 'unreviewed\n')
+    mkdirSync(join(root, 'lib/unpinned'))
+    writeFileSync(join(root, 'lib/unpinned/library.sol'), 'unreviewed\n')
     expect(() => cleanSourceRevision(root)).toThrow('dependency')
   })
 })
@@ -186,7 +189,7 @@ describe('assertBuildProvenanceUnchanged', () => {
   it('refuses changed dependency sources before emitting a success record', () => {
     const { root, dependency } = checkout()
     const before = captureBuildProvenance(root)
-    writeFileSync(join(dependency('zone-router'), 'library.sol'), 'modified\n')
+    writeFileSync(join(dependency('second'), 'library.sol'), 'modified\n')
     expect(() => assertBuildProvenanceUnchanged(root, before)).toThrow('dependency')
   })
 
@@ -203,12 +206,12 @@ describe('assertBuildProvenanceUnchanged', () => {
 describe('devnet deployment provenance boundary', () => {
   it('refuses dirty ignored dependency input before resolving credentials or deploying', async () => {
     const { root, dependency } = checkout()
-    writeFileSync(join(dependency('earn'), 'library.sol'), 'modified\n')
+    writeFileSync(join(dependency('fixture'), 'library.sol'), 'modified\n')
     await expect(runCli(root)).rejects.toThrow('dependency')
     expect(cli.configuration).not.toHaveBeenCalled()
     expect(cli.deploy).not.toHaveBeenCalled()
     expect(existsSync(join(root, '.solar/install.json'))).toBe(false)
-    expect(readFileSync(join(dependency('earn'), 'library.sol'), 'utf8')).toBe('modified\n')
+    expect(readFileSync(join(dependency('fixture'), 'library.sol'), 'utf8')).toBe('modified\n')
   })
 
   it.each(['substituted', 'unreceipted'])(
@@ -227,10 +230,9 @@ describe('devnet deployment provenance boundary', () => {
     },
   )
 
-  it('installs missing Earn, Zone and compiler inputs through a credential-free child before configuration', async () => {
+  it('installs missing libraries and compiler inputs through a credential-free child before configuration', async () => {
     const { root, compiler, receipt } = checkout()
-    rmSync(join(root, 'earn/lib'), { recursive: true })
-    rmSync(join(root, 'zone-router/lib'), { recursive: true })
+    rmSync(join(root, 'lib'), { recursive: true })
     rmSync(compiler)
     rmSync(receipt)
     vi.stubEnv('DEPLOYER_PRIVATE_KEY', 'synthetic-deployer')
@@ -239,7 +241,7 @@ describe('devnet deployment provenance boundary', () => {
     vi.stubEnv('FOUNDRY_SOLC', '/unreviewed-compiler')
     await runCli(root)
     expect(JSON.parse(readFileSync(join(root, '.solar/install.json'), 'utf8'))).toEqual({
-      projects: ['earn', 'zone-router'],
+      arguments: [],
       leaked: {},
     })
     expect(() => captureBuildProvenance(root)).not.toThrow()
@@ -248,7 +250,7 @@ describe('devnet deployment provenance boundary', () => {
 
   it('refuses unpinned installed libraries before the installer can replace them', async () => {
     const { root, dependency, git } = checkout()
-    const directory = dependency('zone-router')
+    const directory = dependency('second')
     writeFileSync(join(directory, 'library.sol'), 'unreviewed revision\n')
     git(directory, 'add', '.')
     git(directory, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'unreviewed')
@@ -263,7 +265,7 @@ describe('devnet deployment provenance boundary', () => {
     'refuses %s before configuration or deployment',
     async (failure) => {
       const { root, dependency } = checkout()
-      rmSync(dependency('earn'), { recursive: true })
+      rmSync(dependency('fixture'), { recursive: true })
       writeFileSync(join(root, '.solar', failure), 'true')
       await expect(runCli(root)).rejects.toThrow()
       expect(cli.configuration).not.toHaveBeenCalled()
@@ -328,7 +330,7 @@ describe('devnet deployment provenance boundary', () => {
       const directory = join(root, 'outputs')
       const path = {
         source: join(root, 'fixture.sol'),
-        dependency: join(dependency('zone-router'), 'library.sol'),
+        dependency: join(dependency('second'), 'library.sol'),
         compiler,
       }[input]!
       const message = {
@@ -430,24 +432,24 @@ function checkout() {
     git(directory, 'config', 'user.email', 'fixture@example.test')
   }
   init(root)
-  writeFileSync(join(root, '.gitignore'), '*/lib/\n.solar/\n')
+  writeFileSync(join(root, '.gitignore'), 'lib/\n.solar/\n')
   writeFileSync(join(root, 'fixture.sol'), 'original\n')
-  const dependency = (project: string) => join(root, project, 'lib/fixture')
-  for (const project of ['earn', 'zone-router']) {
-    const directory = dependency(project)
+  const libraries = ['fixture', 'second']
+  const dependency = (name: string) => join(root, 'lib', name)
+  const lock: Record<string, { tag: { rev: string } }> = {}
+  for (const name of libraries) {
+    const directory = dependency(name)
     mkdirSync(directory, { recursive: true })
     init(directory)
     writeFileSync(join(directory, '.gitignore'), 'ignored.sol\n')
     writeFileSync(join(directory, 'library.sol'), 'original\n')
     git(directory, 'add', '.')
-    git(directory, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'library')
-    writeFileSync(
-      join(root, project, 'foundry.lock'),
-      JSON.stringify({ 'lib/fixture': { tag: { rev: git(directory, 'rev-parse', 'HEAD') } } }),
-    )
+    git(directory, '-c', 'commit.gpgsign=false', 'commit', '-qm', name)
+    lock['lib/' + name] = { tag: { rev: git(directory, 'rev-parse', 'HEAD') } }
   }
+  writeFileSync(join(root, 'foundry.lock'), JSON.stringify(lock))
   const solarRevision = 'd8'.repeat(20)
-  writeFileSync(join(root, 'earn/solar.lock'), `${solarRevision}\n`)
+  writeFileSync(join(root, 'solar.lock'), `${solarRevision}\n`)
   const compiler = join(root, '.solar', solarRevision, 'bin/solar')
   mkdirSync(join(root, '.solar', solarRevision, 'bin'), { recursive: true })
   const binary = '#!/bin/sh\necho local-unverified-compiler\nexit 1\n'
@@ -462,8 +464,8 @@ function checkout() {
     }),
   )
   // This subprocess substitutes only fetching/building inputs; strict provenance still uses real Git and files.
-  for (const project of ['earn', 'zone-router'])
-    cpSync(dependency(project), join(root, '.solar/seed', project), { recursive: true })
+  for (const name of libraries)
+    cpSync(dependency(name), join(root, '.solar/seed', name), { recursive: true })
   const freshBinary = '#!/bin/sh\necho freshly-built-fixture-compiler\n'
   mkdirSync(join(root, 'scripts'))
   writeFileSync(
@@ -473,16 +475,17 @@ const { createHash } = require('node:crypto');
 const { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const root = process.cwd();
-const projects = process.argv.slice(2);
+const args = process.argv.slice(2);
 const names = ['DEPLOYER_PRIVATE_KEY', 'ZONE_ADMIN_PRIVATE_KEY', 'TEMPO_RPC_URL', 'FOUNDRY_SOLC'];
 writeFileSync(resolve(root, '.solar/install.json'), JSON.stringify({
-  projects, leaked: Object.fromEntries(names.flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])),
+  arguments: args, leaked: Object.fromEntries(names.flatMap(name => process.env[name] ? [[name, process.env[name]]] : [])),
 }));
 if (existsSync(resolve(root, '.solar/fail-install'))) process.exit(33);
 if (existsSync(resolve(root, '.solar/skip-install'))) process.exit(0);
-for (const project of projects) {
-  const target = resolve(root, project, 'lib/fixture');
-  if (!existsSync(target)) cpSync(resolve(root, '.solar/seed', project), target, { recursive: true });
+if (args.length > 0) process.exit(2);
+for (const name of ['fixture', 'second']) {
+  const target = resolve(root, 'lib', name);
+  if (!existsSync(target)) cpSync(resolve(root, '.solar/seed', name), target, { recursive: true });
 }
 const compiler = ${JSON.stringify(compiler)};
 const receipt = ${JSON.stringify(receipt)};
@@ -549,7 +552,7 @@ async function runCli(
 }
 
 function addSubmodule({ root, dependency, git }: ReturnType<typeof checkout>) {
-  const directory = dependency('earn')
+  const directory = dependency('fixture')
   const submodule = join(directory, 'vendor/child')
   mkdirSync(submodule, { recursive: true })
   git(submodule, 'init', '--quiet')
@@ -567,10 +570,9 @@ function addSubmodule({ root, dependency, git }: ReturnType<typeof checkout>) {
     `160000,${git(submodule, 'rev-parse', 'HEAD')},vendor/child`,
   )
   git(directory, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'submodule pin')
-  writeFileSync(
-    join(root, 'earn/foundry.lock'),
-    JSON.stringify({ 'lib/fixture': { rev: git(directory, 'rev-parse', 'HEAD') } }),
-  )
+  const lock = JSON.parse(readFileSync(join(root, 'foundry.lock'), 'utf8'))
+  lock['lib/fixture'] = { rev: git(directory, 'rev-parse', 'HEAD') }
+  writeFileSync(join(root, 'foundry.lock'), JSON.stringify(lock))
   git(root, 'add', '.')
   git(root, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'library pin')
   return submodule

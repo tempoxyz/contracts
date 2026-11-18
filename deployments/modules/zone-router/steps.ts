@@ -69,7 +69,7 @@ const namesFactory = (profile: EarnDeploymentProfile) => profile.zoneRouter?.fac
  */
 const namedFactoryCheck = (profile: EarnDeploymentProfile, outputs: Record<string, Address>) =>
   namesFactory(profile)
-    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as zone-router/src/ZoneRouterFactory.sol. `
+    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as src/zone/ZoneRouterFactory.sol. `
     : ''
 
 /** The router's conversion pool, when its Earn binding converts the private asset. */
@@ -79,11 +79,10 @@ export const deployZoneRouterFactory = defineFoundryStep({
   id: 'deploy-zone-router-factory',
   authority: deployerAuthority,
   execution: 'foundry',
-  project: 'zone-router',
   summary: 'Deploy the ownerless ZoneRouterFactory the profile does not name.',
   phase: 'deployment',
   intent: ['zoneRouterFactory'],
-  script: 'script/deploy/DeployZoneRouterFactory.s.sol:DeployZoneRouterFactoryScript',
+  script: 'script/zone/deploy/DeployZoneRouterFactory.s.sol:DeployZoneRouterFactoryScript',
   enabled: (profile) => profile.zoneRouter !== null && profile.zoneRouter.factory === undefined,
   input: (profile, _outputs, outputPath) =>
     encodeFunctionData({
@@ -93,7 +92,7 @@ export const deployZoneRouterFactory = defineFoundryStep({
     }),
   source: {
     output: 'zoneRouterFactory',
-    contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
     constructorArgs: () => '0x',
   },
   async satisfied(client, _profile, outputs) {
@@ -118,7 +117,6 @@ export const deployZoneRouter = defineFoundryStep({
   id: 'deploy-zone-router',
   authority: deployerAuthority,
   execution: 'foundry',
-  project: 'zone-router',
   summary: 'Deploy the ZoneRouter for the profile mode through its ZoneRouterFactory.',
   phase: 'deployment',
   // A new factory deploys the same mode at a new address.
@@ -129,10 +127,10 @@ export const deployZoneRouter = defineFoundryStep({
     argument: 'router',
     output: 'zoneRouter',
     ...(namesFactory(profile)
-      ? { source: { project: 'zone-router', contract: deployZoneRouterFactory.source!.contract } }
+      ? { source: { contract: deployZoneRouterFactory.source!.contract } }
       : {}),
   }),
-  script: 'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
+  script: 'script/zone/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
   rawGasEstimate: true,
   enabled: hasZoneRouter,
   input: (profile, outputs, outputPath) =>
@@ -150,7 +148,7 @@ export const deployZoneRouter = defineFoundryStep({
     }),
   source: {
     output: 'zoneRouter',
-    contract: 'src/ZoneRouter.sol:ZoneRouter',
+    contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
     // An Earn mode moves EarnShare; a Spend-only router never holds it, and membership grants it nothing.
     accessMember: true,
     constructorArgs: (profile, outputs) =>
@@ -326,7 +324,7 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const router = requiredOutput(outputs, 'zoneRouter')
     const factory = zoneRouterFactory(profile, outputs)
     const provenance = profile.zoneRouter?.factory
-      ? `confirm that ZoneRouterFactory ${factory} is source verified as zone-router/src/ZoneRouterFactory.sol, then `
+      ? `confirm that ZoneRouterFactory ${factory} is source verified as src/zone/ZoneRouterFactory.sol, then `
       : ''
     return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },
@@ -507,14 +505,12 @@ async function requireModeProvenance(
 ) {
   await requireRouterProvenance(client, {
     address: zoneRouterFactory(profile, outputs),
-    project: 'zone-router',
-    contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
     constructorArgs: '0x',
   })
   await requireRouterProvenance(client, {
     address: requiredOutput(outputs, 'zoneRouter'),
-    project: 'zone-router',
-    contract: 'src/ZoneRouter.sol:ZoneRouter',
+    contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
     constructorArgs: zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
   })
 }

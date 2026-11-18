@@ -381,7 +381,7 @@ describe('deployment authority adapters', () => {
     ).rejects.toBe(error)
     expect(vi.mocked(requireRouterProvenance).mock.lastCall?.[1]).toMatchObject({
       address: router,
-      contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+      contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
     })
     expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
   })

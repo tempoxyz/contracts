@@ -50,7 +50,7 @@ not Merkle reward registration.
 
 ### Optional controller
 
-[`EarnContributionController`](../../../earn/src/rewards/EarnContributionController.sol) is immutable to one
+[`EarnContributionController`](../../../src/earn/rewards/EarnContributionController.sol) is immutable to one
 EarnVault and its base asset and uses `Ownable2Step` ownership.
 
 | Function                                                       | Authority             | Behavior                                                   |
@@ -81,7 +81,7 @@ Providers can always call `EarnVault.contribute` directly.
 
 ## Merkle distributor
 
-[`EarnMerkleRewardDistributor`](../../../earn/src/rewards/EarnMerkleRewardDistributor.sol) is immutable to
+[`EarnMerkleRewardDistributor`](../../../src/earn/rewards/EarnMerkleRewardDistributor.sol) is immutable to
 one EarnVault, its base asset and EarnShare, a treasury, a nonzero campaign ID, and a future claim
 deadline. It pays only EarnShare. Leaves are cumulative and domain-separated by chain, distributor,
 campaign, recipient, and cumulative amount:
@@ -153,8 +153,8 @@ distributor address.
 `targetYield` (deploys the controller) and `boostRewards` (deploys the distributor). The lifecycle
 runs `deploy-merkle-distributor` after `deploy-router` and `deploy-contribution-controller` after
 `validate-access` ([step order](../../deployment/deployment.md#authority-boundaries)), both as the
-deployer through `script/deploy/DeployEarnMerkleRewardDistributor.s.sol` and
-`script/deploy/DeployEarnContributionController.s.sol`. Both contracts are owned directly by the
+deployer through `script/earn/deploy/DeployEarnMerkleRewardDistributor.s.sol` and
+`script/earn/deploy/DeployEarnContributionController.s.sol`. Both contracts are owned directly by the
 profile `owner`. The distributor's treasury is `boostRewards.treasury`, its campaign ID derives from
 the chain ID, profile ID, and version, and its claim deadline is 30 days after
 `boostRewards.endTimestamp`. The profile parser requires that derived deadline to fit `uint40`.
@@ -165,7 +165,7 @@ after expiry. A protected EarnShare must whitelist the distributor and its treas
 fixture-key guard checks. Each component is its own intent component, so a constructor change
 replaces only that contract. The lifecycle never deploys or configures the offchain service.
 
-**For an existing EarnVault.** [`EarnRewardsFactory`](../../../earn/src/rewards/EarnRewardsFactory.sol) is
+**For an existing EarnVault.** [`EarnRewardsFactory`](../../../src/earn/rewards/EarnRewardsFactory.sol) is
 ownerless and permissionless. `install(earnVault, owner, treasury, claimDeadline, targetYield,
 boostRewards)` deploys either or both components with `CREATE2`, assigns `owner` directly, and keeps
 no authority. A boost installation requires a nonzero treasury and a future deadline; a
@@ -184,7 +184,7 @@ Tempo API installs reward periphery through the rewards factory and pins each ho
 release itself; profiles never use it.
 
 To release one, deploy from a reviewed `main` checkout through the `earnRewardsFactory(uint256)`
-entry point of `script/deploy/DeployFactoryRelease.s.sol` (plain `CREATE`, run like the other
+entry point of `script/earn/deploy/DeployFactoryRelease.s.sol` (plain `CREATE`, run like the other
 [shared factory releases](../../deployment/deployment.md#shared-factory-releases)), source-verify it,
 and require its onchain runtime-code hash to match the local `deployedBytecode` hash with the
 verifier reporting `exact_match`. Then configure its address and onchain runtime-code hash in Tempo
@@ -210,7 +210,7 @@ distributor's EarnShare, treasury, campaign ID, deadline, and funder allowance. 
 root-version and settlement replay protection, recipient deferral and recovery, pause behavior, and
 post-deadline treasury return.
 
-Foundry tests in [`test/rewards/`](../../../earn/test/rewards/) cover both contracts and the factory. In E2E,
+Foundry tests in [`test/earn/rewards/`](../../../test/earn/rewards/) cover both contracts and the factory. In E2E,
 [`rewards-controller`](../../../e2e/modules/rewards/module.ts) (group `rewards`) runs on any stack
 with a contribution controller, `fees-waterfall` shows contributed growth following the configured
 fee waterfall, and `access-ineligible-contributor-does-not-earn` shows an ineligible contributor

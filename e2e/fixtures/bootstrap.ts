@@ -64,8 +64,8 @@ import {
 
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const repositoryRoot = dirname(e2eRoot)
-// Earn's Foundry project: Forge steps and broadcasts resolve here.
-const root = resolve(repositoryRoot, 'earn')
+// The Foundry project (the repository root): Forge steps and broadcasts resolve here.
+const root = repositoryRoot
 /** PATHUSD the deployer must hold for the fixture broadcasts, from the faucet where there is one. */
 const minimumFeeBalance = 1_000_000n
 const pathUsd = getAddress(Addresses.pathUsd)

@@ -77,9 +77,6 @@ jobs:
           forge-cache: deploy
           workspace: '@tempoxyz/contracts'
 
-      - name: Install the Zone router's Solidity dependencies
-        run: scripts/solidity-deps.sh zone-router
-
       - name: Deploy the factory releases
         run: |
           set -euo pipefail
@@ -112,9 +109,8 @@ jobs:
         with:
           path: |
             profiles/*/deployment.pending.json
-            earn/.earn/external
-            earn/broadcast
-            zone-router/broadcast
+            .earn/external
+            broadcast
           key: deploy-resume-${{ matrix.network }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: deploy-resume-${{ matrix.network }}-
 
@@ -158,16 +154,15 @@ jobs:
           done
           exit "$incomplete"
 
-      # Forge records the authenticated RPC URL in its script sequences under each project's cache,
-      # which the forge cache saves for every branch to restore; remove them whatever the outcome.
+      # Forge records the authenticated RPC URL in its script sequences under the profile's cache
+      # directory in cache/, which the forge cache saves for every branch to restore; remove them
+      # whatever the outcome.
       - name: Remove Forge script sequences
         if: ${{ always() }}
         run: |
-          for cache in earn/cache zone-router/cache; do
-            if [[ -d "$cache" ]]; then
-              find "$cache" -mindepth 2 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
-            fi
-          done
+          if [[ -d cache ]]; then
+            find cache -mindepth 1 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
+          fi
 
       - name: Save profile resume state
         if: ${{ always() && inputs.broadcast }}
@@ -175,9 +170,8 @@ jobs:
         with:
           path: |
             profiles/*/deployment.pending.json
-            earn/.earn/external
-            earn/broadcast
-            zone-router/broadcast
+            .earn/external
+            broadcast
           key: deploy-resume-${{ matrix.network }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # The registry and record changes this network made, for the record job to apply. Networks change

@@ -23,24 +23,21 @@ const create2Deployer = getAddress('0x4e59b44847b379578588920cA78FbF26c0B4956C')
 const releaseSalt = keccak256(stringToBytes('tempoxyz/earn shared factory release'))
 
 /**
- * A contract's creation code as its project's release builds it: the Zone router's under its `deploy`
- * profile (`pnpm zone-router-release`), the card project's under its default one (its release.sh).
+ * A contract's creation code as its release builds it. Every profile compiles with the same
+ * settings, so the Zone router's `deploy` build and the spend release script's default one agree.
  */
-function creationCode(project: 'cards' | 'zone-router', contract: string) {
-  const key = `${project}:${contract}`
-  const cached = creationCodes.get(key)
+function creationCode(contract: string) {
+  const cached = creationCodes.get(contract)
   if (cached) return cached
-  const environment = foundryVerificationEnvironment(process.env)
-  if (project === 'cards') delete environment.FOUNDRY_PROFILE
   const bytecode = execFileSync('forge', ['inspect', contract, 'bytecode'], {
-    cwd: `${repository}${project}`,
+    cwd: repository,
     encoding: 'utf8',
-    env: environment as NodeJS.ProcessEnv,
+    env: foundryVerificationEnvironment(process.env) as NodeJS.ProcessEnv,
   }).trim()
   if (!isHex(bytecode) || bytecode === '0x') {
     throw new Error(`Forge returned invalid creation bytecode for ${contract}`)
   }
-  creationCodes.set(key, bytecode)
+  creationCodes.set(contract, bytecode)
   return bytecode
 }
 
@@ -58,14 +55,14 @@ export const spenderReleases: SpenderReleases = {
   cardFactory: (routerFactory) =>
     releaseAddress(
       concatHex([
-        creationCode('cards', 'src/core/CardFactory.sol:CardFactory'),
+        creationCode('src/spend/CardFactory.sol:CardFactory'),
         encodeAbiParameters(parseAbiParameters('address'), [routerFactory]),
       ]),
     ),
   sendSpender: ({ routerFactory, convertVault, pool, customerId }) =>
     releaseAddress(
       concatHex([
-        creationCode('zone-router', 'src/spenders/SendSpender.sol:SendSpender'),
+        creationCode('src/zone/spenders/SendSpender.sol:SendSpender'),
         encodeAbiParameters(parseAbiParameters('address, address, address, bytes32'), [
           routerFactory,
           convertVault,

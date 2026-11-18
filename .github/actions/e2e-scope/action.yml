@@ -41,24 +41,31 @@ runs:
           const exactPaths = new Set([
             '.github/workflows/local-zone.yml',
             '.nvmrc',
-            'earn/foundry.lock',
-            'earn/foundry.toml',
-            'earn/solar-solc',
-            'earn/solar.lock',
+            'foundry.lock',
+            'foundry.toml',
             'package.json',
             'pnpm-lock.yaml',
             'pnpm-workspace.yaml',
+            'script/DeterministicRelease.sol',
+            'solar-solc',
+            'solar.lock',
           ])
-          // Localnet deploys the committed DirectPropAMM fixture; otherwise E2E, localnet, and the
-          // scripts import nothing from `earn/test/`.
+          // Localnet deploys the committed DirectPropAMM fixture; the rest of `test/` and the spend
+          // contracts and scripts (`src/spend/`, `script/spend/`) are outside Local E2E.
           const pathPrefixes = [
             '.github/actions/',
             'e2e/',
             'deployments/',
             'profiles/',
-            'earn/script/',
-            'earn/src/',
-            'earn/test/fixtures/propamm/',
+            'script/earn/',
+            'script/zone/',
+            'src/demo/',
+            'src/earn/',
+            'src/interfaces/earn/',
+            'src/interfaces/external/',
+            'src/interfaces/zone/',
+            'src/zone/',
+            'test/earn/fixtures/propamm/',
             'localnet/',
             'scripts/solidity-deps.sh',
           ]

@@ -89,7 +89,7 @@ Localnet installs Earn's pinned Solidity dependencies on first use; Prool suppli
 
 Every local Earn stack is an `EarnDeploymentProfile` deployed through the same plan and lifecycle as
 hosted profiles: `planEarnDeployment` derives the actions, `reconcileEarnProfileActions` runs the
-shared `earn/script/deploy/` Forge scripts and the typed authority steps (engine binding, router
+shared `script/earn/deploy/` Forge scripts and the typed authority steps (engine binding, router
 admission, Zone token enablement, all held by local accounts), and `verifyEarnDeploymentState`
 inspects the result, including the factory-predicted EarnShare, EarnFees, and engine addresses.
 Localnet skips only what needs a hosted chain: the reviewed factory runtime check, source
@@ -115,7 +115,7 @@ factory) leaves that engine with a separate funded setup owner, so the lifecycle
 Each kind's `LocalEngine` lives in `localnet/src/engines/<kind>.ts`: venue `provision`, an optional
 fixture `validate`, the `profileEngine` target, token `metadata`, and `hostedFixture` (whether the
 kind runs over canonical PATHUSD and how its engine's constructor arguments are read for source
-verification). Its fixture contracts deploy from `earn/script/local/script/DeployLocal<Kind>.s.sol`;
+verification). Its fixture contracts deploy from `script/earn/local/DeployLocal<Kind>.s.sol`;
 shared engine facts come from `engineDefinitions`. [Adding an
 engine](../earn/integrations/engines.md#adding-an-engine) lists every file a new kind needs.
 
@@ -135,8 +135,8 @@ before acceptance; stale fixture addresses do not prohibit rotation or authorize
 ### Devnet source evidence
 
 `pnpm devnet:deploy` deploys an Earn stack on an existing devnet. It requires a clean repository.
-Before resolving credentials, it validates existing Earn and Zone-router libraries against their
-respective `foundry.lock` revisions, then installs missing dependencies through the pinned installer.
+Before resolving credentials, it validates the installed Solidity libraries against the
+repository's `foundry.lock` revisions, then installs missing dependencies through the pinned installer.
 Symlinked checkouts, modified sources, unpublished files (including ignored files), and unpinned
 installed libraries fail before the installer can replace them. The completed installation is
 checked before any chain write and again before certifying the deployment. Disposable
@@ -176,8 +176,8 @@ between deployed runtime and independently rebuilt source.
 - Each fixture step is its own `forge script --sig <calldata>` call of one entry point:
   `DeployLocalEarn.s.sol` for engine-independent fixtures, one `DeployLocal<Kind>.s.sol` per engine,
   or a shared release step. Localnet deploys the EarnVault and EarnFees implementations and
-  `EarnFactory` from `earn/script/deploy/DeployFactoryRelease.s.sol` and every engine factory from its
-  engine's deploy script (`erc4626EngineFactory` in `earn/script/deploy/DeployERC4626Engine.s.sol`); it
+  `EarnFactory` from `script/earn/deploy/DeployFactoryRelease.s.sol` and every engine factory from its
+  engine's deploy script (`erc4626EngineFactory` in `script/earn/deploy/DeployERC4626Engine.s.sol`); it
   deploys no rewards factory. `Foundry.script` binds a script to its generated ABI from
   `@tempoxyz/contracts/abis`, so step names and arguments are checked against the Solidity signatures.
 - Fixture and deployment scripts receive `DEPLOYER_PRIVATE_KEY` as their only signing key, alongside
@@ -187,9 +187,9 @@ between deployed runtime and independently rebuilt source.
   `foundry.toml`. Fixture and
   lifecycle steps run with `--batch` and the PATHUSD fee token; Tempo batches allow a top-level
   CREATE only in the first slot.
-- Fixture scripts extend `earn/script/local/script/FixtureScript.sol`, shared with the hosted fixture
+- Fixture scripts extend `script/earn/local/FixtureScript.sol`, shared with the hosted fixture
   bootstrap, so the stablecoin pair (`DemoStablecoinFunder`) and the DirectPropAMM pool deployment
-  have one definition. `DeployLocalEarn.s.sol` deploys the `earn/src/demo/` par oracle and recipient
+  have one definition. `DeployLocalEarn.s.sol` deploys the `src/demo/` par oracle and recipient
   registry.
 - Each `Environment.run` gets a temporary run directory `localnet/.local/run-*` holding its
   `FOUNDRY_BROADCAST` directory (`broadcast/`), isolated Forge build state (`build/<project>/`), and lifecycle resume state (each profile's
@@ -236,7 +236,7 @@ between deployed runtime and independently rebuilt source.
 
 ## Card runtime compatibility
 
-The [card project](../../cards/README.md) implements card payments through provider contracts.
+[Card spend](../spend/README.md) implements card payments through provider contracts.
 Its [compatibility record](../../localnet/fixtures/card-runtime-provenance.json) maps a tested native subset; `runtimeEquivalenceEstablished` stays
 `false`. Foundry models the Zone side in one EVM, while the Docker tests run the pinned Rust Inbox
 and Outbox. A model test cannot substitute for native private-flow acceptance.
@@ -254,7 +254,7 @@ The first command checks the vendored Zone source hashes and installed `tempo-st
 in a disposable directory with solc 0.8.35, Osaka, via-IR and 200 optimizer runs. Portal, Messenger
 and Verifier executable bytes must exactly match the locked fixture. Only the standard solc 0.8.35
 IPFS metadata trailer may differ; no opcodes, immutables or library addresses are masked. This
-comparison does not change the card project's solar (Solidity 0.8.36)/Cancun settings.
+comparison does not change the repository's solar (Solidity 0.8.36)/Cancun settings.
 
 Every localnet startup inspects the running container's image digest and recorded source labels on
 the daemon selected by Testcontainers. Before applying local genesis overrides, it requires the

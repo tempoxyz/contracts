@@ -17,7 +17,7 @@ read each kind's properties from the shared
 
 ## Engine contract
 
-[`IEarnEngine`](../../../earn/src/interfaces/engines/IEarnEngine.sol) defines single-client custody and
+[`IEarnEngine`](../../../src/interfaces/earn/engines/IEarnEngine.sol) defines single-client custody and
 valuation:
 
 - `asset` and the `earnVault` binding;
@@ -47,11 +47,11 @@ Optional behavior is advertised through ERC-165:
 
 | Interface                                                                                       | Capability                           |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------ |
-| [`IEarnEngineRedeem`](../../../earn/src/interfaces/engines/IEarnEngineRedeem.sol)               | Immediate preview and redemption     |
-| [`IEarnEngineExactWithdraw`](../../../earn/src/interfaces/engines/IEarnEngineExactWithdraw.sol) | Immediate exact-asset withdrawal     |
-| [`IEarnEngineAsyncRedeem`](../../../earn/src/interfaces/engines/IEarnEngineAsyncRedeem.sol)     | Request and cancel queued redemption |
-| [`IEarnEngineInKindDeposit`](../../../earn/src/interfaces/engines/IEarnEngineInKindDeposit.sol) | Current venue-share entry            |
-| [`IEarnEngineFeeValuation`](../../../earn/src/interfaces/engines/IEarnEngineFeeValuation.sol)   | Expiring fee valuation               |
+| [`IEarnEngineRedeem`](../../../src/interfaces/earn/engines/IEarnEngineRedeem.sol)               | Immediate preview and redemption     |
+| [`IEarnEngineExactWithdraw`](../../../src/interfaces/earn/engines/IEarnEngineExactWithdraw.sol) | Immediate exact-asset withdrawal     |
+| [`IEarnEngineAsyncRedeem`](../../../src/interfaces/earn/engines/IEarnEngineAsyncRedeem.sol)     | Request and cancel queued redemption |
+| [`IEarnEngineInKindDeposit`](../../../src/interfaces/earn/engines/IEarnEngineInKindDeposit.sol) | Current venue-share entry            |
+| [`IEarnEngineFeeValuation`](../../../src/interfaces/earn/engines/IEarnEngineFeeValuation.sol)   | Expiring fee valuation               |
 
 Every installed engine must advertise `IEarnEngine` and at least one of `IEarnEngineRedeem`,
 `IEarnEngineExactWithdraw`, or `IEarnEngineAsyncRedeem`. `EarnVault.initialize`
@@ -117,15 +117,15 @@ the ABI module. Every other workspace reads the new kind from those registration
 
 New files:
 
-| File                                      | Contents                                                                                                                                 |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/engines/<kind>/<Name>Engine.sol`     | The engine and any periphery contracts                                                                                                   |
-| `test/engines/<kind>/*.t.sol`             | Foundry tests ([test guide](../../../earn/test/AGENTS.md))                                                                               |
-| `deployments/modules/engines/<kind>.ts`   | One `defineEngine` ([fields](#definition-fields))                                                                                        |
-| `localnet/src/engines/<kind>.ts`          | Its `LocalEngine` ([fields](#localnet-and-e2e))                                                                                          |
-| `localnet/script/DeployLocal<Kind>.s.sol` | Contract `DeployLocal<Kind>Script is FixtureScript`, one `broadcast` function per fixture; local fixture contracts go in `localnet/src/` |
-| `e2e/engines/<kind>/engine.ts`            | `export const engine: E2eEngine` ([fields](#localnet-and-e2e))                                                                           |
-| `docs/modules/<kind>.md`                  | The kind's one owning page                                                                                                               |
+| File                                       | Contents                                                                                                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/earn/engines/<kind>/<Name>Engine.sol` | The engine and any periphery contracts                                                                                                   |
+| `test/earn/engines/<kind>/*.t.sol`         | Foundry tests ([test guide](../../../test/earn/AGENTS.md))                                                                               |
+| `deployments/modules/engines/<kind>.ts`    | One `defineEngine` ([fields](#definition-fields))                                                                                        |
+| `localnet/src/earn/engines/<kind>.ts`      | Its `LocalEngine` ([fields](#localnet-and-e2e))                                                                                          |
+| `localnet/script/DeployLocal<Kind>.s.sol`  | Contract `DeployLocal<Kind>Script is FixtureScript`, one `broadcast` function per fixture; local fixture contracts go in `localnet/src/` |
+| `e2e/engines/<kind>/engine.ts`             | `export const engine: E2eEngine` ([fields](#localnet-and-e2e))                                                                           |
+| `docs/modules/<kind>.md`                   | The kind's one owning page                                                                                                               |
 
 Registrations:
 
@@ -138,7 +138,7 @@ Registrations:
 | [`deployments/abis/generated.ts`](../../../deployments/abis/generated.ts)                    | Regenerate: `forge build src script test localnet`, then `pnpm --filter @tempoxyz/contracts abis`                            |
 
 [ABI generation](../../../deployments/abis/generate.ts) exports every deployable contract under `src/`
-as `<name>Abi` (`PropAMMEngine` becomes `propAMMEngineAbi`) and every `script/deploy/` and
+as `<name>Abi` (`PropAMMEngine` becomes `propAMMEngineAbi`) and every `script/earn/deploy/` and
 `localnet/script/` script's state-changing entry points as `<name>ScriptAbi`, so a new
 contract needs no entry there. Add a venue built in another repository to
 [`deployments/abis/external.ts`](../../../deployments/abis/external.ts). Export an engine's helpers from
@@ -147,11 +147,11 @@ them, as `quotePropAMMRoute` is.
 
 A kind whose engines the lifecycle provisions from a venue also adds:
 
-- the factory contract under `src/engines/` and its tests;
-- a `script/deploy/` script whose `run(Input)` deploys an engine and whose
+- the factory contract under `src/earn/engines/` and its tests;
+- a `script/earn/deploy/` script whose `run(Input)` deploys an engine and whose
   `<releaseKey>Factory(uint256 expectedChainId)` deploys the ownerless factory, encoded by the
   definition's `deployInput` and `releaseInput`
-  ([`DeployERC4626Engine.s.sol`](../../../earn/script/deploy/DeployERC4626Engine.s.sol)); and
+  ([`DeployERC4626Engine.s.sol`](../../../script/earn/deploy/DeployERC4626Engine.s.sol)); and
 - the `releaseKey` in each hosted network's `canonicalReleases.<network>.factories` in
   [`releases.ts`](../../../deployments/core/releases.ts) (`mainnet` and `moderato`), with the
   reviewed factory address or `null` until it is released there. The entry is typed
@@ -184,7 +184,7 @@ The registry derives `EngineKind`, `engineKinds`, `FactoryEngineKind`, the profi
 accepted kinds, the local variants, and the literals that
 [`boundary.test.ts`](../../../deployments/modules/earn/engines/boundary.test.ts) rejects in generic code:
 outside test files, no file under `deployments/core`, `deployments/chain`, `e2e/harness`,
-`e2e/fixtures`, `e2e/modules`, or `localnet/src` (except `localnet/src/engines`) may quote a kind name.
+`e2e/fixtures`, `e2e/modules`, or `localnet/src` (except `localnet/src/earn/engines`) may quote a kind name.
 
 ### Localnet and E2E
 

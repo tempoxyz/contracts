@@ -1,7 +1,7 @@
 # Tempo Earn documentation
 
 This documentation describes the code on `main`. Start with the root [Tempo Earn
-overview](../../earn/README.md). Each Earn topic has one canonical page below; shared topics (deployment,
+overview](overview.md). Each Earn topic has one canonical page below; shared topics (deployment,
 profiles, E2E, development, security policy) and the other projects are in the
 [repository documentation](../README.md). Other pages link to the canonical page rather than
 restating it, so a behavior change needs one documentation edit. The [glossary](glossary.md) defines
@@ -43,7 +43,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 | `access-policy`         | [Access policy](modules/access.md)               | EarnShare TIP-403 whitelist, required members, `pnpm earn access`          |
 | `rewards`               | [Rewards](modules/rewards.md)                    | Contribution controller, Merkle distributor, `EarnRewardsFactory`          |
 | none                    | [Existing vault migration](modules/migration.md) | Holder opt-in, source-vault composition, stack replacement (E2E in `zone`) |
-| top-level `zone-router` | [`ZoneRouter`](../zone-router/zone-router.md)    | The `zoneRouter` field: a `ZoneRouter` mode and its `ZoneRouterFactory`    |
+| top-level `zone-router` | [`ZoneRouter`](../zone/zone-router.md)           | The `zoneRouter` field: a `ZoneRouter` mode and its `ZoneRouterFactory`    |
 
 ## Document ownership
 

@@ -144,15 +144,15 @@ export function sharedFactoryRuntimeCodeHashes(
   compile: (contract: string) => CompiledRuntimeCode,
   engineFactory?: Pick<EngineFactory, 'contract' | 'releaseKey' | 'source'>,
 ): SharedFactoryRuntimeCodeHashes {
-  const earnFactory = compile('src/core/EarnFactory.sol:EarnFactory')
+  const earnFactory = compile('src/earn/core/EarnFactory.sol:EarnFactory')
   const hash = (contract: string) => keccak256(compile(contract).bytecode)
   return {
     earnFactory: {
       hash: keccak256(normalizeImmutableReferences(earnFactory.bytecode, earnFactory.references)),
       immutableReferences: earnFactory.references,
     },
-    earnVaultImplementation: hash('src/core/EarnVault.sol:EarnVault'),
-    earnFeesImplementation: hash('src/core/EarnFees.sol:EarnFees'),
+    earnVaultImplementation: hash('src/earn/core/EarnVault.sol:EarnVault'),
+    earnFeesImplementation: hash('src/earn/core/EarnFees.sol:EarnFees'),
     ...(engineFactory
       ? {
           [factoryHashKey(engineFactory)]: hash(

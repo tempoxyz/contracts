@@ -7,7 +7,7 @@ Audit coverage is in [audits](../audit/README.md#scope).
 
 ## Contract
 
-[`ERC4626Engine`](../../../earn/src/engines/ERC4626Engine.sol) wraps one ERC-4626 vault (`vault()`) and is
+[`ERC4626Engine`](../../../src/earn/engines/erc4626/ERC4626Engine.sol) wraps one ERC-4626 vault (`vault()`) and is
 the default engine for venues that execute immediately. It deposits the base asset and measures the
 venue shares it receives, accepts the vault's own shares through `depositInKind`, values its custody
 with the vault's `previewRedeem`, and advertises redeem, exact-withdraw, and in-kind entry. It does
@@ -42,7 +42,7 @@ test fixtures, not production venues.
 
 ## Factory
 
-[`ERC4626EngineFactory`](../../../earn/src/engines/ERC4626EngineFactory.sol) is ownerless and
+[`ERC4626EngineFactory`](../../../src/earn/engines/erc4626/ERC4626EngineFactory.sol) is ownerless and
 permissionless, released once per network and pinned in that network's current release
 ([factory releases](../../deployment/deployment.md#shared-factory-releases)).
 `deploy(deploymentId, vault, owner, nameOverride, symbolOverride)` uses `CREATE2` to deploy the
@@ -63,7 +63,7 @@ its own reviewed factory, and the setup owner still binds the engine after core 
 A profile names the engine one of two ways ([profile schema](../../../profiles/README.md#schema)):
 
 - `{ "kind": "erc4626", "venue": "0x..." }` runs `deploy-engine`
-  (`script/deploy/DeployERC4626Engine.s.sol`) through the release's factory, with the deployer as
+  (`script/earn/deploy/DeployERC4626Engine.s.sol`) through the release's factory, with the deployer as
   setup owner, a deployment ID of `keccak256("<profile id>:v<version>")`, and no metadata overrides,
   so the venue must report a nonempty name and symbol. `erc4626` is the only kind with a factory.
 - `{ "kind": "erc4626", "address": "0x..." }` reuses an existing, unbound engine, for example one
@@ -87,7 +87,7 @@ venue must be dedicated or gated and reviewed against the
 
 ## Tests
 
-- Foundry, under [`test/engines/erc4626/`](../../../earn/test/engines/erc4626/): the engine, the factory,
+- Foundry, under [`test/earn/engines/erc4626/`](../../../test/earn/engines/erc4626/): the engine, the factory,
   and a composition invariant suite.
 - E2E: `erc4626` is the default local variant (`pnpm e2e:local`), so every shared case runs over it.
   `public-deposit-existing-venue-shares` (requires `inKindDeposit`) covers in-kind entry, and the

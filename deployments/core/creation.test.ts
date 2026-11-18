@@ -1,5 +1,5 @@
 import * as ChildProcess from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
@@ -28,7 +28,7 @@ const profile = parseEarnDeploymentProfile(
 )
 
 describe('assertStepCreation', () => {
-  test('compiles the declared project and contract with deploy settings and no signer or compiler override', async () => {
+  test('compiles the declared contract with deploy settings and no signer or compiler override', async () => {
     const fixture = setup()
     try {
       const compile = vi
@@ -39,7 +39,7 @@ describe('assertStepCreation', () => {
         'forge',
         ['inspect', fixture.options.step.source!.contract, 'bytecode'],
         {
-          cwd: join(fixture.root, 'zone-router'),
+          cwd: fixture.root,
           encoding: 'utf8',
           env: { PATH: '/bin', FOUNDRY_PROFILE: 'deploy' },
         },
@@ -57,7 +57,7 @@ describe('assertStepCreation', () => {
       await expect(assertStepCreation(fixture.options)).rejects.toThrow('invalid creation bytecode')
       expect(fixture.client.getTransaction).not.toHaveBeenCalled()
       compile.mockClear()
-      writeFileSync(join(fixture.root, 'zone-router', '.env'), 'FOUNDRY_PROFILE=audit')
+      writeFileSync(join(fixture.root, '.env'), 'FOUNDRY_PROFILE=audit')
       await expect(assertStepCreation(fixture.options)).rejects.toThrow(
         'before running deployment tooling',
       )
@@ -108,8 +108,6 @@ describe('assertStepCreation', () => {
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'creation-compiler-'))
-  mkdirSync(join(root, 'earn'))
-  mkdirSync(join(root, 'zone-router'))
   const step = deploymentStep('deploy-zone-router-factory')
   if (step.execution !== 'foundry' || !step.source) throw new Error('Expected direct source')
   const client = {
@@ -131,7 +129,7 @@ function setup() {
     client,
     options: {
       client: client as never,
-      root: join(root, 'earn'),
+      root,
       environment: {
         PATH: '/bin',
         FOUNDRY_PROFILE: 'audit',

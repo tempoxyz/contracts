@@ -18,25 +18,25 @@ Keep the report confidential until we have confirmed a fix and agreed on disclos
 
 In scope:
 
-- Tempo Earn: the contracts in [`earn/src/`](earn/src/), except `earn/src/demo/`;
-- the Zone router: the contracts in [`zone-router/src/`](zone-router/src/), including its spenders;
-- card spend: [`cards/src/`](cards/src/), the provider-agnostic core and our code for each provider
+- Tempo Earn: the contracts in [`src/earn/`](src/earn/);
+- the Zone router: the contracts in [`src/zone/`](src/zone/), including its spenders;
+- card spend: [`src/spend/`](src/spend/), the provider-agnostic core and our code for each provider
   (Bridge's "TS" handler and `BridgeProvider`, Rain's `RainProvider`); and
-- the deployment tooling: [`deployments/`](deployments/), each project's `script/`, and the
+- the deployment tooling: [`deployments/`](deployments/), `script/`, and the
   [profile lifecycle](docs/deployment/deployment.md) they implement.
 
 Out of scope:
 
-- `earn/src/demo/` and test fixtures, including every `test/` directory, `localnet/`, `e2e/`, and
+- `src/demo/` and test fixtures, including `test/`, `localnet/`, `e2e/`, and
   committed fixture artifacts, which are not production code;
-- vendored third-party code, such as the card providers' contracts in `cards/vendor/`, and third-party venues
+- vendored third-party code, such as the card providers' contracts in `vendor/`, and third-party venues
   such as ERC-4626 vaults, Veda, and PropAMM. Report issues in them to their owners. A bug in how
   Tempo's contracts integrate with them is in scope.
 
 Each project documents its trust assumptions, privileged roles, and privacy boundary: Earn's
 [security and privacy model](docs/earn/architecture/security-and-privacy.md), the
-[Zone router](docs/zone-router/zone-router.md), and card spend's
-[design](docs/cards/design.md). Behavior documented there as trusted or visible is not a
+[Zone router](docs/zone/zone-router.md), and card spend's
+[design](docs/spend/design.md). Behavior documented there as trusted or visible is not a
 vulnerability by itself.
 
 ## Bug bounty
@@ -47,5 +47,5 @@ These contracts have no bug bounty.
 
 Earn's completed audits, their scope, and the contracts changed or added since are listed on its
 [audits page](docs/earn/audit/README.md). Bridge card spend's
-[design](docs/cards/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeProvider`,
+[design](docs/spend/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeProvider`,
 `CardSpender`, `CardFactory`, `ZoneRouter` and `ZoneRouterFactory`.

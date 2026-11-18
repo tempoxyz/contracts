@@ -17,7 +17,7 @@ vi.mock('./config.js', async (importOriginal) => {
   const { tmpdir } = await import('node:os')
   const { resolve } = await import('node:path')
   const root = mkdtempSync(resolve(tmpdir(), 'localnet-foundry-'))
-  return { ...config, root, earnRoot: resolve(root, 'earn') }
+  return { ...config, root, foundryRoot: root }
 })
 
 const runRoot = resolve(Config.root, 'run')
@@ -66,7 +66,7 @@ const excludedEnvironment = {
 }
 
 beforeAll(() => {
-  for (const name of ['earn', 'zone-router', 'run/broadcast', 'bin', 'scripts'])
+  for (const name of ['run/broadcast', 'bin', 'scripts'])
     mkdirSync(resolve(Config.root, name), { recursive: true })
   const forge = resolve(Config.root, 'bin/forge')
   writeFileSync(
@@ -125,40 +125,37 @@ PROBE
 
 afterEach(() => {
   vi.unstubAllEnvs()
-  for (const path of [captured, history, installed, 'earn/.env', 'zone-router/.env', 'run/build'])
+  for (const path of [captured, history, installed, '.env', 'run/build'])
     rmSync(resolve(Config.root, path), { force: true, recursive: true })
 })
 afterAll(() => rmSync(Config.root, { recursive: true, force: true }))
 
-it.each(['earn', 'zone-router'])(
-  'refuses dotenv in the mapped %s project before dependencies or Forge run',
-  (project) => {
-    writeFileSync(
-      resolve(Config.root, project, '.env'),
-      'ZONE_ADMIN_PRIVATE_KEY=synthetic-authority\nFOUNDRY_SOLC=/unreviewed\n',
-    )
-    vi.stubEnv('PATH', `${resolve(Config.root, 'bin')}:${process.env.PATH}`)
-    expect(() =>
-      runLifecycleStep(
-        {
-          action: { id: 'deploy-fixture' },
-          root: project === 'earn' ? runRoot : resolve(runRoot, '..', project),
-          arguments: ['script', 'DeployFixture'],
-          environment: { PATH: process.env.PATH! },
-          rawGasEstimate: false,
-        },
-        broadcastDirectory,
-      ),
-    ).toThrow(`Remove ${resolve(Config.root, project, '.env')}`)
-    expect(existsSync(captured)).toBe(false)
-    expect(existsSync(installed)).toBe(false)
-  },
-)
+it('refuses dotenv in the Foundry project before dependencies or Forge run', () => {
+  writeFileSync(
+    resolve(Config.foundryRoot, '.env'),
+    'ZONE_ADMIN_PRIVATE_KEY=synthetic-authority\nFOUNDRY_SOLC=/unreviewed\n',
+  )
+  vi.stubEnv('PATH', `${resolve(Config.root, 'bin')}:${process.env.PATH}`)
+  expect(() =>
+    runLifecycleStep(
+      {
+        action: { id: 'deploy-fixture' },
+        root: runRoot,
+        arguments: ['script', 'DeployFixture'],
+        environment: { PATH: process.env.PATH! },
+        rawGasEstimate: false,
+      },
+      broadcastDirectory,
+    ),
+  ).toThrow(`Remove ${resolve(Config.foundryRoot, '.env')}`)
+  expect(existsSync(captured)).toBe(false)
+  expect(existsSync(installed)).toBe(false)
+})
 
 it('refuses release inspection dotenv before dependencies or compilation', () => {
-  writeFileSync(resolve(Config.earnRoot, '.env'), 'FOUNDRY_SOLC=/unreviewed\n')
+  writeFileSync(resolve(Config.foundryRoot, '.env'), 'FOUNDRY_SOLC=/unreviewed\n')
   expect(() => releaseAddresses([], broadcastDirectory)).toThrow(
-    `Remove ${resolve(Config.earnRoot, '.env')}`,
+    `Remove ${resolve(Config.foundryRoot, '.env')}`,
   )
   expect(existsSync(captured)).toBe(false)
   expect(existsSync(installed)).toBe(false)
@@ -171,7 +168,7 @@ it('passes proxy and CA settings to the actual dependency child without authorit
   runLifecycleStep(
     {
       action: { id: 'deploy-router' },
-      root: resolve(runRoot, '..', 'zone-router'),
+      root: runRoot,
       arguments: ['script', 'DeployFixture'],
       environment: { PATH: process.env.PATH! },
       rawGasEstimate: false,
@@ -202,7 +199,7 @@ it('carries a credential-bearing fixture RPC only through the actual child envir
   expect(invocation.arguments).not.toContain('--rpc-url')
   expect(JSON.stringify(invocation.arguments)).not.toContain('synthetic')
   expect(invocation).toMatchObject({
-    cwd: Config.earnRoot,
+    cwd: Config.foundryRoot,
     rpcUrl,
     deployer: privateKey,
     broadcast: broadcastDirectory,
@@ -211,7 +208,7 @@ it('carries a credential-bearing fixture RPC only through the actual child envir
   expect(invocation).not.toHaveProperty('compiler')
 })
 
-it('preserves the lifecycle RPC and profile-scoped broadcast directory at the mapped project', () => {
+it('preserves the lifecycle RPC and profile-scoped broadcast directory at the Foundry project', () => {
   const rpcUrl = 'https://rpc.example/private-path?key=synthetic-query'
   const scopedBroadcast = resolve(broadcastDirectory, 'profile-hash')
   runLifecycleStep(
@@ -230,18 +227,17 @@ it('preserves the lifecycle RPC and profile-scoped broadcast directory at the ma
   )
   const invocation = JSON.parse(readFileSync(captured, 'utf8'))
   expect(invocation).toMatchObject({
-    cwd: Config.earnRoot,
+    cwd: Config.foundryRoot,
     rpcUrl,
     broadcast: scopedBroadcast,
   })
   expect(JSON.stringify(invocation.arguments)).not.toContain('synthetic')
 })
 
-it('keeps inspection, fixture scripts and sibling lifecycle builds off stale output and cache overrides', async () => {
+it('keeps inspection, fixture scripts and lifecycle builds off stale output and cache overrides', async () => {
   vi.stubEnv('PATH', `${resolve(Config.root, 'bin')}:${process.env.PATH}`)
   const stale = [
-    ['earn/out/deploy', 'earn/cache/deploy'],
-    ['zone-router/out/deploy', 'zone-router/cache/deploy'],
+    ['out/deploy', 'cache/deploy'],
     ['override/out', 'override/cache'],
   ]
   for (const [out, cache] of stale) {
@@ -263,14 +259,14 @@ it('keeps inspection, fixture scripts and sibling lifecycle builds off stale out
     .map((line) => JSON.parse(line))
   // The release prediction builds and inspects its own output, apart from fixture scripts.
   expect(built).toMatchObject({
-    arguments: ['build', 'script/deploy/DeployFactoryRelease.s.sol'],
-    cwd: Config.earnRoot,
-    out: resolve(runRoot, 'build/earn/out-release'),
-    cache: resolve(runRoot, 'build/earn/cache-release'),
+    arguments: ['build', 'script/earn/deploy/DeployFactoryRelease.s.sol'],
+    cwd: Config.foundryRoot,
+    out: resolve(runRoot, 'build/out-release'),
+    cache: resolve(runRoot, 'build/cache-release'),
     reused: false,
   })
   expect(inspected).toMatchObject({
-    cwd: Config.earnRoot,
+    cwd: Config.foundryRoot,
     out: built.out,
     cache: built.cache,
     reused: true,
@@ -287,31 +283,30 @@ it('keeps inspection, fixture scripts and sibling lifecycle builds off stale out
     }),
   ).rejects.toThrow('Forge did not write a new broadcast transaction')
   expect(JSON.parse(readFileSync(captured, 'utf8'))).toMatchObject({
-    out: resolve(runRoot, 'build/earn/out'),
-    cache: resolve(runRoot, 'build/earn/cache'),
+    out: resolve(runRoot, 'build/out'),
+    cache: resolve(runRoot, 'build/cache'),
     reused: false,
     bytecode: '0x6001',
   })
-  for (const project of ['earn', 'zone-router']) {
-    for (const attempt of [0, 1]) {
-      runLifecycleStep(
-        {
-          action: { id: 'deploy-fixture' },
-          root: project === 'earn' ? runRoot : resolve(runRoot, '..', project),
-          arguments: ['script', 'DeployFixture'],
-          environment: { PATH: process.env.PATH!, ...overrides },
-          rawGasEstimate: false,
-        },
-        broadcastDirectory,
-      )
-      expect(JSON.parse(readFileSync(captured, 'utf8'))).toMatchObject({
-        cwd: resolve(Config.root, project),
-        out: resolve(runRoot, 'build', project, 'out'),
-        cache: resolve(runRoot, 'build', project, 'cache'),
-        reused: project === 'earn' || attempt > 0,
-        bytecode: '0x6001',
-      })
-    }
+  // Every lifecycle step, whatever module directory it names, shares the one project's build.
+  for (const root of [runRoot, resolve(runRoot, '..', 'zone-router')]) {
+    runLifecycleStep(
+      {
+        action: { id: 'deploy-fixture' },
+        root,
+        arguments: ['script', 'DeployFixture'],
+        environment: { PATH: process.env.PATH!, ...overrides },
+        rawGasEstimate: false,
+      },
+      broadcastDirectory,
+    )
+    expect(JSON.parse(readFileSync(captured, 'utf8'))).toMatchObject({
+      cwd: Config.foundryRoot,
+      out: resolve(runRoot, 'build/out'),
+      cache: resolve(runRoot, 'build/cache'),
+      reused: true,
+      bytecode: '0x6001',
+    })
   }
   // Nothing cleans, overwrites, or adopts a developer's unrelated build state.
   for (const [out, cache] of stale) {
@@ -339,9 +334,9 @@ it.skipIf(!nativeAvailable)(
   () => {
     vi.stubEnv('PATH', nativeEnvironment.PATH)
     const plan = planFactoryRelease('core', 0)
-    mkdirSync(resolve(Config.earnRoot, 'src/core'), { recursive: true })
+    mkdirSync(resolve(Config.foundryRoot, 'src/earn/core'), { recursive: true })
     writeFileSync(
-      resolve(Config.earnRoot, 'foundry.toml'),
+      resolve(Config.foundryRoot, 'foundry.toml'),
       `
 [profile.default]
 solc = ${JSON.stringify(solc)}
@@ -352,7 +347,7 @@ cache_path = "cache/deploy"
     )
     for (const { name } of plan.contracts)
       writeFileSync(
-        resolve(Config.earnRoot, 'src/core', `${name}.sol`),
+        resolve(Config.foundryRoot, 'src/earn/core', `${name}.sol`),
         `
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
@@ -360,18 +355,18 @@ contract ${name} { function value() external pure returns (uint256) { return 42;
 `,
       )
     // The release prediction compiles exactly the release script's sources.
-    mkdirSync(resolve(Config.earnRoot, 'script/deploy'), { recursive: true })
+    mkdirSync(resolve(Config.foundryRoot, 'script/earn/deploy'), { recursive: true })
     writeFileSync(
-      resolve(Config.earnRoot, 'script/deploy/DeployFactoryRelease.s.sol'),
+      resolve(Config.foundryRoot, 'script/earn/deploy/DeployFactoryRelease.s.sol'),
       `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
-${plan.contracts.map(({ name }) => `import { ${name} } from "../../src/core/${name}.sol";`).join('\n')}
+${plan.contracts.map(({ name }) => `import { ${name} } from "../../../src/earn/core/${name}.sol";`).join('\n')}
 contract DeployFactoryReleaseScript {}
 `,
     )
     const forge = (...args: string[]) =>
       execFileSync('forge', args, {
-        cwd: Config.earnRoot,
+        cwd: Config.foundryRoot,
         env: nativeEnvironment,
         encoding: 'utf8',
       }).trim()
@@ -388,19 +383,19 @@ contract DeployFactoryReleaseScript {}
         address,
       ]),
     )
-    const poisoned = resolve(Config.earnRoot, 'out/deploy/EarnVault.sol/EarnVault.json')
+    const poisoned = resolve(Config.foundryRoot, 'out/deploy/EarnVault.sol/EarnVault.json')
     const artifact = JSON.parse(readFileSync(poisoned, 'utf8'))
     artifact.bytecode.object = '0xdead'
     writeFileSync(poisoned, JSON.stringify(artifact))
     // Prove the stale-cache failure with the real binary, not the probe's model of reuse.
-    expect(forge('inspect', 'src/core/EarnVault.sol:EarnVault', 'bytecode')).toBe('0xdead')
-    vi.stubEnv('FOUNDRY_OUT', resolve(Config.earnRoot, 'out/deploy'))
-    vi.stubEnv('FOUNDRY_CACHE_PATH', resolve(Config.earnRoot, 'cache/deploy'))
+    expect(forge('inspect', 'src/earn/core/EarnVault.sol:EarnVault', 'bytecode')).toBe('0xdead')
+    vi.stubEnv('FOUNDRY_OUT', resolve(Config.foundryRoot, 'out/deploy'))
+    vi.stubEnv('FOUNDRY_CACHE_PATH', resolve(Config.foundryRoot, 'cache/deploy'))
     expect(releaseAddresses([], broadcastDirectory)).toEqual(expected)
     const fresh = JSON.parse(
-      readFileSync(resolve(runRoot, 'build/earn/out-release/EarnVault.sol/EarnVault.json'), 'utf8'),
+      readFileSync(resolve(runRoot, 'build/out-release/EarnVault.sol/EarnVault.json'), 'utf8'),
     )
-    expect(fresh.bytecode.object).toBe(bytecodes['src/core/EarnVault.sol:EarnVault'])
+    expect(fresh.bytecode.object).toBe(bytecodes['src/earn/core/EarnVault.sol:EarnVault'])
     expect(JSON.parse(readFileSync(poisoned, 'utf8')).bytecode.object).toBe('0xdead')
   },
 )

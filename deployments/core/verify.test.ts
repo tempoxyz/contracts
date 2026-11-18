@@ -4,6 +4,7 @@ import {
   encodeEventTopics,
   getAbiItem,
   keccak256,
+  stringToBytes,
   type Abi,
   type Address,
   type Log,
@@ -60,9 +61,9 @@ const actions = {
 const addresses = { asset: address('b'), engine, earnFees, earnShare, earnVault }
 const contracts = {
   ERC1967Proxy: 'lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy',
-  ERC4626Engine: 'src/engines/ERC4626Engine.sol:ERC4626Engine',
-  VedaEngine: 'src/engines/veda/VedaEngine.sol:VedaEngine',
-  PropAMMEngine: 'src/engines/propamm/PropAMMEngine.sol:PropAMMEngine',
+  ERC4626Engine: 'src/earn/engines/erc4626/ERC4626Engine.sol:ERC4626Engine',
+  VedaEngine: 'src/earn/engines/veda/VedaEngine.sol:VedaEngine',
+  PropAMMEngine: 'src/earn/engines/propamm/PropAMMEngine.sol:PropAMMEngine',
 } as const
 
 function verifiedContract(verifiedAddress: string, name: keyof typeof contracts) {
@@ -216,15 +217,13 @@ function namedFactoryRun() {
   const factoryContract = {
     address: factory,
     name: 'ZoneRouterFactory',
-    fullyQualifiedName: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    fullyQualifiedName: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
     match: 'exact_match',
     sources: {
-      'src/ZoneRouterFactory.sol': { content: 'canonical:zone-router/src/ZoneRouterFactory.sol' },
+      'src/zone/ZoneRouterFactory.sol': { content: 'canonical:src/zone/ZoneRouterFactory.sol' },
     },
   }
-  runtime.readSource = vi.fn(
-    (path: string) => `canonical:${path.replace(/^\/checkout\/(earn\/)?/, '')}`,
-  )
+  runtime.readSource = vi.fn((path: string) => `canonical:${path.replace(/^\/checkout\//, '')}`)
   runtime.fetch = vi.fn(async (input) => {
     const url = String(input).toLowerCase()
     if (url.includes(factory.toLowerCase())) return Response.json(factoryContract)
@@ -232,15 +231,15 @@ function namedFactoryRun() {
       return Response.json({
         address: router,
         name: 'ZoneRouter',
-        fullyQualifiedName: 'src/ZoneRouter.sol:ZoneRouter',
+        fullyQualifiedName: 'src/zone/ZoneRouter.sol:ZoneRouter',
         match: 'exact_match',
         transactionHash: transaction,
-        sources: { 'src/ZoneRouter.sol': { content: 'canonical:zone-router/src/ZoneRouter.sol' } },
+        sources: { 'src/zone/ZoneRouter.sol': { content: 'canonical:src/zone/ZoneRouter.sol' } },
       })
     return dependencies().fetch(input)
   }) as unknown as typeof fetch
   const options = run({
-    root: '/checkout/earn',
+    root: '/checkout',
     profile: {
       ...profile,
       zoneRouter: { zoneId: 7, ops: ['spend'], spenders: [address('5e')], factory },
@@ -263,7 +262,7 @@ function namedFactoryRun() {
 function directControllerRun() {
   const controller = address('c0')
   const hash = `0x${'c'.repeat(64)}` as const
-  const sourcePath = 'src/rewards/EarnContributionController.sol'
+  const sourcePath = 'src/earn/rewards/EarnContributionController.sol'
   const constructorArgs = encodeAbiParameters(
     [{ type: 'address' }, { type: 'address' }],
     [earnVault, profile.owner],
@@ -362,7 +361,9 @@ describe('deployment source verification', () => {
     const engineSources = {
       'lib/forge-std/src/check.sol': { content: 'canonical:lib/forge-std/src/check.sol' },
       'lib/forge-std/src/hash.sol': { content: 'canonical:lib/forge-std/src/hash.sol' },
-      'src/engines/veda/VedaEngine.sol': { content: 'canonical:src/engines/veda/VedaEngine.sol' },
+      'src/earn/engines/veda/VedaEngine.sol': {
+        content: 'canonical:src/earn/engines/veda/VedaEngine.sol',
+      },
     }
     runtime.sourcePaths = vi.fn((_root: string, contract: string) =>
       contract.endsWith(':VedaEngine')
@@ -549,7 +550,7 @@ describe('deployment source verification', () => {
       expect.arrayContaining([
         'verify-contract',
         engine,
-        'src/engines/ERC4626Engine.sol:ERC4626Engine',
+        'src/earn/engines/erc4626/ERC4626Engine.sol:ERC4626Engine',
         '--creation-transaction-hash',
         transaction,
       ]),
@@ -737,7 +738,7 @@ describe('deployment source verification', () => {
     expect(arguments_).not.toContain('--rpc-url')
   })
 
-  test('verifies a sibling project contract from its own root, allowing Earn imports', async () => {
+  test('verifies a Zone router contract from the repository root with Earn imports', async () => {
     const router = address('70')
     const routerProfile = parseEarnDeploymentProfile(
       {
@@ -757,7 +758,7 @@ describe('deployment source verification', () => {
     )
     const verifiedRouter = (sources: Record<string, string>) => ({
       address: router,
-      fullyQualifiedName: 'src/ZoneRouter.sol:ZoneRouter',
+      fullyQualifiedName: 'src/zone/ZoneRouter.sol:ZoneRouter',
       match: 'match',
       name: 'ZoneRouter',
       sources: Object.fromEntries(
@@ -769,7 +770,7 @@ describe('deployment source verification', () => {
       const runtime = dependencies()
       runtime.sourcePaths = vi.fn((_root: string, contract: string) =>
         contract.endsWith(':ZoneRouter')
-          ? ['src/ZoneRouter.sol', '../earn/src/interfaces/core/IEarnVault.sol']
+          ? ['src/zone/ZoneRouter.sol', 'src/interfaces/earn/IEarnVault.sol']
           : [contract.slice(0, contract.lastIndexOf(':'))],
       )
       let routerLookups = 0
@@ -785,12 +786,12 @@ describe('deployment source verification', () => {
         if (url.toLowerCase().includes(address('fac').toLowerCase())) {
           return Response.json({
             address: address('fac'),
-            fullyQualifiedName: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+            fullyQualifiedName: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
             name: 'ZoneRouterFactory',
             match: 'exact_match',
             sources: {
-              'src/ZoneRouterFactory.sol': {
-                content: 'canonical:zone-router/src/ZoneRouterFactory.sol',
+              'src/zone/ZoneRouterFactory.sol': {
+                content: 'canonical:src/zone/ZoneRouterFactory.sol',
               },
             },
           })
@@ -802,9 +803,7 @@ describe('deployment source verification', () => {
         }
         return dependencies().fetch(input)
       }) as unknown as typeof fetch
-      runtime.readSource = vi.fn(
-        (path: string) => `canonical:${path.replace(/^\/checkout\/(earn\/)?/, '')}`,
-      )
+      runtime.readSource = vi.fn((path: string) => `canonical:${path.replace(/^\/checkout\//, '')}`)
       runtime.spawn = vi.fn(() => ({
         status: 0,
         stdout: '',
@@ -812,7 +811,7 @@ describe('deployment source verification', () => {
       })) as unknown as typeof runtime.spawn
       const result = verifyDeploymentSources(
         run({
-          root: '/checkout/earn',
+          root: '/checkout',
           profile: routerProfile,
           record: {
             actions: {
@@ -832,26 +831,23 @@ describe('deployment source verification', () => {
     }
 
     const { result, runtime } = verify({
-      'src/ZoneRouter.sol': 'canonical:zone-router/src/ZoneRouter.sol',
-      '../earn/src/interfaces/core/IEarnVault.sol': 'canonical:src/interfaces/core/IEarnVault.sol',
+      'src/zone/ZoneRouter.sol': 'canonical:src/zone/ZoneRouter.sol',
+      'src/interfaces/earn/IEarnVault.sol': 'canonical:src/interfaces/earn/IEarnVault.sol',
     })
     await expect(result).resolves.toMatchObject({
       contracts: { zoneRouter: { name: 'ZoneRouter', match: 'match' } },
     })
     const [, arguments_, spawnOptions] = vi.mocked(runtime.spawn).mock.calls[0]!
     expect(arguments_).toEqual(
-      expect.arrayContaining(['--root', '/checkout/zone-router', 'src/ZoneRouter.sol:ZoneRouter']),
+      expect.arrayContaining(['--root', '/checkout', 'src/zone/ZoneRouter.sol:ZoneRouter']),
     )
-    expect(spawnOptions?.cwd).toBe('/checkout/zone-router')
-    expect(runtime.compilerArguments).toHaveBeenCalledWith(
-      '/checkout/zone-router',
-      expect.any(Object),
-    )
+    expect(spawnOptions?.cwd).toBe('/checkout')
+    expect(runtime.compilerArguments).toHaveBeenCalledWith('/checkout', expect.any(Object))
 
     await expect(
       verify({
-        'src/ZoneRouter.sol': 'canonical:zone-router/src/ZoneRouter.sol',
-        '../../outside/Secret.sol': 'canonical:outside',
+        'src/zone/ZoneRouter.sol': 'canonical:src/zone/ZoneRouter.sol',
+        '../outside/Secret.sol': 'canonical:outside',
       }).result,
     ).rejects.toThrow('Verifier source paths do not match the complete compiler input manifest')
   })
@@ -864,7 +860,7 @@ describe('deployment source verification', () => {
         options,
         runtime,
       )) as EarnDeploymentRecord['source']
-      factoryContract.sources['src/ZoneRouterFactory.sol']!.content =
+      factoryContract.sources['src/zone/ZoneRouterFactory.sol']!.content =
         'contract FakeFactory { /* emits RouterDeployed without creation */ }'
       const result =
         entry === 'deployment'
@@ -1001,6 +997,46 @@ describe('deployment source verification', () => {
     expect(runtime.readSource).not.toHaveBeenCalled()
   })
 
+  test('accepts a recorded deployment verified under its path before the single-project layout', async () => {
+    const legacyPath = 'src/engines/veda/VedaEngine.sol'
+    const legacy = () => {
+      const runtime = dependencies()
+      runtime.fetch = vi.fn(async (input) => {
+        const url = String(input)
+        if (!url.toLowerCase().includes(engine.toLowerCase())) return dependencies().fetch(input)
+        return Response.json({
+          ...verifiedContract(engine, 'VedaEngine'),
+          fullyQualifiedName: `${legacyPath}:VedaEngine`,
+          sources: { [legacyPath]: { content: 'historical engine source' } },
+        })
+      }) as unknown as typeof fetch
+      return runtime
+    }
+    await expect(verifyDeploymentSources(run(), legacy())).rejects.toThrow(
+      'expected src/earn/engines/veda/VedaEngine.sol:VedaEngine',
+    )
+
+    const verified = await verifyDeploymentSources(run(), dependencies())
+    const sourceInputsHash = keccak256(
+      stringToBytes(
+        JSON.stringify([[legacyPath, keccak256(stringToBytes('historical engine source'))]]),
+      ),
+    )
+    const recorded = (hash: Hex) => ({
+      ...verified,
+      contracts: {
+        ...verified.contracts,
+        engine: { ...verified.contracts.engine!, sourceInputsHash: hash },
+      },
+    })
+    await expect(
+      verifyRecordedDeploymentSources(run({ source: recorded(sourceInputsHash) }), legacy()),
+    ).resolves.toBeUndefined()
+    await expect(
+      verifyRecordedDeploymentSources(run({ source: recorded(`0x${'b'.repeat(64)}`) }), legacy()),
+    ).rejects.toThrow('does not match current provenance')
+  })
+
   test('rejects a record-selected verifier instead of contacting it', async () => {
     const runtime = dependencies()
     const verified = await verifyDeploymentSources(run(), runtime)
@@ -1024,7 +1060,9 @@ describe('deployment source verification', () => {
       return Response.json({
         ...lookalike,
         sources: {
-          'src/engines/veda/VedaEngine.sol': { content: 'contract VedaEngine { /* lookalike */ }' },
+          'src/earn/engines/veda/VedaEngine.sol': {
+            content: 'contract VedaEngine { /* lookalike */ }',
+          },
         },
       })
     }) as unknown as typeof fetch
@@ -1204,7 +1242,7 @@ describe('source verifier admission', () => {
       'current provenance',
     )
     Object.values(contract.sources)[0]!.content =
-      'canonical:src/rewards/EarnContributionController.sol'
+      'canonical:src/earn/rewards/EarnContributionController.sol'
     rpc.getTransactionReceipt.mockResolvedValue({
       status: 'success',
       transactionHash: contract.transactionHash,
@@ -1238,7 +1276,7 @@ describe('source verifier admission', () => {
     expect(source.contractVerification).toBe('verified')
     expect(source.contracts.earnContributionController).toEqual(retained)
     expect(source.contracts.engine).toMatchObject({ kind: 'source', name: 'VedaEngine' })
-    expect(runtime.readSource).toHaveBeenCalledWith('/repo/src/engines/veda/VedaEngine.sol')
+    expect(runtime.readSource).toHaveBeenCalledWith('/repo/src/earn/engines/veda/VedaEngine.sol')
     expect(options.record.source).toEqual(before)
     await expect(
       verifyRecordedStepCreation({ ...options, action: 'deploy-contribution-controller' }, runtime),
@@ -1481,7 +1519,7 @@ describe('source verifier admission', () => {
     }
     const runtime = dependencies()
     runtime.sourcePaths.mockReturnValue([
-      'src/engines/veda/VedaEngine.sol',
+      'src/earn/engines/veda/VedaEngine.sol',
       'src/interfaces/Engine.sol',
     ])
     await expect(verifyDeploymentSources(run(), runtime)).rejects.toThrow(

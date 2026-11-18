@@ -34,13 +34,13 @@ import {
 } from './factory-release.js'
 import { address, exactKeys, isBytes32, object, positiveInteger, unique } from './parse.js'
 
-const routerReleaseScript = 'script/deploy/DeployRouterRelease.s.sol:DeployRouterReleaseScript'
+const routerReleaseScript = 'script/zone/deploy/DeployRouterRelease.s.sol:DeployRouterReleaseScript'
 
 /**
  * The router project's ownerless contracts, released by the shared factory release engine
  * (`deployRelease`) from their own CLI and workflow, and named by no registry entry: the
  * ZoneRouterFactory, a SendSpender, and a ZoneRouter its factory creates. A card program's
- * spender, its CardSpender, releases with the card integration (cards/script/bridge/deploy/release.sh).
+ * spender, its CardSpender, releases with the card integration (script/spend/bridge/deploy/release.sh).
  */
 export const routerReleaseKinds = ['zoneRouterFactory', 'sendSpender', 'zoneRouter'] as const
 
@@ -72,7 +72,7 @@ const constructorInputs = (abi: Abi) =>
     .inputs
 const zoneRouterFactoryContract = {
   name: 'ZoneRouterFactory',
-  contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+  contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
 }
 const opDeposit = 1
 const opRedeem = 2
@@ -204,7 +204,6 @@ export function planRouterRelease(
   if (kind === 'zoneRouterFactory') {
     return {
       kind,
-      project: 'zone-router',
       script: routerReleaseScript,
       parameters: noParameters(kind, parameters),
       calldata: encodeFunctionData({
@@ -227,7 +226,6 @@ export function planRouterRelease(
     }
     return {
       kind,
-      project: 'zone-router',
       script: routerReleaseScript,
       parameters: spender,
       calldata: encodeFunctionData({
@@ -245,7 +243,7 @@ export function planRouterRelease(
         ...(spender.factory ? [] : [zoneRouterFactoryContract]),
         {
           name: 'SendSpender',
-          contract: 'src/spenders/SendSpender.sol:SendSpender',
+          contract: 'src/zone/spenders/SendSpender.sol:SendSpender',
           constructorArgs: (addresses) =>
             encodeAbiParameters(constructorInputs(sendSpenderAbi), [
               routerFactory(addresses),
@@ -264,7 +262,6 @@ export function planRouterRelease(
     const modeArgs = encodeAbiParameters(constructorInputs(zoneRouterAbi), [router.mode])
     return {
       kind,
-      project: 'zone-router',
       script: routerReleaseScript,
       parameters: router,
       validate: async (client) => {
@@ -286,7 +283,7 @@ export function planRouterRelease(
       contracts: [
         {
           name: 'ZoneRouter',
-          contract: 'src/ZoneRouter.sol:ZoneRouter',
+          contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
           constructorArgs: () => modeArgs,
           creator: { address: router.factory, salt: keccak256(modeArgs) },
           createdInReceipt: (receipt, address) =>
@@ -359,7 +356,7 @@ const usage =
 /** CLI boundary; reads DEPLOYER_PRIVATE_KEY and the optional TEMPO_RPC_* from the environment. */
 export async function main(
   argv: string[] = process.argv.slice(2),
-  root = resolve(fileURLToPath(new URL('../../earn', import.meta.url))),
+  root = resolve(fileURLToPath(new URL('../..', import.meta.url))),
 ) {
   const { positionals, values } = parseArgs({
     args: argv,

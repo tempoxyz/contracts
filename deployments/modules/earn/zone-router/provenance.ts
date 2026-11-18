@@ -10,12 +10,12 @@ import {
 const repository = fileURLToPath(new URL('../../../../', import.meta.url))
 const builds = new Map<string, Hex>()
 
-type Contract =
-  | { project: 'earn'; contract: 'src/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter' }
-  | {
-      project: 'zone-router'
-      contract: 'src/ZoneRouter.sol:ZoneRouter' | 'src/ZoneRouterFactory.sol:ZoneRouterFactory'
-    }
+type Contract = {
+  contract:
+    | 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter'
+    | 'src/zone/ZoneRouter.sol:ZoneRouter'
+    | 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory'
+}
 
 /**
  * Requires exact runtime from the reviewed constructor before granting independent authority.
@@ -45,10 +45,9 @@ export async function requireRouterProvenance(
 }
 
 function compiledCreation(options: Contract): Hex {
-  const key = `${options.project}:${options.contract}`
-  const cached = builds.get(key)
+  const cached = builds.get(options.contract)
   if (cached) return cached
-  const root = `${repository}${options.project}`
+  const root = repository
   assertFoundryProjectEnvironment(root)
   const code = execFileSync('forge', ['inspect', options.contract, 'bytecode'], {
     cwd: root,
@@ -57,6 +56,6 @@ function compiledCreation(options: Contract): Hex {
   }).trim()
   if (!isHex(code) || code === '0x')
     throw new Error(`Invalid canonical creation code for ${options.contract}`)
-  builds.set(key, code)
+  builds.set(options.contract, code)
   return code
 }

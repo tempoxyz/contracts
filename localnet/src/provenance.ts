@@ -17,7 +17,7 @@ import { dependencyEnvironment } from './foundry.js'
 /** Checks the repository and installed Solidity sources, not the authenticity of local build tools. */
 export function cleanSourceRevision(root: string) {
   const revision = cleanCheckoutRevision(root)
-  for (const project of ['earn', 'zone-router']) assertDependencies(root, project)
+  assertDependencies(root)
   return revision
 }
 
@@ -25,8 +25,8 @@ export function cleanSourceRevision(root: string) {
 export function prepareBuildProvenance(root: string) {
   cleanCheckoutRevision(root)
   // The installer can replace wrong-revision libraries; validate every present checkout before it runs.
-  for (const project of ['earn', 'zone-router']) assertDependencies(root, project, true)
-  execFileSync(resolve(root, 'scripts/solidity-deps.sh'), ['earn', 'zone-router'], {
+  assertDependencies(root, true)
+  execFileSync(resolve(root, 'scripts/solidity-deps.sh'), [], {
     cwd: root,
     env: dependencyEnvironment(process.env),
     stdio: 'inherit',
@@ -47,9 +47,9 @@ function cleanCheckoutRevision(root: string) {
 /** Captures source evidence and the installed solar bytes without treating a local binary as authenticated. */
 export function captureBuildProvenance(root: string) {
   const sourceRevision = cleanSourceRevision(root)
-  const requestedSourceRevision = readFileSync(resolve(root, 'earn/solar.lock'), 'utf8').trim()
+  const requestedSourceRevision = readFileSync(resolve(root, 'solar.lock'), 'utf8').trim()
   if (!/^[0-9a-f]{40}$/.test(requestedSourceRevision))
-    throw new Error('Invalid solar source revision in earn/solar.lock')
+    throw new Error('Invalid solar source revision in solar.lock')
   const path = `.solar/${requestedSourceRevision}/bin/solar`
   const binary = resolve(root, path)
   const sha256 = (() => {
@@ -102,15 +102,15 @@ export function assertBuildProvenanceUnchanged(
     throw new Error('Devnet build inputs changed during deployment; refusing provenance output')
 }
 
-function assertDependencies(root: string, project: string, allowMissing = false) {
-  const directory = resolve(root, project)
+function assertDependencies(root: string, allowMissing = false) {
+  const directory = root
   const lock = JSON.parse(readFileSync(resolve(directory, 'foundry.lock'), 'utf8')) as Record<
     string,
     { rev?: string; tag?: { rev?: string } }
   >
   const paths = Object.keys(lock)
   if (paths.length === 0 || paths.some((path) => !/^lib\/[a-zA-Z0-9_-]+$/.test(path)))
-    throw new Error(`Invalid dependency paths in ${project}/foundry.lock`)
+    throw new Error('Invalid dependency paths in foundry.lock')
   try {
     const library = resolve(directory, 'lib')
     const entry = lstatSync(library, { throwIfNoEntry: false })
@@ -129,7 +129,7 @@ function assertDependencies(root: string, project: string, allowMissing = false)
     }
   } catch (cause) {
     throw new Error(
-      `Devnet ${project} dependency sources must be clean and pinned; remove altered libraries and run pnpm deps`,
+      'Devnet dependency sources must be clean and pinned; remove altered libraries and run pnpm deps',
       { cause },
     )
   }

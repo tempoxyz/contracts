@@ -35,7 +35,7 @@ administrator must keep every protocol endpoint that moves EarnShare or the asse
 authorized: the EarnVault, `EarnFees`, every recipient of the current fee configuration, and, when
 configured, the Merkle distributor and its treasury, the Zone router with the Zone's Portal,
 Messenger, every active sequencer, and Outbox, and the profile's `zoneRouter`
-([`ZoneRouter`](../../zone-router/zone-router.md#deployment)) with its own Zone's Portal, Messenger,
+([`ZoneRouter`](../../zone/zone-router.md#deployment)) with its own Zone's Portal, Messenger,
 sequencers, and Outbox, whatever its ops, plus its spenders when that Portal enables EarnShare (an
 EarnShare spend moves shares through them; `pnpm earn verify` reports a spender the policy omits).
 Authorities that never hold EarnShare (owner,
@@ -50,7 +50,7 @@ because `deploy-core` passes it to `EarnFactory`.
 
 - **Preflight** requires the policy to be a whitelist with a nonzero administrator.
 - **`validate-access`** (deployer, protected profiles only) runs
-  `script/deploy/AttachEarnSharePolicy.s.sol` after `deploy-merkle-distributor`. It is satisfied
+  `script/earn/deploy/AttachEarnSharePolicy.s.sol` after `deploy-merkle-distributor`. It is satisfied
   when EarnShare's `transferPolicyId` is the configured policy and the policy is a whitelist with a
   live administrator; the script otherwise reverts `PolicyDoesNotExist`, `UnsupportedPolicyType`,
   `PolicyHasNoAdministrator`, or `TransferPolicyMismatch`.
