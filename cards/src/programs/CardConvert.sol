@@ -7,6 +7,7 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
 import { CardProgram } from "./CardProgram.sol";
 import { Conversion } from "./Conversion.sol";
+import { CoreDebt, LegBook } from "./LegBook.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
@@ -45,6 +46,8 @@ library CardConvert {
         mapping(bytes32 legId => uint256) locked;
         /// @dev How many debts the program has charged the settlement account, which names each charge.
         uint256 issuerCharges;
+        /// @dev How many conversion repayments the program has charged, which names each charge.
+        uint256 repays;
         /// @dev Per token, the program's own funds for advancing payouts: what it holds for them plus what the
         ///      settlement account owes it. Sweeps to the settlement account leave the held part in place.
         mapping(address token => uint256) issuerFunds;
@@ -175,9 +178,9 @@ library CardConvert {
     function _replan(address owner, bytes32 legId, address token, uint256 value, uint256 most) private {
         uint256 rate = current(token);
         uint256 tokens = _min(_tokensFor(token, value, rate), most);
-        if (CORE.getHold(owner, legId).held != tokens) {
+        if (CORE.getHold(owner, address(this), legId).held != tokens) {
             // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.adjust(owner, legId, uint128(tokens));
+            CORE.adjust(owner, address(this), legId, uint128(tokens));
         }
         Layout storage L = _layout();
         if (L.locked[legId] != rate) L.locked[legId] = rate;
@@ -252,23 +255,19 @@ library CardConvert {
         address settlement = _settlement();
         address c = cash == address(0) ? address(0) : swapper(cash, CASH);
         if (c == address(0)) return 0;
-        (address creditor, uint128 owed) = CORE.debtOf(owner, settlement);
-        if (creditor != address(this) || owed == 0) return 0;
+        uint128 owed = CoreDebt.owedTo(owner, settlement, address(this));
+        if (owed == 0) return 0;
         uint256 need = Conversion(c).quoteOut(cash, settlement, owed);
         uint256 pay = _min(need, CORE.available(owner, cash));
         if (pay == 0) return 0;
-        bytes32 id;
-        for (uint256 k;; ++k) {
-            id = keccak256(abi.encode(address(this), owner, "repay", k));
-            if (CORE.getHold(owner, id).token == address(0)) break;
-        }
+        // The core keeps no record of a charge, so its id only labels the event.
+        bytes32 id = keccak256(abi.encode(address(this), owner, "repay", ++_layout().repays));
         // forge-lint: disable-next-line(unsafe-typecast)
         CORE.charge(owner, cash, id, uint128(pay), address(this), false);
         SafeTransferLib.safeApprove(cash, c, pay);
         if (pay == need) Conversion(c).swapExactOut(cash, settlement, owed, pay, owner);
         else Conversion(c).swapExactIn(cash, settlement, pay, 0, owner);
-        (, uint128 left) = CORE.debtOf(owner, settlement);
-        repaid = owed - left;
+        repaid = owed - CoreDebt.owedTo(owner, settlement, address(this));
         uint256 landed = _sweepable(settlement);
         if (landed != 0) SafeTransferLib.safeTransfer(settlement, program.SETTLEMENT_ACCOUNT(), landed);
         emit Converted(bytes32(0), cash, pay, settlement, repaid, 0);
@@ -287,6 +286,7 @@ library CardConvert {
         if (tokens == 0 || tokens > CORE.available(owner, cash)) return 0;
         // forge-lint: disable-next-line(unsafe-typecast)
         CORE.charge(owner, cash, id, uint128(tokens), address(this), false);
+        LegBook.noteCharge(id, cash, tokens);
         SafeTransferLib.safeApprove(cash, c, tokens);
         Conversion(c).swapExactOut(cash, settlement, amount, tokens, program.SETTLEMENT_ACCOUNT());
         // A refund gives the cash back at today's reference rate, which the leg keeps.
@@ -309,7 +309,7 @@ library CardConvert {
             uint8 reason = ISettlementTokenGuard(guards[i]).settlementTokenInUse(address(this));
             if (reason != 0) revert CardProgram.SettlementTokenInUse(reason);
         }
-        if (CORE.reserved(account, current) != 0 || CORE.liened(account, current) != 0) {
+        if (CORE.reserved(account, current) != 0) {
             revert CardProgram.SettlementTokenInUse(IN_USE_HELD);
         }
     }
@@ -335,8 +335,7 @@ library CardConvert {
     function retained(address token) public view returns (uint256) {
         uint256 funds = _layout().issuerFunds[token];
         if (funds == 0) return 0;
-        (address creditor, uint128 owed) = CORE.debtOf(CardProgram(address(this)).SETTLEMENT_ACCOUNT(), token);
-        if (creditor != address(this)) return funds;
+        uint128 owed = CoreDebt.owedTo(CardProgram(address(this)).SETTLEMENT_ACCOUNT(), token, address(this));
         return funds > owed ? funds - owed : 0;
     }
 
@@ -361,8 +360,7 @@ library CardConvert {
         uint256 free = CORE.available(account, token);
         if (amount > free) {
             advanced = amount - free;
-            (address creditor, uint128 owed) = CORE.debtOf(account, token);
-            uint256 prior = creditor == address(this) ? owed : 0;
+            uint256 prior = CoreDebt.owedTo(account, token, address(this));
             uint256 held = retained(token);
             if (held < advanced + prior) revert IssuerFundsShort(advanced + prior, held);
             // What the account already owes comes straight back as repayment, leaving the advance free to pay out.
@@ -380,8 +378,8 @@ library CardConvert {
     function carryIssuerDebt(address current, address next) external {
         CardProgram program = CardProgram(address(this));
         address account = program.SETTLEMENT_ACCOUNT();
-        (address creditor, uint128 owed) = CORE.debtOf(account, current);
-        if (creditor != address(this) || owed == 0) return;
+        uint128 owed = CoreDebt.owedTo(account, current, address(this));
+        if (owed == 0) return;
         uint256 carried = Conversion(program.conversion()).quoteOut(next, current, owed);
         uint256 held = retained(current);
         if (held < owed) revert IssuerFundsShort(owed, held);
@@ -469,7 +467,7 @@ library CardConvert {
         uint256 out = c.convertAtMid(settlement, token, paying, address(this));
         tokens = _min(out, refundable);
         // forge-lint: disable-next-line(unsafe-typecast)
-        if (tokens != 0) CORE.refund(owner, legId, uint128(tokens));
+        if (tokens != 0) CORE.refund(owner, token, address(this), legId, uint128(tokens));
         if (out > tokens) SafeTransferLib.safeTransfer(token, owner, out - tokens);
     }
 

@@ -8,6 +8,7 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 import { CardConvert } from "./CardConvert.sol";
 import { CardProgram } from "./CardProgram.sol";
 import { CreditLine } from "./CreditLine.sol";
+import { CoreDebt, LegBook } from "./LegBook.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 
@@ -74,6 +75,8 @@ library CardFunding {
     /// @dev One leg's hold as a step reads it.
     struct Leg {
         address holdOwner;
+        /// @dev Who placed the hold: the program, or the credit line for a credit leg.
+        address placer;
         address token;
         bytes32 id;
         uint256 rate;
@@ -255,13 +258,13 @@ library CardFunding {
             parts[i] = _part(s, amount, tokens);
             sums[0] = tokens;
             // The shortfall the core turned into debt counts in the program's exposure, like a charged one.
-            (address creditor, uint128 owed) = CORE.debtOf(owner, leg.token);
-            if (creditor == address(this) && owed != 0) noteDebtor(owner);
+            if (CoreDebt.owedTo(owner, leg.token, address(this)) != 0) noteDebtor(owner);
         } else {
             // Over-capture (tips) stays within the owner's tolerance for this program, as the core holds each leg to it.
-            uint256 tolerance = cashToken == address(0) ? 0 : CORE.captureTolerance(owner, address(this), cashToken);
+            uint256 tolerance =
+                cashToken == address(0) ? 0 : CORE.payeeTerms(owner, address(this), cashToken).toleranceBps;
             if (amount > uint256(p.held) + uint256(p.amount) * tolerance / BPS) {
-                revert IReservationCore.ToleranceExceeded();
+                revert IReservationCore.CaptureLimitExceeded();
             }
             uint256 rest = amount;
             uint8 allowed = _allowed(L, cardLegs) | (p.legs & ALL_KINDS);
@@ -338,8 +341,8 @@ library CardFunding {
         if (amount > refundable) revert CardProgram.RefundExceedsCapture(amount - refundable);
 
         // The owner's debt to this program first: a cash refund repays it as it lands.
-        (address creditor, uint128 owed) = CORE.debtOf(owner, cashToken);
-        if (creditor == address(this) && owed != 0) {
+        uint128 owed = CoreDebt.owedTo(owner, cashToken, address(this));
+        if (owed != 0) {
             uint256 first = _toSettlement(owed, rate);
             if (first > rest) first = rest;
             uint256 left = _refundCharges(ref, owner, cashToken, rate, first, parts);
@@ -389,8 +392,8 @@ library CardFunding {
             Source memory s = order[i];
             Leg memory leg = _leg(owner, ref, _key(order, i), s);
             if (!leg.exists || leg.settled) continue;
-            if (expired) CORE.releaseExpired(leg.holdOwner, leg.id);
-            else CORE.release(leg.holdOwner, leg.id);
+            if (expired) CORE.releaseExpired(leg.holdOwner, leg.placer, leg.id);
+            else CORE.release(leg.holdOwner, leg.placer, leg.id);
             if (s.kind == CREDIT) CreditLine(s.source).sync(leg.id);
             parts[i] = _part(s, _value(leg, s, leg.held), leg.held);
             sums[_sumIndex(s.kind)] += leg.held;
@@ -471,8 +474,8 @@ library CardFunding {
             address owner = L.debtors[i];
             address token = CardConvert.debtToken(program.fundingOf(owner));
             if (token == address(0)) continue;
-            (address creditor, uint128 owed) = CORE.debtOf(owner, token);
-            if (creditor == address(this) && owed != 0) {
+            uint128 owed = CoreDebt.owedTo(owner, token, address(this));
+            if (owed != 0) {
                 debt += _toSettlement(owed, _rate(token));
                 ++debtors;
             }
@@ -601,11 +604,13 @@ library CardFunding {
             CreditLine line = CreditLine(s.source);
             (address lender, address token) = line.partiesOf(s.lineId);
             leg.holdOwner = lender;
+            leg.placer = address(line);
             leg.token = token;
             leg.id = line.holdIdOf(address(this), _drawRef(ref, key));
             leg.rate = _rate(token);
         } else {
             leg.holdOwner = owner;
+            leg.placer = address(this);
             leg.id = _legId(ref, key == FIRST ? s.kind : LEG_TAG + key);
             if (s.kind == SAVINGS) {
                 SavingsFacility facility = SavingsFacility(s.source);
@@ -619,12 +624,16 @@ library CardFunding {
         _readHold(leg);
     }
 
+    /// @dev A leg is live while the core keeps its hold. The core deletes it once it settles, so a leg that captured
+    ///      or ended empty stays settled through LegBook and is never placed again.
     function _readHold(Leg memory leg) private view {
-        IReservationCore.HoldRecord memory h = CORE.getHold(leg.holdOwner, leg.id);
-        leg.exists = h.token != address(0);
-        leg.settled = h.settled;
-        leg.held = h.settled ? 0 : h.held;
-        leg.refundable = h.captured - h.refunded;
+        IReservationCore.HoldRecord memory h = CORE.getHold(leg.holdOwner, leg.placer, leg.id);
+        LegBook.Leg memory b = LegBook.layout().legs[leg.id];
+        bool live = h.token != address(0);
+        leg.settled = !live && (b.captured != 0 || b.ended);
+        leg.exists = live || leg.settled;
+        leg.held = h.held;
+        leg.refundable = b.captured - b.refunded;
     }
 
     /// @dev Token units the source could add now: free cash or shares, or the line's undrawn credit.
@@ -674,7 +683,7 @@ library CardFunding {
         } else if (leg.exists) {
             CardConvert.lock(leg.id, leg.token, s.kind, leg.rate);
             // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.adjust(owner, leg.id, uint128(tokens));
+            CORE.adjust(owner, address(this), leg.id, uint128(tokens));
         } else {
             CardConvert.lock(leg.id, leg.token, s.kind, leg.rate);
             if (s.kind == SAVINGS && !CardProgram(address(this)).approvedSource(s.source)) {
@@ -697,16 +706,21 @@ library CardFunding {
     }
 
     function _captureLeg(Leg memory leg, Source memory s, uint256 tokens, bool isFinal) private {
-        if (s.kind == SAVINGS) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            if (tokens != 0) SavingsFacility(s.source).capture(leg.holdOwner, leg.id, uint128(tokens), isFinal);
-            else CORE.release(leg.holdOwner, leg.id);
+        if (tokens == 0) {
+            CORE.release(leg.holdOwner, leg.placer, leg.id);
+            if (s.kind == CREDIT) CreditLine(s.source).sync(leg.id);
             return;
         }
+        // A leg's captures are core amounts, which fit in 64 bits.
         // forge-lint: disable-next-line(unsafe-typecast)
-        if (tokens != 0) CORE.capture(leg.holdOwner, leg.id, uint128(tokens), isFinal);
-        else CORE.release(leg.holdOwner, leg.id);
-        if (s.kind == CREDIT) CreditLine(s.source).sync(leg.id);
+        LegBook.layout().legs[leg.id].captured += uint64(tokens);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (s.kind == SAVINGS) SavingsFacility(s.source).capture(leg.holdOwner, leg.id, uint128(tokens), isFinal);
+        // The line records what its draw captured, which the core forgets once the hold settles.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        else if (s.kind == CREDIT) CreditLine(s.source).capture(leg.id, uint128(tokens), isFinal);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        else CORE.capture(leg.holdOwner, address(this), leg.id, uint128(tokens), isFinal);
     }
 
     /// @dev Charges what the capture still needs to the owner's cash token as capped debt, within the cap's headroom.
@@ -716,9 +730,8 @@ library CardFunding {
     {
         if (cashToken == address(0)) return (0, 0);
         uint256 rate = _rate(cashToken);
-        (address creditor, uint128 owed) = CORE.debtOf(owner, cashToken);
-        if (owed != 0 && creditor != address(this)) return (0, 0);
-        uint256 cap = CORE.debtCap(owner, address(this), cashToken);
+        uint128 owed = CoreDebt.owedTo(owner, cashToken, address(this));
+        uint256 cap = CORE.payeeTerms(owner, address(this), cashToken).debtCap;
         uint256 headroom = cap > owed ? cap - owed : 0;
         tokens = _toTokenUp(rest, rate);
         if (tokens > headroom) {
@@ -729,16 +742,24 @@ library CardFunding {
         }
         if (tokens == 0) return (0, 0);
         // forge-lint: disable-next-line(unsafe-typecast)
-        CORE.charge(owner, cashToken, _nextDebtId(ref, owner), uint128(tokens), address(this), false);
+        CORE.charge(owner, cashToken, _noteDebtCharge(ref, cashToken, tokens), uint128(tokens), address(this), false);
         p.legs |= DEBT;
         noteDebtor(owner);
     }
 
-    function _nextDebtId(bytes32 ref, address owner) private view returns (bytes32 id) {
-        for (uint256 k;; ++k) {
-            id = _legId(ref, DEBT_TAG + k);
-            if (CORE.getHold(owner, id).token == address(0)) return id;
-        }
+    /// @dev Records the purchase's next capture charge. Its first charge's record also counts its charges.
+    function _noteDebtCharge(bytes32 ref, address token, uint256 tokens) private returns (bytes32 id) {
+        LegBook.Layout storage B = LegBook.layout();
+        bytes32 first = _legId(ref, DEBT_TAG);
+        uint8 k = B.charges[first].count;
+        id = _legId(ref, DEBT_TAG + k);
+        LegBook.noteCharge(id, token, tokens);
+        B.charges[first].count = k + 1;
+    }
+
+    /// @dev How many capture charges the purchase made.
+    function _debtCharges(bytes32 ref) private view returns (uint256) {
+        return LegBook.layout().charges[_legId(ref, DEBT_TAG)].count;
     }
 
     /// @dev Refunds up to `rest` from the purchase's capture debt charges, latest first, then its late charge.
@@ -750,21 +771,22 @@ library CardFunding {
         uint256 rest,
         Part[] memory parts
     ) private returns (uint256) {
-        uint256 count;
-        while (CORE.getHold(owner, _legId(ref, DEBT_TAG + count)).token != address(0)) ++count;
+        uint256 count = _debtCharges(ref);
         Part memory part = parts[parts.length - 2];
+        LegBook.Layout storage B = LegBook.layout();
         for (uint256 k = count + 1; k > 0 && rest != 0; --k) {
             // The late charge (tag 8) refunds after every capture charge.
             Leg memory leg;
             leg.holdOwner = owner;
             leg.id = k == 1 ? _legId(ref, CHARGED) : _legId(ref, DEBT_TAG + k - 2);
             // A charge is in the owner's cash token or, when debt is owed in the settlement token, in that at par.
-            address token = CORE.getHold(owner, leg.id).token;
-            if (token != cashToken && token != _settlement()) continue;
+            LegBook.Charge memory c = B.charges[leg.id];
+            address token = c.token;
+            if (token == address(0) || (token != cashToken && token != _settlement())) continue;
             leg.token = token;
             uint256 locked = CardConvert.lockOf(leg.id);
             leg.rate = token != cashToken ? RATE_ONE : locked != 0 ? locked : rate;
-            _readHold(leg);
+            leg.refundable = c.captured - B.chargeRefunded[leg.id];
             if (leg.refundable == 0) continue;
             uint256 value = _toSettlement(leg.refundable, leg.rate);
             uint256 take = rest < value ? rest : value;
@@ -776,8 +798,10 @@ library CardFunding {
                 tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, leg.rate), leg.refundable);
                 SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), tokens);
                 // forge-lint: disable-next-line(unsafe-typecast)
-                CORE.refund(owner, leg.id, uint128(tokens));
+                CORE.refund(owner, token, address(this), leg.id, uint128(tokens));
             }
+            // forge-lint: disable-next-line(unsafe-typecast)
+            B.chargeRefunded[leg.id] += uint64(tokens);
             // A charge in the settlement token rather than the owner's cash lands as that token.
             part.kind = token == cashToken ? CASH : TOKEN;
             part.source = token;
@@ -797,15 +821,17 @@ library CardFunding {
             Leg memory leg = _leg(owner, ref, _key(order, i), order[i]);
             total += _value(leg, order[i], leg.refundable);
         }
-        uint256 count;
-        while (CORE.getHold(owner, _legId(ref, DEBT_TAG + count)).token != address(0)) ++count;
+        uint256 count = _debtCharges(ref);
+        LegBook.Layout storage B = LegBook.layout();
         for (uint256 k; k <= count; ++k) {
             bytes32 id = k == count ? _legId(ref, CHARGED) : _legId(ref, DEBT_TAG + k);
-            IReservationCore.HoldRecord memory h = CORE.getHold(owner, id);
+            LegBook.Charge memory c = B.charges[id];
+            uint256 left = c.captured - B.chargeRefunded[id];
             // A force post that converted cash refunds it at the rate it locked.
             uint256 locked = CardConvert.lockOf(id);
-            if (h.token == cashToken) total += _toSettlement(h.captured - h.refunded, locked != 0 ? locked : rate);
-            else if (h.token == _settlement()) total += h.captured - h.refunded;
+            if (c.token == address(0)) continue;
+            else if (c.token == cashToken) total += _toSettlement(left, locked != 0 ? locked : rate);
+            else if (c.token == _settlement()) total += left;
         }
     }
 
@@ -830,16 +856,24 @@ library CardFunding {
             // The issuer pays a vault in another token in today's settlement token, converted at the reference rate.
             uint256 paid = CardConvert.pullRefund(asset, _toTokenUp(take, leg.rate));
             SafeTransferLib.safeApprove(asset, address(facility), paid);
-            tokens = facility.refund(owner, leg.id, paid);
+            tokens = facility.refund(owner, leg.id, paid, leg.refundable);
         } else if (CardConvert.swapper(leg.token, s.kind) != address(0)) {
             tokens = CardConvert.refund(ref, owner, leg.id, leg.token, leg.refundable, take);
         } else {
             tokens = take >= value ? leg.refundable : _min(_toTokenUp(take, leg.rate), leg.refundable);
             SafeTransferLib.safeTransferFrom(leg.token, msg.sender, address(this), tokens);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.refund(leg.holdOwner, leg.id, uint128(tokens));
-            if (s.kind == CREDIT) CreditLine(s.source).sync(leg.id);
+            if (s.kind == CREDIT) {
+                // The line pays the refund to the lender, which lowers what the borrower owes.
+                SafeTransferLib.safeApprove(leg.token, s.source, tokens);
+                // forge-lint: disable-next-line(unsafe-typecast)
+                CreditLine(s.source).refund(leg.id, uint128(tokens));
+            } else {
+                // forge-lint: disable-next-line(unsafe-typecast)
+                CORE.refund(leg.holdOwner, leg.token, address(this), leg.id, uint128(tokens));
+            }
         }
+        // forge-lint: disable-next-line(unsafe-typecast)
+        LegBook.layout().legs[leg.id].refunded += uint64(tokens);
         Part memory part = parts[i];
         part.kind = s.kind;
         part.source = s.source;
@@ -864,15 +898,17 @@ library CardFunding {
         if (tokens == 0) return less;
         uint256 keep = leg.held - tokens;
         if (keep == 0) {
-            CORE.release(leg.holdOwner, leg.id);
+            CORE.release(leg.holdOwner, leg.placer, leg.id);
             if (s.kind == CREDIT) CreditLine(s.source).sync(leg.id);
+            // The core forgets the leg, so the program records that it ended and never places it again.
+            LegBook.layout().legs[leg.id].ended = true;
             leg.settled = true;
         } else if (s.kind == CREDIT) {
             // forge-lint: disable-next-line(unsafe-typecast)
             CreditLine(s.source).resize(leg.id, uint128(keep));
         } else {
             // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.adjust(leg.holdOwner, leg.id, uint128(keep));
+            CORE.adjust(leg.holdOwner, leg.placer, leg.id, uint128(keep));
         }
         // forge-lint: disable-next-line(unsafe-typecast)
         leg.held = uint128(keep);

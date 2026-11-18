@@ -14,6 +14,7 @@ import { CardLimits } from "./CardLimits.sol";
 import { Conversion } from "./Conversion.sol";
 import { CreditLine } from "./CreditLine.sol";
 import { IdentityRules } from "./IdentityRules.sol";
+import { CoreDebt } from "./LegBook.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
@@ -138,22 +139,14 @@ contract CardProgram {
 
     /// @dev What a purchase captured (charges included) and refunded, in the token it was booked in. Refunds never pass
     ///      what it captured: legs refund at today's rate, which can leave a converted leg more than the purchase.
+    struct Reserve {
+        address owner;
+        bool consented;
+    }
+
     struct Booked {
         uint128 captured;
         uint128 refunded;
-    }
-
-    /// @dev One leg's hold as a purchase step reads it.
-    struct Leg {
-        address holdOwner;
-        bytes32 id;
-        address token;
-        uint256 rate;
-        uint128 held;
-        uint128 refundable;
-        bool settled;
-        /// @dev Settlement-unit value of what the step can use from the leg.
-        uint256 value;
     }
 
     /// @notice How long a setting that moves money waits between the issuer proposing it and applying it, once any
@@ -220,8 +213,9 @@ contract CardProgram {
     /// @notice What an owner lets this program reserve and collect of a token outside disputes: a lifetime cap on
     ///         collections, what it has collected and the purpose each reserve must name. A zero cap allows nothing.
     mapping(address owner => mapping(address token => ReserveConsent)) public reserveConsent;
-    /// @dev Reserves placed under an owner's reserveConsent, whose collections count against it.
-    mapping(bytes32 id => bool) internal _consented;
+    /// @dev Each reserve's owner, which the core keys it by, and whether it was placed under the owner's
+    ///      reserveConsent, whose collections count against it.
+    mapping(bytes32 id => Reserve) internal _reserveOf;
     /// @dev Reserves this program may still hold, so a settlement token change waits for them.
     bytes32[] internal _reserves;
     mapping(bytes32 purchaseRef => Booked) internal _booked;
@@ -953,8 +947,7 @@ contract CardProgram {
         _forward(token);
         if (absorbed != 0) CardFunding.noteAbsorbed(purchaseRef, absorbed);
         // Debt the charge left counts in the program's exposure, like a capture's.
-        (address creditor, uint128 owed) = CORE.debtOf(owner, token);
-        if (creditor == address(this) && owed != 0) CardFunding.noteDebtor(owner);
+        if (CoreDebt.owedTo(owner, token, address(this)) != 0) CardFunding.noteDebtor(owner);
         _booked[purchaseRef].captured += amount;
 
         Ledger storage ledger_ = ledger;
@@ -1086,9 +1079,8 @@ contract CardProgram {
             ReserveConsent storage c = reserveConsent[owner][token];
             if (c.purpose != purpose || uint256(amount) + c.collected > c.cap) revert ReserveNotAllowed();
             _useKey(_valueOf(token, amount));
-            _consented[id] = true;
         }
-        _reserve(owner, token, id, amount, expiresAt);
+        _reserve(owner, token, id, amount, expiresAt, owner != SETTLEMENT_ACCOUNT);
     }
 
     /// @notice Reserves a disputed purchase for at most the networks' dispute window: `tokens[0]` on the merchant's
@@ -1109,25 +1101,30 @@ contract CardProgram {
         if (tokens[0] != 0) {
             _useKey(_valueOf(token, tokens[0]));
             bytes32 id = reserveId(purchaseRef, merchant);
-            delete _consented[id];
-            _reserve(merchant, token, id, tokens[0], expiresAt);
+            _reserve(merchant, token, id, tokens[0], expiresAt, false);
         }
         if (tokens[1] != 0) {
-            _reserve(SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), tokens[1], expiresAt);
+            _reserve(
+                SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), tokens[1], expiresAt, false
+            );
         }
         emit DisputeReserved(purchaseRef, merchant, token, tokens, covers, expiresAt);
     }
 
     /// @notice Releases a reserve before it expires.
     function releaseReserve(bytes32 id) external nonReentrant onlyRole(ROLE_TREASURY) {
-        CORE.releaseLien(id);
+        CORE.release(_reserveOf[id].owner, address(this), id);
     }
 
     /// @notice Takes `amount` of a reserve and pays it to the settlement account, releasing the rest. A reserve placed
     ///         under an owner's reserveConsent counts against its cap, and the owner may have withdrawn it since.
     function collectReserve(bytes32 id, uint128 amount) external nonReentrant onlyRole(ROLE_TREASURY) {
-        (address owner, address token, uint128 held,,) = CORE.lienOf(address(this), id);
-        if (_consented[id]) {
+        Reserve memory r = _reserveOf[id];
+        address owner = r.owner;
+        IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), id);
+        (address token, uint128 held) = (h.token, h.held);
+        if (token == address(0)) revert IReservationCore.HoldNotFound();
+        if (r.consented) {
             ReserveConsent storage c = reserveConsent[owner][token];
             uint256 collected = uint256(c.collected) + amount;
             if (collected > c.cap) revert ReserveNotAllowed();
@@ -1136,8 +1133,9 @@ contract CardProgram {
             c.collected = uint128(collected);
         }
         if (owner != SETTLEMENT_ACCOUNT) _useKey(_valueOf(token, amount));
-        if (amount != 0) CORE.seizeLien(id, amount);
-        if (held > amount) CORE.releaseLien(id);
+        // Collecting the whole reserve ends it; collecting part releases the rest.
+        if (amount != 0) CORE.capture(owner, address(this), id, amount, true);
+        else if (held != 0) CORE.release(owner, address(this), id);
         if (amount != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT_ACCOUNT, amount);
         emit ReserveCollected(id, SETTLEMENT_ACCOUNT, amount);
     }
@@ -1225,7 +1223,15 @@ contract CardProgram {
 
     // Internals.
 
-    function _reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) private {
+    function _reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt, bool consented)
+        private
+    {
+        // The core keys a reserve by its owner, so an id names one reserve at a time across owners.
+        address prior = _reserveOf[id].owner;
+        if (prior != address(0) && CORE.getHold(prior, address(this), id).token != address(0)) {
+            revert IReservationCore.HoldExists();
+        }
+        _reserveOf[id] = Reserve({ owner: owner, consented: consented });
         CORE.pledgeFrom(owner, token, id, amount, expiresAt);
         _reserves.push(id);
         emit ReservePlaced(id, owner, token, amount, expiresAt);
@@ -1238,8 +1244,10 @@ contract CardProgram {
             --i;
             // Each reserve the program placed is one core read; the list only holds reserves still to end.
             // forge-lint: disable-next-line(calls-loop)
-            (,, uint128 amount,,) = CORE.lienOf(address(this), _reserves[i]);
-            if (amount != 0) revert SettlementTokenInUse(IN_USE_HOLDS);
+            bytes32 id = _reserves[i];
+            if (CORE.getHold(_reserveOf[id].owner, address(this), id).held != 0) {
+                revert SettlementTokenInUse(IN_USE_HOLDS);
+            }
             _reserves[i] = _reserves[_reserves.length - 1];
             _reserves.pop();
         }

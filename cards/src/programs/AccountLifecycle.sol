@@ -5,6 +5,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { AccountKeys } from "./AccountKeys.sol";
+import { CoreDebt } from "./LegBook.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 
 /// @title AccountLifecycle
@@ -339,11 +340,11 @@ contract AccountLifecycle {
         if (keys == address(0) || !AccountKeys(keys).signsFor(account, msg.sender)) revert NotOwner();
     }
 
-    /// @dev Live holds: what the core reserves beyond liens.
+    /// @dev Live holds: anything the core reserves, which counts pledges and liens too.
     function _holding(address account, address token) private view returns (bool) {
-        // Reads of the reservation core, also made once per vault the caller names.
+        // A read of the reservation core, also made once per vault the caller names.
         // forge-lint: disable-next-line(calls-loop)
-        return CORE.reserved(account, token) > CORE.liened(account, token);
+        return CORE.reserved(account, token) != 0;
     }
 
     /// @dev The payee is the owner's choice, the recorded executor or the noticed authority, so the vaults the caller
@@ -353,8 +354,8 @@ contract AccountLifecycle {
     function _payOut(address account, address to, address[] calldata vaults) private returns (uint256 paid) {
         if (to == address(0) || to == account) revert InvalidPayee();
         address token = TOKEN;
-        (, uint128 debt) = CORE.debtOf(account, token);
-        (, uint128 toDebt) = CORE.debtOf(to, token);
+        uint256 debt = CoreDebt.total(account, token);
+        uint256 toDebt = CoreDebt.total(to, token);
 
         // Shares redeem to the account itself, so the core repays its debt from them as from any credit.
         uint256 savings;
@@ -373,14 +374,14 @@ contract AccountLifecycle {
         // forge-lint: disable-end(calls-loop)
 
         // Cash moved onto the account itself is a credit the core repays debt from first.
-        (, uint128 owed) = CORE.debtOf(account, token);
+        uint256 owed = CoreDebt.total(account, token);
         uint256 free = CORE.available(account, token);
         if (owed != 0 && free != 0) token.safeTransferFrom(account, account, owed < free ? owed : free);
         paid = CORE.available(account, token);
         if (paid != 0) token.safeTransferFrom(account, to, paid);
 
-        (, uint128 debtAfter) = CORE.debtOf(account, token);
-        (, uint128 toDebtAfter) = CORE.debtOf(to, token);
+        uint256 debtAfter = CoreDebt.total(account, token);
+        uint256 toDebtAfter = CoreDebt.total(to, token);
         uint256 repaid = debt > debtAfter ? debt - debtAfter : 0;
         uint256 received = toDebt > toDebtAfter ? toDebt - toDebtAfter : 0;
         if (paid != 0 || repaid != 0 || savings != 0) emit PaidOut(account, to, paid, repaid, received, savings);

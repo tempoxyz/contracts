@@ -9,8 +9,7 @@ import { AccountLifecycle } from "./AccountLifecycle.sol";
 import { CardConvert } from "./CardConvert.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { CardProgram } from "./CardProgram.sol";
-import { CreditLine } from "./CreditLine.sol";
-import { SavingsFacility } from "./SavingsFacility.sol";
+import { CoreDebt, LegBook } from "./LegBook.sol";
 import { IReservationCore } from "./interfaces/IReservationCore.sol";
 
 /// @title CardAdjust
@@ -106,6 +105,8 @@ library CardAdjust {
             if (tokens != 0) {
                 // forge-lint: disable-next-line(unsafe-typecast)
                 core.charge(owner, token, id, uint128(tokens), address(this), false);
+                // The core keeps no record of a charge, so the program records what a refund may give back.
+                LegBook.noteCharge(id, token, tokens);
             }
         }
         // Bit 16 marks a late charge that took nothing from the owner, so the reference can't be charged again.
@@ -118,62 +119,17 @@ library CardAdjust {
     }
 
     /// @dev What a charge of `wanted` tokens can take from `owner`: its available balance, then the program's debt cap
-    ///      less the debt the owner already carries to it. Debt to another creditor leaves no room for new debt here.
+    ///      less the debt the owner already carries to it.
     function _chargeable(IReservationCore core, address owner, address token, uint256 wanted)
         private
         view
         returns (uint256)
     {
         uint256 room = core.available(owner, token);
-        (address creditor, uint256 debt) = core.debtOf(owner, token);
-        if (debt == 0 || creditor == address(this)) {
-            uint256 cap = core.debtCap(owner, address(this), token);
-            if (cap > debt) room += cap - debt;
-        }
+        uint256 debt = CoreDebt.owedTo(owner, token, address(this));
+        uint256 cap = core.payeeTerms(owner, address(this), token).debtCap;
+        if (cap > debt) room += cap - debt;
         return wanted < room ? wanted : room;
-    }
-
-    /// @notice Refunds `amount` settlement units across legs `l` (cash, savings, credit, late charge) in reverse order,
-    ///         pulling each leg's token from the caller, and returns the cash (with any late charge), share and credit
-    ///         tokens refunded.
-    function refund(IReservationCore core, CardProgram.Leg[4] memory l, address creditLine, uint256 amount)
-        external
-        returns (uint256[3] memory tokens)
-    {
-        uint256 rest = amount;
-        uint256[4] memory take;
-        for (uint256 i = 4; i > 0; --i) {
-            take[i - 1] = rest < l[i - 1].value ? rest : l[i - 1].value;
-            rest -= take[i - 1];
-        }
-        if (rest != 0) revert CardProgram.RefundExceedsCapture(rest);
-
-        if (take[3] != 0) tokens[0] = _refundLeg(core, l[3], take[3]);
-        if (take[2] != 0) {
-            tokens[2] = _refundLeg(core, l[2], take[2]);
-            CreditLine(creditLine).sync(l[2].id);
-        }
-        if (take[1] != 0) {
-            SavingsFacility facility = SavingsFacility(core.getHold(l[1].holdOwner, l[1].id).payee);
-            uint256 assets = _toTokenUp(take[1], l[1].rate);
-            SafeTransferLib.safeTransferFrom(facility.ASSET(), msg.sender, address(this), assets);
-            SafeTransferLib.safeApprove(facility.ASSET(), address(facility), assets);
-            tokens[1] = facility.refund(l[1].holdOwner, l[1].id, assets);
-        }
-        if (take[0] != 0) tokens[0] += _refundLeg(core, l[0], take[0]);
-    }
-
-    /// @dev Pulls a cash, credit or charge leg's tokens for `take` settlement units from the caller and refunds the leg
-    ///      as its payee.
-    function _refundLeg(IReservationCore core, CardProgram.Leg memory leg, uint256 take)
-        private
-        returns (uint256 tokens)
-    {
-        tokens = take == leg.value ? leg.refundable : _toTokenUp(take, leg.rate);
-        if (tokens > leg.refundable) tokens = leg.refundable;
-        SafeTransferLib.safeTransferFrom(leg.token, msg.sender, address(this), tokens);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        core.refund(leg.holdOwner, leg.id, uint128(tokens));
     }
 
     /// @notice Issues a card to owner; its ceiling starts at the issued limits, in SETTLEMENT_TOKEN units.

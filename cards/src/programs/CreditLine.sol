@@ -43,6 +43,8 @@ contract CreditLine is ISettlementTokenGuard {
     uint256 private constant BPS = 10_000;
     /// @dev The program role whose keys may repay a line for a reference (CardProgram.ROLE_TREASURY).
     uint8 private constant ROLE_TREASURY = 4;
+    /// @dev The core's kind for a pledge.
+    uint8 private constant PLEDGE = 2;
     /// @dev How long one commitment hold lasts; the core caps holds at 31 days.
     uint256 private constant COMMITMENT_TERM = 30 days;
     /// @dev The year interest rates are quoted over.
@@ -89,11 +91,14 @@ contract CreditLine is ISettlementTokenGuard {
         uint128 redrawn;
     }
 
-    /// @dev What `sync` last read from a draw's hold.
+    /// @dev A draw's hold as the line last applied it: what it holds, what counted toward what the borrower owes, and
+    ///      what its captures less refunds came to (gross), which the core forgets once the hold settles. Core amounts
+    ///      fit in 64 bits.
     struct Draw {
         uint64 lineId;
-        uint96 held;
-        uint96 net;
+        uint64 held;
+        uint64 net;
+        uint64 gross;
     }
 
     enum StatementStatus {
@@ -341,12 +346,12 @@ contract CreditLine is ISettlementTokenGuard {
         uint256 credit = availableCredit(lineId);
         if (amount > credit) revert CreditExceeded(amount, credit);
         // Draws fit in a Draw record: credit is bounded by the limit, so this only guards an unusual limit.
-        if (amount > type(uint96).max) revert CreditExceeded(amount, type(uint96).max);
+        if (amount > type(uint64).max) revert CreditExceeded(amount, type(uint64).max);
 
         (lender, token) = (l.lender, l.token);
         holdId = holdIdOf(msg.sender, ref);
         // forge-lint: disable-next-line(unsafe-typecast)
-        draws[holdId] = Draw({ lineId: lineId, held: uint96(amount), net: 0 });
+        draws[holdId] = Draw({ lineId: lineId, held: uint64(amount), net: 0, gross: 0 });
         l.pending += amount;
         // The draw comes out of the commitment, so it frees the lender's balance first.
         _commit(lineId);
@@ -363,17 +368,64 @@ contract CreditLine is ISettlementTokenGuard {
         emit Drawn(lineId, holdId, ref, amount, expiresAt);
     }
 
-    /// @notice Applies what changed on a draw's hold since the last sync: captures add to what the borrower owes,
-    ///         refunds take from it, and captures, releases and expiry free pending credit. Anyone may call it.
+    /// @notice Applies what changed on a draw's hold since the last sync: releases and expiry free pending credit.
+    ///         Anyone may call it.
     function sync(bytes32 holdId) public {
         Draw storage d = draws[holdId];
         uint64 lineId = d.lineId;
         if (lineId == 0) revert UnknownDraw();
+        _apply(lineId, holdId, d.gross);
+    }
+
+    /// @notice Captures `amount` of draw `holdId` for the program that drew it, paying the program. The capture adds
+    ///         to what the borrower owes within its debt bound, and the line records it, since the core forgets a
+    ///         settled hold.
+    function capture(bytes32 holdId, uint128 amount, bool isFinal) external nonReentrant {
+        Draw storage d = draws[holdId];
+        uint64 lineId = d.lineId;
+        if (lineId == 0) revert UnknownDraw();
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.program) revert NotProgram();
+        uint256 gross = uint256(d.gross) + amount;
+        // A hold captures at most its 64-bit capture limit, so a draw's captures fit too.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        d.gross = uint64(gross);
+        // Every entry point holds the transient lock for this whole call.
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        CORE.capture(l.lender, address(this), holdId, amount, isFinal);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _apply(lineId, holdId, uint64(gross));
+    }
+
+    /// @notice Refunds `amount` of what draw `holdId` captured to the lender, pulled from the program that drew it,
+    ///         which lowers what the borrower owes. Refunds never pass what the draw captured.
+    function refund(bytes32 holdId, uint128 amount) external nonReentrant {
+        Draw storage d = draws[holdId];
+        uint64 lineId = d.lineId;
+        if (lineId == 0) revert UnknownDraw();
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.program) revert NotProgram();
+        uint64 gross = d.gross;
+        if (amount > gross) revert RepayExceedsOwed(amount, gross);
+        // Bounded by gross, a uint64.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        gross -= uint64(amount);
+        d.gross = gross;
+        SafeTransferLib.safeTransferFrom(l.token, msg.sender, address(this), amount);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        CORE.refund(l.lender, l.token, address(this), holdId, amount);
+        _apply(lineId, holdId, gross);
+    }
+
+    /// @dev Applies a draw's hold and its captures less refunds (`gross`): captures add to what the borrower owes,
+    ///      refunds take from it, and captures, releases and expiry free pending credit.
+    function _apply(uint64 lineId, bytes32 holdId, uint64 gross) private {
+        Draw storage d = draws[holdId];
         Line storage l = _lines[lineId];
         _accrue(lineId, false);
-        IReservationCore.HoldRecord memory h = CORE.getHold(l.lender, holdId);
-        uint128 held = h.held;
-        uint128 net = h.captured - h.refunded;
+        // A settled hold is gone from the core and holds nothing.
+        uint128 held = CORE.getHold(l.lender, address(this), holdId).held;
+        uint128 net = gross;
         // Pending holds only shrink after placement: captures and releases free them.
         l.pending = l.pending + held - d.held;
         uint128 excess;
@@ -393,11 +445,11 @@ contract CreditLine is ISettlementTokenGuard {
             if (back > l.owed) excess = back - l.owed;
             l.owed -= back - excess;
         }
-        // Both are at most the draw's amount, which fits in 96 bits.
+        // Both are at most the draw's amount or its captures, which fit in 64 bits.
         // forge-lint: disable-next-line(unsafe-typecast)
-        (d.held, d.net) = (uint96(held), uint96(net));
+        (d.held, d.net) = (uint64(held), uint64(net));
         // A refund past what the borrower owes (it repaid the purchase already) reached the lender; it is the
-        // borrower's. The id is unique: each refund lowers the draw's net.
+        // borrower's.
         if (excess != 0) {
             CORE.charge(
                 l.lender,
@@ -422,26 +474,26 @@ contract CreditLine is ISettlementTokenGuard {
         if (lineId == 0) revert UnknownDraw();
         Line storage l = _lines[lineId];
         if (msg.sender != l.program) revert NotProgram();
-        uint128 held = CORE.getHold(l.lender, holdId).held;
+        uint128 held = CORE.getHold(l.lender, address(this), holdId).held;
         if (amount > held) {
             _accrue(lineId, false);
             uint256 more = amount - held;
             uint256 credit = availableCredit(lineId);
             if (more > credit) revert CreditExceeded(more, credit);
-            if (amount > type(uint96).max) revert CreditExceeded(amount, type(uint96).max);
+            if (amount > type(uint64).max) revert CreditExceeded(amount, type(uint64).max);
             l.pending = l.pending + amount - d.held;
             // forge-lint: disable-next-line(unsafe-typecast)
-            d.held = uint96(amount);
+            d.held = uint64(amount);
             _commit(lineId);
             // Every entry point holds the transient lock for this whole call.
             // forge-lint: disable-next-line(reentrancy-no-eth)
-            CORE.adjust(l.lender, holdId, amount);
+            CORE.adjust(l.lender, address(this), holdId, amount);
         } else {
             // forge-lint: disable-next-line(reentrancy-no-eth)
-            CORE.adjust(l.lender, holdId, amount);
+            CORE.adjust(l.lender, address(this), holdId, amount);
             l.pending = l.pending + amount - d.held;
             // forge-lint: disable-next-line(unsafe-typecast)
-            d.held = uint96(amount);
+            d.held = uint64(amount);
             _commit(lineId);
         }
         _lock(lineId);
@@ -480,9 +532,9 @@ contract CreditLine is ISettlementTokenGuard {
         if (drawn > free) {
             uint256 keep = _committed(lineId) - (drawn - free);
             bytes32 id = commitmentOf[lineId];
-            if (keep == 0) CORE.release(l.lender, id);
+            if (keep == 0) CORE.release(l.lender, address(this), id);
             // forge-lint: disable-next-line(unsafe-typecast)
-            else CORE.adjust(l.lender, id, uint128(keep));
+            else CORE.adjust(l.lender, address(this), id, uint128(keep));
         }
         CORE.charge(l.lender, l.token, keccak256(abi.encode(address(this), "redraw", ++_redraws)), drawn, payee, false);
         // forge-lint: disable-end(reentrancy-no-eth)
@@ -844,18 +896,15 @@ contract CreditLine is ISettlementTokenGuard {
         if (msg.sender != l.borrower) revert NotBorrower();
         IEarnVault vault = l.collateralVault;
         if (address(vault) == address(0) || locking[lineId]) revert InvalidPledge();
-        if (l.pledgeId != bytes32(0)) {
-            (,, uint128 current,,) = CORE.lienOf(address(this), l.pledgeId);
-            if (current != 0) revert PledgeInPlace();
-        }
-        (address owner, address token, uint128 shares, uint64 expiresAt, bool pledged) =
-            CORE.lienOf(address(this), pledgeId);
+        if (l.pledgeId != bytes32(0) && _pledged(l.borrower, l.pledgeId).held != 0) revert PledgeInPlace();
+        // The borrower placed the pledge, so the core keys it by the borrower as owner and placer.
+        IReservationCore.HoldRecord memory h = _pledged(l.borrower, pledgeId);
         if (
-            owner != l.borrower || token != vault.earnShare() || !pledged || shares == 0
-                || expiresAt <= uint256(l.dueDate) + l.noticePeriod
+            h.token != vault.earnShare() || h.kind != PLEDGE || h.payee != address(this) || h.held == 0
+                || h.expiresAt <= uint256(l.dueDate) + l.noticePeriod
         ) revert InvalidPledge();
         l.pledgeId = pledgeId;
-        emit PledgeAttached(lineId, pledgeId, shares, expiresAt);
+        emit PledgeAttached(lineId, pledgeId, h.held, h.expiresAt);
     }
 
     /// @notice The borrower takes its pledge back once nothing is owed or pending.
@@ -866,8 +915,7 @@ contract CreditLine is ISettlementTokenGuard {
         bytes32 pledgeId = l.pledgeId;
         if (pledgeId == bytes32(0)) revert InvalidPledge();
         l.pledgeId = bytes32(0);
-        (,, uint128 shares,,) = CORE.lienOf(address(this), pledgeId);
-        if (shares != 0) CORE.releaseLien(pledgeId);
+        if (_pledged(l.borrower, pledgeId).held != 0) CORE.release(l.borrower, l.borrower, pledgeId);
         emit PledgeReleased(lineId, pledgeId);
     }
 
@@ -886,7 +934,7 @@ contract CreditLine is ISettlementTokenGuard {
         if (owed == 0) revert NothingOwed();
         bytes32 pledgeId = l.pledgeId;
         if (pledgeId == bytes32(0)) revert InvalidPledge();
-        (,, uint128 pledgedShares,,) = CORE.lienOf(address(this), pledgeId);
+        uint128 pledgedShares = _pledged(l.borrower, pledgeId).held;
         uint256 cover = l.collateralVault.previewWithdraw(_assetsFor(l, owed));
         // forge-lint: disable-next-line(unsafe-typecast)
         shares = cover < pledgedShares ? uint128(cover) : pledgedShares;
@@ -894,7 +942,7 @@ contract CreditLine is ISettlementTokenGuard {
 
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        CORE.seizeLien(pledgeId, shares);
+        CORE.capture(l.borrower, l.borrower, pledgeId, shares, false);
         assets = _redeemToLender(l, shares);
         // Rounding may return a little more than owed; the debt never goes below zero.
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -955,7 +1003,7 @@ contract CreditLine is ISettlementTokenGuard {
         bytes32 id = lockOf[lineId];
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        CORE.capture(l.borrower, id, shares, false);
+        CORE.capture(l.borrower, address(this), id, shares, false);
         assets = _redeemToLender(l, shares);
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 credited = assets < l.owed ? uint128(assets) : l.owed;
@@ -1022,9 +1070,9 @@ contract CreditLine is ISettlementTokenGuard {
             return shares == 0 ? 0 : _inLine(l, l.collateralVault.previewRedeem(shares));
         }
         if (l.pledgeId == bytes32(0)) return 0;
-        (address owner,, uint128 shares, uint64 expiresAt,) = CORE.lienOf(address(this), l.pledgeId);
-        if (owner != l.borrower || shares == 0 || expiresAt <= uint256(l.dueDate) + l.noticePeriod) return 0;
-        return _inLine(l, l.collateralVault.previewRedeem(shares));
+        IReservationCore.HoldRecord memory h = _pledged(l.borrower, l.pledgeId);
+        if (h.held == 0 || h.expiresAt <= uint256(l.dueDate) + l.noticePeriod) return 0;
+        return _inLine(l, l.collateralVault.previewRedeem(h.held));
     }
 
     /// @notice A line `program` draws on is open in its settlement token while its borrower has accepted it and it has
@@ -1115,10 +1163,10 @@ contract CreditLine is ISettlementTokenGuard {
         IReservationCore.HoldRecord memory h;
         bool live;
         if (id != bytes32(0)) {
-            h = CORE.getHold(l.lender, id);
+            h = CORE.getHold(l.lender, address(this), id);
             // Expiries are timestamps by design; a few seconds of validator skew does not change them.
             // forge-lint: disable-next-line(block-timestamp)
-            live = !h.settled && h.token != address(0) && h.expiresAt > block.timestamp;
+            live = h.token != address(0) && h.expiresAt > block.timestamp;
         }
         uint256 target;
         // forge-lint: disable-next-line(block-timestamp)
@@ -1138,22 +1186,22 @@ contract CreditLine is ISettlementTokenGuard {
         if (live && !renew) {
             if (target == h.held) return;
             if (target == 0) {
-                CORE.release(l.lender, id);
+                CORE.release(l.lender, address(this), id);
             } else if (target < h.held) {
                 // forge-lint: disable-next-line(unsafe-typecast)
-                CORE.adjust(l.lender, id, uint128(target));
+                CORE.adjust(l.lender, address(this), id, uint128(target));
             } else {
                 // Growing the commitment is best effort: a lender who lowered or revoked this contract's allowance
                 // keeps what is committed, and draws and repayments still settle.
                 // forge-lint: disable-next-line(unsafe-typecast)
-                try CORE.adjust(l.lender, id, uint128(target)) { }
+                try CORE.adjust(l.lender, address(this), id, uint128(target)) { }
                 catch {
                     return;
                 }
             }
         } else {
-            if (live) CORE.release(l.lender, id);
-            else if (id != bytes32(0) && !h.settled && h.token != address(0)) CORE.releaseExpired(l.lender, id);
+            if (live) CORE.release(l.lender, address(this), id);
+            else if (h.token != address(0)) CORE.releaseExpired(l.lender, address(this), id);
             if (target == 0) {
                 if (id != bytes32(0)) commitmentOf[lineId] = bytes32(0);
                 emit Committed(lineId, bytes32(0), 0);
@@ -1207,8 +1255,8 @@ contract CreditLine is ISettlementTokenGuard {
         IReservationCore.HoldRecord memory h;
         bool live;
         if (id != bytes32(0)) {
-            h = CORE.getHold(l.borrower, id);
-            live = !h.settled && h.token != address(0) && h.expiresAt > block.timestamp;
+            h = CORE.getHold(l.borrower, address(this), id);
+            live = h.token != address(0) && h.expiresAt > block.timestamp;
         }
         uint256 used = uint256(l.owed) + l.pending;
         // Locks only for what the borrower agreed to owe, at the loan-to-value it accepted.
@@ -1220,11 +1268,11 @@ contract CreditLine is ISettlementTokenGuard {
         bool renew = live && h.expiresAt < block.timestamp + 1 days;
         if (live && !renew) {
             if (target == h.held) return;
-            if (target == 0) CORE.release(l.borrower, id);
-            else CORE.adjust(l.borrower, id, uint128(target));
+            if (target == 0) CORE.release(l.borrower, address(this), id);
+            else CORE.adjust(l.borrower, address(this), id, uint128(target));
         } else {
-            if (live) CORE.release(l.borrower, id);
-            else if (id != bytes32(0) && !h.settled && h.token != address(0)) CORE.releaseExpired(l.borrower, id);
+            if (live) CORE.release(l.borrower, address(this), id);
+            else if (h.token != address(0)) CORE.releaseExpired(l.borrower, address(this), id);
             id = bytes32(0);
             if (target != 0) {
                 id = keccak256(abi.encode(address(this), "lock", lineId, ++_locks[lineId]));
@@ -1248,16 +1296,21 @@ contract CreditLine is ISettlementTokenGuard {
     function _lockedShares(uint64 lineId) private view returns (uint256) {
         bytes32 id = lockOf[lineId];
         if (id == bytes32(0)) return 0;
-        IReservationCore.HoldRecord memory h = CORE.getHold(_lines[lineId].borrower, id);
-        return h.settled || h.expiresAt <= block.timestamp ? 0 : h.held;
+        IReservationCore.HoldRecord memory h = CORE.getHold(_lines[lineId].borrower, address(this), id);
+        return h.expiresAt <= block.timestamp ? 0 : h.held;
     }
 
     function _committed(uint64 lineId) private view returns (uint256) {
         bytes32 id = commitmentOf[lineId];
         if (id == bytes32(0)) return 0;
-        IReservationCore.HoldRecord memory h = CORE.getHold(_lines[lineId].lender, id);
+        IReservationCore.HoldRecord memory h = CORE.getHold(_lines[lineId].lender, address(this), id);
         // forge-lint: disable-next-line(block-timestamp)
-        return h.settled || h.expiresAt <= block.timestamp ? 0 : h.held;
+        return h.expiresAt <= block.timestamp ? 0 : h.held;
+    }
+
+    /// @dev The borrower's pledge `id`, which it placed itself.
+    function _pledged(address borrower, bytes32 id) private view returns (IReservationCore.HoldRecord memory) {
+        return CORE.getHold(borrower, borrower, id);
     }
     // forge-lint: disable-end(unsafe-typecast)
     // forge-lint: disable-end(block-timestamp)

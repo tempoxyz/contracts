@@ -9,6 +9,7 @@ import { CardFunding } from "./CardFunding.sol";
 import { CardProgram } from "./CardProgram.sol";
 import { Conversion } from "./Conversion.sol";
 import { CreditLine } from "./CreditLine.sol";
+import { CoreDebt } from "./LegBook.sol";
 import { SavingsFacility } from "./SavingsFacility.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
@@ -416,10 +417,12 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 repaid;
         if (rest > 0) {
             _use(rest);
-            (, uint128 before) = CORE.debtOf(owner, TOKEN);
+            uint256 before = CoreDebt.total(owner, TOKEN);
             _refund(purchaseRef, rest);
-            (, uint128 later) = CORE.debtOf(owner, TOKEN);
-            repaid = before > later ? before - later : 0;
+            uint256 later = CoreDebt.total(owner, TOKEN);
+            // Bounded by the owner's 128-bit debt before the refund.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            repaid = before > later ? uint128(before - later) : 0;
         }
         // The provisional credit the cardholder keeps counts as refunded too: it frees the mandate's usage and leaves
         // the network's side of the chargeback the refund above did not already cover.
@@ -540,8 +543,7 @@ contract IssuerDesk is ISettlementTokenGuard {
         for (uint256 i; i < _debtors.length; ++i) {
             // A view over the core's debt records, one read per owner a lost dispute left in debt.
             // forge-lint: disable-next-line(calls-loop)
-            (address creditor, uint128 owed) = CORE.debtOf(_debtors[i], TOKEN);
-            if (creditor == SETTLEMENT) debt += owed;
+            debt += CoreDebt.owedTo(_debtors[i], TOKEN, SETTLEMENT);
         }
     }
 
@@ -590,10 +592,12 @@ contract IssuerDesk is ISettlementTokenGuard {
         } else if (split) {
             emit DisputeCredited(purchaseRef, owner, 1, token, 0, amount, amount);
         }
-        (, uint128 before) = CORE.debtOf(owner, token);
+        uint256 before = CoreDebt.total(owner, token);
         _payFromSettlement(token, owner, units);
-        (, uint128 later) = CORE.debtOf(owner, token);
-        repaid = before > later ? before - later : 0;
+        uint256 later = CoreDebt.total(owner, token);
+        // Bounded by the owner's 128-bit debt before the payment.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        repaid = before > later ? uint128(before - later) : 0;
     }
 
     function _step(bytes32 purchaseRef, uint8 kind, uint128 amount) private {
@@ -768,7 +772,7 @@ contract IssuerDesk is ISettlementTokenGuard {
     // What credit source i drew for the purchase, net of refunds; nothing for a line in another token than the desk's.
     function _drawn(bytes32 purchaseRef, CardFunding.Source[] memory order, uint256 i) private view returns (uint256) {
         CreditLine line = CreditLine(order[i].source);
-        (address lender, address token) = line.partiesOf(order[i].lineId);
+        (, address token) = line.partiesOf(order[i].lineId);
         if (token != TOKEN) return 0;
         // The program's draw reference: the purchase for its first credit source, else keyed by the source's index.
         bytes32 ref = purchaseRef;
@@ -778,8 +782,9 @@ contract IssuerDesk is ISettlementTokenGuard {
                 break;
             }
         }
-        IReservationCore.HoldRecord memory h = CORE.getHold(lender, line.holdIdOf(address(PROGRAM), ref));
-        return h.captured - h.refunded;
+        // The line records what each draw captured less refunds, which the core forgets once the hold settles.
+        (,,, uint64 gross) = line.draws(line.holdIdOf(address(PROGRAM), ref));
+        return gross;
     }
 
     function _min(uint256 a, uint256 b) private pure returns (uint256) {

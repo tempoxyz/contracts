@@ -14,7 +14,7 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///         refunds the shares it mints to the cardholder. Specified in docs/cards/design.md (Card programs).
 /// @dev Deployed with a fixed vault, settlement account and funder, and never changed. Only a hold's own placer
 ///      drives it, so a program captures and refunds only the legs it placed. It keeps a standing approval of
-///      both tokens to its vault and writes no storage per capture: the core records captured and refunded shares.
+///      both tokens to its vault and writes no storage per capture: the placer bounds refunds by what it captured.
 ///      When the vault quotes but cannot redeem at once, the float pays the settlement account and the shares wait
 ///      here for the funder's `redeemHeld`. Without a quote a capture reverts.
 /// @custom:reentrancy-guard _locked
@@ -82,14 +82,15 @@ contract SavingsFacility {
         nonReentrant
         returns (uint256 assets)
     {
-        IReservationCore.HoldRecord memory h = CORE.getHold(owner, id);
-        _checkPlacer(h);
+        // The core keys the leg by its placer, so only the program that placed it finds it here.
+        IReservationCore.HoldRecord memory h = CORE.getHold(owner, msg.sender, id);
+        _checkHold(h);
         // Nothing beyond the hold: an excess could become owner debt to this facility, which no one has paid for.
         if (shares > h.held) revert ExceedsHeld(shares, h.held);
         /// @custom:assert shares <= h.held
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
-        CORE.capture(owner, id, shares, isFinal);
+        CORE.capture(owner, msg.sender, id, shares, isFinal);
         if (shares == 0) return 0;
 
         uint256 quote = VAULT.previewRedeem(shares);
@@ -111,25 +112,27 @@ contract SavingsFacility {
         emit Captured(owner, id, shares, assets, deferred);
     }
 
-    /// @notice Refunds `owner`'s savings leg `id` with `assets` of the base asset pulled from the caller (its
-    ///         placer): deposits them into the vault and refunds the minted shares, up to what is still refundable.
-    ///         Shares minted beyond that stay here for the funder.
+    /// @notice Refunds `owner`'s savings leg `id` with `assets` of the base asset pulled from the caller: deposits
+    ///         them into the vault and refunds the minted shares, up to `maxShares`, what the caller (the leg's placer)
+    ///         records as still refundable. The core forgets a settled leg, so the placer keeps that bound. Shares
+    ///         minted beyond it stay here for the funder.
     /// @return shares The shares refunded to `owner`.
-    function refund(address owner, bytes32 id, uint256 assets) external nonReentrant returns (uint256 shares) {
-        IReservationCore.HoldRecord memory h = CORE.getHold(owner, id);
-        _checkPlacer(h);
-        uint256 refundable = h.captured - h.refunded;
-        if (refundable == 0 || assets == 0) revert NothingToRefund();
+    function refund(address owner, bytes32 id, uint256 assets, uint256 maxShares)
+        external
+        nonReentrant
+        returns (uint256 shares)
+    {
+        if (maxShares == 0 || assets == 0) revert NothingToRefund();
         SafeTransferLib.safeTransferFrom(ASSET, msg.sender, address(this), assets);
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         uint256 minted = VAULT.deposit(assets, address(this), 1);
-        shares = minted < refundable ? minted : refundable;
+        shares = minted < maxShares ? minted : maxShares;
         uint256 surplus = minted - shares;
         if (surplus != 0) heldShares += surplus;
-        // Bounded by refundable, a uint128 difference; the transient lock covers this whole call.
+        // The facility pays the refund from the shares the assets minted, onto the caller's leg.
         // forge-lint: disable-next-line(unsafe-typecast, reentrancy-no-eth)
-        CORE.refund(owner, id, uint128(shares));
+        if (shares != 0) CORE.refund(owner, SHARE, msg.sender, id, uint128(shares));
         emit Refunded(owner, id, assets, shares, surplus);
     }
 
@@ -155,8 +158,8 @@ contract SavingsFacility {
         return IERC20Like(ASSET).balanceOf(address(this));
     }
 
-    function _checkPlacer(IReservationCore.HoldRecord memory h) private view {
-        if (h.placer != msg.sender) revert NotPlacer();
+    function _checkHold(IReservationCore.HoldRecord memory h) private view {
+        if (h.token == address(0)) revert NotPlacer();
         if (h.token != SHARE || h.payee != address(this)) revert NotFacilityHold();
     }
 

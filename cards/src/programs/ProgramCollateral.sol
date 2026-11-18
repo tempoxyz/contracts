@@ -19,7 +19,7 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 ///         is another token count at the program's rate for it or, without one, at what they sell for through the
 ///         program's conversion venue, and are sold there when seized.
 /// @dev The settlement account pledges first (`IReservationCore.pledge` with `pledgeId` and this contract as authority), then
-///      calls `post`. Value is read from the core's liens and the vault's price, never recorded.
+///      calls `post`. Value is read from the core's pledges and the vault's price, never recorded.
 // Loops over a program's pledges are bounded by MAX_PLEDGES and call only the fixed core and the program's vault.
 // forge-lint: disable-start(calls-loop)
 contract ProgramCollateral is ReentrancyGuardTransient {
@@ -29,6 +29,8 @@ contract ProgramCollateral is ReentrancyGuardTransient {
     uint256 private constant RATE_ONE = 1e18;
     /// @dev Pledges a program keeps at once; each deposit adds one.
     uint256 public constant MAX_PLEDGES = 16;
+    /// @dev The core's kind for a pledge.
+    uint8 private constant PLEDGE = 2;
 
     /// @notice One program's collateral: who may release it, what it is held in and how many pledges back it.
     struct Position {
@@ -82,13 +84,14 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         }
         if (pos.count >= MAX_PLEDGES) revert TooManyPledges();
         bytes32 id = pledgeId(program, pos.count + 1);
-        (address owner, address liened, uint128 units, uint64 expiresAt, bool pledged) = CORE.lienOf(address(this), id);
+        // The settlement account placed the pledge itself, so the core keys it by the account as owner and placer.
+        IReservationCore.HoldRecord memory h = CORE.getHold(account, account, id);
         // forge-lint: disable-next-line(block-timestamp)
-        if (owner != account || liened != token || !pledged || units == 0 || expiresAt <= block.timestamp) {
+        if (h.token != token || h.kind != PLEDGE || h.payee != address(this) || h.held == 0 || h.expiresAt <= block.timestamp) {
             revert PledgeMissing(id);
         }
         ++pos.count;
-        emit CollateralPosted(program, sponsor, id, units);
+        emit CollateralPosted(program, sponsor, id, h.held);
     }
 
     /// @notice Releases `value` settlement units of `program`'s collateral back to its settlement account, as its
@@ -150,10 +153,13 @@ contract ProgramCollateral is ReentrancyGuardTransient {
     /// @notice The live units `program`'s pledges hold, and what they are worth in its settlement units.
     function unitsOf(address program) public view returns (uint256 units) {
         Position storage pos = positionOf[program];
-        for (uint256 n = 1; n <= pos.count; ++n) {
-            (,, uint128 amount, uint64 expiresAt,) = CORE.lienOf(address(this), pledgeId(program, n));
+        uint256 count = pos.count;
+        if (count == 0) return 0;
+        address account = CardProgram(program).SETTLEMENT_ACCOUNT();
+        for (uint256 n = 1; n <= count; ++n) {
+            IReservationCore.HoldRecord memory h = CORE.getHold(account, account, pledgeId(program, n));
             // forge-lint: disable-next-line(block-timestamp)
-            if (expiresAt > block.timestamp) units += amount;
+            if (h.expiresAt > block.timestamp) units += h.held;
         }
     }
 
@@ -230,17 +236,21 @@ contract ProgramCollateral is ReentrancyGuardTransient {
     /// @dev Frees `units` from the latest pledges first, seizing them to this contract or releasing them to the
     ///      owner, and returns the units moved.
     function _take(Position storage pos, address program, uint256 units, bool seizing) private returns (uint256 moved) {
+        address account = CardProgram(program).SETTLEMENT_ACCOUNT();
         for (uint256 n = pos.count; n > 0 && units != 0; --n) {
             bytes32 id = pledgeId(program, n);
-            (,, uint128 amount, uint64 expiresAt,) = CORE.lienOf(address(this), id);
+            IReservationCore.HoldRecord memory h = CORE.getHold(account, account, id);
+            uint128 amount = h.held;
             // forge-lint: disable-next-line(block-timestamp)
-            if (amount == 0 || expiresAt <= block.timestamp) continue;
+            if (amount == 0 || h.expiresAt <= block.timestamp) continue;
             // Below the 128-bit pledge amount it is compared with.
             // forge-lint: disable-next-line(unsafe-typecast)
             uint128 part = units < amount ? uint128(units) : amount;
-            if (seizing) CORE.seizeLien(id, part);
-            else if (part == amount) CORE.releaseLien(id);
-            else CORE.reduceLien(id, part);
+            // Seizing captures to this contract and leaves the rest pledged; releasing all ends the pledge, and
+            // releasing part lowers it.
+            if (seizing) CORE.capture(account, account, id, part, false);
+            else if (part == amount) CORE.release(account, account, id);
+            else CORE.adjust(account, account, id, amount - part);
             units -= part;
             moved += part;
         }
