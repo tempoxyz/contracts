@@ -292,13 +292,14 @@ contract ERC4626Engine is
         return vault.previewRedeem(totalShares());
     }
 
-    /// Advertises ERC-165, the engine, redeem, exact withdraw and in-kind entry, and nothing else.
+    /// Advertises ERC-165, the engine, redeem, exact withdraw, in-kind entry and held deposit, and nothing else.
     /// @custom:ensures interfaceId == type(IERC165).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngine).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineRedeem).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineExactWithdraw).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineInKindDeposit).interfaceId ==> result
-    /// @custom:ensures result ==> (interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId || interfaceId == type(IEarnEngineRedeem).interfaceId || interfaceId == type(IEarnEngineExactWithdraw).interfaceId || interfaceId == type(IEarnEngineInKindDeposit).interfaceId)
+    /// @custom:ensures interfaceId == type(IEarnEngineHeldDeposit).interfaceId ==> result
+    /// @custom:ensures result ==> (interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId || interfaceId == type(IEarnEngineRedeem).interfaceId || interfaceId == type(IEarnEngineExactWithdraw).interfaceId || interfaceId == type(IEarnEngineInKindDeposit).interfaceId || interfaceId == type(IEarnEngineHeldDeposit).interfaceId)
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId
             || interfaceId == type(IEarnEngineRedeem).interfaceId
