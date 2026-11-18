@@ -303,6 +303,11 @@ export type AuthorityStep<
   handoffSummary: string
   handoff(profile: EarnDeploymentProfile, outputs: Record<string, Address>): string
   /**
+   * Runs `execute` once, when a signer is available, before recording the step even if it is already
+   * satisfied, for best-effort work `satisfied` does not require. Work left undone never blocks.
+   */
+  attemptWhenSatisfied?: true
+  /**
    * Whether the configured signer can execute the step; by default, whether the authority's signer
    * key is set. `proven` is the result of `probeSigner`, when the step has one and planning ran it.
    */

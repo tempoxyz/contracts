@@ -354,6 +354,52 @@ describe('Earn deployment lifecycle', () => {
     }
   })
 
+  test('offers a satisfied best-effort step for execution once before recording it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-best-effort-'))
+    const step = deploymentStep('seed-zone-router')
+    if (step.execution !== 'authority') throw new Error('Expected authority step')
+    const inspect = vi.spyOn(Inspection, 'inspectEarnDeployment').mockResolvedValue({})
+    const satisfied = vi.spyOn(step, 'satisfied').mockResolvedValue(true)
+    const handoff = vi.spyOn(step, 'handoff').mockReturnValue('Warm the router.')
+    const routerProfile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'best-effort-test',
+        chainId: 4217,
+        owner: address('4'),
+        engine: { kind: 'veda', address: address('1') },
+        zoneRouter: {
+          zoneId: 7,
+          ops: ['spend'],
+          spenders: [address('5e')],
+          factory: address('fa'),
+        },
+      },
+      { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+    )
+    try {
+      const options = {
+        root,
+        profilePath: join(root, 'profile.json'),
+        profile: routerProfile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: [{ id: step.id } as never],
+      }
+      const offered = await prepareLifecycleStep(options)
+      expect(offered).toMatchObject({ kind: 'handoff', optional: true })
+      if (offered.kind !== 'handoff') throw new Error('Expected handoff')
+      await recordAuthorityAction({ ...options, step: offered, transactions: [] })
+      // Once recorded, the satisfied step is not offered again.
+      expect(await prepareLifecycleStep(options)).toMatchObject({ kind: 'complete' })
+    } finally {
+      inspect.mockRestore()
+      satisfied.mockRestore()
+      handoff.mockRestore()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('refuses an ownerless unbound engine before deployment but preserves external owner handoffs', async () => {
     const configured = { ...profile, engine: { kind: 'erc4626' as const, address: address('1') } }
     let owner: `0x${string}` = zeroAddress

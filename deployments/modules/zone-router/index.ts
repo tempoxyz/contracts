@@ -160,16 +160,23 @@ export const zoneRouterModeModule: CapabilityModule = {
         blockers: spenderBlockers,
       }
     }
-    // Seed units and Portal allowances only save callback gas, so their absence never blocks a route.
-    const seedPlan = await zoneRouterSeedPlan(client, profile, outputs)
-    const missingSeeds = zoneRouterSeedNotes(
-      seedPlan,
-      await missingZoneRouterSeeds(client, seedPlan),
-    )
-    const seedDetails = {
-      ...(missingSeeds.length > 0 ? { missing: missingSeeds.join('; ') } : {}),
-      ...(seedPlan.notes.length > 0 ? { withheld: seedPlan.notes.join('; ') } : {}),
-    }
+    // Seed units and Portal allowances only save callback gas, so their absence never blocks a route,
+    // and neither does a failed read of them.
+    const seedDetails: Record<string, string> = await (async () => {
+      try {
+        const seedPlan = await zoneRouterSeedPlan(client, profile, outputs)
+        const missingSeeds = zoneRouterSeedNotes(
+          seedPlan,
+          await missingZoneRouterSeeds(client, seedPlan),
+        )
+        const details: Record<string, string> = {}
+        if (missingSeeds.length > 0) details.missing = missingSeeds.join('; ')
+        if (seedPlan.notes.length > 0) details.withheld = seedPlan.notes.join('; ')
+        return details
+      } catch (error) {
+        return { unread: error instanceof Error ? error.message : String(error) }
+      }
+    })()
     report.zoneRouterSeeds = {
       label: 'Zone router seeds',
       status: 'ready',

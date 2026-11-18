@@ -401,8 +401,9 @@ export async function reconcileEarnProfileActions(
         profile: options.profile,
         rpcUrl: options.rpcUrl,
       })
-      if (!execution) return step
-      await recordAuthorityAction({ ...options, step, transactions: execution.transactions })
+      // An already-satisfied step whose best-effort work found no signer is recorded as found.
+      if (!execution && !step.optional) return step
+      await recordAuthorityAction({ ...options, step, transactions: execution?.transactions ?? [] })
       continue
     }
 

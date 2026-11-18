@@ -8,6 +8,7 @@ import {
   isAddress,
   parseAbi,
   toEventSelector,
+  toFunctionSelector,
   zeroAddress,
   type Address,
   type Hex,
@@ -220,8 +221,9 @@ export async function zoneRouterSeedPlan(
         )
     }
   }
-  // A router release that sets its Portal allowance per callback refuses warm (OpDisabled on a router
-  // without Spend), so only allowances the router can keep standing are planned.
+  // A router release that sets its Portal allowance per callback refuses warm with OpDisabled (a router
+  // without Spend), so only allowances the router can keep standing are planned. Any other refusal
+  // stays planned, so the step hands it off rather than reporting the router warmed.
   const refusals = await Promise.all(
     warm.map((entry) =>
       simulationRefusal(client, profile.deployer, {
@@ -230,18 +232,21 @@ export async function zoneRouterSeedPlan(
       }),
     ),
   )
-  refusals.forEach((reason, index) => {
-    if (reason === undefined) return
+  const perCallback = refusals.map((refusal) => refusal !== undefined && refusal.disabled)
+  refusals.forEach((refusal, index) => {
+    if (refusal === undefined) return
     const entry = warm[index]!
     notes.push(
-      `Zone router ${routerAddress} refuses warm(${entry.token}) (${reason}), so its ${entry.tokenLabel} Portal allowance is set per callback and not warmed`,
+      perCallback[index]
+        ? `Zone router ${routerAddress} refuses warm(${entry.token}) (${refusal.reason}), so its ${entry.tokenLabel} Portal allowance is set per callback and not warmed`
+        : `Zone router ${routerAddress} reverts warm(${entry.token}) (${refusal.reason}), so its ${entry.tokenLabel} Portal allowance cannot be set and returns of that token to the Zone may fail`,
     )
   })
   return {
     router: routerAddress,
     portal,
     seeds,
-    warm: warm.filter((_, index) => refusals[index] === undefined),
+    warm: warm.filter((_, index) => !perCallback[index]),
     unverified,
     notes,
   }
@@ -285,25 +290,6 @@ export type MissingZoneRouterSeeds = Awaited<ReturnType<typeof missingZoneRouter
 /** Whether the router holds every Portal allowance it returns funds through. Anyone may warm one. */
 export function zoneRouterWarmed(missing: MissingZoneRouterSeeds) {
   return missing.warm.length === 0
-}
-
-/**
- * Whether the router is warmed and `deployer` can send no missing seed: each one it lacks the token for,
- * or whose transfer the token's policy refuses, is reported rather than required, so it never blocks.
- */
-export async function zoneRouterSeeded(
-  client: Pick<PublicClient, 'call' | 'readContract'>,
-  deployer: Address,
-  plan: ZoneRouterSeedPlan,
-) {
-  const missing = await missingZoneRouterSeeds(client, plan)
-  if (!zoneRouterWarmed(missing)) return false
-  if (missing.seeds.length === 0 || deployer === zeroAddress) return true
-  const sendable = await sendableZoneRouterSeedCalls(client, deployer, plan, {
-    seeds: missing.seeds,
-    warm: [],
-  })
-  return sendable.calls.length === 0
 }
 
 /**
@@ -407,10 +393,10 @@ export async function sendableZoneRouterSeedCalls(
   const simulated = await Promise.all(
     calls.map(async (call): Promise<string | undefined> => {
       if (call.spends && held.get(call.spends)! === 0n) return tooLittle(call)
-      const reason = await simulationRefusal(client, account, call)
-      return reason === undefined
+      const refusal = await simulationRefusal(client, account, call)
+      return refusal === undefined
         ? undefined
-        : `${call.description}: reverts from the deployer ${account} (${reason})`
+        : `${call.description}: reverts from the deployer ${account} (${refusal.reason})`
     }),
   )
   // Each transfer spends 1 base unit, so what the deployer holds funds the first transfers that pass.
@@ -444,10 +430,20 @@ async function simulationRefusal(
     return undefined
   } catch (error) {
     if (
-      error instanceof BaseError &&
-      error.walk((cause) => cause instanceof ExecutionRevertedError) !== null
+      !(error instanceof BaseError) ||
+      error.walk((cause) => cause instanceof ExecutionRevertedError) === null
     )
-      return error.shortMessage
-    throw error
+      throw error
+    // Nodes return the revert data on the RPC error; some also name the error in the message.
+    const data = error.walk((cause) => typeof (cause as { data?: unknown }).data === 'string') as {
+      data?: string
+    } | null
+    const disabled =
+      data?.data?.toLowerCase().startsWith(opDisabledSelector) === true ||
+      error.message.includes('OpDisabled')
+    return { disabled, reason: error.shortMessage }
   }
 }
+
+/** The ZoneRouter's `OpDisabled()` error selector. */
+const opDisabledSelector = toFunctionSelector('OpDisabled()')

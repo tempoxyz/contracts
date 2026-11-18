@@ -852,13 +852,15 @@ describe('Zone router seeds', () => {
   /**
    * The given profile's chain plus token state: `balances` and `allowances` keyed by `token:holder`
    * (zero when absent), the Portal enabling `enabled`, a vault that restarts when `restarts`, and a
-   * TIP-403 policy reverting every simulated call to a token in `refuse`.
+   * TIP-403 policy reverting every simulated call to a token in `refuse` (the router itself reverting
+   * `warm` with OpDisabled when `perCallback`).
    */
   function seedChain(
     options: {
       allowances?: Record<string, bigint>
       balances?: Record<string, bigint>
       enabled?: Address[]
+      perCallback?: boolean
       profile?: typeof card
       refuse?: Address[]
       restarts?: boolean
@@ -897,6 +899,8 @@ describe('Zone router seeds', () => {
     })
     return {
       call: vi.fn(async ({ to }: { to: Address }) => {
+        if (options.perCallback && to === outputs.zoneRouter)
+          throw new ExecutionRevertedError({ message: 'execution reverted: OpDisabled()' })
         if (options.refuse?.includes(to))
           throw new ExecutionRevertedError({ message: 'execution reverted: PolicyForbids' })
         return { data: '0x' }
@@ -1192,14 +1196,34 @@ describe('Zone router seeds', () => {
       ['warm', earnBinding.privateAsset],
     ])
 
-    // Every call refused: nothing is sendable, so the step completes without sending anything.
+    // Every transfer refused and warm disabled on a per-callback router: nothing is sendable, so the
+    // step completes without sending anything.
     const refusedAll = seedChain({
       restarts: true,
-      refuse: [outputs.asset, earnBinding.privateAsset, outputs.earnShare, outputs.zoneRouter],
+      perCallback: true,
+      refuse: [outputs.asset, earnBinding.privateAsset, outputs.earnShare],
       balances: funded([outputs.asset, earnBinding.privateAsset, outputs.earnShare]),
     })
     const none = vi.fn()
     await expect(run(refusedAll, cardAndEarn, none)).resolves.toEqual({ transactions: [] })
+    expect(none).not.toHaveBeenCalled()
+
+    // Any other warm revert stays required: the step hands off instead of reporting it warmed.
+    const failing = seedChain({
+      restarts: true,
+      refuse: [outputs.asset, earnBinding.privateAsset, outputs.earnShare, outputs.zoneRouter],
+      balances: funded([outputs.asset, earnBinding.privateAsset, outputs.earnShare]),
+    })
+    const plan = await zoneRouterSeedPlan(failing as never, cardAndEarn, outputs)
+    expect(plan.warm.map((entry) => entry.token)).toEqual([
+      outputs.earnShare,
+      earnBinding.privateAsset,
+    ])
+    expect(plan.notes).toEqual([
+      expect.stringContaining(`reverts warm(${outputs.earnShare})`),
+      expect.stringContaining(`reverts warm(${earnBinding.privateAsset})`),
+    ])
+    await expect(run(failing, cardAndEarn, none)).resolves.toBeUndefined()
     expect(none).not.toHaveBeenCalled()
 
     // An unreachable RPC is not a refusal.
@@ -1279,5 +1303,56 @@ describe('Zone router seeds', () => {
       transactions: [],
     })
     expect(sendTransactionSync).not.toHaveBeenCalled()
+  })
+
+  test('stays satisfied once warmed whatever the deployer holds, and still seeds when run', async () => {
+    const step = deploymentStep('seed-zone-router')
+    if (step.execution !== 'authority') throw new Error('expected an authority step')
+    expect(step.attemptWhenSatisfied).toBe(true)
+    // Every allowance set by earlier callbacks, no seed sent, and a deployer able to fund them all.
+    const reads = seedChain({
+      restarts: true,
+      balances: funded([outputs.asset, earnBinding.privateAsset, outputs.earnShare]),
+      allowances: Object.fromEntries(
+        [outputs.earnShare, earnBinding.privateAsset].map((token) => [
+          `${token}:${outputs.zoneRouter}`,
+          1n,
+        ]),
+      ),
+    })
+    expect(await step.satisfied(reads as never, cardAndEarn, outputs)).toBe(true)
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
+    await expect(run(reads, cardAndEarn, sendTransactionSync)).resolves.toEqual({
+      transactions: [receiptHash],
+    })
+    expect(sentCalls(sendTransactionSync)).toEqual([
+      [outputs.asset, outputs.zoneRouter, 1n],
+      [earnBinding.privateAsset, outputs.zoneRouter, 1n],
+      [outputs.earnShare, outputs.zoneRouter, 1n],
+      [earnBinding.privateAsset, spender, 1n],
+      [outputs.earnShare, spender, 1n],
+      [outputs.asset, spender, 1n],
+    ])
+  })
+
+  test('reports unreadable seed state without blocking the router', async () => {
+    const reads = seedChain()
+    const client = {
+      ...reads,
+      readContract: vi.fn(async (parameters: Record<string, unknown>) => {
+        if (parameters.functionName === 'balanceOf') throw new Error('balance read failed')
+        return reads.readContract(parameters)
+      }),
+      getBlock: async () => ({ number: 7n, timestamp: 110n }),
+    }
+    const report = await zoneRouterModeModule.inspect!(client as never, cardAndEarn, outputs)
+    expect(report?.zoneRouterSeeds).toEqual({
+      label: 'Zone router seeds',
+      status: 'ready',
+      blockers: [],
+      details: { unread: 'balance read failed' },
+    })
   })
 })

@@ -218,12 +218,13 @@ spender gets nothing, noted under **Zone router seeds**; **Zone router spenders*
 only when it is one of the stack's three tokens. The step sends only what is missing, from
 `DEPLOYER_PRIVATE_KEY`, simulating each transfer and `warm` call from the deployer first: it sends
 those that succeed in batches of at most 48 calls. Only the profile's deployer seeds. The step
-completes once the router holds its Portal allowances and no missing unit is one the deployer could
-send; units it cannot send (it holds too little of a token, or a token's TIP-403 transfer policy
-refuses the deployer or the holder) block nothing. A router release that sets its Portal allowance on
-each callback refuses `warm`, so those allowances are noted rather than required.
-`pnpm earn verify` notes each missing unit or allowance under **Zone router seeds**, which is
-always ready.
+requires only the router's Portal allowances, which stay set once warmed, and runs its sends once
+even when they are already set; units it cannot send (it holds too little of a token, or a token's
+TIP-403 transfer policy refuses the deployer or the holder) block nothing and are sent by hand. A
+router release that sets its Portal allowance on each callback refuses `warm` with `OpDisabled`, so
+those allowances are noted rather than required; any other `warm` revert stays required and hands
+off. `pnpm earn verify` notes each missing unit or allowance under **Zone router seeds**, which is
+always ready, even when it cannot read them.
 Tokens outside the stack, such as other stablecoins a Spend router routes, and routers or spenders
 deployed outside a profile, are seeded by hand.
 

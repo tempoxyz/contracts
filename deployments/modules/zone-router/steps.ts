@@ -48,7 +48,6 @@ import { inspectZoneRouterBinding } from './inspection.js'
 import {
   missingZoneRouterSeeds,
   sendableZoneRouterSeedCalls,
-  zoneRouterSeeded,
   zoneRouterWarmed,
   zoneRouterSeedPlan,
 } from './seeds.js'
@@ -414,12 +413,15 @@ export const seedZoneRouter = defineAuthorityStep({
   enabled: hasZoneRouter,
   signerAvailable: (profile, environment) =>
     privateKeyMatches(environment, deployerAuthority.signer, profile.deployer),
+  // Only the Portal allowances, which stay set once warmed, are required, so verify stays stable
+  // whatever the deployer later holds. Seed units are sent once by `attemptWhenSatisfied`.
   async satisfied(client, profile, outputs) {
     const plan = await zoneRouterSeedPlan(client, profile, outputs)
-    return zoneRouterSeeded(client, profile.deployer, plan)
+    return zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))
   },
+  attemptWhenSatisfied: true,
   handoff: (profile, outputs) =>
-    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} lacks a Portal allowance, or a seed unit the deployer ${profile.deployer} could send. Run pnpm earn verify, then either re-run the same pnpm earn deploy command with that deployer's DEPLOYER_PRIVATE_KEY, or call warm(token) on the router for each allowance and send each holder listed under Zone router seeds 1 base unit (anyone may), and re-run; it will verify them and continue. Seeds the deployer cannot send block nothing.`,
+    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} lacks a Portal allowance. Run pnpm earn verify, then either re-run the same pnpm earn deploy command with the deployer ${profile.deployer}'s DEPLOYER_PRIVATE_KEY, or call warm(token) on the router for each allowance listed under Zone router seeds (anyone may), and re-run; it will verify them and continue. Seed units listed there block nothing: send each holder 1 base unit by hand.`,
   async execute(options, dependencies) {
     const key = envPrivateKey(options.environment, deployerAuthority.signer)
     if (!key) return undefined
@@ -450,11 +452,12 @@ export const seedZoneRouter = defineAuthorityStep({
       )
       sent.transactions.push(...transactions)
     }
-    if (await zoneRouterSeeded(client, account.address, plan)) return sent
+    // Seeds left unsent (refused, unfunded, or newly fundable after a faucet top-up) never block.
+    if (zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))) return sent
     if (sent.transactions.length === 0) return undefined
     // Sent batches cannot be recorded against an unsatisfied step, so name them before handing off.
     throw new Error(
-      `seed-zone-router sent ${sent.transactions.join(', ')} but a Portal allowance or sendable seed is still missing: ${sendable.refused.join('; ')}`,
+      `seed-zone-router sent ${sent.transactions.join(', ')} but a Portal allowance is still missing: ${sendable.refused.join('; ')}`,
     )
   },
 })

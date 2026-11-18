@@ -65,6 +65,8 @@ export type ReconciliationStep =
       action: EarnDeploymentAction
       instructions: string
       pending: PendingDeployment
+      /** Set when the step is already satisfied and only its best-effort execution is offered. */
+      optional?: true
     }
   | {
       kind: 'foundry'
@@ -142,6 +144,15 @@ export async function prepareLifecycleStep(
         : undefined
     if (await step.satisfied(client, profile, pending.outputs)) {
       const recorded = pending.actions[action.id]
+      // A satisfied step with best-effort work is offered for execution once, before it is recorded.
+      if (!recorded && step.execution === 'authority' && step.attemptWhenSatisfied)
+        return {
+          kind: 'handoff',
+          action,
+          instructions: step.handoff(profile, pending.outputs),
+          pending,
+          optional: true,
+        }
       // Earlier resumes may have cached the bindings before Forge saved a creation receipt.
       const recoverCreation = createsContracts && recorded?.transactions.length === 0
       if (!recorded || recoverCreation) {
