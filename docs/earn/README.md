@@ -47,22 +47,22 @@ capability updates one page. The shared engine contract and the recipe for a new
 
 ## Document ownership
 
-| Topic                                                                          | Canonical document                                                                            |
-| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| Goals, layers, custody, accounting, roles, invariants of the core stack        | [System architecture](architecture/system.md)                                                 |
-| Fee economics, waterfall, checkpoints, claims, and queued-withdrawal treatment | [Earn fees](architecture/fees.md)                                                             |
-| Core transaction and money-movement sequences                                  | [Flows](architecture/flows.md)                                                                |
-| Core trust assumptions and privileges, privacy model                           | [Security and privacy](architecture/security-and-privacy.md)                                  |
-| Core contract APIs, events, state, and failure behavior                        | [Contract reference](reference/contracts.md)                                                  |
-| Shared engine contract, installation checks, and adding an engine kind         | [Yield engines](integrations/engines.md)                                                      |
-| One engine kind's contracts, valuation, exits, deployment, and operations      | [ERC-4626](modules/erc4626-engine.md), [Veda](modules/veda.md), [PropAMM](modules/propamm.md) |
-| Capability contracts, flows, operations, and rationale                         | [Capability modules](#capability-modules)                                                     |
-| Completed Sigma Prime audit reports, finding status, and post-audit coverage   | [Audits](audit/README.md)                                                                     |
-| Agent entry-point selection, access checks, and integration troubleshooting    | [Agent guide](integrations/agent-guide.md)                                                    |
-| Client integration, approvals, simulation, and revert handling                 | [Client integration](integrations/client.md)                                                  |
-| Integrator onboarding for agents                                               | [Tempo Earn skill](../../SKILL.md)                                                            |
-| One-line term definitions                                                      | [Glossary](glossary.md)                                                                       |
-| Settled rationale for the core stack                                           | [Design decisions](decisions.md)                                                              |
+| Topic                                                                          | Canonical document                                                                                                     |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Goals, layers, custody, accounting, roles, invariants of the core stack        | [System architecture](architecture/system.md)                                                                          |
+| Fee economics, waterfall, checkpoints, claims, and queued-withdrawal treatment | [Earn fees](architecture/fees.md)                                                                                      |
+| Core transaction and money-movement sequences                                  | [Flows](architecture/flows.md)                                                                                         |
+| Core trust assumptions and privileges, privacy model                           | [Security and privacy](architecture/security-and-privacy.md)                                                           |
+| Core contract APIs, events, state, and failure behavior                        | [Contract reference](reference/contracts.md)                                                                           |
+| Shared engine contract, installation checks, and adding an engine kind         | [Yield engines](integrations/engines.md)                                                                               |
+| One engine kind's contracts, valuation, exits, deployment, and operations      | [ERC-4626](modules/erc4626-engine.md), [Veda](modules/veda.md), [PropAMM](modules/propamm.md), [Hold](modules/hold.md) |
+| Capability contracts, flows, operations, and rationale                         | [Capability modules](#capability-modules)                                                                              |
+| Completed Sigma Prime audit reports, finding status, and post-audit coverage   | [Audits](audit/README.md)                                                                                              |
+| Agent entry-point selection, access checks, and integration troubleshooting    | [Agent guide](integrations/agent-guide.md)                                                                             |
+| Client integration, approvals, simulation, and revert handling                 | [Client integration](integrations/client.md)                                                                           |
+| Integrator onboarding for agents                                               | [Tempo Earn skill](../../SKILL.md)                                                                                     |
+| One-line term definitions                                                      | [Glossary](glossary.md)                                                                                                |
+| Settled rationale for the core stack                                           | [Design decisions](decisions.md)                                                                                       |
 
 ## Documentation rules
 
