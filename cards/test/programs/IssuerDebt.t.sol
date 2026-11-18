@@ -130,10 +130,10 @@ contract IssuerDebtTest is ProgramsEnv {
         cards.refund(bytes32("purchase-1"), 1e6);
         vm.prank(key);
         vm.expectRevert(CardProgram.NotIssuer.selector);
-        cards.collectReserve(bytes32("reserve-1"), 1e6, bob);
+        cards.collectReserve(bytes32("reserve-1"), 1e6);
         vm.prank(key);
         vm.expectRevert(CardProgram.NotIssuer.selector);
-        cards.reserve(settlement, address(usd), bytes32("reserve-1"), 1e6, uint64(block.timestamp + 1 days));
+        cards.reserve(settlement, address(usd), bytes32("reserve-1"), 1e6, uint64(block.timestamp + 1 days), "");
         // A key needs a cap, and zero roles remove it.
         vm.prank(issuer);
         vm.expectRevert(CardProgram.InvalidAmount.selector);
