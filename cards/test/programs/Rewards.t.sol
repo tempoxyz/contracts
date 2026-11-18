@@ -35,9 +35,9 @@ contract RewardsTest is AuthEnv {
     }
 
     function test_clawBack_neverPastWhatThePurchasesRewardsPaid() public {
+        usd.mint(alice, 50e6);
         vm.startPrank(issuer);
         rewards.pay(P1, 5e6);
-        usd.mint(alice, 50e6);
         assertEq(rewards.clawBack(P1, 3e6), 3e6);
         assertEq(rewards.clawBack(P1, 5e6), 2e6);
         assertEq(rewards.clawBack(P1, 1e6), 0);
@@ -82,8 +82,9 @@ contract RewardsTest is AuthEnv {
         vm.expectRevert(Rewards.Unauthorized.selector);
         rewards.clawBack(P1, 1e6);
         address key = makeAddr("settler");
+        uint8 settle = cards.ROLE_SETTLE();
         vm.prank(issuer);
-        cards.setOperator(key, cards.ROLE_SETTLE(), 4e6);
+        cards.setOperator(key, settle, 4e6);
         vm.prank(key);
         rewards.pay(P1, 4e6);
         assertEq(cards.operatorOf(key).used, 4e6);

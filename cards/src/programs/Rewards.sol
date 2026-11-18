@@ -52,6 +52,8 @@ contract Rewards {
         if (amount == 0) revert InvalidAmount();
         Reward storage r = rewardOf[ref];
         r.paid = (r.paid + amount).toUint128();
+        // The funder is fixed at deployment and approves this contract for rewards only.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
         SafeTransferLib.safeTransferFrom(TOKEN, FUNDER, owner, amount);
         emit RewardPaid(ref, owner, amount);
     }
