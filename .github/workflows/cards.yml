@@ -99,10 +99,16 @@ jobs:
       - name: Rain fixture is current
         run: script/rain/build-fixture.sh --check
 
+      # FORGE_SNAPSHOT_CHECK fails the run when a gas group recorded with vm.snapshotGas* (snapshots/*.json)
+      # no longer matches the committed file.
       - name: Test
         env:
           FOUNDRY_PROFILE: ci
+          FORGE_SNAPSHOT_CHECK: "true"
         run: forge test
+
+      - name: Card authorization gas snapshot
+        run: forge snapshot --check snapshots/auth.gas-snapshot --match-path test/programs/AuthGas.t.sol
 
       - name: Bridge matrix is current
         working-directory: .

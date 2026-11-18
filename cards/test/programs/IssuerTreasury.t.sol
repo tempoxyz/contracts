@@ -462,6 +462,19 @@ contract IssuerTreasuryTest is CompEnv {
         assertApproxEqAbs(treasury.valueOf(), value - 100e6, 2);
     }
 
+    function test_checkExposure_refusesPastTheCollateral() public {
+        // Nothing owed passes without collateral.
+        treasury.checkExposure();
+        auth.setExposure(10e6, 0, 0);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 10e6, 0));
+        treasury.checkExposure();
+        _postCash(10e6);
+        treasury.checkExposure();
+        auth.setExposure(8e6, 0, 3e6);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 11e6, 10e6));
+        treasury.checkExposure();
+    }
+
     function _postCash(uint128 amount) internal {
         usd.mint(settlement, amount);
         bytes32 id = treasury.pledgeId(1);

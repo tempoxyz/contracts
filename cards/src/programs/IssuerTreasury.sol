@@ -7,6 +7,7 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
+import { IExposureGuard } from "./interfaces/IExposureGuard.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
@@ -25,7 +26,7 @@ interface ITIP20Memo {
 ///         and the sponsor collateral the settlement account pledges behind the program's exposure. Every advance
 ///         comes from funds the issuer put in: a shortfall reverts.
 /// @custom:reentrancy-guard _locked
-contract IssuerTreasury {
+contract IssuerTreasury is IExposureGuard {
     using FixedPointMathLib for uint256;
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
@@ -74,6 +75,7 @@ contract IssuerTreasury {
 
     error AboveExposure(uint256 value, uint256 room);
     error BelowExposure(uint256 remaining, uint256 exposure);
+    error ExposureAboveCollateral(uint256 exposure, uint256 collateral);
     error IssuerFundsShort(uint256 needed, uint256 available);
     error NoConversion();
     error NotIssuer();
@@ -218,6 +220,15 @@ contract IssuerTreasury {
     function exposure() public view returns (uint256) {
         (uint256 held,, uint256 unsettled) = PROGRAM.exposure();
         return held + unsettled;
+    }
+
+    /// @notice Reverts when the program's exposure is past what its live sponsor collateral is worth. The program asks
+    ///         it after every step that raises its exposure once the issuer registers this contract as its guard.
+    function checkExposure() external view {
+        uint256 due = exposure();
+        if (due == 0) return;
+        uint256 value = valueOf();
+        if (due > value) revert ExposureAboveCollateral(due, value);
     }
 
     function tokenGuardsLength() external view returns (uint256) {

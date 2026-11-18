@@ -5,6 +5,7 @@ import { AccountKeys } from "./AccountKeys.sol";
 import { CardLegs } from "./CardLegs.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
+import { IExposureGuard } from "./interfaces/IExposureGuard.sol";
 import { ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
@@ -89,6 +90,8 @@ contract CardAuth is ICardAuth {
     mapping(address owner => uint8 version) public fundingVersion;
     mapping(address owner => mapping(uint8 version => CardLegs.Funding[])) internal _funding;
     mapping(bytes32 ref => uint256) internal _purchases;
+    /// @notice Asked after every step that raises the program's exposure; zero for none.
+    address public exposureGuard;
 
     event PurchaseAuthorized(
         bytes32 indexed ref, bytes32 indexed card, address indexed owner, uint256 amount, uint256 legs, uint64 seq
@@ -108,6 +111,7 @@ contract CardAuth is ICardAuth {
     event SourceSet(address indexed source, uint8 kind);
     event CompanionSet(address indexed account, bool active);
     event CompanionsSet(address accountKeys, address identityRules, address lifecycle, address conversion);
+    event ExposureGuardSet(address guard);
     event IssuerOffered(address indexed issuer, address indexed next);
     event IssuerTransferred(address indexed previous, address indexed next);
     event SettingProposed(bytes32 indexed id, bytes data, uint64 eta);
@@ -213,6 +217,17 @@ contract CardAuth is ICardAuth {
         if (!_settle(false)) return;
         (accountKeys, identityRules, lifecycle, conversion) = (accountKeys_, identityRules_, lifecycle_, conversion_);
         emit CompanionsSet(accountKeys_, identityRules_, lifecycle_, conversion_);
+    }
+
+    /// @notice Sets the guard asked after every step that raises the program's exposure (zero for none), after the
+    ///         settings delay.
+    // Zero turns the check off.
+    // forge-lint: disable-next-item(missing-zero-check)
+    function setExposureGuard(address guard) external {
+        _onlyIssuer();
+        if (!_settle(false)) return;
+        exposureGuard = guard;
+        emit ExposureGuardSet(guard);
     }
 
     function cancelSetting(bytes32 id) external {
@@ -340,6 +355,7 @@ contract CardAuth is ICardAuth {
         );
         _moveHeld(int256(approved), standIn);
         emit PurchaseAuthorized(ref, card, owner, approved, legs, _step());
+        _checkExposure();
     }
 
     /// @notice Moves an open purchase's amount to `amount`: an increase holds more across the owner's sources in
@@ -355,7 +371,8 @@ contract CardAuth is ICardAuth {
         (CardLimits.Card storage c, address owner) = _card(p);
         CardLegs.Funding[] storage order = _funding[owner][p.version];
         uint256 legs = p.flags >> 3;
-        if (amount > p.amount) {
+        bool up = amount > p.amount;
+        if (up) {
             if (c.status != CardLimits.Status.Active) revert CardLimits.CardNotActive();
             // A revoked grant stops increments as it stops new purchases.
             if (!grants[owner].active) revert CardLimits.NoTerms();
@@ -371,6 +388,8 @@ contract CardAuth is ICardAuth {
         p.flags = (p.flags & 7) | legs << 3;
         _purchases[ref] = _pack(p);
         emit PurchaseAdjusted(ref, amount, legs, _step());
+        // A decrease is never refused, even while the program is past what its guard allows.
+        if (up) _checkExposure();
     }
 
     /// @notice Captures `amount` of an open purchase from its sources' holds in order. What the holds lack comes from
@@ -460,6 +479,7 @@ contract CardAuth is ICardAuth {
         _purchases[ref] = _pack(p);
         _ledger.net += int128(int256(covered));
         emit PurchaseCaptured(ref, amount, covered, true, true, _step());
+        _checkExposure();
     }
 
     /// @notice Refunds `amount` of a purchase, in the token it was booked in, to its sources: legs that bound what
@@ -573,6 +593,11 @@ contract CardAuth is ICardAuth {
     }
 
     // Internals.
+
+    function _checkExposure() private view {
+        address guard = exposureGuard;
+        if (guard != address(0)) IExposureGuard(guard).checkExposure();
+    }
 
     function _onlyIssuer() private view {
         if (msg.sender != _issuer) revert NotIssuer();

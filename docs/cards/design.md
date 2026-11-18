@@ -149,7 +149,9 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   captures, charges and refunds carry what the sources covered. The issuer's
   `acknowledgeSettlement(throughSeq)` moves a settled-through cursor, so what is owed rebuilds from events.
   `exposure()` reports what open purchases hold, the stand-in part, and the unacknowledged net, which the
-  issuer treasury keeps funds behind.
+  issuer treasury keeps funds behind. With the treasury registered as its exposure guard
+  (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase or charge
+  that takes held plus unsettled past the sponsor collateral; decreases, captures and releases still go through.
 - **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus
   the owner's budget, so no share debt arises; it keeps standing approvals to its vault. When the vault
   quotes but cannot redeem, the float pays and the shares wait for the funder.
