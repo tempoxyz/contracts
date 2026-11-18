@@ -206,6 +206,37 @@ contract CreditLineConversionTest is ProgramsEnv {
         assertEq(credit.settlementTokenInUse(address(this)), 0);
     }
 
+    function test_settlementTokenInUse_ignoresLinesTheBorrowerNeverAccepted() public {
+        settlementToken = address(eur);
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        uint64 lineId = credit.openLine(bob, address(eur), address(this), 1000e6, due, 0, IEarnVault(address(0)), 0);
+        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        // Accepted, the line holds the token until it closes.
+        vm.prank(bob);
+        credit.acceptLine(lineId);
+        assertEq(credit.settlementTokenInUse(address(this)), 7);
+        vm.prank(bob);
+        credit.closeLine(lineId);
+        assertEq(credit.settlementTokenInUse(address(this)), 0);
+    }
+
+    function test_settlementTokenInUse_costDoesNotGrowWithLines() public {
+        settlementToken = address(eur);
+        uint256 gas = gasleft();
+        credit.settlementTokenInUse(address(this));
+        uint256 before = gas - gasleft();
+        address stranger = makeAddr("stranger");
+        for (uint160 i = 1; i <= 50; ++i) {
+            vm.prank(stranger);
+            credit.openLine(address(i + 0x1000), address(eur), address(this), 1e6, due, 0, IEarnVault(address(0)), 0);
+        }
+        gas = gasleft();
+        assertEq(credit.settlementTokenInUse(address(this)), 0);
+        uint256 later = gas - gasleft();
+        assertLe(later, before + 5000);
+    }
+
     function _line(uint128 limit, IEarnVault vault, uint16 ltvBps) internal returns (uint64 lineId) {
         vm.prank(lender);
         lineId = credit.openLine(alice, address(eur), address(this), limit, due, 7 days, vault, ltvBps);

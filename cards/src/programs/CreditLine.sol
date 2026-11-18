@@ -114,6 +114,11 @@ contract CreditLine is ISettlementTokenGuard {
     /// @dev Re-draws so far, which number their charges on the lender.
     uint64 internal _redraws;
 
+    /// @dev Accepted, open lines each program draws on in each token that still have a limit, a balance owed or a live
+    ///      hold, and whether each line is one of them.
+    mapping(address program => mapping(address token => uint256)) internal _activeLines;
+    mapping(uint64 lineId => bool) internal _active;
+
     bool private transient _locked;
 
     event LineOpened(
@@ -780,6 +785,7 @@ contract CreditLine is ISettlementTokenGuard {
         uint128 credited = assets < owed ? uint128(assets) : owed;
         l.owed = owed - credited;
         _payStatements(lineId, credited);
+        _track(lineId);
         emit Seized(lineId, pledgeId, shares, assets, l.owed);
     }
 
@@ -904,19 +910,11 @@ contract CreditLine is ISettlementTokenGuard {
         return _inLine(l, l.collateralVault.previewRedeem(shares));
     }
 
-    /// @notice A line `program` draws on is open in its settlement token while it has a limit, a balance owed or a live
-    ///         hold, so the program's token waits for it to close (reason 7, open credit lines).
-    // A read-only scan the program makes once, at a settlement token change.
-    // forge-lint: disable-next-item(calls-loop)
+    /// @notice A line `program` draws on is open in its settlement token while its borrower has accepted it and it has
+    ///         a limit, a balance owed or a live hold, so the program's token waits for it to close (reason 7, open
+    ///         credit lines). A line its borrower never accepted does not count.
     function settlementTokenInUse(address program) external view returns (uint8) {
-        address token = IProgramSettlementToken(program).settlementToken();
-        uint64 count = lineCount;
-        for (uint64 id = 1; id <= count; ++id) {
-            Line storage l = _lines[id];
-            if (l.program != program || l.closed || l.token != token) continue;
-            if (l.limit != 0 || l.owed != 0 || l.pending != 0) return 7;
-        }
-        return 0;
+        return _activeLines[program][IProgramSettlementToken(program).settlementToken()] != 0 ? 7 : 0;
     }
 
     /// @notice A line's terms and state.
@@ -948,6 +946,7 @@ contract CreditLine is ISettlementTokenGuard {
     /// @dev Moves the commitment hold to the line's undrawn limit (what is neither owed nor pending), within what the
     ///      lender's balance backs. A closed, unaccepted or past-due line commits nothing.
     function _commit(uint64 lineId) private {
+        _track(lineId);
         Line storage l = _lines[lineId];
         bytes32 id = commitmentOf[lineId];
         IReservationCore.HoldRecord memory h;
@@ -1019,6 +1018,17 @@ contract CreditLine is ISettlementTokenGuard {
         }
         // forge-lint: disable-next-line(unsafe-typecast)
         emit Committed(lineId, id, uint128(target));
+    }
+
+    /// @dev Counts line `lineId` among its program's active lines in its token while it is accepted, open and has a
+    ///      limit, a balance owed or a live hold. Every change to those runs through here.
+    function _track(uint64 lineId) private {
+        Line storage l = _lines[lineId];
+        bool active = l.accepted && !l.closed && (l.limit != 0 || l.owed != 0 || l.pending != 0);
+        if (active == _active[lineId]) return;
+        _active[lineId] = active;
+        if (active) ++_activeLines[l.program][l.token];
+        else --_activeLines[l.program][l.token];
     }
 
     /// @dev Moves the share lock to the shares worth what is owed and pending over the loan-to-value, at most what the
