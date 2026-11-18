@@ -51,8 +51,8 @@ contract ModelRandomTest is CoreInvariants {
         _run(3);
     }
 
-    function test_seed8166() public {
-        _run(8166);
+    function test_seed4() public {
+        _run(4);
     }
 
     /// forge-config: default.fuzz.runs = 16
