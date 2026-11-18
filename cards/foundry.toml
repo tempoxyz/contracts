@@ -23,6 +23,7 @@ fs_permissions = [
     { access = "read-write", path = "./reports" },
     { access = "read", path = "./test/bridge/harness/fixtures" },
     { access = "read", path = "./test/rain/fixtures" },
+    { access = "read", path = "./test/programs/differential/traces" },
 ]
 remappings = [
     "forge-std/=lib/forge-std/src/",
