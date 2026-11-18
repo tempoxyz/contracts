@@ -59,9 +59,9 @@ interface ICardAuth {
         external
         view
         returns (address[] memory sources, bytes32[] memory positions, bytes32[] memory legIds);
-    /// @notice What open purchases hold, the stand-in part of it, and what was captured net of refunds since the
-    ///         issuer last acknowledged settlement.
-    function exposure() external view returns (uint256 held, uint256 standIn, int256 unsettled);
+    /// @notice What open purchases hold, the stand-in part of it, and what the sources covered net of refunds since
+    ///         the issuer last acknowledged settlement (zero when refunds outran it).
+    function exposure() external view returns (uint256 held, uint256 standIn, uint256 unsettled);
     /// @notice Purchase steps so far, the last one the issuer acknowledged, net captured units and the net at that
     ///         acknowledgement.
     function ledger() external view returns (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet);

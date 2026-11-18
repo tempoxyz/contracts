@@ -583,10 +583,10 @@ contract CardAuth is ICardAuth {
         _return(CardLegs.legsOf(_funding[owner][p.version], ref, p.flags >> 3));
     }
 
-    function exposure() external view returns (uint256 held, uint256 standIn, int256 unsettled) {
+    function exposure() external view returns (uint256 held, uint256 standIn, uint256 unsettled) {
         State memory s = _state;
         Ledger memory l = _ledger;
-        return (s.held, s.standIn, int256(l.net) - l.settledNet);
+        return (s.held, s.standIn, l.net > l.settledNet ? uint256(int256(l.net - l.settledNet)) : 0);
     }
 
     function ledger() external view returns (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet) {
