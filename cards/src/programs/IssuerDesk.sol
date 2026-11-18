@@ -124,6 +124,9 @@ contract IssuerDesk is ISettlementTokenGuard {
     bytes32[] internal _disputed;
     address[] internal _debtors;
     mapping(address owner => bool) internal _isDebtor;
+    /// @notice What a split payee still owes the issuer for refunded splits the desk could not take back at once, by
+    ///         the token the split was paid in.
+    mapping(address payee => mapping(address token => uint256)) public payeeOwed;
 
     event TermsSet(Line[] lines);
     event RewardsSet(Reward[] rewards);
@@ -132,6 +135,10 @@ contract IssuerDesk is ISettlementTokenGuard {
     event FeeReversed(
         bytes32 indexed purchaseRef, address indexed payee, bytes32 kind, uint128 amount, uint128 debt, uint256 value
     );
+    /// @notice A refund could not take back `amount` of a payee's split, which the payee now owes the issuer.
+    event PayeeOwed(bytes32 indexed purchaseRef, address indexed payee, address indexed token, uint128 amount);
+    /// @notice The issuer collected `amount` of what a payee owed it; `left` is still owed.
+    event PayeeOwedCollected(address indexed payee, address indexed token, uint128 amount, uint256 left);
     event RewardPaid(
         bytes32 indexed purchaseRef, address indexed account, address indexed funder, bytes32 kind, uint128 amount
     );
@@ -391,6 +398,30 @@ contract IssuerDesk is ISettlementTokenGuard {
         if (d.state == 0 || d.state >= WON) revert NoDispute();
         reserveCollected[purchaseRef] += amount;
         emit ReserveCollectedFor(purchaseRef, amount);
+    }
+
+    /// @notice Takes up to `amount` of what a payee owes the issuer for refunded splits from what the payee has available
+    ///         in that token, for the settlement account (converted into today's settlement token if it changed).
+    ///         Returns what it took.
+    function collectPayeeOwed(address payee, address token, uint128 amount)
+        external
+        nonReentrant
+        onlyOperator
+        returns (uint128 collected)
+    {
+        uint256 owed = payeeOwed[payee][token];
+        // At most amount, a uint128.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        collected = uint128(_min(_min(amount, owed), CORE.available(payee, token)));
+        if (collected == 0) return 0;
+        payeeOwed[payee][token] = owed - collected;
+        if (token == PROGRAM.settlementToken()) {
+            CORE.charge(payee, token, _nextId(), collected, SETTLEMENT, false);
+        } else {
+            CORE.charge(payee, token, _nextId(), collected, address(this), false);
+            _convert(token, collected, SETTLEMENT);
+        }
+        emit PayeeOwedCollected(payee, token, collected, owed - collected);
     }
 
     /// @notice Corrects a processor error on the capture or refund the program logged as target, by an amount
@@ -834,28 +865,20 @@ contract IssuerDesk is ISettlementTokenGuard {
             if (due <= s.reversed) continue;
             uint128 share = due - s.reversed;
             s.reversed = due;
-            uint128 available = CORE.available(s.payee, token);
             if (s.funder == address(0)) {
-                uint256 value = uint256(share).mulDiv(rate, RATE_ONE);
-                uint128 owed = share > available ? share - available : 0;
                 // The issuer's own share was paid to its settlement account, where it already is.
-                if (s.payee == SETTLEMENT) owed = 0;
-                else if (token == today) CORE.charge(s.payee, token, _nextId(), share, SETTLEMENT, false);
-                else _reverseForeign(s.payee, token, share - owed, owed);
-                emit FeeReversed(purchaseRef, s.payee, s.kind, share, owed, value);
+                uint128 debt = s.payee == SETTLEMENT ? 0 : _reverseFee(purchaseRef, s.payee, token, today, share);
+                emit FeeReversed(purchaseRef, s.payee, s.kind, share, debt, uint256(share).mulDiv(rate, RATE_ONE));
                 continue;
             }
+            uint128 available = CORE.available(s.payee, token);
             uint128 taken = share < available ? share : available;
             if (taken == 0) continue;
             uint256 back = taken;
-            if (token == today) {
-                CORE.charge(s.payee, token, _nextId(), taken, s.funder, false);
-            } else {
-                // A reward paid in an earlier token comes back to its funder in today's, at the reference rate.
-                CORE.charge(s.payee, token, _nextId(), taken, address(this), false);
-                SafeTransferLib.safeApprove(token, address(PROGRAM), taken);
-                back = PROGRAM.convertToSettlement(token, taken, s.funder);
-            }
+            // A reward paid in an earlier token comes back to its funder in today's, at the reference rate. A reward the
+            // owner no longer lets the desk take back is written off like one it no longer has.
+            if (!_tryCharge(s.payee, token, taken, token == today ? s.funder : address(this))) continue;
+            if (token != today) back = _convert(token, taken, s.funder);
             emit RewardReversed(purchaseRef, s.payee, s.funder, s.kind, taken, back);
         }
     }
@@ -864,17 +887,44 @@ contract IssuerDesk is ISettlementTokenGuard {
     // forge-lint: disable-end(arbitrary-send-erc20)
     // forge-lint: disable-end(reentrancy-no-eth)
 
-    /// @dev Takes `paid` of an earlier settlement token from a payee and converts it into today's for the settlement
-    ///      account at the reference rate; what the payee lacks, `owed`, it owes the settlement account in that token.
+    /// @dev Takes `share` of a refunded split back from its payee in `token`: what it has available for the settlement
+    ///      account (converted into today's settlement token `today` if it changed), the rest as its debt to the
+    ///      settlement account within its debt cap. What the core refuses, the payee owes the issuer on the desk's
+    ///      books, so a payee never holds up a refund. Returns the debt the core recorded.
     // Runs once per split inside the refund lock; the program and core are fixed trusted contracts.
     // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
-    function _reverseForeign(address payee, address token, uint128 paid, uint128 owed) private {
-        if (paid != 0) {
-            CORE.charge(payee, token, _nextId(), paid, address(this), false);
-            SafeTransferLib.safeApprove(token, address(PROGRAM), paid);
-            PROGRAM.convertToSettlement(token, paid, SETTLEMENT);
+    function _reverseFee(bytes32 purchaseRef, address payee, address token, address today, uint128 share)
+        private
+        returns (uint128 debt)
+    {
+        uint128 available = CORE.available(payee, token);
+        uint128 taken = share < available ? share : available;
+        bool foreign = token != today;
+        bool ok = taken == 0 || _tryCharge(payee, token, taken, foreign ? address(this) : SETTLEMENT);
+        if (ok && taken != 0 && foreign) _convert(token, taken, SETTLEMENT);
+        uint128 rest = ok ? share - taken : share;
+        if (ok && rest != 0 && _tryCharge(payee, token, rest, SETTLEMENT)) (debt, rest) = (rest, 0);
+        if (rest == 0) return debt;
+        payeeOwed[payee][token] += rest;
+        emit PayeeOwed(purchaseRef, payee, token, rest);
+    }
+
+    /// @dev Charges `amount` of `token` from `owner` to `payee` through the desk's holder approval, the part past its
+    ///      balance as capped debt, and reports whether the core took it.
+    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
+    function _tryCharge(address owner, address token, uint128 amount, address payee) private returns (bool) {
+        try CORE.charge(owner, token, _nextId(), amount, payee, false) {
+            return true;
+        } catch {
+            return false;
         }
-        if (owed != 0) CORE.charge(payee, token, _nextId(), owed, SETTLEMENT, false);
+    }
+
+    /// @dev Converts `amount` of an earlier settlement token the desk holds into today's for `to`, at the reference rate.
+    // forge-lint: disable-next-item(calls-loop,reentrancy-no-eth)
+    function _convert(address token, uint128 amount, address to) private returns (uint256) {
+        SafeTransferLib.safeApprove(token, address(PROGRAM), amount);
+        return PROGRAM.convertToSettlement(token, amount, to);
     }
 
     function _nextId() private returns (bytes32) {

@@ -385,6 +385,76 @@ contract IssuerDeskTest is ProgramsEnv {
         desk.openDispute(P1, 51e6, "");
     }
 
+    function test_refund_payeeRevokedApproval_stillRefunds() public {
+        _purchase(100e6);
+        vm.prank(network);
+        core.approveHolder(address(desk), address(usd), 0);
+        usd.mint(settlement, 100e6);
+        vm.prank(issuer);
+        desk.refund(P1, 100e6);
+        assertEq(usd.balanceOf(alice), 1000e6, "the whole refund reaches the owner");
+        assertEq(usd.balanceOf(network), 1e6, "the network kept its split");
+        assertEq(usd.balanceOf(partner), 0, "the partner returned its split");
+        assertEq(desk.payeeOwed(network, address(usd)), 1e6, "the network owes its split to the issuer");
+        assertEq(desk.payeeOwed(partner, address(usd)), 0);
+        (, uint128 debt) = core.debtOf(network, address(usd));
+        assertEq(debt, 0, "no debt on the core");
+    }
+
+    function test_collectPayeeOwed_takesWhatThePayeeHas_andReducesTheRecord() public {
+        test_refund_payeeRevokedApproval_stillRefunds();
+        vm.prank(issuer);
+        vm.expectRevert();
+        desk.collectPayeeOwed(network, address(usd), 1e6);
+        vm.startPrank(network);
+        core.approveHolder(address(desk), address(usd), type(uint128).max);
+        usd.transfer(bob, 0.6e6);
+        vm.stopPrank();
+        uint256 before = usd.balanceOf(settlement);
+        vm.prank(issuer);
+        uint128 collected = desk.collectPayeeOwed(network, address(usd), 1e6);
+        assertEq(collected, 0.4e6, "what the network had");
+        assertEq(usd.balanceOf(settlement), before + 0.4e6, "to the settlement account");
+        assertEq(desk.payeeOwed(network, address(usd)), 0.6e6, "the rest still owed");
+        usd.mint(network, 5e6);
+        vm.prank(issuer);
+        collected = desk.collectPayeeOwed(network, address(usd), 5e6);
+        assertEq(collected, 0.6e6, "never more than recorded");
+        assertEq(desk.payeeOwed(network, address(usd)), 0);
+        assertEq(usd.balanceOf(network), 4.4e6);
+        vm.prank(bob);
+        vm.expectRevert(IssuerDesk.NotIssuer.selector);
+        desk.collectPayeeOwed(network, address(usd), 1);
+    }
+
+    function test_refund_emptyPayeeWithoutDebtCap_stillRefunds() public {
+        _purchase(100e6);
+        vm.startPrank(network);
+        usd.transfer(bob, 1e6);
+        core.setDebtCap(settlement, address(usd), 0);
+        vm.stopPrank();
+        usd.mint(settlement, 100e6);
+        vm.prank(issuer);
+        desk.refund(P1, 100e6);
+        assertEq(usd.balanceOf(alice), 1000e6, "the whole refund reaches the owner");
+        assertEq(desk.payeeOwed(network, address(usd)), 1e6, "the split it could not return");
+        assertEq(usd.balanceOf(partner), 0, "the partner returned its split");
+    }
+
+    function test_dispute_won_payeeRevokedApproval_stillResolves() public {
+        _disputed(50e6);
+        vm.prank(partner);
+        core.approveHolder(address(desk), address(usd), 0);
+        usd.mint(settlement, 50e6);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, true);
+        assertEq(usd.balanceOf(alice), 1000e6, "the whole disputed amount comes back");
+        (, uint8 state,,) = desk.disputes(P1);
+        assertEq(state, desk.WON());
+        assertEq(desk.payeeOwed(partner, address(usd)), 1e6, "the partner owes its split to the issuer");
+        assertEq(usd.balanceOf(network), 0, "the network returned its split");
+    }
+
     function _allowIssuerDebt(uint128 cap) internal {
         vm.startPrank(settlement);
         usd.approve(address(cards), type(uint256).max);
