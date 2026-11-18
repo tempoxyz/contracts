@@ -124,6 +124,7 @@ contract IssuerDeskTest is CompEnv {
         assertEq(usd.balanceOf(alice), 970e6, "provisional plus the refunded rest");
         assertEq(auth.refundedOut(P1), 30e6, "the program refunded what provisional credit did not cover");
         assertEq(auth.creditedBack(P1), 20e6, "the credit kept counts as refunded");
+        assertEq(auth.settledBack(P1), 20e6, "settlement nets the credit kept with the refunded rest");
         assertEq(auth.purchaseOf(P1).refunded, 50e6);
         assertEq(usd.balanceOf(address(desk)), 0, "the desk keeps nothing");
         vm.prank(issuer);
@@ -232,6 +233,23 @@ contract IssuerDeskTest is CompEnv {
         // The issuer itself is never capped.
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
+    }
+
+    /// @dev Settlement nets only the chargeback: what merchant reserves paid the issuer stays owed to the network, even
+    ///      when the reserves cover part of the rest the win refunds.
+    function test_dispute_won_settlesOnlyTheChargeback() public {
+        _disputed(50e6);
+        usd.mint(settlement, 50e6);
+        vm.startPrank(issuer);
+        desk.disputeStep(P1, 2, 20e6, "", false);
+        desk.collectedReserve(P1, 35e6);
+        desk.resolveDispute(P1, true);
+        vm.stopPrank();
+        assertEq(auth.refundedOut(P1), 30e6);
+        assertEq(auth.creditedBack(P1), 20e6);
+        // The refunded 30 already counted, so the credit back gives 15 of it back: 30 - 15 = 50 - 35.
+        assertEq(auth.settledBack(P1), -15e6);
+        assertEq(auth.purchaseOf(P1).refunded, 50e6);
     }
 
     function test_collectedReserve_boundedByTheDisputeAndWhatStaysUnrefunded() public {

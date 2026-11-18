@@ -165,11 +165,15 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint128 credited = d.amount < open ? d.amount : open;
         uint128 rest = credited > provisional ? credited - provisional : 0;
         _operator(rest);
-        uint128 chargeback = credited > d.collected ? credited - d.collected : 0;
+        uint128 recovered = credited > d.collected ? d.collected : credited;
+        uint128 chargeback = credited - recovered;
         if (rest != 0) _refund(ref, rest);
-        // The credit the cardholder keeps counts as refunded too: it frees usage and settles the refund cap.
+        // The credit the cardholder keeps counts as refunded too: it frees usage and settles the refund cap. Settlement
+        // nets only the chargeback, since what merchant reserves paid the issuer never comes back through the network.
         uint128 kept = credited - rest;
-        if (kept != 0) PROGRAM.creditBack(ref, kept, kept);
+        // Both are at most the dispute's amount, which a uint64 purchase bounds, so both fit int128.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (kept != 0 || recovered != 0) PROGRAM.creditBack(ref, kept, int128(kept) - int128(recovered));
         emit DisputeResolved(ref, true, int256(uint256(rest)), 0, 0, chargeback);
     }
 
@@ -196,7 +200,9 @@ contract IssuerDesk is ISettlementTokenGuard {
             }
         }
         if (units > settled) _refund(ref, units - settled);
-        if (settled != 0) PROGRAM.creditBack(ref, settled, settled);
+        // At most the provisional credit, which a uint64 purchase bounds.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (settled != 0) PROGRAM.creditBack(ref, settled, int128(settled));
     }
 
     /// @notice Records what the issuer collected from merchant reserves toward an open dispute, which a cardholder win

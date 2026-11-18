@@ -99,6 +99,23 @@ library CardLegs {
         emit SettlementTokenSet(token, scale, era);
     }
 
+    /// @notice Counts `settles` units of a purchase booked in `era` against settlement as a refund and returns them
+    ///         in today's settlement token; negative adds to what the program owes.
+    function creditBack(
+        mapping(uint8 => Era) storage eras,
+        State storage s,
+        Ledger storage l,
+        uint8 era,
+        int128 settles
+    ) external returns (int256 pay) {
+        uint8 current = s.era;
+        pay = settles;
+        if (era != current) pay = pay * int256(uint256(eras[current].scale)) / int256(uint256(eras[era].scale));
+        // At most |settles| times the ratio of two era scales, both uint96, so it fits int128.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        l.net -= int128(pay);
+    }
+
     /// @notice Replaces `list` with `order`, every entry an approved source.
     function setOrder(
         Funding[] storage list,

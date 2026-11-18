@@ -47,6 +47,8 @@ contract CompCardAuth is ICardAuth {
     mapping(bytes32 ref => bytes32[]) internal _legIds;
     /// @notice What creditBack counted per purchase.
     mapping(bytes32 ref => uint256) public creditedBack;
+    /// @notice What creditBack counted against settlement per purchase.
+    mapping(bytes32 ref => int256) public settledBack;
     /// @notice What refunds per purchase paid out.
     mapping(bytes32 ref => uint256) public refundedOut;
 
@@ -143,10 +145,11 @@ contract CompCardAuth is ICardAuth {
         SafeTransferLib.safeTransferFrom(settlementToken, msg.sender, p.owner, amount);
     }
 
-    function creditBack(bytes32 ref, uint128, uint128 net) external {
+    function creditBack(bytes32 ref, uint128 amount, int128 settles) external {
         if (!this.hasRoles(msg.sender, ROLE_SETTLE)) revert NotSettle();
-        _purchases[ref].refunded += uint64(net);
-        creditedBack[ref] += net;
+        _purchases[ref].refunded += uint64(amount);
+        creditedBack[ref] += amount;
+        settledBack[ref] += settles;
     }
 
     // Driver: runs a source's legs as the program.

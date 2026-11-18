@@ -104,8 +104,8 @@ contract CardAuth is ICardAuth {
     event PurchaseReleased(bytes32 indexed ref, uint256 released, uint64 seq);
     /// @notice `amount` was refunded in the purchase's token, `paid` in today's settlement token.
     event PurchaseRefunded(bytes32 indexed ref, uint256 amount, uint256 paid, uint64 seq);
-    /// @notice `net` was booked refunded without moving money, `paid` in today's settlement token.
-    event CreditedBack(bytes32 indexed ref, uint256 usage, uint256 net, uint256 paid, uint64 seq);
+    /// @notice `net` was booked refunded without moving money; settlement counts `paid`, in today's settlement token.
+    event CreditedBack(bytes32 indexed ref, uint256 net, int256 paid, uint64 seq);
     event ReserveSettled(bytes32 indexed ref, uint256 amount, uint64 seq);
     event Revoked(address indexed owner);
     event OperatorSet(address indexed key, uint8 roles, uint256 cap);
@@ -518,19 +518,18 @@ contract CardAuth is ICardAuth {
         emit PurchaseRefunded(ref, amount, pay, _step());
     }
 
-    /// @notice Gives `usage` back to the cardholder's limits and books `net` refunded without moving money,
-    ///         after the caller paid the cardholder itself. Settlement counts it as a refund. Settle role.
-    function creditBack(bytes32 ref, uint128 usage, uint128 net) external {
+    /// @notice Gives `amount` back to the cardholder's limits and books it refunded without moving money, after the
+    ///         caller paid the cardholder itself. Settlement counts `settles` of it as a refund, negative when the
+    ///         caller recovered more elsewhere (a merchant reserve) than the network charges back. Settle role.
+    function creditBack(bytes32 ref, uint128 amount, int128 settles) external {
         _role(ROLE_SETTLE, 0);
         Purchase memory p = _unpack(_purchases[ref]);
-        if (p.index == 0 || p.refunded + net > p.captured) revert InvalidAmount();
+        if (p.index == 0 || p.refunded + amount > p.captured) revert InvalidAmount();
         (CardLimits.Card storage c, address owner) = _card(p);
-        p.refunded += net;
+        p.refunded += amount;
         _purchases[ref] = _pack(p);
-        _giveBack(c, owner, p, usage);
-        uint256 pay = _today(net, p.era);
-        _ledger.net -= int128(int256(pay));
-        emit CreditedBack(ref, usage, net, pay, _step());
+        _giveBack(c, owner, p, amount);
+        emit CreditedBack(ref, amount, CardLegs.creditBack(eras, _state, _ledger, p.era, settles), _step());
     }
 
     /// @notice Books `amount` of a purchase the issuer absorbed as covered after it settled it from a merchant
