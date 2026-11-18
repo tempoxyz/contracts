@@ -8,8 +8,8 @@
   "capture_finalCashLeg": "147238",
   "capture_partialCashLeg": "142262",
   "charge_cash": "663082",
-  "refund_cashAndSavings": "582235",
-  "refund_cashLeg": "379697",
-  "refund_charge": "379697",
+  "refund_cashAndSavings": "582233",
+  "refund_cashLeg": "379695",
+  "refund_charge": "379695",
   "release_cashLeg": "127788"
 }

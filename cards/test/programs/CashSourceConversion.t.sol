@@ -253,10 +253,12 @@ contract CashSourceConversionTest is AuthEnv {
         uint256 cost = conv.quoteOut(address(usd), address(eur), 40e6);
         _capture(P1, 40e6, true);
         assertEq(eur.balanceOf(settlement), 40e6);
-        // The owner pays what the venue asks, never more than the hold; what the hold rounded up stays free.
+        // At the rate it locked, the whole leg spends the whole hold: the owner pays what the lock promised, and what
+        // the venue did not need goes to the settlement account with the capture.
         assertLt(cost, held);
-        assertEq(usd.balanceOf(alice), 100e6 - cost);
-        assertEq(core.available(alice, address(usd)), 100e6 - cost);
+        assertEq(usd.balanceOf(alice), 100e6 - held);
+        assertEq(core.available(alice, address(usd)), 100e6 - held);
+        assertEq(usd.balanceOf(settlement), held - cost);
         assertEq(usd.balanceOf(address(cash)), 0);
     }
 
@@ -415,7 +417,9 @@ contract CashSourceConversionTest is AuthEnv {
         vm.prank(issuer);
         cards.refund(P1, 25e6);
         uint256 paid = 100e6 - eur.balanceOf(issuer);
-        assertEq(paid, 25e6 * EUR_SCALE / 1e18, "the issuer pays EUR 22.727272");
+        assertEq(
+            paid, (25e6 * EUR_SCALE + 1e18 - 1) / 1e18, "the issuer pays EUR 22.727273, rounded up for the cardholder"
+        );
         // The cash leg converts the euros back to dollars at the reference rate.
         assertEq(usd.balanceOf(alice), 60e6 + paid * 1.1e18 / 1e18);
         vm.prank(issuer);
@@ -443,7 +447,11 @@ contract CashSourceConversionTest is AuthEnv {
         uint256 shares = earnShare.balanceOf(alice);
         vm.prank(issuer);
         cards.refund(P1, 25e6);
-        assertEq(eur.balanceOf(issuer), 100e6 - 25e6 * EUR_SCALE / 1e18, "the issuer pays EUR 22.727272");
+        assertEq(
+            eur.balanceOf(issuer),
+            100e6 - (25e6 * EUR_SCALE + 1e18 - 1) / 1e18,
+            "the issuer pays EUR 22.727273, rounded up"
+        );
         assertEq(usd.balanceOf(issuer), 0, "and no dollars");
         // The last leg, savings, takes it back first, converted back at the reference rate.
         assertEq(usd.balanceOf(alice), 0, "cash untouched");

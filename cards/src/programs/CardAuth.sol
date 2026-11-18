@@ -746,9 +746,10 @@ contract CardAuth is ICardAuth {
     }
 
     /// @dev `amount` booked in era `era`'s token, in today's settlement token units.
+    // A refund of an earlier era's purchase rounds up, in the cardholder's favour.
     function _today(uint256 amount, uint8 era) private view returns (uint256) {
         uint8 current = _state.era;
-        return era == current ? amount : amount.mulDiv(eras[current].scale, eras[era].scale);
+        return era == current ? amount : amount.mulDivUp(eras[current].scale, eras[era].scale);
     }
 
     function _scale() private view returns (uint256) {

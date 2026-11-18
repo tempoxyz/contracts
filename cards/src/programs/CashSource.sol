@@ -287,6 +287,13 @@ contract CashSource is ISource, ISettlementTokenGuard {
             if (needed > promised) needed = promised;
         }
         uint256 tokens = needed < h.held ? needed : h.held;
+        // At the rate it locked, a capture of the whole leg spends the whole hold: the owner pays what the lock promised
+        // and the venue's rounding left over goes to the settlement account with the capture.
+        if (
+            locked && tokens < h.held && c.rate(token, settlement) == rate && units >= uint256(h.held).mulDiv(rate, ONE)
+        ) {
+            tokens = h.held;
+        }
         if (beyond && needed > h.held) {
             tokens = h.held + _excessRoom(owner, token, false, needed - h.held, false);
             // Tokens past the hold are bounded by the hold's own tolerance: a lapsed rate never costs the owner more.
