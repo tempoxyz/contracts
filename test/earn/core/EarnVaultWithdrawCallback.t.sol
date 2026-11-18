@@ -39,6 +39,21 @@ contract EarnVaultWithdrawCallbackTest is Test {
         assertFalse(core.supportsInterface(0xffffffff));
     }
 
+    function testRevertsWhenTheReturnIsNotCredited() public {
+        RedirectingShare redirecting = new RedirectingShare(address(0xBEEF));
+        EarnVault redirectCore =
+            EarnVaultTestDeployer.deploy(address(engine), address(redirecting), operator, earnVaultTestNoFees());
+        CallbackPayer redirectPayer = new CallbackPayer(redirectCore, redirecting);
+        asset.mint(address(redirectPayer), 10 ether);
+        redirectPayer.deposit(10 ether);
+
+        // Transfers from the vault land with another holder, as a redirecting receive policy would send them.
+        redirecting.setRedirectFrom(address(redirectCore));
+        engine.setWithdrawBurnOverride(2 ether);
+        vm.expectRevert(EarnVault.EarnSharesNotReturned.selector);
+        redirectPayer.withdraw(5 ether, receiver, 5 ether);
+    }
+
     function testReturnsQuotedSharesTheBurnLeaves() public {
         engine.setWithdrawBurnOverride(2 ether);
         uint256 burned = payer.withdraw(5 ether, receiver, 5 ether);
@@ -207,6 +222,27 @@ contract ShortCreditToken is CoreMockToken {
     function transferFrom(address from, address to, uint256 value) public override returns (bool) {
         super.transferFrom(from, to, value);
         balanceOf[to] -= 1;
+        return true;
+    }
+}
+
+/// @notice Sends {transfer}s from one sender to a fixed holder instead of the named recipient.
+contract RedirectingShare is CoreMockToken {
+    address internal immutable divertTo;
+    address internal redirectFrom;
+
+    constructor(address divertTo_) CoreMockToken("Redirecting", "RDR", 18) {
+        divertTo = divertTo_;
+    }
+
+    function setRedirectFrom(address from) external {
+        redirectFrom = from;
+    }
+
+    function transfer(address to, uint256 value) external override returns (bool) {
+        address credited = msg.sender == redirectFrom ? divertTo : to;
+        balanceOf[msg.sender] -= value;
+        balanceOf[credited] += value;
         return true;
     }
 }

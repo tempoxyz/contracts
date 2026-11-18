@@ -215,6 +215,8 @@ contract EarnVault is IEarnVault {
     error EngineAssetMismatch();
     error EngineCapabilityUnsupported(bytes4 interfaceId);
     error EarnSharesNotReceived();
+    /// @notice The callback caller was not credited the quoted EarnShare the burn left.
+    error EarnSharesNotReturned();
     error EngineEarnVaultMismatch();
     error EngineExitUnsupported();
     error ExcessiveConversionLoss(uint256 inputShares, uint256 representedShares);
@@ -966,7 +968,11 @@ contract EarnVault is IEarnVault {
         if (!callback) {
             _collectEarnShares(earnSharesBurned, false);
         } else if (requiredEarnShares != earnSharesBurned) {
-            _safeTransfer(earnShare, msg.sender, requiredEarnShares - earnSharesBurned);
+            // A receive policy can redirect a successful transfer, so the caller must be credited the full return.
+            uint256 unburned = requiredEarnShares - earnSharesBurned;
+            uint256 callerHeld = IERC20Like(earnShare).balanceOf(msg.sender);
+            _safeTransfer(earnShare, msg.sender, unburned);
+            if (IERC20Like(earnShare).balanceOf(msg.sender) != callerHeld + unburned) revert EarnSharesNotReturned();
         }
         IEarnShare(earnShare).burn(earnSharesBurned);
 
