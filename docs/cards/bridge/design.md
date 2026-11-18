@@ -133,7 +133,8 @@ sequenceDiagram
 ```
 
 Before it sends a public spend, Bridge reads `program.paused()`, the TS handler permissions for
-the clone, `isAuthorizedDestination`, `availableBalance` and the remaining key limit. For Earn,
+the clone, `isAuthorizedDestination`, `availableBalance` and the remaining key limit, which must cover
+each approval's increase over the current allowance (the amount plus 1 from zero). For Earn,
 Bridge sets `maxShares = previewWithdraw(fromVault) × 1.005`.
 
 ## Private spend

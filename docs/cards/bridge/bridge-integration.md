@@ -65,7 +65,10 @@ Before signing, decline if any of these fail. Each is a read:
 - **Balance:** The cardholder's token balance, plus share value for Earn. On the L1 that is
   `availableBalance(from, token, vault)` on the program, or on the clone. In a Zone it is `balanceOf` through an authenticated Zone RPC,
   for the one token the spend withdraws.
-- **Key headroom:** The spend fits the key's remaining periodic limit.
+- **Key headroom:** The key's remaining periodic limit for each token covers what its `approve` raises
+  the allowance by: the new approval minus the current allowance, so `fromStable + 1` (and, for Earn,
+  `maxShares + 1` of EarnShare) from a zero allowance. When the limit covers the spend but not the
+  extra unit, approve the exact amount for that spend instead.
 - **Zone health, private only**, read on the L1:
   - the portal is not paused and `areDepositsActive(token)` is true;
   - the router still has its Zone role, and the refund recipient and program wallet are still

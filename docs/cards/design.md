@@ -84,7 +84,9 @@ sequenceDiagram
 - **Keep the public allowance nonzero.** `spend` pulls with `transferFrom`, so an approval of the exact
   amount, or a reset to 0 afterwards, clears the cardholder's TIP-20 allowance slot, and the next
   approval creates it again (250,000 gas unless a TIP-1060 storage credit covers it). Never reset the
-  allowance to 0. What stays approved is at most the residual (1 unit, or the cap's unused part), and only
+  allowance to 0. The key's limit counts each approval's increase over the current allowance, so the
+  first spend from a zero allowance needs headroom for the extra unit; without it, approve the exact
+  amount for that spend. What stays approved is at most the residual (1 unit, or the cap's unused part), and only
   `spend` can pull it, from `msg.sender`: the cardholder's own account, in a transaction its key signs.
 - **Private.** The provider sends one Zone transaction from the cardholder's Zone account, signed with a
   Zone key scoped to the outbox, that withdraws `maxInput` plus change to the router with Spend callback
