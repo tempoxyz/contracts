@@ -61,6 +61,8 @@ contract Conversion {
     /// @notice Rates carry 18 decimals: units of the output token per unit of the input token.
     uint256 public constant RATE_ONE = 1e18;
     uint256 internal constant BPS = 10_000;
+    /// @notice How long a reference rate prices conversions after it was set.
+    uint64 public constant MAX_RATE_AGE = 7 days;
     /// @dev Amount a rate is measured on; venues price linearly, so a large probe keeps rounding out of the rate.
     uint256 internal constant PROBE = 1e10;
     IStablecoinDEX internal constant DEX = IStablecoinDEX(0xDEc0000000000000000000000000000000000000);
@@ -79,6 +81,8 @@ contract Conversion {
     mapping(address tokenIn => mapping(address tokenOut => Venue)) internal venues;
     /// @dev Hub units per token unit at the market's reference rate, with 18 decimals. The hub is always one.
     mapping(address token => uint256) internal mids;
+    /// @notice When each token's reference rate was last set.
+    mapping(address token => uint64) public rateUpdatedAt;
     /// @notice Basis points the market may move from a rate a program's purchase locked; zero keeps every lock.
     mapping(address owner => mapping(address program => uint32)) public rateToleranceBps;
     /// @notice Programs that may convert at the reference rate out of this contract's float (refunds and reversals).
@@ -104,6 +108,8 @@ contract Conversion {
     error Unauthorized();
     error NoVenue(address tokenIn, address tokenOut);
     error NoReferenceRate(address token);
+    /// @notice The token's reference rate is older than MAX_RATE_AGE.
+    error RateStale(address token);
     error Slippage(uint256 amount, uint256 bound);
     error InvalidAmount();
     error InsufficientFloat(uint256 needed, uint256 available);
@@ -143,6 +149,9 @@ contract Conversion {
     function setReferenceRate(address token, uint256 rate_) external onlyOwner {
         if (token == HUB || rate_ == 0) revert InvalidAmount();
         mids[token] = rate_;
+        // Timestamps fit 64 bits for billions of years.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        rateUpdatedAt[token] = uint64(block.timestamp);
         emit ReferenceRateSet(token, rate_);
     }
 
@@ -169,11 +178,15 @@ contract Conversion {
         return venues[tokenIn][tokenOut];
     }
 
-    /// @notice Hub units per token unit at the reference rate, with 18 decimals.
+    /// @notice Hub units per token unit at the reference rate, with 18 decimals. Reverts RateStale once the rate is
+    ///         older than MAX_RATE_AGE, so nothing prices at a rate the owner stopped keeping current.
     function referenceRate(address token) public view returns (uint256 rate_) {
         if (token == HUB) return RATE_ONE;
         rate_ = mids[token];
         if (rate_ == 0) revert NoReferenceRate(token);
+        // Rate ages are days long; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp > rateUpdatedAt[token] + MAX_RATE_AGE) revert RateStale(token);
     }
 
     /// @notice Units of tokenOut one unit of tokenIn is worth at the reference rates, with 18 decimals.

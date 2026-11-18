@@ -51,6 +51,22 @@ contract ConversionTest is ProgramsEnv {
 
     // Conversion on its own.
 
+    function test_referenceRate_staleAfterMaxAge() public {
+        assertEq(conv.mid(address(eur), address(usd)), 1.1e18);
+        vm.warp(vm.getBlockTimestamp() + conv.MAX_RATE_AGE() + 1);
+        vm.expectRevert(abi.encodeWithSelector(Conversion.RateStale.selector, address(eur)));
+        conv.mid(address(eur), address(usd));
+        vm.expectRevert(abi.encodeWithSelector(Conversion.RateStale.selector, address(eur)));
+        conv.referenceRate(address(eur));
+        vm.expectRevert(abi.encodeWithSelector(Conversion.RateStale.selector, address(eur)));
+        conv.costBps(address(eur), address(usd), 1e18);
+        // The hub never goes stale, and setting the rate again makes it current.
+        assertEq(conv.referenceRate(address(usd)), 1e18);
+        conv.setReferenceRate(address(eur), 1.2e18);
+        assertEq(conv.mid(address(eur), address(usd)), 1.2e18);
+        assertEq(conv.rateUpdatedAt(address(eur)), vm.getBlockTimestamp());
+    }
+
     function test_quotes_routeThroughTheHub() public {
         FixedPricePool gbpAsk = new FixedPricePool(address(otherUsd), address(usd), 1.25e18);
         otherUsd.mint(address(gbpAsk), 1_000_000e6);
