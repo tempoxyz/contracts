@@ -85,7 +85,7 @@ contract ProgramCollateralConversionTest is ProgramsEnv {
         _authorize(P1, 100e6);
         uint256 before = collateral.valueOf(address(cards));
         vm.prank(sponsor);
-        collateral.seize(address(cards), 100e6, sponsor);
+        collateral.seize(address(cards), 100e6);
         assertApproxEqAbs(eur.balanceOf(sponsor), 100e6, 2);
         assertLe(eur.balanceOf(sponsor), 100e6);
         assertEq(usd.balanceOf(sponsor), 0);

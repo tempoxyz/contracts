@@ -61,7 +61,7 @@ contract ProgramCollateralTest is ProgramsEnv {
         assertEq(core.reserved(settlement, address(usd)), 100e6);
     }
 
-    function test_seize_cappedAtExposure_andPaysOnlyWhereTheSponsorSays() public {
+    function test_seize_cappedAtExposure_andPaysTheSponsor() public {
         _postCash(150e6);
         usd.mint(alice, 500e6);
         _authorize(P1, 100e6);
@@ -69,21 +69,80 @@ contract ProgramCollateralTest is ProgramsEnv {
         vm.expectRevert(
             abi.encodeWithSelector(ProgramCollateral.AboveExposure.selector, uint256(101e6), uint256(100e6))
         );
-        collateral.seize(address(cards), 101e6, sponsor);
+        collateral.seize(address(cards), 101e6);
         vm.prank(issuer);
         vm.expectRevert(ProgramCollateral.NotSponsor.selector);
-        collateral.seize(address(cards), 10e6, issuer);
+        collateral.seize(address(cards), 10e6);
         vm.prank(sponsor);
-        collateral.seize(address(cards), 100e6, sponsor);
+        collateral.seize(address(cards), 100e6);
         assertEq(usd.balanceOf(sponsor), 100e6);
         assertEq(collateral.valueOf(address(cards)), 50e6);
+    }
+
+    function test_seize_repeatedCallsTakeNoMoreThanTheExposure() public {
+        _postCash(1000e6);
+        usd.mint(alice, 500e6);
+        _authorize(P1, 100e6);
+        vm.prank(sponsor);
+        collateral.seize(address(cards), 60e6);
+        vm.prank(sponsor);
+        collateral.seize(address(cards), 40e6);
+        // The exposure is unchanged, and the seizures already cover all of it.
+        (,,,, uint256 total) = cards.exposure();
+        assertEq(total, 100e6);
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(ProgramCollateral.AboveExposure.selector, uint256(1), uint256(0)));
+        collateral.seize(address(cards), 1);
+        assertEq(usd.balanceOf(sponsor), 100e6);
+        assertEq(collateral.seizedOf(address(cards)), 100e6);
+        assertEq(collateral.valueOf(address(cards)), 900e6);
+    }
+
+    function test_seize_coverFollowsTheExposureDown() public {
+        _postCash(1000e6);
+        usd.mint(alice, 500e6);
+        _authorize(P1, 100e6);
+        vm.prank(sponsor);
+        collateral.seize(address(cards), 100e6);
+        assertEq(collateral.seizedOf(address(cards)), 100e6);
+        // The hold closes, so the exposure the seizure covered is gone; once that is synced, a new exposure can be
+        // seized, once.
+        vm.prank(issuer);
+        cards.release(P1);
+        collateral.sync(address(cards));
+        assertEq(collateral.seizedOf(address(cards)), 0);
+        _authorize(bytes32("purchase-2"), 50e6);
+        vm.prank(sponsor);
+        collateral.seize(address(cards), 50e6);
+        assertEq(collateral.seizedOf(address(cards)), 50e6);
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(ProgramCollateral.AboveExposure.selector, uint256(1), uint256(0)));
+        collateral.seize(address(cards), 1);
+        assertEq(usd.balanceOf(sponsor), 150e6);
+    }
+
+    function test_seize_withoutASync_aLowerExposureStaysCovered() public {
+        _postCash(1000e6);
+        usd.mint(alice, 500e6);
+        _authorize(P1, 100e6);
+        vm.prank(sponsor);
+        collateral.seize(address(cards), 100e6);
+        vm.prank(issuer);
+        cards.release(P1);
+        _authorize(bytes32("purchase-2"), 50e6);
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(ProgramCollateral.AboveExposure.selector, uint256(1), uint256(0)));
+        collateral.seize(address(cards), 1);
+        // Syncing at the lower exposure keeps it covered, and seizing records the lower cover.
+        collateral.sync(address(cards));
+        assertEq(collateral.seizedOf(address(cards)), 50e6);
     }
 
     function test_nothingToSeize_withoutExposure() public {
         _postCash(150e6);
         vm.prank(sponsor);
         vm.expectRevert(abi.encodeWithSelector(ProgramCollateral.AboveExposure.selector, uint256(1), uint256(0)));
-        collateral.seize(address(cards), 1, sponsor);
+        collateral.seize(address(cards), 1);
     }
 
     function test_post_onlySettlementAccount_withAMatchingPledge() public {

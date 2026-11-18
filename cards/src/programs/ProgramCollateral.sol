@@ -13,7 +13,8 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 /// @title ProgramCollateral
 /// @notice Collateral a card program's settlement account pledges to its sponsor, in cash or in savings shares that
 ///         keep earning. Each deposit is a core pledge whose authority is this contract, so the sponsor releases or
-///         seizes it only through here, and never below or beyond the program's live exposure.
+///         seizes it only through here, and never below or beyond the program's live exposure. Seizures add up: what
+///         the sponsor has seized counts against the exposure until the exposure falls below it.
 ///         Collateral is worth settlement units of the token the program settles in now. Cash or shares whose asset
 ///         is another token count at the program's rate for it or, without one, at what they sell for through the
 ///         program's conversion venue, and are sold there when seized.
@@ -39,9 +40,14 @@ contract ProgramCollateral is ReentrancyGuardTransient {
 
     mapping(address program => Position) public positionOf;
 
+    /// @notice Settlement units seized from `program`'s collateral that still count against its exposure. Lowered to
+    ///         the exposure at each seizure or `sync` that finds the exposure below it.
+    mapping(address program => uint256) public seizedOf;
+
     event CollateralPosted(address indexed program, address indexed sponsor, bytes32 pledgeId, uint128 units);
     event CollateralReleased(address indexed program, uint256 value, uint256 units);
     event CollateralSeized(address indexed program, address indexed to, uint256 value, uint256 units);
+    event SeizedSynced(address indexed program, uint256 seized);
 
     error NotSettlementAccount();
     error NotSponsor();
@@ -99,14 +105,20 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         emit CollateralReleased(program, value, units);
     }
 
-    /// @notice Seizes `value` settlement units of `program`'s collateral to `to`, as its sponsor, up to the
-    ///         program's live exposure: the sponsor takes what the program owes, never more. Collateral in the
-    ///         settlement token, or in a token the program rates, moves as it is; shares or cash in another asset are
-    ///         redeemed and sold through the program's conversion venue, so `to` receives settlement tokens.
-    function seize(address program, uint256 value, address to) external nonReentrant {
+    /// @notice Seizes `value` settlement units of `program`'s collateral to its sponsor, as the sponsor, up to the
+    ///         program's live exposure less what earlier seizures already cover: the sponsor takes what the program
+    ///         owes, never more, however many calls it makes. Collateral in the settlement token, or in a token the
+    ///         program rates, moves as it is; shares or cash in another asset are redeemed and sold through the
+    ///         program's conversion venue, so the sponsor receives settlement tokens.
+    function seize(address program, uint256 value) external nonReentrant {
         Position storage pos = _sponsored(program);
         uint256 exposure = _exposure(program);
-        if (value > exposure) revert AboveExposure(value, exposure);
+        // Earlier seizures cover the exposure until it falls below them, as the program settles or holds close.
+        uint256 covered = seizedOf[program];
+        if (covered > exposure) covered = exposure;
+        if (value > exposure - covered) revert AboveExposure(value, exposure - covered);
+        seizedOf[program] = covered + value;
+        address to = pos.sponsor;
         uint256 units = _unitsDown(pos, program, value);
         uint256 seized = _take(pos, program, units, true);
         CardProgram p = CardProgram(program);
@@ -124,6 +136,15 @@ contract ProgramCollateral is ReentrancyGuardTransient {
         }
         // forge-lint: disable-end(reentrancy-no-eth)
         emit CollateralSeized(program, to, value, seized);
+    }
+
+    /// @notice Lowers what earlier seizures cover to `program`'s live exposure when the exposure has fallen below it,
+    ///         as its holds close or it settles, so a later exposure can be seized again. Anyone may call it.
+    function sync(address program) external nonReentrant {
+        uint256 exposure = _exposure(program);
+        if (seizedOf[program] <= exposure) return;
+        seizedOf[program] = exposure;
+        emit SeizedSynced(program, exposure);
     }
 
     /// @notice The live units `program`'s pledges hold, and what they are worth in its settlement units.
