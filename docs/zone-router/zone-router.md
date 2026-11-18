@@ -77,8 +77,8 @@ contracts:
    one in one batch), then `seed-zone-router` (the deployer sends the router and each listed
    spender verified as the release `SendSpender` 1 base unit of each stack token they handle and
    calls `warm` for each token the router returns to its Zone, so no callback creates those slots;
-   EarnShare units only when the vault restarts unbacked pools. Each call is simulated first; calls a
-   token's transfer policy refuses, and any unverified spender, are handed off rather than sent, see
+   EarnShare units only when the vault restarts unbacked pools. Each call is simulated first; units a
+   token's transfer policy refuses, or an unverified spender's, are noted rather than sent, see
    [balance residues](../deployment/deployment.md#gas-residue-after-deployment)).
    The lifecycle grants pool, gateway and account admission with its own keys only when it
    deployed the factory itself; for a router from a factory the profile names, each is always handed

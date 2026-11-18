@@ -1,10 +1,12 @@
 import {
+  CallExecutionError,
   ContractFunctionZeroDataError,
   decodeFunctionData,
   erc20Abi,
   ExecutionRevertedError,
   getAddress,
   HttpRequestError,
+  LimitExceededRpcError,
   toEventSelector,
   zeroAddress,
   zeroHash,
@@ -855,6 +857,7 @@ describe('Zone router seeds', () => {
       profile?: typeof card
       refuse?: Address[]
       restarts?: boolean
+      strayCardProgram?: boolean
     } = {},
   ) {
     const profile = options.profile ?? cardAndEarn
@@ -862,6 +865,8 @@ describe('Zone router seeds', () => {
       readContract: (parameters: Record<string, unknown>) => Promise<unknown>
     }
     const enabled = options.enabled ?? [earnBinding.privateAsset, outputs.earnShare]
+    // Set once a sent batch's warm calls land, so later reads see every Portal allowance.
+    const state = { warmed: false }
     const readContract = vi.fn(async (parameters: Record<string, unknown>) => {
       const target = parameters.address as Address
       const args = (parameters.args ?? []) as Address[]
@@ -870,9 +875,11 @@ describe('Zone router seeds', () => {
         case 'balanceOf':
           return options.balances?.[`${target}:${args[0]}`] ?? 0n
         case 'allowance':
-          return options.allowances?.[`${target}:${args[0]}`] ?? 0n
+          return state.warmed ? 1n : (options.allowances?.[`${target}:${args[0]}`] ?? 0n)
         case 'isTokenEnabled':
           return enabled.includes(args[0]!)
+        case 'isDeployed':
+          return args[0] === cardProgram && !options.strayCardProgram
       }
       const contract = spenders[target]
       if (contract) {
@@ -897,7 +904,13 @@ describe('Zone router seeds', () => {
           : zeroHash,
       ),
       readContract,
+      state,
     }
+  }
+
+  /** Marks every Portal allowance of `reads` set, as a landed batch of warm calls would. */
+  const warmAll = (reads: ReturnType<typeof seedChain>) => {
+    reads.state.warmed = true
   }
 
   /** Runs the seed step as the deployer against `reads`, recording each batch it sends. */
@@ -922,7 +935,12 @@ describe('Zone router seeds', () => {
           account,
           chain: { id: 42431 },
           getTransactionCount: async () => 0,
-          sendTransactionSync,
+          // A landed batch sets the Portal allowances its warm calls name.
+          sendTransactionSync: async (...parameters: unknown[]) => {
+            const receipt = await sendTransactionSync(...parameters)
+            warmAll(reads)
+            return receipt
+          },
         })) as never,
         fundFromFaucet: vi.fn() as never,
       },
@@ -1021,6 +1039,19 @@ describe('Zone router seeds', () => {
       seed(convertingSpender, outputs.asset),
     ])
     expect(plan.unverified).toEqual([])
+    // A card program the release CardFactory never deployed is still reported.
+    const stray = await zoneRouterSeedPlan(
+      seedChain({
+        profile: converting,
+        enabled: [earnBinding.privateAsset],
+        strayCardProgram: true,
+      }) as never,
+      converting,
+      outputs,
+    )
+    expect(stray.unverified).toEqual([
+      `Spender ${cardProgram} is not a CardSpender the release CardFactory ${getAddress(`0x${'cafac'.padStart(40, '0')}`)} deployed`,
+    ])
     expect(plan.notes).toContain(
       `SendSpender ${convertingSpender} parToken ${address('ba')} is not one of the profile's tokens, so it is not seeded: send it 1 base unit by hand if wanted`,
     )
@@ -1044,7 +1075,9 @@ describe('Zone router seeds', () => {
       .fn()
       .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
     const reads = seedChain({ ...options, balances: funded([outputs.asset, address('dead')]) })
-    await expect(run(reads, stray, sendTransactionSync)).resolves.toBeUndefined()
+    await expect(run(reads, stray, sendTransactionSync)).resolves.toEqual({
+      transactions: [receiptHash],
+    })
     // The verified holders are still seeded; the stray spender and the token it names get nothing.
     expect(sentCalls(sendTransactionSync)).toEqual([
       [outputs.asset, outputs.zoneRouter, 1n],
@@ -1059,13 +1092,11 @@ describe('Zone router seeds', () => {
       },
       allowances: { [`${outputs.asset}:${outputs.zoneRouter}`]: 1n },
     })
-    expect(await step.satisfied(seeded as never, stray, outputs)).toBe(false)
-    expect(step.handoff(stray, outputs)).toContain(
-      'neither a card program nor the release SendSpender',
-    )
+    // The stray spender is blocked by Zone router spenders, not by this step.
+    expect(await step.satisfied(seeded as never, stray, outputs)).toBe(true)
   })
 
-  test('reports each unseeded holder and unwarmed token without blocking routes', async () => {
+  test('notes each unseeded holder and unwarmed token without blocking routes', async () => {
     const client = {
       ...seedChain({
         balances: { [`${outputs.asset}:${outputs.zoneRouter}`]: 1n },
@@ -1076,14 +1107,15 @@ describe('Zone router seeds', () => {
     const report = await zoneRouterModeModule.inspect!(client as never, cardAndEarn, outputs)
     expect(report?.zoneRouterSeeds).toEqual({
       label: 'Zone router seeds',
-      status: 'blocked',
-      blockers: [
-        `Zone router ${outputs.zoneRouter} holds no private asset ${earnBinding.privateAsset}, so each callback recreates its balance slot: send it 1 base unit`,
-        `SendSpender ${spender} ${spender} holds no private asset ${earnBinding.privateAsset}, so each callback recreates its balance slot: send it 1 base unit`,
-        `SendSpender ${spender} ${spender} holds no vault asset ${outputs.asset}, so each callback recreates its balance slot: send it 1 base unit`,
-        `Zone router ${outputs.zoneRouter} has no Portal allowance for private asset ${earnBinding.privateAsset}, so its next return to the Zone sets one: call warm(${earnBinding.privateAsset})`,
-      ],
+      status: 'ready',
+      blockers: [],
       details: {
+        missing: [
+          `Zone router ${outputs.zoneRouter} holds no private asset ${earnBinding.privateAsset}, so each callback recreates its balance slot: send it 1 base unit`,
+          `SendSpender ${spender} ${spender} holds no private asset ${earnBinding.privateAsset}, so each callback recreates its balance slot: send it 1 base unit`,
+          `SendSpender ${spender} ${spender} holds no vault asset ${outputs.asset}, so each callback recreates its balance slot: send it 1 base unit`,
+          `Zone router ${outputs.zoneRouter} has no Portal allowance for private asset ${earnBinding.privateAsset}, so its next return to the Zone sets one: call warm(${earnBinding.privateAsset})`,
+        ].join('; '),
         withheld: `EarnShare units withheld: EarnVault ${outputs.earnVault} does not restart unbacked pools, so nothing bound to it may hold EarnShare (its Portal allowance is still warmed)`,
       },
     })
@@ -1123,10 +1155,13 @@ describe('Zone router seeds', () => {
       refuse: [outputs.earnShare],
       balances: funded([outputs.asset, earnBinding.privateAsset, outputs.earnShare]),
     })
-    const sendTransactionSync = vi
-      .fn()
-      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
-    await expect(run(reads, cardAndEarn, sendTransactionSync)).resolves.toBeUndefined()
+    const sendTransactionSync = vi.fn(async () => {
+      warmAll(reads)
+      return { status: 'success', transactionHash: receiptHash }
+    })
+    await expect(run(reads, cardAndEarn, sendTransactionSync)).resolves.toEqual({
+      transactions: [receiptHash],
+    })
     expect(sendTransactionSync).toHaveBeenCalledTimes(1)
     expect(sentCalls(sendTransactionSync)).toEqual([
       [outputs.asset, outputs.zoneRouter, 1n],
@@ -1155,12 +1190,50 @@ describe('Zone router seeds', () => {
     const error = new HttpRequestError({ url: 'https://rpc.invalid' })
     unreachable.call.mockRejectedValue(error)
     await expect(run(unreachable, cardAndEarn, vi.fn())).rejects.toBe(error)
+
+    // Nor is a node's request limit, even inside a call error.
+    const limited = seedChain({
+      restarts: true,
+      balances: funded([outputs.asset, earnBinding.privateAsset, outputs.earnShare]),
+    })
+    const limit = new CallExecutionError(
+      new LimitExceededRpcError(new Error('request limit exceeded')),
+      {},
+    )
+    limited.call.mockRejectedValue(limit)
+    await expect(run(limited, cardAndEarn, vi.fn())).rejects.toBe(limit)
   })
 
-  test('hands off when the deployer lacks a seed token and sends nothing once seeded', async () => {
-    // Warming spends nothing of the deployer's, so it still goes out before the handoff.
-    const warmOnly = vi.fn().mockResolvedValue({ status: 'success', transactionHash: receiptHash })
-    await expect(run(seedChain(), cardAndEarn, warmOnly)).resolves.toBeUndefined()
+  test('funds as many seeds of a token as the deployer holds units of', async () => {
+    const reads = seedChain({
+      restarts: true,
+      balances: {
+        ...funded([outputs.asset, outputs.earnShare]),
+        [`${earnBinding.privateAsset}:${deployer}`]: 1n,
+      },
+    })
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
+    await expect(run(reads, cardAndEarn, sendTransactionSync)).resolves.toEqual({
+      transactions: [receiptHash],
+    })
+    // One private-asset unit funds the router's seed; the spender's is left for verify to note.
+    expect(
+      sentCalls(sendTransactionSync).filter((call) => call[0] === earnBinding.privateAsset),
+    ).toEqual([[earnBinding.privateAsset, outputs.zoneRouter, 1n]])
+  })
+
+  test('warms without seed tokens and sends nothing once seeded', async () => {
+    // Warming spends nothing of the deployer's, so the step completes without seed units.
+    const unfunded = seedChain()
+    const warmOnly = vi.fn(async () => {
+      warmAll(unfunded)
+      return { status: 'success', transactionHash: receiptHash }
+    })
+    await expect(run(unfunded, cardAndEarn, warmOnly)).resolves.toEqual({
+      transactions: [receiptHash],
+    })
     expect(sentCalls(warmOnly)).toEqual([
       ['warm', outputs.earnShare],
       ['warm', earnBinding.privateAsset],

@@ -214,13 +214,14 @@ Portal enables for Spend (it asks the Portal about each of the three, whatever t
 seeds the same tokens on each listed spender verified as the release `SendSpender` for its
 settings, as `pnpm earn verify` verifies it. A listed card program is left to its
 [runbook](../cards/bridge/deploy.md#6-prepare-the-program-for-low-callback-gas). Any other listed
-spender gets nothing and leaves the step incomplete, reported under **Zone router seeds**, until the
-profile lists only verified spenders. A `SendSpender`'s conversion asset or par stablecoin is seeded
+spender gets nothing, noted under **Zone router seeds**; **Zone router spenders** blocks it. A `SendSpender`'s conversion asset or par stablecoin is seeded
 only when it is one of the stack's three tokens. The step sends only what is missing, from
 `DEPLOYER_PRIVATE_KEY`, simulating each transfer and `warm` call from the deployer first: it sends
-those that succeed in one batch and hands off, naming the rest, when the deployer holds too little of
-a token or a token's TIP-403 transfer policy refuses the deployer or the holder. `pnpm earn verify`
-reports each missing unit or allowance under **Zone router seeds** without blocking the route.
+those that succeed in batches of at most 48 calls. The step completes once the router holds its
+Portal allowances, which anyone may set; units the deployer cannot send (it holds too little of a
+token, or a token's TIP-403 transfer policy refuses the deployer or the holder) block nothing.
+`pnpm earn verify` notes each missing unit or allowance under **Zone router seeds**, which is
+always ready.
 Tokens outside the stack, such as other stablecoins a Spend router routes, and routers or spenders
 deployed outside a profile, are seeded by hand.
 

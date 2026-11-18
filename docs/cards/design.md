@@ -79,14 +79,14 @@ sequenceDiagram
 
 - **Public.** The provider sends one L1 transaction from the cardholder's account, signed with an access
   key the cardholder scoped to `token.approve(recipient = program)` and `program.spend`, with a periodic
-  limit. It approves the amount plus 1 base unit (and, for Earn, the share quote plus 1), or a standing
-  cap, and spends. The provider approves the card on the L1 receipt.
+  limit. It approves the amount plus 1 base unit (and, for Earn, the share quote plus 1) and spends. The provider approves the card on the L1 receipt.
 - **Keep the public allowance nonzero.** `spend` pulls with `transferFrom`, so an approval of the exact
   amount, or a reset to 0 afterwards, clears the cardholder's TIP-20 allowance slot, and the next
   approval creates it again (250,000 gas unless a TIP-1060 storage credit covers it). Never reset the
   allowance to 0. The key's limit counts each approval's increase over the current allowance, so the
   first spend from a zero allowance needs headroom for the extra unit; without it, approve the exact
-  amount for that spend. What stays approved is at most the residual (1 unit, or the cap's unused part), and only
+  amount for that spend. Never leave a standing cap approved: the key's limit counts only approvals, so a cap would let later
+  spends pull past the period's limit. What stays approved is the residual 1 unit, and only
   `spend` can pull it, from `msg.sender`: the cardholder's own account, in a transaction its key signs.
 - **Private.** The provider sends one Zone transaction from the cardholder's Zone account, signed with a
   Zone key scoped to the outbox, that withdraws `maxInput` plus change to the router with Spend callback

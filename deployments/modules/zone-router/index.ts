@@ -28,7 +28,7 @@ import { spenderReleases } from './releases.js'
 import {
   enablesEarnShare,
   missingZoneRouterSeeds,
-  zoneRouterSeedBlockers,
+  zoneRouterSeedNotes,
   zoneRouterSeedPlan,
 } from './seeds.js'
 import { zoneRouterTokens } from './steps.js'
@@ -162,15 +162,19 @@ export const zoneRouterModeModule: CapabilityModule = {
     }
     // Seed units and Portal allowances only save callback gas, so their absence never blocks a route.
     const seedPlan = await zoneRouterSeedPlan(client, profile, outputs)
-    const seedBlockers = zoneRouterSeedBlockers(
+    const missingSeeds = zoneRouterSeedNotes(
       seedPlan,
       await missingZoneRouterSeeds(client, seedPlan),
     )
+    const seedDetails = {
+      ...(missingSeeds.length > 0 ? { missing: missingSeeds.join('; ') } : {}),
+      ...(seedPlan.notes.length > 0 ? { withheld: seedPlan.notes.join('; ') } : {}),
+    }
     report.zoneRouterSeeds = {
       label: 'Zone router seeds',
-      status: seedBlockers.length === 0 ? 'ready' : 'blocked',
-      blockers: seedBlockers,
-      ...(seedPlan.notes.length > 0 ? { details: { withheld: seedPlan.notes.join('; ') } } : {}),
+      status: 'ready',
+      blockers: [],
+      ...(Object.keys(seedDetails).length > 0 ? { details: seedDetails } : {}),
     }
     if (conversion) {
       report.zoneRouterConversion = {

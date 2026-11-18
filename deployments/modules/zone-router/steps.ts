@@ -1,4 +1,11 @@
-import { encodeFunctionData, getAbiItem, getAddress, zeroAddress, type Address } from 'viem'
+import {
+  encodeFunctionData,
+  getAbiItem,
+  getAddress,
+  zeroAddress,
+  type Address,
+  type Hex,
+} from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import {
@@ -40,7 +47,7 @@ import { inspectZoneRouterBinding } from './inspection.js'
 import {
   missingZoneRouterSeeds,
   sendableZoneRouterSeedCalls,
-  zoneRouterSeeded,
+  zoneRouterWarmed,
   zoneRouterSeedPlan,
 } from './seeds.js'
 import {
@@ -399,16 +406,16 @@ export const seedZoneRouter = defineAuthorityStep({
   summary:
     'Send the ZoneRouter and its SendSpenders 1 base unit of each token they route, and warm the router Portal allowances.',
   handoffSummary:
-    'Verify the router and its SendSpenders hold their seed units and allowances, and emit a deployer handoff if not.',
+    'Verify the router holds its Portal allowances, and emit a deployer handoff if not.',
   phase: 'activation',
   intent: ['zoneRouter'],
   enabled: hasZoneRouter,
   async satisfied(client, profile, outputs) {
     const plan = await zoneRouterSeedPlan(client, profile, outputs)
-    return zoneRouterSeeded(plan, await missingZoneRouterSeeds(client, plan))
+    return zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))
   },
   handoff: (_profile, outputs) =>
-    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} or a listed spender still lacks a seed the deployer could not send: the deployer holds too little of a token, a token's transfer policy refuses the deployer or the holder, or a listed spender is neither a card program nor the release SendSpender. Run pnpm earn verify: send each holder named under Zone router seeds 1 base unit from an account the token's policy authorizes, call warm(token) on the router for each allowance blocker (anyone may), replace any unverified spender, then re-run the same pnpm earn deploy command; it will verify the seeds and continue.`,
+    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} still lacks a Portal allowance the deployer could not set. Run pnpm earn verify and call warm(token) on the router for each allowance listed under Zone router seeds (anyone may), then re-run the same pnpm earn deploy command; it will verify the allowances and continue. Seed units listed there save callback gas but block nothing: send each holder 1 base unit from an account the token's policy authorizes.`,
   async execute(options, dependencies) {
     const key = envPrivateKey(options.environment, deployerAuthority.signer)
     if (!key) return undefined
@@ -420,18 +427,34 @@ export const seedZoneRouter = defineAuthorityStep({
       )
     const plan = await zoneRouterSeedPlan(client, options.profile, options.outputs)
     const missing = await missingZoneRouterSeeds(client, plan)
-    if (zoneRouterSeeded(plan, missing)) return { transactions: [] }
+    if (missing.seeds.length === 0 && zoneRouterWarmed(missing)) return { transactions: [] }
     // Each call is simulated alone first, so a token whose policy refuses one transfer never reverts
-    // the batch: the rest go out and the step hands off what is left.
+    // the batch: the rest go out, and units left unsent are reported by verify.
     const sendable = await sendableZoneRouterSeedCalls(client, account.address, plan, missing)
-    const sent =
-      sendable.calls.length > 0
-        ? await sendAuthorityCalls(client, dependencies, options.profile, sendable.calls)
-        : { transactions: [] }
-    // Anything left needs someone else, so the deploy stops at this step's handoff.
-    return sendable.refused.length > 0 || plan.unverified.length > 0 ? undefined : sent
+    // Each seed or warm call can create a slot (about 290,000 gas), so batches stay well under
+    // Tempo's 30M transaction cap however many spenders the router lists.
+    const sent: { transactions: Hex[] } = { transactions: [] }
+    for (let index = 0; index < sendable.calls.length; index += seedBatchSize) {
+      const batch = sendable.calls.slice(index, index + seedBatchSize)
+      const { transactions } = await sendAuthorityCalls(
+        client,
+        dependencies,
+        options.profile,
+        batch,
+      )
+      sent.transactions.push(...transactions)
+    }
+    if (zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))) return sent
+    if (sent.transactions.length === 0) return undefined
+    // Sent batches cannot be recorded against an unsatisfied step, so name them before handing off.
+    throw new Error(
+      `seed-zone-router sent ${sent.transactions.join(', ')} but a Portal allowance is still unset: ${sendable.refused.join('; ')}`,
+    )
   },
 })
+
+/** Calls per seed transaction: about 14M gas when every call creates a slot. */
+const seedBatchSize = 48
 
 /** The tokens an Earn mode moves in and out of its Zone, labeled for readiness reports. */
 export function zoneRouterTokens(
