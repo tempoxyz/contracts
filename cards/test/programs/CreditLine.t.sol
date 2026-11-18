@@ -13,6 +13,9 @@ contract CreditLineTest is ProgramsEnv {
     bytes32 internal constant REF = bytes32("purchase-1");
     bytes32 internal constant PLEDGE = bytes32("pledge-1");
     uint64 internal due;
+    address internal immutable SETTLE = makeAddr("settlement-account");
+    address internal immutable operatorKey = makeAddr("operator-key");
+    mapping(address => bool) internal operatorKeys;
 
     function setUp() public {
         _deployPrograms();
@@ -335,6 +338,44 @@ contract CreditLineTest is ProgramsEnv {
         assertEq(credit.lockedShares(lineId), locked);
     }
 
+    function test_redraw_operatorKeyCannotRedraw() public {
+        uint64 lineId = _repaidLine();
+        operatorKeys[operatorKey] = true;
+        vm.prank(operatorKey);
+        vm.expectRevert(CreditLine.NotProgram.selector);
+        credit.redraw(lineId, 100e6);
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert();
+        credit.redraw(lineId, 100e6);
+    }
+
+    function test_redraw_refusedOnAClosedUnacceptedOrPastDueLine() public {
+        uint64 unaccepted = _line(1000e6, IEarnVault(address(0)), 0, false);
+        vm.expectRevert(CreditLine.LineNotOpen.selector);
+        credit.redraw(unaccepted, 100e6);
+        vm.prank(lender);
+        credit.closeLine(unaccepted);
+        uint64 closed = _repaidLine();
+        vm.prank(alice);
+        credit.closeLine(closed);
+        vm.expectRevert(CreditLine.LineNotOpen.selector);
+        credit.redraw(closed, 100e6);
+        uint64 pastDue = _line(1000e6, IEarnVault(address(0)), 0, true);
+        vm.warp(due);
+        vm.expectRevert(CreditLine.LineNotOpen.selector);
+        credit.redraw(pastDue, 100e6);
+    }
+
+    function test_redraw_boundedByTheUndrawnLimit_andPaysTheSettlementAccount() public {
+        uint64 lineId = _repaidLine();
+        uint128 drawn = credit.redraw(lineId, 5000e6);
+        assertEq(drawn, 1000e6);
+        assertEq(credit.lineOf(lineId).owed, 1000e6);
+        assertEq(usd.balanceOf(SETTLE), 1000e6);
+        // Nothing is left of the limit to draw again.
+        assertEq(credit.redraw(lineId, 1), 0);
+    }
+
     function test_locking_excludesAPledge() public {
         uint64 lineId = _lockingLine(100e6);
         vm.prank(alice);
@@ -350,6 +391,28 @@ contract CreditLineTest is ProgramsEnv {
         core.approveHolder(address(credit), address(earnShare), type(uint128).max);
         credit.enableLocking(lineId);
         vm.stopPrank();
+    }
+
+    function _repaidLine() internal returns (uint64 lineId) {
+        lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
+        bytes32 id = _draw(lineId, 400e6);
+        core.capture(lender, id, 400e6, true);
+        credit.sync(id);
+        usd.mint(alice, 400e6);
+        vm.startPrank(alice);
+        usd.approve(address(credit), 400e6);
+        credit.repay(lineId, 400e6);
+        vm.stopPrank();
+        assertEq(credit.lineOf(lineId).owed, 0);
+    }
+
+    /// @dev The line's program names its settlement account and its operator keys.
+    function SETTLEMENT_ACCOUNT() external view returns (address) {
+        return SETTLE;
+    }
+
+    function operators(address key) external view returns (bool) {
+        return operatorKeys[key];
     }
 
     function _line(uint128 limit, IEarnVault vault, uint16 ltvBps, bool accept) internal returns (uint64 lineId) {

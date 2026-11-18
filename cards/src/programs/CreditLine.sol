@@ -8,9 +8,11 @@ import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
-/// @dev The keys a card program lets act for it, such as its issuer desk.
-interface IProgramOperators {
-    function operators(address key) external view returns (bool);
+/// @dev The account a card program settles through, which a line's redraws pay.
+interface IProgramSettlementAccount {
+    // The program's own name for it.
+    // forge-lint: disable-next-line(mixed-case-function)
+    function SETTLEMENT_ACCOUNT() external view returns (address);
 }
 
 /// @dev The token a card program settles in.
@@ -372,24 +374,29 @@ contract CreditLine is ISettlementTokenGuard {
     }
 
     /// @notice Draws up to `amount` on line `lineId` again for its program (a merchant's win on a purchase that
-    ///         provisional credit repaid), paying `payee` from what the lender can fund: its commitment, then its free
-    ///         balance. It may pass the limit, as the purchase was drawn before. Returns what it drew.
-    function redraw(uint64 lineId, uint128 amount, address payee) external nonReentrant returns (uint128 drawn) {
+    ///         provisional credit repaid), paying the program's settlement account from what the lender can fund: its
+    ///         free balance, then its commitment. Only the line's program may call it, on an accepted, open line before
+    ///         its due date, and it draws at most the credit still available. Returns what it drew.
+    function redraw(uint64 lineId, uint128 amount) external nonReentrant returns (uint128 drawn) {
         Line storage l = _lines[lineId];
-        if (msg.sender != l.program && !IProgramOperators(l.program).operators(msg.sender)) revert NotProgram();
-        uint256 committed_ = _committed(lineId);
-        uint256 free = CORE.available(l.lender, l.token);
-        uint256 fundable = committed_ + free;
-        // The commitment's expiry only zeroes it in _committed; nothing here compares time. The call is nonReentrant
-        // and _commit rewrites the commitment afterwards.
-        // forge-lint: disable-start(block-timestamp)
-        // forge-lint: disable-start(reentrancy-no-eth)
+        if (msg.sender != l.program) revert NotProgram();
+        // Due dates are timestamps by design; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (!l.accepted || l.closed || block.timestamp >= l.dueDate) revert LineNotOpen();
+        uint256 credit = availableCredit(lineId);
         // At most amount, a uint128.
         // forge-lint: disable-next-line(unsafe-typecast)
-        drawn = uint128(amount < fundable ? amount : fundable);
+        drawn = uint128(amount < credit ? amount : credit);
         if (drawn == 0) return 0;
+        address payee = IProgramSettlementAccount(l.program).SETTLEMENT_ACCOUNT();
+        uint256 free = CORE.available(l.lender, l.token);
+        // availableCredit is bounded by the free balance plus the commitment, so the commitment covers the rest. The
+        // call is nonReentrant and _commit rewrites the commitment afterwards.
+        // The commitment's expiry only zeroes it in _committed; nothing here compares time.
+        // forge-lint: disable-start(block-timestamp)
+        // forge-lint: disable-start(reentrancy-no-eth)
         if (drawn > free) {
-            uint256 keep = committed_ - (drawn - free);
+            uint256 keep = _committed(lineId) - (drawn - free);
             bytes32 id = commitmentOf[lineId];
             if (keep == 0) CORE.release(l.lender, id);
             // forge-lint: disable-next-line(unsafe-typecast)
