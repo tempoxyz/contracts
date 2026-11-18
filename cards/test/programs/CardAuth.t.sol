@@ -1260,6 +1260,27 @@ contract CardAuthTest is AuthEnv {
         cards.acknowledgeSettlement(2);
     }
 
+    /// @dev Credit the cardholder already holds (provisional credit a won dispute keeps) settles as a refund: the
+    ///      purchase, its refund and the credit kept net to nothing owed.
+    function test_creditBack_countsAgainstSettlement() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        _capture(P1, 100e6, true);
+        _refund(P1, 40e6);
+        vm.expectEmit(address(cards));
+        emit CardAuth.CreditedBack(P1, 60e6, 60e6, 60e6, 4);
+        vm.prank(issuer);
+        cards.creditBack(P1, 60e6, 60e6);
+        (uint64 seq,, int128 net,) = cards.ledger();
+        assertEq(seq, 4);
+        assertEq(net, 0);
+        assertEq(cards.purchaseOf(P1).refunded, 100e6);
+        // Nothing is left to refund or credit back.
+        vm.prank(issuer);
+        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        cards.creditBack(P1, 1, 1);
+    }
+
     // Funding order versions, views and storage.
 
     function test_setFunding_openPurchaseKeepsItsLegs() public {
