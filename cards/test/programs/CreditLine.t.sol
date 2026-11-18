@@ -43,6 +43,24 @@ contract CreditLineTest is ProgramsEnv {
         _assertCoreBalanced();
     }
 
+    function test_sync_overCaptureCountsOnlyWithinTheAcceptedDebtBound() public {
+        uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
+        assertEq(credit.lineOf(lineId).maxDebt, 1000e6, "the limit, at a zero rate");
+        bytes32 id = _draw(lineId, 1000e6);
+        // The lender lets the program capture a tip past the draw.
+        vm.prank(lender);
+        core.setCaptureTolerance(address(this), address(usd), 2000);
+        core.capture(lender, id, 1100e6, true);
+        credit.sync(id);
+        assertEq(credit.lineOf(lineId).owed, 1000e6, "never past what the borrower accepted");
+        assertEq(credit.lineOf(lineId).pending, 0);
+        // A refund of the purchase clears what was counted, and nothing more reaches the borrower.
+        core.refund(lender, id, 1100e6);
+        credit.sync(id);
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertEq(usd.balanceOf(alice), 0);
+    }
+
     function test_draw_onlyTheLinesProgram() public {
         uint64 lineId = _line(1000e6, IEarnVault(address(0)), 0, true);
         vm.prank(bob);

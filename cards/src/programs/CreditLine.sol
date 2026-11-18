@@ -378,7 +378,16 @@ contract CreditLine is ISettlementTokenGuard {
         l.pending = l.pending + held - d.held;
         uint128 excess;
         if (net >= d.net) {
-            l.owed += net - d.net;
+            // A capture past the draw counts only within the debt bound the borrower accepted; the draw records only
+            // what counted, so the rest counts on a later sync once there is room.
+            uint256 more = net - d.net;
+            uint256 used = uint256(l.owed) + l.pending;
+            uint256 room = l.maxDebt > used ? l.maxDebt - used : 0;
+            // Both fit in 128 bits: more is a difference of uint128s and room is at most more here.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            if (more > room) (net, more) = (net - uint128(more - room), room);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            l.owed += uint128(more);
         } else {
             uint128 back = d.net - net;
             if (back > l.owed) excess = back - l.owed;
