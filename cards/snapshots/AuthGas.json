@@ -1,0 +1,15 @@
+{
+  "adjust_upCashLeg": "159629",
+  "authorize_cashAndSavings": "3509167",
+  "authorize_singleCashLeg": "2397556",
+  "authorize_standIn": "2397836",
+  "capture_beyondHoldIntoDebt": "211527",
+  "capture_cashAndSavings": "370797",
+  "capture_finalCashLeg": "148609",
+  "capture_partialCashLeg": "143738",
+  "charge_cash": "1401817",
+  "refund_cashAndSavings": "393022",
+  "refund_cashLeg": "380497",
+  "refund_charge": "380497",
+  "release_cashLeg": "137581"
+}
