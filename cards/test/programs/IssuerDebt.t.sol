@@ -109,6 +109,71 @@ contract IssuerDebtTest is ProgramsEnv {
         cards.payOut(bob, 1e6, bytes32("credit-1"));
     }
 
+    function test_operatorRoles_authorizerCannotPayOutRefundOrCollect() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        usd.mint(alice, 100e6);
+        address key = makeAddr("key");
+        uint8 authorizer = cards.ROLE_AUTHORIZE();
+        uint8 treasury = cards.ROLE_TREASURY();
+        vm.prank(issuer);
+        cards.setOperator(key, authorizer, 1000e6);
+        assertEq(cards.rolesOf(key), authorizer);
+        vm.prank(key);
+        cards.authorize(CARD, bytes32("purchase-1"), 10e6, merchant, uint64(block.timestamp + 1 days), 0);
+        vm.prank(key);
+        cards.capture(bytes32("purchase-1"), 10e6, true);
+        vm.prank(key);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.payOut(bob, 1e6, bytes32("credit-1"));
+        vm.prank(key);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.refund(bytes32("purchase-1"), 1e6);
+        vm.prank(key);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.collectReserve(bytes32("reserve-1"), 1e6, bob);
+        vm.prank(key);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.reserve(settlement, address(usd), bytes32("reserve-1"), 1e6, uint64(block.timestamp + 1 days));
+        // A key needs a cap, and zero roles remove it.
+        vm.prank(issuer);
+        vm.expectRevert(CardProgram.InvalidAmount.selector);
+        cards.setOperator(key, treasury, 0);
+        vm.prank(issuer);
+        cards.setOperator(key, 0, 0);
+        assertFalse(cards.operators(key));
+        vm.prank(key);
+        vm.expectRevert(CardProgram.NotIssuer.selector);
+        cards.authorize(CARD, bytes32("purchase-2"), 1e6, merchant, uint64(block.timestamp + 1 days), 0);
+    }
+
+    function test_operatorCap_countsAuthorizeChargeAndPayOutTogether() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        usd.mint(alice, 100e6);
+        address key = makeAddr("key");
+        vm.prank(issuer);
+        cards.setOperator(key, 7, 100e6);
+        vm.prank(key);
+        cards.authorize(CARD, bytes32("purchase-1"), 40e6, merchant, uint64(block.timestamp + 1 days), 0);
+        vm.prank(key);
+        cards.charge(CARD, bytes32("purchase-2"), 30e6, merchant);
+        vm.prank(key);
+        cards.payOut(bob, 20e6, bytes32("credit-1"));
+        (uint256 cap, uint256 used) = cards.operatorCap(key);
+        assertEq(cap, 100e6);
+        assertEq(used, 90e6);
+        vm.prank(key);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.KeyCapExceeded.selector, 10e6));
+        cards.payOut(bob, 10e6 + 1, bytes32("credit-2"));
+        vm.prank(key);
+        vm.expectRevert(abi.encodeWithSelector(CardProgram.KeyCapExceeded.selector, 10e6));
+        cards.charge(CARD, bytes32("purchase-3"), 10e6 + 1, merchant);
+        vm.prank(key);
+        cards.payOut(bob, 10e6, bytes32("credit-2"));
+        // The issuer itself has no cap.
+        vm.prank(issuer);
+        cards.payOut(bob, 1e6, bytes32("credit-3"));
+    }
+
     function test_setSettlementToken_carriesIssuerDebtAtTheVenuePriceRoundedUp() public {
         vm.prank(settlement);
         cards.payOut(bob, 20e6, bytes32("credit-1"));

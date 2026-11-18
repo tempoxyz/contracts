@@ -61,7 +61,7 @@ contract CardRegistryTest is ProgramsEnv {
         vm.stopPrank();
         address operator = makeAddr("operator");
         vm.prank(issuer);
-        cards.setOperator(operator, true);
+        cards.setOperator(operator, 7, 1e30);
         vm.prank(operator);
         registry.setHolder(CARD, "Alice");
         assertEq(registry.metadataOf(CARD).holder, "Alice");

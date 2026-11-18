@@ -43,7 +43,7 @@ contract CardRegistry {
     }
 
     modifier onlyIssuer() {
-        if (msg.sender != PROGRAM.ISSUER() && !PROGRAM.operators(msg.sender)) revert NotIssuer();
+        if (msg.sender != PROGRAM.ISSUER() && PROGRAM.rolesOf(msg.sender) & 1 == 0) revert NotIssuer();
         _;
     }
 

@@ -384,7 +384,7 @@ contract ConversionTest is ProgramsEnv {
         IssuerDesk.Line[] memory lines = new IssuerDesk.Line[](1);
         lines[0] = IssuerDesk.Line({ payee: network, bps: 100, kind: "interchange" });
         vm.startPrank(issuer);
-        cards.setOperator(address(desk), true);
+        cards.setOperator(address(desk), 7, 1e30);
         desk.setTerms(lines);
         vm.stopPrank();
         vm.startPrank(settlement);
@@ -436,7 +436,7 @@ contract ConversionTest is ProgramsEnv {
         IssuerDesk.Reward[] memory rewards = new IssuerDesk.Reward[](1);
         rewards[0] = IssuerDesk.Reward({ funder: network, bps: 50, kind: "cashback" });
         vm.startPrank(issuer);
-        cards.setOperator(address(desk), true);
+        cards.setOperator(address(desk), 7, 1e30);
         desk.setTerms(lines);
         desk.setRewards(rewards);
         vm.stopPrank();
@@ -478,7 +478,7 @@ contract ConversionTest is ProgramsEnv {
     function test_desk_wonDisputeOnAnEarlierTokensPurchaseGivesBackItsUsage() public {
         IssuerDesk desk = new IssuerDesk(cards);
         vm.prank(issuer);
-        cards.setOperator(address(desk), true);
+        cards.setOperator(address(desk), 7, 1e30);
         vm.startPrank(settlement);
         usd.approve(address(desk), type(uint256).max);
         eur.approve(address(desk), type(uint256).max);
@@ -511,7 +511,7 @@ contract ConversionTest is ProgramsEnv {
         ITIP20Token gbp = _createToken("Pound", "GBPX");
         IssuerDesk desk = new IssuerDesk(cards);
         vm.prank(issuer);
-        cards.setOperator(address(desk), true);
+        cards.setOperator(address(desk), 7, 1e30);
         vm.startPrank(settlement);
         eur.approve(address(desk), type(uint256).max);
         gbp.approve(address(desk), type(uint256).max);
@@ -622,7 +622,7 @@ contract ConversionTest is ProgramsEnv {
         _localIssuer();
         address key = makeAddr("key");
         vm.prank(issuer);
-        cards.setOperatorCap(key, 100e6);
+        cards.setOperator(key, 7, 100e6);
         usd.mint(alice, 500e6);
         vm.prank(key);
         cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 7 days), 0);
@@ -656,14 +656,15 @@ contract ConversionTest is ProgramsEnv {
         cards.adjust(P2, 52.81e6);
         vm.prank(key);
         cards.adjust(P2, 52.8e6);
-        // Without a cap, the issuer and other operators are not counted.
+        // The issuer is not counted.
         vm.prank(issuer);
         cards.authorize(CARD, bytes32("purchase-3"), 100e6, merchant, uint64(block.timestamp + 7 days), 0);
-        // Plain operator rights clear the cap.
+        // Removing the key clears the cap.
         vm.prank(issuer);
-        cards.setOperator(key, true);
+        cards.setOperator(key, 0, 0);
         (cap,) = cards.operatorCap(key);
         assertEq(cap, 0);
+        assertEq(cards.rolesOf(key), 0);
     }
 
     function _tokenFirst(address owner, uint64 maxCostBps) internal {

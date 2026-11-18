@@ -67,11 +67,21 @@ contract CardProgram {
         Closed
     }
 
-    /// @notice Spending limits in settlement units. Zero allows nothing.
+    /// @notice An operator key may authorize, adjust, capture, release and charge purchases.
+    uint8 public constant ROLE_AUTHORIZE = 1;
+    /// @notice An operator key may refund, credit back, record reserve settlements and convert to settlement.
+    uint8 public constant ROLE_SETTLE = 2;
+    /// @notice An operator key may pay out, place, release and collect reserves, and redraw credit lines.
+    uint8 public constant ROLE_TREASURY = 4;
+
+    /// @dev An operator key's roles, its cap and what it has used, both in SETTLEMENT_TOKEN units.
     struct KeyCap {
-        uint128 cap;
+        uint8 roles;
+        uint120 cap;
         uint128 used;
     }
+
+    /// @notice Spending limits in settlement units. Zero allows nothing.
 
     struct Limits {
         uint80 perPurchase;
@@ -147,10 +157,8 @@ contract CardProgram {
     mapping(address owner => mapping(address merchant => CardLimits.Mandate)) public mandates;
     mapping(address owner => CardLimits.Grant) public grants;
     mapping(address owner => CardLimits.Usage) public usageOf;
-    /// @notice Keys the issuer lets act on purchases besides itself.
-    mapping(address key => bool) public operators;
-    /// @dev An operator key's spend cap and what it has authorized, in SETTLEMENT_TOKEN units so a settlement token
-    ///      change rescales both. A zero cap means none.
+    /// @dev Each operator key's roles, cap and use, in SETTLEMENT_TOKEN units so a settlement token change rescales
+    ///      the cap and use alike.
     mapping(address key => KeyCap) internal _keyCaps;
     mapping(address owner => address) public fundingOf;
     mapping(bytes32 purchaseRef => Purchase) internal _purchases;
@@ -267,8 +275,7 @@ contract CardProgram {
     event SettlementAcknowledged(uint64 throughSeq, uint64 previous);
     event Granted(address indexed owner, CardLimits.Terms terms, uint32 epoch);
     event Revoked(address indexed owner);
-    event OperatorSet(address indexed key, bool allowed);
-    event OperatorCapSet(address indexed key, uint256 cap);
+    event OperatorSet(address indexed key, uint8 roles, uint256 cap);
     event CardCapSet(bytes32 indexed card, uint64 cap);
     event PurchaseAdjusted(bytes32 indexed purchaseRef, bytes32 indexed card, uint256 amount, uint256 cash, uint64 seq);
     event PurchaseCharged(
@@ -325,8 +332,8 @@ contract CardProgram {
         _;
     }
 
-    modifier onlyOperator() {
-        if (msg.sender != ISSUER && !operators[msg.sender]) revert NotIssuer();
+    modifier onlyRole(uint8 role) {
+        _onlyRole(role);
         _;
     }
 
@@ -374,25 +381,29 @@ contract CardProgram {
         CardAdjust.raiseLimits(c, card, _baseLimits(given));
     }
 
-    /// @notice Lets `key` act on purchases (authorize, adjust, capture, release, charge, refund), or stops it.
-    function setOperator(address key, bool allowed) external onlyIssuer {
-        operators[key] = allowed;
-        delete _keyCaps[key];
-        emit OperatorSet(key, allowed);
+    /// @notice Gives `key` the `roles` (a mask of the ROLE_ constants) while the cardholder money it moves stays within
+    ///         `cap` settlement units over its life, restarting its use; zero roles remove the key. A settlement token
+    ///         change rescales the cap and use at that day's rate: the cap rounds down and its use up.
+    function setOperator(address key, uint8 roles, uint256 cap) external onlyIssuer {
+        uint256 base;
+        if (roles != 0) {
+            uint256 scale = _scaleOf(settlementToken());
+            base = scale == RATE_ONE ? cap : cap.mulDiv(scale, RATE_ONE);
+            if (roles > 7 || base == 0 || base > type(uint120).max) revert InvalidAmount();
+        }
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _keyCaps[key] = KeyCap(roles, uint120(base), 0);
+        emit OperatorSet(key, roles, cap);
     }
 
-    /// @notice Lets `key` act on purchases while what it authorizes, holds and increases alike (stand-in included),
-    ///         stays within `cap` settlement units over its life. A settlement token change rescales the cap and what
-    ///         it has used at that day's rate: the cap rounds down and its use up, so a change never adds room.
-    function setOperatorCap(address key, uint256 cap) external onlyIssuer {
-        uint256 scale = _scaleOf(settlementToken());
-        uint256 base = scale == RATE_ONE ? cap : cap.mulDiv(scale, RATE_ONE);
-        if (base == 0 || base > type(uint128).max) revert InvalidAmount();
-        operators[key] = true;
-        // forge-lint: disable-next-line(unsafe-typecast)
-        _keyCaps[key] = KeyCap(uint128(base), 0);
-        emit OperatorSet(key, true);
-        emit OperatorCapSet(key, cap);
+    /// @notice The roles `key` holds.
+    function rolesOf(address key) external view returns (uint8) {
+        return _keyCaps[key].roles;
+    }
+
+    /// @notice Whether `key` holds any role.
+    function operators(address key) external view returns (bool) {
+        return _keyCaps[key].roles != 0;
     }
 
     /// @notice `key`'s cap and what it has used in the current settlement token, zero cap meaning none.
@@ -511,9 +522,12 @@ contract CardProgram {
     }
 
     /// @notice Pays `amount` from the settlement account to `to` with `memo`, the program advancing what the account
-    ///         lacks as debt the account owes it. The settlement account, the issuer or an operator calls it.
+    ///         lacks as debt the account owes it. The settlement account, the issuer or a treasury key calls it.
     function payOut(address to, uint256 amount, bytes32 memo) external nonReentrant returns (uint256 advanced) {
-        if (msg.sender != SETTLEMENT_ACCOUNT && msg.sender != ISSUER && !operators[msg.sender]) revert NotIssuer();
+        if (msg.sender != SETTLEMENT_ACCOUNT) {
+            _onlyRole(ROLE_TREASURY);
+            _useKey(_base(amount, type(uint256).max));
+        }
         return CardConvert.payOut(to, amount, memo);
     }
 
@@ -654,7 +668,7 @@ contract CardProgram {
         address merchant,
         uint64 expiresAt,
         uint8 flags
-    ) external nonReentrant onlyOperator returns (uint256 approved) {
+    ) external nonReentrant onlyRole(ROLE_AUTHORIZE) returns (uint256 approved) {
         if (amount == 0 || amount > type(uint64).max) revert InvalidAmount();
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner != address(0)) revert PurchaseExists();
@@ -720,7 +734,7 @@ contract CardProgram {
     /// @notice Moves an open purchase to `amount` settlement units (an incremental authorization or a partial
     ///         reversal). An increase checks the card, grant and limits on the new total and places the difference
     ///         on the owner's funding order; a decrease frees cash first, then the other legs.
-    function adjust(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
+    function adjust(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyRole(ROLE_AUTHORIZE) {
         Purchase storage p = _purchases[purchaseRef];
         address owner = p.owner;
         uint256 previous = p.amount;
@@ -749,7 +763,7 @@ contract CardProgram {
     /// @notice Captures `amount` settlement units of a purchase across its legs in funding order (cash, savings,
     ///         credit), and pays the settlement account in the same call. An amount above what the legs hold (a tip)
     ///         is captured on the cash leg within the owner's tolerance on the core. `isFinal` releases the rest.
-    function capture(bytes32 purchaseRef, uint128 amount, bool isFinal) external nonReentrant onlyOperator {
+    function capture(bytes32 purchaseRef, uint128 amount, bool isFinal) external nonReentrant onlyRole(ROLE_AUTHORIZE) {
         Purchase storage p = _purchases[purchaseRef];
         if (!p.open) revert PurchaseNotOpen();
         // Expiries and due dates are timestamps by design; a few seconds of validator skew does not change them.
@@ -794,7 +808,7 @@ contract CardProgram {
     function charge(bytes32 card, bytes32 purchaseRef, uint128 amount, address merchant)
         external
         nonReentrant
-        onlyOperator
+        onlyRole(ROLE_AUTHORIZE)
     {
         if (amount == 0 || amount > type(uint64).max) revert InvalidAmount();
         Purchase storage p = _purchases[purchaseRef];
@@ -816,6 +830,7 @@ contract CardProgram {
             }
         }
         address owner = p.owner;
+        _useKey(_counted(purchaseRef, amount));
         // A late charge is owed like capture debt: in the settlement token where the owner's cash converts into it.
         address token = CardConvert.debtToken(fundingOf[owner]);
         Card storage card_ = _follow(p);
@@ -847,7 +862,7 @@ contract CardProgram {
     }
 
     /// @notice Releases every open leg of a purchase and gives back what it still held.
-    function release(bytes32 purchaseRef) external nonReentrant onlyOperator {
+    function release(bytes32 purchaseRef) external nonReentrant onlyRole(ROLE_AUTHORIZE) {
         _end(purchaseRef, false);
     }
 
@@ -860,7 +875,7 @@ contract CardProgram {
     ///         (a late charge, credit, savings, cash), and gives the amount back to the owner's limits. The caller
     ///         funds it: the program pulls each leg's token from the caller (the savings leg's base asset, which the
     ///         facility deposits for shares) and refunds the leg as its payee.
-    function refund(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
+    function refund(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyRole(ROLE_SETTLE) {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
@@ -868,6 +883,7 @@ contract CardProgram {
         uint256 left = b.captured > b.refunded ? b.captured - b.refunded : 0;
         if (amount > left) revert RefundExceedsCapture(amount - left);
         b.refunded += amount;
+        _useKey(_counted(purchaseRef, amount));
         // A purchase booked in an earlier settlement token refunds in its units: rates read in that token meanwhile.
         address booked = _purchaseTokens[purchaseRef];
         if (booked == address(0)) booked = SETTLEMENT_TOKEN;
@@ -894,7 +910,7 @@ contract CardProgram {
     function convertToSettlement(address token, uint256 amount, address to)
         external
         nonReentrant
-        onlyOperator
+        onlyRole(ROLE_SETTLE)
         returns (uint256)
     {
         return CardConvert.convertToSettlement(msg.sender, token, amount, to);
@@ -902,7 +918,7 @@ contract CardProgram {
 
     /// @notice Records that merchant reserves paid the issuer `amount` of a purchase's refund, which settlement then
     ///         leaves out of what the network returns. Moves no money.
-    function reserveSettled(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyOperator {
+    function reserveSettled(bytes32 purchaseRef, uint128 amount) external nonReentrant onlyRole(ROLE_SETTLE) {
         if (_purchases[purchaseRef].owner == address(0)) revert UnknownPurchase();
         if (amount == 0) revert InvalidAmount();
         Ledger storage ledger_ = ledger;
@@ -914,7 +930,7 @@ contract CardProgram {
 
     /// @notice Records `usage` of a purchase as given back to its card's limits and `net` as returned to the network,
     ///         moving no money: dispute credit the cardholder already holds, which a win or a later refund settles.
-    function creditBack(bytes32 purchaseRef, uint128 usage, uint128 net) external nonReentrant onlyOperator {
+    function creditBack(bytes32 purchaseRef, uint128 usage, uint128 net) external nonReentrant onlyRole(ROLE_SETTLE) {
         Purchase storage p = _purchases[purchaseRef];
         if (p.owner == address(0)) revert UnknownPurchase();
         if (usage == 0 && net == 0) revert InvalidAmount();
@@ -951,9 +967,12 @@ contract CardProgram {
     function reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt)
         external
         nonReentrant
-        onlyOperator
+        onlyRole(ROLE_TREASURY)
     {
-        if (owner != SETTLEMENT_ACCOUNT && !grants[owner].active) revert NoTerms();
+        if (owner != SETTLEMENT_ACCOUNT) {
+            if (!grants[owner].active) revert NoTerms();
+            _useKey(_valueOf(token, amount));
+        }
         _reserve(owner, token, id, amount, expiresAt);
     }
 
@@ -967,12 +986,15 @@ contract CardProgram {
         uint128[2] calldata tokens,
         uint128[2] calldata covers,
         uint64 expiresAt
-    ) external nonReentrant onlyOperator {
+    ) external nonReentrant onlyRole(ROLE_TREASURY) {
         if (!grants[merchant].active) revert NoTerms();
         if (!disputeReserves[merchant]) revert ReserveNotAllowed();
         // forge-lint: disable-next-line(block-timestamp)
         if (expiresAt > block.timestamp + MAX_DISPUTE_RESERVE) revert ReserveTooLong();
-        if (tokens[0] != 0) _reserve(merchant, token, reserveId(purchaseRef, merchant), tokens[0], expiresAt);
+        if (tokens[0] != 0) {
+            _useKey(_valueOf(token, tokens[0]));
+            _reserve(merchant, token, reserveId(purchaseRef, merchant), tokens[0], expiresAt);
+        }
         if (tokens[1] != 0) {
             _reserve(SETTLEMENT_ACCOUNT, token, reserveId(purchaseRef, SETTLEMENT_ACCOUNT), tokens[1], expiresAt);
         }
@@ -980,13 +1002,14 @@ contract CardProgram {
     }
 
     /// @notice Releases a reserve before it expires.
-    function releaseReserve(bytes32 id) external nonReentrant onlyOperator {
+    function releaseReserve(bytes32 id) external nonReentrant onlyRole(ROLE_TREASURY) {
         CORE.releaseLien(id);
     }
 
     /// @notice Takes `amount` of a reserve and pays it to `to` (the issuer a dispute was lost to), releasing the rest.
-    function collectReserve(bytes32 id, uint128 amount, address to) external nonReentrant onlyOperator {
-        (, address token, uint128 held,,) = CORE.lienOf(address(this), id);
+    function collectReserve(bytes32 id, uint128 amount, address to) external nonReentrant onlyRole(ROLE_TREASURY) {
+        (address owner, address token, uint128 held,,) = CORE.lienOf(address(this), id);
+        if (owner != SETTLEMENT_ACCOUNT) _useKey(_valueOf(token, amount));
         if (amount != 0) CORE.seizeLien(id, amount);
         if (held > amount) CORE.releaseLien(id);
         if (amount != 0) SafeTransferLib.safeTransfer(token, to, amount);
@@ -1154,16 +1177,27 @@ contract CardProgram {
         return increment == 0 ? amount : (amount + increment - 1) / increment * increment;
     }
 
-    /// @dev Counts `counted` SETTLEMENT_TOKEN units against the calling key's cap, when it has one.
+    /// @dev Reverts unless the caller is the issuer or a key holding `role`.
+    function _onlyRole(uint8 role) private view {
+        if (msg.sender != ISSUER && _keyCaps[msg.sender].roles & role == 0) revert NotIssuer();
+    }
+
+    /// @dev Counts `counted` SETTLEMENT_TOKEN units against the calling key's cap; the issuer has none.
     function _useKey(uint256 counted) private {
+        if (msg.sender == ISSUER) return;
         KeyCap storage k = _keyCaps[msg.sender];
         uint256 cap = k.cap;
-        if (cap == 0) return;
         uint256 used = k.used + counted;
-        if (used > cap) revert KeyCapExceeded(cap - k.used);
+        if (used > cap) revert KeyCapExceeded(cap > k.used ? cap - k.used : 0);
         // Bounded by the 128-bit cap just checked.
         // forge-lint: disable-next-line(unsafe-typecast)
         k.used = uint128(used);
+    }
+
+    /// @dev SETTLEMENT_TOKEN units of `amount` of `token`: at the issuer's rate where it set one, else unit for unit.
+    function _valueOf(address token, uint256 amount) private view returns (uint256) {
+        uint256 rate = rateOf[token];
+        return _base(rate == 0 ? amount : amount.mulDivUp(rate, RATE_ONE), type(uint256).max);
     }
 
     function _scaleOf(address token) private view returns (uint256 scale) {

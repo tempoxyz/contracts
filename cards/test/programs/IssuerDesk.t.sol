@@ -20,7 +20,7 @@ contract IssuerDeskTest is ProgramsEnv {
         _issue(alice, _limits(500e6, 1000e6, 5000e6));
         desk = new IssuerDesk(cards);
         vm.prank(issuer);
-        cards.setOperator(address(desk), true);
+        cards.setOperator(address(desk), 7, 1e30);
         vm.prank(settlement);
         usd.approve(address(desk), type(uint256).max);
         for (uint256 i; i < 2; ++i) {

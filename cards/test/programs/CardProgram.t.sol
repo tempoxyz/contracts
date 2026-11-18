@@ -458,11 +458,11 @@ contract CardProgramTest is ProgramsEnv {
         usd.mint(alice, 1000e6);
         address key = makeAddr("key");
         vm.prank(issuer);
-        cards.setOperator(key, true);
+        cards.setOperator(key, 7, 1e30);
         vm.prank(key);
         cards.authorize(CARD, P1, 10e6, merchant, uint64(block.timestamp + 1 days), 0);
         vm.prank(issuer);
-        cards.setOperator(key, false);
+        cards.setOperator(key, 0, 0);
         vm.prank(key);
         vm.expectRevert(CardProgram.NotIssuer.selector);
         cards.capture(P1, 10e6, true);
