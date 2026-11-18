@@ -495,6 +495,24 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).refunded, 40e6);
     }
 
+    /// @dev An earlier era's refund the issuer recovered elsewhere nets to nothing owed: the refund and the credit back
+    ///      both round up in today's token.
+    function test_creditBack_earlierTokensRecoveredRefund_netsToNothing() public {
+        usd.mint(alice, 100e6);
+        _authorize(P1, 40e6);
+        _capture(P1, 40e6, true);
+        _acknowledge();
+        _localIssuer();
+        _fundRefunds(eur, 100e6);
+        vm.prank(issuer);
+        cards.refund(P1, 25e6);
+        vm.prank(issuer);
+        cards.creditBack(P1, 0, -25e6);
+        (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet) = cards.ledger();
+        assertEq(seq - settledThrough, 2);
+        assertEq(net, settledNet);
+    }
+
     function test_refund_earlierTokensSavingsPurchase_paidInTodaysTokenAtTheReferenceRate() public {
         // Booked in dollars on $20 of cash and $25 of savings, then the issuer settles in euros.
         usd.mint(alice, 20e6);

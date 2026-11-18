@@ -110,8 +110,15 @@ library CardLegs {
     ) external returns (int256 pay) {
         uint8 current = s.era;
         pay = settles;
-        if (era != current) pay = pay * int256(uint256(eras[current].scale)) / int256(uint256(eras[era].scale));
-        // At most |settles| times the ratio of two era scales, both uint96, so it fits int128.
+        if (era != current) {
+            // Rounded up in size, as a refund of an earlier era's purchase is, so the two net out.
+            uint256 size = FixedPointMathLib.mulDivUp(
+                uint256(int256(settles < 0 ? -settles : settles)), eras[current].scale, eras[era].scale
+            );
+            // At most |settles| times the ratio of two era scales, both uint96, so it fits int256.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            pay = settles < 0 ? -int256(size) : int256(size);
+        }
         // forge-lint: disable-next-line(unsafe-typecast)
         l.net -= int128(pay);
     }
