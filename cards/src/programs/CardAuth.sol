@@ -433,7 +433,8 @@ contract CardAuth is ICardAuth {
             p = Purchase(c.index, 0, 0, 0, 0, day, epoch, fundingVersion[owner], _state.era, CHARGED);
         } else {
             p = _unpack(word);
-            if (p.flags & OPEN != 0) revert PurchaseExists();
+            // An open purchase captures instead, and a reference charges at most once.
+            if (p.flags & (OPEN | CHARGED) != 0) revert PurchaseExists();
             if (p.era != _state.era) revert CardLegs.Unsettled();
             (c, owner) = _card(p);
             _spend(c, owner, address(0), 0, amount, false);
