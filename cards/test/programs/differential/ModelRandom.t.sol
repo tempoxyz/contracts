@@ -61,6 +61,7 @@ contract ModelRandomTest is CoreInvariants {
     }
 
     function _run(uint256 seed) internal {
+        vm.pauseGasMetering();
         rng = seed;
         paused = [false, false];
         Trace memory m = t;

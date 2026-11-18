@@ -41,6 +41,8 @@ contract DifferentialTest is CoreInvariants {
 
     /// @notice Every committed trace replays identically on the model.
     function test_replayTraces() public {
+        // Replaying thousands of operations exceeds any block gas limit; gas is not what this test measures.
+        vm.pauseGasMetering();
         Vm.DirEntry[] memory entries = vm.readDir(TRACES);
         uint256 replayed;
         for (uint256 i; i < entries.length; ++i) {
@@ -60,7 +62,15 @@ contract DifferentialTest is CoreInvariants {
         bytes[] memory ops = vm.parseJsonBytesArray(json, ".ops");
         string[] memory labels = vm.parseJsonStringArray(json, ".labels");
         for (uint256 n; n < ops.length; ++n) {
+            // Each step's scratch memory is freed after it; only the expected state carries over, updated in place.
+            uint256 free;
+            assembly ("memory-safe") {
+                free := mload(0x40)
+            }
             _step(t, _unpack(abi.decode(ops[n], (EncodedOp))), labels[n]);
+            assembly ("memory-safe") {
+                mstore(0x40, free)
+            }
         }
         return ops.length;
     }
@@ -127,7 +137,9 @@ contract DifferentialTest is CoreInvariants {
 
         assertEq(ok, op.ok, string.concat(at, ": outcome"));
         if (op.kind == KIND_CORE) assertEq(ret, op.ret, string.concat(at, ": revert data"));
-        _compareLogs(logs, op, at);
+        // vm.getRecordedLogs keeps logs from reverted frames; a reverted transaction on the node emits none.
+        if (ok) _compareLogs(logs, op, at);
+        else assertEq(op.topics.length, 0, string.concat(at, ": events from a reverted call"));
 
         for (uint256 i; i < op.diff.length; ++i) {
             t.expected[op.diff[i] >> 240] = op.diff[i] & ((1 << 240) - 1);
