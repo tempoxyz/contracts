@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { Conversion } from "./Conversion.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, MAX_CREDITORS, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
+import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
@@ -25,7 +26,7 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 /// @custom:reentrancy-guard _locked
 // Calls go to the fixed core, the program's own Conversion and its tokens, inside program-driven steps.
 // forge-lint: disable-start(reentrancy-no-eth, calls-loop)
-contract CashSource is ISource {
+contract CashSource is ISource, ISettlementTokenGuard {
     using FixedPointMathLib for uint256;
     using SafeCastLib for uint256;
 
@@ -35,6 +36,7 @@ contract CashSource is ISource {
 
     /// @notice What the source is: cash.
     uint8 public constant KIND = 1;
+    uint8 internal constant IN_USE_DEBT = 3;
     /// @notice The card authorization contract this source serves.
     ICardAuth public immutable PROGRAM;
     /// @notice Where every capture and charge is paid.
@@ -42,6 +44,10 @@ contract CashSource is ISource {
 
     /// @notice The rate a converted leg locked: settlement units per token unit, with 18 decimals.
     mapping(bytes32 legId => uint256) public lockedRate;
+    /// @notice Whether `owner` has owed this source core debt, and so is among `debtors`.
+    mapping(address owner => bool) public isDebtor;
+    /// @notice Everyone who has owed this source core debt, in the order they first did.
+    address[] public debtors;
 
     bool private transient _locked;
 
@@ -181,6 +187,7 @@ contract CashSource is ISource {
             // A short capture of free funds stays live: debt may follow through CAPTURE_BEYOND.
             if (isFinal && !beyond && amount < units) isFinal = false;
             if (amount != 0 || isFinal) _take(owner, token, legId, h, amount, isFinal);
+            if (amount > h.held) _noteDebtor(owner, token);
             _forward(settlement);
             return (amount, amount);
         }
@@ -202,6 +209,7 @@ contract CashSource is ISource {
             taken = _excessRoom(owner, token, standIn, units, true);
             if (taken == 0) return 0;
             CORE.charge(owner, token, legId, taken.toUint128(), address(this), standIn);
+            _noteDebtor(owner, token);
             _forward(settlement);
             return taken;
         }
@@ -234,6 +242,19 @@ contract CashSource is ISource {
                 : c.swapExactIn(settlement, token, units, 0, address(this));
         }
         if (tokens != 0) CORE.refund(owner, token, address(this), legId, tokens.toUint128());
+    }
+
+    /// @notice Core debt anyone owes this source in the settlement token keeps that token from changing (reason 3).
+    // At most every debtor this source has had, one core read each.
+    // forge-lint: disable-next-item(calls-loop)
+    function settlementTokenInUse(address) external view returns (uint8) {
+        address token = PROGRAM.settlementToken();
+        uint256 n = debtors.length;
+        for (uint256 i; i < n; ++i) {
+            (uint256 owed,) = _owed(debtors[i], token);
+            if (owed != 0) return IN_USE_DEBT;
+        }
+        return 0;
     }
 
     /// @notice Pays what this source holds of `token` (debt repaid to it) on to the settlement account.
@@ -334,6 +355,15 @@ contract CashSource is ISource {
         uint256 budget = b.limit > used ? b.limit - used : 0;
         if (room > budget) room = budget;
         if (room > want) room = want;
+    }
+
+    /// @dev Counts `owner` among the debtors once a capture or charge left them owing this source.
+    function _noteDebtor(address owner, address token) private {
+        if (isDebtor[owner]) return;
+        (uint256 owed,) = _owed(owner, token);
+        if (owed == 0) return;
+        isDebtor[owner] = true;
+        debtors.push(owner);
     }
 
     /// @dev What `owner` owes this source in `token`, and how many creditors they owe.

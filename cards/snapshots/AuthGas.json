@@ -3,13 +3,13 @@
   "authorize_cashAndSavings": "3021109",
   "authorize_singleCashLeg": "1655038",
   "authorize_standIn": "1655267",
-  "capture_beyondHoldIntoDebt": "250984",
-  "capture_cashAndSavings": "371096",
-  "capture_finalCashLeg": "147165",
-  "capture_partialCashLeg": "142189",
-  "charge_cash": "659132",
+  "capture_beyondHoldIntoDebt": "1013445",
+  "capture_cashAndSavings": "371191",
+  "capture_finalCashLeg": "147238",
+  "capture_partialCashLeg": "142262",
+  "charge_cash": "663082",
   "refund_cashAndSavings": "582235",
   "refund_cashLeg": "379697",
   "refund_charge": "379697",
-  "release_cashLeg": "127766"
+  "release_cashLeg": "127788"
 }

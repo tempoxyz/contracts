@@ -125,6 +125,9 @@ contract CashSourceTest is AuthEnv {
         // The debt is the owner's to the cash source: the settlement account receives what the owner had.
         assertEq(usd.balanceOf(settlement), 100e6);
         assertEq(_owed(alice, address(usd), address(cash)), 15e6);
+        // Debt owed in the settlement token keeps that token from changing until it is repaid.
+        assertTrue(cash.isDebtor(alice));
+        assertEq(cash.settlementTokenInUse(address(cards)), 3);
         ICardAuth.PurchaseView memory v = cards.purchaseOf(P1);
         assertEq(v.captured, 120e6);
         // What the issuer absorbed counts as refunded, so refunds stop at what the sources covered.
@@ -139,6 +142,7 @@ contract CashSourceTest is AuthEnv {
         usd.mint(alice, 15e6);
         _repay(alice, address(usd));
         assertEq(_owed(alice, address(usd), address(cash)), 0);
+        assertEq(cash.settlementTokenInUse(address(cards)), 0);
         cash.sweep(address(usd));
         assertEq(usd.balanceOf(settlement), 115e6);
     }
@@ -432,6 +436,8 @@ contract CashSourceTest is AuthEnv {
         cards.charge(CARD, P1, 60e6, merchant);
         assertEq(usd.balanceOf(settlement), 30e6);
         assertEq(_owed(alice, address(usd), address(cash)), 20e6);
+        assertEq(cash.debtors(0), alice);
+        assertEq(cash.settlementTokenInUse(address(cards)), 3);
         ICardAuth.PurchaseView memory v = cards.purchaseOf(P1);
         assertEq(v.captured, 60e6);
         assertEq(v.refunded, 10e6);
