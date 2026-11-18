@@ -24,11 +24,12 @@
     "test": "pnpm --filter @tempoxyz/contracts test --run && pnpm --filter localnet test --run && pnpm --filter e2e test --run",
     "test:contracts": "FOUNDRY_PROFILE=ci forge test && FOUNDRY_PROFILE=spend-ci forge test",
     "verify": "pnpm run '/^verify:/'",
-    "verify:contracts": "forge fmt --check && forge lint --deny warnings --out out/lint --cache-path cache/lint && forge build src script test && pnpm --filter @tempoxyz/contracts abis:check && FOUNDRY_PROFILE=deploy forge build --sizes src/earn/core/EarnVault.sol && pnpm test:contracts && pnpm gas:snapshot",
+    "verify:contracts": "forge fmt --check && forge lint --deny warnings --out out/lint --cache-path cache/lint && pnpm lint:zone-spend && forge build src script test && pnpm --filter @tempoxyz/contracts abis:check && FOUNDRY_PROFILE=deploy forge build --sizes src/earn/core/EarnVault.sol && pnpm test:contracts && pnpm gas:snapshot",
     "verify:typescript": "pnpm check && pnpm check:types && pnpm test",
     "deps": "scripts/solidity-deps.sh",
     "e2e:bridge": "pnpm --filter e2e run bridge",
-    "e2e:cards": "pnpm --filter e2e run cards"
+    "e2e:cards": "pnpm --filter e2e run cards",
+    "lint:zone-spend": "FOUNDRY_PROFILE=lint-zone-spend forge lint --deny warnings --out out/lint --cache-path cache/lint src/zone src/interfaces/zone src/spend/CardFactory.sol src/spend/CardSpend.sol src/spend/CardSpender.sol src/interfaces/spend src/spend/providers/rain src/spend/providers/bridge/BridgeProvider.sol"
   },
   "devDependencies": {
     "@types/node": "catalog:",

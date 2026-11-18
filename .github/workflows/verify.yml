@@ -39,6 +39,10 @@ jobs:
       - name: Lint
         run: forge lint --deny warnings --out out/lint --cache-path cache/lint
 
+      # The Zone router and spend sources keep their narrower lint exclusions (foundry.toml).
+      - name: Lint Zone router and spend
+        run: pnpm lint:zone-spend
+
       # One invocation for every source set: a partial build prunes the others from the cache.
       - name: Build
         run: forge build src script test

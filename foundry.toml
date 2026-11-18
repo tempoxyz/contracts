@@ -124,6 +124,19 @@ exclude_lints = [
     "unused-return",
 ]
 
+# The Zone router and spend contracts keep the narrower exclusions their own projects had. CI lints
+# them again under this profile, over the paths those projects linted (Bridge's TS handler excluded).
+[profile.lint-zone-spend.lint]
+lint_on_build = false
+exclude_lints = [
+    "encode-packed-collision",
+    "incorrect-strict-equality",
+    "reentrancy-events",
+    "require-revert-in-loop",
+    "uninitialized-local",
+    "unused-return",
+]
+
 [fmt]
 line_length = 120
 tab_width = 4
