@@ -44,6 +44,10 @@ contract StubSource is ISource {
         return limitOf[owner] > used ? limitOf[owner] - used : 0;
     }
 
+    function owed(address, bytes32) external pure returns (uint256) {
+        return 0;
+    }
+
     function held(address owner, bytes32, bytes32 legId) external view returns (uint256) {
         return legs[owner][legId].held;
     }
@@ -73,7 +77,7 @@ contract StubSource is ISource {
     function capture(address owner, bytes32, bytes32 legId, uint256 units, uint8 flags)
         external
         onlyProgram
-        returns (uint256 taken)
+        returns (uint256 taken, uint256)
     {
         Leg storage l = legs[owner][legId];
         taken = units < l.held ? units : l.held;
@@ -84,6 +88,7 @@ contract StubSource is ISource {
             l.held = 0;
         }
         if (taken != 0) SafeTransferLib.safeTransfer(TOKEN, PROGRAM.SETTLEMENT_ACCOUNT(), taken);
+        return (taken, taken);
     }
 
     function charge(address, bytes32, bytes32, uint256, bool) external view onlyProgram returns (uint256) {

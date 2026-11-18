@@ -392,9 +392,10 @@ contract CardAuth is ICardAuth {
         if (up) _checkExposure();
     }
 
-    /// @notice Captures `amount` of an open purchase from its sources' holds in order. What the holds lack comes from
-    ///         the owner's first cash leg (else first leg): free funds, then debt within the owner's terms; the issuer
-    ///         absorbs the rest. Past the owner's capture tolerance it reverts. `isFinal` releases what is left.
+    /// @notice Captures `amount` of an open purchase walking the owner's funding order: each source covers what it
+    ///         holds and can still cover, then the first cash source charges the rest, free cash and then debt within
+    ///         the owner's terms; the issuer absorbs the rest. Past the owner's capture tolerance it reverts.
+    ///         `isFinal` releases what is left.
     function capture(bytes32 ref, uint128 amount, bool isFinal) external {
         _role(ROLE_AUTHORIZE, 0);
         Purchase memory p = _open(ref);
@@ -404,9 +405,18 @@ contract CardAuth is ICardAuth {
         uint256 legs = p.flags >> 3;
         uint256 open = p.amount - p.captured;
         bool standIn = p.flags & STANDIN != 0;
-        uint256 covered = CardLegs.capture(
-            order, sourceKind, ref, owner, legs, [uint256(amount), open, p.amount], isFinal, standIn
+        uint256 covered;
+        (covered, legs) = CardLegs.capture(
+            order,
+            sourceKind,
+            ref,
+            owner,
+            legs,
+            [uint256(amount), open, p.amount, c.kinds, p.expiresAt],
+            isFinal,
+            standIn
         );
+        p.flags = (p.flags & 7) | legs << 3;
         p.captured += amount;
         if (p.captured > MAX_AMOUNT) revert InvalidAmount();
         if (p.captured > p.amount) {

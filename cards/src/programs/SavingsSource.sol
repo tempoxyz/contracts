@@ -4,7 +4,7 @@ pragma solidity ^0.8.36;
 import { Conversion } from "./Conversion.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
+import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
@@ -108,6 +108,10 @@ contract SavingsSource is ISource {
         return _value(CORE.getHold(owner, address(this), legId).held);
     }
 
+    function owed(address, bytes32) external pure returns (uint256) {
+        return 0;
+    }
+
     function refundable(address, bytes32, bytes32 legId) external view returns (uint256) {
         Leg memory l = legs[legId];
         return l.captured - l.refunded;
@@ -127,7 +131,8 @@ contract SavingsSource is ISource {
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
         bool live = h.token != address(0);
         uint256 most = (live ? h.held : 0) + CORE.available(owner, SHARE);
-        uint256 shares = units == 0 ? 0 : _sharesFor(units);
+        // No shares to hold: skip pricing them.
+        uint256 shares = units == 0 || most == 0 ? 0 : _sharesFor(units);
         if (shares > most) {
             shares = most;
             units = _value(shares);
@@ -150,23 +155,27 @@ contract SavingsSource is ISource {
     function capture(address owner, bytes32, bytes32 legId, uint256 units, uint8 flags)
         external
         onlyProgram
-        returns (uint256 paid)
+        returns (uint256 paid, uint256)
     {
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
-        if (h.token == address(0)) return 0;
+        if (h.token == address(0)) return (0, 0);
         bool isFinal = flags & CAPTURE_FINAL != 0;
         uint256 shares = units == 0 ? 0 : _sharesFor(units);
         uint256 most = h.held;
-        if (flags & CAPTURE_BEYOND != 0) {
+        bool free = flags & CAPTURE_FREE != 0;
+        if (shares > most && (free || flags & CAPTURE_BEYOND != 0)) {
             most += _budgetRoom(owner, CORE.available(owner, SHARE));
-            if (most > h.captureLimit) most = h.captureLimit;
+            // CAPTURE_BEYOND stays within the hold's tolerance; CAPTURE_FREE grows the hold to what it takes.
+            if (!free && most > h.captureLimit) most = h.captureLimit;
         }
         if (shares > most) shares = most;
-        if (shares == 0 && !isFinal) return 0;
+        if (shares == 0 && !isFinal) return (0, 0);
+        if (shares > h.captureLimit) CORE.adjust(owner, address(this), legId, shares.toUint128());
         CORE.capture(owner, address(this), legId, shares.toUint128(), isFinal);
-        if (shares == 0) return 0;
+        if (shares == 0) return (0, 0);
         paid = _redeem(owner, legId, shares, units);
         legs[legId].captured += paid.toUint120();
+        return (paid, paid);
     }
 
     function charge(address, bytes32, bytes32, uint256, bool) external view onlyProgramView returns (uint256) {

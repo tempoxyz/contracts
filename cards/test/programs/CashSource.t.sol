@@ -220,8 +220,9 @@ contract CashSourceTest is AuthEnv {
         assertEq(_hold(alice, P1, CASH_LEG).held, 1e6);
         uint256 before = usd.balanceOf(settlement);
         _capture(P1, 150e6, true);
-        // The 50 past the purchase's holds lands on the cash leg as debt, within the purchase's tolerance.
-        assertEq(_owed(alice, address(usd), address(cash)), 50e6);
+        // The 50 past the purchase's holds (less the dust of free shares) lands on the cash leg as debt, within the
+        // purchase's tolerance.
+        assertApproxEqAbs(_owed(alice, address(usd), address(cash)), 50e6, 2);
         assertEq(cards.purchaseOf(P1).refunded, 0, "nothing absorbed");
         assertApproxEqAbs(usd.balanceOf(settlement) - before, 100e6, 2);
         _assertCoreBalanced();
@@ -243,17 +244,20 @@ contract CashSourceTest is AuthEnv {
         cards.capture(P2, 1e6, true);
     }
 
-    function test_capture_overage_doesNotReachSavingsDepositedAfterTheHold() public {
-        // Captures do not re-plan: savings deposited after a cash-only hold stay untouched, the overage the issuer's.
+    function test_capture_overage_takesSavingsDepositedAfterTheHold() public {
+        // The capture walks the order: savings deposited after a cash-only hold cover the overage before any debt.
         usd.mint(alice, 50e6);
         _tolerance(10_000);
+        _setDebtCap(alice, address(cash), address(usd), 100e6);
         _authorize(P1, 50e6);
-        uint256 shares = _savings(alice, 100e6);
+        _savings(alice, 100e6);
         _capture(P1, 80e6, true);
-        assertEq(usd.balanceOf(settlement), 50e6);
-        assertEq(earnShare.balanceOf(alice), shares);
+        assertApproxEqAbs(usd.balanceOf(settlement), 80e6, 2);
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 70e6, 2);
         assertEq(_owed(alice, address(usd), address(cash)), 0);
-        assertEq(cards.purchaseOf(P1).refunded, 30e6);
+        assertEq(cards.purchaseOf(P1).refunded, 0);
+        assertEq(core.reserved(alice, address(earnShare)), 0);
+        _assertCoreBalanced();
     }
 
     // Refunds.
@@ -264,13 +268,13 @@ contract CashSourceTest is AuthEnv {
         _tolerance(10_000);
         _setDebtCap(alice, address(cash), address(usd), 100e6);
         _authorize(P1, 150e6);
-        // 100 cash, savings worth 50, then 80 of debt through the cash leg.
+        // 100 cash, savings worth 100 (50 held, 50 free), then 30 of debt through the cash leg.
         _capture(P1, 230e6, true);
-        assertApproxEqAbs(_owed(alice, address(usd), address(cash)), 80e6, 2);
+        assertApproxEqAbs(_owed(alice, address(usd), address(cash)), 30e6, 2);
         uint256 debt = _owed(alice, address(usd), address(cash));
         uint256 sharesBefore = earnShare.balanceOf(alice);
         uint256 restored = savings.refundable(alice, bytes32(0), cards.legId(P1, 1));
-        assertApproxEqAbs(restored, 50e6, 2);
+        assertApproxEqAbs(restored, 100e6, 2);
 
         _fundRefunds(100e6 + restored);
         vm.prank(issuer);
@@ -336,13 +340,14 @@ contract CashSourceTest is AuthEnv {
         assertEq(_legs(P1), 1 << SAVINGS_LEG);
         // The venue loses half its assets: all of Alice's shares now redeem for about 50.5.
         _impair(usd.balanceOf(address(venue)) / 2);
-        uint256 worth = earnVault.previewRedeem(_hold(alice, P1, SAVINGS_LEG).held);
+        uint256 worth = earnVault.previewRedeem(_hold(alice, P1, SAVINGS_LEG).held + earnShare.balanceOf(alice));
         _capture(P1, 100e6, true);
-        // A savings-only purchase has no cash leg to carry debt: the issuer absorbs what the shares lack.
-        assertEq(usd.balanceOf(settlement), worth);
-        assertEq(cards.purchaseOf(P1).refunded, 100e6 - worth);
+        // A savings-only purchase has no cash leg to carry debt: the held and free shares pay what they are worth and
+        // the issuer absorbs what they lack.
+        assertApproxEqAbs(usd.balanceOf(settlement), worth, 2);
+        assertEq(cards.purchaseOf(P1).refunded, 100e6 - usd.balanceOf(settlement));
         assertEq(core.reserved(alice, address(earnShare)), 0);
-        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 0.5e6, 2);
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 0, 2);
         _assertCoreBalanced();
     }
 

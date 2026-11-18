@@ -2,7 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
+import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 
@@ -220,46 +220,81 @@ library CardLegs {
         }
     }
 
-    /// @notice Captures `amount` across the legs: each leg's hold in order, then what they lack from the first
-    ///         cash leg (else the first leg), free funds and debt within the owner's terms. Past `open` plus the
-    ///         tolerance on `total` it reverts (a stand-in has none). Returns the units the sources covered.
+    /// @notice Captures `amount` walking the order: each entry the card allows takes what it holds and what its source
+    ///         can still cover for the owner, placing or growing its leg as needed, so free funds of earlier entries
+    ///         go before later legs' holds. What no entry covers is charged to the first cash entry: free cash, then
+    ///         debt within the owner's terms; the issuer absorbs the rest. Past `open` plus the tolerance on `total`
+    ///         it reverts (a stand-in has none and captures from its one cash leg). `amounts` is amount, open,
+    ///         total, the card's kinds and the expiry of legs it places. Returns the units covered and the legs.
     function capture(
         Funding[] storage order,
         mapping(address => uint8) storage kindOf,
         bytes32 ref,
         address owner,
         uint256 legs,
-        uint256[3] memory amounts,
+        uint256[5] memory amounts,
         bool isFinal,
         bool standIn
-    ) external returns (uint256 covered) {
-        (uint256 amount, uint256 open, uint256 total) = (amounts[0], amounts[1], amounts[2]);
-        // The leg that takes what the holds lack: the first cash leg, else the first leg.
-        uint256 last = _lowBit(legs);
-        for (uint256 i = last; i < order.length; ++i) {
-            if (legs >> i & 1 != 0 && kindOf[address(order[i].source)] == CASH) {
-                last = i;
+    ) external returns (uint256 covered, uint256) {
+        uint256 amount = amounts[0];
+        if (amount > amounts[1] || standIn) {
+            // The leg whose tolerance bounds the purchase: the first cash leg, else the first leg.
+            uint256 lead = _lowBit(legs);
+            for (uint256 i = lead; i < order.length; ++i) {
+                if (legs >> i & 1 != 0 && kindOf[address(order[i].source)] == CASH) {
+                    lead = i;
+                    break;
+                }
+            }
+            Funding memory f = order[lead];
+            if (standIn) {
+                if (amount > amounts[1]) revert CaptureLimitExceeded();
+                uint8 flags = CAPTURE_BEYOND | (isFinal ? CAPTURE_FINAL : 0);
+                (covered,) = f.source.capture(owner, f.position, legId(ref, lead), amount, flags);
+                return (covered, legs);
+            }
+            uint256 tolerance = f.source.toleranceBps(owner, f.position);
+            if (amount > amounts[1] + amounts[2] * tolerance / BPS) revert CaptureLimitExceeded();
+        }
+        // The last leg the purchase drew on captures as final, as does any leg placed past it; a leg that covers less
+        // than it is asked stays live for the debt below and is released after it.
+        uint256 top = _highBit(legs);
+        uint256 finals;
+        uint256 rest = amount;
+        for (uint256 i; i < order.length && rest != 0; ++i) {
+            Funding memory g = order[i];
+            bytes32 id = legId(ref, i);
+            if (legs >> i & 1 == 0) {
+                if (kindOf[address(g.source)] & amounts[3] == 0) continue;
+                if (g.source.hold(owner, g.position, id, rest, uint64(amounts[4]), false) == 0) continue;
+                legs |= 1 << i;
+            }
+            bool last = isFinal && i >= top;
+            (uint256 paid, uint256 took) =
+                g.source.capture(owner, g.position, id, rest, CAPTURE_FREE | (last ? CAPTURE_FINAL : 0));
+            (covered, rest) = (covered + paid, rest - took);
+            if (last && rest == 0) finals |= 1 << i;
+        }
+        if (rest != 0 && amounts[3] & CASH != 0) {
+            // What no source covered is debt on the first cash entry: through its live leg, else a charge.
+            for (uint256 i; i < order.length; ++i) {
+                Funding memory g = order[i];
+                if (kindOf[address(g.source)] != CASH) continue;
+                bytes32 id = legId(ref, i);
+                if (legs >> i & 1 != 0) {
+                    (uint256 paid,) =
+                        g.source.capture(owner, g.position, id, rest, CAPTURE_BEYOND | (isFinal ? CAPTURE_FINAL : 0));
+                    if (isFinal) finals |= 1 << i;
+                    covered += paid;
+                } else {
+                    uint256 t = g.source.charge(owner, g.position, id, rest, false);
+                    if (t != 0) (covered, legs, finals) = (covered + t, legs | 1 << i, finals | 1 << i);
+                }
                 break;
             }
         }
-        Funding memory f = order[last];
-        if (amount > open) {
-            uint256 tolerance = standIn ? 0 : f.source.toleranceBps(owner, f.position);
-            if (amount > open + total * tolerance / BPS) revert CaptureLimitExceeded();
-        }
-        if (legs == 1 << last) {
-            uint8 flags = CAPTURE_BEYOND | (isFinal ? CAPTURE_FINAL : 0);
-            return f.source.capture(owner, f.position, legId(ref, last), amount, flags);
-        }
-        uint256 rest = amount;
-        for (uint256 i; i < order.length && rest != 0; ++i) {
-            if (legs >> i & 1 == 0) continue;
-            Funding memory g = order[i];
-            rest -= g.source.capture(owner, g.position, legId(ref, i), rest, 0);
-        }
-        if (rest != 0) rest -= f.source.capture(owner, f.position, legId(ref, last), rest, CAPTURE_BEYOND);
-        if (isFinal) release(order, ref, owner, legs);
-        covered = amount - rest;
+        if (isFinal && legs & ~finals != 0) release(order, ref, owner, legs & ~finals);
+        return (covered, legs);
     }
 
     /// @notice Charges `amount` with no hold across the order's cash entries, adding the ones that paid to the legs.
@@ -289,10 +324,11 @@ library CardLegs {
         }
     }
 
-    /// @notice Refunds `units` of `token`, pulled from the caller, walking the legs in reverse order, each taking back
-    ///         at most what it still nets: a bounded leg (savings, credit) its own refundable, the first cash leg what
-    ///         the purchase still nets (`remaining`) past the bounded legs. The first cash leg (else order entry)
-    ///         takes whatever is left.
+    /// @notice Refunds `units` of `token`, pulled from the caller. What the owner owes the first cash leg's source
+    ///         (else the first cash entry's) as debt is repaid first through that leg. The rest walks the legs in
+    ///         reverse order, each taking back at most what it still nets: a bounded leg (savings, credit) its own
+    ///         refundable, the first cash leg what the purchase still nets (`remaining`) past the bounded legs. The
+    ///         first cash leg takes whatever is left.
     function refund(
         Funding[] storage order,
         bytes32 ref,
@@ -313,22 +349,24 @@ library CardLegs {
             if (r != NONE) bounded += r;
             else if (taker == NONE) taker = i;
         }
-        // Cash bounds nothing itself: the first cash leg nets what the bounded legs don't, later cash legs nothing.
-        if (taker != NONE) room[taker] = remaining > bounded ? remaining - bounded : 0;
-        for (uint256 i = n; i != 0 && units != 0;) {
-            --i;
-            if (room[i] == NONE) continue;
-            uint256 take = _min(units, room[i]);
-            if (take == 0) continue;
-            _refundLeg(order[i], token, owner, legId(ref, i), take);
-            units -= take;
-        }
-        if (units == 0) return;
         for (uint256 i; i < n && taker == NONE; ++i) {
             if (order[i].source.refundable(owner, order[i].position, legId(ref, i)) == NONE) taker = i;
         }
-        if (taker == NONE) revert InvalidAmount();
-        _refundLeg(order[taker], token, owner, legId(ref, taker), units);
+        if (taker == NONE) {
+            if (_refundBounded(order, ref, owner, legs, room, units, token) != 0) revert InvalidAmount();
+            return;
+        }
+        Funding memory f = order[taker];
+        bytes32 id = legId(ref, taker);
+        uint256 first = _min(units, f.source.owed(owner, f.position));
+        if (first != 0) {
+            _refundLeg(f, token, owner, id, first);
+            (units, remaining) = (units - first, remaining - _min(first, remaining));
+        }
+        // Cash bounds nothing itself: the first cash leg nets what the bounded legs don't, later cash legs nothing.
+        if (legs >> taker & 1 != 0) room[taker] = remaining > bounded ? remaining - bounded : 0;
+        units = _refundBounded(order, ref, owner, legs, room, units, token);
+        if (units != 0) _refundLeg(f, token, owner, id, units);
     }
 
     /// @notice The ABI encoding of the legs' sources, positions and leg ids.
@@ -394,6 +432,27 @@ library CardLegs {
         }
     }
 
+    /// @dev Refunds up to `units` to the legs in reverse order, each up to its room; returns what is left.
+    function _refundBounded(
+        Funding[] storage order,
+        bytes32 ref,
+        address owner,
+        uint256 legs,
+        uint256[MAX_LEGS] memory room,
+        uint256 units,
+        address token
+    ) private returns (uint256) {
+        for (uint256 i = order.length; i != 0 && units != 0;) {
+            --i;
+            if (legs >> i & 1 == 0 || room[i] == NONE) continue;
+            uint256 take = _min(units, room[i]);
+            if (take == 0) continue;
+            _refundLeg(order[i], token, owner, legId(ref, i), take);
+            units -= take;
+        }
+        return units;
+    }
+
     function _refundLeg(Funding memory f, address token, address owner, bytes32 id, uint256 units) private {
         SafeTransferLib.safeTransferFrom(token, msg.sender, address(f.source), units);
         f.source.refund(owner, f.position, id, units);
@@ -402,6 +461,12 @@ library CardLegs {
     function _lowBit(uint256 x) private pure returns (uint256 i) {
         if (x == 0) return 0;
         while (x >> i & 1 == 0) {
+            ++i;
+        }
+    }
+
+    function _highBit(uint256 x) private pure returns (uint256 i) {
+        while (x >> (i + 1) != 0) {
             ++i;
         }
     }

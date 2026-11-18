@@ -48,7 +48,7 @@ contract SavingsSourceTest is AuthEnv {
         uint256 leg = _leg(ID).held;
         uint256 value = earnVault.previewRedeem(leg);
         vm.prank(address(cards));
-        uint256 paid = savings.capture(alice, bytes32(0), ID, 300e6, CAPTURE_FINAL);
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 300e6, CAPTURE_FINAL);
         assertEq(paid, 300e6);
         // Rounding the shares up may redeem a little more than the capture; it goes with the capture.
         assertEq(usd.balanceOf(settlement), value);
@@ -104,7 +104,8 @@ contract SavingsSourceTest is AuthEnv {
         uint256 leg = _leg(ID).held;
         uint256 first = earnVault.previewWithdraw(50e6);
         vm.prank(address(cards));
-        assertEq(savings.capture(alice, bytes32(0), ID, 50e6, 0), 50e6);
+        (uint256 got,) = savings.capture(alice, bytes32(0), ID, 50e6, 0);
+        assertEq(got, 50e6);
         assertEq(_leg(ID).held, leg - first);
         uint256 second = earnVault.previewWithdraw(50e6);
         vm.prank(address(cards));
@@ -141,7 +142,8 @@ contract SavingsSourceTest is AuthEnv {
             })
         );
         vm.prank(address(cards));
-        assertEq(savings.capture(alice, bytes32(0), ID, 1e6, CAPTURE_FINAL), 0);
+        (uint256 got,) = savings.capture(alice, bytes32(0), ID, 1e6, CAPTURE_FINAL);
+        assertEq(got, 0);
         assertEq(core.getHold(alice, address(this), ID).held, 100e6);
         assertEq(usd.balanceOf(settlement), 0);
     }
@@ -152,7 +154,8 @@ contract SavingsSourceTest is AuthEnv {
         uint256 value = earnVault.previewRedeem(leg);
         // Asked for more than it holds, the source takes only its hold.
         vm.prank(address(cards));
-        assertEq(savings.capture(alice, bytes32(0), ID, 150e6, 0), value);
+        (uint256 got,) = savings.capture(alice, bytes32(0), ID, 150e6, 0);
+        assertEq(got, value);
         assertEq(earnShare.balanceOf(alice), shares - leg);
         // Past the hold it reaches free shares only within the hold's capture limit: the hold itself, with no
         // tolerance.
@@ -169,7 +172,7 @@ contract SavingsSourceTest is AuthEnv {
         uint256 before = earnShare.balanceOf(alice);
         _place(ID, 100e6);
         vm.prank(address(cards));
-        uint256 paid = savings.capture(alice, bytes32(0), ID, 140e6, CAPTURE_BEYOND | CAPTURE_FINAL);
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 140e6, CAPTURE_BEYOND | CAPTURE_FINAL);
         assertEq(paid, 140e6);
         assertEq(before - earnShare.balanceOf(alice), earnVault.previewWithdraw(140e6));
         _assertCoreBalanced();
@@ -185,7 +188,7 @@ contract SavingsSourceTest is AuthEnv {
             "illiquid"
         );
         vm.prank(address(cards));
-        uint256 paid = savings.capture(alice, bytes32(0), ID, 100e6, CAPTURE_FINAL);
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 100e6, CAPTURE_FINAL);
         assertEq(paid, 100e6);
         assertEq(usd.balanceOf(settlement), value);
         assertEq(savings.heldShares(), leg);
@@ -229,7 +232,7 @@ contract SavingsSourceTest is AuthEnv {
         _place(ID, 300e6);
         uint256 leg = _leg(ID).held;
         vm.prank(address(cards));
-        uint256 paid = savings.capture(alice, bytes32(0), ID, 300e6, CAPTURE_FINAL);
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 300e6, CAPTURE_FINAL);
         // The program pays the source the refund before calling it.
         usd.mint(address(savings), paid);
         vm.prank(address(cards));

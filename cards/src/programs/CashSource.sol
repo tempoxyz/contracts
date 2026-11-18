@@ -4,7 +4,7 @@ pragma solidity ^0.8.36;
 import { Conversion } from "./Conversion.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, MAX_CREDITORS, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
+import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
@@ -84,6 +84,16 @@ contract CashSource is ISource {
         return rate == 0 ? tokens : tokens.mulDiv(rate, ONE);
     }
 
+    function owed(address owner, bytes32 position) external view returns (uint256) {
+        (address token,) = _decode(position);
+        (uint256 debt,) = _owed(owner, token);
+        address settlement = PROGRAM.settlementToken();
+        if (debt == 0 || token == settlement) return debt;
+        Conversion c = _conversion();
+        if (address(c) == address(0) || !c.converts(token, settlement)) return 0;
+        return debt.mulDiv(c.rate(token, settlement), ONE);
+    }
+
     function refundable(address, bytes32, bytes32) external pure returns (uint256) {
         return type(uint256).max;
     }
@@ -153,26 +163,32 @@ contract CashSource is ISource {
     function capture(address owner, bytes32 position, bytes32 legId, uint256 units, uint8 flags)
         external
         onlyProgram
-        returns (uint256 taken)
+        returns (uint256 paid, uint256 covered)
     {
         (address token,) = _decode(position);
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
-        if (h.token == address(0)) return 0;
+        if (h.token == address(0)) return (0, 0);
         bool isFinal = flags & CAPTURE_FINAL != 0;
         bool beyond = flags & CAPTURE_BEYOND != 0;
         address settlement = PROGRAM.settlementToken();
         uint256 rate = lockedRate[legId];
         if (rate == 0) {
             uint256 amount = units < h.held ? units : h.held;
-            if (beyond && units > h.held) amount = h.held + _excessRoom(owner, token, h.standIn, units - h.held, true);
-            _take(owner, token, legId, h, amount, isFinal);
+            // Past the hold: free cash, and with CAPTURE_BEYOND debt within the owner's caps.
+            if (units > h.held && (beyond || flags & CAPTURE_FREE != 0)) {
+                amount = h.held + _excessRoom(owner, token, h.standIn, units - h.held, beyond);
+            }
+            // A short capture of free funds stays live: debt may follow through CAPTURE_BEYOND.
+            if (isFinal && !beyond && amount < units) isFinal = false;
+            if (amount != 0 || isFinal) _take(owner, token, legId, h, amount, isFinal);
             _forward(settlement);
-            return amount;
+            return (amount, amount);
         }
-        taken = _captureConverted(owner, token, settlement, legId, h, units, rate, beyond);
-        if (isFinal) {
-            _release(owner, legId);
-        }
+        // A converted leg never takes debt: past its hold it takes free tokens either way.
+        (paid, covered) = _captureConverted(
+            owner, token, settlement, legId, h, units, rate, flags & (CAPTURE_BEYOND | CAPTURE_FREE) != 0
+        );
+        if (isFinal && (beyond || covered >= units)) _release(owner, legId);
     }
 
     function charge(address owner, bytes32 position, bytes32 legId, uint256 units, bool standIn)
@@ -237,11 +253,12 @@ contract CashSource is ISource {
         uint256 units,
         uint256 rate,
         bool beyond
-    ) private returns (uint256) {
+    ) private returns (uint256 paid, uint256 covered) {
         Conversion c = _conversion();
         uint256 needed = c.quoteOut(token, settlement, units);
         // The lock holds while the market stays within the owner's tolerance: the owner pays at most the locked price.
-        if (!c.lapsed(owner, rate, c.rate(token, settlement))) {
+        bool locked = !c.lapsed(owner, rate, c.rate(token, settlement));
+        if (locked) {
             uint256 promised = units.mulDivUp(ONE, rate);
             if (needed > promised) needed = promised;
         }
@@ -251,9 +268,16 @@ contract CashSource is ISource {
             // Tokens past the hold are bounded by the hold's own tolerance: a lapsed rate never costs the owner more.
             if (tokens > h.captureLimit) tokens = h.captureLimit;
         }
-        if (tokens == 0) return 0;
+        if (tokens == 0) return (0, 0);
         CORE.capture(owner, address(this), legId, tokens.toUint128(), false);
-        return _swap(c, token, settlement, legId, units, tokens);
+        paid = _swap(c, token, settlement, legId, units, tokens);
+        covered = paid;
+        // Within the lock the owner covers what the tokens buy at the locked rate; the issuer carries the slippage.
+        if (locked) {
+            uint256 atLock = tokens.mulDiv(rate, ONE);
+            if (atLock > units) atLock = units;
+            if (atLock > covered) covered = atLock;
+        }
     }
 
     /// @dev Converts `tokens` into the settlement token for the settlement account: exactly `units` when they buy it,

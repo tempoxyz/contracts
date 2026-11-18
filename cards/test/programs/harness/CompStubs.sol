@@ -163,7 +163,7 @@ contract CompCardAuth is ICardAuth {
         external
         returns (uint256 taken)
     {
-        taken = source.capture(owner, bytes32(0), legId, units, isFinal ? CAPTURE_FINAL : 0);
+        (taken,) = source.capture(owner, bytes32(0), legId, units, isFinal ? CAPTURE_FINAL : 0);
         PurchaseView storage p = _purchases[ref];
         if (p.owner == address(0)) {
             (p.owner, p.token) = (owner, settlementToken);
@@ -174,8 +174,11 @@ contract CompCardAuth is ICardAuth {
         p.captured += uint64(taken);
     }
 
-    function captureBeyond(ISource source, address owner, bytes32 legId, uint256 units) external returns (uint256) {
-        return source.capture(owner, bytes32(0), legId, units, CAPTURE_FINAL | CAPTURE_BEYOND);
+    function captureBeyond(ISource source, address owner, bytes32 legId, uint256 units)
+        external
+        returns (uint256 taken)
+    {
+        (taken,) = source.capture(owner, bytes32(0), legId, units, CAPTURE_FINAL | CAPTURE_BEYOND);
     }
 
     function release(ISource source, address owner, bytes32 legId) external {

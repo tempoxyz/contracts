@@ -8,7 +8,7 @@ import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "./interfaces/ISource.sol";
+import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 
 /// @title CreditSource
 /// @notice Lenders' credit lines as one funding source of a card authorization contract (its PROGRAM). Each leg is a
@@ -302,8 +302,14 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @inheritdoc ISource
     /// @dev A line grants no capture tolerance: a capture past what was approved draws more credit only through
-    ///      CAPTURE_BEYOND, within the line's room.
+    ///      CAPTURE_FREE or CAPTURE_BEYOND, within the line's room.
     function toleranceBps(address, bytes32) external pure returns (uint16) {
+        return 0;
+    }
+
+    /// @inheritdoc ISource
+    /// @dev What a borrower owes a line is the line's, never core debt to this source.
+    function owed(address, bytes32) external pure returns (uint256) {
         return 0;
     }
 
@@ -373,7 +379,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         external
         nonReentrant
         onlyProgram
-        returns (uint256)
+        returns (uint256, uint256)
     {
         bytes32 id = _holdId(owner, legId);
         Leg storage g = _legs[id];
@@ -382,14 +388,16 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         Line storage l = _lines[lineId];
         IReservationCore.HoldRecord memory r = CORE.getHold(l.lender, address(this), id);
         // A settled leg covers nothing more.
-        if (r.token == address(0)) return 0;
+        if (r.token == address(0)) return (0, 0);
         uint256 h = r.held;
-        if (units > h && flags & CAPTURE_BEYOND == 0) units = h;
+        if (units > h && flags & (CAPTURE_BEYOND | CAPTURE_FREE) == 0) units = h;
         // forge-lint: disable-start(reentrancy-no-eth)
         if (units > h) {
-            // Past what the leg holds: grow it within the line's credit first, or the capture reverts.
+            // Past what the leg holds: grow it within the line's credit first. CAPTURE_FREE takes what the credit
+            // allows; CAPTURE_BEYOND reverts past it.
             _accrue(lineId, false);
             uint256 credit = availableCredit(lineId);
+            if (units - h > credit && flags & CAPTURE_FREE != 0) units = h + credit;
             if (units - h > credit || units > type(uint64).max) revert CreditExceeded(units - h, credit);
             // Bounded by the 64-bit check above.
             // forge-lint: disable-start(unsafe-typecast)
@@ -398,8 +406,10 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             // forge-lint: disable-end(unsafe-typecast)
             _commit(lineId);
             // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.adjust(l.lender, address(this), id, uint128(units));
+            if (units > h) CORE.adjust(l.lender, address(this), id, uint128(units));
         }
+        // A drained leg with no credit left covers nothing.
+        if (units == 0 && flags & CAPTURE_FINAL == 0) return (0, 0);
         uint256 gross = uint256(g.gross) + units;
         // forge-lint: disable-next-line(unsafe-typecast)
         g.gross = uint64(gross);
@@ -408,7 +418,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         // forge-lint: disable-end(reentrancy-no-eth)
         // forge-lint: disable-next-line(unsafe-typecast)
         _apply(lineId, id, uint64(gross));
-        return units;
+        return (units, units);
     }
 
     /// @inheritdoc ISource

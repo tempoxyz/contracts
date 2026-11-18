@@ -22,6 +22,10 @@ interface ISource {
     /// @notice What leg `legId` holds now, at the rate it locked; zero once it settled.
     function held(address owner, bytes32 position, bytes32 legId) external view returns (uint256 units);
 
+    /// @notice What `owner` owes this source as debt at `position`, which a refund through it repays first; zero
+    ///         for a source that never lends through debt.
+    function owed(address owner, bytes32 position) external view returns (uint256 units);
+
     /// @notice What leg `legId` can still take back in refunds: what it captured less what it was refunded. Cash,
     ///         whose first leg takes whatever a purchase refunds past its other legs, returns type(uint256).max.
     function refundable(address owner, bytes32 position, bytes32 legId) external view returns (uint256 units);
@@ -38,13 +42,16 @@ interface ISource {
         external
         returns (uint256 heldUnits);
 
-    /// @notice Captures up to `units` for leg `legId` and pays the settlement account. Without CAPTURE_BEYOND it
-    ///         takes only what the leg holds; with it, also the owner's free funds (cash: then debt within the
-    ///         owner's caps), never past what the core lets the hold capture. CAPTURE_FINAL releases what is left. Returns the units it covered
-    ///         (zero for a settled leg).
+    /// @notice Captures up to `units` for leg `legId` and pays the settlement account. Without a flag it takes only
+    ///         what the leg holds. CAPTURE_FREE also takes what the source can still cover for the owner (unheld
+    ///         cash or shares, credit room), never debt; CAPTURE_BEYOND does too and, for cash, then debt within the
+    ///         owner's caps. CAPTURE_FINAL releases what is left, except that a CAPTURE_FREE capture covering less
+    ///         than `units` keeps the leg live for a later CAPTURE_BEYOND. Returns the units paid to the settlement
+    ///         account and the units of the purchase it covered: more than paid only for a converted leg within its
+    ///         locked rate, whose slippage the issuer carries (both zero for a settled leg).
     function capture(address owner, bytes32 position, bytes32 legId, uint256 units, uint8 flags)
         external
-        returns (uint256 taken);
+        returns (uint256 paid, uint256 covered);
 
     /// @notice Charges up to `units` with no hold: the owner's free funds, then debt to this source within the
     ///         owner's debt cap (with `standIn`, the offline cap where higher). Returns the units it covered; zero
@@ -65,3 +72,4 @@ interface ISource {
 /// @dev ISource.capture flags.
 uint8 constant CAPTURE_FINAL = 1;
 uint8 constant CAPTURE_BEYOND = 2;
+uint8 constant CAPTURE_FREE = 4;
