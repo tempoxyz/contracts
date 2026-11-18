@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { AccountLifecycle } from "./AccountLifecycle.sol";
+import { IdentityRules } from "./IdentityRules.sol";
+
 /// @title CardLimits
 /// @notice Spend accounting for card programs: an owner's terms and usage, a card's windows, and merchant mandates.
 /// @dev Linked as an external library so a program keeps its runtime code small. Windows are calendar days and months
@@ -55,6 +58,268 @@ library CardLimits {
     error MerchantRevoked();
     error MerchantLimitExceeded();
 
+    /// @notice A card's state.
+    enum Status {
+        None,
+        Active,
+        Frozen,
+        Closed
+    }
+
+    /// @notice A card's own limits, in base units. The program's owner terms apply on top.
+    struct Limits {
+        uint80 perPurchase;
+        uint80 daily;
+        uint80 monthly;
+    }
+
+    /// @notice A card: its owner, state, the source kinds it may draw on, its limits and the ceiling the owner lets
+    ///         the issuer raise them to, and its windows.
+    struct Card {
+        address owner;
+        uint40 expiry;
+        Status status;
+        /// @dev Source kinds the card may draw on: cash 1, savings 2, credit 4.
+        uint8 kinds;
+        /// @dev The card's number in the program, which purchases record instead of its id.
+        uint32 index;
+        Limits limits;
+        Limits ceiling;
+        Window window;
+    }
+
+    event CardIssued(bytes32 indexed card, address indexed owner, uint40 expiry, Limits limits, uint8 kinds);
+    event CardReplaced(bytes32 indexed oldCard, bytes32 indexed newCard, uint40 expiry);
+    event CardStatusSet(bytes32 indexed card, Status status);
+    event LimitsSet(bytes32 indexed card, Limits limits, Limits ceiling);
+
+    event Granted(address indexed owner, Terms terms, uint32 epoch);
+    event MandateSet(address indexed owner, address indexed merchant, bool revoked, uint96 monthlyLimit);
+    event CardCapSet(bytes32 indexed card, uint64 cap);
+    event CardExpirySet(bytes32 indexed card, uint40 expiry);
+    event UsageCarried(address indexed owner);
+
+    error AccountInactive();
+    error CardExists();
+    error CardExpired();
+    error CardsClosed();
+    error NoTerms();
+    error CardNotActive();
+    error InvalidCard();
+    error LimitAboveCeiling();
+
+    /// @notice Issues card `card` to `owner` with number `index`.
+    function issue(
+        Card storage c,
+        bytes32 card,
+        address owner,
+        uint40 expiry,
+        Limits calldata given,
+        uint8 kinds,
+        uint32 index,
+        uint256 scale
+    ) external {
+        Limits memory limits = _baseLimits(given, scale);
+        if (c.status != Status.None) revert CardExists();
+        // Expiries are timestamps by design; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (owner == address(0) || expiry <= block.timestamp || kinds == 0 || kinds > 7) revert InvalidCard();
+        (c.owner, c.expiry, c.status, c.kinds, c.index) = (owner, expiry, Status.Active, kinds, index);
+        (c.limits, c.ceiling) = (limits, limits);
+        emit CardIssued(card, owner, expiry, limits, kinds);
+    }
+
+    /// @notice Replaces card `old` with `c` (number `index`): the new card takes its owner, state, limits and
+    ///         windows, and the old one closes.
+    function replace(Card storage old, Card storage c, bytes32 oldCard, bytes32 newCard, uint40 expiry, uint32 index)
+        external
+    {
+        if (old.status != Status.Active && old.status != Status.Frozen) revert CardNotActive();
+        if (c.status != Status.None) revert CardExists();
+        // forge-lint: disable-next-line(block-timestamp)
+        if (expiry <= block.timestamp) revert InvalidCard();
+        (c.owner, c.status, c.kinds, c.index, c.expiry) = (old.owner, old.status, old.kinds, index, expiry);
+        (c.limits, c.ceiling, c.window) = (old.limits, old.ceiling, old.window);
+        old.status = Status.Closed;
+        emit CardReplaced(oldCard, newCard, expiry);
+        emit CardStatusSet(oldCard, Status.Closed);
+    }
+
+    /// @notice Sets a card's limits: 0 the issuer raises them within the ceiling, 1 the owner lowers them (and the
+    ///         ceiling with them), 2 the owner sets the ceiling (lowering limits above it).
+    function setLimits(Card storage c, bytes32 card, Limits calldata limitsGiven, uint8 how, uint256 scale) external {
+        Limits memory given = _baseLimits(limitsGiven, scale);
+        if (c.status == Status.None || (how == 0 && c.status == Status.Closed)) revert CardNotActive();
+        Limits memory limits = c.limits;
+        Limits memory ceiling = c.ceiling;
+        if (how == 2) {
+            ceiling = given;
+            limits = _lower(limits, given);
+        } else {
+            Limits memory bound = how == 0 ? ceiling : limits;
+            if (given.perPurchase > bound.perPurchase || given.daily > bound.daily || given.monthly > bound.monthly) {
+                revert LimitAboveCeiling();
+            }
+            limits = given;
+            if (how == 1) ceiling = _lower(ceiling, given);
+        }
+        (c.limits, c.ceiling) = (limits, ceiling);
+        emit LimitsSet(card, limits, ceiling);
+    }
+
+    /// @notice Carries an owner's usage, some of their cards' windows and merchant mandates counted on another
+    ///         instance of the program into this one, as carryUsage, carryWindow and carryMandate do.
+    function carry(
+        mapping(bytes32 => Card) storage cards,
+        mapping(address => Mandate) storage ownerMandates,
+        Usage storage u,
+        address owner,
+        bytes calldata data
+    ) external {
+        (
+            Usage memory usage,
+            bytes32[] memory cardIds,
+            Window[] memory windows,
+            address[] memory merchants,
+            Mandate[] memory spent
+        ) = abi.decode(data, (Usage, bytes32[], Window[], address[], Mandate[]));
+        if (cardIds.length != windows.length || merchants.length != spent.length) revert InvalidCard();
+        _carryUsage(u, usage);
+        for (uint256 i; i < cardIds.length; ++i) {
+            Card storage c = cards[cardIds[i]];
+            if (c.owner != owner) revert InvalidCard();
+            _carryWindow(c.window, windows[i]);
+        }
+        for (uint256 i; i < merchants.length; ++i) {
+            _carryMandate(ownerMandates[merchants[i]], spent[i]);
+        }
+        emit UsageCarried(owner);
+    }
+
+    /// @notice Grants `given` terms, in today's units worth `scale` per base unit (18 decimals), starting usage afresh.
+    ///         Returns whether it is the owner's first grant.
+    function grant(Grant storage g, Usage storage u, Terms calldata given, uint256 scale) external returns (bool) {
+        Terms memory t = given;
+        (t.limit, t.perPurchase, t.daily, t.monthly) =
+            (uint64(_toBase(t.limit, scale)), uint64(_toBase(t.perPurchase, scale)), uint64(_toBase(t.daily, scale)), uint64(_toBase(t.monthly, scale)));
+        (g.terms, g.active) = (t, true);
+        uint32 epoch = ++g.epoch;
+        (u.committed, u.day, u.month, u.daySpent, u.monthSpent) = (0, 0, 0, 0, 0);
+        emit Granted(msg.sender, t, epoch);
+        return epoch == 1;
+    }
+
+    /// @notice The ABI encoding of card `c` with the status its account's lifecycle gives it: closed once the account
+    ///         closed, frozen while the account is an estate.
+    function cardView(Card storage c, address lifecycle) external view returns (bytes memory) {
+        Card memory card = c;
+        if (lifecycle != address(0) && card.status != Status.None && card.status != Status.Closed) {
+            AccountLifecycle.Status account = AccountLifecycle(lifecycle).statusOf(card.owner);
+            if (account == AccountLifecycle.Status.Closed) card.status = Status.Closed;
+            else if (account == AccountLifecycle.Status.Estate) card.status = Status.Frozen;
+        }
+        return abi.encode(card);
+    }
+
+    function _toBase(uint256 amount, uint256 scale) private pure returns (uint256 base) {
+        base = scale == 1e18 ? amount : amount * 1e18 / scale;
+        if (base > type(uint64).max) revert InvalidCard();
+    }
+
+    /// @notice Counts `amount` toward the owner's usage and card `c`'s windows (checking every limit on `total` when
+    ///         `enforce`), and toward merchant `merchant`'s mandate `m` unless it is zero. Returns the owner's local
+    ///         day and the grant's epoch (low 8 bits).
+    function use(
+        Card storage c,
+        Grant storage g,
+        Usage storage u,
+        Mandate storage m,
+        address merchant,
+        uint256 total,
+        uint256 amount,
+        bool enforce
+    ) external returns (uint32 day, uint8 epoch) {
+        Limits memory l = c.limits;
+        (day,) = _spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], total, amount, enforce);
+        if (merchant != address(0)) _useMandate(m, g.terms.utcOffset, amount);
+        epoch = uint8(g.epoch);
+    }
+
+    /// @notice giveBack for spend counted on local day `day` (its month follows from it).
+    function giveBackOn(Grant storage g, Usage storage u, Window storage w, uint32 epoch, uint32 day, uint256 amount)
+        external
+    {
+        _giveBack(g, u, w, epoch, day, _month(day), amount);
+    }
+
+    /// @notice Sets a card's spending cap (`what` 0, in units worth `scale` per base unit), expiry (1) or status (2).
+    function set(Card storage c, bytes32 card, uint8 what, uint256 value, uint256 scale) external {
+        Status was = c.status;
+        if (was == Status.None) revert InvalidCard();
+        if (what == 0) {
+            c.window.cap = uint64(_toBase(value, scale));
+            emit CardCapSet(card, c.window.cap);
+        } else if (what == 1) {
+            c.expiry = uint40(value);
+            emit CardExpirySet(card, uint40(value));
+        } else {
+            if (was == Status.Closed || value == 0 || value > uint8(Status.Closed)) revert CardNotActive();
+            c.status = Status(value);
+            emit CardStatusSet(card, Status(value));
+        }
+    }
+
+    /// @notice The owner freezes (`how` 1, from active), unfreezes (2, from frozen) or closes (3) a card.
+    function setOwnStatus(Card storage c, bytes32 card, uint8 how) external {
+        Status was = c.status;
+        bool ok = how == 1 ? was == Status.Active : how == 2 ? was == Status.Frozen : how == 3 && was != Status.Closed;
+        if (!ok) revert CardNotActive();
+        Status to = how == 1 ? Status.Frozen : how == 2 ? Status.Active : Status.Closed;
+        c.status = to;
+        emit CardStatusSet(card, to);
+    }
+
+    /// @notice Checks card `c` can start a purchase under grant `g`, reporting activity to the account lifecycle
+    ///         and checking the identity rules when set.
+    function admit(Card storage c, Grant storage g, address lifecycle, address identityRules) external {
+        if (c.status != Status.Active) revert CardNotActive();
+        // Expiries are timestamps by design; a few seconds of validator skew does not change them.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp >= c.expiry) revert CardExpired();
+        if (!g.active) revert NoTerms();
+        address owner = c.owner;
+        if (lifecycle != address(0)) {
+            AccountLifecycle.Status account = AccountLifecycle(lifecycle).noteActivity(owner);
+            if (account == AccountLifecycle.Status.Dormant) revert AccountInactive();
+            if (account == AccountLifecycle.Status.Closed || account == AccountLifecycle.Status.Estate) {
+                revert CardsClosed();
+            }
+        }
+        if (identityRules != address(0)) IdentityRules(identityRules).admit(owner);
+    }
+
+    /// @notice Sets the caller's mandate `m` for `merchant`: revoked, or a monthly limit in units worth `scale`
+    ///         per base unit.
+    function setMandate(Mandate storage m, address merchant, bool revoked, uint256 monthlyLimit, uint256 scale)
+        external
+    {
+        uint96 limit = uint96(_toBase(monthlyLimit, scale));
+        (m.revoked, m.monthlyLimit) = (revoked, limit);
+        emit MandateSet(msg.sender, merchant, revoked, limit);
+    }
+
+    function _baseLimits(Limits calldata l, uint256 scale) private pure returns (Limits memory) {
+        return Limits(uint80(_toBase(l.perPurchase, scale)), uint80(_toBase(l.daily, scale)), uint80(_toBase(l.monthly, scale)));
+    }
+
+    function _lower(Limits memory a, Limits memory b) private pure returns (Limits memory) {
+        return Limits(
+            a.perPurchase < b.perPurchase ? a.perPurchase : b.perPurchase,
+            a.daily < b.daily ? a.daily : b.daily,
+            a.monthly < b.monthly ? a.monthly : b.monthly
+        );
+    }
+
     /// @notice Counts `amount` toward the owner's usage and the card's window today, checking every limit (the
     ///         per-purchase ones on the purchase's `total`) when `enforce`. Returns today's day and month numbers.
     function spend(
@@ -66,6 +331,18 @@ library CardLimits {
         uint256 amount,
         bool enforce
     ) external returns (uint32 day, uint32 month) {
+        return _spend(g, u, w, cardLimits, total, amount, enforce);
+    }
+
+    function _spend(
+        Grant storage g,
+        Usage storage u,
+        Window storage w,
+        uint256[3] memory cardLimits,
+        uint256 total,
+        uint256 amount,
+        bool enforce
+    ) private returns (uint32 day, uint32 month) {
         Terms memory t = g.terms;
         if (enforce && (total > cardLimits[0] || (t.perPurchase != 0 && total > t.perPurchase))) {
             revert LimitExceeded(0);
@@ -103,6 +380,18 @@ library CardLimits {
         uint32 month,
         uint256 amount
     ) external {
+        _giveBack(g, u, w, epoch, day, month, amount);
+    }
+
+    function _giveBack(
+        Grant storage g,
+        Usage storage u,
+        Window storage w,
+        uint32 epoch,
+        uint32 day,
+        uint32 month,
+        uint256 amount
+    ) private {
         // Each result is at most its first operand, which fits the field it came from.
         // forge-lint: disable-start(unsafe-typecast)
         if (g.epoch == epoch) {
@@ -118,6 +407,10 @@ library CardLimits {
 
     /// @notice Checks a merchant mandate and counts `amount` toward its monthly limit.
     function useMandate(Mandate storage m, int32 utcOffset, uint256 amount) external {
+        _useMandate(m, utcOffset, amount);
+    }
+
+    function _useMandate(Mandate storage m, int32 utcOffset, uint256 amount) private {
         if (m.revoked) revert MerchantRevoked();
         uint96 limit = m.monthlyLimit;
         if (limit == 0) return;
@@ -134,6 +427,10 @@ library CardLimits {
     ///         a later window replaces an earlier one, the same window keeps the larger count, and totals keep the
     ///         larger. Carrying the same usage twice changes nothing.
     function carryUsage(Usage storage u, Usage calldata from) external {
+        _carryUsage(u, from);
+    }
+
+    function _carryUsage(Usage storage u, Usage memory from) private {
         u.committed = _more64(u.committed, from.committed);
         if (from.day > u.day) (u.day, u.daySpent) = (from.day, from.daySpent);
         else if (from.day == u.day) u.daySpent = _more64(u.daySpent, from.daySpent);
@@ -143,6 +440,10 @@ library CardLimits {
 
     /// @notice Carries a card's window counted elsewhere, as carryUsage does. The card's cap stays its own.
     function carryWindow(Window storage w, Window calldata from) external {
+        _carryWindow(w, from);
+    }
+
+    function _carryWindow(Window storage w, Window memory from) private {
         w.committed = _more64(w.committed, from.committed);
         if (from.day > w.day) (w.day, w.daySpent) = (from.day, from.daySpent);
         else if (from.day == w.day && from.daySpent > w.daySpent) w.daySpent = from.daySpent;
@@ -152,6 +453,10 @@ library CardLimits {
 
     /// @notice Carries a merchant mandate's monthly spend counted elsewhere. Its limit and revocation stay its own.
     function carryMandate(Mandate storage m, Mandate calldata from) external {
+        _carryMandate(m, from);
+    }
+
+    function _carryMandate(Mandate storage m, Mandate memory from) private {
         if (from.month > m.month) (m.month, m.spent) = (from.month, from.spent);
         else if (from.month == m.month && from.spent > m.spent) m.spent = from.spent;
     }

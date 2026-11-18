@@ -26,6 +26,10 @@ interface ISource {
     ///         its other legs, returns type(uint256).max.
     function refundable(address owner, bytes32 position, bytes32 legId) external view returns (uint256 units);
 
+    /// @notice The capture tolerance the owner gave this source at `position`, in basis points: how far past a
+    ///         purchase's authorized amount a capture may go.
+    function toleranceBps(address owner, bytes32 position) external view returns (uint16);
+
     /// @notice Holds up to `units` for leg `legId`: places the leg, or moves a live leg's hold to what it can of
     ///         `units` (releasing it at zero). A stand-in (cash only) reserves what is available and lets captures
     ///         reach `units` through debt within the owner's offline cap. Returns what the leg now holds, at most
@@ -35,8 +39,8 @@ interface ISource {
         returns (uint256 heldUnits);
 
     /// @notice Captures up to `units` for leg `legId` and pays the settlement account. Without CAPTURE_BEYOND it
-    ///         takes only what the leg holds; with it, also the owner's free funds and debt within the owner's caps,
-    ///         up to the hold's capture limit. CAPTURE_FINAL releases what is left. Returns the units it covered
+    ///         takes only what the leg holds; with it, also the owner's free funds (cash: then debt within the
+    ///         owner's caps), never past what the core lets the hold capture. CAPTURE_FINAL releases what is left. Returns the units it covered
     ///         (zero for a settled leg).
     function capture(address owner, bytes32 position, bytes32 legId, uint256 units, uint8 flags)
         external
