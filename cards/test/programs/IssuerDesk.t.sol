@@ -486,7 +486,7 @@ contract IssuerDeskTest is ProgramsEnv {
     function test_programOperator_isNotADeskOperator() public {
         address key = makeAddr("swipeKey");
         vm.prank(issuer);
-        cards.setOperator(key, true);
+        cards.setOperator(key, 7, 1e30);
         _authorize(P1, 100e6);
         vm.prank(key);
         vm.expectRevert(IssuerDesk.NotIssuer.selector);
