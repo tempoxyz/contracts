@@ -301,6 +301,13 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     /// @inheritdoc ISource
+    /// @dev A line grants no capture tolerance: a capture past what was approved draws more credit only through
+    ///      CAPTURE_BEYOND, within the line's room.
+    function toleranceBps(address, bytes32) external pure returns (uint16) {
+        return 0;
+    }
+
+    /// @inheritdoc ISource
     function refundable(address owner, bytes32, bytes32 legId) external view returns (uint256) {
         return _legs[_holdId(owner, legId)].gross;
     }

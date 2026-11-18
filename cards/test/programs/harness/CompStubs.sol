@@ -110,7 +110,7 @@ contract CompCardAuth is ICardAuth {
         return (_held, _standIn, _unsettled);
     }
 
-    function ledger() external pure returns (uint64, uint64, uint128, uint128) {
+    function ledger() external pure returns (uint64, uint64, int128, int128) {
         return (0, 0, 0, 0);
     }
 

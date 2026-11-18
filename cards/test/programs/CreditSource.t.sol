@@ -81,6 +81,7 @@ contract CreditSourceTest is CompEnv {
         auth.release(credit, alice, LEG);
         assertEq(credit.charge(alice, _pos(lineId), LEG, 1e6, true), 0);
         assertEq(credit.KIND(), 4);
+        assertEq(credit.toleranceBps(alice, _pos(lineId)), 0);
     }
 
     function test_capture_owesWhatWasCaptured_refundAndRepay() public {

@@ -6,8 +6,9 @@ pragma solidity ^0.8.36;
 ///         call on a card authorization contract. Amounts are settlement-token units.
 interface ICardAuth {
     /// @notice A purchase as CardAuth records it, in units of the settlement token it was booked in (`token`).
-    ///         `captured` is what the cardholder's sources covered (and reserves settled); what the issuer absorbed
-    ///         is not in it.
+    ///         `captured` is everything captured or charged; `refunded` is what was refunded or credited back plus
+    ///         what the issuer absorbed because the sources could not cover it, so `captured - refunded` is what can
+    ///         still be refunded. `held` is what an open purchase still holds.
     struct PurchaseView {
         address owner;
         bytes32 card;
@@ -58,12 +59,12 @@ interface ICardAuth {
         external
         view
         returns (address[] memory sources, bytes32[] memory positions, bytes32[] memory legIds);
-    /// @notice What open purchases hold, the stand-in part of it, and what was captured net of refunds since the
-    ///         issuer last acknowledged settlement.
+    /// @notice What open purchases hold, the stand-in part of it, and what the sources covered net of refunds since
+    ///         the issuer last acknowledged settlement (zero when refunds outran it).
     function exposure() external view returns (uint256 held, uint256 standIn, uint256 unsettled);
     /// @notice Purchase steps so far, the last one the issuer acknowledged, net captured units and the net at that
     ///         acknowledgement.
-    function ledger() external view returns (uint64 seq, uint64 settledThrough, uint128 net, uint128 settledNet);
+    function ledger() external view returns (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet);
 
     /// @notice Captures `amount` of purchase `ref`. Authorize role.
     function capture(bytes32 ref, uint128 amount, bool isFinal) external;
@@ -77,7 +78,7 @@ interface ICardAuth {
     /// @notice Gives `usage` back to the cardholder's limits and books `net` as refunded without moving money (the
     ///         caller paid the cardholder itself). Settle role.
     function creditBack(bytes32 ref, uint128 usage, uint128 net) external;
-    /// @notice Books `amount` more as covered for purchase `ref` after the issuer settled it from a reserve, so it can
-    ///         be refunded. Settle role.
+    /// @notice Books `amount` the issuer absorbed on purchase `ref` as covered after it settled it from a merchant
+    ///         reserve, so it can be refunded. Settle role.
     function reserveSettled(bytes32 ref, uint128 amount) external;
 }
