@@ -128,6 +128,25 @@ contract CaptureWaterfallTest is AuthEnv {
         _assertCoreBalanced();
     }
 
+    /// @dev A purchase no cash leg funds still takes the owner's tolerance from its cash entry.
+    function test_toleranceFromTheCashEntry_whenNoCashLegFunds() public {
+        _savings(alice, 100e6);
+        _setTolerance(alice, address(cash), address(usd), 2000);
+        CardLegs.Funding[] memory order = new CardLegs.Funding[](2);
+        order[0] = CardLegs.Funding(ISource(address(savings)), bytes32(0));
+        order[1] = _cashEntry(address(usd), 0);
+        vm.prank(alice);
+        cards.setFunding(order);
+        _authorize(P1, 40e6);
+        assertEq(_legs(P1), 1 << 0);
+        vm.prank(issuer);
+        vm.expectRevert(CardLegs.CaptureLimitExceeded.selector);
+        cards.capture(P1, 49e6, true);
+        _capture(P1, 45e6, true);
+        assertApproxEqAbs(_savingsValue(), 55e6, 2);
+        _assertCoreBalanced();
+    }
+
     function _savings(address owner, uint256 assets) internal returns (uint256 shares) {
         usd.mint(owner, assets);
         shares = _depositEarn(owner, assets);

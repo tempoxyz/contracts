@@ -1146,6 +1146,25 @@ contract CardAuthTest is AuthEnv {
         _assertCoreBalanced();
     }
 
+    /// @dev A stand-in lowered below what then clears captures within the owner's tolerance, the rest as debt up to the
+    ///      offline cap; past the tolerance it refuses.
+    function test_standIn_captureWithinTolerance_afterAdjustDown() public {
+        usd.mint(alice, 30e6);
+        _setOfflineCap(alice, address(cash), address(usd), 50e6);
+        _setTolerance(alice, address(cash), address(usd), 2000);
+        vm.prank(issuer);
+        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
+        vm.prank(issuer);
+        cards.adjust(P1, 35e6);
+        vm.prank(issuer);
+        vm.expectRevert(CardLegs.CaptureLimitExceeded.selector);
+        cards.capture(P1, 43e6, true);
+        _capture(P1, 40e6, true);
+        assertEq(usd.balanceOf(alice), 0);
+        assertEq(core.debtOf(alice, address(usd))[0].amount, 10e6);
+        _assertCoreBalanced();
+    }
+
     function test_standIn_onFrozenCard_declinedWhenItLands() public {
         usd.mint(alice, 30e6);
         vm.prank(alice);

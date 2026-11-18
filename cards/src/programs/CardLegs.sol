@@ -240,8 +240,8 @@ library CardLegs {
     /// @notice Captures `amount` walking the order: each entry the card allows takes what it holds and what its source
     ///         can still cover for the owner, placing or growing its leg as needed, so free funds of earlier entries
     ///         go before later legs' holds. What no entry covers is charged to the first cash entry: free cash, then
-    ///         debt within the owner's terms; the issuer absorbs the rest. Past `open` plus the tolerance on `total`
-    ///         it reverts (a stand-in has none and captures from its one cash leg). `amounts` is amount, open,
+    ///         debt within the owner's terms; the issuer absorbs the rest. Past `open` plus the owner's tolerance on
+    ///         `total` it reverts, a stand-in too, which captures from its one cash leg. `amounts` is amount, open,
     ///         total, the card's kinds and the expiry of legs it places. Returns the units covered and the legs.
     function capture(
         Funding[] storage order,
@@ -255,23 +255,31 @@ library CardLegs {
     ) external returns (uint256 covered, uint256) {
         uint256 amount = amounts[0];
         if (amount > amounts[1] || standIn) {
-            // The leg whose tolerance bounds the purchase: the first cash leg, else the first leg.
+            // The owner's tolerance is the larger of its terms on the first leg and on the first cash entry, so a
+            // purchase no cash leg funds keeps it; a stand-in captures through its first cash leg, else its first leg.
             uint256 lead = _lowBit(legs);
-            for (uint256 i = lead; i < order.length; ++i) {
-                if (legs >> i & 1 != 0 && kindOf[address(order[i].source)] == CASH) {
+            Funding memory first = order[lead];
+            uint256 tolerance = first.source.toleranceBps(owner, first.position);
+            uint256 bound = type(uint256).max;
+            for (uint256 i; i < order.length; ++i) {
+                if (kindOf[address(order[i].source)] != CASH) continue;
+                if (bound == type(uint256).max) bound = i;
+                if (legs >> i & 1 != 0) {
                     lead = i;
                     break;
                 }
             }
-            Funding memory f = order[lead];
+            if (bound != type(uint256).max && bound != _lowBit(legs)) {
+                uint256 cash = order[bound].source.toleranceBps(owner, order[bound].position);
+                if (cash > tolerance) tolerance = cash;
+            }
+            if (amount > amounts[1] + amounts[2] * tolerance / BPS) revert CaptureLimitExceeded();
             if (standIn) {
-                if (amount > amounts[1]) revert CaptureLimitExceeded();
+                Funding memory f = order[lead];
                 uint8 flags = CAPTURE_BEYOND | (isFinal ? CAPTURE_FINAL : 0);
                 (covered,) = f.source.capture(owner, f.position, legId(ref, lead), amount, flags);
                 return (covered, legs);
             }
-            uint256 tolerance = f.source.toleranceBps(owner, f.position);
-            if (amount > amounts[1] + amounts[2] * tolerance / BPS) revert CaptureLimitExceeded();
         }
         // The last leg the purchase drew on captures as final, as does any leg placed past it; a leg that covers less
         // than it is asked stays live for the debt below and is released after it.
