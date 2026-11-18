@@ -150,6 +150,8 @@ contract IssuerTreasury is IExposureGuard {
         if (amount == 0) return 0;
         address conversion = PROGRAM.conversion();
         if (conversion == address(0)) revert NoConversion();
+        // From the program's own settlement account only, which the issuer or the account itself asked for above.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
         SafeTransferLib.safeTransferFrom(token, account, address(this), amount);
         SafeTransferLib.safeApprove(token, conversion, amount);
         out = IConvertAtMid(conversion).convertAtMid(token, current, amount, account);
