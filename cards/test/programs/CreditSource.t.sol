@@ -47,7 +47,8 @@ contract CreditSourceTest is CompEnv {
         usd.mint(lender, 1000e6);
         vm.startPrank(lender);
         core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
-        uint64 lineId = credit.openLine(alice, 500e6, uint64(block.timestamp + 30 days), IEarnVault(address(0)), 0, 0, 0);
+        uint64 lineId =
+            credit.openLine(alice, 500e6, uint64(block.timestamp + 30 days), IEarnVault(address(0)), 0, 0, 0);
         vm.stopPrank();
         assertEq(credit.coverable(alice, _pos(lineId)), 0);
         vm.expectRevert(CreditSource.LineNotOpen.selector);
@@ -348,7 +349,8 @@ contract CreditSourceTest is CompEnv {
         assertEq(credit.settlementTokenInUse(address(auth)), 0);
         vm.startPrank(lender);
         core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
-        uint64 lineId = credit.openLine(alice, 100e6, uint64(block.timestamp + 30 days), IEarnVault(address(0)), 0, 0, 0);
+        uint64 lineId =
+            credit.openLine(alice, 100e6, uint64(block.timestamp + 30 days), IEarnVault(address(0)), 0, 0, 0);
         vm.stopPrank();
         // A line the borrower never accepted holds nothing back.
         assertEq(credit.settlementTokenInUse(address(auth)), 0);

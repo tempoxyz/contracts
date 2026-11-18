@@ -192,7 +192,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         PROGRAM = program;
     }
 
-
     /// @notice Opens a line from the caller (the lender) to borrower in the program's settlement token, offering
     ///         simple interest of aprBps a year and a bound of maxDebt on what is owed and pending (zero: the limit
     ///         plus a year of interest on it). The borrower accepts before any draw. A zero collateralVault makes it
@@ -222,7 +221,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         lineIdOf[msg.sender][borrower] = lineId;
         Line storage l = _lines[lineId];
         (l.lender, l.dueDate, l.ltvBps, l.borrower, l.token, l.limit, l.collateralVault) =
-            (msg.sender, dueDate, ltvBps, borrower, token, limit, collateralVault);
+        (msg.sender, dueDate, ltvBps, borrower, token, limit, collateralVault);
         emit LineOpened(lineId, msg.sender, borrower, token, limit, dueDate, address(collateralVault), ltvBps);
         _offer(lineId, l, aprBps, maxDebt);
     }
@@ -285,7 +284,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _settle(lineId);
     }
 
-
     /// @inheritdoc ISource
     function coverable(address owner, bytes32 position) external view returns (uint256) {
         uint64 lineId = _lineIdOf(position);
@@ -331,6 +329,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             if (heldUnits - now_ > credit) revert CreditExceeded(heldUnits - now_, credit);
         }
         if (heldUnits > type(uint64).max) revert CreditExceeded(heldUnits, type(uint64).max);
+        // Bounded by the 64-bit check above.
+        // forge-lint: disable-next-line(unsafe-typecast)
         l.pending = l.pending + uint128(heldUnits) - g.held;
         // forge-lint: disable-next-line(unsafe-typecast)
         (g.lineId, g.held) = (lineId, uint64(heldUnits));
@@ -383,9 +383,12 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             // Past what the leg holds: grow it within the line's credit first, or the capture reverts.
             _accrue(lineId, false);
             uint256 credit = availableCredit(lineId);
-            if (units - h > credit) revert CreditExceeded(units - h, credit);
+            if (units - h > credit || units > type(uint64).max) revert CreditExceeded(units - h, credit);
+            // Bounded by the 64-bit check above.
+            // forge-lint: disable-start(unsafe-typecast)
             l.pending += uint128(units - h);
             g.held = uint64(units);
+            // forge-lint: disable-end(unsafe-typecast)
             _commit(lineId);
             // forge-lint: disable-next-line(unsafe-typecast)
             CORE.adjust(l.lender, address(this), id, uint128(units));
@@ -416,10 +419,11 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         Line storage l = _lines[lineId];
         IReservationCore.HoldRecord memory h = CORE.getHold(l.lender, address(this), id);
         if (h.token == address(0)) return;
-        // Expiry is a timestamp by design.
-        // forge-lint: disable-next-line(block-timestamp,reentrancy-no-eth)
+        // Expiry is a timestamp by design; the transient lock covers the call.
+        // forge-lint: disable-start(block-timestamp,reentrancy-no-eth)
         if (h.expiresAt <= block.timestamp) CORE.releaseExpired(l.lender, address(this), id);
         else CORE.release(l.lender, address(this), id);
+        // forge-lint: disable-end(block-timestamp,reentrancy-no-eth)
         _apply(lineId, id, g.gross);
     }
 
@@ -443,7 +447,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         // forge-lint: disable-end(reentrancy-no-eth)
         _apply(lineId, id, gross);
     }
-
 
     /// @notice Repays amount of what the borrower owes, from the caller to the lender.
     function repay(uint64 lineId, uint128 amount) external nonReentrant {
@@ -513,6 +516,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (drawn > free) {
             uint256 keep = _heldNow(l.lender, commitmentOf[lineId]) - (drawn - free);
             bytes32 id = commitmentOf[lineId];
+            // An amount the linter mistakes for a timestamp.
+            // forge-lint: disable-next-line(block-timestamp)
             if (keep == 0) CORE.release(l.lender, address(this), id);
             // forge-lint: disable-next-line(unsafe-typecast)
             else CORE.adjust(l.lender, address(this), id, uint128(keep));
@@ -529,7 +534,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _accrue(lineId, true);
         _settle(lineId);
     }
-
 
     /// @notice Snapshots what the line owes as a statement due at dueAt, as its lender. Repayments pay open
     ///         statements oldest first.
@@ -600,7 +604,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _settle(lineId);
     }
 
-
     /// @notice The lender sells just enough locked shares to bring a line past its loan-to-value back within it, at
     ///         today's price, and takes the proceeds toward what is owed.
     // Comparisons here are on share amounts the linter mistakes for timestamps.
@@ -638,7 +641,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _settle(lineId);
     }
 
-
     /// @notice Credit the line can still draw: its limit (at most the debt bound), or for a secured line the lower of
     ///         that and its collateral's value times the loan-to-value, less what is owed and pending, within what the
     ///         lender's free balance and commitment back.
@@ -658,6 +660,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (!l.locking) return 0;
         uint256 shares =
             _heldNow(l.borrower, lockOf[lineId]) + CORE.available(l.borrower, l.collateralVault.earnShare());
+        // A share count the linter mistakes for a timestamp.
+        // forge-lint: disable-next-line(block-timestamp)
         return shares == 0 ? 0 : _inLine(l, l.collateralVault.previewRedeem(shares));
     }
 
@@ -708,7 +712,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     function settlementTokenInUse(address) external view returns (uint8) {
         return _activeLines[PROGRAM.settlementToken()] != 0 ? IN_USE_LINES : 0;
     }
-
 
     function _onlyTreasury() private view {
         if (msg.sender == address(PROGRAM) || PROGRAM.isCompanion(msg.sender)) return;
@@ -918,6 +921,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         }
         return (id, true);
     }
+
     // forge-lint: disable-end(unsafe-typecast)
     // forge-lint: disable-end(block-timestamp)
     // forge-lint: disable-end(reentrancy-no-eth)

@@ -392,6 +392,7 @@ contract ConversionTest is ProgramsEnv {
         assertEq(core.available(alice, address(eur)), 30e6);
         assertEq(eur.balanceOf(issuer), 0);
     }
+
     function test_setSettlementToken_issuerOnly() public {
         vm.prank(alice);
         vm.expectRevert();

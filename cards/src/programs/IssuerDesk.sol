@@ -100,6 +100,10 @@ contract IssuerDesk is ISettlementTokenGuard {
         (PROGRAM, CREDIT, TREASURY, SAVINGS) = (program, credit, treasury, savings);
     }
 
+    // Every entry point that moves money holds the transient lock for its whole call; the program and the core it
+    // calls are fixed.
+    // forge-lint: disable-start(reentrancy-no-eth)
+
     /// @notice Opens a dispute on a captured purchase for at most what it captured and has not refunded.
     function openDispute(bytes32 ref, uint128 amount, bytes calldata evidence) external nonReentrant {
         _operator(0);
@@ -324,6 +328,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         if (left != 0) SafeTransferLib.safeTransfer(token, PROGRAM.SETTLEMENT_ACCOUNT(), left);
     }
 
+    // Takes only from the program's settlement account, which approved this desk to pay provisional credit and refunds.
+    // forge-lint: disable-next-item(arbitrary-send-erc20)
     function _fromSettlement(address token, address to, uint256 amount) private {
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
         if (amount <= CORE.available(account, token)) SafeTransferLib.safeTransferFrom(token, account, to, amount);
@@ -378,4 +384,5 @@ contract IssuerDesk is ISettlementTokenGuard {
     function _min(uint256 a, uint256 b) private pure returns (uint256) {
         return a < b ? a : b;
     }
+    // forge-lint: disable-end(reentrancy-no-eth)
 }

@@ -103,6 +103,10 @@ contract IssuerTreasury {
         PROGRAM = program;
     }
 
+    // Every entry point that moves money holds the transient lock for its whole call; the program and the core it
+    // calls are fixed.
+    // forge-lint: disable-start(reentrancy-no-eth)
+
     /// @notice Adds amount of token from the caller to the issuer's funds for advancing payouts.
     function fundIssuerDebt(address token, uint256 amount) external nonReentrant {
         SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), amount);
@@ -443,4 +447,5 @@ contract IssuerTreasury {
     function _min(uint256 a, uint256 b) private pure returns (uint256) {
         return a < b ? a : b;
     }
+    // forge-lint: disable-end(reentrancy-no-eth)
 }

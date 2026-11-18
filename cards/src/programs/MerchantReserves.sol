@@ -77,6 +77,10 @@ contract MerchantReserves is ISettlementTokenGuard {
         PROGRAM = program;
     }
 
+    // Every entry point that moves money holds the transient lock for its whole call; the program and the core it
+    // calls are fixed.
+    // forge-lint: disable-start(reentrancy-no-eth)
+
     /// @notice Lets the program's operators reserve the caller's token for purpose and collect up to cap of it over the
     ///         consent's life, counting what they already collected. A zero cap withdraws the consent.
     function allowReserves(address token, uint128 cap, bytes32 purpose) external {
@@ -209,4 +213,5 @@ contract MerchantReserves is ISettlementTokenGuard {
         _live.push(id);
         emit ReservePlaced(id, owner, token, amount, expiresAt);
     }
+    // forge-lint: disable-end(reentrancy-no-eth)
 }
