@@ -269,14 +269,16 @@ contract CashSourceTest is AuthEnv {
         assertApproxEqAbs(_owed(alice, address(usd), address(cash)), 80e6, 2);
         uint256 debt = _owed(alice, address(usd), address(cash));
         uint256 sharesBefore = earnShare.balanceOf(alice);
+        uint256 restored = savings.refundable(alice, bytes32(0), cards.legId(P1, 1));
+        assertApproxEqAbs(restored, 50e6, 2);
 
-        _fundRefunds(100e6);
+        _fundRefunds(100e6 + restored);
         vm.prank(issuer);
-        cards.refund(P1, 100e6);
-        // The refund forgives the debt first and pays the owner the rest in cash; savings get nothing.
+        cards.refund(P1, uint128(100e6 + restored));
+        // Savings take back what they captured; the cash leg forgives the debt first and pays the owner the rest.
         assertEq(_owed(alice, address(usd), address(cash)), 0);
         assertEq(usd.balanceOf(alice), 100e6 - debt);
-        assertEq(earnShare.balanceOf(alice), sharesBefore);
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - sharesBefore), restored, 2);
         // The forgiven part stays with the source until it is swept back to the settlement account.
         assertEq(usd.balanceOf(address(cash)), debt);
         uint256 before = usd.balanceOf(settlement);

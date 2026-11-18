@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { AuthEnv } from "./harness/AuthEnv.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 /// @notice Gas of CardAuth's purchase paths, one call each, recorded under snapshots/AuthGas.json and checked with
 ///         `forge snapshot --check snapshots/auth.gas-snapshot`, and the CardAuth storage slots each path writes.
@@ -143,6 +144,46 @@ contract AuthGasTest is AuthEnv {
         _assertSlots(key, abi.encodeCall(cards.charge, (CARD, "p2", 10e6, merchant)), 5, 1, "charge");
         _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, "p3", 10e6, merchant, _expiry(), 0)), 6, 1, "auth2");
         _assertSlots(key, abi.encodeCall(cards.release, ("p3")), 5, 0, "release");
+    }
+
+    /// @notice A savings leg pays its one slot when the purchase swipes; its captures and refunds create no slot in
+    ///         CardAuth or the savings source.
+    function test_slots_savingsLeg() public {
+        _splitCashAndSavings();
+        usd.mint(issuer, 101e6);
+        vm.prank(issuer);
+        usd.approve(address(cards), 101e6);
+        // A first purchase starts the owner's windows and the program's totals.
+        _authorize("p0", 1e6);
+        _capture("p0", 1e6, true);
+        vm.prank(issuer);
+        cards.refund("p0", 1e6);
+        _assertFresh(abi.encodeCall(cards.authorize, (CARD, P1, 100e6, merchant, _expiry(), 0)), 1, 1, "authorize");
+        _assertFresh(abi.encodeCall(cards.capture, (P1, 60e6, false)), 0, 0, "capture partial");
+        _assertFresh(abi.encodeCall(cards.capture, (P1, 40e6, true)), 0, 0, "capture final");
+        _assertFresh(abi.encodeCall(cards.refund, (P1, 30e6)), 0, 0, "refund savings");
+        _assertFresh(abi.encodeCall(cards.refund, (P1, 69e6)), 0, 0, "refund savings then cash");
+    }
+
+    /// @dev Sends `data` as the issuer and checks how many slots it creates in CardAuth and in the savings source.
+    function _assertFresh(bytes memory data, uint256 inCards, uint256 inSavings, string memory label) internal {
+        vm.startStateDiffRecording();
+        vm.prank(issuer);
+        (bool ok,) = address(cards).call(data);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        assertTrue(ok, label);
+        uint256 c;
+        uint256 s;
+        for (uint256 i; i < accesses.length; ++i) {
+            for (uint256 j; j < accesses[i].storageAccesses.length; ++j) {
+                Vm.StorageAccess memory a = accesses[i].storageAccesses[j];
+                if (!a.isWrite || a.reverted || a.previousValue != 0 || a.newValue == 0) continue;
+                if (a.account == address(cards)) ++c;
+                else if (a.account == address(savings)) ++s;
+            }
+        }
+        assertEq(c, inCards, string.concat(label, ": new CardAuth slots"));
+        assertEq(s, inSavings, string.concat(label, ": new savings slots"));
     }
 
     function _expiry() internal view returns (uint64) {

@@ -359,8 +359,8 @@ contract CardAuth is ICardAuth {
     }
 
     /// @notice Moves an open purchase's amount to `amount`: an increase holds more across the owner's sources in
-    ///         order and counts against the limits; a decrease returns holds from the last source first. A stand-in
-    ///         only decreases.
+    ///         order and counts against the limits; a decrease returns cash legs first, then the other legs from the
+    ///         last. A stand-in only decreases.
     function adjust(bytes32 ref, uint128 amount) external {
         Purchase memory p = _open(ref);
         bool standIn = p.flags & STANDIN != 0;
@@ -380,7 +380,7 @@ contract CardAuth is ICardAuth {
             _spend(c, owner, address(0), amount, want, true);
             legs = CardLegs.grow(order, sourceKind, ref, owner, c.kinds, want, legs, p.expiresAt);
         } else {
-            CardLegs.shrink(order, ref, owner, legs, amount - p.captured, standIn, p.expiresAt);
+            CardLegs.shrink(order, sourceKind, ref, owner, legs, amount - p.captured, standIn, p.expiresAt);
             _giveBack(c, owner, p, p.amount - amount);
         }
         _moveHeld(int256(uint256(amount)) - int256(p.amount), standIn);
@@ -482,17 +482,24 @@ contract CardAuth is ICardAuth {
         _checkExposure();
     }
 
-    /// @notice Refunds `amount` of a purchase, in the token it was booked in, to its sources: legs that bound what
-    ///         they take back (credit) in reverse order first, then the first leg that takes any amount (cash,
-    ///         savings) the rest. The caller pays in today's settlement token, approving this contract. Never past
-    ///         what the sources covered. Settle role.
+    /// @notice Refunds `amount` of a purchase, in the token it was booked in, to its legs in reverse order, each at
+    ///         most what it still nets, and the first cash leg the rest. The caller pays in today's settlement token,
+    ///         approving this contract. Never past what the sources covered. Settle role.
     function refund(bytes32 ref, uint128 amount) external {
         _role(ROLE_SETTLE, 0);
         Purchase memory p = _unpack(_purchases[ref]);
         if (amount == 0 || p.refunded + amount > p.captured) revert InvalidAmount();
         (CardLimits.Card storage c, address owner) = _card(p);
         uint256 pay = _today(amount, p.era);
-        CardLegs.refund(_funding[owner][p.version], ref, owner, p.flags >> 3, pay, eras[_state.era].token);
+        CardLegs.refund(
+            _funding[owner][p.version],
+            ref,
+            owner,
+            p.flags >> 3,
+            pay,
+            _today(p.captured - p.refunded, p.era),
+            eras[_state.era].token
+        );
         p.refunded += amount;
         _purchases[ref] = _pack(p);
         _giveBack(c, owner, p, amount);

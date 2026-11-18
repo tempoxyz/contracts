@@ -43,8 +43,18 @@ contract SavingsSource is ISource {
     /// @notice Supplies the float and may withdraw it and redeem shares that deferred redemptions left.
     address public immutable FUNDER;
 
+    /// @notice What a leg captured and was refunded, in settlement units. `placed` is written with the leg's first
+    ///         hold, so its captures and refunds write an existing slot.
+    struct Leg {
+        bool placed;
+        uint120 captured;
+        uint120 refunded;
+    }
+
     /// @notice Shares left here by deferred redemptions and refund surpluses, the only shares the funder may take.
     uint256 public heldShares;
+    /// @notice Each leg's captures and refunds, by leg id.
+    mapping(bytes32 => Leg) public legs;
 
     bool private transient _locked;
 
@@ -98,8 +108,9 @@ contract SavingsSource is ISource {
         return _value(CORE.getHold(owner, address(this), legId).held);
     }
 
-    function refundable(address, bytes32, bytes32) external pure returns (uint256) {
-        return type(uint256).max;
+    function refundable(address, bytes32, bytes32 legId) external view returns (uint256) {
+        Leg memory l = legs[legId];
+        return l.captured - l.refunded;
     }
 
     function toleranceBps(address owner, bytes32) external view returns (uint16) {
@@ -126,6 +137,7 @@ contract SavingsSource is ISource {
             return 0;
         }
         if (!live) {
+            if (!legs[legId].placed) legs[legId].placed = true;
             CORE.holdFrom(
                 owner, IReservationCore.HoldRequest(SHARE, legId, shares.toUint128(), expiresAt, address(this), false)
             );
@@ -154,6 +166,7 @@ contract SavingsSource is ISource {
         CORE.capture(owner, address(this), legId, shares.toUint128(), isFinal);
         if (shares == 0) return 0;
         paid = _redeem(owner, legId, shares, units);
+        legs[legId].captured += paid.toUint120();
     }
 
     function charge(address, bytes32, bytes32, uint256, bool) external view onlyProgramView returns (uint256) {
@@ -165,6 +178,7 @@ contract SavingsSource is ISource {
     }
 
     function refund(address owner, bytes32, bytes32 legId, uint256 units) external onlyProgram {
+        legs[legId].refunded += units.toUint120();
         address settlement = PROGRAM.settlementToken();
         uint256 assets = units;
         if (settlement != ASSET) {

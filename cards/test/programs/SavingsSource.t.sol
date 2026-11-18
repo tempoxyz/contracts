@@ -61,13 +61,42 @@ contract SavingsSourceTest is AuthEnv {
         _assertCoreBalanced();
     }
 
-    function test_capture_writesNoStorageBeyondTheCore() public {
+    function test_capture_writesOnlyTheLegsExistingSlot() public {
         _place(ID, 100e6);
+        bytes32 slot = _legSlot(ID);
+        assertTrue(vm.load(address(savings), slot) != 0, "the hold writes the leg's slot");
         vm.record();
         vm.prank(address(cards));
         savings.capture(alice, bytes32(0), ID, 100e6, CAPTURE_FINAL);
         (, bytes32[] memory writes) = vm.accesses(address(savings));
-        assertEq(writes.length, 0);
+        for (uint256 i; i < writes.length; ++i) {
+            assertEq(writes[i], slot);
+        }
+        vm.record();
+        usd.mint(address(savings), 40e6);
+        vm.prank(address(cards));
+        savings.refund(alice, bytes32(0), ID, 40e6);
+        (, writes) = vm.accesses(address(savings));
+        for (uint256 i; i < writes.length; ++i) {
+            assertEq(writes[i], slot);
+        }
+    }
+
+    function test_refundable_capturedLessRefunded() public {
+        assertEq(savings.refundable(alice, bytes32(0), ID), 0);
+        _place(ID, 200e6);
+        assertEq(savings.refundable(alice, bytes32(0), ID), 0);
+        vm.prank(address(cards));
+        savings.capture(alice, bytes32(0), ID, 150e6, CAPTURE_FINAL);
+        assertEq(savings.refundable(alice, bytes32(0), ID), 150e6);
+        usd.mint(address(savings), 40e6);
+        vm.prank(address(cards));
+        savings.refund(alice, bytes32(0), ID, 40e6);
+        assertEq(savings.refundable(alice, bytes32(0), ID), 110e6);
+        (bool placed, uint120 captured, uint120 refunded) = savings.legs(ID);
+        assertTrue(placed);
+        assertEq(captured, 150e6);
+        assertEq(refunded, 40e6);
     }
 
     function test_capture_partial() public {
@@ -213,7 +242,7 @@ contract SavingsSourceTest is AuthEnv {
     }
 
     function test_refund_boundedByTheProgramAtWhatItCovered() public {
-        // Through the program: savings refunds take any amount, so the program stops them at what was covered.
+        // Through the program: refunds stop at what the savings leg captured.
         _issueSavingsOnly();
         vm.prank(issuer);
         cards.authorize(CARD, bytes32("p1"), 100e6, merchant, _expiry(), 0);
@@ -263,6 +292,11 @@ contract SavingsSourceTest is AuthEnv {
 
     function _leg(bytes32 id) internal view returns (IReservationCore.HoldRecord memory) {
         return core.getHold(alice, address(savings), id);
+    }
+
+    /// @dev The slot of leg `id` in the source's `legs` mapping (storage slot 1).
+    function _legSlot(bytes32 id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, uint256(1)));
     }
 
     function _expiry() internal view returns (uint64) {

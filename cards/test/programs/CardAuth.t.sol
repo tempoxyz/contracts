@@ -951,7 +951,7 @@ contract CardAuthTest is AuthEnv {
         assertEq(usd.balanceOf(address(line)), FLOAT);
     }
 
-    function test_refund_creditFirstThenFirstLeg() public {
+    function test_refund_reverseOrder_creditThenSavingsThenCash() public {
         usd.mint(alice, 30e6);
         uint256 shares = _savings(alice, 20e6);
         _withLine(1000e6);
@@ -961,19 +961,102 @@ contract CardAuthTest is AuthEnv {
         uint256 owed = line.usedOf(alice);
         uint256 cashBefore = usd.balanceOf(alice);
         assertLt(sharesBefore, shares);
+        bytes32 savingsId = cards.legId(P1, SAVINGS_LEG);
+        assertApproxEqAbs(savings.refundable(alice, bytes32(0), savingsId), 20e6, 2);
 
-        // The credit leg takes back what it captured, the first leg (cash) the rest.
+        // The legs take back in reverse order: the credit leg what it captured, then savings.
         _fundRefund(100e6);
         vm.prank(issuer);
         cards.refund(P1, uint128(owed + 10e6));
         assertEq(line.usedOf(alice), 0);
         assertEq(line.refundedTo(alice), owed);
-        assertEq(usd.balanceOf(alice), cashBefore + 10e6);
-        assertEq(earnShare.balanceOf(alice), sharesBefore, "nothing back to the savings leg");
+        assertEq(usd.balanceOf(alice), cashBefore, "nothing back to cash yet");
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - sharesBefore), 10e6, 2);
+        assertApproxEqAbs(savings.refundable(alice, bytes32(0), savingsId), 10e6, 2);
 
         vm.prank(issuer);
         vm.expectRevert(CardAuth.InvalidAmount.selector);
         cards.refund(P1, 50e6);
+        // The rest restores savings up to what it captured, then cash.
+        vm.prank(issuer);
+        cards.refund(P1, uint128(90e6 - owed));
+        assertEq(savings.refundable(alice, bytes32(0), savingsId), 0);
+        assertApproxEqAbs(usd.balanceOf(alice), cashBefore + 30e6, 2);
+        _assertCoreBalanced();
+    }
+
+    function test_adjustDown_cashAndSavings_cashGivesBackFirst() public {
+        usd.mint(alice, 30e6);
+        _savings(alice, 500e6);
+        _authorize(P1, 50e6);
+        assertEq(_hold(alice, P1, CASH_LEG).held, 30e6);
+        bytes32 savingsId = cards.legId(P1, SAVINGS_LEG);
+        assertApproxEqAbs(savings.held(alice, bytes32(0), savingsId), 20e6, 2);
+
+        // A partial reversal of 15 lowers cash, not savings.
+        vm.prank(issuer);
+        cards.adjust(P1, 35e6);
+        assertEq(_hold(alice, P1, CASH_LEG).held, 15e6);
+        assertApproxEqAbs(savings.held(alice, bytes32(0), savingsId), 20e6, 2);
+        assertEq(usd.balanceOf(alice), 15e6);
+        // Past what cash holds, savings gives back the rest.
+        vm.prank(issuer);
+        cards.adjust(P1, 10e6);
+        assertEq(_hold(alice, P1, CASH_LEG).token, address(0));
+        assertApproxEqAbs(savings.held(alice, bytes32(0), savingsId), 10e6, 2);
+        assertEq(usd.balanceOf(alice), 30e6);
+        assertEq(cards.purchaseOf(P1).held, 10e6);
+        _assertCoreBalanced();
+    }
+
+    function test_refund_cashAndSavings_restoresSavingsFirst() public {
+        usd.mint(alice, 30e6);
+        _savings(alice, 500e6);
+        _authorize(P1, 40e6);
+        _capture(P1, 40e6, true);
+        assertEq(usd.balanceOf(alice), 0);
+        uint256 sharesBefore = earnShare.balanceOf(alice);
+
+        // 15 back: savings takes the 10 it captured, cash the other 5.
+        _refund(P1, 15e6);
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - sharesBefore), 10e6, 2);
+        assertEq(usd.balanceOf(alice), 5e6);
+        assertEq(savings.refundable(alice, bytes32(0), cards.legId(P1, SAVINGS_LEG)), 0);
+        // The rest goes to cash.
+        _refund(P1, 25e6);
+        assertEq(usd.balanceOf(alice), 30e6);
+        _assertCoreBalanced();
+    }
+
+    function test_savingsThenCash_adjustDownLowersCash_refundTakesCashFirst() public {
+        usd.mint(alice, 100e6);
+        _savings(alice, 20e6);
+        CardLegs.Funding[] memory order = new CardLegs.Funding[](2);
+        order[0] = CardLegs.Funding(ISource(address(savings)), bytes32(0));
+        order[1] = _cashEntry(address(usd), 0);
+        vm.prank(alice);
+        cards.setFunding(order);
+        _authorize(P1, 50e6);
+        bytes32 savingsId = cards.legId(P1, 0);
+        bytes32 cashId = cards.legId(P1, 1);
+        assertApproxEqAbs(savings.held(alice, bytes32(0), savingsId), 20e6, 2);
+        assertApproxEqAbs(core.getHold(alice, address(cash), cashId).held, 30e6, 2);
+
+        // Cash gives back first even though it is the last leg drawn.
+        vm.prank(issuer);
+        cards.adjust(P1, 40e6);
+        assertApproxEqAbs(core.getHold(alice, address(cash), cashId).held, 20e6, 2);
+        assertApproxEqAbs(savings.held(alice, bytes32(0), savingsId), 20e6, 2);
+
+        _capture(P1, 40e6, true);
+        uint256 sharesBefore = earnShare.balanceOf(alice);
+        uint256 cashBefore = usd.balanceOf(alice);
+        // In reverse order: cash takes back the 20 it netted, then savings 5.
+        _refund(P1, 25e6);
+        assertApproxEqAbs(usd.balanceOf(alice), cashBefore + 20e6, 2);
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - sharesBefore), 5e6, 3);
+        assertApproxEqAbs(savings.refundable(alice, bytes32(0), savingsId), 15e6, 3);
+        _assertCoreBalanced();
     }
 
     function test_refund_creditBoundedByRefundable_thenCashTakesTheRest() public {

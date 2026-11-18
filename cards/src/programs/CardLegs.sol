@@ -161,11 +161,12 @@ library CardLegs {
         return legs;
     }
 
-    /// @notice Shrinks what the legs hold to `open` in total: the first legs keep what they hold up to what is still
-    ///         open, so the last give back first. Legs are sized against what they hold now, so a leg whose value
+    /// @notice Shrinks what the legs hold to `open` in total: cash legs give back first, from the last cash leg, then
+    ///         the other legs from the last drawn. Legs are sized against what they hold now, so a leg whose value
     ///         drifted since it was placed never releases more than the purchase gives up. A stand-in holds `open`.
     function shrink(
         Funding[] storage order,
+        mapping(address => uint8) storage kindOf,
         bytes32 ref,
         address owner,
         uint256 legs,
@@ -173,18 +174,34 @@ library CardLegs {
         bool standIn,
         uint64 expiresAt
     ) external {
-        for (uint256 i; i < order.length; ++i) {
+        uint256 n = order.length;
+        uint256[MAX_LEGS] memory cur;
+        uint256 total;
+        for (uint256 i; i < n; ++i) {
             if (legs >> i & 1 == 0) continue;
             Funding memory f = order[i];
-            bytes32 id = legId(ref, i);
             if (standIn) {
-                f.source.hold(owner, f.position, id, open, expiresAt, true);
+                f.source.hold(owner, f.position, legId(ref, i), open, expiresAt, true);
                 return;
             }
-            uint256 cur = f.source.held(owner, f.position, id);
-            uint256 keep = _min(cur, open);
-            if (keep < cur) f.source.hold(owner, f.position, id, keep, expiresAt, false);
-            open -= keep;
+            cur[i] = f.source.held(owner, f.position, legId(ref, i));
+            total += cur[i];
+        }
+        if (total <= open) return;
+        uint256 less = total - open;
+        // Cash gives back first (pass 0), then the other legs (pass 1), each from the last; one leg needs no kind.
+        bool single = legs & (legs - 1) == 0;
+        for (uint256 pass; pass < 2 && less != 0; ++pass) {
+            for (uint256 i = n; i != 0 && less != 0;) {
+                --i;
+                if (cur[i] == 0) continue;
+                Funding memory f = order[i];
+                if (!single && (pass == 0) != (kindOf[address(f.source)] == CASH)) continue;
+                uint256 take = _min(cur[i], less);
+                f.source.hold(owner, f.position, legId(ref, i), cur[i] - take, expiresAt, false);
+                cur[i] = 0;
+                less -= take;
+            }
         }
     }
 
@@ -257,28 +274,42 @@ library CardLegs {
         }
     }
 
-    /// @notice Refunds `units` of `token`, pulled from the caller: legs that bound what they take back in reverse
-    ///         order first, then the first leg (else order entry) that takes any amount, the rest.
-    function refund(Funding[] storage order, bytes32 ref, address owner, uint256 legs, uint256 units, address token)
-        external
-    {
+    /// @notice Refunds `units` of `token`, pulled from the caller, walking the legs in reverse order, each taking back
+    ///         at most what it still nets: a bounded leg (savings, credit) its own refundable, the first cash leg what
+    ///         the purchase still nets (`remaining`) past the bounded legs. The first cash leg (else order entry)
+    ///         takes whatever is left.
+    function refund(
+        Funding[] storage order,
+        bytes32 ref,
+        address owner,
+        uint256 legs,
+        uint256 units,
+        uint256 remaining,
+        address token
+    ) external {
+        uint256 n = order.length;
+        uint256[MAX_LEGS] memory room;
+        uint256 bounded;
         uint256 taker = NONE;
-        for (uint256 i = order.length; i != 0 && units != 0;) {
-            --i;
+        for (uint256 i; i < n; ++i) {
             if (legs >> i & 1 == 0) continue;
-            Funding memory f = order[i];
-            bytes32 id = legId(ref, i);
-            uint256 room = f.source.refundable(owner, f.position, id);
-            if (room == NONE) {
-                taker = i;
-                continue;
-            }
-            room = _min(units, room);
-            if (room != 0) _refundLeg(f, token, owner, id, room);
-            units -= room;
+            uint256 r = order[i].source.refundable(owner, order[i].position, legId(ref, i));
+            room[i] = r;
+            if (r != NONE) bounded += r;
+            else if (taker == NONE) taker = i;
+        }
+        // Cash bounds nothing itself: the first cash leg nets what the bounded legs don't, later cash legs nothing.
+        if (taker != NONE) room[taker] = remaining > bounded ? remaining - bounded : 0;
+        for (uint256 i = n; i != 0 && units != 0;) {
+            --i;
+            if (room[i] == NONE) continue;
+            uint256 take = _min(units, room[i]);
+            if (take == 0) continue;
+            _refundLeg(order[i], token, owner, legId(ref, i), take);
+            units -= take;
         }
         if (units == 0) return;
-        for (uint256 i; i < order.length && taker == NONE; ++i) {
+        for (uint256 i; i < n && taker == NONE; ++i) {
             if (order[i].source.refundable(owner, order[i].position, legId(ref, i)) == NONE) taker = i;
         }
         if (taker == NONE) revert InvalidAmount();

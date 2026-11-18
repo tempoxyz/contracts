@@ -22,8 +22,8 @@ interface ISource {
     /// @notice What leg `legId` holds now, at the rate it locked; zero once it settled.
     function held(address owner, bytes32 position, bytes32 legId) external view returns (uint256 units);
 
-    /// @notice What leg `legId` can still take back in refunds. Cash, which takes whatever a purchase refunds past
-    ///         its other legs, returns type(uint256).max.
+    /// @notice What leg `legId` can still take back in refunds: what it captured less what it was refunded. Cash,
+    ///         whose first leg takes whatever a purchase refunds past its other legs, returns type(uint256).max.
     function refundable(address owner, bytes32 position, bytes32 legId) external view returns (uint256 units);
 
     /// @notice The capture tolerance the owner gave this source at `position`, in basis points: how far past a

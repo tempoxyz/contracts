@@ -410,9 +410,9 @@ contract CashSourceConversionTest is AuthEnv {
         cards.refund(P1, 25e6);
         assertEq(eur.balanceOf(issuer), 100e6 - 25e6 * EUR_SCALE / 1e18, "the issuer pays EUR 22.727272");
         assertEq(usd.balanceOf(issuer), 0, "and no dollars");
-        // Refunds go to the first leg that takes any amount, the cash leg, converted back at the reference rate.
-        assertApproxEqAbs(usd.balanceOf(alice), 25e6, 1);
-        assertEq(earnShare.balanceOf(alice), shares, "savings untouched");
+        // The last leg, savings, takes it back first, converted back at the reference rate.
+        assertEq(usd.balanceOf(alice), 0, "cash untouched");
+        assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - shares), 25e6, 2);
     }
 
     function test_operatorCap_rescalesWithTheSettlementToken() public {
