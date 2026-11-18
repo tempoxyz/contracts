@@ -15,6 +15,12 @@ interface IMidRate {
     function mid(address tokenIn, address tokenOut) external view returns (uint256);
 }
 
+interface IConvertAtMid {
+    function convertAtMid(address tokenIn, address tokenOut, uint256 amountIn, address recipient)
+        external
+        returns (uint256 out);
+}
+
 interface ITIP20Memo {
     function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
 }
@@ -66,6 +72,7 @@ contract IssuerTreasury is IExposureGuard {
     event IssuerFunded(address indexed from, address indexed token, uint256 amount);
     event IssuerFundsWithdrawn(address indexed token, uint256 amount);
     event IssuerPaid(address indexed to, address indexed token, uint256 amount, uint256 advanced, bytes32 memo);
+    event HeldConverted(address indexed token, uint256 amount, uint256 out);
     event IssuerDebtCarried(address indexed from, uint256 owed, address indexed to, uint256 carried);
     event SettingProposed(bytes32 indexed id, bytes data, uint64 eta);
     event SettingCanceled(bytes32 indexed id);
@@ -129,6 +136,24 @@ contract IssuerTreasury is IExposureGuard {
         _funds[token] -= amount;
         SafeTransferLib.safeTransfer(token, PROGRAM.SETTLEMENT_ACCOUNT(), amount);
         emit IssuerFundsWithdrawn(token, amount);
+    }
+
+    /// @notice Converts what the settlement account holds free of an earlier settlement token (a payee's split
+    ///         returned in the token it was paid in) into today's at the reference rates, through the program's
+    ///         Conversion. The settlement account or the issuer calls it.
+    function convertHeld(address token) external nonReentrant returns (uint256 out) {
+        address account = PROGRAM.SETTLEMENT_ACCOUNT();
+        if (msg.sender != account && msg.sender != PROGRAM.ISSUER()) revert NotIssuer();
+        address current = PROGRAM.settlementToken();
+        if (token == current) revert WrongAsset();
+        uint256 amount = CORE.available(account, token);
+        if (amount == 0) return 0;
+        address conversion = PROGRAM.conversion();
+        if (conversion == address(0)) revert NoConversion();
+        SafeTransferLib.safeTransferFrom(token, account, address(this), amount);
+        SafeTransferLib.safeApprove(token, conversion, amount);
+        out = IConvertAtMid(conversion).convertAtMid(token, current, amount, account);
+        emit HeldConverted(token, amount, out);
     }
 
     /// @notice Pays amount of the settlement token from the settlement account to to with memo. What the account

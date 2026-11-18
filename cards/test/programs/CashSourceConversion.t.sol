@@ -7,7 +7,9 @@ import { CardAuth } from "../../src/programs/CardAuth.sol";
 import { CardLegs } from "../../src/programs/CardLegs.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
+import { IssuerTreasury } from "../../src/programs/IssuerTreasury.sol";
 import { Rewards } from "../../src/programs/Rewards.sol";
+import { ICardAuth } from "../../src/programs/interfaces/ICardAuth.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
 import { ISource } from "../../src/programs/interfaces/ISource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
@@ -536,6 +538,28 @@ contract CashSourceConversionTest is AuthEnv {
         // The last leg, savings, takes it back first, converted back at the reference rate.
         assertEq(usd.balanceOf(alice), 0, "cash untouched");
         assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - shares), 25e6, 2);
+    }
+
+    /// @dev A payee's split returned in the token it was paid in converts into today's at the reference rate.
+    function test_treasury_convertHeld_atTheReferenceRate() public {
+        IssuerTreasury treasury = new IssuerTreasury(ICardAuth(address(cards)));
+        conv.setTrusted(address(treasury), true);
+        _localIssuer();
+        usd.mint(settlement, 0.2e6);
+        vm.prank(settlement);
+        usd.approve(address(treasury), 0.2e6);
+        vm.prank(alice);
+        vm.expectRevert(IssuerTreasury.NotIssuer.selector);
+        treasury.convertHeld(address(usd));
+        vm.prank(settlement);
+        vm.expectRevert(IssuerTreasury.WrongAsset.selector);
+        treasury.convertHeld(address(eur));
+        uint256 before = eur.balanceOf(settlement);
+        vm.prank(settlement);
+        uint256 out = treasury.convertHeld(address(usd));
+        assertEq(out, uint256(0.2e6) * 1e18 / 1.1e18);
+        assertEq(eur.balanceOf(settlement) - before, out);
+        assertEq(usd.balanceOf(settlement), 0);
     }
 
     function test_operatorCap_rescalesWithTheSettlementToken() public {
