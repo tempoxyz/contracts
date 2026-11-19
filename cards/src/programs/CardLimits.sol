@@ -172,12 +172,14 @@ library CardLimits {
     }
 
     /// @notice Carries an owner's usage, some of their cards' windows and merchant mandates counted on another
-    ///         instance of the program into this one, as carryUsage, carryWindow and carryMandate do.
+    ///         instance of the program into this one, as carryUsage, carryWindow and carryMandate do. Days and months
+    ///         later than the owner's today (at utcOffset) are refused, so carrying never empties today's counts.
     function carry(
         mapping(bytes32 => Card) storage cards,
         mapping(address => Mandate) storage ownerMandates,
         Usage storage u,
         address owner,
+        int32 utcOffset,
         bytes calldata data
     ) external {
         (
@@ -188,13 +190,16 @@ library CardLimits {
             Mandate[] memory spent
         ) = abi.decode(data, (Usage, bytes32[], Window[], address[], Mandate[]));
         if (cardIds.length != windows.length || merchants.length != spent.length) revert InvalidCard();
+        (uint32 day, uint32 month) = calendar(utcOffset);
+        if (usage.day > day || usage.month > month) revert InvalidCard();
         _carryUsage(u, usage);
         for (uint256 i; i < cardIds.length; ++i) {
             Card storage c = cards[cardIds[i]];
-            if (c.owner != owner) revert InvalidCard();
+            if (c.owner != owner || windows[i].day > day || windows[i].month > month) revert InvalidCard();
             _carryWindow(c.window, windows[i]);
         }
         for (uint256 i; i < merchants.length; ++i) {
+            if (spent[i].month > month) revert InvalidCard();
             _carryMandate(ownerMandates[merchants[i]], spent[i]);
         }
         emit UsageCarried(owner);
@@ -255,7 +260,7 @@ library CardLimits {
     ) external returns (uint32 day, uint8 epoch) {
         Limits memory l = c.limits;
         (day,) = _spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], total, amount, enforce);
-        if (merchant != address(0)) _useMandate(m, g.terms.utcOffset, amount);
+        if (merchant != address(0)) _useMandate(m, g.terms.utcOffset, amount, enforce);
         // Purchases record the low 8 bits of the epoch and compare them only to it.
         // forge-lint: disable-next-line(unsafe-typecast)
         epoch = uint8(g.epoch);
@@ -441,16 +446,21 @@ library CardLimits {
 
     /// @notice Checks a merchant mandate and counts `amount` toward its monthly limit.
     function useMandate(Mandate storage m, int32 utcOffset, uint256 amount) external {
-        _useMandate(m, utcOffset, amount);
+        _useMandate(m, utcOffset, amount, true);
     }
 
-    function _useMandate(Mandate storage m, int32 utcOffset, uint256 amount) private {
-        if (m.revoked) revert MerchantRevoked();
+    /// @dev Without enforce (a tip or late charge the network already took) it counts, up to the limit, without
+    ///      refusing.
+    function _useMandate(Mandate storage m, int32 utcOffset, uint256 amount, bool enforce) private {
+        if (enforce && m.revoked) revert MerchantRevoked();
         uint96 limit = m.monthlyLimit;
         if (limit == 0) return;
         (, uint32 month) = calendar(utcOffset);
         uint256 spent = (m.month == month ? m.spent : 0) + amount;
-        if (spent > limit) revert MerchantLimitExceeded();
+        if (spent > limit) {
+            if (enforce) revert MerchantLimitExceeded();
+            spent = limit;
+        }
         m.month = month;
         // Bounded by the 96-bit limit just checked.
         // forge-lint: disable-next-line(unsafe-typecast)

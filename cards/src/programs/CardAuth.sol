@@ -167,6 +167,8 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (approved == 0 || (approved < amount && flags & PARTIAL == 0)) revert InsufficientAvailable();
         // A stand-in already passed the limits offline: it counts against them without being refused.
         (uint32 day, uint8 epoch) = _spend(c, owner, merchant, approved, approved, !standIn);
+        // Only purchases under a mandate limit keep their merchant, so the rest add no storage.
+        if (merchant != address(0) && mandates[owner][merchant].monthlyLimit != 0) mandateMerchant[ref] = merchant;
         _purchases[ref] = _pack(
             Purchase(
                 c.index,
@@ -207,7 +209,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
             // A revoked grant stops increments as it stops new purchases.
             if (!grants[owner].active) revert CardLimits.NoTerms();
             uint256 want = amount - p.amount;
-            _spend(c, owner, address(0), amount, want, true);
+            _spend(c, owner, mandateMerchant[ref], amount, want, true);
             legs = CardLegs.grow(order, sourceKind, ref, owner, c.kinds, want, legs, p.expiresAt);
         } else {
             CardLegs.shrink(order, sourceKind, ref, owner, legs, amount - p.captured, standIn, p.expiresAt);
@@ -252,7 +254,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (p.captured > MAX_AMOUNT) revert InvalidAmount();
         // A tip within tolerance counts against the limits without being checked. The authorized amount stays as it
         // was, the bound for later captures.
-        if (amount > open) _spend(c, owner, address(0), 0, amount - open, false);
+        if (amount > open) _spend(c, owner, mandateMerchant[ref], 0, amount - open, false);
         uint256 left = p.amount > p.captured ? p.amount - p.captured : 0;
         if (isFinal) {
             _giveBack(c, owner, p, left);
@@ -304,7 +306,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
             if (p.flags & (OPEN | CHARGED) != 0) revert PurchaseExists();
             if (p.era != _state.era) revert CardLegs.Unsettled();
             (c, owner) = _card(p);
-            _spend(c, owner, address(0), 0, amount, false);
+            _spend(c, owner, mandateMerchant[ref], 0, amount, false);
             p.flags |= CHARGED;
         }
         CardLegs.Funding[] storage order = _funding[owner][p.version];

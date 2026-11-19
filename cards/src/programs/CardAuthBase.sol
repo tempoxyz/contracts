@@ -84,6 +84,9 @@ abstract contract CardAuthBase is ICardAuthState {
     mapping(bytes32 ref => uint256) internal _purchases;
     /// @notice Asked after every step that raises the program's exposure; zero for none.
     address public exposureGuard;
+    /// @notice The merchant of a purchase authorized under one of its owner's mandate limits, whose later increments,
+    ///         tips and late charges count toward that mandate too.
+    mapping(bytes32 ref => address merchant) public mandateMerchant;
 
     event PurchaseAuthorized(
         bytes32 indexed ref, bytes32 indexed card, address indexed owner, uint256 amount, uint256 legs, uint64 seq

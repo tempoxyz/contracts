@@ -42,7 +42,7 @@ contract CardAuthAdmin is CardAuthBase {
     ///         reads it.
     function carryUsage(address owner, bytes calldata data) external {
         _onlyIssuer();
-        CardLimits.carry(_cards, mandates[owner], usageOf[owner], owner, data);
+        CardLimits.carry(_cards, mandates[owner], usageOf[owner], owner, grants[owner].terms.utcOffset, data);
     }
 
     /// @notice Gives `key` the role bits `roles` and a cumulative cap of `cap` units; zero roles removes it.
