@@ -137,10 +137,18 @@ contract DifferentialTest is CoreInvariants {
 
     function _assertCoverage(Coverage memory c) internal pure {
         for (uint256 j; j < c.calls.length; ++j) {
-            assertGe(c.callOk[j], c.callLeast[j], string.concat("successful calls of ", vm.toString(abi.encodePacked(c.calls[j]))));
+            assertGe(
+                c.callOk[j],
+                c.callLeast[j],
+                string.concat("successful calls of ", vm.toString(abi.encodePacked(c.calls[j])))
+            );
         }
         for (uint256 j; j < c.errors.length; ++j) {
-            assertGe(c.errorHits[j], c.errorLeast[j], string.concat("reverts with ", vm.toString(abi.encodePacked(c.errors[j]))));
+            assertGe(
+                c.errorHits[j],
+                c.errorLeast[j],
+                string.concat("reverts with ", vm.toString(abi.encodePacked(c.errors[j])))
+            );
         }
         for (uint256 j; j < c.events.length; ++j) {
             assertGe(c.eventHits[j], c.eventLeast[j], string.concat("events ", vm.toString(c.events[j])));
