@@ -70,9 +70,6 @@ contract MockPayoutTarget {
     Mode public mode;
     ICardProvider public provider;
 
-    /// @dev Bridge's handler names it this way.
-    error IncorrectAssetForVault();
-
     function setMode(Mode mode_) external {
         mode = mode_;
     }
@@ -115,7 +112,7 @@ contract MockPayoutTarget {
         ) revert CardSpender.DestinationNotAuthorized(s.destination);
         if (s.fromVault != 0) {
             if (!provider.isAllowedVault(s.vault)) revert CardSpender.VaultNotAllowed(s.vault);
-            if (ITempoEarnVault(s.vault).asset() != s.token) revert IncorrectAssetForVault();
+            if (ITempoEarnVault(s.vault).asset() != s.token) revert CardSpender.IncorrectAssetForVault();
         }
     }
 
