@@ -102,9 +102,10 @@ contract VedaEngine is
     ITeller public teller;
     IBoringQueue public queue;
     IAccountant public accountant;
-    uint64 public peripheryVersion;
     /// @notice Maximum age of the latest Veda Accountant rate report accepted for new deposits.
+    /// @dev Packed beside `accountant`, which every read of it pairs with.
     uint64 public maxRateAge;
+    uint64 public peripheryVersion;
     /// @dev Transaction-scoped rate checkpoint. Transient storage is cleared automatically after the
     ///      transaction, so unrelated operations in the same block may consume a newly posted rate.
     bool private transient _rateCheckpointed;
