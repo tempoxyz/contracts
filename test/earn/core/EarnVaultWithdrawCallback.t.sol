@@ -104,7 +104,7 @@ contract EarnVaultWithdrawCallbackTest is Test {
     function testCallbackNavRiseBeforeFullBurnReverts() public {
         engine.setWithdrawBurnOverride(10 ether);
         payer.setNavBump(engine, 1 ether);
-        vm.expectRevert(EarnVault.ResidualBacking.selector);
+        vm.expectRevert(EarnVault.EngineChangedDuringCallback.selector);
         payer.withdraw(10 ether, receiver, 10 ether);
     }
 
@@ -113,8 +113,22 @@ contract EarnVaultWithdrawCallbackTest is Test {
         engine.setWithdrawBurnOverride(9 ether);
         payer.setNavBump(engine, 1 ether);
         payer.setCustodyCut(address(core), 1 ether);
-        vm.expectRevert(EarnVault.ResidualBacking.selector);
+        vm.expectRevert(EarnVault.EngineChangedDuringCallback.selector);
         payer.withdraw(9 ether, receiver, 10 ether);
+    }
+
+    /// @dev A partial withdrawal is refused too once the callback moves venue value or custody.
+    function testCallbackNavRiseOnPartialWithdrawReverts() public {
+        payer.setNavBump(engine, 1 ether);
+        vm.expectRevert(EarnVault.EngineChangedDuringCallback.selector);
+        payer.withdraw(4 ether, receiver, 10 ether);
+    }
+
+    function testCallbackCustodyCutOnPartialWithdrawReverts() public {
+        payer.setNavBump(engine, 0);
+        payer.setCustodyCut(address(core), 1 ether);
+        vm.expectRevert(EarnVault.EngineChangedDuringCallback.selector);
+        payer.withdraw(4 ether, receiver, 10 ether);
     }
 
     function testRevertsWhenTheCallbackUnderpays() public {

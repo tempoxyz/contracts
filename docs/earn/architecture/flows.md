@@ -114,7 +114,7 @@ step 3, before the engine pays out, it calls `earnWithdrawCallback(requiredEarnS
 ([`IEarnWithdrawCallback`](../../../src/interfaces/earn/IEarnWithdrawCallback.sol)) for the quoted cost, and
 reverts with `EarnSharesNotReceived` unless its EarnShare balance rose by exactly that amount. Accounting
 and fees are settled before the callback, but views read inside it are not: they may count the shares already
-moved to the EarnVault as burned, so price nothing from them there. The burn may not
+moved to the EarnVault as burned, so price nothing from them there. The callback may not change the engine's custody or value; the withdrawal reverts with `EngineChangedDuringCallback` if it does. The burn may not
 exceed the quote (`ExceedsMaxEarnShares`), and any quoted EarnShare it leaves returns to the caller in
 step 7, reverting with `EarnSharesNotReturned` unless the caller is credited all of it. A contract that spends someone else's shares (a card program) uses it to move them straight
 from their owner to the EarnVault, without a separate `previewWithdraw` quote. The EarnVault reports it

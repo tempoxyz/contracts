@@ -217,6 +217,8 @@ contract EarnVault is IEarnVault {
     error EarnSharesNotReceived();
     /// @notice The callback caller was not credited the quoted EarnShare the burn left.
     error EarnSharesNotReturned();
+    /// @notice Engine custody or value changed while the withdraw callback ran.
+    error EngineChangedDuringCallback();
     error EngineEarnVaultMismatch();
     error EngineExitUnsupported();
     error ExcessiveConversionLoss(uint256 inputShares, uint256 representedShares);
@@ -949,11 +951,16 @@ contract EarnVault is IEarnVault {
         if (requiredEarnShares > maxEarnShares) revert ExceedsMaxEarnShares();
         // Read before the callback: shares it pays in would otherwise fill the vault's one-unit residue allowance.
         uint256 supply = _activeSupply();
-        // The callback runs here, while the vault's state is settled, so no caller code ever reads it half-updated.
-        if (callback) _collectEarnShares(requiredEarnShares, true);
-        // Read after the callback, which can move the venue's NAV or custody, so the full-burn guard sees one state.
         uint256 engineSharesBefore = engineShares();
         uint256 engineAssetsBefore = totalAssets();
+        // The callback runs here, while the vault's state is settled, so no caller code ever reads it half-updated.
+        if (callback) {
+            _collectEarnShares(requiredEarnShares, true);
+            // Fees, the anchor and the quote were settled against this engine state; the callback may not move it.
+            if (engineShares() != engineSharesBefore || totalAssets() != engineAssetsBefore) {
+                revert EngineChangedDuringCallback();
+            }
+        }
 
         uint256 engineSharesBurned = IEarnEngineExactWithdraw(engine).withdraw(assets, receiver);
         if (engineSharesBurned == 0) revert InsufficientOutput();
