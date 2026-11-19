@@ -88,6 +88,8 @@ abstract contract CardAuthBase is ICardAuthState {
     /// @notice The merchant of a purchase authorized under one of its owner's mandate limits, whose later increments,
     ///         tips and late charges count toward that mandate too.
     mapping(bytes32 ref => address merchant) public mandateMerchant;
+    /// @dev The latest settlement checkpoints (CardLegs.CHECKPOINTS), a ring the ledger's checkpoint count indexes.
+    CardLegs.Checkpoint[8] internal _checkpoints;
 
     event PurchaseAuthorized(
         bytes32 indexed ref, bytes32 indexed card, address indexed owner, uint256 amount, uint256 legs, uint64 seq
@@ -126,6 +128,8 @@ abstract contract CardAuthBase is ICardAuthState {
     error PurchaseExpired();
     error PurchaseNotOpen();
     error SettingPending(uint64 eta);
+    /// @notice The settlement token's policy keeps the settlement account from receiving it, so nothing could capture.
+    error SettlementAccountBlocked();
     error Unauthorized();
 
     function _onlyIssuer() internal view {

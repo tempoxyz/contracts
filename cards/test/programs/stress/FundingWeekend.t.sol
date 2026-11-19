@@ -140,19 +140,18 @@ contract FundingWeekendStressTest is FundingBase {
         _run(10, 7, START + 9 days + 9 hours, true);
     }
 
-    /// @dev The network pays what was captured through each 00:00 cut-off at 10:00 and the sponsor acknowledges through
-    ///      that cut-off. Current behaviour: an acknowledgement short of the live sequence moves the cursor but clears
-    ///      none of the unsettled net, so unsettled exposure only grows and the guard declines from midweek on. Paying
-    ///      and acknowledging the live net instead (the other runs) clears captures made after the cut-off that the
-    ///      network has not been paid for yet.
+    /// @dev The sponsor checkpoints the program at each 00:00 cut-off; the network pays what was captured through it
+    ///      at 10:00 and the sponsor acknowledges through that cut-off while captures continue past it. Each
+    ///      acknowledgement clears exactly the net through the cut-off and leaves the later net open, so the guard
+    ///      counts nothing the network was paid for, and nothing it was not paid for is cleared.
     function test_stress_weekendOutage_cutoffAcknowledgement() public {
         _setUp(40);
         tag = "weekend_cutoff_ack";
         cutoffMode = true;
         _run(10, type(uint256).max, START + 7 days + 9 hours, false);
-        // Current behaviour: an acknowledgement short of the live sequence clears nothing.
         assertGt(partialAcks, 0, "no partial acknowledgement");
-        assertEq(partialCleared, 0, "a partial acknowledgement cleared exposure");
+        assertGt(partialCleared, 0, "partial acknowledgements cleared nothing");
+        assertEq(paidStillCountedMax, 0, "the guard counted net the network was paid for");
     }
 
     // Simulation.
@@ -176,7 +175,17 @@ contract FundingWeekendStressTest is FundingBase {
         bool business = !weekend && hr / 24 != holiday;
         bool outage = t >= outageStart && t < fundingAt;
         if (hour == 0) {
-            (cutoffSeq,, cutoffNet,) = cards.ledger();
+            if (cutoffMode) {
+                // The network's cut-off: the sponsor records the net through it for the acknowledgement at 10:00.
+                vm.prank(sponsor);
+                cutoffSeq = treasury.checkpointSettlement();
+                int128 recorded;
+                (, recorded) = cards.settlementCheckpoint(0);
+                (,, cutoffNet,) = cards.ledger();
+                if (cutoffSeq > _settledThrough()) assertEq(recorded, cutoffNet, "checkpoint records the live net");
+            } else {
+                (cutoffSeq,, cutoffNet,) = cards.ledger();
+            }
         }
         if (hour == 6 && wd == 5) _paydays();
         if (hour == 9 && business && !outage) {
@@ -397,6 +406,8 @@ contract FundingWeekendStressTest is FundingBase {
             vm.prank(sponsor);
             treasury.acknowledgeSettlement(cutoffSeq, 0);
             uint256 cleared = before - _unsettled();
+            (,,, int128 settledNow) = cards.ledger();
+            assertEq(settledNow, cutoffNet, "an acknowledgement clears exactly the net through its cut-off");
             cutoffCleared += cleared;
             ++cutoffAcks;
             if (cutoffSeq < seq) {
@@ -412,6 +423,10 @@ contract FundingWeekendStressTest is FundingBase {
         ++s.settlements;
         if (s.resumeHour == 0 && block.timestamp > outageStart) s.resumeHour = (block.timestamp - START) / HOUR;
         _checkLedger();
+    }
+
+    function _settledThrough() internal view returns (uint64 through) {
+        (, through,,) = cards.ledger();
     }
 
     function _observe() internal {

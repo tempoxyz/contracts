@@ -127,13 +127,27 @@ contract CardAuthAdmin is CardAuthBase {
         // forge-lint: disable-end(missing-events-access-control)
     }
 
-    /// @notice Acknowledges purchase steps through `throughSeq` as settled off chain. Once the issuer sets an exposure
-    ///         guard, only the guard acknowledges, for the party the exposure is owed to; without one, the issuer.
+    /// @notice Acknowledges purchase steps through `throughSeq` as settled off chain, clearing the net as of that
+    ///         step: the latest step or a kept checkpoint. Once the issuer sets an exposure guard, only the guard
+    ///         acknowledges, for the party the exposure is owed to; without one, the issuer.
     function acknowledgeSettlement(uint64 throughSeq) external {
+        _onlyAcknowledger();
+        CardLegs.acknowledge(_ledger, _checkpoints, throughSeq);
+    }
+
+    /// @notice Records the net as of the latest purchase step (at a network cut-off) for a later acknowledgement
+    ///         through it, and returns that step. Recording clears nothing; whoever acknowledges records, so nobody
+    ///         else can replace the checkpoints it keeps.
+    function checkpointSettlement() external returns (uint64) {
+        _onlyAcknowledger();
+        return CardLegs.checkpoint(_ledger, _checkpoints);
+    }
+
+    /// @dev The exposure guard once the issuer set one, for the party the exposure is owed to; without one, the issuer.
+    function _onlyAcknowledger() private view {
         address guard = exposureGuard;
         if (guard == address(0)) _onlyIssuer();
         else if (msg.sender != guard) revert Unauthorized();
-        CardLegs.acknowledge(_ledger, throughSeq);
     }
 
     // Companions.

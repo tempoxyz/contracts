@@ -8,6 +8,8 @@ import { CardLimits } from "./CardLimits.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IExposureGuard } from "./interfaces/IExposureGuard.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @title CardAuth
 /// @notice A card program's authorization contract: its cards, the owners' grants and limits, merchant mandates,
@@ -119,6 +121,10 @@ contract CardAuth is CardAuthBase, ICardAuth {
         _delegate();
     }
 
+    function checkpointSettlement() external returns (uint64) {
+        _delegate();
+    }
+
     function useOperatorCap(address, uint256) external {
         _delegate();
     }
@@ -170,11 +176,13 @@ contract CardAuth is CardAuthBase, ICardAuth {
         _role(ROLE_AUTHORIZE, amount);
         if (_purchases[ref] != 0) revert PurchaseExists();
         if (amount == 0 || amount > MAX_AMOUNT || expiresAt > type(uint32).max) revert InvalidAmount();
+        bool standIn = flags & STAND_IN != 0;
+        // A stand-in was already approved offline and the network presents it anyway: its hold still counts.
+        if (!standIn) _checkSettlementAccount();
         CardLimits.Card storage c = _cards[card];
         address owner = _admit(c);
         uint8 version = fundingVersion[owner];
         CardLegs.Funding[] storage order = _funding[owner][version];
-        bool standIn = flags & STAND_IN != 0;
         uint256 legs;
         (approved, legs) = CardLegs.place(order, sourceKind, ref, owner, c.kinds, amount, expiresAt, standIn);
         if (approved == 0 || (approved < amount && flags & PARTIAL == 0)) revert InsufficientAvailable();
@@ -220,6 +228,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
             if (c.status != CardLimits.Status.Active) revert CardLimits.CardNotActive();
             // A revoked grant stops increments as it stops new purchases.
             if (!grants[owner].active) revert CardLimits.NoTerms();
+            _checkSettlementAccount();
             uint256 want = amount - p.amount;
             _spend(c, owner, mandateMerchant[ref], amount, want, true);
             legs = CardLegs.grow(order, sourceKind, ref, owner, c.kinds, want, legs, p.expiresAt);
@@ -444,12 +453,30 @@ contract CardAuth is CardAuthBase, ICardAuth {
         return (l.seq, l.settledThrough, l.net, l.settledNet);
     }
 
+    function settlementCheckpoint(uint256 back) external view returns (uint64 seq, int128 net) {
+        uint256 n = _ledger.checkpoints;
+        if (back >= n || back >= CardLegs.CHECKPOINTS) return (0, 0);
+        CardLegs.Checkpoint memory c = _checkpoints[(n - 1 - back) % CardLegs.CHECKPOINTS];
+        return (c.seq, c.net);
+    }
+
     /// @notice The id order entry `i` of purchase `ref` holds under at its source.
     function legId(bytes32 ref, uint256 i) external pure returns (bytes32) {
         return CardLegs.legId(ref, i);
     }
 
     // Internals.
+
+    /// @dev Refuses a new hold while the settlement token's TIP-403 policy keeps the settlement account from receiving
+    ///      it: the purchase could never capture.
+    function _checkSettlementAccount() private view {
+        address token = eras[_state.era].token;
+        uint64 policy = ITIP20(token).transferPolicyId();
+        // Policy 1 authorizes every account.
+        if (policy != 1 && !StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, SETTLEMENT_ACCOUNT)) {
+            revert SettlementAccountBlocked();
+        }
+    }
 
     function _checkExposure() private view {
         address guard = exposureGuard;

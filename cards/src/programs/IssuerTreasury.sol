@@ -355,6 +355,14 @@ contract IssuerTreasury is IExposureGuard {
         emit SettlementAcknowledged(throughSeq, applied);
     }
 
+    /// @notice Records the program's net as of its latest purchase step (at a network cut-off), for a later
+    ///         acknowledgement through that step, and returns the step. The sponsor, or the issuer before one.
+    function checkpointSettlement() external returns (uint64) {
+        address sponsor = collateral.sponsor;
+        if (msg.sender != (sponsor == address(0) ? PROGRAM.ISSUER() : sponsor)) revert NotSponsor();
+        return PROGRAM.checkpointSettlement();
+    }
+
     /// @notice The core id of the settlement account's nth collateral pledge.
     function pledgeId(uint256 n) public view returns (bytes32) {
         return keccak256(abi.encode(address(this), n));

@@ -90,4 +90,9 @@ interface ICardAuth is ICardAuthState {
     /// @notice Acknowledges purchase steps through `throughSeq` as settled: the exposure guard once one is set, else
     ///         the issuer.
     function acknowledgeSettlement(uint64 throughSeq) external;
+    /// @notice Records the net as of the latest purchase step (at a network cut-off) for a later acknowledgement
+    ///         through that step, and returns it. Whoever acknowledges: the exposure guard once set, else the issuer.
+    function checkpointSettlement() external returns (uint64 seq);
+    /// @notice A kept settlement checkpoint: the latest for `back` zero, older ones after it; zeros past those kept.
+    function settlementCheckpoint(uint256 back) external view returns (uint64 seq, int128 net);
 }

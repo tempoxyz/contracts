@@ -118,6 +118,14 @@ contract CompCardAuth is ICardAuth {
         _unsettled = 0;
     }
 
+    function checkpointSettlement() external pure returns (uint64) {
+        return 0;
+    }
+
+    function settlementCheckpoint(uint256) external pure returns (uint64, int128) {
+        return (0, 0);
+    }
+
     function ledger() external view returns (uint64, uint64, int128, int128) {
         // Unsettled exposure reads as one step the issuer has not acknowledged.
         return (_unsettled == 0 ? 0 : 1, 0, int128(int256(_unsettled)), 0);

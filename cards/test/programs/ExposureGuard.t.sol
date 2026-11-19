@@ -55,6 +55,56 @@ contract ExposureGuardTest is AuthEnv {
         cards.charge(CARD, P2, 50e6, merchant);
     }
 
+    /// @dev The sponsor checkpoints at the network's cut-off and acknowledges through it once the network paid, while
+    ///      captures continue: exactly the net through the cut-off stops counting, and the later net still counts.
+    function test_exposure_acknowledgedThroughACheckpoint_clearsOnlyTheNetThrough() public {
+        _authorize(P1, 60e6);
+        _capture(P1, 60e6, true);
+        // Only the sponsor records, through the treasury; neither the issuer nor its settle operator can.
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.NotSponsor.selector);
+        treasury.checkpointSettlement();
+        vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
+        cards.checkpointSettlement();
+        vm.prank(sponsor);
+        uint64 cutoff = treasury.checkpointSettlement();
+        _authorize(P2, 30e6);
+        _capture(P2, 30e6, true);
+        assertEq(treasury.exposure(), 90e6);
+        // The issuer still cannot clear exposure alone.
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.NotSponsor.selector);
+        treasury.acknowledgeSettlement(cutoff, 0);
+        vm.prank(sponsor);
+        treasury.acknowledgeSettlement(cutoff, 0);
+        assertEq(treasury.exposure(), 30e6, "the capture after the cut-off still counts");
+        // So 70 more fits under the collateral, and 71 does not.
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 101e6, 100e6));
+        cards.charge(CARD, bytes32("guard-3"), 71e6, merchant);
+        vm.prank(issuer);
+        cards.charge(CARD, bytes32("guard-3"), 70e6, merchant);
+    }
+
+    /// @dev What the sponsor seized applies to a partial acknowledgement only up to the net it clears.
+    function test_exposure_partialAcknowledgement_appliesAtMostWhatItClears() public {
+        _authorize(P1, 60e6);
+        _capture(P1, 60e6, true);
+        vm.prank(sponsor);
+        uint64 cutoff = treasury.checkpointSettlement();
+        _authorize(P2, 30e6);
+        _capture(P2, 30e6, true);
+        vm.prank(sponsor);
+        treasury.seize(90e6);
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(61e6), uint256(60e6)));
+        treasury.acknowledgeSettlement(cutoff, 61e6);
+        vm.prank(sponsor);
+        treasury.acknowledgeSettlement(cutoff, 60e6);
+        assertEq(treasury.seized(), 30e6);
+    }
+
     function test_exposure_expiredCollateral_refusesNewExposure() public {
         _authorize(P1, 100e6);
         // The collateral stops covering, so the program is past it and nothing may add to the exposure.

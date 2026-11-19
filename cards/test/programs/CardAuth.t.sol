@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
 import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
@@ -1341,6 +1343,186 @@ contract CardAuthTest is AuthEnv {
         vm.prank(issuer);
         vm.expectRevert(CardLegs.InvalidCursor.selector);
         cards.acknowledgeSettlement(2);
+    }
+
+    /// @dev Captures and refunds continue past a network cut-off: acknowledging through the cut-off's checkpoint clears
+    ///      exactly the net through it, and what came after stays open.
+    function test_checkpoint_acknowledgeThroughCutoff_clearsOnlyTheNetThrough() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        _capture(P1, 100e6, true);
+        vm.expectEmit(address(cards));
+        emit CardLegs.SettlementCheckpointed(2, 100e6);
+        vm.prank(issuer);
+        assertEq(cards.checkpointSettlement(), 2);
+        // After the cut-off: another capture and a refund of the first purchase.
+        _authorize(P2, 50e6);
+        _capture(P2, 50e6, true);
+        _refund(P1, 20e6);
+        (uint64 seq,, int128 net,) = cards.ledger();
+        assertEq(seq, 5);
+        assertEq(net, 130e6);
+        // A step no checkpoint recorded cannot be acknowledged short of the latest.
+        vm.prank(issuer);
+        vm.expectRevert(CardLegs.InvalidCursor.selector);
+        cards.acknowledgeSettlement(3);
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(2);
+        (, uint64 settledThrough, int128 netNow, int128 settledNet) = cards.ledger();
+        assertEq(settledThrough, 2);
+        assertEq(settledNet, 100e6);
+        assertEq(netNow - settledNet, 30e6, "the 50 captured less the 20 refunded after the cut-off stay open");
+        // The next cut-off records the refund-heavy net, and acknowledging it clears the rest.
+        vm.prank(issuer);
+        assertEq(cards.checkpointSettlement(), 5);
+        (uint64 cpSeq, int128 cpNet) = cards.settlementCheckpoint(0);
+        assertEq(cpSeq, 5);
+        assertEq(cpNet, 130e6);
+        (cpSeq, cpNet) = cards.settlementCheckpoint(1);
+        assertEq(cpSeq, 2);
+        assertEq(cpNet, 100e6);
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(5);
+        (, settledThrough, netNow, settledNet) = cards.ledger();
+        assertEq(settledThrough, 5);
+        assertEq(settledNet, netNow);
+        // The cursor never moves back, through a kept checkpoint or not.
+        vm.prank(issuer);
+        vm.expectRevert(CardLegs.InvalidCursor.selector);
+        cards.acknowledgeSettlement(2);
+    }
+
+    /// @dev A net that went down across a cut-off (refunds past captures) is cleared as recorded too.
+    function test_checkpoint_refundsPastCapturesClearTheLowerNet() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        _capture(P1, 100e6, true);
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(2);
+        _refund(P1, 30e6);
+        vm.prank(issuer);
+        assertEq(cards.checkpointSettlement(), 3);
+        _authorize(P2, 10e6);
+        _capture(P2, 10e6, true);
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(3);
+        (,, int128 net, int128 settledNet) = cards.ledger();
+        assertEq(settledNet, 70e6);
+        assertEq(net, 80e6);
+    }
+
+    /// @dev Recording again without a new step, or at a step already acknowledged, records nothing.
+    function test_checkpoint_withoutANewStep_recordsNothing() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        vm.prank(issuer);
+        assertEq(cards.checkpointSettlement(), 1);
+        vm.recordLogs();
+        vm.prank(issuer);
+        assertEq(cards.checkpointSettlement(), 1);
+        assertEq(vm.getRecordedLogs().length, 0);
+        (uint64 cpSeq,) = cards.settlementCheckpoint(1);
+        assertEq(cpSeq, 0, "one checkpoint kept");
+        _capture(P1, 100e6, true);
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(2);
+        vm.recordLogs();
+        vm.prank(issuer);
+        assertEq(cards.checkpointSettlement(), 2);
+        assertEq(vm.getRecordedLogs().length, 0);
+        (cpSeq,) = cards.settlementCheckpoint(0);
+        assertEq(cpSeq, 1, "the acknowledged step is not recorded");
+    }
+
+    /// @dev Eight checkpoints are kept: the oldest is replaced by a ninth and can no longer be acknowledged through.
+    function test_checkpoint_keepsTheLatestEight() public {
+        usd.mint(alice, 1000e6);
+        uint64[9] memory seqs;
+        for (uint256 i; i < 9; ++i) {
+            bytes32 ref = bytes32(uint256(i + 100));
+            _authorize(ref, 10e6);
+            _capture(ref, 10e6, true);
+            vm.prank(issuer);
+            seqs[i] = cards.checkpointSettlement();
+        }
+        (uint64 cpSeq, int128 cpNet) = cards.settlementCheckpoint(7);
+        assertEq(cpSeq, seqs[1]);
+        assertEq(cpNet, 20e6);
+        (cpSeq,) = cards.settlementCheckpoint(8);
+        assertEq(cpSeq, 0, "past those kept");
+        vm.prank(issuer);
+        vm.expectRevert(CardLegs.InvalidCursor.selector);
+        cards.acknowledgeSettlement(seqs[0]);
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seqs[1]);
+        (,,, int128 settledNet) = cards.ledger();
+        assertEq(settledNet, 20e6);
+    }
+
+    /// @dev Whoever acknowledges records checkpoints, so nobody else can replace the ones it keeps.
+    function test_checkpoint_onlyTheAcknowledger() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 100e6);
+        address key = makeAddr("key");
+        uint8 settleRole = cards.ROLE_SETTLE();
+        vm.prank(issuer);
+        cards.setOperator(key, settleRole, 50e6);
+        vm.prank(key);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
+        cards.checkpointSettlement();
+        vm.prank(alice);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
+        cards.checkpointSettlement();
+        vm.prank(issuer);
+        cards.checkpointSettlement();
+    }
+
+    // Settlement account and the settlement token's policy.
+
+    /// @dev While the settlement token's policy keeps the settlement account from receiving it, nothing new is held:
+    ///      new purchases and increments are declined; decreases, releases and stand-ins approved offline still land.
+    function test_authorize_declinedWhileTheSettlementAccountCannotReceive() public {
+        usd.mint(alice, 1000e6);
+        _authorize(P1, 50e6);
+        ITIP403Registry registry = StdPrecompiles.TIP403_REGISTRY;
+        uint64 policy = registry.createPolicy(address(this), ITIP403Registry.PolicyType.BLACKLIST);
+        usd.changeTransferPolicyId(policy);
+        // Another account frozen changes nothing.
+        registry.modifyPolicyBlacklist(policy, bob, true);
+        _authorize(P2, 10e6);
+        registry.modifyPolicyBlacklist(policy, settlement, true);
+        vm.startPrank(issuer);
+        vm.expectRevert(CardAuthBase.SettlementAccountBlocked.selector);
+        cards.authorize(CARD, P3, 10e6, merchant, uint64(block.timestamp + 1 days), 0);
+        vm.expectRevert(CardAuthBase.SettlementAccountBlocked.selector);
+        cards.adjust(P1, 60e6);
+        cards.adjust(P1, 40e6);
+        cards.authorize(CARD, P3, 10e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
+        cards.release(P2);
+        vm.stopPrank();
+        assertEq(cards.purchaseOf(P1).held, 40e6);
+        assertTrue(cards.purchaseOf(P3).open);
+        // Unfrozen, purchases are approved again.
+        registry.modifyPolicyBlacklist(policy, settlement, false);
+        _authorize(bytes32("purchase-4"), 10e6);
+        vm.prank(issuer);
+        cards.adjust(P1, 60e6);
+        _assertCoreBalanced();
+    }
+
+    /// @dev A whitelist that leaves the settlement account out declines as a freeze does.
+    function test_authorize_declinedWhenAWhitelistLeavesOutTheSettlementAccount() public {
+        usd.mint(alice, 1000e6);
+        ITIP403Registry registry = StdPrecompiles.TIP403_REGISTRY;
+        uint64 policy = registry.createPolicy(address(this), ITIP403Registry.PolicyType.WHITELIST);
+        registry.modifyPolicyWhitelist(policy, alice, true);
+        registry.modifyPolicyWhitelist(policy, address(cash), true);
+        usd.changeTransferPolicyId(policy);
+        vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.SettlementAccountBlocked.selector);
+        cards.authorize(CARD, P1, 10e6, merchant, uint64(block.timestamp + 1 days), 0);
+        registry.modifyPolicyWhitelist(policy, settlement, true);
+        _authorize(P1, 10e6);
     }
 
     /// @dev Credit the cardholder already holds (provisional credit a won dispute keeps) settles as a refund, by what the

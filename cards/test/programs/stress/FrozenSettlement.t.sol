@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+import { CardAuthBase } from "../../../src/programs/CardAuthBase.sol";
 import { CardLegs } from "../../../src/programs/CardLegs.sol";
 import { AdverseBase } from "./AdverseBase.sol";
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
@@ -60,6 +61,8 @@ contract FrozenSettlementStressTest is AdverseBase {
         uint256 authValue;
         uint256 declines;
         uint256 outageDeclines;
+        // Outage declines that name the settlement account as unable to receive the settlement token.
+        uint256 settlementBlockedDeclines;
         uint256 outageAuths;
         uint256 captures;
         uint256 frozenHolderCaptures;
@@ -118,10 +121,11 @@ contract FrozenSettlementStressTest is AdverseBase {
     }
 
     /// @notice The settlement account is frozen for longer than a purchase's hold term (10 days against 7 by
-    ///         default, `STRESS_FREEZE_DAYS` to change it). Every capture fails, purchases keep being approved,
-    ///         lapsed ones are released and charged late after the account is unfrozen, from whatever the cardholder
-    ///         still holds then; a fifth of the cardholders move their money elsewhere once their hold lapses, which
-    ///         the issuer absorbs.
+    ///         default, `STRESS_FREEZE_DAYS` to change it). Every capture fails and every new purchase is declined
+    ///         while the account cannot receive the settlement token; purchases approved before the freeze that lapse
+    ///         are released and charged late after the account is unfrozen, from whatever the cardholder still holds
+    ///         then; a fifth of the cardholders move their money elsewhere once their hold lapses, which the issuer
+    ///         absorbs.
     function test_stress_settlementAccountFrozenPastHoldTerm() public {
         string memory t = "settlementFrozen";
         _holders(40 * scale, START_BALANCE);
@@ -137,8 +141,16 @@ contract FrozenSettlementStressTest is AdverseBase {
         (uint256 held,, uint256 unsettled) = cards.exposure();
         assertEq(held, 0, "nothing held at the end");
         assertEq(unsettled, 0, "everything acknowledged");
-        assertGt(m.outageAuths, 0, "purchases kept being approved while the account was frozen");
-        assertGt(m.absorbed, 0, "the issuer absorbed what drained cardholders no longer held");
+        assertEq(m.outageAuths, 0, "nothing approved while the account was frozen");
+        assertGt(m.outageDeclines, 0, "purchases were tried while the account was frozen");
+        assertEq(m.settlementBlockedDeclines, m.outageDeclines, "every outage decline names the settlement account");
+        // Only purchases approved before the freeze lapse now, and the issuer absorbs exactly what their cardholders
+        // no longer held when charged late (none at the default seed).
+        assertEq(
+            m.absorbed,
+            m.lapsedValue - m.lateCoveredValue,
+            "the issuer absorbed what drained cardholders no longer held"
+        );
     }
 
     /// @notice The token is paused from Friday 18:00 to Monday 12:00 with short holds (3 days) and merchants that
@@ -297,10 +309,15 @@ contract FrozenSettlementStressTest is AdverseBase {
                 ++m.auths;
                 m.authValue += amount;
                 if (_blocked(i)) ++m.outageAuths;
-            } catch {
+            } catch (bytes memory reason) {
                 _metered("authorize_declined");
                 ++m.declines;
-                if (_blocked(i)) ++m.outageDeclines;
+                if (_blocked(i)) {
+                    ++m.outageDeclines;
+                    if (bytes4(reason) == CardAuthBase.SettlementAccountBlocked.selector) {
+                        ++m.settlementBlockedDeclines;
+                    }
+                }
             }
         }
     }
@@ -479,6 +496,7 @@ contract FrozenSettlementStressTest is AdverseBase {
         _log(t, "declines", m.declines);
         _log(t, "outage_auths", m.outageAuths);
         _log(t, "outage_declines", m.outageDeclines);
+        _log(t, "outage_declines_settlement_blocked", m.settlementBlockedDeclines);
         _log(t, "captures", m.captures);
         _log(t, "frozen_holder_captures", m.frozenHolderCaptures);
         _log(t, "capture_fails", m.captureFails);

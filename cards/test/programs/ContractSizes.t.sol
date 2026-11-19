@@ -12,6 +12,9 @@ import { CardAuthAdmin } from "../../src/programs/CardAuthAdmin.sol";
 contract ContractSizesTest is Test {
     uint256 internal constant CARD_AUTH_BUDGET = 12_288;
     uint256 internal constant EIP170_LIMIT = 24_576;
+    /// @dev The compiler's CBOR metadata: a map of an ipfs hash and the compiler version, then its length.
+    bytes8 internal constant METADATA_HEAD = hex"a264697066735822";
+    uint256 internal constant METADATA_LENGTH = 52;
 
     function test_cardAuth_runtimeWithinBudget() public {
         CardAuthAdmin admin = new CardAuthAdmin();
@@ -73,14 +76,30 @@ contract ContractSizesTest is Test {
         ];
     }
 
-    /// @dev Whether the instructions in `code` before `end` include CREATE (0xf0) or CREATE2 (0xf5), skipping push data.
+    /// @dev Whether the instructions in `code` before `end` include CREATE (0xf0) or CREATE2 (0xf5), skipping push data
+    ///      and the CBOR metadata of code a constructor embeds as data (such as the admin code CardAuth checks).
     function _creates(bytes memory code, uint256 end) private pure returns (bool) {
         for (uint256 i; i < end; ++i) {
+            if (_metadataAt(code, i)) {
+                i += METADATA_LENGTH + 1;
+                continue;
+            }
             uint8 op = uint8(code[i]);
             if (op == 0xf0 || op == 0xf5) return true;
             if (op >= 0x60 && op <= 0x7f) i += op - 0x5f;
         }
         return false;
+    }
+
+    /// @dev Whether a CBOR metadata map (`{ipfs, solar}`) followed by its two-byte length starts at `i`.
+    function _metadataAt(bytes memory code, uint256 i) private pure returns (bool) {
+        if (i + METADATA_LENGTH + 2 > code.length) return false;
+        bytes8 head;
+        assembly ("memory-safe") {
+            head := mload(add(add(code, 32), i))
+        }
+        uint256 length = uint256(uint8(code[i + METADATA_LENGTH])) << 8 | uint8(code[i + METADATA_LENGTH + 1]);
+        return head == METADATA_HEAD && length == METADATA_LENGTH;
     }
 
     /// @dev Where runtime code ends before its CBOR metadata, whose length its last two bytes give.

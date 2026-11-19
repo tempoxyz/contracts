@@ -46,20 +46,30 @@ library CardLegs {
     }
 
     /// @notice Purchase steps so far and the last one the issuer acknowledged, with net covered units now and at
-    ///         that acknowledgement.
+    ///         that acknowledgement, and how many settlement checkpoints were ever recorded.
     struct Ledger {
         uint64 seq;
         uint64 settledThrough;
         int128 net;
         int128 settledNet;
+        uint64 checkpoints;
+    }
+
+    /// @notice The net covered units as of purchase step `seq`, recorded for an acknowledgement through that step.
+    struct Checkpoint {
+        uint64 seq;
+        int128 net;
     }
 
     /// @notice Most order entries an owner may list.
     uint256 internal constant MAX_LEGS = 4;
+    /// @notice Settlement checkpoints kept, the oldest replaced first.
+    uint256 internal constant CHECKPOINTS = 8;
 
     event FundingSet(address indexed owner, uint8 version, Funding[] order);
 
     event SettlementAcknowledged(uint64 throughSeq, uint64 previous);
+    event SettlementCheckpointed(uint64 seq, int128 net);
     event SettlementTokenSet(address token, uint256 scale, uint8 era);
 
     error CaptureLimitExceeded();
@@ -69,12 +79,35 @@ library CardLegs {
     error InvalidOrder();
     error Unsettled();
 
-    /// @notice Acknowledges purchase steps through `throughSeq` as settled.
-    function acknowledge(Ledger storage l, uint64 throughSeq) external {
+    /// @notice Records the net as of the latest purchase step, so a later acknowledgement through that step clears
+    ///         exactly it while the steps after it stay open. Returns that step; nothing new to record changes nothing.
+    function checkpoint(Ledger storage l, Checkpoint[CHECKPOINTS] storage ring) external returns (uint64 seq) {
+        seq = l.seq;
+        uint64 n = l.checkpoints;
+        if (seq <= l.settledThrough || (n != 0 && ring[(n - 1) % CHECKPOINTS].seq == seq)) return seq;
+        int128 net = l.net;
+        ring[n % CHECKPOINTS] = Checkpoint(seq, net);
+        l.checkpoints = n + 1;
+        emit SettlementCheckpointed(seq, net);
+    }
+
+    /// @notice Acknowledges purchase steps through `throughSeq` as settled, clearing the net as of that step: the
+    ///         latest step, or one a kept checkpoint recorded.
+    function acknowledge(Ledger storage l, Checkpoint[CHECKPOINTS] storage ring, uint64 throughSeq) external {
         uint64 previous = l.settledThrough;
-        if (throughSeq <= previous || throughSeq > l.seq) revert InvalidCursor();
-        l.settledThrough = throughSeq;
-        if (throughSeq == l.seq) l.settledNet = l.net;
+        uint64 seq = l.seq;
+        if (throughSeq <= previous || throughSeq > seq) revert InvalidCursor();
+        int128 net = l.net;
+        if (throughSeq != seq) {
+            // Steps are numbered once across eras, and a token switch needs every step acknowledged, so a kept
+            // checkpoint past the cursor always holds a net of the current era.
+            uint256 i;
+            while (ring[i].seq != throughSeq) {
+                if (++i == CHECKPOINTS) revert InvalidCursor();
+            }
+            net = ring[i].net;
+        }
+        (l.settledThrough, l.settledNet) = (throughSeq, net);
         emit SettlementAcknowledged(throughSeq, previous);
     }
 
