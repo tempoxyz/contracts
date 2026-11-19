@@ -1,0 +1,509 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.36;
+
+import { CreditSource } from "../../../src/programs/CreditSource.sol";
+import { CompEnv } from "../harness/CompStubs.sol";
+import { console } from "forge-std/console.sol";
+import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
+
+/// @notice A year of secured credit lines with defaults: dozens of borrowers draw weekly on lines secured by Earn
+///         shares at 50-80% loan-to-value, accrue simple interest, get monthly statements collected through autopay,
+///         and 10-30% of them default (moving their free money and shares away). The collateral's price falls 20-50%
+///         in two steps; the lender liquidates every week. After every week: usd is conserved over every party, the
+///         core holds exactly what it reserves, a liquidation pays the lender at most what is owed and the borrower
+///         the surplus, and no borrower pays more than it drew plus simple interest on it.
+contract CreditDefaultsStressTest is CompEnv {
+    uint256 internal constant YEAR = 365 days;
+
+    struct Borrower {
+        address who;
+        uint64 lineId;
+        uint16 ltvBps;
+        uint16 aprBps;
+        uint32 defaultWeek;
+        bool defaulted;
+        uint128 drawn;
+        uint128 paid;
+        uint128 surplus;
+        uint32 liquidations;
+        uint32 firstDraw;
+    }
+
+    struct Cfg {
+        uint256 borrowers;
+        uint256 weeks_;
+        uint256 tailWeeks;
+        uint256 defaultBps;
+        uint256 firstDropWeek;
+        uint256 firstDropBps;
+        uint256 secondDropWeek;
+        uint256 totalDropBps;
+        // Weeks in which nobody collects, relocks or liquidates (a keeper outage), from outageFrom.
+        uint256 outageFrom;
+        uint256 outageWeeks;
+        // The keeper renews locks that fall due each day; otherwise it only acts on the weekly run.
+        bool dailyRelock;
+    }
+
+    struct Metrics {
+        uint256 draws;
+        uint256 drawValue;
+        uint256 drawRefusals;
+        uint256 statements;
+        uint256 statementRefusals;
+        uint256 pastDue;
+        uint256 collected;
+        uint256 liquidations;
+        uint256 liquidationsPerforming;
+        uint256 saleProceeds;
+        uint256 lenderFromSales;
+        uint256 surplusToBorrowers;
+        uint256 interestAccrued;
+        uint256 maxOwed;
+        uint256 maxUndercollateralized;
+        uint256 lastLiquidationWeek;
+        uint256 withdrawnAfterLapse;
+        uint256 relocks;
+    }
+
+    Borrower[] internal bs;
+    Cfg internal cfg;
+    Metrics internal m;
+    uint256 private _seed;
+    uint256 internal week;
+    bytes4 internal lastRevert;
+
+    address internal gone = makeAddr("gone");
+    address internal dead = address(0xdead);
+    address[] internal tracked;
+    uint256 internal expectedUsd;
+
+    function setUp() public {
+        _deployComp();
+        vm.warp(1_767_225_600); // 2026-01-01
+        tracked.push(lender);
+        tracked.push(settlement);
+        tracked.push(address(credit));
+        tracked.push(address(core));
+        tracked.push(address(auth));
+        tracked.push(address(venue));
+        tracked.push(address(earnVault));
+        tracked.push(gone);
+        tracked.push(dead);
+        tracked.push(address(this));
+    }
+
+    /// @notice 60 borrowers (times STRESS_SCALE), 20% default over the year, the collateral falls 20% in week 20
+    ///         and 50% in all by week 36 (STRESS_DROP_BPS to change it); 26 weeks of tail after the year.
+    function test_stress_defaultsWithCollateralCrash() public {
+        string memory t = "creditCrash";
+        _configure(60, vm.envOr("STRESS_DEFAULT_BPS", uint256(2000)), vm.envOr("STRESS_DROP_BPS", uint256(5000)));
+        _run(keccak256("credit-crash"));
+        _report(t);
+        assertGt(m.liquidations, 0, "the lender liquidated");
+        (uint256 loss,,) = _losses();
+        assertGt(loss, 0, "past the loan-to-value, the lender loses what the collateral no longer covers");
+    }
+
+    /// @notice Same year at stable prices: defaulted borrowers' collateral covers their debt at its loan-to-value,
+    ///         so the lender can never sell it. Liquidation only trims the interest that pushes a line past its
+    ///         ratio; the principal stays owed and the locked shares stay locked for as long as anyone relocks them.
+    function test_stress_defaultsAtStablePrices_principalNeverRecovered() public {
+        string memory t = "creditStable";
+        _configure(60, 2000, 0);
+        _run(keccak256("credit-stable"));
+        _report(t);
+        (uint256 loss, uint256 stuck, uint256 stuckLines) = _losses();
+        assertEq(loss, 0, "the collateral covers every defaulted line");
+        // Current behaviour: past-due principal on a line within its ratio has no path to recovery.
+        assertGt(stuck, 0, "defaulted principal stays owed against locked collateral");
+        assertGt(stuckLines, 0);
+    }
+
+    /// @notice The same year at stable prices with a keeper that only runs weekly (collect, relock through it, and
+    ///         liquidate). A line's 30-day lock renews only within its last day, so a weekly run misses that window
+    ///         about six times in seven; the lock lapses, anyone may end it, and every defaulted borrower walks away
+    ///         with its collateral. The lender loses the defaulted principal although prices never moved.
+    function test_stress_weeklyKeeperLetsLocksLapse() public {
+        string memory t = "creditWeeklyKeeper";
+        _configure(60, 2000, 0);
+        cfg.dailyRelock = false;
+        _run(keccak256("credit-stable"));
+        _report(t);
+        (uint256 loss,,) = _losses();
+        assertGt(m.withdrawnAfterLapse, 0, "defaulted borrowers withdrew collateral whose lock lapsed");
+        assertGt(loss, 0, "the lender lost defaulted principal at stable prices");
+    }
+
+    /// @notice A keeper outage longer than the 30-day lock term: nobody collects, relocks or liquidates for 6 weeks
+    ///         right after the first price drop. Locks lapse, defaulted borrowers move their shares away, and the
+    ///         lender is left unsecured.
+    function test_stress_lockLapsesDuringKeeperOutage() public {
+        string memory t = "creditLockLapse";
+        _configure(60, 2000, 3000);
+        cfg.outageFrom = 21;
+        cfg.outageWeeks = 6;
+        _run(keccak256("credit-lapse"));
+        _report(t);
+        assertGt(m.withdrawnAfterLapse, 0, "defaulted borrowers withdrew collateral whose lock lapsed");
+    }
+
+    /// @notice Fuzzed default rate (10-30%), price fall (20-50%) and seed over a smaller book; every weekly invariant
+    ///         holds, and the lender only loses on lines whose collateral was sold out.
+    /// forge-config: default.fuzz.runs = 8
+    /// forge-config: ci.fuzz.runs = 4
+    function testFuzz_stress_creditDefaults(uint256 defaultBps, uint256 dropBps, bytes32 seed) public {
+        defaultBps = bound(defaultBps, 1000, 3000);
+        dropBps = bound(dropBps, 2000, 5000);
+        _configure(16, defaultBps, dropBps);
+        cfg.weeks_ = 40;
+        cfg.tailWeeks = 12;
+        cfg.secondDropWeek = 30;
+        _run(seed);
+        for (uint256 i; i < bs.length; ++i) {
+            Borrower storage b = bs[i];
+            uint256 owed = credit.owedNow(b.lineId);
+            uint256 locked = credit.lockedShares(b.lineId);
+            uint256 value = locked == 0 ? 0 : earnVault.previewRedeem(locked);
+            // A line still owing more than its collateral is worth was sold down to its last few units.
+            if (owed > value + 2) assertLe(value, 2, "lender loses only once the collateral is sold out");
+        }
+    }
+
+    // Setup.
+
+    function _configure(uint256 n, uint256 defaultBps, uint256 dropBps) internal {
+        uint256 scale = vm.envOr("STRESS_SCALE", uint256(1));
+        cfg = Cfg({
+            borrowers: n * (scale == 0 ? 1 : scale),
+            weeks_: 52,
+            tailWeeks: 26,
+            defaultBps: defaultBps,
+            firstDropWeek: 20,
+            firstDropBps: dropBps < 2000 ? dropBps : 2000,
+            secondDropWeek: 36,
+            totalDropBps: dropBps,
+            outageFrom: 0,
+            outageWeeks: 0,
+            dailyRelock: true
+        });
+    }
+
+    function _open() internal {
+        usd.mint(lender, 0);
+        vm.prank(lender);
+        core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
+        uint16[4] memory ltvs = [uint16(5000), 6000, 7000, 8000];
+        for (uint256 i; i < cfg.borrowers; ++i) {
+            address who = makeAddr(string.concat("borrower-", vm.toString(i)));
+            uint128 limit = uint128(_between(1000, 5000) * 1e6);
+            uint16 ltv = ltvs[i % 4];
+            uint16 apr = uint16(_between(800, 2500));
+            _mint(lender, limit);
+            vm.prank(lender);
+            uint64 lineId = credit.openLine(
+                who, limit, uint64(block.timestamp + 400 days), IEarnVault(address(earnVault)), ltv, apr, 0
+            );
+            _accept(who, lineId);
+            // Collateral worth 120% of what the line needs at its ratio.
+            uint256 collateral = uint256(limit) * 10_000 / ltv * 12 / 10;
+            _mint(who, collateral);
+            _depositEarn(who, collateral);
+            tracked.push(who);
+            address[] memory sources = new address[](1);
+            sources[0] = address(usd);
+            vm.startPrank(who);
+            core.approveHolder(address(credit), address(earnShare), type(uint128).max, 0);
+            credit.enableLocking(lineId);
+            credit.setAutopay(lineId, sources);
+            usd.approve(address(credit), type(uint256).max);
+            vm.stopPrank();
+            uint32 defaultWeek = _chance(cfg.defaultBps) ? uint32(_between(8, cfg.weeks_ - 4)) : type(uint32).max;
+            bs.push(Borrower(who, lineId, ltv, apr, defaultWeek, false, 0, 0, 0, 0, 0));
+        }
+        expectedUsd = _sumTracked();
+    }
+
+    // Engine.
+
+    function _run(bytes32 seed) internal {
+        vm.pauseGasMetering();
+        _seed = uint256(seed);
+        _open();
+        for (week = 1; week <= cfg.weeks_ + cfg.tailWeeks; ++week) {
+            bool trading = week <= cfg.weeks_;
+            bool keeper = !(week >= cfg.outageFrom && week < cfg.outageFrom + cfg.outageWeeks);
+            // The renewal window is open strictly inside the lock's last day, so the keeper looks twice a day.
+            for (uint256 h; h < 14; ++h) {
+                vm.warp(block.timestamp + 12 hours);
+                if (keeper && cfg.dailyRelock) _relockDue();
+            }
+            _price();
+            for (uint256 i; i < bs.length; ++i) {
+                Borrower storage b = bs[i];
+                if (!b.defaulted && week >= b.defaultWeek) _default(b);
+                if (b.defaulted) _sweepLapsed(b);
+                if (!b.defaulted && trading) _live(b, i);
+                if (trading && week % 4 == 0) _statement(b);
+                if (keeper) {
+                    _collect(b);
+                    _liquidate(b);
+                }
+                m.maxOwed = _max(m.maxOwed, credit.lineOf(b.lineId).owed);
+            }
+            _check();
+        }
+    }
+
+    /// @dev The collateral's underlying venue loses assets, dropping the Earn share price for everyone.
+    function _price() internal {
+        uint256 cut;
+        if (week == cfg.firstDropWeek) cut = cfg.firstDropBps;
+        if (week == cfg.secondDropWeek && cfg.totalDropBps > cfg.firstDropBps) {
+            // From (1 - first) to (1 - total) of the original price.
+            cut = (cfg.totalDropBps - cfg.firstDropBps) * 10_000 / (10_000 - cfg.firstDropBps);
+        }
+        if (cut == 0) return;
+        uint256 loss = usd.balanceOf(address(venue)) * cut / 10_000;
+        vm.prank(address(venue));
+        usd.transfer(dead, loss);
+    }
+
+    /// @dev A lock renews only within its last day, so a keeper watches every line's lock expiry.
+    function _relockDue() internal {
+        for (uint256 i; i < bs.length; ++i) {
+            bytes32 id = credit.lockOf(bs[i].lineId);
+            if (id == bytes32(0)) continue;
+            uint64 expiresAt = core.getHold(bs[i].who, address(credit), id).expiresAt;
+            if (expiresAt > block.timestamp && expiresAt < block.timestamp + 1 days) {
+                credit.relock(bs[i].lineId);
+                ++m.relocks;
+            }
+        }
+    }
+
+    function _live(Borrower storage b, uint256 i) internal {
+        // A weekly paycheck that covers what a performing borrower spends.
+        _mint(b.who, 120e6);
+        if (!_chance(4000)) return;
+        uint256 room = credit.availableCredit(b.lineId);
+        uint256 amount = _min(_between(20, 400) * 1e6, room);
+        if (amount < 1e6) {
+            ++m.drawRefusals;
+            return;
+        }
+        bytes32 leg = keccak256(abi.encode("leg", i, week));
+        try auth.hold(credit, b.who, _pos(b.lineId), leg, amount, false) returns (uint256 got) {
+            if (got == 0) {
+                ++m.drawRefusals;
+                return;
+            }
+            uint128 before = credit.lineOf(b.lineId).owed;
+            auth.capture(credit, b.who, leg, got, true, leg);
+            uint128 added = credit.lineOf(b.lineId).owed - before;
+            assertEq(added, got, "a draw owes what it captured");
+            b.drawn += uint128(got);
+            if (b.firstDraw == 0) b.firstDraw = uint32(week);
+            ++m.draws;
+            m.drawValue += got;
+        } catch {
+            ++m.drawRefusals;
+        }
+    }
+
+    /// @dev A defaulting borrower moves every free unit and share it has away and never pays again.
+    function _default(Borrower storage b) internal {
+        b.defaulted = true;
+        _moveAway(b);
+    }
+
+    function _sweepLapsed(Borrower storage b) internal {
+        // Anyone may end a lapsed lock; a defaulted borrower does so at once.
+        try core.releaseExpired(b.who, address(credit), credit.lockOf(b.lineId)) { } catch { }
+        uint256 shares = earnShare.balanceOf(b.who);
+        if (shares != 0) m.withdrawnAfterLapse += earnVault.previewRedeem(shares);
+        _moveAway(b);
+    }
+
+    function _moveAway(Borrower storage b) internal {
+        uint256 cash = usd.balanceOf(b.who);
+        vm.startPrank(b.who);
+        if (cash != 0) usd.transfer(gone, cash);
+        uint256 shares = earnShare.balanceOf(b.who);
+        if (shares != 0) earnShare.transfer(gone, shares);
+        vm.stopPrank();
+    }
+
+    function _statement(Borrower storage b) internal {
+        if (credit.lineOf(b.lineId).owed == 0) return;
+        vm.prank(lender);
+        try credit.closeStatement(b.lineId, uint64(block.timestamp + 21 days)) {
+            ++m.statements;
+        } catch {
+            ++m.statementRefusals;
+        }
+    }
+
+    function _collect(Borrower storage b) internal {
+        uint256 lenderBefore = _lenderTotal();
+        uint256 borrowerBefore = usd.balanceOf(b.who);
+        uint128 owedBefore = credit.lineOf(b.lineId).owed;
+        credit.collect(b.lineId);
+        uint256 got = borrowerBefore - usd.balanceOf(b.who);
+        assertEq(_lenderTotal() - lenderBefore, got, "autopay lands with the lender");
+        m.collected += got;
+        b.paid += uint128(got);
+        // What is owed now is what was owed plus interest less what was paid.
+        m.interestAccrued += credit.lineOf(b.lineId).owed + got - owedBefore;
+    }
+
+    /// @dev The lender's free and committed balance: commitments renewing move between the two.
+    function _lenderTotal() internal view returns (uint256) {
+        return usd.balanceOf(lender) + core.reserved(lender, address(usd));
+    }
+
+    function _liquidate(Borrower storage b) internal {
+        uint256 owedNow = credit.owedNow(b.lineId);
+        uint128 owedBefore = credit.lineOf(b.lineId).owed;
+        uint256 lenderBefore = _lenderTotal();
+        uint256 borrowerBefore = usd.balanceOf(b.who);
+        vm.prank(lender);
+        try credit.liquidate(b.lineId) returns (uint128, uint256 assets) {
+            uint256 toLender = _lenderTotal() - lenderBefore;
+            uint256 toBorrower = usd.balanceOf(b.who) - borrowerBefore;
+            assertEq(toLender + toBorrower, assets, "the sale's proceeds all land");
+            assertLe(toLender, owedNow, "the lender takes at most what is owed");
+            if (toBorrower != 0) assertEq(credit.lineOf(b.lineId).owed, 0, "surplus only once the debt is paid");
+            m.interestAccrued += credit.lineOf(b.lineId).owed + toLender - owedBefore;
+            ++m.liquidations;
+            ++b.liquidations;
+            if (!b.defaulted) ++m.liquidationsPerforming;
+            m.saleProceeds += assets;
+            m.lenderFromSales += toLender;
+            m.surplusToBorrowers += toBorrower;
+            b.paid += uint128(toLender);
+            b.surplus += uint128(toBorrower);
+            m.lastLiquidationWeek = week;
+            // A defaulted borrower's surplus goes the way the rest of its money went.
+            if (b.defaulted) _moveAway(b);
+        } catch (bytes memory reason) {
+            if (bytes4(reason) != CreditSource.NotUndercollateralized.selector) {
+                ++m.maxUndercollateralized;
+                lastRevert = bytes4(reason);
+            }
+        }
+    }
+
+    // Invariants.
+
+    function _check() internal {
+        assertEq(_sumTracked(), expectedUsd, "usd conserved");
+        _assertCoreBalanced();
+        assertEq(usd.balanceOf(address(credit)), 0, "the credit source keeps nothing");
+        for (uint256 i; i < bs.length; ++i) {
+            Borrower storage b = bs[i];
+            uint256 owed = credit.lineOf(b.lineId).owed;
+            // Simple interest on everything drawn since the first draw bounds what a borrower pays and still owes.
+            uint256 elapsed = b.firstDraw == 0 ? 0 : (week - b.firstDraw + 1) * 7 days;
+            uint256 bound = uint256(b.drawn) + uint256(b.drawn) * b.aprBps * elapsed / (YEAR * 10_000) + 1;
+            assertLe(b.paid + owed, bound, "never pays more than drawn plus simple interest");
+        }
+    }
+
+    function _sumTracked() internal view returns (uint256 total) {
+        for (uint256 i; i < tracked.length; ++i) {
+            total += usd.balanceOf(tracked[i]);
+        }
+    }
+
+    function _mint(address to, uint256 amount) internal {
+        usd.mint(to, amount);
+        expectedUsd += amount;
+    }
+
+    /// @dev Unrecoverable: owed on lines with no collateral left. Stuck: owed on defaulted lines whose collateral
+    ///      covers it at the ratio, which the lender cannot sell.
+    function _losses() internal view returns (uint256 loss, uint256 stuck, uint256 stuckLines) {
+        for (uint256 i; i < bs.length; ++i) {
+            Borrower storage b = bs[i];
+            uint256 owed = credit.owedNow(b.lineId);
+            if (owed == 0) continue;
+            uint256 locked = credit.lockedShares(b.lineId);
+            uint256 value = locked == 0 ? 0 : earnVault.previewRedeem(locked);
+            if (value < owed) loss += owed - value;
+            if (b.defaulted && value >= owed) {
+                stuck += owed;
+                ++stuckLines;
+            }
+        }
+    }
+
+    // Output.
+
+    function _report(string memory t) internal view {
+        (uint256 loss, uint256 stuck, uint256 stuckLines) = _losses();
+        uint256 defaulted;
+        uint256 defaultedDrawn;
+        uint256 defaultedPaid;
+        uint256 surplusDefaulted;
+        for (uint256 i; i < bs.length; ++i) {
+            if (!bs[i].defaulted) continue;
+            ++defaulted;
+            defaultedDrawn += bs[i].drawn;
+            defaultedPaid += bs[i].paid;
+            surplusDefaulted += bs[i].surplus;
+        }
+        _log(t, "borrowers", bs.length);
+        _log(t, "defaulted", defaulted);
+        _log(t, "price_drop_bps", cfg.totalDropBps);
+        _log(t, "draws", m.draws);
+        _log(t, "draw_value_usd", m.drawValue / 1e6);
+        _log(t, "draw_refusals", m.drawRefusals);
+        _log(t, "statements", m.statements);
+        _log(t, "statement_refusals", m.statementRefusals);
+        _log(t, "collected_usd", m.collected / 1e6);
+        _log(t, "interest_accrued_usd", m.interestAccrued / 1e6);
+        _log(t, "liquidations", m.liquidations);
+        _log(t, "liquidations_of_performing", m.liquidationsPerforming);
+        _log(t, "sale_proceeds_usd", m.saleProceeds / 1e6);
+        _log(t, "lender_from_sales_usd", m.lenderFromSales / 1e6);
+        _log(t, "surplus_to_borrowers_usd", m.surplusToBorrowers / 1e6);
+        _log(t, "defaulted_drawn_usd", defaultedDrawn / 1e6);
+        _log(t, "defaulted_recovered_usd", defaultedPaid / 1e6);
+        _log(t, "lender_loss_usd", loss / 1e6);
+        _log(t, "lender_loss_bps_of_drawn", m.drawValue == 0 ? 0 : loss * 10_000 / m.drawValue);
+        _log(t, "stuck_principal_usd", stuck / 1e6);
+        _log(t, "stuck_lines", stuckLines);
+        _log(t, "max_line_owed_usd", m.maxOwed / 1e6);
+        _log(t, "last_liquidation_week", m.lastLiquidationWeek);
+        _log(t, "withdrawn_after_lapse_usd", m.withdrawnAfterLapse / 1e6);
+        _log(t, "keeper_relocks", m.relocks);
+        _log(t, "liquidate_other_reverts", m.maxUndercollateralized);
+        _log(t, "liquidate_other_revert_selector", uint32(lastRevert));
+    }
+
+    function _log(string memory test, string memory metric, uint256 value) internal pure {
+        console.log(string.concat("STRESS ", test, " ", metric, "=", vm.toString(value)));
+    }
+
+    function _rand() internal returns (uint256) {
+        _seed = uint256(keccak256(abi.encode(_seed)));
+        return _seed;
+    }
+
+    function _between(uint256 lo, uint256 hi) internal returns (uint256) {
+        return lo + _rand() % (hi - lo + 1);
+    }
+
+    function _chance(uint256 bps) internal returns (bool) {
+        return _rand() % 10_000 < bps;
+    }
+
+    function _max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a : b;
+    }
+
+    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+}
