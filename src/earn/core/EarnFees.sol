@@ -46,14 +46,18 @@ contract EarnFees is IEarnFees {
     /// @dev Set by the constructor on the implementation and by {initialize} on a clone. Packed beside
     ///      `earnVault`, which {initialize} writes in the same call.
     bool private initialized;
+    /// @dev The flags every checkpoint reads share `earnVault`'s slot, which `onlyEarnVault` has already read.
+    uint64 public currentFeeConfigId;
+    bool public feesDisabled;
+    /// @notice Whether an empty active pool was reopened while fee valuation was stale.
+    /// @dev The next fresh checkpoint initializes baselines without charging the returned principal.
+    bool public feeBaselinesPending;
     address public earnShare;
+    uint40 public targetStartedAt;
     uint256 public earnShareScale;
 
-    uint64 public currentFeeConfigId;
     uint256 public highWaterMark;
     uint256 public targetBase;
-    uint40 public targetStartedAt;
-    bool public feesDisabled;
 
     mapping(uint64 configId => FeeConfig config) private _feeConfigs;
     mapping(uint64 configId => mapping(uint8 slot => uint256 remainder)) private _feeRemainders;
@@ -75,9 +79,6 @@ contract EarnFees is IEarnFees {
     mapping(bytes32 requestId => StoredFeeSnapshot snapshot) private _pendingFeeSnapshots;
     mapping(address recipient => uint256 earnShares) public claimableEarnShares;
     uint256 public totalClaimableEarnShares;
-    /// @notice Whether an empty active pool was reopened while fee valuation was stale.
-    /// @dev The next fresh checkpoint initializes baselines without charging the returned principal.
-    bool public feeBaselinesPending;
     uint256 private _disableEpoch;
 
     /// @dev Reentrancy lock held for the duration of each locked call. Transient storage writes no slot.
