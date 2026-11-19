@@ -942,7 +942,6 @@ contract EarnVault is IEarnVault {
 
         _accrueFees();
 
-        uint256 engineSharesBefore = engineShares();
         uint256 requiredEngineShares = IEarnEngineExactWithdraw(engine).previewWithdraw(assets);
         if (requiredEngineShares == 0) revert InsufficientOutput();
         uint256 requiredEarnShares = _convertEngineSharesToEarnSharesUp(requiredEngineShares);
@@ -952,7 +951,8 @@ contract EarnVault is IEarnVault {
         uint256 supply = _activeSupply();
         // The callback runs here, while the vault's state is settled, so no caller code ever reads it half-updated.
         if (callback) _collectEarnShares(requiredEarnShares, true);
-        // Read after the callback, which can move the venue's NAV, so the full-burn guard prices current backing.
+        // Read after the callback, which can move the venue's NAV or custody, so the full-burn guard sees one state.
+        uint256 engineSharesBefore = engineShares();
         uint256 engineAssetsBefore = totalAssets();
 
         uint256 engineSharesBurned = IEarnEngineExactWithdraw(engine).withdraw(assets, receiver);

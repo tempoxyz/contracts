@@ -108,6 +108,15 @@ contract EarnVaultWithdrawCallbackTest is Test {
         payer.withdraw(10 ether, receiver, 10 ether);
     }
 
+    /// @dev A callback that cuts engine custody cannot let the withdrawal burn what remains below its value.
+    function testCallbackCustodyCutBeforeFullBurnReverts() public {
+        engine.setWithdrawBurnOverride(9 ether);
+        payer.setNavBump(engine, 1 ether);
+        payer.setCustodyCut(address(core), 1 ether);
+        vm.expectRevert(EarnVault.ResidualBacking.selector);
+        payer.withdraw(9 ether, receiver, 10 ether);
+    }
+
     function testRevertsWhenTheCallbackUnderpays() public {
         payer.setShortfall(1);
         vm.expectRevert(EarnVault.EarnSharesNotReceived.selector);
@@ -211,6 +220,14 @@ contract CallbackPayer is IEarnWithdrawCallback {
     CoreMockEngine internal navEngine;
     uint256 internal navBump;
 
+    address internal custodyHolder;
+    uint256 internal custodyCut;
+
+    function setCustodyCut(address holder, uint256 cut) external {
+        custodyHolder = holder;
+        custodyCut = cut;
+    }
+
     function setNavBump(CoreMockEngine engine_, uint256 bump) external {
         navEngine = engine_;
         navBump = bump;
@@ -227,6 +244,7 @@ contract CallbackPayer is IEarnWithdrawCallback {
             vault.withdrawExactWithCallback(1, address(this), type(uint256).max);
         }
         if (address(navEngine) != address(0)) navEngine.setNavGain(navBump);
+        if (custodyCut != 0) navEngine.burnShares(custodyHolder, custodyCut);
         uint256 amount = shortfall == type(uint256).max ? earnShares + 1 : earnShares - shortfall;
         share.transfer(address(vault), amount);
     }
