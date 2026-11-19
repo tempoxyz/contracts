@@ -12,6 +12,7 @@ import { ZoneRouterMockPortal } from "./helpers/ZoneRouterMockPortal.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "../earn/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "../earn/helpers/PropAMMEngineMocks.sol";
 import { IEarnVault } from "../../src/interfaces/earn/IEarnVault.sol";
+import { IEarnVaultWithdrawCallback, IEarnWithdrawCallback } from "../../src/interfaces/earn/IEarnWithdrawCallback.sol";
 import { IPropAMMVenue } from "../../src/interfaces/external/propamm/IPropAMMVenue.sol";
 import { ZONE_MESSENGER_ADDRESS } from "../../src/interfaces/external/tempo/IZone.sol";
 
@@ -44,6 +45,46 @@ contract PassThroughVault {
 
     function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares) external returns (uint256) {
         MemoMockToken(earnShare).transferFrom(msg.sender, address(this), maxEarnShares);
+        MemoMockToken(asset).transfer(receiver, assets);
+        return maxEarnShares;
+    }
+}
+
+/// @dev Reports the callback withdrawal and pays its asset from its own funds, calling back as `mode` says.
+contract CallbackVault {
+    enum Mode {
+        Once,
+        Twice,
+        AboveMax,
+        Skip
+    }
+
+    address public immutable earnShare;
+    address public immutable asset;
+    Mode public mode;
+
+    constructor(address earnShare_, address asset_) {
+        earnShare = earnShare_;
+        asset = asset_;
+    }
+
+    function setMode(Mode mode_) external {
+        mode = mode_;
+    }
+
+    function supportsInterface(bytes4 id) external pure returns (bool) {
+        return id == type(IEarnVaultWithdrawCallback).interfaceId || id == 0x01ffc9a7;
+    }
+
+    function withdrawExactWithCallback(uint256 assets, address receiver, uint256 maxEarnShares)
+        external
+        returns (uint256)
+    {
+        if (mode != Mode.Skip) {
+            IEarnWithdrawCallback(msg.sender)
+                .earnWithdrawCallback(mode == Mode.AboveMax ? maxEarnShares + 1 : maxEarnShares);
+        }
+        if (mode == Mode.Twice) IEarnWithdrawCallback(msg.sender).earnWithdrawCallback(1);
         MemoMockToken(asset).transfer(receiver, assets);
         return maxEarnShares;
     }
@@ -455,6 +496,79 @@ contract SendSpenderTest is EarnRouterTestBase {
         earnA.transfer(address(plainSends), 4 * ONE);
         vm.expectRevert(SendSpender.DestinationNotPaid.selector);
         _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(thief)));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Callback withdrawals
+    // ---------------------------------------------------------------------------------------------
+
+    function testRedeemsThroughTheVaultCallbackWithoutAnAllowance() public {
+        _shares(10 * ONE);
+        uint256 maxShares = earnVaultA.previewWithdraw(3 * ONE) + 2;
+        earnA.transfer(address(plainSends), maxShares);
+        vm.expectCall(
+            address(plainSends), abi.encodeWithSelector(IEarnWithdrawCallback.earnWithdrawCallback.selector), 1
+        );
+        vm.expectCall(address(earnA), abi.encodeWithSignature("approve(address,uint256)"), 0);
+        _spendAsRouter(plainSends, address(earnA), maxShares, _send(address(assetA), 3 * ONE, address(earnVaultA)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.balanceOf(address(sendRouter)), 2);
+        _assertEmpty(plainSends);
+    }
+
+    function testConvertsThroughTheVaultCallbackWithoutAnAllowance() public {
+        _shares(10 * ONE);
+        uint256 maxShares = earnVaultA.previewWithdraw(3 * ONE) + 2;
+        earnA.transfer(address(sends), maxShares);
+        vm.expectCall(address(sends), abi.encodeWithSelector(IEarnWithdrawCallback.earnWithdrawCallback.selector), 1);
+        vm.expectCall(address(earnA), abi.encodeWithSignature("approve(address,uint256)"), 0);
+        _spendAsRouter(sends, address(earnA), maxShares, _send(address(alternate), 3 * ONE, address(earnVaultA)));
+        assertEq(alternate.balanceOf(to), 3 * ONE);
+        _assertEmpty(sends);
+    }
+
+    function testOnlyTheRedeemingVaultCanCallBack() public {
+        vm.expectRevert(SendSpender.NotVault.selector);
+        plainSends.earnWithdrawCallback(1);
+        vm.prank(address(earnVaultA));
+        vm.expectRevert(SendSpender.NotVault.selector);
+        plainSends.earnWithdrawCallback(1);
+    }
+
+    function testAVaultCannotCallBackTwice() public {
+        _expectCallbackVaultReverts(CallbackVault.Mode.Twice, abi.encodeWithSelector(SendSpender.NotVault.selector));
+    }
+
+    function testAVaultCannotTakeMoreThanMaxInput() public {
+        _expectCallbackVaultReverts(
+            CallbackVault.Mode.AboveMax, abi.encodeWithSelector(SendSpender.InsufficientInput.selector)
+        );
+    }
+
+    function testAVaultThatSkipsTheCallbackCannotSettle() public {
+        _expectCallbackVaultReverts(CallbackVault.Mode.Skip, abi.encodeWithSelector(SendSpender.NothingSpent.selector));
+    }
+
+    function testACallbackVaultThatCallsBackOnceSettles() public {
+        CallbackVault vault = _callbackVault(CallbackVault.Mode.Once);
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.balanceOf(address(vault)), 4 * ONE);
+        _assertEmpty(plainSends);
+    }
+
+    function _callbackVault(CallbackVault.Mode mode) internal returns (CallbackVault vault) {
+        vault = new CallbackVault(address(earnA), address(assetA));
+        vault.setMode(mode);
+        assetA.mint(address(vault), 3 * ONE);
+        _shares(4 * ONE);
+        earnA.transfer(address(plainSends), 4 * ONE);
+    }
+
+    function _expectCallbackVaultReverts(CallbackVault.Mode mode, bytes memory reason) internal {
+        CallbackVault vault = _callbackVault(mode);
+        vm.expectRevert(reason);
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
     }
 
     function testSendsThroughARouterAndReturnsTheChangeToTheZone() public {

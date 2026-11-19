@@ -347,7 +347,10 @@ contract ZoneRouter is IWithdrawalReceiver {
         /// @custom:assert rawOp == uint256(Op.Deposit) || rawOp == uint256(Op.Redeem) || (enabledOps & OP_SPEND) != 0
 
         if (Op(rawOp) == Op.Spend) {
-            _handleSpend(sourcePortal, token, amount, abi.decode(callbackData, (SpendData)));
+            // An exact spend already measured the balance back at inputBalanceBefore, and nothing moved since.
+            if (!_handleSpend(
+                    sourcePortal, token, amount, inputBalanceBefore + amount, abi.decode(callbackData, (SpendData))
+                )) return IWithdrawalReceiver.onWithdrawalReceived.selector;
         } else {
             CallbackData memory data = abi.decode(callbackData, (CallbackData));
             Operation memory operation = Operation({
@@ -371,7 +374,14 @@ contract ZoneRouter is IWithdrawalReceiver {
         return IWithdrawalReceiver.onWithdrawalReceived.selector;
     }
 
-    function _handleSpend(address sourcePortal, address token, uint128 amount, SpendData memory data) private {
+    /// @param balanceBefore The router's `token` balance on entry, input included: only static calls run before the transfer.
+    function _handleSpend(
+        address sourcePortal,
+        address token,
+        uint128 amount,
+        uint256 balanceBefore,
+        SpendData memory data
+    ) private returns (bool returnedChange) {
         if (!isSpender[data.spender]) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
@@ -382,7 +392,6 @@ contract ZoneRouter is IWithdrawalReceiver {
         bool returnChecked = data.maxInput < amount;
         if (returnChecked) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
 
-        uint256 balanceBefore = IERC20Like(token).balanceOf(address(this));
         // A transfer instead of an approval: the spender holds no allowance from the router, so it can
         // never take more than maxInput, and no router -> spender allowance slot is written.
         _safeTransfer(token, data.spender, data.maxInput);
@@ -421,6 +430,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         }
         /// @custom:assert change == 0 || gChangeReturned == change
         emit Spent(data.spender, token, used, change, zoneDepositHash);
+        returnedChange = change != 0;
     }
 
     /// @dev Requires the Portal to take `token` back and its deposit fee to be within the sender's cap.

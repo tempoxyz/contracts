@@ -8,6 +8,7 @@ import { IERC20Allowance } from "../../interfaces/external/IERC20Allowance.sol";
 import { ISpender } from "../../interfaces/zone/ISpender.sol";
 import { SpenderAuth } from "./SpenderAuth.sol";
 import { IEarnVault } from "../../interfaces/earn/IEarnVault.sol";
+import { IEarnVaultWithdrawCallback, IEarnWithdrawCallback } from "../../interfaces/earn/IEarnWithdrawCallback.sol";
 import { IERC20Like } from "../../interfaces/external/IERC20Like.sol";
 import { IPropAMMPriceOracle, IPropAMMVenue } from "../../interfaces/external/propamm/IPropAMMVenue.sol";
 
@@ -38,7 +39,7 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "../../interfaces/external/pr
 /// @custom:invariant address(convertVault) != address(0) ==> parToken != convertAsset
 /// @custom:invariant address(convertVault) == address(0) ==> convertAsset == address(0) && parToken == address(0)
 /// @custom:invariant address(convertVault) == address(0) ==> !assetIsBase
-contract SendSpender is ISpender {
+contract SendSpender is ISpender, IEarnWithdrawCallback {
     /// @notice One send: `to` receives exactly `amount` of `token`.
     /// @dev With `vault` zero, `token` is the withdrawn token. Otherwise the input is `vault`'s
     ///      EarnShare, redeemed with `withdrawExact` into `token`, which is the vault asset or, only for
@@ -67,6 +68,11 @@ contract SendSpender is ISpender {
     bool private immutable assetIsBase;
 
     bool private transient locked;
+    /// @dev Set only while a redemption waits on {earnWithdrawCallback}: the vault that may call it, the
+    ///      EarnShare it pays and the most it may pay.
+    address private transient callbackVault;
+    address private transient callbackShare;
+    uint256 private transient callbackMax;
 
     error ConversionNotAllowed();
     error DestinationNotPaid();
@@ -79,6 +85,7 @@ contract SendSpender is ISpender {
     error InvalidVault();
     error NothingSpent();
     error NotRouter();
+    error NotVault();
     error Reentrancy();
     error ResidualBalance(address token);
     error TokenCallFailed();
@@ -201,19 +208,24 @@ contract SendSpender is ISpender {
             /// @custom:assert send.token != token && asset != token && converts == (send.token != asset)
             /// @custom:assert converts ==> send.vault == address(convertVault) && asset == convertAsset
             /// @custom:assert converts ==> send.token == parToken
-            _safeApprove(token, send.vault, maxInput);
-            /// @custom:assert gAllowance[token][send.vault] == maxInput
+            // A vault with the callback is paid by transfer inside it, so no allowance slot is ever written.
+            bool callback = _hasWithdrawCallback(send.vault);
+            if (callback) {
+                callbackVault = send.vault;
+                callbackShare = token;
+                callbackMax = maxInput;
+            } else {
+                _safeApprove(token, send.vault, maxInput);
+            }
+            /// @custom:assert callback || gAllowance[token][send.vault] == maxInput
+            /// @custom:assert !callback || gAllowance[token][send.vault] == 0
             if (!converts && payee == send.to) {
-                // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
-                // forge-lint: disable-next-line(reentrancy-no-eth)
-                IEarnVault(send.vault).withdrawExact(send.amount, send.to, maxInput);
+                _withdraw(send.vault, callback, send.amount, send.to, maxInput);
             } else {
                 // Redeemed here first when it converts, or when `to` is virtual: Earn's engines measure the
                 // literal receiver, which a virtual address never is, so this spender transfers to it instead.
                 uint256 assetBefore = IERC20Like(asset).balanceOf(address(this));
-                // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
-                // forge-lint: disable-next-line(reentrancy-no-eth)
-                IEarnVault(send.vault).withdrawExact(send.amount, address(this), maxInput);
+                _withdraw(send.vault, callback, send.amount, address(this), maxInput);
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore + send.amount) {
                     revert InsufficientInput();
                 }
@@ -223,7 +235,12 @@ contract SendSpender is ISpender {
                 /// @custom:assert converts || payee != send.to
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore) revert ResidualBalance(asset);
             }
-            _safeApprove(token, send.vault, 0);
+            // The callback clears the vault, so a vault that skipped it took nothing.
+            if (callback) {
+                if (callbackVault != address(0)) revert NothingSpent();
+            } else {
+                _safeApprove(token, send.vault, 0);
+            }
             /// @custom:assert gAllowance[token][send.vault] == 0
         }
 
@@ -234,9 +251,12 @@ contract SendSpender is ISpender {
         if (unused >= maxInput) revert NothingSpent();
         /// @custom:assert unused < maxInput
         /// @custom:ghost gReturnedBefore = gSent[token][msg.sender]
-        if (unused != 0) _safeTransfer(token, msg.sender, unused);
+        // With nothing unused the balance read above already equals the baseline.
+        if (unused != 0) {
+            _safeTransfer(token, msg.sender, unused);
+            if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
+        }
         /// @custom:assert gSent[token][msg.sender] == gReturnedBefore + unused
-        if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
         if (send.token != token && IERC20Like(send.token).balanceOf(address(this)) != outputBaseline) {
             revert ResidualBalance(send.token);
         }
@@ -244,11 +264,39 @@ contract SendSpender is ISpender {
         emit Sent(send.ref, send.to, token, send.token, send.amount, maxInput - unused, unused);
     }
 
+    /// @inheritdoc IEarnWithdrawCallback
+    /// @dev Only the vault a running spend redeems through, once, for at most that spend's `maxInput`.
+    function earnWithdrawCallback(uint256 earnShares) external override {
+        address vault = callbackVault;
+        if (vault == address(0) || msg.sender != vault) revert NotVault();
+        if (earnShares > callbackMax) revert InsufficientInput();
+        callbackVault = address(0);
+        _safeTransfer(callbackShare, vault, earnShares);
+    }
+
     /// @notice The pool's par price, or zero without a pool.
     /// @custom:ensures address(pool) == address(0) ==> result == 0
     function parPrice() public view returns (uint256) {
         if (address(pool) == address(0)) return 0;
         return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
+    }
+
+    function _withdraw(address vault, bool callback, uint256 amount, address receiver, uint256 maxInput) private {
+        // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
+        // forge-lint: disable-start(reentrancy-no-eth)
+        if (callback) IEarnVaultWithdrawCallback(vault).withdrawExactWithCallback(amount, receiver, maxInput);
+        else IEarnVault(vault).withdrawExact(amount, receiver, maxInput);
+        // forge-lint: disable-end(reentrancy-no-eth)
+    }
+
+    /// @dev Whether `vault` reports the callback withdrawal through ERC-165, rejecting a fallback that answers
+    ///      true to everything (0xffffffff must read false).
+    function _hasWithdrawCallback(address vault) private view returns (bool) {
+        (bool ok, bytes memory ret) =
+            vault.staticcall(abi.encodeWithSelector(0x01ffc9a7, type(IEarnVaultWithdrawCallback).interfaceId));
+        if (!ok || ret.length < 32 || abi.decode(ret, (uint256)) != 1) return false;
+        (ok, ret) = vault.staticcall(abi.encodeWithSelector(0x01ffc9a7, bytes4(0xffffffff)));
+        return ok && ret.length >= 32 && abi.decode(ret, (uint256)) == 0;
     }
 
     /// @dev Who a transfer to `to` credits: its TIP-1022 master if it is a virtual address, else `to`.
