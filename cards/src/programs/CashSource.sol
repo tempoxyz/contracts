@@ -56,10 +56,11 @@ contract CashSource is ISource, ISettlementTokenGuard {
     mapping(bytes32 legId => uint256) public lockedRate;
     /// @notice What a converted leg paid in each settlement token, which its refunds in that token convert back at.
     mapping(bytes32 legId => mapping(address settlement => Paid)) public paidOf;
-    /// @notice Whether `owner` has owed this source core debt, and so is among `debtors`.
-    mapping(address owner => bool) public isDebtor;
-    /// @notice Everyone who has owed this source core debt, in the order they first did.
-    address[] public debtors;
+    /// @notice Whether `owner` is among the debtors listed for `token`.
+    mapping(address token => mapping(address owner => bool)) public isDebtor;
+    /// @notice Who may owe this source core debt in each token: everyone a capture or charge left owing it, until
+    ///         pruneDebtors finds they owe nothing.
+    mapping(address token => address[]) public debtors;
 
     bool private transient _locked;
 
@@ -297,16 +298,43 @@ contract CashSource is ISource, ISettlementTokenGuard {
     }
 
     /// @notice Core debt anyone owes this source in the settlement token keeps that token from changing (reason 3).
-    // At most every debtor this source has had, one core read each.
+    ///         It reads the listed debtors until one owes; pruneDebtors keeps the list to those who may.
+    // At most the listed debtors, one core read each.
     // forge-lint: disable-next-item(calls-loop)
     function settlementTokenInUse(address) external view returns (uint8) {
         address token = PROGRAM.settlementToken();
-        uint256 n = debtors.length;
+        address[] storage list = debtors[token];
+        uint256 n = list.length;
         for (uint256 i; i < n; ++i) {
-            (uint256 owed,) = _owed(debtors[i], token);
+            (uint256 owed,) = _owed(list[i], token);
             if (owed != 0) return IN_USE_DEBT;
         }
         return 0;
+    }
+
+    /// @notice Reads up to `count` debtors listed for `token` from index `start` on and drops those who owe this
+    ///         source nothing in it, moving the last listed debtor into each one's place. Anyone may call it.
+    // At most count core reads.
+    // forge-lint: disable-next-item(calls-loop)
+    function pruneDebtors(address token, uint256 start, uint256 count) external returns (uint256 dropped) {
+        address[] storage list = debtors[token];
+        uint256 i = start;
+        for (uint256 k; k < count && i < list.length; ++k) {
+            address owner = list[i];
+            (uint256 owed,) = _owed(owner, token);
+            if (owed != 0) {
+                ++i;
+                continue;
+            }
+            isDebtor[token][owner] = false;
+            list[i] = list[list.length - 1];
+            list.pop();
+            ++dropped;
+        }
+    }
+
+    function debtorCount(address token) external view returns (uint256) {
+        return debtors[token].length;
     }
 
     /// @notice Pays what this source holds of `token` (debt repaid to it) on to the settlement account.
@@ -453,13 +481,13 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (room > want) room = want;
     }
 
-    /// @dev Counts `owner` among the debtors once a capture or charge left them owing this source.
+    /// @dev Lists `owner` among the debtors in `token` once a capture or charge left them owing this source.
     function _noteDebtor(address owner, address token) private {
-        if (isDebtor[owner]) return;
+        if (isDebtor[token][owner]) return;
         (uint256 owed,) = _owed(owner, token);
         if (owed == 0) return;
-        isDebtor[owner] = true;
-        debtors.push(owner);
+        isDebtor[token][owner] = true;
+        debtors[token].push(owner);
     }
 
     /// @dev What `owner` owes this source in `token`, and how many creditors they owe.

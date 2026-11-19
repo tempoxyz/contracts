@@ -127,7 +127,7 @@ contract CashSourceTest is AuthEnv {
         assertEq(usd.balanceOf(settlement), 100e6);
         assertEq(_owed(alice, address(usd), address(cash)), 15e6);
         // Debt owed in the settlement token keeps that token from changing until it is repaid.
-        assertTrue(cash.isDebtor(alice));
+        assertTrue(cash.isDebtor(address(usd), alice));
         assertEq(cash.settlementTokenInUse(address(cards)), 3);
         ICardAuth.PurchaseView memory v = cards.purchaseOf(P1);
         assertEq(v.captured, 120e6);
@@ -430,6 +430,43 @@ contract CashSourceTest is AuthEnv {
         assertEq(cash.coverable(alice, position), 20e6);
     }
 
+    function test_pruneDebtors_dropsOnlyThoseWhoOweNothing_andListsThemAgainOnNewDebt() public {
+        usd.mint(alice, 30e6);
+        _setDebtCap(alice, address(cash), address(usd), 20e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 60e6, merchant);
+        assertEq(cash.debtorCount(address(usd)), 1);
+        // Still owing, alice stays listed and keeps the token in use.
+        assertEq(cash.pruneDebtors(address(usd), 0, 10), 0);
+        assertEq(cash.debtorCount(address(usd)), 1);
+        assertEq(cash.settlementTokenInUse(address(cards)), 3);
+        // Repaid, she leaves the list, so the guard no longer reads her.
+        usd.mint(alice, 20e6);
+        _repay(alice, address(usd));
+        assertEq(cash.settlementTokenInUse(address(cards)), 0);
+        assertEq(cash.pruneDebtors(address(usd), 0, 10), 1);
+        assertEq(cash.debtorCount(address(usd)), 0);
+        assertFalse(cash.isDebtor(address(usd), alice));
+        // New debt lists her again.
+        vm.prank(issuer);
+        cards.charge(CARD, P2, 10e6, merchant);
+        assertEq(_owed(alice, address(usd), address(cash)), 10e6);
+        assertEq(cash.debtors(address(usd), 0), alice);
+        assertEq(cash.settlementTokenInUse(address(cards)), 3);
+    }
+
+    function test_pruneDebtors_readsAtMostCount() public {
+        usd.mint(alice, 30e6);
+        _setDebtCap(alice, address(cash), address(usd), 20e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 60e6, merchant);
+        usd.mint(alice, 20e6);
+        _repay(alice, address(usd));
+        assertEq(cash.pruneDebtors(address(usd), 0, 0), 0);
+        assertEq(cash.pruneDebtors(address(usd), 1, 10), 0);
+        assertEq(cash.debtorCount(address(usd)), 1);
+    }
+
     function test_charge_forcePost_takesFreeCashThenDebtThenAbsorbs() public {
         usd.mint(alice, 30e6);
         _setDebtCap(alice, address(cash), address(usd), 20e6);
@@ -437,7 +474,7 @@ contract CashSourceTest is AuthEnv {
         cards.charge(CARD, P1, 60e6, merchant);
         assertEq(usd.balanceOf(settlement), 30e6);
         assertEq(_owed(alice, address(usd), address(cash)), 20e6);
-        assertEq(cash.debtors(0), alice);
+        assertEq(cash.debtors(address(usd), 0), alice);
         assertEq(cash.settlementTokenInUse(address(cards)), 3);
         ICardAuth.PurchaseView memory v = cards.purchaseOf(P1);
         assertEq(v.captured, 60e6);
