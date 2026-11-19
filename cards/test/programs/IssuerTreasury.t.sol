@@ -179,16 +179,22 @@ contract IssuerTreasuryTest is CompEnv {
         treasury.payOut(bob, 20e6, bytes32("credit-1"));
         _allowDebt(eur, type(uint128).max);
         _setting(abi.encodeCall(treasury.setSettlementToken, (address(eur))));
-        assertEq(usd.balanceOf(address(treasury)), 10e6);
-        assertEq(treasury.issuerFunds(address(usd)), 10e6);
-        _repayDebt(settlement, address(usd));
+        // The dollar debt is forgiven and owed again in euros: nothing leaves the treasury.
+        uint256 carried = conv.quoteOut(address(eur), address(usd), 20e6);
+        assertEq(core.debtOf(settlement, address(usd)).length, 0);
+        assertEq(core.debtOf(settlement, address(eur))[0].amount, carried);
         assertEq(usd.balanceOf(address(treasury)), 30e6);
         assertEq(treasury.issuerFunds(address(usd)), 30e6);
+        assertEq(treasury.issuerFunds(address(eur)), 0);
+        eur.mint(settlement, carried);
+        _repayDebt(settlement, address(eur));
+        assertEq(eur.balanceOf(address(treasury)), carried);
+        assertEq(treasury.issuerFunds(address(eur)), carried);
     }
 
     function testFuzz_issuerFunds_neverAboveTheBalanceAfterATokenChange(uint64 paid, uint64 withdrawn) public {
-        // Carrying sends the old debt from what the treasury still holds, so it carries at most half its funds.
-        paid = uint64(bound(paid, 1, 25e6));
+        // Carrying sends nothing, so it carries debt up to all the funds.
+        paid = uint64(bound(paid, 1, 50e6));
         vm.prank(settlement);
         treasury.payOut(bob, paid, bytes32("credit-1"));
         _allowDebt(eur, type(uint128).max);
@@ -257,6 +263,21 @@ contract IssuerTreasuryTest is CompEnv {
         treasury.setSettlementToken(address(eur));
         assertEq(auth.settlementToken(), address(eur));
         assertEq(treasury.pendingSetting(id), 0);
+    }
+
+    function test_setSettlementToken_proposalLapsesAfterTheSettingsWindow() public {
+        auth.setGranted(1);
+        vm.prank(issuer);
+        treasury.setSettlementToken(address(eur));
+        bytes32 id = keccak256(abi.encodeCall(treasury.setSettlementToken, (address(eur))));
+        uint64 eta = treasury.pendingSetting(id);
+        vm.warp(eta + auth.SETTINGS_WINDOW() + 1);
+        Rates.set(conv, address(eur), 1.1e18);
+        vm.prank(issuer);
+        treasury.setSettlementToken(address(eur));
+        // Recorded afresh, not applied.
+        assertEq(auth.settlementToken(), address(usd));
+        assertEq(treasury.pendingSetting(id), vm.getBlockTimestamp() + auth.SETTINGS_DELAY());
     }
 
     function test_setSettlementToken_cancelledProposalNeverApplies() public {
@@ -480,12 +501,170 @@ contract IssuerTreasuryTest is CompEnv {
         treasury.seize(1);
     }
 
+    function test_payOut_advancesAllTheIssuersFundsOnTopOfExistingDebt() public {
+        vm.prank(settlement);
+        treasury.payOut(bob, 30e6, bytes32("credit-1"));
+        assertEq(treasury.issuerFunds(address(usd)), 20e6);
+        // The last 20 of the issuer's funds advance in full, though the account already owes 30.
+        vm.prank(settlement);
+        assertEq(treasury.payOut(bob, 20e6, bytes32("credit-2")), 20e6);
+        assertEq(usd.balanceOf(bob), 50e6);
+        assertEq(usd.balanceOf(address(treasury)), 0);
+        assertEq(_owed(settlement, address(usd), address(treasury)), 50e6);
+        assertEq(treasury.issuerFunds(address(usd)), 0);
+        vm.prank(settlement);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.IssuerFundsShort.selector, 1, 0));
+        treasury.payOut(bob, 1, bytes32("credit-3"));
+        _assertCoreBalanced();
+    }
+
+    function test_carryIssuerDebt_carriesDebtWorthAllTheIssuersFunds() public {
+        vm.prank(settlement);
+        treasury.payOut(bob, 50e6, bytes32("credit-1"));
+        assertEq(usd.balanceOf(address(treasury)), 0);
+        _allowDebt(eur, type(uint128).max);
+        _setting(abi.encodeCall(treasury.setSettlementToken, (address(eur))));
+        assertEq(auth.settlementToken(), address(eur));
+        assertEq(_owed(settlement, address(usd), address(treasury)), 0);
+        assertEq(_owed(settlement, address(eur), address(treasury)), conv.quoteOut(address(eur), address(usd), 50e6));
+        assertEq(treasury.issuerFunds(address(usd)), 0);
+        assertEq(treasury.issuerFunds(address(eur)), 0);
+    }
+
+    function test_post_refusesAPledgeExpiringBeforeTheCoverTerm() public {
+        usd.mint(settlement, 100e6);
+        bytes32 id = treasury.pledgeId(1);
+        vm.startPrank(settlement);
+        core.pledge(address(treasury), address(usd), id, 100e6, uint64(block.timestamp + treasury.COVER_TERM()));
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.PledgeMissing.selector, id));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
+        vm.stopPrank();
+    }
+
+    function test_collateral_stopsCoveringACoverTermBeforeItExpiresYetStaysSeizable() public {
+        usd.mint(settlement, 100e6);
+        bytes32 id = treasury.pledgeId(1);
+        vm.startPrank(settlement);
+        core.pledge(
+            address(treasury), address(usd), id, 100e6, uint64(block.timestamp + treasury.COVER_TERM() + 1 days)
+        );
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
+        vm.stopPrank();
+        auth.setExposure(60e6, 0, 0);
+        treasury.checkExposure();
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        // It no longer covers new exposure, but what it already covers can still be seized.
+        assertEq(treasury.valueOf(), 0);
+        assertEq(treasury.unitsOf(), 100e6);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 60e6, 0));
+        treasury.checkExposure();
+        vm.warp(vm.getBlockTimestamp() + treasury.COVER_TERM() - 1);
+        vm.prank(sponsor);
+        treasury.seize(60e6);
+        assertEq(usd.balanceOf(sponsor), 60e6);
+    }
+
+    function test_post_endedPledgesFreeTheirSlots() public {
+        uint256 max = treasury.MAX_PLEDGES();
+        usd.mint(settlement, 1000e6);
+        vm.startPrank(settlement);
+        for (uint256 n = 1; n <= max; ++n) {
+            core.pledge(address(treasury), address(usd), treasury.pledgeId(n), 10e6, uint64(block.timestamp + 365 days));
+            treasury.post(sponsor, IEarnVault(address(0)), n);
+        }
+        vm.expectRevert(IssuerTreasury.TooManyPledges.selector);
+        treasury.post(sponsor, IEarnVault(address(0)), max + 1);
+        vm.stopPrank();
+        assertEq(treasury.valueOf(), max * 10e6);
+        // Releasing whole pledges ends them and frees their slots.
+        vm.prank(sponsor);
+        treasury.release(25e6);
+        assertEq(treasury.valueOf(), max * 10e6 - 25e6);
+        (,,, uint16 slots) = treasury.collateral();
+        assertEq(slots, type(uint16).max >> 2);
+        vm.startPrank(settlement);
+        core.pledge(address(treasury), address(usd), treasury.pledgeId(max), 30e6, uint64(block.timestamp + 365 days));
+        treasury.post(sponsor, IEarnVault(address(0)), max);
+        vm.stopPrank();
+        assertEq(treasury.valueOf(), max * 10e6 + 5e6);
+    }
+
+    function test_post_slotOfAnExpiredPledgeTakesANewOne() public {
+        usd.mint(settlement, 100e6);
+        bytes32 id = treasury.pledgeId(1);
+        vm.startPrank(settlement);
+        core.pledge(address(treasury), address(usd), id, 50e6, uint64(block.timestamp + 60 days));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
+        vm.warp(vm.getBlockTimestamp() + 60 days);
+        assertEq(treasury.unitsOf(), 0);
+        core.releaseExpired(settlement, settlement, id);
+        core.pledge(address(treasury), address(usd), id, 80e6, uint64(vm.getBlockTimestamp() + 60 days));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
+        vm.stopPrank();
+        assertEq(treasury.valueOf(), 80e6);
+    }
+
+    function test_post_aSlotReusedForAnotherHoldCountsNothing() public {
+        usd.mint(settlement, 100e6);
+        bytes32 id = treasury.pledgeId(1);
+        vm.startPrank(settlement);
+        core.pledge(address(treasury), address(usd), id, 50e6, uint64(block.timestamp + 60 days));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
+        vm.stopPrank();
+        vm.prank(sponsor);
+        treasury.release(50e6);
+        // The settlement account pledges the freed id to someone else: the treasury counts none of it.
+        vm.prank(settlement);
+        core.pledge(bob, address(usd), id, 50e6, uint64(block.timestamp + 60 days));
+        assertEq(treasury.unitsOf(), 0);
+        assertEq(treasury.valueOf(), 0);
+    }
+
+    function test_post_sponsorChangesOnlyOnceNothingIsLiveSeizedOrExposed() public {
+        _postCash(100e6);
+        auth.setExposure(10e6, 0, 0);
+        vm.prank(sponsor);
+        treasury.release(90e6);
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.BelowExposure.selector, uint256(0), uint256(10e6)));
+        treasury.release(10e6);
+        auth.setExposure(0, 0, 0);
+        vm.prank(sponsor);
+        treasury.release(10e6);
+        assertEq(treasury.unitsOf(), 0);
+        usd.mint(settlement, 100e6);
+        vm.startPrank(settlement);
+        core.pledge(address(treasury), address(usd), treasury.pledgeId(2), 100e6, uint64(block.timestamp + 365 days));
+        treasury.post(bob, IEarnVault(address(0)), 2);
+        vm.stopPrank();
+        (address now_,,,) = treasury.collateral();
+        assertEq(now_, bob);
+    }
+
+    function test_post_sponsorStaysWhileExposed() public {
+        _postCash(100e6);
+        auth.setExposure(0, 0, 50e6);
+        vm.prank(sponsor);
+        treasury.seize(50e6);
+        assertEq(treasury.unitsOf(), 50e6);
+        // The rest expires: the seizure and the exposure still keep the sponsor.
+        vm.warp(vm.getBlockTimestamp() + 365 days);
+        usd.mint(settlement, 100e6);
+        vm.startPrank(settlement);
+        core.pledge(
+            address(treasury), address(usd), treasury.pledgeId(2), 100e6, uint64(vm.getBlockTimestamp() + 365 days)
+        );
+        vm.expectRevert(IssuerTreasury.WrongSponsor.selector);
+        treasury.post(bob, IEarnVault(address(0)), 2);
+        vm.stopPrank();
+    }
+
     function test_post_onlySettlementAccount_withAMatchingPledge() public {
         vm.expectRevert(IssuerTreasury.NotSettlementAccount.selector);
-        treasury.post(sponsor, IEarnVault(address(0)));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
         vm.prank(settlement);
         vm.expectPartialRevert(IssuerTreasury.PledgeMissing.selector);
-        treasury.post(sponsor, IEarnVault(address(0)));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
     }
 
     function test_post_keepsOneAssetAndSponsor() public {
@@ -498,10 +677,10 @@ contract IssuerTreasuryTest is CompEnv {
         core.pledge(address(treasury), address(earnShare), id, uint128(shares), uint64(block.timestamp + 365 days));
         vm.expectRevert(IssuerTreasury.WrongAsset.selector);
         vm.prank(settlement);
-        treasury.post(sponsor, IEarnVault(address(earnVault)));
+        treasury.post(sponsor, IEarnVault(address(earnVault)), 2);
         vm.expectRevert(IssuerTreasury.WrongSponsor.selector);
         vm.prank(settlement);
-        treasury.post(issuer, IEarnVault(address(0)));
+        treasury.post(issuer, IEarnVault(address(0)), 1);
     }
 
     function test_seize_dollarSharesSoldForEurosWhenTheProgramSettlesInEuros() public {
@@ -537,7 +716,7 @@ contract IssuerTreasuryTest is CompEnv {
         bytes32 id = treasury.pledgeId(1);
         vm.startPrank(settlement);
         core.pledge(address(treasury), address(usd), id, amount, uint64(block.timestamp + 365 days));
-        treasury.post(sponsor, IEarnVault(address(0)));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
         vm.stopPrank();
     }
 
@@ -548,7 +727,7 @@ contract IssuerTreasuryTest is CompEnv {
         vm.startPrank(settlement);
         // forge-lint: disable-next-line(unsafe-typecast)
         core.pledge(address(treasury), address(earnShare), id, uint128(shares), uint64(block.timestamp + 365 days));
-        treasury.post(sponsor, IEarnVault(address(earnVault)));
+        treasury.post(sponsor, IEarnVault(address(earnVault)), 1);
         vm.stopPrank();
     }
 

@@ -118,9 +118,11 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
 
 - **Cards.** A card has an owner, a status (active, frozen, closed), an expiry, the source kinds it may
   draw on (cash, savings, credit) and limits per purchase, per day and per 30-day month. The owner
-  freezes, unfreezes and closes it, lowers its limits and sets the ceiling the issuer may raise them to;
-  the issuer issues, replaces and raises within that ceiling. Owners revoke merchants or cap a merchant's
-  monthly spend, and grant the program terms across their cards. Limits and operator caps are kept in the
+  and the issuer each freeze it and lift only their own freeze, so it is active once neither holds it; the
+  owner closes it, lowers its limits and sets the ceiling the issuer may raise them to; the issuer issues,
+  replaces and raises within that ceiling. Owners revoke merchants or cap a merchant's monthly spend: a
+  purchase's increases, tips and late charges count toward its merchant's cap, and what a release, decrease
+  or refund gives back returns to it. Owners grant the program terms across their cards. Limits and operator caps are kept in the
   program's first settlement token, so they survive a change of settlement token.
 - **Funding order.** Each owner lists up to four entries, each a source the issuer approved and a
   position at it: for cash the token and the most a conversion may cost, for credit the line. A purchase
@@ -129,7 +131,7 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   refunds its own core holds (it is their placer and payee), paying what it takes to the settlement
   account in the same call.
 - **Authorize.** `authorize(card, ref, amount, merchant, expiresAt, flags)` checks the card, its windows
-  and the mandate on the amount the sources hold, asking each entry in order to hold what is still
+  and the merchant's mandate (every new purchase names its merchant) on the amount the sources hold, asking each entry in order to hold what is still
   missing; with `PARTIAL` it approves less. Any failure reverts every leg. A purchase is one storage
   slot, never deleted, so a reference never repeats; a leg's id is `keccak256(ref, entry)`. A stand-in
   approved offline is one cash hold: the core reserves what is there and captures the shortfall as debt
@@ -156,6 +158,8 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   issuer treasury keeps funds behind. With the treasury registered as its exposure guard
   (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase or charge
   that takes held plus unsettled past the sponsor collateral; decreases, captures and releases still go through.
+  A pledge counts toward that collateral only while it stands `COVER_TERM` more (the longest hold plus a week
+  to seize what is still unsettled), and its slot is free again once it ends.
 - **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus
   the owner's budget, so no share debt arises; it keeps standing approvals to its vault. When the vault
   quotes but cannot redeem, the float pays and the shares wait for the funder.

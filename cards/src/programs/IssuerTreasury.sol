@@ -8,7 +8,7 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IExposureGuard } from "./interfaces/IExposureGuard.sol";
-import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
+import { IReservationCore, MAX_HOLD_DURATION, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
 
 interface IMidRate {
@@ -37,6 +37,9 @@ contract IssuerTreasury is IExposureGuard {
 
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 public constant MAX_PLEDGES = 16;
+    /// @notice How long a pledge must still stand to cover exposure: past the longest hold, with a week for the
+    ///         sponsor to seize what is still unsettled before it expires.
+    uint256 public constant COVER_TERM = MAX_HOLD_DURATION + 7 days;
     /// @dev Settlement-token-in-use reasons this contract reports itself.
     uint8 private constant IN_USE_HOLDS = 1;
     uint8 private constant IN_USE_UNSETTLED = 2;
@@ -55,12 +58,12 @@ contract IssuerTreasury is IExposureGuard {
     uint64 internal _charges;
 
     /// @notice The sponsor collateral: who receives what is seized, the pledged token, its Earn vault (zero for
-    ///         plain tokens), and how many pledges the settlement account placed.
+    ///         plain tokens), and which of the MAX_PLEDGES pledge slots hold posted pledges (bit n-1 for pledgeId(n)).
     struct Collateral {
         address sponsor;
         address token;
         IEarnVault vault;
-        uint32 count;
+        uint16 slots;
     }
 
     Collateral public collateral;
@@ -173,14 +176,16 @@ contract IssuerTreasury is IExposureGuard {
         uint256 free = CORE.available(account, token);
         if (amount > free) {
             advanced = amount - free;
-            uint256 owed = advanced + _owedTo(account, token);
             uint256 held = issuerFunds(token);
-            if (held < owed) revert IssuerFundsShort(owed, held);
-            // What the account already owes comes straight back as repayment, leaving the advance free to pay out.
-            SafeTransferLib.safeTransfer(token, account, owed);
+            if (held < advanced) revert IssuerFundsShort(advanced, held);
+            // The account's debt here is forgiven first, so the advance reaches it whole, and charged again below
+            // together with the advance: only the advance leaves this contract.
+            bytes32 id = _chargeId();
+            uint256 before = _forgive(account, token, id);
+            SafeTransferLib.safeTransfer(token, account, advanced);
             ITIP20Memo(token).transferFromWithMemo(account, to, amount, memo);
             // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.charge(account, token, _chargeId(), uint128(owed), address(this), false);
+            CORE.charge(account, token, id, uint128(before + advanced), address(this), false);
         } else {
             ITIP20Memo(token).transferFromWithMemo(account, to, amount, memo);
         }
@@ -265,33 +270,39 @@ contract IssuerTreasury is IExposureGuard {
         return tokenGuards.length;
     }
 
-    /// @notice Records the settlement account's next pledge of sponsor collateral: a core pledge it placed with this
-    ///         contract as payee, of the settlement token, or of one Earn vault's shares (vault nonzero). Sponsor and
-    ///         asset stay those of the first pledge.
+    /// @notice Records the settlement account's pledge of sponsor collateral at pledgeId(n), n from 1 to MAX_PLEDGES:
+    ///         a core pledge it placed with this contract as payee, standing at least COVER_TERM, of the settlement
+    ///         token or of one Earn vault's shares (vault nonzero). A slot is free again once its pledge ended. The
+    ///         asset changes only while no pledge is live, and the sponsor only while nothing is live, seized or
+    ///         exposed.
     // forge-lint: disable-next-item(block-timestamp)
-    function post(address sponsor, IEarnVault vault) external nonReentrant {
+    function post(address sponsor, IEarnVault vault, uint256 n) external nonReentrant {
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
         if (msg.sender != account) revert NotSettlementAccount();
+        if (n == 0 || n > MAX_PLEDGES) revert TooManyPledges();
+        if (sponsor == address(0)) revert WrongSponsor();
         Collateral storage c = collateral;
         address token = address(vault) == address(0) ? PROGRAM.settlementToken() : vault.earnShare();
-        if (c.count == 0) {
-            if (sponsor == address(0)) revert WrongSponsor();
+        if (unitsOf() == 0) {
+            if (sponsor != c.sponsor && (c.sponsor != address(0) && (seized != 0 || exposure() != 0))) {
+                revert WrongSponsor();
+            }
             if (address(vault) != address(0)) _toAssets(vault.asset(), 0);
-            (c.sponsor, c.token, c.vault) = (sponsor, token, vault);
+            (c.sponsor, c.token, c.vault, c.slots) = (sponsor, token, vault, 0);
         } else {
             if (c.token != token || address(c.vault) != address(vault)) revert WrongAsset();
             if (c.sponsor != sponsor) revert WrongSponsor();
         }
-        if (c.count >= MAX_PLEDGES) revert TooManyPledges();
-        bytes32 id = pledgeId(c.count + 1);
+        bytes32 id = pledgeId(n);
         IReservationCore.HoldRecord memory h = CORE.getHold(account, account, id);
-        if (h.token != token || h.kind != PLEDGE || h.payee != address(this) || h.held == 0) revert PledgeMissing(id);
-        if (h.expiresAt <= block.timestamp) revert PledgeMissing(id);
-        ++c.count;
+        if (!_counts(h, token, block.timestamp + COVER_TERM)) revert PledgeMissing(id);
+        // A slot already posted holds this same pledge: posting it again changes nothing.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        c.slots |= uint16(1 << (n - 1));
         emit CollateralPosted(sponsor, id, h.held);
     }
 
-    /// @notice The sponsor releases collateral worth value, never below the program's exposure.
+    /// @notice The sponsor releases collateral worth value, never below the program's exposure in what still covers it.
     function release(uint256 value) external nonReentrant {
         Collateral storage c = _sponsored();
         uint256 current = valueOf();
@@ -333,7 +344,7 @@ contract IssuerTreasury is IExposureGuard {
     ///         acknowledgement clears, so seizures in all never pass what the program came to owe.
     function acknowledgeSettlement(uint64 throughSeq, uint256 applied) external nonReentrant {
         Collateral storage c = collateral;
-        if (msg.sender != (c.count == 0 ? PROGRAM.ISSUER() : c.sponsor)) revert NotSponsor();
+        if (msg.sender != (c.sponsor == address(0) ? PROGRAM.ISSUER() : c.sponsor)) revert NotSponsor();
         (,, uint256 before) = PROGRAM.exposure();
         PROGRAM.acknowledgeSettlement(throughSeq);
         (,, uint256 left) = PROGRAM.exposure();
@@ -349,21 +360,16 @@ contract IssuerTreasury is IExposureGuard {
         return keccak256(abi.encode(address(this), n));
     }
 
-    /// @notice The pledged units still live.
-    // forge-lint: disable-next-item(block-timestamp,calls-loop)
-    function unitsOf() public view returns (uint256 units) {
-        uint256 count = collateral.count;
-        address account = PROGRAM.SETTLEMENT_ACCOUNT();
-        for (uint256 n = 1; n <= count; ++n) {
-            IReservationCore.HoldRecord memory h = CORE.getHold(account, account, pledgeId(n));
-            if (h.expiresAt > block.timestamp) units += h.held;
-        }
+    /// @notice The posted units still live.
+    function unitsOf() public view returns (uint256) {
+        return _units(block.timestamp);
     }
 
-    /// @notice What the live collateral is worth in the settlement token.
+    /// @notice What the collateral standing at least COVER_TERM more is worth in the settlement token: what covers
+    ///         the program's exposure.
     function valueOf() public view returns (uint256) {
         Collateral storage c = collateral;
-        uint256 units = unitsOf();
+        uint256 units = _units(block.timestamp + COVER_TERM);
         if (units == 0) return 0;
         IEarnVault vault = c.vault;
         if (address(vault) == address(0)) return _inSettlement(c.token, units);
@@ -378,7 +384,26 @@ contract IssuerTreasury is IExposureGuard {
 
     function _sponsored() private view returns (Collateral storage c) {
         c = collateral;
-        if (c.count == 0 || msg.sender != c.sponsor) revert NotSponsor();
+        if (c.sponsor == address(0) || msg.sender != c.sponsor) revert NotSponsor();
+    }
+
+    /// @dev The posted units whose pledges stand past `until`.
+    // forge-lint: disable-next-item(calls-loop)
+    function _units(uint256 until) private view returns (uint256 units) {
+        Collateral storage c = collateral;
+        (uint256 slots, address token) = (c.slots, c.token);
+        address account = PROGRAM.SETTLEMENT_ACCOUNT();
+        for (uint256 n = 1; slots >> (n - 1) != 0; ++n) {
+            if (slots & (1 << (n - 1)) == 0) continue;
+            IReservationCore.HoldRecord memory h = CORE.getHold(account, account, pledgeId(n));
+            if (_counts(h, token, until)) units += h.held;
+        }
+    }
+
+    /// @dev Whether h is a live pledge of token to this contract standing past `until`. A slot's pledge may have
+    ///      ended and its id been used again for something else.
+    function _counts(IReservationCore.HoldRecord memory h, address token, uint256 until) private view returns (bool) {
+        return h.token == token && h.kind == PLEDGE && h.payee == address(this) && h.held != 0 && h.expiresAt > until;
     }
 
     /// @dev Reverts while a guard, posted collateral or any other hold on the settlement account's balance still sizes
@@ -410,18 +435,17 @@ contract IssuerTreasury is IExposureGuard {
         uint256 owed = _owedTo(account, current);
         if (owed == 0) return;
         uint256 carried = venue.quoteOut(next, current, owed);
-        uint256 held = issuerFunds(current);
-        if (held < owed) revert IssuerFundsShort(owed, held);
-        // What this contract sends comes straight back as repayment, which clears the debt in current.
-        SafeTransferLib.safeTransfer(current, account, owed);
         if (carried > type(uint128).max) revert SettlementTokenInUse(IN_USE_ISSUER_DEBT);
+        // The debt in current is forgiven, with nothing sent, and charged again in next.
+        bytes32 id = _chargeId();
+        _forgive(account, current, id);
         // forge-lint: disable-next-line(unsafe-typecast)
-        try CORE.charge(account, next, _chargeId(), uint128(carried), address(this), false) { }
+        try CORE.charge(account, next, id, uint128(carried), address(this), false) { }
         catch {
             revert SettlementTokenInUse(IN_USE_ISSUER_DEBT);
         }
-        // The claim moves to next: the funds in current drop by what this sent, so what it retains there stays what
-        // it holds once the old debt is repaid.
+        // The claim moves to next: the funds in current drop by the forgiven debt, so what this holds there for
+        // advancing stays the same.
         _funds[current] -= owed;
         _funds[next] += carried;
         emit IssuerDebtCarried(current, owed, next, carried);
@@ -431,7 +455,9 @@ contract IssuerTreasury is IExposureGuard {
         if (immediate || PROGRAM.grantedOwners() == 0) return true;
         bytes32 id = keccak256(msg.data);
         uint64 eta = pendingSetting[id];
-        if (eta == 0) {
+        // A proposal not applied within the program's settings window after its delay lapses and is recorded afresh.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (eta == 0 || block.timestamp > eta + PROGRAM.SETTINGS_WINDOW()) {
             // forge-lint: disable-next-line(unsafe-typecast)
             eta = uint64(block.timestamp) + PROGRAM.SETTINGS_DELAY();
             pendingSetting[id] = eta;
@@ -447,6 +473,14 @@ contract IssuerTreasury is IExposureGuard {
 
     function _chargeId() private returns (bytes32) {
         return keccak256(abi.encode("tempo.cards.issuer-debt", address(this), ++_charges));
+    }
+
+    /// @dev Forgives all that account owes this contract in token, through a core refund that pays nothing, and
+    ///      returns it.
+    function _forgive(address account, address token, bytes32 id) private returns (uint256 owed) {
+        owed = _owedTo(account, token);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (owed != 0) CORE.refund(account, token, address(this), id, uint128(owed));
     }
 
     /// @dev What owner owes this contract in token on the core.
@@ -491,18 +525,24 @@ contract IssuerTreasury is IExposureGuard {
     // forge-lint: disable-next-item(block-timestamp,calls-loop,reentrancy-no-eth,unsafe-typecast)
     function _take(Collateral storage c, uint256 units, bool seizing) private returns (uint256 moved) {
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
-        for (uint256 n = c.count; n > 0 && units != 0; --n) {
+        (uint256 slots, address token) = (c.slots, c.token);
+        for (uint256 n = MAX_PLEDGES; n > 0 && units != 0; --n) {
+            uint256 bit = 1 << (n - 1);
+            if (slots & bit == 0) continue;
             bytes32 id = pledgeId(n);
             IReservationCore.HoldRecord memory h = CORE.getHold(account, account, id);
+            if (!_counts(h, token, block.timestamp)) continue;
             uint128 amount = h.held;
-            if (amount == 0 || h.expiresAt <= block.timestamp) continue;
             uint128 part = units < amount ? uint128(units) : amount;
+            // Taking a whole pledge ends it, which frees its slot.
+            if (part == amount) slots &= ~bit;
             if (seizing) CORE.capture(account, account, id, part, false);
             else if (part == amount) CORE.release(account, account, id);
             else CORE.adjust(account, account, id, amount - part);
             units -= part;
             moved += part;
         }
+        c.slots = uint16(slots);
     }
 
     function _min(uint256 a, uint256 b) private pure returns (uint256) {

@@ -57,7 +57,7 @@ contract ExposureGuardTest is AuthEnv {
 
     function test_exposure_expiredCollateral_refusesNewExposure() public {
         _authorize(P1, 100e6);
-        // The collateral expires, so the program is past it and nothing may add to the exposure.
+        // The collateral stops covering, so the program is past it and nothing may add to the exposure.
         vm.warp(block.timestamp + 4 days);
         assertEq(treasury.valueOf(), 0);
         vm.startPrank(issuer);
@@ -68,7 +68,7 @@ contract ExposureGuardTest is AuthEnv {
 
     function test_exposure_decreaseAndCaptureWhilePastCollateral() public {
         _authorize(P1, 100e6);
-        // The collateral expires; the purchase can still shrink and capture.
+        // The collateral stops covering; the purchase can still shrink and capture.
         vm.warp(block.timestamp + 4 days);
         vm.startPrank(issuer);
         cards.adjust(P1, 50e6);
@@ -104,8 +104,11 @@ contract ExposureGuardTest is AuthEnv {
         usd.mint(settlement, amount);
         bytes32 id = treasury.pledgeId(1);
         vm.startPrank(settlement);
-        core.pledge(address(treasury), address(usd), id, amount, uint64(block.timestamp + 3 days));
-        treasury.post(sponsor, IEarnVault(address(0)));
+        // It covers exposure for 3 days: until COVER_TERM before it expires.
+        core.pledge(
+            address(treasury), address(usd), id, amount, uint64(block.timestamp + treasury.COVER_TERM() + 3 days)
+        );
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
         vm.stopPrank();
     }
 }

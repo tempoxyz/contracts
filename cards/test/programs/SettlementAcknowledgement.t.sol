@@ -21,8 +21,8 @@ contract SettlementAcknowledgementTest is AuthEnv {
         usd.mint(settlement, 100e6);
         bytes32 id = treasury.pledgeId(1);
         vm.startPrank(settlement);
-        core.pledge(address(treasury), address(usd), id, 100e6, uint64(block.timestamp + 30 days));
-        treasury.post(sponsor, IEarnVault(address(0)));
+        core.pledge(address(treasury), address(usd), id, 100e6, uint64(block.timestamp + 365 days));
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
         vm.stopPrank();
         _setting(abi.encodeCall(cards.setExposureGuard, (address(treasury))));
     }

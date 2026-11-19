@@ -75,7 +75,7 @@ contract CompanionGasTest is CompEnv {
         bytes32 id = treasury.pledgeId(1);
         vm.startPrank(settlement);
         core.pledge(address(treasury), address(usd), id, 100e6, uint64(vm.getBlockTimestamp() + 365 days));
-        treasury.post(bob, IEarnVault(address(0)));
+        treasury.post(bob, IEarnVault(address(0)), 1);
         vm.snapshotGasLastCall("CompanionGas", "treasury_postCollateral");
         vm.stopPrank();
         auth.setExposure(40e6, 0, 0);
@@ -105,8 +105,9 @@ contract CompanionGasTest is CompEnv {
             uint64(vm.getBlockTimestamp() + 30 days)
         );
         vm.snapshotGasLastCall("CompanionGas", "reserves_reserveDispute");
+        bytes32 id = reserves.reserveRefId(shop, bytes32("r1"));
         vm.prank(operator);
-        reserves.collectReserve(bytes32("r1"), 10e6);
+        reserves.collectReserve(id, 10e6);
         vm.snapshotGasLastCall("CompanionGas", "reserves_collectReserve");
     }
 
