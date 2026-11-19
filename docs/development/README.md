@@ -14,8 +14,8 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   the ignored `.solar/`. The repository is one Foundry project at its root, so Earn, the Zone router
   and card spend share this build. Forge resolves the wrapper from its working directory: run it from
   the repository root, or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. Only the
-  vendored Zones runtime rebuild and Rain's fixture build keep solc, because they reproduce
-  third-party bytecode.
+  vendored Zones runtime rebuild, Rain's fixture build, and the PropAMM fixture rebuild keep solc,
+  because they reproduce bytecode built outside this repository.
   CI installs that Foundry version through `.github/actions/setup` and the PropAMM fixture job, and the
   deployment tooling refuses an older Forge (`deployments/chain/foundry.ts`). A record's
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version

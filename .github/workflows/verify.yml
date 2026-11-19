@@ -82,8 +82,8 @@ jobs:
         run: forge test --brutalize --match-contract SingleZoneEarnRouterAbiFuzzTest --fuzz-runs 4096 -vv
 
   # Rebuilds the committed DirectPropAMM fixture from its pinned private source. Forks cannot read
-  # tempoxyz/propAMM: a fork PR that leaves the fixture unchanged passes without the rebuild, and one
-  # that changes it fails until a maintainer re-verifies it from a branch in this repository.
+  # tempoxyz/tempo-propamm: a fork PR that leaves the fixture unchanged passes without the rebuild, and
+  # one that changes it fails until a maintainer re-verifies it from a branch in this repository.
   propamm-fixture:
     name: PropAMM fixture
     runs-on: ubuntu-latest
@@ -136,7 +136,7 @@ jobs:
         if: steps.fork.outputs.skip != 'true'
         uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
-          scope: tempoxyz/propAMM
+          scope: tempoxyz/tempo-propamm
           policy: earn-ci-read
           ttl: 5m
 
@@ -144,7 +144,7 @@ jobs:
         if: steps.fork.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: tempoxyz/propAMM
+          repository: tempoxyz/tempo-propamm
           ref: ${{ steps.source.outputs.commit }}
           path: .propamm
           token: ${{ steps.sts.outputs.token }}

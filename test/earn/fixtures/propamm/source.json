@@ -1,7 +1,7 @@
 {
-  "repository": "tempoxyz/propAMM",
-  "commit": "383d8d400ac221fb571d896045608cd8aeb986d0",
-  "contract": "src/DirectPropAMM.sol:DirectPropAMM",
+  "repository": "tempoxyz/tempo-propamm",
+  "commit": "65d992d54d2cf9cdde79487715a54f4b600129c5",
+  "contract": "contracts/src/DirectPropAMM.sol:DirectPropAMM",
   "solc": "0.8.30",
-  "regenerate": "test/earn/fixtures/propamm/update.sh [--check] [<propAMM checkout>]; see docs/earn/modules/propamm.md#pinned-directpropamm-fixture"
+  "regenerate": "test/earn/fixtures/propamm/update.sh [--check] [<tempo-propamm checkout>]; see docs/earn/modules/propamm.md#pinned-directpropamm-fixture"
 }
