@@ -96,11 +96,17 @@ contract AccountKeysTest is AuthEnv {
         assertEq(threshold, 2);
     }
 
-    function test_recover_withThreshold_replacesKeys_moneyStays() public {
+    function test_recover_withThreshold_replacesKeysAfterTheDelay_moneyStays() public {
         usd.mint(alice, 100e6);
         _configure();
         vm.prank(stranger);
         keys.recover(alice, laptop, _two(g1Key, g3Key, laptop));
+        // The replacement waits the recovery delay, during which the old key still signs.
+        assertFalse(keys.signsFor(alice, laptop));
+        assertTrue(keys.signsFor(alice, phone));
+        vm.warp(vm.getBlockTimestamp() + keys.RECOVERY_DELAY());
+        vm.prank(stranger);
+        keys.completeRecovery(alice);
         assertTrue(keys.signsFor(alice, laptop));
         assertFalse(keys.signsFor(alice, phone));
         assertEq(usd.balanceOf(alice), 100e6);
@@ -137,6 +143,8 @@ contract AccountKeysTest is AuthEnv {
         vm.expectRevert(abi.encodeWithSelector(AccountKeys.NotEnoughGuardians.selector, 0, 2));
         keys.recover(alice, stranger, sigs);
         keys.recover(alice, laptop, sigs);
+        vm.warp(vm.getBlockTimestamp() + keys.RECOVERY_DELAY());
+        keys.completeRecovery(alice);
         // The nonce moved, so the same approvals can't run the recovery again after the owner changes keys.
         vm.prank(laptop);
         keys.configure(alice, _one(phone), _guardians(), 2);
