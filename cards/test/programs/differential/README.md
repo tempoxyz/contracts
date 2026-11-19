@@ -8,7 +8,10 @@ folder proves the model matches the node.
   `StateReader` reads (balances, reserved, available, budgets, payee terms, debts and holds over a fixed set of
   accounts, tokens and hold ids).
 - `Differential.t.sol` replays every trace against the model and requires the same outcome, revert data, events and
-  state after every operation, then checks the core invariants (`CoreInvariants.sol`).
+  state after every operation, then checks the core invariants (`CoreInvariants.sol`). Each trace must name the node
+  commit it was recorded on, and the traces together must reach every core call's success path, every core error
+  (`DebtCapExceeded` and `TooManyCreditors` included) and the debt events at least as often as `_coverage()` lists,
+  the same minimums the harness's `run.ts` enforces on a run.
 - `ModelRandom.t.sol` runs the same kind of sequences against the model alone, without a node, checking the
   invariants only.
 
@@ -16,7 +19,7 @@ Regenerate the traces from the harness repository (tempoxyz/cards), with a tempo
 
 ```sh
 forge build    # in this cards/ folder: the script reads the core ABI and StateReader from out/
-TEMPO_BIN=<path to tempo> pnpm differential --cards <this checkout>/cards --node --seeds 1,2,3,4,5,6,7,8 --ops 200
+TEMPO_BIN=<path to tempo> pnpm differential --cards <this checkout>/cards --node    # seeds 1-5, 300 ops each
 ```
 
 `--node` starts a fresh dev node on port 18545 (`DIFF_RPC_PORT`) and stops it afterwards; without it the script uses

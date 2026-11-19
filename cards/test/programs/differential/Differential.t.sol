@@ -39,25 +39,119 @@ contract DifferentialTest is CoreInvariants {
         reader = new StateReader();
     }
 
-    /// @notice Every committed trace replays identically on the model.
+    /// @dev How often the replayed traces reached each core call's success path, each core error and the debt events,
+    ///      beside the least each must reach.
+    struct Coverage {
+        bytes4[] calls;
+        uint256[] callOk;
+        uint256[] callLeast;
+        bytes4[] errors;
+        uint256[] errorHits;
+        uint256[] errorLeast;
+        bytes32[] events;
+        uint256[] eventHits;
+        uint256[] eventLeast;
+    }
+
+    /// @notice Every committed trace replays identically on the model, and together they reach every core call's success
+    ///         path, every core error and the debt events at least as often as the generator requires.
     function test_replayTraces() public {
         // Replaying thousands of operations exceeds any block gas limit; gas is not what this test measures.
         vm.pauseGasMetering();
         Vm.DirEntry[] memory entries = vm.readDir(TRACES);
+        Coverage memory c = _coverage();
         uint256 replayed;
         for (uint256 i; i < entries.length; ++i) {
             if (entries[i].isDir || !vm.contains(entries[i].path, ".json")) continue;
             uint256 snapshot = vm.snapshotState();
-            replayed += _replay(entries[i].path);
+            replayed += _replay(entries[i].path, c);
             vm.revertToState(snapshot);
         }
         assertGt(replayed, 0, "no traces");
         emit log_named_uint("operations compared", replayed);
+        _assertCoverage(c);
     }
 
-    function _replay(string memory file) internal returns (uint256) {
+    /// @dev The minimums scripts/differential/run.ts (tempoxyz/cards) enforces on a run, kept in step with it.
+    function _coverage() internal pure returns (Coverage memory c) {
+        c.calls = new bytes4[](14);
+        c.callLeast = new uint256[](14);
+        (c.calls[0], c.callLeast[0]) = (IReservationCore.adjust.selector, 10);
+        (c.calls[1], c.callLeast[1]) = (IReservationCore.approveHolder.selector, 20);
+        (c.calls[2], c.callLeast[2]) = (IReservationCore.capture.selector, 20);
+        (c.calls[3], c.callLeast[3]) = (IReservationCore.charge.selector, 30);
+        (c.calls[4], c.callLeast[4]) = (IReservationCore.clearLapsedDebt.selector, 10);
+        (c.calls[5], c.callLeast[5]) = (IReservationCore.hold.selector, 20);
+        (c.calls[6], c.callLeast[6]) = (IReservationCore.holdFrom.selector, 15);
+        (c.calls[7], c.callLeast[7]) = (IReservationCore.lien.selector, 5);
+        (c.calls[8], c.callLeast[8]) = (IReservationCore.pledge.selector, 5);
+        (c.calls[9], c.callLeast[9]) = (IReservationCore.pledgeFrom.selector, 5);
+        (c.calls[10], c.callLeast[10]) = (IReservationCore.refund.selector, 20);
+        (c.calls[11], c.callLeast[11]) = (IReservationCore.release.selector, 10);
+        (c.calls[12], c.callLeast[12]) = (IReservationCore.releaseExpired.selector, 10);
+        (c.calls[13], c.callLeast[13]) = (IReservationCore.setPayeeTerms.selector, 20);
+        c.callOk = new uint256[](14);
+        c.errors = new bytes4[](13);
+        c.errorLeast = new uint256[](13);
+        (c.errors[0], c.errorLeast[0]) = (IReservationCore.BudgetExceeded.selector, 2);
+        (c.errors[1], c.errorLeast[1]) = (IReservationCore.CaptureLimitExceeded.selector, 2);
+        (c.errors[2], c.errorLeast[2]) = (IReservationCore.DebtCapExceeded.selector, 5);
+        (c.errors[3], c.errorLeast[3]) = (IReservationCore.HoldExists.selector, 2);
+        (c.errors[4], c.errorLeast[4]) = (IReservationCore.HoldExpired.selector, 3);
+        (c.errors[5], c.errorLeast[5]) = (IReservationCore.HoldNotExpired.selector, 3);
+        (c.errors[6], c.errorLeast[6]) = (IReservationCore.HoldNotFound.selector, 3);
+        (c.errors[7], c.errorLeast[7]) = (IReservationCore.InsufficientAvailable.selector, 3);
+        (c.errors[8], c.errorLeast[8]) = (IReservationCore.InvalidAmount.selector, 3);
+        (c.errors[9], c.errorLeast[9]) = (IReservationCore.InvalidExpiry.selector, 3);
+        (c.errors[10], c.errorLeast[10]) = (IReservationCore.PolicyForbids.selector, 3);
+        (c.errors[11], c.errorLeast[11]) = (IReservationCore.TooManyCreditors.selector, 3);
+        (c.errors[12], c.errorLeast[12]) = (IReservationCore.Unauthorized.selector, 3);
+        c.errorHits = new uint256[](13);
+        c.events = new bytes32[](2);
+        c.eventLeast = new uint256[](2);
+        (c.events[0], c.eventLeast[0]) = (IReservationCore.DebtLapsed.selector, 5);
+        (c.events[1], c.eventLeast[1]) = (IReservationCore.DebtRepaid.selector, 10);
+        c.eventHits = new uint256[](2);
+    }
+
+    function _tally(Coverage memory c, Op memory op) internal pure {
+        for (uint256 i; i < op.topics.length; ++i) {
+            for (uint256 j; j < c.events.length; ++j) {
+                if (op.topics[i].length != 0 && op.topics[i][0] == c.events[j]) ++c.eventHits[j];
+            }
+        }
+        if (op.kind != KIND_CORE) return;
+        if (op.ok) {
+            bytes4 selector = bytes4(op.data);
+            for (uint256 j; j < c.calls.length; ++j) {
+                if (c.calls[j] == selector) ++c.callOk[j];
+            }
+            return;
+        }
+        if (op.ret.length < 4) return;
+        bytes4 error = bytes4(op.ret);
+        for (uint256 j; j < c.errors.length; ++j) {
+            if (c.errors[j] == error) ++c.errorHits[j];
+        }
+    }
+
+    function _assertCoverage(Coverage memory c) internal pure {
+        for (uint256 j; j < c.calls.length; ++j) {
+            assertGe(c.callOk[j], c.callLeast[j], string.concat("successful calls of ", vm.toString(abi.encodePacked(c.calls[j]))));
+        }
+        for (uint256 j; j < c.errors.length; ++j) {
+            assertGe(c.errorHits[j], c.errorLeast[j], string.concat("reverts with ", vm.toString(abi.encodePacked(c.errors[j]))));
+        }
+        for (uint256 j; j < c.events.length; ++j) {
+            assertGe(c.eventHits[j], c.eventLeast[j], string.concat("events ", vm.toString(c.events[j])));
+        }
+    }
+
+    function _replay(string memory file, Coverage memory c) internal returns (uint256) {
         string memory json = vm.readFile(file);
         assertEq(vm.parseJsonStringArray(json, ".nodeInvariantFailures").length, 0, "node invariant failures recorded");
+        // A trace names the node commit it was recorded on, so a drift can be traced to a node change.
+        assertEq(bytes(vm.parseJsonString(json, ".node.commit")).length, 40, "trace records its node commit");
         Trace memory t = _setup(file, json);
         bytes[] memory ops = vm.parseJsonBytesArray(json, ".ops");
         string[] memory labels = vm.parseJsonStringArray(json, ".labels");
@@ -67,7 +161,9 @@ contract DifferentialTest is CoreInvariants {
             assembly ("memory-safe") {
                 free := mload(0x40)
             }
-            _step(t, _unpack(abi.decode(ops[n], (EncodedOp))), labels[n]);
+            Op memory op = _unpack(abi.decode(ops[n], (EncodedOp)));
+            _step(t, op, labels[n]);
+            _tally(c, op);
             assembly ("memory-safe") {
                 mstore(0x40, free)
             }
