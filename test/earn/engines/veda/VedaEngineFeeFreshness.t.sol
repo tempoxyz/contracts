@@ -95,7 +95,7 @@ contract VedaEngineFeeFreshnessTest is VedaEngineTestBase {
         vm.prank(USER);
         bytes32 requestId = earnVault.requestRedeem(100 * ONE, _requestData(), receiver);
         assertFalse(earnFees.pendingFeeSnapshot(requestId).open);
-        assertEq(earnShare.totalSupply(), 0);
+        assertEq(earnVault.totalEarnShares(), 0);
 
         vm.prank(USER);
         earnVault.cancelRedeem(requestId, 100 * ONE);

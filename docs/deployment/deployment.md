@@ -188,22 +188,28 @@ none. It is best effort. A run without the deployer key, a deployer holding none
 token policy that refuses the transfer records the step without sending, and nothing waits on it.
 The EarnVault's unit is still sent by hand.
 
-Only an EarnVault from a factory release that includes this change counts up to 1 unit of EarnShare it
-holds as burned (TIP-20 burns only the caller's balance, so every exit moves shares to the vault
-first). Send such a vault 1 unit of EarnShare, from a small first deposit, after confirming from the
-stack's recorded factory release that its EarnVault implementation was built from this change: that
-unit keeps its balance slot without ever counting as supply or claiming backing. EarnShare beyond
-that unit still counts as supply, so transfers to the vault cannot shrink supply to inflate the rate.
+The EarnVault also needs 1 unit of EarnShare (TIP-20 burns only the caller's balance, so every exit
+moves shares to the vault first). An EarnVault counts up to 1 unit of EarnShare it holds as burned,
+so that unit keeps its balance slot without ever counting as supply or claiming backing. EarnShare
+beyond that unit still counts as supply, so transfers to the vault cannot shrink supply to inflate
+the rate.
 
-Never send EarnShare to anything when its EarnVault predates both changes, which includes every stack
-recorded before them. That vault cannot burn it, so supply could never return to zero: after every
-other holder exits and that unit's backing rounds to zero, deposits and whole-pool migration revert.
+- New stacks need no EarnShare step: the EarnVault mints its own unit to itself while the factory
+  initializes it, before the transfer policy applies.
+- An EarnVault from an earlier release that counts the unit as burned (its implementation emits
+  `UnbackedPoolRestarted`) but did not mint it: send it 1 unit of EarnShare, from a small first
+  deposit, after confirming from the stack's recorded factory release which implementation it runs.
+
+Never send EarnShare to anything when its EarnVault does not count the unit as burned, which
+includes every stack recorded before that release. That vault cannot burn it, so supply could never
+return to zero: after every other holder exits and that unit's backing rounds to zero, deposits and
+whole-pool migration revert.
 
 Every EarnVault, ERC-4626 engine and PropAMM engine balance check is a before/after delta, so the residue never
 counts as user assets; it stays with the contract for good. Measured on real TIP-20
-(`test/spend/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and on a
-vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The EarnVault and EarnShare units are plain transfers
-outside the recorded deployment actions.
+(`test/spend/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and the
+EarnShare unit cuts a redeem from 427k to 173k. The base-asset residue is a plain transfer outside the
+recorded deployment actions, so it adds no step to existing deployment records.
 
 [Reward periphery](../earn/modules/rewards.md) pulls the vault asset from a funder and passes it on in
 the same call, so each funding recreates the funding contract's balance slot. After a contribution

@@ -366,7 +366,7 @@ contract DeployScriptsTest is ZoneEnv {
         vaults[0] = address(earnVault);
         r = _earnPreflight(preflight, router, vaults);
         assertFalse(r.cloneSeeded, "no share in the clone yet");
-        assertFalse(r.vaultSeeded, "nor in the vault");
+        assertTrue(r.vaultSeeded, "the vault mints its own unit at initialization");
         assertFalse(r.programSeeded, "nor in the program");
         preflight.print(r, vaults);
     }

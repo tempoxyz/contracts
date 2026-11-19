@@ -99,7 +99,7 @@ contract ERC4626CompositionHandler is Test {
     }
 
     function contribute(uint256 assets) external {
-        if (earnShare.totalSupply() == 0) return;
+        if (earnVault.totalEarnShares() == 0) return;
 
         assets = bound(assets, 1, 1e18);
         earnVault.accrueFees();
@@ -221,7 +221,7 @@ contract ERC4626CompositionInvariantTest is StdInvariant, Test {
 
     function invariant_projectedEarnSupplyRedeemsToActualVenueAssets() public view {
         FeePreview memory preview = fees.previewAccruedFees();
-        uint256 projectedSupply = earnShare.totalSupply() + preview.totalFeeEarnShares;
+        uint256 projectedSupply = earnVault.totalEarnShares() + preview.totalFeeEarnShares;
         uint256 managedAssets = earnVault.totalAssets();
 
         if (projectedSupply == 0) {
@@ -253,12 +253,13 @@ contract ERC4626CompositionInvariantTest is StdInvariant, Test {
 
     /// @dev Allowances may stand (Tempo charges each zero-to-nonzero allowance as a new slot), but only
     ///      along the fixed vault-to-engine-to-venue path, so a standing allowance can never reach a token
-    ///      balance outside that path: neither intermediate holds any token between calls.
+    ///      balance outside that path: neither intermediate holds any token between calls, except the one
+    ///      EarnShare unit the vault mints itself at initialization and counts as burned.
     function invariant_intermediateContractsRetainNoTokens() public view {
         assertEq(asset.balanceOf(address(earnVault)), 0);
         assertEq(asset.balanceOf(address(engine)), 0);
         assertEq(venue.balanceOf(address(earnVault)), 0);
-        assertEq(earnShare.balanceOf(address(earnVault)), 0);
+        assertEq(earnShare.balanceOf(address(earnVault)), 1);
         assertEq(venue.allowance(address(earnVault), address(engine)), 0);
         assertEq(earnShare.allowance(address(earnVault), address(engine)), 0);
         _assertZeroOrMax(asset.allowance(address(earnVault), address(engine)));

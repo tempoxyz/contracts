@@ -174,7 +174,7 @@ contract SingleZoneEarnRouterAbiFuzzTest is EarnRouterTestBase {
             assertEq(portalA.lastAmount(), ONE);
             _assertRouterState(0, 0, 0);
         } else {
-            assertEq(earnA.totalSupply(), 0);
+            assertEq(earnVaultA.totalEarnShares(), 0);
             assertEq(portalA.depositCount(), 0);
             _assertRouterState(ONE, 0, 0);
         }

@@ -267,7 +267,7 @@ contract PropAMMIntegrationTest is Test {
         vm.expectRevert(bytes("BLOCKED"));
         _deposit(alice, 105e6);
         assertEq(asset.balanceOf(alice), 1_000e6);
-        assertEq(share.totalSupply(), 0);
+        assertEq(vault.totalEarnShares(), 0);
         assertEq(engine.totalShares(), 0);
     }
 
@@ -300,7 +300,7 @@ contract PropAMMIntegrationTest is Test {
         uint256 bobPayout = _redeem(bob, bobShares, 1);
         alicePayout += _redeem(alice, share.balanceOf(alice), 1);
         assertEq(alicePayout + bobPayout, aliceAssets + bobAssets);
-        assertEq(share.totalSupply(), 0);
+        assertEq(vault.totalEarnShares(), 0);
         assertEq(engine.totalShares(), 0);
         assertEq(engine.totalAssets(), 0);
         assertEq(asset.allowance(address(engine), address(pool)), 1);

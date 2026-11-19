@@ -62,7 +62,7 @@ contract EarnVaultWithdrawCallbackTest is Test {
         assertEq(payer.requested(), 5 ether);
         assertEq(asset.balanceOf(receiver), 5 ether);
         assertEq(share.balanceOf(address(payer)), 8 ether);
-        assertEq(share.balanceOf(address(core)), 0);
+        assertEq(share.balanceOf(address(core)), 1);
         assertEq(core.totalEarnShares(), core.engineShares());
     }
 
@@ -82,12 +82,12 @@ contract EarnVaultWithdrawCallbackTest is Test {
     }
 
     /// @dev The quoted shares paid in by the callback must not count against the residual-backing guard: leaving
-    ///      one backed share on a vault with no residue still succeeds.
+    ///      one backed share beside the vault's own residue still succeeds.
     function testCallbackCanLeaveTheLastBackedShare() public {
-        assertEq(share.balanceOf(address(core)), 0);
+        assertEq(share.balanceOf(address(core)), 1);
         uint256 burned = payer.withdraw(10 ether - 1, receiver, 10 ether);
         assertEq(burned, 10 ether - 1);
-        assertEq(share.totalSupply(), 1);
+        assertEq(core.totalEarnShares(), 1);
         assertEq(core.engineShares(), 1);
     }
 

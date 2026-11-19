@@ -68,7 +68,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         assertEq(earnA.balanceOf(recipient), 0);
         assertEq(earnA.balanceOf(address(portalA)), 0);
         assertEq(earnA.balanceOf(address(portalB)), 0);
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
     }
 
     function testRejectsSpoofedMessengerAndMismatchedSourcePortal() public {
@@ -104,7 +104,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         vm.expectRevert(ZoneRouter.WrongSourceZone.selector);
         router.onWithdrawalReceived(ZONE_B, address(portalB), bytes32(0), address(alternate), uint128(ONE), data);
 
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
         assertEq(alternate.balanceOf(address(router)), ONE);
     }
 
@@ -129,6 +129,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
     function testDepositCallbackDataMustEndTheCalldata() public {
         alternate.mint(address(router), ONE);
         bytes memory valid = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        uint256 supply = earnA.totalSupply();
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.BadFlow.selector);
@@ -143,7 +144,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         (bool ok, bytes memory reason) = address(router).call(bytes.concat(call, bytes32(0)));
         assertFalse(ok);
         assertEq(reason, abi.encodeWithSelector(ZoneRouter.BadFlow.selector));
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnA.totalSupply(), supply);
 
         _deposit(ONE, ONE, ONE);
         assertEq(portalA.depositCount(), 1);
@@ -167,8 +168,8 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
             ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), callerSelectedVaultData
         );
 
-        assertEq(earnA.totalSupply(), 0);
-        assertEq(earnB.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
+        assertEq(earnVaultB.totalEarnShares(), 0);
         assertEq(alternate.balanceOf(address(router)), ONE);
     }
 
@@ -207,7 +208,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         );
 
         assertEq(assetA.balanceOf(address(router)), ONE);
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
     }
 
     function _arbitraryDestinationCallback(ArbitraryDestination destination, bytes memory destinationData)
