@@ -1665,8 +1665,7 @@ contract EarnVault is IEarnVault {
     ///      minted at the pre-entry anchor represents an exact floor-rounded engine-share count;
     ///      only that count becomes managed backing. Any unrepresented entry remainder stays raw
     ///      surplus and may be absorbed later through the explicit capped reward path.
-    /// Not proved: held <= supply * rateEngineShares / rateEarnShares. The verifier answers the second totalSupply()
-    /// read (in _reanchorAtRest) afresh after the write to _managedEngineShares, so it can't tie the two reads.
+    /// @custom:ensures held <= supply * rateEngineShares / rateEarnShares
     /// @custom:ensures held == _managedEngineShares && held <= old(_managedEngineShares)
     /// @custom:ensures (old(rewardRateBaseline) != 0 ==> rewardRateBaseline != 0) && earnShareScale == old(earnShareScale)
     /// @custom:ensures (supply != 0 && held != 0) ==> anchorEngineShares == held && anchorEarnShares == supply
