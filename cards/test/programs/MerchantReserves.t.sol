@@ -3,7 +3,7 @@ pragma solidity ^0.8.36;
 
 import { MerchantReserves } from "../../src/programs/MerchantReserves.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
-import { CompEnv } from "./harness/CompStubs.sol";
+import { CompCardAuth, CompEnv } from "./harness/CompStubs.sol";
 
 /// @notice Merchant reserves: pledges on balances that approved the reserves contract, for purposes the owner
 ///         consented to and never collected past its cap; dispute reserves once the merchant allowed them, within the
@@ -16,9 +16,15 @@ contract MerchantReservesTest is CompEnv {
     bytes32 internal constant R2 = bytes32("reserve-2");
     address internal shop = makeAddr("shop");
     address internal other = makeAddr("other");
+    bytes32 internal shopR1;
+    bytes32 internal shopR2;
+    bytes32 internal settlementR1;
+    bytes32 internal settlementR2;
 
     function setUp() public {
         _deployComp();
+        (shopR1, shopR2) = (reserves.reserveRefId(shop, R1), reserves.reserveRefId(shop, R2));
+        (settlementR1, settlementR2) = (reserves.reserveRefId(settlement, R1), reserves.reserveRefId(settlement, R2));
         usd.mint(shop, 100e6);
         usd.mint(settlement, 100e6);
         vm.startPrank(shop);
@@ -98,10 +104,10 @@ contract MerchantReservesTest is CompEnv {
         assertEq(cap, 40e6);
         assertEq(collected, 0);
         assertEq(purpose, FEES);
-        // The same id cannot name a second live reserve.
+        // The same reference cannot name a second live reserve on the same owner.
         vm.prank(issuer);
         vm.expectRevert(MerchantReserves.ReserveExists.selector);
-        reserves.reserve(settlement, address(usd), R1, 1e6, expiry, FEES);
+        reserves.reserve(shop, address(usd), R1, 0, expiry, FEES);
     }
 
     function test_reserve_onlyTheIssuerOrATreasuryOperatorWithinItsCap() public {
@@ -122,7 +128,63 @@ contract MerchantReservesTest is CompEnv {
         // Collecting the merchant's reserve counts against the cap too.
         vm.prank(operator);
         vm.expectRevert();
-        reserves.collectReserve(R1, 1);
+        reserves.collectReserve(shopR1, 1);
+    }
+
+    function test_reserve_operatorCapCountsReservesOnTheSettlementAccount() public {
+        uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
+        auth.setRoles(operator, TREASURY, 10e6);
+        vm.prank(operator);
+        vm.expectRevert(CompCardAuth.CapExceeded.selector);
+        reserves.reserve(settlement, address(usd), R1, 10e6 + 1, expiry, FEES);
+        vm.prank(operator);
+        reserves.reserve(settlement, address(usd), R1, 10e6, expiry, FEES);
+        vm.prank(operator);
+        vm.expectRevert(CompCardAuth.CapExceeded.selector);
+        reserves.reserve(settlement, address(usd), R2, 1, expiry, FEES);
+        assertEq(core.available(settlement, address(usd)), 90e6);
+    }
+
+    function test_reserve_operatorCapCountsBothSidesOfADisputeReserve() public {
+        vm.prank(shop);
+        reserves.setDisputeReserves(true);
+        auth.setRoles(operator, TREASURY, 30e6);
+        uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
+        vm.prank(operator);
+        vm.expectRevert(CompCardAuth.CapExceeded.selector);
+        reserves.reserveDispute(
+            shop, address(usd), REF, [uint128(10e6), uint128(20e6 + 1)], [uint128(10e6), uint128(20e6 + 1)], expiry
+        );
+        vm.prank(operator);
+        reserves.reserveDispute(
+            shop, address(usd), REF, [uint128(10e6), uint128(20e6)], [uint128(10e6), uint128(20e6)], expiry
+        );
+    }
+
+    function test_reserve_cannotTakeTheIdOfADisputeReserve() public {
+        vm.prank(shop);
+        reserves.setDisputeReserves(true);
+        uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
+        // A reserve named after the purchase, on either side, lands under a different id from the dispute's.
+        vm.startPrank(issuer);
+        reserves.reserve(settlement, address(usd), REF, 1, expiry, FEES);
+        reserves.reserve(shop, address(usd), REF, 1, expiry, FEES);
+        reserves.reserveDispute(
+            shop, address(usd), REF, [uint128(10e6), uint128(5e6)], [uint128(10e6), uint128(5e6)], expiry
+        );
+        vm.stopPrank();
+        assertEq(core.getHold(shop, address(reserves), reserves.reserveId(REF, shop)).held, 10e6);
+        assertEq(core.getHold(settlement, address(reserves), reserves.reserveId(REF, settlement)).held, 5e6);
+    }
+
+    function test_reserve_sameReferenceOnTwoOwnersNamesTwoReserves() public {
+        uint64 expiry = uint64(vm.getBlockTimestamp() + 30 days);
+        vm.startPrank(issuer);
+        reserves.reserve(settlement, address(usd), R1, 5e6, expiry, FEES);
+        reserves.reserve(shop, address(usd), R1, 7e6, expiry, FEES);
+        vm.stopPrank();
+        assertEq(core.getHold(settlement, address(reserves), settlementR1).held, 5e6);
+        assertEq(core.getHold(shop, address(reserves), shopR1).held, 7e6);
     }
 
     function test_collectReserve_neverPastTheCapAndOnlyToTheSettlementAccount() public {
@@ -130,11 +192,11 @@ contract MerchantReservesTest is CompEnv {
         vm.startPrank(issuer);
         reserves.reserve(shop, address(usd), R1, 25e6, expiry, FEES);
         reserves.reserve(shop, address(usd), R2, 25e6, expiry, FEES);
-        reserves.collectReserve(R1, 25e6);
+        reserves.collectReserve(shopR1, 25e6);
         // 15 dollars of the cap are left: the second reserve cannot be collected in full.
         vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
-        reserves.collectReserve(R2, 15e6 + 1);
-        reserves.collectReserve(R2, 15e6);
+        reserves.collectReserve(shopR2, 15e6 + 1);
+        reserves.collectReserve(shopR2, 15e6);
         vm.stopPrank();
         (, uint128 collected,) = reserves.consentOf(shop, address(usd));
         assertEq(collected, 40e6);
@@ -155,9 +217,9 @@ contract MerchantReservesTest is CompEnv {
         reserves.allowReserves(address(usd), 0, FEES);
         vm.prank(issuer);
         vm.expectRevert(MerchantReserves.ReserveNotAllowed.selector);
-        reserves.collectReserve(R1, 1e6);
+        reserves.collectReserve(shopR1, 1e6);
         vm.prank(issuer);
-        reserves.collectReserve(R1, 0);
+        reserves.collectReserve(shopR1, 0);
         assertEq(core.available(shop, address(usd)), 100e6);
     }
 
@@ -186,11 +248,11 @@ contract MerchantReservesTest is CompEnv {
         vm.prank(issuer);
         reserves.reserve(shop, address(usd), R1, 30e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
         vm.prank(issuer);
-        reserves.collectReserve(R1, 20e6);
+        reserves.collectReserve(shopR1, 20e6);
         assertEq(usd.balanceOf(settlement), 120e6);
         assertEq(usd.balanceOf(shop), 80e6);
         assertEq(core.available(shop, address(usd)), 80e6);
-        assertEq(core.getHold(shop, address(reserves), R1).held, 0);
+        assertEq(core.getHold(shop, address(reserves), shopR1).held, 0);
         assertEq(core.budget(shop, address(reserves), address(usd)).outstanding, 0);
         _assertCoreBalanced();
     }
@@ -204,7 +266,7 @@ contract MerchantReservesTest is CompEnv {
         vm.expectRevert();
         reserves.reserve(shop, address(usd), R2, 1e6, uint64(vm.getBlockTimestamp() + 30 days), FEES);
         vm.prank(issuer);
-        reserves.releaseReserve(R1);
+        reserves.releaseReserve(shopR1);
         assertEq(core.available(shop, address(usd)), 100e6);
     }
 
@@ -214,7 +276,7 @@ contract MerchantReservesTest is CompEnv {
         vm.warp(vm.getBlockTimestamp() + 1 days);
         assertEq(core.available(shop, address(usd)), 70e6);
         vm.prank(other);
-        core.releaseExpired(shop, address(reserves), R1);
+        core.releaseExpired(shop, address(reserves), shopR1);
         assertEq(core.available(shop, address(usd)), 100e6);
     }
 
@@ -224,13 +286,13 @@ contract MerchantReservesTest is CompEnv {
         reserves.reserve(settlement, address(usd), R1, 5e6, uint64(vm.getBlockTimestamp() + 1 days), FEES);
         assertEq(reserves.settlementTokenInUse(address(auth)), 9);
         vm.prank(issuer);
-        reserves.releaseReserve(R1);
+        reserves.releaseReserve(settlementR1);
         assertEq(reserves.settlementTokenInUse(address(auth)), 0);
         // Ended reserves are pruned as new ones are placed.
         vm.prank(issuer);
         reserves.reserve(settlement, address(usd), R2, 5e6, uint64(vm.getBlockTimestamp() + 1 days), FEES);
         vm.prank(issuer);
-        reserves.collectReserve(R2, 0);
+        reserves.collectReserve(settlementR2, 0);
         assertEq(reserves.settlementTokenInUse(address(auth)), 0);
     }
 }

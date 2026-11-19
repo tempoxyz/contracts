@@ -95,11 +95,13 @@ contract MerchantReserves is ISettlementTokenGuard {
         emit DisputeReservesSet(msg.sender, allowed);
     }
 
-    /// @notice Holds back amount of owner's token until expiresAt. An owner other than the settlement account needs its
-    ///         consent for purpose, with room for amount left under its cap.
-    function reserve(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt, bytes32 purpose)
+    /// @notice Holds back amount of owner's token until expiresAt, under the core id reserveRefId(owner, ref), which it
+    ///         returns. An owner other than the settlement account needs its consent for purpose, with room for amount
+    ///         left under its cap. An operator's cap counts every reserve it places.
+    function reserve(address owner, address token, bytes32 ref, uint128 amount, uint64 expiresAt, bytes32 purpose)
         external
         nonReentrant
+        returns (bytes32 id)
     {
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
         bool consented = owner != account;
@@ -107,7 +109,8 @@ contract MerchantReserves is ISettlementTokenGuard {
             Consent storage c = consentOf[owner][token];
             if (c.purpose != purpose || uint256(amount) + c.collected > c.cap) revert ReserveNotAllowed();
         }
-        _operator(consented ? amount : 0);
+        _operator(amount);
+        id = reserveRefId(owner, ref);
         _reserve(owner, token, id, amount, expiresAt, consented);
     }
 
@@ -125,7 +128,7 @@ contract MerchantReserves is ISettlementTokenGuard {
         if (!disputeReserves[merchant]) revert ReserveNotAllowed();
         // forge-lint: disable-next-line(block-timestamp)
         if (expiresAt > block.timestamp + MAX_DISPUTE_RESERVE) revert ReserveTooLong();
-        _operator(tokens[0]);
+        _operator(uint256(tokens[0]) + tokens[1]);
         if (tokens[0] != 0) _reserve(merchant, token, reserveId(purchaseRef, merchant), tokens[0], expiresAt, false);
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
         if (tokens[1] != 0) _reserve(account, token, reserveId(purchaseRef, account), tokens[1], expiresAt, false);
@@ -172,6 +175,12 @@ contract MerchantReserves is ISettlementTokenGuard {
     /// @notice The core id of the reserve a dispute placed on owner.
     function reserveId(bytes32 purchaseRef, address owner) public pure returns (bytes32) {
         return keccak256(abi.encode(purchaseRef, owner));
+    }
+
+    /// @notice The core id of the reserve placed on owner under ref outside disputes. Its longer encoding keeps it
+    ///         apart from every dispute reserve's id.
+    function reserveRefId(address owner, bytes32 ref) public pure returns (bytes32) {
+        return keccak256(abi.encode(owner, ref, uint256(1)));
     }
 
     /// @notice A reserve still held keeps the settlement token from changing (reason 9).
