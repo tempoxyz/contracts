@@ -100,6 +100,14 @@ contract EarnVaultWithdrawCallbackTest is Test {
         payer.withdraw(20 ether - 1, receiver, 10 ether);
     }
 
+    /// @dev A callback that raises the venue's NAV cannot let a full burn pay out less than current backing.
+    function testCallbackNavRiseBeforeFullBurnReverts() public {
+        engine.setWithdrawBurnOverride(10 ether);
+        payer.setNavBump(engine, 1 ether);
+        vm.expectRevert(EarnVault.ResidualBacking.selector);
+        payer.withdraw(10 ether, receiver, 10 ether);
+    }
+
     function testRevertsWhenTheCallbackUnderpays() public {
         payer.setShortfall(1);
         vm.expectRevert(EarnVault.EarnSharesNotReceived.selector);
@@ -200,6 +208,14 @@ contract CallbackPayer is IEarnWithdrawCallback {
         return vault.withdrawExactWithCallback(assets, to, maxEarnShares);
     }
 
+    CoreMockEngine internal navEngine;
+    uint256 internal navBump;
+
+    function setNavBump(CoreMockEngine engine_, uint256 bump) external {
+        navEngine = engine_;
+        navBump = bump;
+    }
+
     function earnWithdrawCallback(uint256 earnShares) external override {
         require(msg.sender == address(vault), "not vault");
         requested = earnShares;
@@ -210,6 +226,7 @@ contract CallbackPayer is IEarnWithdrawCallback {
             reenter = false;
             vault.withdrawExactWithCallback(1, address(this), type(uint256).max);
         }
+        if (address(navEngine) != address(0)) navEngine.setNavGain(navBump);
         uint256 amount = shortfall == type(uint256).max ? earnShares + 1 : earnShares - shortfall;
         share.transfer(address(vault), amount);
     }
