@@ -42,6 +42,19 @@ contract RepayingToken {
     }
 }
 
+/// @notice A vault of one asset that refuses every deposit, as a paused or full vault does.
+contract RefusingVault {
+    address public immutable asset;
+
+    constructor(address asset_) {
+        asset = asset_;
+    }
+
+    function deposit(uint256, address, uint256) external pure returns (uint256) {
+        revert("paused");
+    }
+}
+
 contract ReceiveSweepTest is AuthEnv {
     ReceiveSweep internal sweep;
     address internal payer = makeAddr("payer");
@@ -127,6 +140,20 @@ contract ReceiveSweepTest is AuthEnv {
         vm.prank(payer);
         vm.expectRevert();
         sweep.pay(alice, address(usd), 10e6, bytes32("memo"));
+    }
+
+    function test_pay_vaultRefusingDeposits_leavesThePaymentWithTheOwner() public {
+        RefusingVault vault = new RefusingVault(address(usd));
+        _optIn(address(usd), IEarnVault(address(vault)));
+        vm.prank(payer);
+        vm.expectEmit(address(sweep));
+        emit ReceiveSweep.SweepRefused(alice, address(usd), address(vault), 100e6);
+        uint256 swept = sweep.pay(alice, address(usd), 100e6, bytes32("memo"));
+        assertEq(swept, 0);
+        assertEq(usd.balanceOf(alice), 100e6);
+        assertEq(usd.balanceOf(payer), 900e6);
+        assertEq(usd.balanceOf(address(sweep)), 0);
+        assertEq(usd.allowance(address(sweep), address(vault)), 0);
     }
 
     function test_policy_isPerOwner() public {

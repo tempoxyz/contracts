@@ -22,6 +22,8 @@ contract ReceiveSweep {
 
     event SweepSet(address indexed owner, address indexed token, address vault);
     event Swept(address indexed owner, address indexed token, address indexed vault, uint256 assets, uint256 shares);
+    /// @notice The owner's vault refused the deposit, so the payment stayed with the owner as cash.
+    event SweepRefused(address indexed owner, address indexed token, address indexed vault, uint256 assets);
 
     error InvalidVault();
 
@@ -33,7 +35,8 @@ contract ReceiveSweep {
     }
 
     /// @notice Pays `amount` of `token` from the caller to `owner` with `memo`, then sweeps what the credit left
-    ///         after debt repayment into the owner's vault. Returns the assets swept.
+    ///         after debt repayment into the owner's vault. A vault that refuses the deposit leaves it with the owner
+    ///         as cash. Returns the assets swept.
     function pay(address owner, address token, uint256 amount, bytes32 memo) external returns (uint256 swept) {
         uint256 before = IERC20Like(token).balanceOf(owner);
         ITIP20Memo(token).transferFromWithMemo(msg.sender, owner, amount, memo);
@@ -47,7 +50,14 @@ contract ReceiveSweep {
         // forge-lint: disable-next-line(arbitrary-send-erc20)
         token.safeTransferFrom(owner, address(this), swept);
         token.safeApprove(address(vault), swept);
-        uint256 shares = vault.deposit(swept, owner, 1);
-        emit Swept(owner, token, address(vault), swept, shares);
+        try vault.deposit(swept, owner, 1) returns (uint256 shares) {
+            emit Swept(owner, token, address(vault), swept, shares);
+        } catch {
+            // A paused or full vault must not fail the payment: the owner keeps the tokens.
+            token.safeApprove(address(vault), 0);
+            token.safeTransfer(owner, swept);
+            emit SweepRefused(owner, token, address(vault), swept);
+            swept = 0;
+        }
     }
 }
