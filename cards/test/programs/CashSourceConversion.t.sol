@@ -20,8 +20,8 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
 /// @notice Purchases funded in another stablecoin through the cash source, and issuers settling in one: rate locks at
 ///         authorization, the capture that pays the issuer exactly, slippage within the owner's tolerance, re-quotes
-///         once it lapses, reversals that keep the leg's share rounded up, refunds at the reference rate, and moving
-///         the program to another settlement token.
+///         once it lapses, reversals that keep the leg's share rounded up, refunds at the rate the capture paid, reference rates
+///         the Conversion owner moves, and moving the program to another settlement token.
 contract CashSourceConversionTest is AuthEnv {
     bytes32 internal constant P1 = bytes32("purchase-1");
     bytes32 internal constant P2 = bytes32("purchase-2");
@@ -227,16 +227,22 @@ contract CashSourceConversionTest is AuthEnv {
         assertApproxEqAbs(cash.held(alice, _position(address(eur), 100), leg), 60e6, 1);
     }
 
-    function test_refund_paysTheTokenBackAtTheReferenceRate() public {
+    function test_refund_paysTheTokenBackAtTheRateTheCapturePaid() public {
         _tokenFirst(100);
         eur.mint(alice, 200e6);
         _authorize(P1, 100e6);
         _capture(P1, 100e6, true);
         uint256 before = eur.balanceOf(alice);
+        uint256 spent = 200e6 - before;
+        (uint128 tokens, uint128 units) = cash.paidOf(cards.legId(P1, TOKEN_LEG), address(usd));
+        assertEq(tokens, spent);
+        assertEq(units, 100e6);
         _fundRefunds(usd, 22e6);
         vm.prank(issuer);
         cards.refund(P1, 22e6);
-        assertEq(eur.balanceOf(alice), before + 20e6);
+        // 22% of the purchase gives back 22% of the euros it took, above their value at the reference rate.
+        assertEq(eur.balanceOf(alice), before + spent * 22 / 100);
+        assertGt(spent * 22 / 100, 20e6);
         assertEq(usd.balanceOf(issuer), 0);
     }
 
@@ -248,8 +254,10 @@ contract CashSourceConversionTest is AuthEnv {
         cards.charge(CARD, P1, 30e6, merchant);
         assertEq(usd.balanceOf(settlement), 30e6);
         assertEq(eur.balanceOf(alice), 100e6 - cost);
-        // A refund converts back at the reference rate the charge kept.
-        assertEq(cash.lockedRate(cards.legId(P1, TOKEN_LEG)), conv.mid(address(eur), address(usd)));
+        // A refund converts back at the rate the charge paid.
+        (uint128 tokens, uint128 units) = cash.paidOf(cards.legId(P1, TOKEN_LEG), address(usd));
+        assertEq(tokens, cost);
+        assertEq(units, 30e6);
         // A foreign token never becomes debt: past the owner's euros the issuer absorbs the charge.
         _setDebtCap(alice, address(cash), address(eur), 500e6);
         vm.prank(issuer);
@@ -263,6 +271,126 @@ contract CashSourceConversionTest is AuthEnv {
         cards.charge(CARD, bytes32("purchase-3"), 10e6, merchant);
         assertEq(eur.balanceOf(alice), 100e6);
         assertEq(cards.purchaseOf(bytes32("purchase-3")).refunded, 10e6);
+    }
+
+    // Reference rates the Conversion's owner moves, and a stale rate.
+
+    /// @dev A rate far from the market waits for the delay, and once set, the venue disagrees with it: the token
+    ///      covers nothing instead of paying ten times its price.
+    function test_referenceRate_farFromTheVenueWaitsAndThenConvertsNothing() public {
+        _tokenFirst(100);
+        eur.mint(alice, 20_000e6);
+        vm.expectRevert(abi.encodeWithSelector(Conversion.RateStepTooLarge.selector, address(eur), 0.11e18));
+        conv.setReferenceRate(address(eur), 0.11e18);
+        Rates.set(conv, address(eur), 0.11e18);
+        vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
+        cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
+        assertEq(eur.balanceOf(alice), 20_000e6);
+    }
+
+    /// @dev Within the agreement band the venue's price decides what the owner pays, not the reference rate: a
+    ///      reference moved up within one step never takes more euros than the venue asks for the dollars.
+    function test_capture_spendsTheVenuesPriceWhateverTheReferenceRate() public {
+        _tokenFirst(100);
+        eur.mint(alice, 200e6);
+        conv.setReferenceRate(address(eur), 1.105e18);
+        uint256 cost = conv.quoteOut(address(eur), address(usd), 100e6);
+        _authorize(P1, 100e6);
+        _capture(P1, 100e6, true);
+        assertEq(usd.balanceOf(settlement), 100e6);
+        // What a hold at the venue's rate rounds to, within a unit of the venue's own price.
+        assertApproxEqAbs(200e6 - eur.balanceOf(alice), cost, 1);
+    }
+
+    /// @dev The venue pays a little above the reference rate the hold locked, and the reference moves a little down
+    ///      before the capture: the capture still pays exactly what it asked.
+    function test_capture_paysWhatItAsksWhenTheVenueBeatsTheReference() public {
+        bid.setPrice(1.1005e18);
+        _tokenFirst(100);
+        eur.mint(alice, 2000e6);
+        _authorize(P1, 100e6);
+        conv.setReferenceRate(address(eur), 1.0995e18);
+        _capture(P1, 100e6, true);
+        assertEq(usd.balanceOf(settlement), 100e6);
+        assertEq(cards.purchaseOf(P1).captured, 100e6);
+        // A larger gap within the band captures too.
+        bid.setPrice(1.105e18);
+        conv.setReferenceRate(address(eur), 1.098e18);
+        _authorize(P2, 100e6);
+        _capture(P2, 100e6, true);
+        assertEq(usd.balanceOf(settlement), 200e6);
+    }
+
+    /// @dev A venue paying far above the reference rate is out of agreement with it: the token covers nothing rather
+    ///      than lock a rate a capture cannot honour, and a hold already locked waits for them to agree again.
+    function test_venueStrayingFromTheReference_tokenCoversNothing() public {
+        _tokenFirst(100);
+        eur.mint(alice, 2000e6);
+        _authorize(P1, 100e6);
+        bid.setPrice(1.2e18);
+        vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
+        cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
+        vm.expectPartialRevert(Conversion.RateDeviates.selector);
+        this.captureExternal(P1, 100e6);
+        bid.setPrice(1.105e18);
+        _capture(P1, 100e6, true);
+        assertEq(usd.balanceOf(settlement), 100e6);
+    }
+
+    function captureExternal(bytes32 ref, uint128 amount) external {
+        _capture(ref, amount, true);
+    }
+
+    /// @dev A stale reference rate stops the token covering purchases; the owner's other funds still pay.
+    function test_staleReferenceRate_skipsTheTokenAndOtherFundsPay() public {
+        _tokenFirst(100);
+        eur.mint(alice, 5000e6);
+        usd.mint(alice, 1000e6);
+        vm.warp(block.timestamp + conv.MAX_RATE_AGE() + 1);
+        _authorize(P1, 10e6);
+        _capture(P1, 10e6, true);
+        assertEq(eur.balanceOf(alice), 5000e6);
+        assertEq(usd.balanceOf(alice), 990e6);
+        assertEq(usd.balanceOf(settlement), 10e6);
+    }
+
+    /// @dev Refunds need no reference rate: a stale one, or one moved a hundredfold after the capture, leaves what a
+    ///      refund pays back unchanged.
+    function test_refund_paysTheSameTokensWhateverTheReferenceRateDoes() public {
+        _tokenFirst(100);
+        eur.mint(alice, 5000e6);
+        _authorize(P1, 100e6);
+        _capture(P1, 100e6, true);
+        uint256 spent = 5000e6 - eur.balanceOf(alice);
+        _fundRefunds(usd, 1000e6);
+        vm.warp(block.timestamp + conv.MAX_RATE_AGE() + 1);
+        vm.prank(issuer);
+        cards.refund(P1, 22e6);
+        assertEq(eur.balanceOf(alice), 5000e6 - spent + spent * 22 / 100);
+        Rates.set(conv, address(eur), 110e18);
+        uint256 left = spent - spent * 22 / 100;
+        vm.prank(issuer);
+        cards.refund(P1, 50e6);
+        assertEq(eur.balanceOf(alice), 5000e6 - spent + spent * 22 / 100 + left * 50 / 78);
+    }
+
+    /// @dev Without float the refund buys the tokens at the venue instead of reverting.
+    function test_refund_buysAtTheVenueWhenTheFloatIsShort() public {
+        _tokenFirst(100);
+        eur.mint(alice, 5000e6);
+        _authorize(P1, 100e6);
+        _capture(P1, 100e6, true);
+        uint256 before = eur.balanceOf(alice);
+        conv.sweep(address(eur), address(0xdead), eur.balanceOf(address(conv)));
+        _fundRefunds(usd, 1000e6);
+        uint256 fetched = conv.quoteIn(address(usd), address(eur), 50e6);
+        vm.prank(issuer);
+        cards.refund(P1, 50e6);
+        assertEq(eur.balanceOf(alice) - before, fetched);
+        assertEq(cards.purchaseOf(P1).refunded, 50e6);
+        assertEq(usd.balanceOf(address(cash)), 0);
     }
 
     // An issuer settling in another stablecoin.
@@ -362,17 +490,18 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(_hold(alice, P1, CASH_LEG).held, (placed + 1) / 2);
     }
 
-    function test_localIssuer_refundPaysTheCardholderAtTheReferenceRate() public {
+    function test_localIssuer_refundPaysTheCardholderAtTheRateTheCapturePaid() public {
         _localIssuer();
         _usdCash(100);
         usd.mint(alice, 100e6);
         _authorize(P1, 40e6);
         _capture(P1, 40e6, true);
         uint256 before = usd.balanceOf(alice);
+        uint256 spent = 100e6 - before;
         _fundRefunds(eur, 20e6);
         vm.prank(issuer);
         cards.refund(P1, 20e6);
-        assertEq(usd.balanceOf(alice), before + 22e6);
+        assertEq(usd.balanceOf(alice), before + spent / 2);
         assertEq(eur.balanceOf(issuer), 0);
     }
 
@@ -393,7 +522,7 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(eur.balanceOf(alice), 20e6);
     }
 
-    function test_localIssuer_forcePostConvertsCashAndRefundsItAtTodaysRate() public {
+    function test_localIssuer_forcePostConvertsCashAndRefundsWhatItTook() public {
         _localIssuer();
         _usdCash(100);
         usd.mint(alice, 100e6);
@@ -406,9 +535,8 @@ contract CashSourceConversionTest is AuthEnv {
         _fundRefunds(eur, 10e6);
         vm.prank(issuer);
         cards.refund(P1, 10e6);
-        // The refund gives the USD cash back at today's reference rate, not the venue's price.
-        uint256 mid = conv.mid(address(usd), address(eur));
-        assertEq(usd.balanceOf(alice), 100e6 - cost + 10e6 * 1e18 / mid);
+        // A full refund gives back every dollar the charge took, whatever the rate does since.
+        assertEq(usd.balanceOf(alice), 100e6);
     }
 
     function test_localIssuer_refundPastDebtCapRepaysAndLandsTheRestInItsToken() public {

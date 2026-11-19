@@ -20,7 +20,9 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 ///         captures through the program's Conversion: at
 ///         the locked rate while the market stays within the owner's tolerance (the issuer absorbing any shortfall),
 ///         at today's price once it moves past it, never past the owner's maximum cost, and always above the
-///         Conversion's slippage floor. Converted legs never create debt.
+///         Conversion's slippage floor. Converted legs never create debt. A refund of a converted leg pays the token
+///         back at the rate its captures and charges paid, whatever the market or the reference rates do since. A
+///         token whose rate the Conversion cannot quote (stale, missing or straying from its venue) covers nothing.
 /// @dev `position`: the token in its low 160 bits and the owner's maximum conversion cost in basis points in the 16
 ///      bits above. Everything this contract receives in the settlement token is paid on to the settlement account in
 ///      the same call; repayments of debt arrive later and `sweep` forwards them. Not upgradeable.
@@ -43,8 +45,17 @@ contract CashSource is ISource, ISettlementTokenGuard {
     /// @notice Where every capture and charge is paid.
     address public immutable SETTLEMENT_ACCOUNT;
 
+    /// @notice What a converted leg's captures and charges spent of its token and covered in a settlement token, less
+    ///         what refunds gave back: the rate its refunds pay the token back at.
+    struct Paid {
+        uint128 tokens;
+        uint128 units;
+    }
+
     /// @notice The rate a converted leg locked: settlement units per token unit, with 18 decimals.
     mapping(bytes32 legId => uint256) public lockedRate;
+    /// @notice What a converted leg paid in each settlement token, which its refunds in that token convert back at.
+    mapping(bytes32 legId => mapping(address settlement => Paid)) public paidOf;
     /// @notice Whether `owner` has owed this source core debt, and so is among `debtors`.
     mapping(address owner => bool) public isDebtor;
     /// @notice Everyone who has owed this source core debt, in the order they first did.
@@ -96,9 +107,8 @@ contract CashSource is ISource, ISettlementTokenGuard {
         (uint256 debt,) = _owed(owner, token);
         address settlement = PROGRAM.settlementToken();
         if (debt == 0 || token == settlement) return debt;
-        Conversion c = _conversion();
-        if (address(c) == address(0) || !c.converts(token, settlement)) return 0;
-        return debt.mulDiv(c.rate(token, settlement), ONE);
+        (uint256 rate,) = _rate(token, settlement, BPS);
+        return debt.mulDiv(rate, ONE);
     }
 
     function refundable(address, bytes32, bytes32) external pure returns (uint256) {
@@ -252,8 +262,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (most == 0) return 0;
         CORE.charge(owner, token, legId, most.toUint128(), address(this), false);
         taken = _swap(c, token, settlement, legId, units, most);
-        // A refund converts back at today's reference rate, which the leg keeps.
-        lockedRate[legId] = c.mid(token, settlement);
+        _paid(legId, settlement, most, taken);
     }
 
     function release(address owner, bytes32, bytes32 legId) external onlyProgram {
@@ -261,6 +270,9 @@ contract CashSource is ISource, ISettlementTokenGuard {
         else if (lockedRate[legId] != 0) delete lockedRate[legId];
     }
 
+    /// @dev A converted leg pays back, for what its captures and charges covered in today's settlement token, the
+    ///      tokens they spent at the same rate, out of the Conversion's float (or, when it is short or does not trust
+    ///      this source, bought at the venue); a refund past that converts at today's price.
     function refund(address owner, bytes32 position, bytes32 legId, uint256 units) external onlyProgram {
         (address token,) = _decode(position);
         address settlement = PROGRAM.settlementToken();
@@ -268,9 +280,18 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (token != settlement) {
             Conversion c = _conversion();
             SafeTransferLib.safeApprove(settlement, address(c), units);
-            tokens = c.trusted(address(this))
-                ? c.convertAtMid(settlement, token, units, address(this))
-                : c.swapExactIn(settlement, token, units, 0, address(this));
+            Paid storage p = paidOf[legId][settlement];
+            uint256 within = units < p.units ? units : p.units;
+            tokens = 0;
+            if (within != 0) {
+                uint256 due = within.mulDiv(p.tokens, p.units);
+                (p.tokens, p.units) = (p.tokens - due.toUint128(), p.units - within.toUint128());
+                tokens = _payBack(c, token, settlement, within, due);
+            }
+            if (units > within) tokens += _convert(c, settlement, token, units - within);
+            SafeTransferLib.safeApprove(settlement, address(c), 0);
+            // What buying the tokens did not spend goes back with the rest of the settlement token.
+            _forward(settlement);
         }
         if (tokens != 0) CORE.refund(owner, token, address(this), legId, tokens.toUint128());
     }
@@ -337,6 +358,40 @@ contract CashSource is ISource, ISettlementTokenGuard {
             if (atLock > units) atLock = units;
             if (atLock > covered) covered = atLock;
         }
+        _paid(legId, settlement, tokens, covered);
+    }
+
+    /// @dev Adds what a converted capture or charge spent and covered to the rate the leg's refunds pay back at.
+    function _paid(bytes32 legId, address settlement, uint256 tokens, uint256 units) private {
+        Paid storage p = paidOf[legId][settlement];
+        (p.tokens, p.units) = (p.tokens + tokens.toUint128(), p.units + units.toUint128());
+    }
+
+    /// @dev Turns `units` of the settlement token this source holds into `due` tokens for a refund: from the
+    ///      Conversion's float when it trusts this source and holds them, else exactly `due` at the venue when `units`
+    ///      buys it, else all `units` buy. Returns the tokens it got.
+    function _payBack(Conversion c, address token, address settlement, uint256 units, uint256 due)
+        private
+        returns (uint256)
+    {
+        if (due == 0) return 0;
+        if (c.trusted(address(this)) && IERC20Like(token).balanceOf(address(c)) >= due) {
+            c.convertAt(settlement, token, units, due, address(this));
+            return due;
+        }
+        if (c.quoteOut(settlement, token, due) > units) {
+            return c.swapExactIn(settlement, token, units, 0, address(this));
+        }
+        c.swapExactOut(settlement, token, due, units, address(this));
+        return due;
+    }
+
+    /// @dev Converts `units` of the settlement token at today's reference rate out of the float when the Conversion
+    ///      trusts this source, else at the venue.
+    function _convert(Conversion c, address settlement, address token, uint256 units) private returns (uint256) {
+        return c.trusted(address(this))
+            ? c.convertAtMid(settlement, token, units, address(this))
+            : c.swapExactIn(settlement, token, units, 0, address(this));
     }
 
     /// @dev Converts `tokens` into the settlement token for the settlement account: exactly `units` when they buy it,
@@ -353,6 +408,9 @@ contract CashSource is ISource, ISettlementTokenGuard {
             paid = units;
         } else {
             paid = c.swapExactIn(token, settlement, tokens, 0, SETTLEMENT_ACCOUNT);
+            // The venue quoted less than `units` for these tokens; a unit of rounding past it goes with the capture,
+            // which never pays more than it asked.
+            if (paid > units) paid = units;
         }
         emit Converted(legId, token, tokens, paid);
     }
@@ -413,11 +471,16 @@ contract CashSource is ISource, ISettlementTokenGuard {
         }
     }
 
-    /// @dev Settlement units per token unit now, and whether converting at it costs at most `maxCost`.
+    /// @dev Settlement units per token unit now, and whether converting at it costs at most `maxCost`; zero when the
+    ///      Conversion cannot quote it (no venue, a stale or missing reference rate, or a venue straying from it).
     function _rate(address token, address settlement, uint256 maxCost) private view returns (uint256 rate, bool ok) {
         Conversion c = _conversion();
         if (address(c) == address(0) || !c.converts(token, settlement)) return (0, false);
-        rate = c.rate(token, settlement);
+        try c.rate(token, settlement) returns (uint256 r) {
+            rate = r;
+        } catch {
+            return (0, false);
+        }
         ok = rate != 0 && c.costBps(token, settlement, rate) <= maxCost;
     }
 
