@@ -148,6 +148,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     /// @notice A refund past what the borrower owed went from the lender to the borrower.
     event Overpaid(uint64 indexed lineId, bytes32 holdId, uint128 amount);
     event Redrawn(uint64 indexed lineId, bytes32 indexed ref, address indexed payee, uint128 amount, uint128 owed);
+    event RedrawLimited(uint64 indexed lineId, bytes32 indexed ref, uint128 left);
     event Committed(uint64 indexed lineId, bytes32 holdId, uint128 amount);
     event LockingEnabled(uint64 indexed lineId);
     event Locked(uint64 indexed lineId, bytes32 holdId, uint128 shares);
@@ -168,6 +169,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     error InvalidStatement();
     error LineNotOpen();
     error NoConversion();
+    error RepayExceedsLeg(uint256 outstanding, uint256 gross);
     error NotBorrower();
     error NotLender();
     error NotProgram();
@@ -480,13 +482,19 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _afterRepay(lineId, l, amount);
     }
 
-    /// @notice Repays amount from the caller to the lender, as the program, one of its companions or a key holding its
-    ///         treasury role, tied to ref (a purchase) so redraw may draw it again for that reference only.
+    /// @notice Repays amount from the caller to the lender, as one of the program's companions (its issuer desk),
+    ///         tied to ref, a purchase whose credit leg drew this line, so redraw may draw it again for that purchase
+    ///         only. What is repaid for ref and not drawn again stays within the leg's captures less refunds.
     function repayFor(uint64 lineId, uint128 amount, bytes32 ref) external nonReentrant {
-        _onlyTreasury();
+        _onlyCompanion();
         Line storage l = _lines[lineId];
+        (bool found, uint256 gross) = _legGross(l, lineId, ref);
+        if (!found) revert UnknownLeg();
+        RefRepayment storage r = repaymentOf[lineId][ref];
+        uint256 outstanding = uint256(r.repaid) - r.redrawn + amount;
+        if (outstanding > gross) revert RepayExceedsLeg(outstanding, gross);
         _repay(lineId, l, amount);
-        repaymentOf[lineId][ref].repaid += amount;
+        r.repaid += amount;
         SafeTransferLib.safeTransferFrom(l.token, msg.sender, l.lender, amount);
         emit RepaidFor(lineId, ref, amount);
         _afterRepay(lineId, l, amount);
@@ -518,14 +526,16 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @notice Draws up to amount on the line again for ref (a merchant's win on a purchase whose provisional credit
     ///         repaid the line), paying the program's settlement account from the lender's free balance, then its
-    ///         commitment. At most what repayFor repaid for ref less what was drawn again for it, and the credit
-    ///         still available. The program, its companions or its treasury role only. Returns what it drew.
+    ///         commitment. At most what repayFor repaid for ref less what was drawn again for it, the purchase's credit
+    ///         leg's captures less refunds, and the credit still available. The program's companions (its issuer desk)
+    ///         only. Returns what it drew.
     function redraw(uint64 lineId, uint128 amount, bytes32 ref) external nonReentrant returns (uint128 drawn) {
-        _onlyTreasury();
+        _onlyCompanion();
         Line storage l = _lines[lineId];
         if (!_open(l)) revert LineNotOpen();
         RefRepayment storage r = repaymentOf[lineId][ref];
-        uint256 left = r.repaid - r.redrawn;
+        (, uint256 gross) = _legGross(l, lineId, ref);
+        uint256 left = _min(r.repaid - r.redrawn, gross);
         if (left == 0) revert NothingToRedraw();
         _accrue(lineId);
         uint256 credit = _min(availableCredit(lineId), left);
@@ -552,6 +562,17 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         l.owed += drawn;
         emit Redrawn(lineId, ref, payee, drawn, l.owed);
         _settle(lineId);
+    }
+
+    /// @notice Lowers what redraw may draw again for ref on the line to at most `left`: what the dispute that repaid
+    ///         it still leaves to a merchant win, nothing once it ended otherwise. The program's companions (its issuer
+    ///         desk) only.
+    function limitRedraw(uint64 lineId, bytes32 ref, uint128 left) external {
+        _onlyCompanion();
+        RefRepayment storage r = repaymentOf[lineId][ref];
+        if (r.repaid - r.redrawn <= left) return;
+        r.redrawn = r.repaid - left;
+        emit RedrawLimited(lineId, ref, left);
     }
 
     /// @notice Adds the interest the line has earned since it last did, up to the accepted debt bound. Anyone.
@@ -701,9 +722,11 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @notice What redraw may still draw on the line for ref; nothing on a line that is not open.
     function redrawable(uint64 lineId, bytes32 ref) external view returns (uint256) {
-        if (!_open(_lines[lineId])) return 0;
+        Line storage l = _lines[lineId];
+        if (!_open(l)) return 0;
         RefRepayment storage r = repaymentOf[lineId][ref];
-        return r.repaid - r.redrawn;
+        (, uint256 gross) = _legGross(l, lineId, ref);
+        return _min(r.repaid - r.redrawn, gross);
     }
 
     /// @notice What the commitment hold reserves of the lender's balance now.
@@ -741,9 +764,21 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         return _activeLines[PROGRAM.settlementToken()] != 0 ? IN_USE_LINES : 0;
     }
 
-    function _onlyTreasury() private view {
-        if (msg.sender == address(PROGRAM) || PROGRAM.isCompanion(msg.sender)) return;
-        if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_TREASURY())) revert NotProgram();
+    function _onlyCompanion() private view {
+        if (!PROGRAM.isCompanion(msg.sender)) revert NotProgram();
+    }
+
+    /// @dev Whether purchase ref has a leg on this source drawing lineId, and that leg's captures less refunds.
+    // At most a purchase's few legs.
+    // forge-lint: disable-next-item(calls-loop)
+    function _legGross(Line storage l, uint64 lineId, bytes32 ref) private view returns (bool, uint256) {
+        (address[] memory sources,, bytes32[] memory legIds) = PROGRAM.legsOf(ref);
+        for (uint256 i; i < sources.length; ++i) {
+            if (sources[i] != address(this)) continue;
+            Leg storage g = _legs[_holdId(l.borrower, legIds[i])];
+            if (g.lineId == lineId) return (true, g.gross);
+        }
+        return (false, 0);
     }
 
     function _open(Line storage l) private view returns (bool) {

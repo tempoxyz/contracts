@@ -309,13 +309,14 @@ contract CreditSourceTest is CompEnv {
         vm.expectRevert(CreditSource.NotProgram.selector);
         credit.repayFor(lineId, 50e6, REF);
         vm.stopPrank();
-        // A registered companion of the program may (the desk is one).
-        assertTrue(auth.isCompanion(address(desk)));
-        auth.setRoles(operator, SETTLE, type(uint256).max);
+        // A treasury role alone may not: it could otherwise give itself a right to draw the line again.
+        auth.setRoles(operator, TREASURY | SETTLE, type(uint256).max);
         vm.prank(operator);
         vm.expectRevert(CreditSource.NotProgram.selector);
         credit.repayFor(lineId, 50e6, REF);
-        auth.setRoles(operator, TREASURY, type(uint256).max);
+        // A registered companion of the program may (the desk is one).
+        assertTrue(auth.isCompanion(address(desk)));
+        auth.setCompanion(operator, true);
         vm.prank(operator);
         credit.repayFor(lineId, 50e6, REF);
         (uint128 repaid,) = credit.repaymentOf(lineId, REF);
@@ -360,13 +361,14 @@ contract CreditSourceTest is CompEnv {
         assertEq(credit.availableCredit(lineId), 0);
     }
 
-    function test_redraw_refusedWithoutTheTreasuryRoleOrOnAClosedLine() public {
+    function test_redraw_refusedToAllButCompanionsOrOnAClosedLine() public {
         uint64 lineId = _repaidLine();
-        auth.setRoles(operator, SETTLE, type(uint256).max);
+        auth.setCompanion(operator, false);
+        auth.setRoles(operator, TREASURY | SETTLE, type(uint256).max);
         vm.prank(operator);
         vm.expectRevert(CreditSource.NotProgram.selector);
         credit.redraw(lineId, 1, REF);
-        auth.setRoles(operator, TREASURY, type(uint256).max);
+        auth.setCompanion(operator, true);
         vm.prank(alice);
         credit.closeLine(lineId);
         assertEq(credit.redrawable(lineId, REF), 0);
@@ -409,11 +411,11 @@ contract CreditSourceTest is CompEnv {
         vm.stopPrank();
     }
 
-    /// @dev A line that drew 400 for REF and that a treasury operator repaid for REF.
+    /// @dev A line that drew 400 for REF and that a companion of the program (operator) repaid for REF.
     function _repaidLine() internal returns (uint64 lineId) {
         lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         _draw(alice, lineId, LEG, 400e6, REF);
-        auth.setRoles(operator, TREASURY, type(uint256).max);
+        auth.setCompanion(operator, true);
         usd.mint(operator, 400e6);
         vm.startPrank(operator);
         usd.approve(address(credit), 400e6);

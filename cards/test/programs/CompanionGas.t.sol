@@ -15,6 +15,8 @@ contract CompanionGasTest is CompEnv {
         _deployComp();
         lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 1500);
         auth.setRoles(operator, TREASURY | SETTLE, type(uint256).max);
+        // repayFor and redraw are for the program's companions, such as its issuer desk.
+        auth.setCompanion(operator, true);
     }
 
     function test_gas_credit() public {

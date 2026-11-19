@@ -349,7 +349,7 @@ contract IssuerDeskTest is CompEnv {
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
         assertEq(credit.lineOf(lineId).owed, 0, "the refund settled the share the line was repaid");
-        assertEq(credit.redrawable(lineId, P1), 60e6, "repaid for the purchase but never redrawn");
+        assertEq(credit.redrawable(lineId, P1), 0, "repaid for the purchase and never drawn again");
     }
 
     function _disputed(uint128 amount) internal {

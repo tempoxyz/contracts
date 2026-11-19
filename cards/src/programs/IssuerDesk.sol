@@ -167,6 +167,8 @@ contract IssuerDesk is ISettlementTokenGuard {
             return;
         }
         d.state = WON;
+        // What provisional credit repaid on the line stays repaid: nothing draws it again.
+        if (d.lineRepaid != 0) CREDIT.limitRedraw(CREDIT.legOf(d.owner, d.creditLeg).lineId, ref, 0);
         (uint128 open,) = _open(ref);
         uint128 credited = d.amount < open ? d.amount : open;
         uint128 rest = credited > provisional ? credited - provisional : 0;
@@ -201,7 +203,10 @@ contract IssuerDesk is ISettlementTokenGuard {
                 if (settled > units) settled = units;
                 d.provisional -= settled;
                 // A line share that settles stays repaid, so a merchant win never draws it again.
-                if (d.lineRepaid > d.provisional) d.lineRepaid = d.provisional;
+                if (d.lineRepaid > d.provisional) {
+                    d.lineRepaid = d.provisional;
+                    CREDIT.limitRedraw(CREDIT.legOf(d.owner, d.creditLeg).lineId, ref, d.provisional);
+                }
                 emit DisputeSettled(ref, settled);
             }
         }
@@ -329,6 +334,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         if (left < want) want = uint128(left);
         if (want != 0) drawn = CREDIT.redraw(lineId, want, ref);
+        // What the merchant's win did not draw again stays repaid.
+        CREDIT.limitRedraw(lineId, ref, 0);
     }
 
     /// @dev Pays units of ref in today's token to owner from the settlement account (the treasury advancing what it
