@@ -4,7 +4,7 @@
 # Usage: test/earn/fixtures/propamm/update.sh [--check] [<tempo-propamm checkout>]
 #
 # Without a checkout path, fetches the pinned commit of the public tempoxyz/tempo-propamm anonymously over
-# HTTPS into a temporary directory. A given checkout must be clean and at the pinned commit. `--check`
+# HTTPS into a temporary directory and requires it to be on that repository's main branch. A given checkout must be clean and at the pinned commit. `--check`
 # rewrites nothing and exits non-zero when the committed fixture differs from the build. Requires git,
 # forge, and jq.
 set -euo pipefail
@@ -32,6 +32,9 @@ contract=$(jq -er '.contract' "$source_json")
 solc=$(jq -er '.solc' "$source_json")
 [[ "$solc" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "source.json solc is not a release version: $solc" >&2; exit 1; }
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "source.json commit is not a full SHA: $commit" >&2; exit 1; }
+# Only the upstream repository is accepted, so a source.json edit cannot point the check elsewhere.
+upstream=tempoxyz/tempo-propamm
+[[ "$repository" == "$upstream" ]] || { echo "source.json repository must be $upstream, got $repository" >&2; exit 1; }
 source_path=${contract%%:*}
 contract_name=${contract##*:}
 
@@ -43,6 +46,13 @@ if [[ -z "$checkout" ]]; then
   git init --quiet "$checkout"
   git -C "$checkout" fetch --quiet --depth 1 "https://github.com/$repository.git" "$commit"
   git -C "$checkout" checkout --quiet --detach FETCH_HEAD
+  # GitHub serves commits pushed to forks from the parent's URL too, so require the pinned commit to be
+  # on upstream main rather than trusting the fetch alone.
+  git -C "$checkout" fetch --quiet --unshallow "https://github.com/$repository.git" refs/heads/main
+  git -C "$checkout" merge-base --is-ancestor "$commit" FETCH_HEAD || {
+    echo "$commit is not on $repository main" >&2
+    exit 1
+  }
 fi
 
 head=$(git -C "$checkout" rev-parse HEAD)
