@@ -114,6 +114,10 @@ contract EarnVault is IEarnVault {
     ///      a distributor fee update, {disableFees}), and each refreshes this copy, so a checkpoint skips the call
     ///      while fees are off.
     bool private feesActiveCached;
+    /// @notice Whether deposits, in-kind entry, contributions, and surplus absorption are paused.
+    ///         Exit paths stay open.
+    /// @dev Packed beside `engine`, which every entry reads anyway.
+    bool public override depositsPaused;
     address public override asset;
     address public override earnShare;
     address public override earnFees;
@@ -140,13 +144,11 @@ contract EarnVault is IEarnVault {
     ///         EarnShare whole-unit scales;
     ///         live pools are explicitly re-anchored by {migrateEngine}, permissionless {contribute}
     ///         funding, fee mints, and ordinary immediate actions that change backing or supply.
-    uint256 public anchorEngineShares;
-    uint256 public anchorEarnShares;
+    ///         Both halves share one slot; {_setAnchor} reverts rather than truncating either.
+    uint128 public anchorEngineShares;
+    uint128 public anchorEarnShares;
 
     uint256 public override openRedeemRequestCount;
-    /// @notice Whether deposits, in-kind entry, contributions, and surplus absorption are paused.
-    ///         Exit paths stay open.
-    bool public override depositsPaused;
 
     struct PendingRedeem {
         address receiver;
@@ -224,6 +226,8 @@ contract EarnVault is IEarnVault {
     error ExcessiveConversionLoss(uint256 inputShares, uint256 representedShares);
     error ExcessiveMigrationClassificationError(uint256 expectedManagedAssets, uint256 actualManagedAssets);
     error ExceedsMaxEarnShares();
+    /// @notice An anchor count does not fit the packed anchor slot.
+    error AnchorOverflow();
     error FinalizedAssetMismatch(address finalizedAsset);
     error FeeValuationStale();
     error InitialEarnShareSupplyNotZero();
@@ -1322,8 +1326,7 @@ contract EarnVault is IEarnVault {
         if (supply == 0 || heldNow == 0) {
             _resetEmptyAnchor(newEngine);
         } else {
-            anchorEngineShares = heldNow;
-            anchorEarnShares = supply;
+            _setAnchor(heldNow, supply);
             // A migration changes raw engine-share denomination. Start a fresh fixed-100x contribution
             // window from the replacement engine's actual post-migration normalized rate.
             rewardRateBaseline = _normalizedRate(anchorEngineShares, anchorEarnShares);
@@ -1650,8 +1653,7 @@ contract EarnVault is IEarnVault {
         }
         if (anchorEarnShares == supply && anchorEngineShares == held) return (supply, held);
 
-        anchorEngineShares = held;
-        anchorEarnShares = supply;
+        _setAnchor(held, supply);
     }
 
     /// @dev Principal entry must not act as an implicit reward for existing holders. The EarnShare
@@ -1686,10 +1688,18 @@ contract EarnVault is IEarnVault {
     ///      EarnShare mint normalized even when the engine and EarnShare use different decimals.
     /// @custom:ensures _specEmptyAnchor()
     function _resetEmptyAnchor(address engine_) internal {
-        anchorEngineShares = IEarnEngine(engine_).shareScale();
-        if (anchorEngineShares == 0) revert InvalidEngineShareScale();
-        anchorEarnShares = earnShareScale;
-        rewardRateBaseline = anchorEngineShares;
+        uint256 scale = IEarnEngine(engine_).shareScale();
+        if (scale == 0) revert InvalidEngineShareScale();
+        _setAnchor(scale, earnShareScale);
+        rewardRateBaseline = scale;
+    }
+
+    /// @dev Writes both halves of the packed anchor. A count too large for its half reverts rather than truncating.
+    /// @custom:ensures anchorEngineShares == engineShares_ && anchorEarnShares == earnShares_
+    function _setAnchor(uint256 engineShares_, uint256 earnShares_) internal {
+        if (engineShares_ > type(uint128).max || earnShares_ > type(uint128).max) revert AnchorOverflow();
+        anchorEngineShares = uint128(engineShares_);
+        anchorEarnShares = uint128(earnShares_);
     }
 
     /// @notice Measured custody, not the engine's report, is what becomes managed backing; both must agree.

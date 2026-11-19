@@ -336,7 +336,11 @@ abstract contract CardSpenderBehavior is CoreEnv {
         program.spend(s);
     }
 
+    /// @dev The vault pays `usd`, so the destination's `otherUsd` balance does not rise. A payout target
+    ///      refuses it first, as Bridge's handler does.
     function test_revert_incorrectAssetForVault() public {
+        bytes4 err =
+            _payout() ? MockPayoutTarget.IncorrectAssetForVault.selector : CardSpender.DestinationNotCredited.selector;
         // The vault holds `usd`; the spend asks it for `otherUsd`, which the provider accepts.
         mock.setToken(address(otherUsd), true);
         _depositEarn(alice, 100e6);
@@ -345,7 +349,7 @@ abstract contract CardSpenderBehavior is CoreEnv {
         vm.prank(alice);
         earnShare.approve(address(program), type(uint256).max);
         vm.prank(alice);
-        vm.expectRevert(CardSpender.IncorrectAssetForVault.selector);
+        vm.expectRevert(err);
         program.spend(s);
 
         uint256 shares = _depositEarn(router, 100e6);
@@ -353,7 +357,7 @@ abstract contract CardSpenderBehavior is CoreEnv {
         vm.prank(router);
         earnShare.transfer(address(program), shares);
         vm.prank(router);
-        vm.expectRevert(CardSpender.IncorrectAssetForVault.selector);
+        vm.expectRevert(err);
         program.spendFrom(address(earnShare), shares, abi.encode(s));
     }
 

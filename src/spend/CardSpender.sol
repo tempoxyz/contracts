@@ -54,7 +54,6 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
 
     error DestinationNotAuthorized(address destination);
     error DestinationNotCredited();
-    error IncorrectAssetForVault();
     error InputNotConsumed(uint256 consumed, uint256 expected);
     error InsufficientInput();
     error InvalidAmount();
@@ -247,8 +246,8 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     function _check(CardSpend memory s, address payer, bool isPrivate) private view returns (address payee) {
         if (s.program != address(this)) revert WrongProgram(s.program);
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
-        // Only TIP-20s settle: no transfer callbacks, fees or rebases to upset the exact-credit checks. A vault's
-        // asset must equal `s.token`, so this covers redemptions too.
+        // Only TIP-20s settle: no transfer callbacks, fees or rebases to upset the exact-credit checks. A redemption
+        // pays `s.token` or fails the destination check, so this covers redemptions too.
         if (!StdPrecompiles.TIP20_FACTORY.isTIP20(s.token)) revert UnsupportedToken(s.token);
         payee = _payee(s.destination);
         // The program's own balance is the baseline it measures input against, so it never pays itself.
@@ -267,10 +266,8 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         if (!PROVIDER.isAuthorizedDestination(payer, s.destination, s.token, s.destinationHint, isPrivate)) {
             revert DestinationNotAuthorized(s.destination);
         }
-        if (s.fromVault != 0) {
-            if (!PROVIDER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
-            if (ITempoEarnVault(s.vault).asset() != s.token) revert IncorrectAssetForVault();
-        }
+        // A vault holding another asset pays that asset, not `s.token`, so the destination check refuses it.
+        if (s.fromVault != 0 && !PROVIDER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
     }
 
     /// @dev A direct public spend: stablecoin straight from the payer, shares pulled, redeemed for the
