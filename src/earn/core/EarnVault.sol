@@ -114,6 +114,10 @@ contract EarnVault is IEarnVault {
     ///      a distributor fee update, {disableFees}), and each refreshes this copy, so a checkpoint skips the call
     ///      while fees are off.
     bool private feesActiveCached;
+    /// @notice Whether deposits, in-kind entry, contributions, and surplus absorption are paused.
+    ///         Exit paths stay open.
+    /// @dev Packed beside `engine`, which every entry reads anyway.
+    bool public override depositsPaused;
     address public override asset;
     address public override earnShare;
     address public override earnFees;
@@ -144,9 +148,6 @@ contract EarnVault is IEarnVault {
     uint256 public anchorEarnShares;
 
     uint256 public override openRedeemRequestCount;
-    /// @notice Whether deposits, in-kind entry, contributions, and surplus absorption are paused.
-    ///         Exit paths stay open.
-    bool public override depositsPaused;
 
     struct PendingRedeem {
         address receiver;
