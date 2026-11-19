@@ -217,6 +217,7 @@ contract CoreMockEngine {
     uint8 public immutable decimals;
     uint256 public totalSupply;
     uint256 public withdrawBurnOverride;
+    uint256 public navGain;
     uint256 public redeemBurnOverride;
     uint256 public redeemReportOverride;
     bool public redeemSupported = true;
@@ -234,6 +235,11 @@ contract CoreMockEngine {
 
     function shareScale() external view returns (uint256) {
         return 10 ** uint256(decimals);
+    }
+
+    /// @notice Adds a fixed amount to the value of any nonzero share count, as a venue NAV rise would.
+    function setNavGain(uint256 v) external {
+        navGain = v;
     }
 
     function setWithdrawBurnOverride(uint256 v) external {
@@ -306,8 +312,8 @@ contract CoreMockEngine {
         return totalSupply;
     }
 
-    function valueOf(uint256 shares) external pure returns (uint256) {
-        return shares;
+    function valueOf(uint256 shares) external view returns (uint256) {
+        return shares == 0 ? 0 : shares + navGain;
     }
 
     function supportsInterface(bytes4 interfaceId) external view returns (bool) {

@@ -94,6 +94,24 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         legacySame = new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(assetA), address(0), bytes32(0));
         earnOnlySame = _zoneRouterFor(3, address(assetA), address(0), bytes32(0));
         earnAndSpendSame = _zoneRouterFor(7, address(assetA), address(0), bytes32(0));
+
+        // ZoneRouter sets its Earn standing approvals at deployment; the legacy router sets the same ones on
+        // its first op of each kind. Compare from that steady state, so every other difference still shows.
+        _warmLegacy(address(legacy), address(alternate), address(pool));
+        _warmLegacy(address(legacySame), address(assetA), address(0));
+    }
+
+    function _warmLegacy(address router, address privateToken, address pool_) private {
+        vm.startPrank(router);
+        assetA.approve(address(earnVaultA), type(uint256).max);
+        earnA.approve(address(earnVaultA), type(uint256).max);
+        earnA.approve(address(portalA), type(uint256).max);
+        MemoMockToken(privateToken).approve(address(portalA), type(uint256).max);
+        if (pool_ != address(0)) {
+            MemoMockToken(privateToken).approve(pool_, type(uint256).max);
+            assetA.approve(pool_, type(uint256).max);
+        }
+        vm.stopPrank();
     }
 
     // ---------------------------------------------------------------------------------------------

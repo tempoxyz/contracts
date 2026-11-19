@@ -257,7 +257,9 @@ input. Its checks are in the [card spend design](../spend/design.md#what-the-pro
 5. No balance a callback brings stays with the router (a one-unit seed anyone sends it stays as it
    is), and no allowance except a standing approval to its own Zone's Portal and standing
    maximum approvals to its immutable EarnVault and pool, which Tempo would otherwise charge as a
-   new storage slot on every op.
+   new storage slot on every op. The constructor sets the Earn ops' approvals (to the EarnVault, the
+   pool, and the Portal for each op's return token), so Earn ops read no allowance; a TIP-20 never
+   spends down a maximum allowance.
 6. The router never emits or stores `senderTag`.
 7. A spender pays only inside a spend from a router its factory deployed whose mode lists it.
 

@@ -13,6 +13,7 @@ import { SpenderAuth } from "../zone/spenders/SpenderAuth.sol";
 import { CardSpend } from "./CardSpend.sol";
 import { ICardProvider, ICardProviderPayout } from "../interfaces/spend/ICardProvider.sol";
 import { ITempoEarnVault } from "../interfaces/spend/ITempoEarnVault.sol";
+import { IEarnVaultWithdrawCallback, IEarnWithdrawCallback } from "../interfaces/earn/IEarnWithdrawCallback.sol";
 
 /// @title CardSpender
 /// @notice One card program on Tempo, for any provider: the stable address cardholders' access keys and a
@@ -30,7 +31,7 @@ import { ITempoEarnVault } from "../interfaces/spend/ITempoEarnVault.sol";
 ///      amount, and a payout uses exactly the spend's input, no more than the share cost it quoted.
 /// @custom:reentrancy-guard _locked
 /// @custom:invariant address(PROVIDER) != address(0) && ROUTER_FACTORY != address(0)
-contract CardSpender is ISpender {
+contract CardSpender is ISpender, IEarnWithdrawCallback {
     /// @dev Solady's `TransferFailed()` and `ApproveFailed()`.
     bytes4 private constant TRANSFER_FAILED = 0x90b8ec18;
     bytes4 private constant APPROVE_FAILED = 0x3e3f8f73;
@@ -42,6 +43,14 @@ contract CardSpender is ISpender {
     address public immutable ROUTER_FACTORY;
 
     bool private transient _locked;
+    /// @dev Set only while a public direct spend waits on {earnWithdrawCallback}: the vault that may call it, the
+    ///      payer whose shares it takes, and the share cost cap (zero for none).
+    address private transient _callbackVault;
+    address private transient _callbackPayer;
+    uint256 private transient _callbackMaxShares;
+    /// @dev The spend's EarnShare token and the shares {earnWithdrawCallback} moved from the payer.
+    address private transient _callbackShare;
+    uint256 private transient _callbackTaken;
 
     error DestinationNotAuthorized(address destination);
     error DestinationNotCredited();
@@ -51,6 +60,7 @@ contract CardSpender is ISpender {
     error InvalidAmount();
     error NotProvider();
     error NotRouter();
+    error NotVault();
     error NothingSpent();
     error ProgramPaused();
     error Reentrancy();
@@ -270,6 +280,7 @@ contract CardSpender is ISpender {
         if (fromStable != 0) SafeTransferLib.safeTransferFrom(s.token, msg.sender, s.destination, fromStable);
         if (s.fromVault == 0) return 0;
         ITempoEarnVault v = ITempoEarnVault(s.vault);
+        if (_hasWithdrawCallback(s.vault)) return _payDirectWithCallback(s, payee);
         uint256 required = v.previewWithdraw(s.fromVault);
         if (s.maxShares != 0 && required > s.maxShares) revert ShareCostExceeded(required, s.maxShares);
         /// @custom:assert s.maxShares == 0 || required <= s.maxShares
@@ -284,6 +295,58 @@ contract CardSpender is ISpender {
         uint256 unused = shareHeld - shareBase;
         sharesUsed = required - unused;
         if (unused != 0) _refund(share, unused);
+    }
+
+    /// @dev The vault prices the shares once and asks for them in {earnWithdrawCallback}, which moves them straight
+    ///      from the payer to the vault: no separate quote and no transfer through the program.
+    function _payDirectWithCallback(CardSpend calldata s, address payee) private returns (uint256 sharesUsed) {
+        _callbackVault = s.vault;
+        _callbackPayer = msg.sender;
+        _callbackMaxShares = s.maxShares;
+        address receiver = payee == s.destination ? s.destination : address(this);
+        uint256 before = receiver == s.destination ? 0 : IERC20Like(s.token).balanceOf(address(this));
+        address share = ITempoEarnVault(s.vault).earnShare();
+        _callbackShare = share;
+        uint256 sharesHeld = IERC20Like(share).balanceOf(address(this));
+        // Every entry point holds the transient lock for this whole call.
+        // forge-lint: disable-next-line(reentrancy-no-eth)
+        IEarnVaultWithdrawCallback(s.vault).withdrawExactWithCallback(s.fromVault, receiver, type(uint256).max);
+        // The callback clears the vault, so a vault that skipped it cannot have burned the payer's shares.
+        if (_callbackVault != address(0)) revert NothingSpent();
+        // The vault returns any quoted shares it did not burn; measured, not reported, they go back to the payer.
+        uint256 returned = IERC20Like(share).balanceOf(address(this)) - sharesHeld;
+        if (returned != 0) _refund(share, returned);
+        // Measured: what the callback took from the payer, less what came back, whatever the vault reports.
+        sharesUsed = _callbackTaken - returned;
+        if (receiver != s.destination) {
+            if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) revert DestinationNotCredited();
+            SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);
+        }
+    }
+
+    /// @notice Pays the vault the share cost of a public direct spend, from the payer's approval to this program.
+    /// @dev Only the vault of the spend in progress may call it, once, and never above the spend's `maxShares`.
+    function earnWithdrawCallback(uint256 earnShares) external override {
+        address vault = _callbackVault;
+        if (vault == address(0) || msg.sender != vault) revert NotVault();
+        uint256 maxShares = _callbackMaxShares;
+        if (maxShares != 0 && earnShares > maxShares) revert ShareCostExceeded(earnShares, maxShares);
+        _callbackVault = address(0);
+        _callbackTaken = earnShares;
+        // The payer is the direct spend's own caller, stored for this call only, so it pays only its own shares.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
+        SafeTransferLib.safeTransferFrom(_callbackShare, _callbackPayer, vault, earnShares);
+    }
+
+    /// @dev Whether `vault` reports {IEarnVaultWithdrawCallback}; a vault deployed before it has no
+    ///      `supportsInterface` and reads as false.
+    function _hasWithdrawCallback(address vault) private view returns (bool) {
+        (bool ok, uint256 word) =
+            _readWord(vault, abi.encodeWithSelector(0x01ffc9a7, type(IEarnVaultWithdrawCallback).interfaceId));
+        if (!ok || word != 1) return false;
+        // ERC-165 requires 0xffffffff to read false, which rules out a fallback answering true to everything.
+        (ok, word) = _readWord(vault, abi.encodeWithSelector(0x01ffc9a7, bytes4(0xffffffff)));
+        return ok && word == 0;
     }
 
     /// @dev A direct private spend, from the `maxInput` the router sent. The vault prices shares itself and

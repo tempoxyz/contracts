@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 
@@ -9,6 +10,7 @@ import { FeeConfig } from "../../../src/interfaces/earn/EarnFeeTypes.sol";
 
 import { CardSpend } from "../../../src/spend/CardSpend.sol";
 import { CardSpender } from "../../../src/spend/CardSpender.sol";
+import { IEarnWithdrawCallback } from "../../../src/interfaces/earn/IEarnWithdrawCallback.sol";
 import { ICardProvider } from "../../../src/interfaces/spend/ICardProvider.sol";
 import { ITempoEarnVault } from "../../../src/interfaces/spend/ITempoEarnVault.sol";
 import { CoreEnv } from "./harness/CoreEnv.sol";
@@ -21,6 +23,7 @@ import {
     MockProvider,
     MockRouter,
     NotAProvider,
+    PermissiveFallbackVault,
     ReentrantToken,
     VirtualAwareToken
 } from "./harness/Mocks.sol";
@@ -516,6 +519,35 @@ contract CardSpenderDirectTest is CardSpenderBehavior {
         program.spend(s);
     }
 
+    /// @dev An EarnVault with the withdraw callback burns the payer's shares straight from the payer: the program's
+    ///      share balance never moves and the payer pays exactly the burn.
+    function test_publicSpend_callbackVaultTakesSharesFromThePayer() public {
+        uint256 shares = _depositEarn(alice, 100e6);
+        CardSpend memory s = _earnSpend(publicWallet, 0, 10e6, 10e6, "callback");
+        uint256 cost = earnVault.previewWithdraw(10e6);
+        uint256 programShares = earnShare.balanceOf(address(program));
+        // Ending balances match on both paths, so pin the path: the callback runs once and no share pull happens.
+        vm.expectCall(address(program), abi.encodeWithSelector(IEarnWithdrawCallback.earnWithdrawCallback.selector), 1);
+        vm.expectCall(
+            address(earnShare), abi.encodeWithSelector(IERC20.transferFrom.selector, alice, address(program)), 0
+        );
+        _publicSpend(alice, s);
+        assertEq(usd.balanceOf(publicWallet), 10e6);
+        assertEq(earnShare.balanceOf(alice), shares - cost);
+        assertEq(earnShare.balanceOf(address(program)), programShares);
+        _assertEmpty();
+    }
+
+    /// @dev Only the vault of a spend in progress may ask the program for shares.
+    function test_revert_withdrawCallbackOutsideASpend() public {
+        vm.prank(address(earnVault));
+        vm.expectRevert(CardSpender.NotVault.selector);
+        program.earnWithdrawCallback(1);
+        vm.prank(alice);
+        vm.expectRevert(CardSpender.NotVault.selector);
+        program.earnWithdrawCallback(1);
+    }
+
     function _misreportingVault(uint256 burnPct, uint256 reportPct) internal returns (MisreportingVault vault) {
         vault = new MisreportingVault(address(usd), burnPct, reportPct);
         mock.setVault(address(vault), true);
@@ -791,6 +823,18 @@ contract CardSpenderVirtualDestinationTest is CoreEnv {
         assertEq(vusd.balanceOf(master), 6e6 + 2e6 + 3e6);
         assertEq(vusd.balanceOf(address(program)), 0);
         assertEq(VirtualAwareToken(vault.earnShare()).balanceOf(address(program)), 0);
+    }
+
+    /// @dev A vault whose fallback answers true to every ERC-165 probe still takes the plain withdraw path.
+    function test_direct_permissiveFallbackVaultTakesThePlainPath() public {
+        PermissiveFallbackVault permissive = new PermissiveFallbackVault(address(vusd));
+        vusd.mint(address(permissive), 1000e6);
+        VirtualAwareToken(permissive.earnShare()).mint(alice, 1000e6);
+        vault = permissive;
+        _program(false);
+        _publicSplit();
+        assertEq(vusd.balanceOf(master), 6e6);
+        assertEq(VirtualAwareToken(permissive.earnShare()).balanceOf(address(program)), 0);
     }
 
     function test_payout_paysVirtualDestinations() public {

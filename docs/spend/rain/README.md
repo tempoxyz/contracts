@@ -49,8 +49,10 @@ does not create the program's approval to it.
 ## Token policies
 
 Under a TIP-403 whitelist policy on the EarnShare (as Earn's protected deployments use) or on the
-stablecoin, the program must be a member: it receives shares from the payer (public) or the router
-(private) and hands them to the vault, and it moves the stablecoin. The router and Portal, and every
+stablecoin, the program must be a member: it moves the stablecoin, receives shares from the router
+(private) and hands them to the vault, and receives and refunds the shares a vault leaves unburned. On a
+public spend to a vault with the withdraw callback, the payer's shares go straight to the vault; a vault
+without it still sends them through the program. The router and Portal, and every
 collateral contract a spend pays, must be able to send or receive what they handle. Earn's
 [required members](../../earn/modules/access.md#required-members) list the vault's own. The Rain E2E
 runs with the always-allow policy.

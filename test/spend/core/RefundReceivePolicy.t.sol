@@ -25,6 +25,7 @@ import { SpenderTempoSpend } from "../../../src/spend/providers/bridge/SpenderTe
 import { Spend } from "../../../src/spend/providers/bridge/interfaces/IBridgeSpender.sol";
 import { TempoEnv } from "../bridge/harness/TempoEnv.sol";
 import { MockProvider } from "./harness/Mocks.sol";
+import { IEarnVaultWithdrawCallback } from "../../../src/interfaces/earn/IEarnWithdrawCallback.sol";
 
 /// @dev ERC-4626 permits withdraw to burn fewer shares than previewWithdraw quotes. Native EarnShare
 ///      refunds therefore remain necessary even when the payer approves exactly the live quote.
@@ -110,6 +111,17 @@ contract RefundReceivePolicyTest is TempoEnv {
     }
 
     function test_directBlockedRefundPayerAuthorityRevertsAtomically() public {
+        _blocked(directProgram, payer);
+    }
+
+    /// @dev A vault that does not report the withdraw callback still takes the pull path, whose refund must credit.
+    function test_directLegacyVaultBlockedRefundDefaultAuthorityRevertsAtomically() public {
+        _withoutWithdrawCallback();
+        _blocked(directProgram, address(0));
+    }
+
+    function test_directLegacyVaultBlockedRefundPayerAuthorityRevertsAtomically() public {
+        _withoutWithdrawCallback();
         _blocked(directProgram, payer);
     }
 
@@ -209,6 +221,15 @@ contract RefundReceivePolicyTest is TempoEnv {
         selected.spend(s);
         assertEq(abi.encode(_balances(selected)), abi.encode(before), "refund failure must roll back every balance");
         assertEq(earnShare.allowance(payer, address(selected)), s.maxShares, "payer approval must roll back");
+    }
+
+    /// @dev Makes the vault answer false for the withdraw callback interface, as a vault deployed before it would.
+    function _withoutWithdrawCallback() internal {
+        vm.mockCall(
+            address(earnVault),
+            abi.encodeWithSelector(0x01ffc9a7, type(IEarnVaultWithdrawCallback).interfaceId),
+            abi.encode(false)
+        );
     }
 
     function _successful(CardSpender selected) internal {

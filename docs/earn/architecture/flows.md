@@ -40,12 +40,17 @@ sequenceDiagram
     participant T as EarnShare
 
     U->>A: deposit(assets, receiver, minEarnShares)
-    A->>F: accrueFees()
+    A->>F: accrueFees(), while fees are active
     F-->>A: FeePreview
     A->>T: mint(F, totalFeeEarnShares)
     A->>A: reconcile managed shares; require backing if supply is nonzero
-    A->>A: transferFrom(U, A, assets); top up E's standing approval if below assets
-    A->>E: deposit(assets)
+    alt engine has IEarnEngineHeldDeposit
+        A->>A: transferFrom(U, E, assets)
+        A->>E: depositHeld(assets)
+    else
+        A->>A: transferFrom(U, A, assets); top up E's standing approval if below assets
+        A->>E: deposit(assets)
+    end
     E->>V: deposit(assets, E)
     E-->>A: reported engineShares
     A->>A: require reported == measured raw-share increase
@@ -53,8 +58,12 @@ sequenceDiagram
     A->>T: mint(receiver, earnShares)
     A->>A: keep only represented shares managed; re-anchor
     A->>A: require totalAssets <= maxManagedAssets, when set
-    A->>F: initializeBaselines()
+    A->>F: initializeBaselines(), while fees are active
 ```
+
+The EarnVault keeps a copy of `feesActive()`, refreshed by every call that can change it (all of which
+go through the EarnVault), and skips the EarnFees calls while fees are off, since they would return
+nothing and change nothing.
 
 The caller supplies nonzero `assets` and `minEarnShares` and a nonzero receiver; the pause must be
 off. When supply exists but managed backing is worth zero, the EarnVault restarts the pool: it moves
@@ -99,6 +108,17 @@ For asset-denominated withdrawal, `withdrawExact(assets, receiver, maxEarnShares
    paying less than their value, or would burn the entire supply while managed backing remains.
 7. `A` pulls and burns `earnSharesBurned` from the caller and re-anchors; unused EarnShare stays
    with the caller.
+
+`withdrawExactWithCallback(assets, receiver, maxEarnShares)` runs the same steps, except that right after
+step 3, before the engine pays out, it calls `earnWithdrawCallback(requiredEarnShares)` on the caller
+([`IEarnWithdrawCallback`](../../../src/interfaces/earn/IEarnWithdrawCallback.sol)) for the quoted cost, and
+reverts with `EarnSharesNotReceived` unless its EarnShare balance rose by exactly that amount. Accounting
+and fees are settled before the callback, but views read inside it are not: they may count the shares already
+moved to the EarnVault as burned, so price nothing from them there. The callback may not change the engine's custody or value; the withdrawal reverts with `EngineChangedDuringCallback` if it does. The burn may not
+exceed the quote (`ExceedsMaxEarnShares`), and any quoted EarnShare it leaves returns to the caller in
+step 7, reverting with `EarnSharesNotReturned` unless the caller is credited all of it. A contract that spends someone else's shares (a card program) uses it to move them straight
+from their owner to the EarnVault, without a separate `previewWithdraw` quote. The EarnVault reports it
+through ERC-165 (`IEarnVaultWithdrawCallback`), and its lock keeps the callback from entering it again.
 
 The final holder closes the pool with `redeem`.
 

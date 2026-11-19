@@ -120,6 +120,12 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 - The destination's balance of `token` rises by exactly `amount` (`DestinationNotCredited`).
 - A private destination may be neither the calling router nor an alias resolving to it
   (`DestinationNotAuthorized`): the router returns only unused input, not the redeemed asset.
+- A direct public Earn spend from an EarnVault with `withdrawExactWithCallback` (`IEarnVaultWithdrawCallback`)
+  pulls no shares up front: the vault quotes the burn once and calls the program's `earnWithdrawCallback`,
+  which moves exactly that many shares from the payer to the vault. Any quoted shares the vault does not
+  burn come back to the program, which refunds what it measurably received to the payer. Only the vault
+  of the spend in progress may call it, once (`NotVault`), and never above a nonzero `maxShares`
+  (`ShareCostExceeded`). A vault without it is paid as below.
 - A public Earn refund is what the program measurably still holds of the shares it pulled, not what the
   vault reports burning, so a vault that under-reports cannot make it refund its own balance
   (`ShareCostExceeded` if the vault took more). The refund increases the payer's share balance by

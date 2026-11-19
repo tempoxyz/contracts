@@ -67,8 +67,8 @@ contract EarnVaultMigrateTest is Test {
     function testMigratePreservesSupplyNavAndBalancesAndReAnchors() public {
         uint256 supplyBefore = core.totalEarnShares();
         uint256 userBalBefore = share.balanceOf(user);
-        // Deposits leave a standing maximum base-asset allowance to the active engine only.
-        assertEq(asset.allowance(address(core), address(fromEngine)), type(uint256).max);
+        // The ERC-4626 engine takes deposits the vault sends it directly, so it needs no base-asset allowance.
+        assertEq(asset.allowance(address(core), address(fromEngine)), 0);
         assertEq(asset.allowance(address(core), address(toEngine)), 0);
 
         vm.prank(operator);
@@ -95,6 +95,21 @@ contract EarnVaultMigrateTest is Test {
 
         // NAV preserved: the new engine holds the same 100 assets of backing.
         assertEq(asset.balanceOf(address(toEngine)), 100 ether);
+    }
+
+    /// @dev An engine that pulls deposits holds a real standing allowance, which migrating away must clear.
+    function testMigrationRevokesARetiredPullEngineAllowance() public {
+        vm.prank(operator);
+        core.migrateEngine(address(toEngine), 50 ether, 100 ether);
+        assertEq(asset.allowance(address(core), address(toEngine)), type(uint256).max);
+
+        MockRateEngine nextEngine = new MockRateEngine(asset, TO_RATE_WAD);
+        nextEngine.initializeEarnVault(address(core));
+        vm.prank(operator);
+        core.migrateEngine(address(nextEngine), 1, 1);
+
+        assertEq(asset.allowance(address(core), address(toEngine)), 0);
+        assertEq(asset.allowance(address(core), address(nextEngine)), type(uint256).max);
     }
 
     function testMigrationResetsFixedRewardRateBaselineForNewShareDenomination() public {

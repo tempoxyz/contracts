@@ -75,6 +75,11 @@ contract FactoryMockTip20Asset {
     constructor(string memory currency_) {
         currency = currency_;
     }
+
+    /// @dev An ERC-4626 engine approves its venue once, in its constructor.
+    function approve(address, uint256) external pure returns (bool) {
+        return true;
+    }
 }
 
 /// @dev Ways a TIP-20 implementation could fail to honor the factory's wiring calls.

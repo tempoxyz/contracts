@@ -108,22 +108,23 @@ transfer-policy setup completed.
 
 ### User and accounting API
 
-| Function                                                   | Behavior                                                          |
-| ---------------------------------------------------------- | ----------------------------------------------------------------- |
-| `deposit(assets, receiver, minEarnShares)`                 | Deposit base assets and mint bounded EarnShare                    |
-| `depositVenueShares(venueShares, receiver, minEarnShares)` | Enter with current venue shares through the in-kind capability    |
-| `redeem(earnShares, receiver, minAssets)`                  | Burn EarnShare and immediately redeem bounded assets              |
-| `withdrawExact(assets, receiver, maxEarnShares)`           | Pay exact assets and burn no more than the cap                    |
-| `contribute(assets)`                                       | Permissionlessly add backing without funder EarnShare             |
-| `absorbEngineShareSurplus(engineShares)`                   | Permissionlessly recognize surplus as a reward                    |
-| `requestRedeem(earnShares, receiver, engineData)`          | Bound floor loss, burn, and open a separate claim                 |
-| `requestRedeem(earnShares, engineData, receiver)`          | The same operation with `engineData` before `receiver`            |
-| `cancelRedeem(requestId, minReceiverEarnShares)`           | Requester or janitor returns bounded queued value to the receiver |
-| `finalizeRedeem(requestId, asset, amount)`                 | Current engine only; forward a solved payout and close the claim  |
-| `previewRedeem(earnShares)`                                | Quote assets after pending fee dilution                           |
-| `previewWithdraw(assets)`                                  | Quote required EarnShare, rounded up, after pending fee dilution  |
-| `convertToEngineShares(earnShares)`                        | Convert at the stored anchor, rounding down                       |
-| `convertEngineSharesToEarnShares(engineShares)`            | Convert at the stored anchor, rounding down                       |
+| Function                                                     | Behavior                                                          |
+| ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `deposit(assets, receiver, minEarnShares)`                   | Deposit base assets and mint bounded EarnShare                    |
+| `depositVenueShares(venueShares, receiver, minEarnShares)`   | Enter with current venue shares through the in-kind capability    |
+| `redeem(earnShares, receiver, minAssets)`                    | Burn EarnShare and immediately redeem bounded assets              |
+| `withdrawExact(assets, receiver, maxEarnShares)`             | Pay exact assets and burn no more than the cap                    |
+| `withdrawExactWithCallback(assets, receiver, maxEarnShares)` | Like `withdrawExact`; the caller pays EarnShare from its callback |
+| `contribute(assets)`                                         | Permissionlessly add backing without funder EarnShare             |
+| `absorbEngineShareSurplus(engineShares)`                     | Permissionlessly recognize surplus as a reward                    |
+| `requestRedeem(earnShares, receiver, engineData)`            | Bound floor loss, burn, and open a separate claim                 |
+| `requestRedeem(earnShares, engineData, receiver)`            | The same operation with `engineData` before `receiver`            |
+| `cancelRedeem(requestId, minReceiverEarnShares)`             | Requester or janitor returns bounded queued value to the receiver |
+| `finalizeRedeem(requestId, asset, amount)`                   | Current engine only; forward a solved payout and close the claim  |
+| `previewRedeem(earnShares)`                                  | Quote assets after pending fee dilution                           |
+| `previewWithdraw(assets)`                                    | Quote required EarnShare, rounded up, after pending fee dilution  |
+| `convertToEngineShares(earnShares)`                          | Convert at the stored anchor, rounding down                       |
+| `convertEngineSharesToEarnShares(engineShares)`              | Convert at the stored anchor, rounding down                       |
 
 The five receiver-selecting entry and exit functions also have self-recipient overloads under
 distinct selectors, for [scoped access keys](../integrations/client.md#delegated-self-recipient-calls):

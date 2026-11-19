@@ -2,9 +2,9 @@
 pragma solidity ^0.8.36;
 
 import { IERC20Like } from "../../../interfaces/external/IERC20Like.sol";
-import { IERC20Allowance } from "../../../interfaces/external/IERC20Allowance.sol";
 import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineExactWithdraw } from "../../../interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
+import { IEarnEngineHeldDeposit } from "../../../interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 import { IEarnEngineInKindDeposit } from "../../../interfaces/earn/engines/IEarnEngineInKindDeposit.sol";
 import { IEarnEngineRedeem } from "../../../interfaces/earn/engines/IEarnEngineRedeem.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
@@ -110,6 +110,9 @@ contract ERC4626Engine is
         _name = bytes(nameOverride_).length == 0 ? vault_.name() : nameOverride_;
         _symbol = bytes(symbolOverride_).length == 0 ? vault_.symbol() : symbolOverride_;
         if (bytes(_name).length == 0 || bytes(_symbol).length == 0) revert EmptyMetadata();
+        // A standing maximum allowance for the immutable venue, set once: Tempo charges every zero-to-nonzero
+        // allowance as a new storage slot, and the engine holds base assets only within a deposit.
+        if (!IERC20Like(asset_).approve(address(vault_), type(uint256).max)) revert TransferFailed();
     }
 
     /// Only the owner binds, once, to a nonzero EarnVault; ownership is unchanged.
@@ -165,19 +168,26 @@ contract ERC4626Engine is
     /// Only the bound EarnVault calls it.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
     // Not proved: the binding and lock release after deposit are not stated here, because the
-    // verifier havocs all storage across a call on the right of && under the lock (_forceApprove).
+    // verifier havocs all storage across a call on the right of && under the lock (the venue deposit).
     /// A deposit credits a positive measured venue-share delta.
     /// @custom:ensures engineShares > 0
     /// Not proved: liveness. A deposit also needs the token pull and the venue's deposit to mint shares,
     /// outside this contract.
     function deposit(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
         _pull(baseAsset, msg.sender, assets);
-        // A standing maximum allowance for the immutable venue: Tempo charges every zero-to-nonzero
-        // allowance as a new storage slot, and the engine holds base assets only within this call.
-        if (IERC20Allowance(baseAsset).allowance(address(this), address(vault)) < assets) {
-            _forceApprove(baseAsset, address(vault), type(uint256).max);
-        }
+        engineShares = _depositToVenue(assets);
+    }
 
+    /// Only the bound EarnVault calls it, after transferring `assets` of the base asset here.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// A deposit credits a positive measured venue-share delta.
+    /// @custom:ensures engineShares > 0
+    function depositHeld(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
+        engineShares = _depositToVenue(assets);
+    }
+
+    /// @dev Deposits `assets` the engine holds into the venue under the constructor's standing allowance.
+    function _depositToVenue(uint256 assets) private returns (uint256 engineShares) {
         uint256 beforeBalance = vault.balanceOf(address(this));
         vault.deposit(assets, address(this));
         engineShares = vault.balanceOf(address(this)) - beforeBalance;
@@ -282,27 +292,24 @@ contract ERC4626Engine is
         return vault.previewRedeem(totalShares());
     }
 
-    /// Advertises ERC-165, the engine, redeem, exact withdraw and in-kind entry, and nothing else.
+    /// Advertises ERC-165, the engine, redeem, exact withdraw, in-kind entry and held deposit, and nothing else.
     /// @custom:ensures interfaceId == type(IERC165).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngine).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineRedeem).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineExactWithdraw).interfaceId ==> result
     /// @custom:ensures interfaceId == type(IEarnEngineInKindDeposit).interfaceId ==> result
-    /// @custom:ensures result ==> (interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId || interfaceId == type(IEarnEngineRedeem).interfaceId || interfaceId == type(IEarnEngineExactWithdraw).interfaceId || interfaceId == type(IEarnEngineInKindDeposit).interfaceId)
+    /// @custom:ensures interfaceId == type(IEarnEngineHeldDeposit).interfaceId ==> result
+    /// @custom:ensures result ==> (interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId || interfaceId == type(IEarnEngineRedeem).interfaceId || interfaceId == type(IEarnEngineExactWithdraw).interfaceId || interfaceId == type(IEarnEngineInKindDeposit).interfaceId || interfaceId == type(IEarnEngineHeldDeposit).interfaceId)
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IEarnEngine).interfaceId
             || interfaceId == type(IEarnEngineRedeem).interfaceId
             || interfaceId == type(IEarnEngineExactWithdraw).interfaceId
-            || interfaceId == type(IEarnEngineInKindDeposit).interfaceId;
+            || interfaceId == type(IEarnEngineInKindDeposit).interfaceId
+            || interfaceId == type(IEarnEngineHeldDeposit).interfaceId;
     }
 
     function _pull(address token, address from, uint256 amount) private {
         if (!IERC20Like(token).transferFrom(from, address(this), amount)) revert TransferFailed();
-    }
-
-    function _forceApprove(address token, address spender, uint256 amount) private {
-        if (!IERC20Like(token).approve(spender, 0)) revert TransferFailed();
-        if (amount != 0 && !IERC20Like(token).approve(spender, amount)) revert TransferFailed();
     }
 
     /// The increase is zero or a real increase over `balanceBefore`: before plus increase is the balance after.

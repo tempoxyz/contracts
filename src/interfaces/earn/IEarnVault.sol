@@ -125,6 +125,10 @@ interface IEarnVault {
     function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares)
         external
         returns (uint256 earnSharesBurned);
+    /// @notice Like {withdrawExact}, but the caller transfers the EarnShare from its {IEarnWithdrawCallback} callback.
+    function withdrawExactWithCallback(uint256 assets, address receiver, uint256 maxEarnShares)
+        external
+        returns (uint256 earnSharesBurned);
 
     // Async extension (burn-at-request pending-claim model).
     /// @notice Uses the caller as receiver; suitable for self-recipient access-key scopes.
