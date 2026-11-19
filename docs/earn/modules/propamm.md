@@ -149,7 +149,9 @@ them through the engine definition and the generated ABIs in `@tempoxyz/contract
 
 Contract tests and localnet deploy `DirectPropAMM` from the committed
 [`test/earn/fixtures/propamm/DirectPropAMM.json`](../../../test/earn/fixtures/propamm/DirectPropAMM.json), which
-holds only its ABI, creation bytecode, and runtime bytecode from an unmodified solc `0.8.30` build.
+holds only its ABI, creation bytecode, and runtime bytecode from a solc `0.8.30` build of the
+unmodified source, the compiler the deployed pool was built with: `update.sh` passes that version to
+Forge in place of the source repository's default compiler.
 Building and testing Earn never needs the PropAMM source repository.
 [`source.json`](../../../test/earn/fixtures/propamm/source.json) records the repository, full commit,
 contract, and compiler of that build.
@@ -159,9 +161,9 @@ To move the pin, change `commit` in `source.json` and regenerate the fixture wit
 access to the source repository:
 
 ```bash
-test/earn/fixtures/propamm/update.sh                       # clone the pinned commit with your Git credentials
-test/earn/fixtures/propamm/update.sh ../propAMM            # or build a clean checkout already at that commit
-test/earn/fixtures/propamm/update.sh --check [../propAMM]  # fail on any difference, rewriting nothing
+test/earn/fixtures/propamm/update.sh                             # clone the pinned commit with your Git credentials
+test/earn/fixtures/propamm/update.sh ../tempo-propamm            # or build a clean checkout already at that commit
+test/earn/fixtures/propamm/update.sh --check [../tempo-propamm]  # fail on any difference, rewriting nothing
 ```
 
 The `PropAMM fixture` job in the Verify workflow runs the `--check` form for same-repository pull
