@@ -943,22 +943,25 @@ contract EarnVault is IEarnVault {
         if (receiver == address(0)) revert ZeroAddress();
         _requireEngineCapability(CAP_EXACT_WITHDRAW, type(IEarnEngineExactWithdraw).interfaceId);
 
-        _accrueFees();
+        // The checkpoint's supply and backing are read before the callback: shares it pays in would otherwise
+        // fill the vault's one-unit residue allowance. The backing equals engineShares() after the checkpoint.
+        (, uint256 supply, uint256 engineSharesBefore) = _accrueFees();
 
         uint256 requiredEngineShares = IEarnEngineExactWithdraw(engine).previewWithdraw(assets);
         if (requiredEngineShares == 0) revert InsufficientOutput();
         uint256 requiredEarnShares = _convertEngineSharesToEarnSharesUp(requiredEngineShares);
         if (requiredEarnShares == 0) revert InsufficientOutput();
         if (requiredEarnShares > maxEarnShares) revert ExceedsMaxEarnShares();
-        // Read before the callback: shares it pays in would otherwise fill the vault's one-unit residue allowance.
-        uint256 supply = _activeSupply();
-        uint256 engineSharesBefore = engineShares();
-        uint256 engineAssetsBefore = totalAssets();
+        uint256 engineAssetsBefore = IEarnEngine(engine).valueOf(engineSharesBefore);
         // The callback runs here, while the vault's state is settled, so no caller code ever reads it half-updated.
         if (callback) {
             _collectEarnShares(requiredEarnShares, true);
             // Fees, the anchor and the quote were settled against this engine state; the callback may not move it.
-            if (engineShares() != engineSharesBefore || totalAssets() != engineAssetsBefore) {
+            uint256 engineSharesAfter = engineShares();
+            if (
+                engineSharesAfter != engineSharesBefore
+                    || IEarnEngine(engine).valueOf(engineSharesAfter) != engineAssetsBefore
+            ) {
                 revert EngineChangedDuringCallback();
             }
         }
