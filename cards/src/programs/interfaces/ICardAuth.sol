@@ -85,4 +85,7 @@ interface ICardAuth is ICardAuthState {
     ///         by at most what the purchase refunded when the caller recovered more elsewhere than the network charges
     ///         back. Registered companions only.
     function creditBack(bytes32 ref, uint128 amount, int128 settles) external;
+    /// @notice Acknowledges purchase steps through `throughSeq` as settled: the exposure guard once one is set, else
+    ///         the issuer.
+    function acknowledgeSettlement(uint64 throughSeq) external;
 }

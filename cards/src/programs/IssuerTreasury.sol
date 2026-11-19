@@ -64,7 +64,7 @@ contract IssuerTreasury is IExposureGuard {
     }
 
     Collateral public collateral;
-    /// @notice What was seized against the exposure so far, never counted above it.
+    /// @notice What the sponsor seized and has not yet applied to an acknowledged settlement.
     uint256 public seized;
 
     bool private transient _locked;
@@ -81,6 +81,7 @@ contract IssuerTreasury is IExposureGuard {
     event CollateralPosted(address indexed sponsor, bytes32 pledgeId, uint128 units);
     event CollateralReleased(uint256 value, uint256 units);
     event CollateralSeized(address indexed to, uint256 value, uint256 units);
+    event SettlementAcknowledged(uint64 throughSeq, uint256 applied);
 
     error AboveExposure(uint256 value, uint256 room);
     error BelowExposure(uint256 remaining, uint256 exposure);
@@ -302,14 +303,14 @@ contract IssuerTreasury is IExposureGuard {
         emit CollateralReleased(value, units);
     }
 
-    /// @notice The sponsor seizes collateral worth value in the settlement token, never more in all than the program's
-    ///         exposure: what was seized before counts against it, until the exposure drops below it.
+    /// @notice The sponsor seizes collateral worth value in the settlement token, never more than the program's
+    ///         exposure less what it seized before and has not applied to an acknowledged settlement.
     function seize(uint256 value) external nonReentrant {
         Collateral storage c = _sponsored();
         uint256 due = exposure();
-        uint256 covered = seized > due ? due : seized;
-        if (value > due - covered) revert AboveExposure(value, due - covered);
-        seized = covered + value;
+        uint256 taken = seized;
+        if (taken + value > due) revert AboveExposure(value, due > taken ? due - taken : 0);
+        seized = taken + value;
         address to = c.sponsor;
         uint256 units = _take(c, _unitsDown(c, value), true);
         address settlement = PROGRAM.settlementToken();
@@ -326,11 +327,21 @@ contract IssuerTreasury is IExposureGuard {
         emit CollateralSeized(to, value, units);
     }
 
-    /// @notice Lowers what counts as seized to the program's exposure now, so a later exposure can be seized once.
-    ///         Anyone.
-    function sync() external {
-        uint256 due = exposure();
-        if (seized > due) seized = due;
+    /// @notice Acknowledges the program's purchase steps through `throughSeq` as settled, for the sponsor that is owed
+    ///         them once collateral is posted (the issuer before). `applied` of what the sponsor seized paid that
+    ///         settlement and stops counting as seized: never more than seized, nor than the unsettled exposure this
+    ///         acknowledgement clears, so seizures in all never pass what the program came to owe.
+    function acknowledgeSettlement(uint64 throughSeq, uint256 applied) external nonReentrant {
+        Collateral storage c = collateral;
+        if (msg.sender != (c.count == 0 ? PROGRAM.ISSUER() : c.sponsor)) revert NotSponsor();
+        (,, uint256 before) = PROGRAM.exposure();
+        PROGRAM.acknowledgeSettlement(throughSeq);
+        (,, uint256 left) = PROGRAM.exposure();
+        uint256 cleared = before > left ? before - left : 0;
+        uint256 room = seized < cleared ? seized : cleared;
+        if (applied > room) revert AboveExposure(applied, room);
+        seized -= applied;
+        emit SettlementAcknowledged(throughSeq, applied);
     }
 
     /// @notice The core id of the settlement account's nth collateral pledge.

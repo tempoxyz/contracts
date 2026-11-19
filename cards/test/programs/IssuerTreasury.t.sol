@@ -402,25 +402,26 @@ contract IssuerTreasuryTest is CompEnv {
         assertEq(treasury.valueOf(), 900e6);
     }
 
-    function test_seize_coverFollowsTheExposureDown() public {
+    function test_seize_appliedToAnAcknowledgedSettlement_letsANewExposureBeSeizedOnce() public {
         _postCash(1000e6);
-        auth.setExposure(100e6, 0, 0);
+        auth.setExposure(0, 0, 100e6);
         vm.prank(sponsor);
         treasury.seize(100e6);
-        // The exposure the seizure covered closes; once synced, a new exposure can be seized, once.
-        auth.setExposure(0, 0, 0);
-        treasury.sync();
+        // The sponsor acknowledges the 100 as settled and applies what it seized to it.
+        vm.prank(sponsor);
+        treasury.acknowledgeSettlement(1, 100e6);
         assertEq(treasury.seized(), 0);
-        auth.setExposure(50e6, 0, 0);
+        auth.setExposure(0, 0, 50e6);
         vm.prank(sponsor);
         treasury.seize(50e6);
         vm.prank(sponsor);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(1), uint256(0)));
         treasury.seize(1);
+        // Never more in all than the program came to owe.
         assertEq(usd.balanceOf(sponsor), 150e6);
     }
 
-    function test_seize_withoutASync_aLowerExposureStaysCovered() public {
+    function test_seize_lowerExposureNeverReopensRoom() public {
         _postCash(1000e6);
         auth.setExposure(100e6, 0, 0);
         vm.prank(sponsor);
@@ -429,8 +430,46 @@ contract IssuerTreasuryTest is CompEnv {
         vm.prank(sponsor);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(1), uint256(0)));
         treasury.seize(1);
-        treasury.sync();
-        assertEq(treasury.seized(), 50e6);
+        // The exposure coming back is the one already seized.
+        auth.setExposure(100e6, 0, 0);
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(1), uint256(0)));
+        treasury.seize(1);
+        assertEq(treasury.seized(), 100e6);
+    }
+
+    function test_acknowledgeSettlement_appliesAtMostWhatItClearsAndWasSeized() public {
+        _postCash(1000e6);
+        auth.setExposure(0, 0, 100e6);
+        vm.prank(sponsor);
+        treasury.seize(40e6);
+        // More than was seized.
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(41e6), uint256(40e6)));
+        treasury.acknowledgeSettlement(1, 41e6);
+        // Nothing cleared, nothing applies.
+        auth.setExposure(0, 0, 0);
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, uint256(1), uint256(0)));
+        treasury.acknowledgeSettlement(1, 1);
+    }
+
+    function test_acknowledgeSettlement_sponsorOnceCollateralIsPosted() public {
+        auth.setExposure(0, 0, 10e6);
+        // Before any collateral the issuer acknowledges.
+        vm.prank(sponsor);
+        vm.expectRevert(IssuerTreasury.NotSponsor.selector);
+        treasury.acknowledgeSettlement(1, 0);
+        vm.prank(issuer);
+        treasury.acknowledgeSettlement(1, 0);
+        _postCash(100e6);
+        auth.setExposure(0, 0, 10e6);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.NotSponsor.selector);
+        treasury.acknowledgeSettlement(1, 0);
+        vm.prank(sponsor);
+        treasury.acknowledgeSettlement(1, 0);
+        assertEq(treasury.exposure(), 0);
     }
 
     function test_nothingToSeize_withoutExposure() public {

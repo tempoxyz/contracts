@@ -128,9 +128,12 @@ contract CardAuthAdmin is CardAuthBase {
         // forge-lint: disable-end(missing-events-access-control)
     }
 
-    /// @notice Acknowledges purchase steps through `throughSeq` as settled off chain.
+    /// @notice Acknowledges purchase steps through `throughSeq` as settled off chain. Once the issuer sets an exposure
+    ///         guard, only the guard acknowledges, for the party the exposure is owed to; without one, the issuer.
     function acknowledgeSettlement(uint64 throughSeq) external {
-        _onlyIssuer();
+        address guard = exposureGuard;
+        if (guard == address(0)) _onlyIssuer();
+        else if (msg.sender != guard) revert Unauthorized();
         CardLegs.acknowledge(_ledger, throughSeq);
     }
 

@@ -12,7 +12,7 @@
   "desk_disputeStepOnCredit": "1225080",
   "desk_openDispute": "1064133",
   "desk_refund": "360798",
-  "desk_resolveCardholderWins": "888902",
+  "desk_resolveCardholderWins": "888924",
   "desk_resolveMerchantWins": "478901",
   "reserves_collectReserve": "126420",
   "reserves_reserve": "1854160",
@@ -21,5 +21,5 @@
   "treasury_payOut": "571336",
   "treasury_payOutAdvanced": "882102",
   "treasury_postCollateral": "796863",
-  "treasury_seize": "359035"
+  "treasury_seize": "359002"
 }

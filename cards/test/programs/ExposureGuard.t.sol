@@ -46,10 +46,11 @@ contract ExposureGuardTest is AuthEnv {
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 110e6, 100e6));
         cards.charge(CARD, P2, 50e6, merchant);
-        // Once the issuer acknowledges settlement, the exposure drops and the post goes through.
+        // Once the sponsor, which is owed it, acknowledges settlement through the treasury, the exposure drops and the
+        // post goes through.
         (uint64 seq,,,) = cards.ledger();
-        vm.prank(issuer);
-        cards.acknowledgeSettlement(seq);
+        vm.prank(sponsor);
+        treasury.acknowledgeSettlement(seq, 0);
         vm.prank(issuer);
         cards.charge(CARD, P2, 50e6, merchant);
     }

@@ -112,6 +112,11 @@ contract CompCardAuth is ICardAuth {
         return (_held, _standIn, _unsettled);
     }
 
+    /// @dev Settles every unsettled step.
+    function acknowledgeSettlement(uint64) external {
+        _unsettled = 0;
+    }
+
     function ledger() external view returns (uint64, uint64, int128, int128) {
         // Unsettled exposure reads as one step the issuer has not acknowledged.
         return (_unsettled == 0 ? 0 : 1, 0, int128(int256(_unsettled)), 0);
