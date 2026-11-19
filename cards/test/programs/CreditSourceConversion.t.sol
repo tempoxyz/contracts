@@ -199,6 +199,54 @@ contract CreditSourceConversionTest is CompEnv {
         assertEq(credit.lineOf(lineId).owed, 300e6);
     }
 
+    /// @dev A reference rate moved tenfold (after its delay) values the collateral at a tenth, but the venue no longer
+    ///      agrees with it, so nothing is valued or sold at it.
+    function test_liquidate_refusedWhenTheReferenceRateStraysFromTheVenue() public {
+        uint64 lineId = _lockedLine();
+        _owe(lineId, 300e6);
+        Rates.set(conv, address(eur), 11e18);
+        uint256 locked = credit.lockedShares(lineId);
+        vm.prank(lender);
+        vm.expectPartialRevert(Conversion.RateDeviates.selector);
+        credit.liquidate(lineId);
+        assertEq(credit.lockedShares(lineId), locked);
+        assertEq(credit.lineOf(lineId).owed, 300e6);
+    }
+
+    /// @dev The lender takes what the sale fetched up to what is owed, and the borrower the rest; the sale is sized at
+    ///      the venue price it sells at, so it fetches what restores the loan-to-value and little more.
+    function test_liquidate_paysTheLenderWhatIsOwedAndTheBorrowerTheRest() public {
+        uint64 lineId = _lockedLine();
+        _owe(lineId, 495e6);
+        // The venue sells dollars 1% dearer, and the reference follows within a step.
+        ask.setPrice(ASK * 101 / 100);
+        bid.setPrice(BID * 101 / 100);
+        conv.setReferenceRate(address(eur), 1.111e18);
+        uint256 lenderBefore = eur.balanceOf(lender) + core.reserved(lender, address(eur));
+        uint256 borrowerBefore = eur.balanceOf(alice);
+        vm.prank(lender);
+        (uint128 shares, uint256 assets) = credit.liquidate(lineId);
+        assertGt(shares, 0);
+        uint256 toLender = eur.balanceOf(lender) + core.reserved(lender, address(eur)) - lenderBefore;
+        uint256 toBorrower = eur.balanceOf(alice) - borrowerBefore;
+        assertEq(toLender + toBorrower, assets);
+        assertEq(credit.lineOf(lineId).owed, 495e6 - toLender);
+        assertLe(toLender, 495e6);
+        assertEq(eur.balanceOf(address(credit)), 0);
+        // Sized at the price it sold at: a few units of rounding past what restores the ratio, never a windfall.
+        assertLe(toBorrower, 1e3);
+    }
+
+    function _lockedLine() internal returns (uint64 lineId) {
+        lineId = _line(600e6, IEarnVault(address(earnVault)), 5000);
+        usd.mint(alice, 1100e6);
+        _depositEarn(alice, 1100e6);
+        vm.startPrank(alice);
+        core.approveHolder(address(credit), address(earnShare), type(uint128).max, 0);
+        credit.enableLocking(lineId);
+        vm.stopPrank();
+    }
+
     function test_openLine_otherTokenCollateralNeedsAVenue() public {
         auth.setConversion(address(0));
         vm.prank(lender);

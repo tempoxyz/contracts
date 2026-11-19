@@ -657,10 +657,13 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         // forge-lint: disable-next-line(reentrancy-no-eth)
         CORE.capture(l.borrower, address(this), lockOf[lineId], shares, false);
         ILineVenue venue = vault.asset() == l.token ? ILineVenue(address(0)) : _venue();
-        assets = ProgramVenue.redeemTo(venue, vault, shares, l.token, l.lender);
+        assets = ProgramVenue.redeemTo(venue, vault, shares, l.token, address(this));
         // forge-lint: disable-next-line(unsafe-typecast)
         uint128 credited = assets < l.owed ? uint128(assets) : l.owed;
-        l.owed -= credited;
+        // The lender takes what is owed; what the sale fetched past it is the borrower's.
+        SafeTransferLib.safeTransfer(l.token, l.lender, credited);
+        if (assets > credited) SafeTransferLib.safeTransfer(l.token, l.borrower, assets - credited);
+        _reduce(lineId, l, credited);
         _payStatements(lineId, credited);
         emit Liquidated(lineId, shares, assets, l.owed);
         _settle(lineId);
