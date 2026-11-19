@@ -13,6 +13,7 @@ import { IReservationCore } from "../../src/programs/interfaces/IReservationCore
 import { ISource } from "../../src/programs/interfaces/ISource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
+import { Rates } from "./harness/Rates.sol";
 import { Vm } from "forge-std/Vm.sol";
 
 /// @notice Card authorization over its funding sources: cards, limits, mandates, and purchases held across cash,
@@ -1253,7 +1254,7 @@ contract CardAuthTest is AuthEnv {
         FixedPricePool pool = new FixedPricePool(address(xusd), address(usd), 1.25e18);
         usd.mint(address(pool), 1_000_000e6);
         conv.setVenue(address(xusd), address(usd), address(pool), true);
-        conv.setReferenceRate(address(xusd), 1.25e18);
+        Rates.set(conv, address(xusd), 1.25e18);
         _setting(abi.encodeCall(cards.setCompanions, (address(0), address(0), address(0), address(conv))));
         _authorize(P1, 100e6);
         assertEq(_hold(alice, P1, CASH_LEG).held, 80e6);

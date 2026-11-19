@@ -15,6 +15,7 @@ import { IReservationCore } from "../../src/programs/interfaces/IReservationCore
 import { ISource } from "../../src/programs/interfaces/ISource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
+import { Rates } from "./harness/Rates.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
 /// @notice Purchases funded in another stablecoin through the cash source, and issuers settling in one: rate locks at
@@ -48,7 +49,7 @@ contract CashSourceConversionTest is AuthEnv {
         eur.mint(address(ask), 1_000_000e6);
         conv.setVenue(address(eur), address(usd), address(bid), true);
         conv.setVenue(address(usd), address(eur), address(ask), false);
-        conv.setReferenceRate(address(eur), 1.1e18);
+        Rates.set(conv, address(eur), 1.1e18);
         conv.setTrusted(address(cash), true);
         conv.setTrusted(address(savings), true);
         usd.mint(address(conv), 100_000e6);
@@ -126,7 +127,7 @@ contract CashSourceConversionTest is AuthEnv {
         uint256 held = _cashHold(P1, TOKEN_LEG).held;
         // The euro falls 1%: the cardholder pays only the euros the hold locked, and the issuer carries the slippage.
         bid.setPrice(BID * 99 / 100);
-        conv.setReferenceRate(address(eur), 1.1e18 * 99 / 100);
+        Rates.set(conv, address(eur), 1.1e18 * 99 / 100);
         assertFalse(_lapsed(cards.legId(P1, TOKEN_LEG)));
         _capture(P1, 100e6, true);
         uint256 paid = usd.balanceOf(settlement);
@@ -146,7 +147,7 @@ contract CashSourceConversionTest is AuthEnv {
         bytes32 leg = cards.legId(P1, TOKEN_LEG);
         uint256 first = cash.lockedRate(leg);
         bid.setPrice(BID * 99 / 100);
-        conv.setReferenceRate(address(eur), 1.1e18 * 99 / 100);
+        Rates.set(conv, address(eur), 1.1e18 * 99 / 100);
         _capture(P1, 40e6, false);
         uint256 rate = cash.lockedRate(leg);
         assertLt(rate, first);
@@ -165,7 +166,7 @@ contract CashSourceConversionTest is AuthEnv {
         _authorize(P1, 100e6);
         uint256 held = _cashHold(P1, TOKEN_LEG).held;
         bid.setPrice(BID * 95 / 100);
-        conv.setReferenceRate(address(eur), 1.1e18 * 95 / 100);
+        Rates.set(conv, address(eur), 1.1e18 * 95 / 100);
         uint256 cost = conv.quoteOut(address(eur), address(usd), 100e6);
         _capture(P1, 100e6, true);
         assertEq(usd.balanceOf(settlement), 100e6);
@@ -182,7 +183,7 @@ contract CashSourceConversionTest is AuthEnv {
         _authorize(P1, 100e6);
         uint256 held = _cashHold(P1, TOKEN_LEG).held;
         bid.setPrice(BID * 95 / 100);
-        conv.setReferenceRate(address(eur), 1.1e18 * 95 / 100);
+        Rates.set(conv, address(eur), 1.1e18 * 95 / 100);
         assertTrue(_lapsed(cards.legId(P1, TOKEN_LEG)));
         // The lock lapsed, but with no tolerance past the hold the owner spends only the hold; the issuer gets what
         // it buys and absorbs the rest.
@@ -219,7 +220,7 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(cash.lockedRate(leg), rate);
         // Growing past what it holds re-prices the leg at today's rate.
         bid.setPrice(BID * 101 / 100);
-        conv.setReferenceRate(address(eur), 1.1e18 * 101 / 100);
+        Rates.set(conv, address(eur), 1.1e18 * 101 / 100);
         vm.prank(issuer);
         cards.adjust(P1, 60e6);
         assertEq(cash.lockedRate(leg), conv.rate(address(eur), address(usd)));
@@ -570,7 +571,7 @@ contract CashSourceConversionTest is AuthEnv {
         FixedPricePool gbpAsk = new FixedPricePool(address(otherUsd), address(usd), 1.25e18);
         otherUsd.mint(address(gbpAsk), 1_000_000e6);
         conv.setVenue(address(usd), address(otherUsd), address(gbpAsk), false);
-        conv.setReferenceRate(address(otherUsd), 1.25e18);
+        Rates.set(conv, address(otherUsd), 1.25e18);
         _localIssuer();
         _tokenFirst(0);
         eur.mint(alice, 500e6);

@@ -6,6 +6,7 @@ import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
 import { CoreEnv } from "../core/harness/CoreEnv.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
+import { Rates } from "./harness/Rates.sol";
 
 /// @notice Conversion on its own: reference rates and their age, quotes and swaps through the hub, the reference
 ///         floor and ceiling every swap stays within, conversion cost, owners' rate tolerances per program, and who
@@ -31,7 +32,7 @@ contract ConversionTest is CoreEnv {
         eur.mint(address(ask), 1_000_000e6);
         conv.setVenue(address(eur), address(usd), address(bid), true);
         conv.setVenue(address(usd), address(eur), address(ask), false);
-        conv.setReferenceRate(address(eur), 1.1e18);
+        Rates.set(conv, address(eur), 1.1e18);
         conv.setTrusted(trustedProgram, true);
         usd.mint(address(conv), 100_000e6);
         eur.mint(address(conv), 100_000e6);
@@ -50,7 +51,7 @@ contract ConversionTest is CoreEnv {
         conv.costBps(address(eur), address(usd), 1e18);
         // The hub never goes stale, and setting the rate again makes it current.
         assertEq(conv.referenceRate(address(usd)), 1e18);
-        conv.setReferenceRate(address(eur), 1.2e18);
+        Rates.set(conv, address(eur), 1.2e18);
         assertEq(conv.mid(address(eur), address(usd)), 1.2e18);
         assertEq(conv.rateUpdatedAt(address(eur)), vm.getBlockTimestamp());
     }
@@ -59,7 +60,7 @@ contract ConversionTest is CoreEnv {
         FixedPricePool gbpAsk = new FixedPricePool(address(otherUsd), address(usd), 1.25e18);
         otherUsd.mint(address(gbpAsk), 1_000_000e6);
         conv.setVenue(address(usd), address(otherUsd), address(gbpAsk), false);
-        conv.setReferenceRate(address(otherUsd), 1.25e18);
+        Rates.set(conv, address(otherUsd), 1.25e18);
         assertTrue(conv.converts(address(eur), address(otherUsd)));
         assertFalse(conv.converts(address(otherUsd), address(eur)));
         uint256 out = conv.quoteIn(address(eur), address(otherUsd), 100e6);
@@ -135,12 +136,23 @@ contract ConversionTest is CoreEnv {
         vm.stopPrank();
     }
 
-    function test_quotes_boundedByTheReferenceRateAndStale() public {
-        // A venue quoting above the reference rate values nothing above it.
+    function test_quotes_refusedWhileTheVenueStraysFromTheReferenceRateOrItIsStale() public {
+        // A venue quoting far above or below the reference rate quotes nothing.
         bid.setPrice(2e18);
-        assertEq(conv.quoteIn(address(eur), address(usd), 100e6), 110e6);
+        vm.expectRevert(
+            abi.encodeWithSelector(Conversion.RateDeviates.selector, address(eur), address(usd), 200e6, 110e6)
+        );
+        conv.quoteIn(address(eur), address(usd), 100e6);
+        bid.setPrice(1.08e18);
+        vm.expectPartialRevert(Conversion.RateDeviates.selector);
+        conv.quoteIn(address(eur), address(usd), 100e6);
         ask.setPrice(0.5e18);
-        assertEq(conv.quoteOut(address(usd), address(eur), 100e6), 110e6);
+        vm.expectPartialRevert(Conversion.RateDeviates.selector);
+        conv.quoteOut(address(usd), address(eur), 100e6);
+        // Within MAX_SLIPPAGE_BPS the venue's own quote stands, above the reference rate too.
+        bid.setPrice(1.105e18);
+        assertEq(conv.quoteIn(address(eur), address(usd), 100e6), 110.5e6);
+        bid.setPrice(BID);
         vm.warp(vm.getBlockTimestamp() + conv.MAX_RATE_AGE() + 1);
         vm.expectRevert(abi.encodeWithSelector(Conversion.RateStale.selector, address(eur)));
         conv.quoteIn(address(eur), address(usd), 100e6);

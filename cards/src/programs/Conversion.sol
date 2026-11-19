@@ -51,10 +51,13 @@ interface IERC20Balance {
 /// @title Conversion
 /// @notice Converts one stablecoin into another for card programs: quotes and swaps on the Stablecoin DEX or a
 ///         DirectPropAMM pool, routing through the hub token when a pair has no venue of its own. Each token has a
-///         reference rate in hub units, against which a quote's conversion cost is measured. Owners set how far the
-///         market may move from a rate a purchase locked before its capture lets the lock lapse.
+///         reference rate in hub units, against which a quote's conversion cost is measured. Quotes are the venue's
+///         own and are refused while it strays more than MAX_SLIPPAGE_BPS from the reference rates. The owner moves a
+///         reference rate at most MAX_RATE_STEP_BPS in a RATE_STEP_WINDOW at once; a larger move, or a token's first
+///         rate, waits RATE_DELAY after it is scheduled. Owners set how far the market may move from a rate a purchase
+///         locked before its capture lets the lock lapse.
 /// @dev Swaps hold no balance between calls: a swap pulls what it spends from the caller and pays the recipient in
-///      full. The only balance is the float that refunds convert out of at the reference rates.
+///      full. The only balance is the float that refunds convert out of.
 contract Conversion {
     using FixedPointMathLib for uint256;
 
@@ -63,8 +66,15 @@ contract Conversion {
     uint256 internal constant BPS = 10_000;
     /// @notice How long a reference rate prices conversions after it was set.
     uint64 public constant MAX_RATE_AGE = 7 days;
-    /// @notice How far below the reference rates a swap may pay out, or above them it may spend, in basis points.
+    /// @notice How far below the reference rates a swap may pay out, or above them it may spend, and how far a
+    ///         venue's quote may stray from them either way, in basis points.
     uint256 public constant MAX_SLIPPAGE_BPS = 100;
+    /// @notice How far a reference rate may move at once from where it stood when its window opened, in basis points.
+    uint256 public constant MAX_RATE_STEP_BPS = 200;
+    /// @notice How long a reference rate's window lasts: each opens at the first change after the last one closed.
+    uint64 public constant RATE_STEP_WINDOW = 1 days;
+    /// @notice How long a scheduled reference rate waits before it may be set.
+    uint64 public constant RATE_DELAY = 2 days;
     /// @dev Amount a rate is measured on; venues price linearly, so a large probe keeps rounding out of the rate.
     uint256 internal constant PROBE = 1e10;
     IStablecoinDEX internal constant DEX = IStablecoinDEX(0xDEc0000000000000000000000000000000000000);
@@ -76,8 +86,22 @@ contract Conversion {
         bool exists;
     }
 
+    /// @notice Where a reference rate stood when its current window opened, and when that was.
+    struct RateWindow {
+        uint128 anchor;
+        uint64 openedAt;
+    }
+
+    /// @notice A reference rate the owner scheduled, and when it may be set.
+    struct ScheduledRate {
+        uint128 rate;
+        uint64 readyAt;
+    }
+
     address public immutable HUB;
     address public owner;
+    /// @notice The owner the current owner named, who becomes owner once it accepts.
+    address public pendingOwner;
     uint256 internal nonce;
 
     mapping(address tokenIn => mapping(address tokenOut => Venue)) internal venues;
@@ -85,16 +109,23 @@ contract Conversion {
     mapping(address token => uint256) internal mids;
     /// @notice When each token's reference rate was last set.
     mapping(address token => uint64) public rateUpdatedAt;
+    mapping(address token => RateWindow) public rateWindowOf;
+    mapping(address token => ScheduledRate) public scheduledRateOf;
     /// @notice Basis points the market may move from a rate a program's purchase locked; zero keeps every lock.
     mapping(address owner => mapping(address program => uint32)) public rateToleranceBps;
     /// @notice Programs that may convert at the reference rate out of this contract's float (refunds and reversals).
     mapping(address program => bool) public trusted;
 
     event OwnerSet(address owner);
+    event OwnerProposed(address owner);
+    event ReferenceRateScheduled(address indexed token, uint256 rate, uint64 readyAt);
     event VenueSet(address indexed tokenIn, address indexed tokenOut, address pool, bool baseToQuote);
     event ReferenceRateSet(address indexed token, uint256 rate);
     event RateToleranceSet(address indexed owner, address indexed program, uint32 toleranceBps);
     event TrustedSet(address indexed program, bool trusted);
+    event ConvertedAt(
+        address indexed program, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut
+    );
     event ConvertedAtMid(
         address indexed program, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut
     );
@@ -112,6 +143,11 @@ contract Conversion {
     error NoReferenceRate(address token);
     /// @notice The token's reference rate is older than MAX_RATE_AGE.
     error RateStale(address token);
+    /// @notice The change moves the rate more than MAX_RATE_STEP_BPS in its window, or the token has no rate yet;
+    ///         schedule it instead.
+    error RateStepTooLarge(address token, uint256 rate);
+    /// @notice The venue's quote strays more than MAX_SLIPPAGE_BPS from the reference rates.
+    error RateDeviates(address tokenIn, address tokenOut, uint256 quoted, uint256 fair);
     error Slippage(uint256 amount, uint256 bound);
     error MinOutTooLow(uint256 minOut, uint256 floor);
     error InvalidAmount();
@@ -133,11 +169,22 @@ contract Conversion {
 
     // Configuration.
 
-    // Setting a zero owner fixes the venues for good.
-    // forge-lint: disable-next-item(missing-zero-check)
+    /// @notice Names the next owner, who takes over once it calls acceptOwner. A zero owner takes effect at once and
+    ///         fixes the venues and rates for good.
     function setOwner(address owner_) external onlyOwner {
-        owner = owner_;
-        emit OwnerSet(owner_);
+        if (owner_ == address(0)) {
+            (owner, pendingOwner) = (address(0), address(0));
+            emit OwnerSet(address(0));
+            return;
+        }
+        pendingOwner = owner_;
+        emit OwnerProposed(owner_);
+    }
+
+    function acceptOwner() external {
+        if (msg.sender != pendingOwner) revert Unauthorized();
+        (owner, pendingOwner) = (msg.sender, address(0));
+        emit OwnerSet(msg.sender);
     }
 
     /// @notice Trades tokenIn for tokenOut on a DirectPropAMM pool in one direction, or on the Stablecoin DEX for a
@@ -149,13 +196,43 @@ contract Conversion {
         emit VenueSet(tokenIn, tokenOut, pool, baseToQuote);
     }
 
+    /// @notice Sets a token's reference rate: the rate scheduled for it once RATE_DELAY has passed, or a rate within
+    ///         MAX_RATE_STEP_BPS of where it stood when its window opened. Setting the current rate only refreshes it.
+    // Windows and delays are days long; a few seconds of validator skew does not change them.
+    // forge-lint: disable-next-item(block-timestamp,unsafe-typecast)
     function setReferenceRate(address token, uint256 rate_) external onlyOwner {
-        if (token == HUB || rate_ == 0) revert InvalidAmount();
+        if (token == HUB || rate_ == 0 || rate_ > type(uint128).max) revert InvalidAmount();
+        ScheduledRate memory s = scheduledRateOf[token];
+        uint64 now_ = uint64(block.timestamp);
+        if (s.readyAt != 0 && s.rate == rate_ && now_ >= s.readyAt) {
+            delete scheduledRateOf[token];
+            rateWindowOf[token] = RateWindow(uint128(rate_), now_);
+        } else {
+            uint256 current = mids[token];
+            if (current == 0) revert RateStepTooLarge(token, rate_);
+            RateWindow memory w = rateWindowOf[token];
+            if (now_ >= w.openedAt + RATE_STEP_WINDOW) {
+                w = RateWindow(uint128(current), now_);
+                if (rate_ != current) rateWindowOf[token] = w;
+            }
+            uint256 moved = rate_ > w.anchor ? rate_ - w.anchor : w.anchor - rate_;
+            if (moved * BPS > uint256(w.anchor) * MAX_RATE_STEP_BPS) revert RateStepTooLarge(token, rate_);
+        }
         mids[token] = rate_;
         // Timestamps fit 64 bits for billions of years.
         // forge-lint: disable-next-line(unsafe-typecast)
         rateUpdatedAt[token] = uint64(block.timestamp);
         emit ReferenceRateSet(token, rate_);
+    }
+
+    /// @notice Schedules a token's reference rate, which setReferenceRate may set once RATE_DELAY has passed; a zero
+    ///         rate cancels what is scheduled.
+    // forge-lint: disable-next-item(block-timestamp,unsafe-typecast)
+    function scheduleReferenceRate(address token, uint256 rate_) external onlyOwner {
+        if (token == HUB || rate_ > type(uint128).max) revert InvalidAmount();
+        uint64 readyAt = rate_ == 0 ? 0 : uint64(block.timestamp) + RATE_DELAY;
+        scheduledRateOf[token] = ScheduledRate(uint128(rate_), readyAt);
+        emit ReferenceRateScheduled(token, rate_, readyAt);
     }
 
     /// @notice The caller's tolerance for every rate a program's purchases lock on its funds.
@@ -218,22 +295,20 @@ contract Conversion {
         return tokenIn != HUB && tokenOut != HUB && venues[tokenIn][HUB].exists && venues[HUB][tokenOut].exists;
     }
 
-    /// @notice What exactly amountIn of tokenIn fetches in tokenOut: the venue's quote, at most its value at the
-    ///         reference rates, so nothing values it above them.
-    function quoteIn(address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256) {
+    /// @notice What exactly amountIn of tokenIn fetches in tokenOut: the venue's quote. Reverts RateDeviates while it
+    ///         strays more than MAX_SLIPPAGE_BPS from the value at the reference rates.
+    function quoteIn(address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256 out) {
         if (tokenIn == tokenOut || amountIn == 0) return amountIn;
-        uint256 out = _routeIn(tokenIn, tokenOut, amountIn);
-        uint256 fair = amountIn.mulDiv(referenceRate(tokenIn), referenceRate(tokenOut));
-        return out < fair ? out : fair;
+        out = _routeIn(tokenIn, tokenOut, amountIn);
+        _agrees(tokenIn, tokenOut, out, amountIn.mulDiv(referenceRate(tokenIn), referenceRate(tokenOut)));
     }
 
-    /// @notice What tokenIn exactly amountOut of tokenOut costs: the venue's quote, at least its cost at the reference
-    ///         rates.
-    function quoteOut(address tokenIn, address tokenOut, uint256 amountOut) public view returns (uint256) {
+    /// @notice What tokenIn exactly amountOut of tokenOut costs: the venue's quote. Reverts RateDeviates while it
+    ///         strays more than MAX_SLIPPAGE_BPS from the cost at the reference rates.
+    function quoteOut(address tokenIn, address tokenOut, uint256 amountOut) public view returns (uint256 cost) {
         if (tokenIn == tokenOut || amountOut == 0) return amountOut;
-        uint256 cost = _routeOut(tokenIn, tokenOut, amountOut);
-        uint256 fair = amountOut.mulDivUp(referenceRate(tokenOut), referenceRate(tokenIn));
-        return cost > fair ? cost : fair;
+        cost = _routeOut(tokenIn, tokenOut, amountOut);
+        _agrees(tokenIn, tokenOut, cost, amountOut.mulDivUp(referenceRate(tokenOut), referenceRate(tokenIn)));
     }
 
     /// @notice Units of tokenOut one unit of tokenIn fetches now, with 18 decimals.
@@ -325,7 +400,28 @@ contract Conversion {
         emit ConvertedAtMid(msg.sender, tokenIn, tokenOut, amountIn, out);
     }
 
+    /// @notice Pays recipient exactly amountOut of tokenOut from the float for amountIn of a trusted program's tokenIn:
+    ///         a rate the program fixed from what a purchase paid, so a refund returns what it took whatever the
+    ///         market does. Trust only programs whose code fixes it so.
+    function convertAt(address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut, address recipient)
+        external
+    {
+        if (!trusted[msg.sender]) revert Unauthorized();
+        if (tokenIn == tokenOut) revert InvalidAmount();
+        SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
+        uint256 float_ = IERC20Balance(tokenOut).balanceOf(address(this));
+        if (float_ < amountOut) revert InsufficientFloat(amountOut, float_);
+        SafeTransferLib.safeTransfer(tokenOut, recipient, amountOut);
+        emit ConvertedAt(msg.sender, tokenIn, tokenOut, amountIn, amountOut);
+    }
+
     // Internals.
+
+    /// @dev Reverts RateDeviates when quoted strays from fair by more than MAX_SLIPPAGE_BPS, past a unit of rounding.
+    function _agrees(address tokenIn, address tokenOut, uint256 quoted, uint256 fair) private pure {
+        uint256 moved = quoted > fair ? quoted - fair : fair - quoted;
+        if (moved > 1 && moved * BPS > fair * MAX_SLIPPAGE_BPS) revert RateDeviates(tokenIn, tokenOut, quoted, fair);
+    }
 
     function _onlyOwner() private view {
         if (msg.sender != owner) revert Unauthorized();

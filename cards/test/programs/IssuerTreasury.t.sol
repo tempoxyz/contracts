@@ -9,6 +9,7 @@ import { IssuerTreasury } from "../../src/programs/IssuerTreasury.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { CompEnv } from "./harness/CompStubs.sol";
+import { Rates } from "./harness/Rates.sol";
 
 /// @notice The issuer's treasury: its funds advance payouts the settlement account cannot make and stay behind the
 ///         program's committed exposure, the settlement token changes only after the settings delay and once nothing
@@ -33,7 +34,7 @@ contract IssuerTreasuryTest is CompEnv {
         eur.mint(address(ask), 1_000_000e6);
         conv.setVenue(address(eur), address(usd), address(bid), true);
         conv.setVenue(address(usd), address(eur), address(ask), false);
-        conv.setReferenceRate(address(eur), 1.1e18);
+        Rates.set(conv, address(eur), 1.1e18);
         auth.setConversion(address(conv));
         _allowDebt(ITIP20Token(address(usd)), 100e6);
         // The issuer's own funds, which advance what the settlement account lacks.

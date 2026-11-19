@@ -8,6 +8,7 @@ import { Conversion } from "../../src/programs/Conversion.sol";
 import { CreditSource } from "../../src/programs/CreditSource.sol";
 import { FixedPricePool } from "../venues/FixedPricePool.sol";
 import { CompCardAuth, CompEnv } from "./harness/CompStubs.sol";
+import { Rates } from "./harness/Rates.sol";
 
 /// @notice Lines owed in the program's euro settlement token while the borrower pays with dollars: repayments and
 ///         autopay sell the borrower's tokens through the program's conversion venue, and dollar collateral is valued
@@ -34,7 +35,7 @@ contract CreditSourceConversionTest is CompEnv {
         eur.mint(address(ask), 1_000_000e6);
         conv.setVenue(address(eur), address(usd), address(bid), true);
         conv.setVenue(address(usd), address(eur), address(ask), false);
-        conv.setReferenceRate(address(eur), 1.1e18);
+        Rates.set(conv, address(eur), 1.1e18);
         // The program settles in euros through the venue.
         auth = new CompCardAuth(issuer, settlement, address(eur));
         auth.setConversion(address(conv));
@@ -192,7 +193,7 @@ contract CreditSourceConversionTest is CompEnv {
         ask.setPrice(11e18);
         uint256 locked = credit.lockedShares(lineId);
         vm.prank(lender);
-        vm.expectPartialRevert(Conversion.Slippage.selector);
+        vm.expectPartialRevert(Conversion.RateDeviates.selector);
         credit.liquidate(lineId);
         assertEq(credit.lockedShares(lineId), locked);
         assertEq(credit.lineOf(lineId).owed, 300e6);
