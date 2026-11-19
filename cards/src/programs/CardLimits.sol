@@ -173,7 +173,8 @@ library CardLimits {
 
     /// @notice Carries an owner's usage, some of their cards' windows and merchant mandates counted on another
     ///         instance of the program into this one, as carryUsage, carryWindow and carryMandate do. Days and months
-    ///         later than the owner's today (at utcOffset) are refused, so carrying never empties today's counts.
+    ///         later than the owner's today (at utcOffset) are refused, so carrying never empties today's counts; a
+    ///         card window's later day or month with nothing counted in it carries nothing.
     function carry(
         mapping(bytes32 => Card) storage cards,
         mapping(address => Mandate) storage ownerMandates,
@@ -195,8 +196,18 @@ library CardLimits {
         _carryUsage(u, usage);
         for (uint256 i; i < cardIds.length; ++i) {
             Card storage c = cards[cardIds[i]];
-            if (c.owner != owner || windows[i].day > day || windows[i].month > month) revert InvalidCard();
-            _carryWindow(c.window, windows[i]);
+            Window memory w = windows[i];
+            if (c.owner != owner) revert InvalidCard();
+            // Issuance names the UTC day and month, which can be after the owner's; with nothing counted they say nothing.
+            if (w.day > day) {
+                if (w.daySpent != 0) revert InvalidCard();
+                w.day = 0;
+            }
+            if (w.month > month) {
+                if (w.monthSpent != 0) revert InvalidCard();
+                w.month = 0;
+            }
+            _carryWindow(c.window, w);
         }
         for (uint256 i; i < merchants.length; ++i) {
             if (spent[i].month > month) revert InvalidCard();

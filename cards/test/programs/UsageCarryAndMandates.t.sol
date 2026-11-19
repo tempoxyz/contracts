@@ -54,14 +54,40 @@ contract UsageCarryAndMandatesTest is AuthEnv {
 
     function test_carryUsage_refusesLaterCardWindows() public {
         (, uint32 day, uint32 month,,) = cards.usageOf(alice);
+        vm.expectRevert(CardLimits.InvalidCard.selector);
+        this.carryWindowAs(CardLimits.Window(day + 1, month, 1, 0, 0, 0), day, month);
+        vm.expectRevert(CardLimits.InvalidCard.selector);
+        this.carryWindowAs(CardLimits.Window(day, month + 1, 0, 1, 0, 0), day, month);
+    }
+
+    /// @dev A new card's window names the UTC day, a day after the owner's late in the day west of UTC. Carried with
+    ///      nothing spent, it carries nothing and leaves today's counts.
+    function test_carryUsage_skipsLaterCardWindowsWithNothingCounted() public {
+        vm.warp(1_798_761_600 + 3 hours); // 2027-01-01 03:00 UTC; 2026-12-31 22:00 at UTC-5.
+        vm.prank(alice);
+        cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: -5 hours }));
+        _auth(P1, 100e6, address(0));
+        (, uint32 day, uint32 month,,) = cards.usageOf(alice);
+        CardLimits.Window memory before = cards.cardOf(CARD).window;
+        (uint32 utcDay, uint32 utcMonth) = CardLimits.calendar(0);
+        assertEq(utcDay, day + 1);
+        assertEq(utcMonth, month + 1);
+        assertEq(before.day, day);
+        assertEq(before.daySpent, 100e6);
+        // Another instance's new card: the UTC day and month, nothing spent.
+        carryWindowAs(CardLimits.Window(utcDay, utcMonth, 0, 0, 0, 0), day, month);
+        assertEq(abi.encode(cards.cardOf(CARD).window), abi.encode(before));
+    }
+
+    /// @dev Carries one window for CARD as the issuer, so a revert can be expected on the outer call.
+    function carryWindowAs(CardLimits.Window memory w, uint32 day, uint32 month) public {
         bytes32[] memory ids = new bytes32[](1);
         ids[0] = CARD;
         CardLimits.Window[] memory ws = new CardLimits.Window[](1);
-        ws[0] = CardLimits.Window(day + 1, month, 0, 0, 0, 0);
+        ws[0] = w;
         bytes memory data =
             abi.encode(CardLimits.Usage(0, day, month, 0, 0), ids, ws, new address[](0), new CardLimits.Mandate[](0));
         vm.prank(issuer);
-        vm.expectRevert(CardLimits.InvalidCard.selector);
         cards.carryUsage(alice, data);
     }
 
