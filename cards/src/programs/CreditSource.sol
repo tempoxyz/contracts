@@ -340,7 +340,9 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     /// @inheritdoc ISource
-    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64 expiresAt, bool standIn)
+    /// @dev A leg grows by at most the line's available credit, and not at all on a line that is not open or not in
+    ///      today's settlement token, so a short line holds what it has and later order entries hold the rest.
+    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64 expiresAt, bool)
         external
         nonReentrant
         onlyProgram
@@ -355,12 +357,14 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (g.lineId != 0 && g.lineId != lineId) revert UnknownLeg();
         heldUnits = units;
         if (units > now_) {
-            if (!_open(l) || l.token != PROGRAM.settlementToken()) revert LineNotOpen();
-            _accrue(lineId);
-            uint256 credit = availableCredit(lineId);
-            // A stand-in leg holds what the line can still give; captures may reach units later.
-            if (standIn && units - now_ > credit) heldUnits = now_ + credit;
-            if (heldUnits - now_ > credit) revert CreditExceeded(heldUnits - now_, credit);
+            uint256 credit;
+            if (_open(l) && l.token == PROGRAM.settlementToken()) {
+                _accrue(lineId);
+                credit = availableCredit(lineId);
+            }
+            if (units - now_ > credit) heldUnits = now_ + credit;
+            // Nothing to add: the leg keeps what it holds, and a new leg places nothing.
+            if (heldUnits == now_) return now_;
         }
         if (heldUnits > type(uint64).max) revert CreditExceeded(heldUnits, type(uint64).max);
         // Bounded by the 64-bit check above.
@@ -369,7 +373,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         (g.lineId, g.held) = (lineId, uint64(heldUnits));
         // A growing leg comes out of the commitment first, which frees the lender's balance.
-        if (heldUnits >= now_) _commit(lineId);
+        if (heldUnits >= now_) _commit(lineId, heldUnits - now_);
         // Every entry point holds the transient lock for this whole call.
         // forge-lint: disable-start(reentrancy-no-eth)
         if (now_ == 0) {
@@ -390,7 +394,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             CORE.adjust(l.lender, address(this), id, uint128(heldUnits));
         }
         // forge-lint: disable-end(reentrancy-no-eth)
-        if (heldUnits < now_) _commit(lineId);
+        if (heldUnits < now_) _commit(lineId, 0);
         _lock(lineId);
         emit Synced(lineId, id, l.owed, l.pending);
     }
@@ -429,7 +433,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             l.pending += uint128(units - h);
             g.held = uint64(units);
             // forge-lint: disable-end(unsafe-typecast)
-            _commit(lineId);
+            _commit(lineId, units - h);
             // forge-lint: disable-next-line(unsafe-typecast)
             if (units > h) CORE.adjust(l.lender, address(this), id, uint128(units));
         }
@@ -897,7 +901,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     function _settle(uint64 lineId) private {
-        _commit(lineId);
+        _commit(lineId, 0);
         _lock(lineId);
     }
 
@@ -956,7 +960,9 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @dev Moves the commitment hold to the undrawn limit, within what the lender's balance backs. Growing or placing
     ///      it is best effort: a lender who lowered its allowance keeps what is committed, and legs still settle.
-    function _commit(uint64 lineId) private {
+    /// @dev Moves the commitment to the line's unused room, leaving `need` of the lender's balance free for the leg
+    ///      about to grow, so a commitment the lender only partly funded shrinks for it.
+    function _commit(uint64 lineId, uint256 need) private {
         _track(lineId);
         Line storage l = _lines[lineId];
         uint256 target;
@@ -966,7 +972,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             target = cap > used ? cap - used : 0;
         }
         uint64 expiresAt = uint64(_min(block.timestamp + TERM, l.dueDate));
-        (bytes32 id, bool ok) = _move(l.lender, l.token, commitmentOf[lineId], lineId, target, expiresAt, true);
+        (bytes32 id, bool ok) = _move(l.lender, l.token, commitmentOf[lineId], lineId, target, need, expiresAt, true);
         commitmentOf[lineId] = id;
         if (ok) emit Committed(lineId, id, uint128(_heldNow(l.lender, id)));
     }
@@ -981,19 +987,20 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         uint256 used = _min(uint256(l.owed) + l.pending, l.maxDebt);
         uint256 target = used == 0 ? 0 : vault.previewWithdraw(_assetsFor(l, (used * BPS + l.ltvBps - 1) / l.ltvBps));
         uint64 expiresAt = uint64(block.timestamp + TERM);
-        (bytes32 id,) = _move(l.borrower, vault.earnShare(), lockOf[lineId], lineId, target, expiresAt, false);
+        (bytes32 id,) = _move(l.borrower, vault.earnShare(), lockOf[lineId], lineId, target, 0, expiresAt, false);
         lockOf[lineId] = id;
         emit Locked(lineId, id, uint128(_heldNow(l.borrower, id)));
     }
 
-    /// @dev Moves this contract's hold id on owner's token to target (at most what the owner can back), renewing it
-    ///      within a day of expiry. Returns the hold's id (zero when none) and whether anything changed.
+    /// @dev Moves this contract's hold id on owner's token to target (at most what the owner can back less `keep`),
+    ///      renewing it within a day of expiry. Returns the hold's id (zero when none) and whether anything changed.
     function _move(
         address owner,
         address token,
         bytes32 id,
         uint64 lineId,
         uint256 target,
+        uint256 keep,
         uint64 expiresAt,
         bool bestEffort
     ) private returns (bytes32, bool) {
@@ -1003,7 +1010,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             h = CORE.getHold(owner, address(this), id);
             live = h.token != address(0) && h.expiresAt > block.timestamp;
         }
-        target = _min(target, CORE.available(owner, token) + (live ? h.held : 0));
+        uint256 backed = CORE.available(owner, token) + (live ? h.held : 0);
+        target = _min(target, backed > keep ? backed - keep : 0);
         bool renew = live && h.expiresAt < block.timestamp + 1 days && expiresAt > h.expiresAt;
         if (live && !renew) {
             if (target == h.held) return (id, false);

@@ -34,6 +34,7 @@ contract FundingCreditStressTest is FundingBase {
         uint256 creditVolume;
         uint256 cashVolume;
         uint256 creditExceeded;
+        uint256 coverableDeclines;
     }
 
     Buy[] internal buys;
@@ -102,9 +103,9 @@ contract FundingCreditStressTest is FundingBase {
         core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
     }
 
-    /// @dev Current behaviour: a line short of a purchase declines it with CreditExceeded instead of holding what it
-    ///      can and letting the cash entry behind it hold the rest, so lender A's holders are declined although they
-    ///      hold cash. Committed liquidity also cannot leave mid-week: lender A finds almost nothing free to pull.
+    /// @dev A line short of a purchase holds what it can and the cash entry behind it holds the rest, so a purchase
+    ///      declines only when the line and cash together fall short. Committed liquidity cannot leave mid-week: lender
+    ///      A finds almost nothing free to pull.
     function test_stress_lenderRunsDryMidweek() public {
         vm.pauseGasMetering();
         tag = "credit_lender_dry";
@@ -114,19 +115,24 @@ contract FundingCreditStressTest is FundingBase {
         _drain(10 * 24);
         _report();
         uint256 exceeded;
+        uint256 coverable;
         uint256 fallback_;
         for (uint256 p; p < 3; ++p) {
-            exceeded += sides[p][0].creditExceeded;
+            for (uint256 s_; s_ < 2; ++s_) {
+                exceeded += sides[p][s_].creditExceeded;
+                coverable += sides[p][s_].coverableDeclines;
+            }
             fallback_ += sides[p][0].cashVolume;
         }
-        assertGt(exceeded, 0, "no credit declines");
-        // Cash behind the line only ever pays tips past a hold, never the part of a purchase the line lacks.
-        assertLt(fallback_, tipVolume + 1, "cash covered purchases the line lacked");
+        assertEq(exceeded, 0, "a short line declined");
+        assertEq(coverable, 0, "declined a purchase the line and cash together could hold");
+        // Cash behind lender A's lines pays the part of purchases the lines lack, well past tips.
+        assertGt(fallback_, tipVolume, "cash did not cover what the lines lacked");
         assertLt(pulled, LIMIT / 100, "committed liquidity left mid-week");
     }
 
     /// @dev What the funding order promises: a line with $100 of credit left and $300 in cash behind it approves a
-    ///      $200 purchase, $100 from each. Today the credit hold reverts with CreditExceeded and the purchase is declined.
+    ///      $200 purchase, $100 from each.
     function test_creditFirst_shortLineFallsBackToCash() public {
         vm.pauseGasMetering();
         uint256 i = n / 2;
@@ -139,11 +145,18 @@ contract FundingCreditStressTest is FundingBase {
         _book(h, big, LIMIT - 100e6);
         assertEq(credit.availableCredit(lineId), 100e6);
         _mint(h, 300e6);
-        (uint256 approved, bytes4 err,) = _try(h, cardIds[i], keccak256("short-line"), 200e6, 0);
-        assertEq(err, CreditSource.CreditExceeded.selector, "current behaviour changed");
-        assertEq(approved, 0);
-        vm.skip(true, "credit hold reverts past available credit instead of holding what it can");
+        uint256 cashBefore = core.available(h, address(usd));
+        bytes32 ref = keccak256("short-line");
+        (uint256 approved, bytes4 err,) = _try(h, cardIds[i], ref, 200e6, 0);
+        assertEq(err, bytes4(0));
         assertEq(approved, 200e6, "credit then cash should approve the purchase");
+        assertEq(credit.availableCredit(lineId), 0, "line held what it had");
+        assertEq(core.available(h, address(usd)), cashBefore - 100e6, "cash held the rest");
+        uint256 owedBefore = credit.owedNow(lineId);
+        (bool ok, uint256 covered,) = _book(h, ref, 200e6);
+        assertTrue(ok);
+        assertEq(covered, 200e6);
+        assertEq(credit.owedNow(lineId), owedBefore + 100e6, "line paid its part");
     }
 
     // Simulation.
@@ -204,10 +217,12 @@ contract FundingCreditStressTest is FundingBase {
         uint256 side = i < n / 2 ? 0 : 1;
         Side storage sd = sides[_phase(hr)][side];
         ++sd.auths;
+        uint256 room = core.available(h, address(usd)) + credit.availableCredit(lineOfHolder[i]);
         (uint256 approved, bytes4 err, uint256 gasUsed) = _try(h, cardIds[i], ref, amount, 0);
         if (approved == 0) {
             ++sd.declined;
             if (err == CreditSource.CreditExceeded.selector) ++sd.creditExceeded;
+            if (amount <= room) ++sd.coverableDeclines;
             return;
         }
         if (gasUsed != 0) {
@@ -323,9 +338,10 @@ contract FundingCreditStressTest is FundingBase {
         return usd.balanceOf(lender) + core.reserved(lender, address(usd));
     }
 
-    /// @dev A holder's cash outlay: wallet out (net of wages) plus cash debt, before line repayments.
+    /// @dev A holder's cash outlay: wallet out (net of wages, not counting what cash legs still hold) plus cash debt,
+    ///      before line repayments.
     function _cashCost(address h) internal view returns (uint256) {
-        return mintedTo[h] - usd.balanceOf(h) + _owed(h, address(usd), address(cash));
+        return mintedTo[h] - usd.balanceOf(h) - core.reserved(h, address(usd)) + _owed(h, address(usd), address(cash));
     }
 
     function _checkAll() internal view {
@@ -360,6 +376,7 @@ contract FundingCreditStressTest is FundingBase {
                 _log(string.concat(k, "_auths"), sd.auths);
                 _log(string.concat(k, "_decline_bps"), sd.auths == 0 ? 0 : sd.declined * 10_000 / sd.auths);
                 _log(string.concat(k, "_credit_exceeded"), sd.creditExceeded);
+                _log(string.concat(k, "_coverable_declines"), sd.coverableDeclines);
                 _logUsd(string.concat(k, "_credit_volume"), sd.creditVolume);
                 _logUsd(string.concat(k, "_cash_fallback_volume"), sd.cashVolume);
             }
