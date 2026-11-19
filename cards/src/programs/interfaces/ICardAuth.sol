@@ -11,6 +11,8 @@ interface ICardAuthState {
     function ROLE_TREASURY() external view returns (uint8);
     /// @notice How long issuer settings wait before they apply once any owner granted terms.
     function SETTINGS_DELAY() external view returns (uint64);
+    /// @notice How long after its delay a proposed setting may still apply before it lapses.
+    function SETTINGS_WINDOW() external view returns (uint64);
     /// @notice The shared conversion the program and its sources price tokens with.
     function conversion() external view returns (address);
     /// @notice Whether `account` is one of the program's registered companion contracts.

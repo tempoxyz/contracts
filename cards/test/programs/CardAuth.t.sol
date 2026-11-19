@@ -231,6 +231,62 @@ contract CardAuthTest is AuthEnv {
         _authorize(P1, 1e6);
     }
 
+    function test_ownerCannotLiftTheIssuersFreeze() public {
+        usd.mint(alice, 1000e6);
+        vm.prank(issuer);
+        cards.setCard(CARD, 2, uint8(CardLimits.Status.Frozen));
+        // The owner holds no freeze of its own to lift.
+        vm.prank(alice);
+        vm.expectRevert(CardLimits.CardNotActive.selector);
+        cards.setOwnStatus(CARD, 2);
+        // Freezing and lifting its own freeze leaves the issuer's in place.
+        vm.startPrank(alice);
+        cards.setOwnStatus(CARD, 1);
+        cards.setOwnStatus(CARD, 2);
+        vm.stopPrank();
+        assertEq(uint8(cards.cardOf(CARD).status), uint8(CardLimits.Status.Frozen));
+        vm.prank(issuer);
+        vm.expectRevert(CardLimits.CardNotActive.selector);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
+        vm.prank(issuer);
+        cards.setCard(CARD, 2, uint8(CardLimits.Status.Active));
+        _authorize(P1, 1e6);
+    }
+
+    function test_issuerCannotLiftTheOwnersFreeze() public {
+        usd.mint(alice, 1000e6);
+        vm.prank(alice);
+        cards.setOwnStatus(CARD, 1);
+        vm.prank(issuer);
+        cards.setCard(CARD, 2, uint8(CardLimits.Status.Active));
+        assertEq(uint8(cards.cardOf(CARD).status), uint8(CardLimits.Status.Frozen));
+        vm.prank(issuer);
+        vm.expectRevert(CardLimits.CardNotActive.selector);
+        cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
+        // Both freezes must lift before the card is active again.
+        vm.prank(issuer);
+        cards.setCard(CARD, 2, uint8(CardLimits.Status.Frozen));
+        vm.prank(alice);
+        cards.setOwnStatus(CARD, 2);
+        assertEq(uint8(cards.cardOf(CARD).status), uint8(CardLimits.Status.Frozen));
+        vm.prank(issuer);
+        cards.setCard(CARD, 2, uint8(CardLimits.Status.Active));
+        _authorize(P1, 1e6);
+    }
+
+    function test_replacementCardKeepsWhoFroze() public {
+        vm.prank(alice);
+        cards.setOwnStatus(CARD, 1);
+        vm.prank(issuer);
+        cards.replaceCard(CARD, bytes32("card-2"), uint40(block.timestamp + 365 days));
+        vm.prank(issuer);
+        cards.setCard(bytes32("card-2"), 2, uint8(CardLimits.Status.Active));
+        assertEq(uint8(cards.cardOf(bytes32("card-2")).status), uint8(CardLimits.Status.Frozen));
+        vm.prank(alice);
+        cards.setOwnStatus(bytes32("card-2"), 2);
+        assertEq(uint8(cards.cardOf(bytes32("card-2")).status), uint8(CardLimits.Status.Active));
+    }
+
     function test_closedCard_refused() public {
         usd.mint(alice, 1000e6);
         vm.prank(alice);

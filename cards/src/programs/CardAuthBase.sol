@@ -27,6 +27,8 @@ abstract contract CardAuthBase is ICardAuthState {
     uint8 public constant PARTIAL = 1;
     uint8 public constant STAND_IN = 2;
     uint64 public constant SETTINGS_DELAY = 2 days;
+    /// @notice How long after its delay a proposed setting may still apply; past it the proposal lapses.
+    uint64 public constant SETTINGS_WINDOW = 7 days;
     /// @notice Most order entries an owner may list.
     uint256 public constant MAX_LEGS = 4;
 
@@ -117,6 +119,7 @@ abstract contract CardAuthBase is ICardAuthState {
     error InvalidOrder();
     error NotCardOwner();
     error NotCompanion();
+    error NoMerchant();
     error NotIssuer();
     error OperatorCapExceeded();
     error PurchaseExists();
@@ -130,12 +133,14 @@ abstract contract CardAuthBase is ICardAuthState {
     }
 
     /// @dev Whether the issuer's setting applies now: at once when `immediate` or before any owner granted terms,
-    ///      else on the same call SETTINGS_DELAY after the first, which records it and returns false.
+    ///      else on the same call between SETTINGS_DELAY and SETTINGS_WINDOW after it, after the first records it and
+    ///      returns false. A call after the window records it afresh.
     function _settle(bool immediate) internal returns (bool) {
         if (immediate || _state.grantedOwners == 0) return true;
         bytes32 id = keccak256(msg.data);
         uint64 eta = pendingSetting[id];
-        if (eta == 0) {
+        // forge-lint: disable-next-line(block-timestamp)
+        if (eta == 0 || block.timestamp > eta + SETTINGS_WINDOW) {
             eta = uint64(block.timestamp) + SETTINGS_DELAY;
             pendingSetting[id] = eta;
             emit SettingProposed(id, msg.data, eta);

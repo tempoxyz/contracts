@@ -84,10 +84,16 @@ library CardLimits {
         uint8 kinds;
         /// @dev The card's number in the program, which purchases record instead of its id.
         uint32 index;
+        /// @dev Who holds the card frozen: the issuer 1, the owner 2. It is active only once neither does.
+        uint8 frozen;
         Limits limits;
         Limits ceiling;
         Window window;
     }
+
+    /// @dev Bits of Card.frozen.
+    uint8 internal constant ISSUER_FROZE = 1;
+    uint8 internal constant OWNER_FROZE = 2;
 
     event CardIssued(bytes32 indexed card, address indexed owner, uint40 expiry, Limits limits, uint8 kinds);
     event CardReplaced(bytes32 indexed oldCard, bytes32 indexed newCard, uint40 expiry);
@@ -143,6 +149,7 @@ library CardLimits {
         // forge-lint: disable-next-line(block-timestamp)
         if (expiry <= block.timestamp) revert InvalidCard();
         (c.owner, c.status, c.kinds, c.index, c.expiry) = (old.owner, old.status, old.kinds, index, expiry);
+        c.frozen = old.frozen;
         (c.limits, c.ceiling, c.window) = (old.limits, old.ceiling, old.window);
         old.status = Status.Closed;
         emit CardReplaced(oldCard, newCard, expiry);
@@ -277,11 +284,22 @@ library CardLimits {
         epoch = uint8(g.epoch);
     }
 
-    /// @notice giveBack for spend counted on local day `day` (its month follows from it).
-    function giveBackOn(Grant storage g, Usage storage u, Window storage w, uint32 epoch, uint32 day, uint256 amount)
-        external
-    {
-        _giveBack(g, u, w, epoch, day, _month(day), amount);
+    /// @notice giveBack for spend counted on local day `day` (its month follows from it), and to the merchant
+    ///         mandate `m` the purchase counted toward, when it counted in that month.
+    function giveBackOn(
+        Grant storage g,
+        Usage storage u,
+        Window storage w,
+        Mandate storage m,
+        uint32 epoch,
+        uint32 day,
+        uint256 amount
+    ) external {
+        uint32 month = _month(day);
+        _giveBack(g, u, w, epoch, day, month, amount);
+        // Bounded by the 96-bit count it came from.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (m.month == month) m.spent = uint96(_less(m.spent, amount));
     }
 
     /// @notice Sets a card's spending cap (`what` 0, in units worth `scale` per base unit), expiry (1) or status (2).
@@ -301,18 +319,26 @@ library CardLimits {
             // forge-lint: disable-end(unsafe-typecast)
         } else {
             if (was == Status.Closed || value == 0 || value > uint8(Status.Closed)) revert CardNotActive();
-            c.status = Status(value);
-            emit CardStatusSet(card, Status(value));
+            // Active lifts only the issuer's freeze; a card the owner froze stays frozen.
+            uint8 frozen = value == uint8(Status.Frozen) ? c.frozen | ISSUER_FROZE : c.frozen & ~ISSUER_FROZE;
+            _setStatus(c, card, value == uint8(Status.Closed), frozen);
         }
     }
 
-    /// @notice The owner freezes (`how` 1, from active), unfreezes (2, from frozen) or closes (3) a card.
+    /// @notice The owner freezes (`how` 1), lifts its own freeze (2) or closes (3) a card. Lifting leaves an issuer's
+    ///         freeze in place.
     function setOwnStatus(Card storage c, bytes32 card, uint8 how) external {
         Status was = c.status;
-        bool ok = how == 1 ? was == Status.Active : how == 2 ? was == Status.Frozen : how == 3 && was != Status.Closed;
+        uint8 frozen = c.frozen;
+        bool owned = frozen & OWNER_FROZE != 0;
+        bool ok = was != Status.Closed && (how == 1 ? !owned : how == 2 ? owned : how == 3);
         if (!ok) revert CardNotActive();
-        Status to = how == 1 ? Status.Frozen : how == 2 ? Status.Active : Status.Closed;
-        c.status = to;
+        _setStatus(c, card, how == 3, how == 1 ? frozen | OWNER_FROZE : frozen & ~OWNER_FROZE);
+    }
+
+    function _setStatus(Card storage c, bytes32 card, bool closes, uint8 frozen) private {
+        Status to = closes ? Status.Closed : frozen != 0 ? Status.Frozen : Status.Active;
+        (c.status, c.frozen) = (to, frozen);
         emit CardStatusSet(card, to);
     }
 
@@ -460,22 +486,21 @@ library CardLimits {
         _useMandate(m, utcOffset, amount, true);
     }
 
-    /// @dev Without enforce (a tip or late charge the network already took) it counts, up to the limit, without
-    ///      refusing.
+    /// @dev Without enforce (a tip or late charge the network already took) it counts in full without refusing, so
+    ///      giving it back later returns exactly what was counted. A mandate that has counted once keeps counting
+    ///      after its limit is lifted, so a limit set again starts from what is still spent.
     function _useMandate(Mandate storage m, int32 utcOffset, uint256 amount, bool enforce) private {
         if (enforce && m.revoked) revert MerchantRevoked();
         uint96 limit = m.monthlyLimit;
-        if (limit == 0) return;
+        uint32 last = m.month;
+        if (limit == 0 && last == 0) return;
         (, uint32 month) = calendar(utcOffset);
-        uint256 spent = (m.month == month ? m.spent : 0) + amount;
-        if (spent > limit) {
-            if (enforce) revert MerchantLimitExceeded();
-            spent = limit;
-        }
+        uint256 spent = (last == month ? m.spent : 0) + amount;
+        if (enforce && limit != 0 && spent > limit) revert MerchantLimitExceeded();
         m.month = month;
-        // Bounded by the 96-bit limit just checked.
+        // Saturates at the field's bound, far past any limit it holds.
         // forge-lint: disable-next-line(unsafe-typecast)
-        m.spent = uint96(spent);
+        m.spent = spent > type(uint96).max ? type(uint96).max : uint96(spent);
     }
 
     /// @notice Carries an owner's usage counted on another instance of the program into this one. Counts only rise:

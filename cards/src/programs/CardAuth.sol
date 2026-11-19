@@ -180,8 +180,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (approved == 0 || (approved < amount && flags & PARTIAL == 0)) revert InsufficientAvailable();
         // A stand-in already passed the limits offline: it counts against them without being refused.
         (uint32 day, uint8 epoch) = _spend(c, owner, merchant, approved, approved, !standIn);
-        // Only purchases under a mandate limit keep their merchant, so the rest add no storage.
-        if (merchant != address(0) && mandates[owner][merchant].monthlyLimit != 0) mandateMerchant[ref] = merchant;
+        _track(ref, owner, merchant);
         _purchases[ref] = _pack(
             Purchase(
                 c.index,
@@ -226,7 +225,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
             legs = CardLegs.grow(order, sourceKind, ref, owner, c.kinds, want, legs, p.expiresAt);
         } else {
             CardLegs.shrink(order, sourceKind, ref, owner, legs, amount - p.captured, standIn, p.expiresAt);
-            _giveBack(c, owner, p, p.amount - amount);
+            _giveBack(c, owner, ref, p, p.amount - amount);
         }
         _moveHeld(int256(uint256(amount)) - int256(p.amount), standIn);
         p.amount = amount;
@@ -270,7 +269,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (amount > open) _spend(c, owner, mandateMerchant[ref], 0, amount - open, false);
         uint256 left = p.amount > p.captured ? p.amount - p.captured : 0;
         if (isFinal) {
-            _giveBack(c, owner, p, left);
+            _giveBack(c, owner, ref, p, left);
             (p.amount, p.flags, left) = (p.captured, p.flags & ~OPEN, 0);
         }
         _moveHeld(int256(left) - int256(open), standIn);
@@ -291,7 +290,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         (CardLimits.Card storage c, address owner) = _card(p);
         CardLegs.release(_funding[owner][p.version], ref, owner, p.flags >> 3);
         uint256 released = p.amount > p.captured ? p.amount - p.captured : 0;
-        _giveBack(c, owner, p, released);
+        _giveBack(c, owner, ref, p, released);
         _moveHeld(-int256(released), p.flags & STANDIN != 0);
         (p.amount, p.flags) = (p.captured, p.flags & ~OPEN);
         _purchases[ref] = _pack(p);
@@ -312,6 +311,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
             c = _cards[card];
             owner = _admit(c);
             (uint32 day, uint8 epoch) = _spend(c, owner, merchant, amount, amount, true);
+            _track(ref, owner, merchant);
             p = Purchase(c.index, 0, 0, 0, 0, day, epoch, fundingVersion[owner], _state.era, CHARGED);
         } else {
             p = _unpack(word);
@@ -357,7 +357,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         );
         p.refunded += amount;
         _purchases[ref] = _pack(p);
-        _giveBack(c, owner, p, amount);
+        _giveBack(c, owner, ref, p, amount);
         _ledger.net -= int128(int256(pay));
         emit PurchaseRefunded(ref, amount, pay, _step());
     }
@@ -378,7 +378,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         }
         (CardLimits.Card storage c, address owner) = _card(p);
         _purchases[ref] = _pack(p);
-        _giveBack(c, owner, p, amount);
+        _giveBack(c, owner, ref, p, amount);
         emit CreditedBack(ref, amount, CardLegs.creditBack(eras, _state, _ledger, p.era, settles), _step());
     }
 
@@ -504,13 +504,22 @@ contract CardAuth is CardAuthBase, ICardAuth {
         owner = c.owner;
     }
 
-    function _giveBack(CardLimits.Card storage c, address owner, Purchase memory p, uint256 amount) private {
+    function _giveBack(CardLimits.Card storage c, address owner, bytes32 ref, Purchase memory p, uint256 amount)
+        private
+    {
         if (amount == 0) return;
         uint256 base = amount.mulDiv(ONE, eras[p.era].scale);
         CardLimits.Grant storage g = grants[owner];
         // Spend counted under an earlier grant gives back only to the card.
         uint32 epoch = uint8(g.epoch) == p.epoch ? g.epoch : 0;
-        CardLimits.giveBackOn(g, usageOf[owner], c.window, epoch, p.day, base);
+        CardLimits.giveBackOn(g, usageOf[owner], c.window, mandates[owner][mandateMerchant[ref]], epoch, p.day, base);
+    }
+
+    /// @dev Every new purchase names its merchant. Only purchases its mandate counted keep it, so the rest add no
+    ///      storage; their later increments, tips, late charges and give-backs then count toward that mandate too.
+    function _track(bytes32 ref, address owner, address merchant) private {
+        if (merchant == address(0)) revert NoMerchant();
+        if (mandates[owner][merchant].month != 0) mandateMerchant[ref] = merchant;
     }
 
     /// @dev Returns `data`, already ABI-encoded, as this call's return data.

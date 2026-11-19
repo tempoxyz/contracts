@@ -66,6 +66,38 @@ contract CardAuthSettingsTest is AuthEnv {
         assertEq(cards.pendingSetting(id), 0);
     }
 
+    function test_settings_proposalLapsesAfterItsWindow() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        bytes memory data = abi.encodeCall(cards.setSource, (source, true));
+        bytes32 id = keccak256(data);
+        vm.prank(issuer);
+        cards.setSource(source, true);
+        uint64 eta = cards.pendingSetting(id);
+        // Past its window the proposal lapses: calling again records it afresh rather than applying it.
+        vm.warp(eta + cards.SETTINGS_WINDOW() + 1);
+        vm.prank(issuer);
+        cards.setSource(source, true);
+        assertEq(cards.sourceKind(source), 0);
+        uint64 renewed = cards.pendingSetting(id);
+        assertEq(renewed, uint64(vm.getBlockTimestamp()) + cards.SETTINGS_DELAY());
+        vm.warp(renewed);
+        vm.prank(issuer);
+        cards.setSource(source, true);
+        assertEq(cards.sourceKind(source), 4);
+    }
+
+    function test_settings_proposalStillAppliesAtTheEndOfItsWindow() public {
+        _issue(alice, _limits(500e6, 1000e6, 5000e6));
+        vm.prank(issuer);
+        cards.setSource(source, true);
+        vm.warp(
+            cards.pendingSetting(keccak256(abi.encodeCall(cards.setSource, (source, true)))) + cards.SETTINGS_WINDOW()
+        );
+        vm.prank(issuer);
+        cards.setSource(source, true);
+        assertEq(cards.sourceKind(source), 4);
+    }
+
     function test_settings_restrictiveChangesApplyAtOnce() public {
         _setting(abi.encodeCall(cards.setCompanion, (companion, true)));
         _issue(alice, _limits(500e6, 1000e6, 5000e6));

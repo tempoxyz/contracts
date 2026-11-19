@@ -28,6 +28,7 @@ contract CompCardAuth is ICardAuth {
     uint8 public constant ROLE_SETTLE = 2;
     uint8 public constant ROLE_TREASURY = 4;
     uint64 public constant SETTINGS_DELAY = 2 days;
+    uint64 public constant SETTINGS_WINDOW = 7 days;
     address public immutable ISSUER;
     address public immutable SETTLEMENT_ACCOUNT;
     address public settlementToken;
