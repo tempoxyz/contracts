@@ -57,6 +57,9 @@ contract IssuerDesk is ISettlementTokenGuard {
     }
 
     mapping(bytes32 ref => Dispute) internal _disputes;
+    /// @notice What a cardholder still owes the settlement account, in a token, from merchant wins the desk could not
+    ///         take back because the cardholder revoked the desk or had neither free funds nor debt room.
+    mapping(address owner => mapping(address token => uint256)) public receivables;
     uint256 public openDisputes;
     uint64 internal _charges;
 
@@ -82,6 +85,9 @@ contract IssuerDesk is ISettlementTokenGuard {
     /// @notice A refund while the dispute ran settled this much provisional credit instead of paying it again.
     event DisputeSettled(bytes32 indexed ref, uint128 settled);
     event ReserveCollectedFor(bytes32 indexed ref, uint128 amount);
+    /// @notice A merchant win left this much owed by the cardholder, for the desk to collect later.
+    event ReceivableRecorded(bytes32 indexed ref, address indexed owner, address token, uint256 amount);
+    event ReceivableCollected(address indexed owner, address token, uint256 amount);
 
     error DisputeExists();
     error DisputeTooLarge();
@@ -220,6 +226,19 @@ contract IssuerDesk is ISettlementTokenGuard {
         emit ReserveCollectedFor(ref, amount);
     }
 
+    /// @notice Collects up to amount of what owner owes the settlement account in token: from its free funds, and as
+    ///         its debt within the debt room it gave. Issuer or settle operators.
+    function collectReceivable(address owner, address token, uint128 amount) external nonReentrant {
+        _operator(0);
+        uint256 owed = receivables[owner][token];
+        // Below amount, so it fits.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (amount > owed) amount = uint128(owed);
+        receivables[owner][token] = owed - amount;
+        CORE.charge(owner, token, _chargeId(), amount, PROGRAM.SETTLEMENT_ACCOUNT(), false);
+        emit ReceivableCollected(owner, token, amount);
+    }
+
     function disputeOf(bytes32 ref) external view returns (Dispute memory) {
         return _disputes[ref];
     }
@@ -345,8 +364,9 @@ contract IssuerDesk is ISettlementTokenGuard {
     }
 
     /// @dev Takes units of ref back from owner in today's token: its free cash, then its free savings shares redeemed
-    ///      to the settlement account, never a credit line; the rest becomes its debt to the settlement account.
-    ///      Returns that debt.
+    ///      to the settlement account, never a credit line; the rest becomes its debt to the settlement account. What
+    ///      the core refuses (the owner revoked the desk, or has no debt room) stays owed as a receivable, so the
+    ///      dispute still closes. Returns what remains owed either way.
     // forge-lint: disable-next-item(unsafe-typecast)
     function _recover(bytes32 ref, address owner, uint128 units) private returns (uint128 debt) {
         (uint256 amount, address token) = _today(ref, units);
@@ -356,7 +376,19 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint256 rest = amount - cash;
         if (rest != 0 && address(SAVINGS) != address(0) && SAVINGS.asset() == token) rest -= _takeShares(owner, rest);
         debt = uint128(rest);
-        if (cash + rest != 0) CORE.charge(owner, token, _chargeId(), uint128(cash + rest), account, false);
+        if (cash + rest == 0) return 0;
+        try CORE.charge(owner, token, _chargeId(), uint128(cash + rest), account, false) { }
+        catch {
+            uint256 owed = cash + rest;
+            if (cash != 0) {
+                try CORE.charge(owner, token, _chargeId(), uint128(cash), account, false) {
+                    owed = rest;
+                } catch { }
+            }
+            receivables[owner][token] += owed;
+            debt = uint128(owed);
+            emit ReceivableRecorded(ref, owner, token, owed);
+        }
     }
 
     /// @dev Takes up to need's worth of owner's free savings shares and redeems them to the settlement account.
@@ -372,7 +404,11 @@ contract IssuerDesk is ISettlementTokenGuard {
             if (wanted < shares) (shares, value) = (wanted, vault.previewRedeem(wanted));
         }
         if (shares == 0 || value == 0) return 0;
-        CORE.charge(owner, share, _chargeId(), uint128(shares), address(this), false);
+        // The owner may have revoked the desk for its shares; then its cash or a receivable covers the rest.
+        try CORE.charge(owner, share, _chargeId(), uint128(shares), address(this), false) { }
+        catch {
+            return 0;
+        }
         SafeTransferLib.safeApprove(share, address(vault), shares);
         value = vault.redeem(shares, PROGRAM.SETTLEMENT_ACCOUNT(), value);
         taken = value < need ? value : need;
