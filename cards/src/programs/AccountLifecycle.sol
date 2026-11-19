@@ -11,20 +11,22 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 /// @notice An account's standing across every card program on one settlement token: active, dormant, closed or an
 ///         estate. Programs read it at authorization and report card activity to it. It pays out what an account
 ///         can release (available cash, plus the available shares of the vaults the caller names, redeemed): the
-///         account's debt first, then the payee. The owner closes its own account; the registrar records estates and
-///         remits unclaimed property, each only after a notice period the owner can end by acting; the executor
-///         settles an estate to itself.
+///         account's debt first, then the payee. The owner closes its own account; the registrar records estates, only
+///         for the executor the owner named, and remits unclaimed property, each only after a notice period the owner
+///         can end by acting; the executor settles an estate to itself, and pays out what reaches it later.
 /// @dev An account enrolls with its own key and approves this contract to move its cash and shares. Payouts take
 ///      only what the reservation core reports available, so holds and liens stay where they are. Debt is repaid
 ///      the way the core repays it from any credit: the cash first lands on the account itself.
 ///
-///      Owner activity the lifecycle sees, which ends a pending notice: the owner's own calls here (enroll,
+///      Owner activity the lifecycle sees, which ends a pending notice: the owner's own calls here (enroll, checkIn,
 ///      reactivate, nameExecutor, and closeAccount for a dormant account, signed by the account or a key AccountKeys
-///      lists for it). Card
-///      activity reported by counted programs (noteActivity) keeps an account from turning dormant and voids an
-///      escheat notice given before it; it does not end an estate notice, since programs report issuer-driven events
-///      such as merchant authorizations. Other transactions the account sends are not seen: Tempo's protocol nonce
-///      cannot be read from a contract.
+///      lists for it). Card activity reported by counted programs (noteActivity) keeps an account from turning dormant
+///      and voids an escheat notice given before it; it does not end an estate notice, since programs report
+///      issuer-driven events such as merchant authorizations. Other transactions the account sends are not seen:
+///      Tempo's protocol nonce cannot be read from a contract, so a wallet that is used without its card calls checkIn.
+///
+///      Dormancy alone never makes an estate: the registrar names only the executor the owner named, whatever the
+///      account's status. A dormant account without one waits for escheat.
 contract AccountLifecycle {
     using SafeTransferLib for address;
 
@@ -38,9 +40,10 @@ contract AccountLifecycle {
 
     /// @param status The account's standing.
     /// @param lastActive When the account last showed activity: enrollment, an owner call or counted card activity.
-    /// @param executor The estate's executor, recorded when the registrar starts the estate notice.
+    /// @param executor The estate's executor, recorded when the registrar starts the estate notice and kept once it
+    ///        settles.
     /// @param noticeAt When the pending estate or escheat notice started; zero for none.
-    /// @param namedExecutor The executor the owner accepts for its estate while the account is active.
+    /// @param namedExecutor The executor the owner accepts for its estate.
     /// @param authority Where an escheat pays, fixed when the escheat notice started.
     struct Account {
         Status status;
@@ -146,12 +149,13 @@ contract AccountLifecycle {
         emit EscheatAuthoritySet(authority);
     }
 
-    /// @notice Records card activity on an account and returns its status. Only a registered program counts; any
-    ///         other caller reads the status unchanged. Activity after an escheat notice voids that notice.
-    function noteActivity(address account) external returns (Status) {
+    /// @notice Records card activity on an enrolled account and returns its status. Only a registered program counts;
+    ///         any other caller reads the status unchanged. Activity after an escheat notice voids that notice.
+    function noteActivity(address account) external returns (Status status) {
         Account storage a = _accounts[account];
-        if (programs[msg.sender]) a.lastActive = _now();
-        return a.status;
+        status = a.status;
+        // An account that never enrolled has no dormancy to measure, so its activity is not stored.
+        if (status != Status.None && programs[msg.sender]) a.lastActive = _now();
     }
 
     /// @notice Marks an active account dormant once it has been idle for the dormancy period, which starts an escheat
@@ -177,6 +181,15 @@ contract AccountLifecycle {
         _setStatus(account, a, Status.Active);
     }
 
+    /// @notice The owner shows it still holds the account, for a wallet used without its card: it counts as activity,
+    ///         keeps an active account from turning dormant, brings back a dormant one and cancels an estate still in
+    ///         its notice period.
+    function checkIn(address account) external {
+        _requireOwner(account);
+        Account storage a = _accounts[account];
+        if (_ownerActs(account, a) != Status.Active) _setStatus(account, a, Status.Active);
+    }
+
     /// @notice The owner names the executor it accepts for its estate, or zero for none. Like any owner call it counts
     ///         as activity: it brings back a dormant account and cancels an estate still in its notice period.
     // Zero is how the owner withdraws its consent.
@@ -193,12 +206,14 @@ contract AccountLifecycle {
 
     /// @notice The owner closes its account and pays out what it can release. Later calls pay out what expiries,
     ///         refunds and lien releases freed since. An estate does not close this way: during its notice period the
-    ///         owner first cancels it with reactivate, and after it only the executor settles it.
+    ///         owner first cancels it with reactivate, and after it only the executor settles it and pays out later.
     function closeAccount(address account, address to, address[] calldata vaults) external returns (uint256 paid) {
         _requireOwner(account);
         Account storage a = _accounts[account];
         Status status = a.status;
         if (status == Status.Estate) revert AccountState(status);
+        // A settled estate keeps its executor, which alone pays out what reaches the account later.
+        if (status == Status.Closed && a.executor != address(0)) revert NotExecutor();
         if (status != Status.Closed) {
             _clearNotice(account, a);
             _setStatus(account, a, Status.Closed);
@@ -206,18 +221,16 @@ contract AccountLifecycle {
         return _payOut(account, to, vaults);
     }
 
-    /// @notice The registrar records the account holder's death, naming the executor: the executor the owner named
-    ///         for an active account, or anyone for a dormant one. New holds stop at once; the executor settles the
-    ///         estate after the notice period, unless the owner acts first.
+    /// @notice The registrar records the account holder's death, naming the executor the owner named, for an active
+    ///         or dormant account. New holds stop at once; the executor settles the estate after the notice period,
+    ///         unless the owner acts first.
     function setEstate(address account, address executor) external onlyRegistrar {
         if (executor == address(0)) revert ZeroAddress();
         if (executor == account) revert InvalidPayee();
         Account storage a = _accounts[account];
-        if (a.status == Status.Active) {
-            if (executor != a.namedExecutor) revert NotNamedExecutor();
-        } else if (a.status != Status.Dormant) {
-            revert AccountState(a.status);
-        }
+        if (a.status != Status.Active && a.status != Status.Dormant) revert AccountState(a.status);
+        // The registrar's word alone moves no money: only the owner's own choice of executor may receive it.
+        if (executor != a.namedExecutor) revert NotNamedExecutor();
         uint64 at = _now();
         a.executor = executor;
         a.noticeAt = at;
@@ -227,11 +240,15 @@ contract AccountLifecycle {
     }
 
     /// @notice The executor settles the estate to itself once the notice period has passed and no hold is open: the
-    ///         account's debts, then the executor. It closes.
+    ///         account's debts, then the executor. It closes. Later calls pay out what refunds and releases freed since.
     function settleEstate(address account, address[] calldata vaults) external returns (uint256 paid) {
         Account storage a = _accounts[account];
-        if (a.status != Status.Estate) revert AccountState(a.status);
+        Status status = a.status;
         address executor = a.executor;
+        // A closed account with an executor is a settled estate; one the owner closed has none.
+        if (status != Status.Estate && (status != Status.Closed || executor == address(0))) {
+            revert AccountState(status);
+        }
         if (msg.sender != executor) revert NotExecutor();
         if (_holding(account, TOKEN)) revert HoldsOpen();
         // The executor names the vaults; each read only checks the estate has no open hold.
@@ -245,7 +262,7 @@ contract AccountLifecycle {
         if (block.timestamp < uint256(a.noticeAt) + ESTATE_NOTICE) revert TooEarly();
         a.noticeAt = 0;
         paid = _payOut(account, executor, vaults);
-        _setStatus(account, a, Status.Closed);
+        if (status == Status.Estate) _setStatus(account, a, Status.Closed);
     }
 
     /// @notice The registrar gives a dormant account an escheat notice naming the authority, replacing any earlier

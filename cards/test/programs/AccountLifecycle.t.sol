@@ -267,17 +267,24 @@ contract AccountLifecycleTest is AuthEnv {
         assertEq(usd.balanceOf(executor), 90e6);
         assertEq(uint8(life.statusOf(alice)), uint8(AccountLifecycle.Status.Closed));
         assertEq(life.accountOf(alice).executor, executor);
+        // Settling again pays out only what arrived since, here nothing, and leaves it closed.
         vm.prank(executor);
-        vm.expectRevert(abi.encodeWithSelector(AccountLifecycle.AccountState.selector, AccountLifecycle.Status.Closed));
-        life.settleEstate(alice, noVaults);
+        assertEq(life.settleEstate(alice, noVaults), 0);
+        assertEq(uint8(life.statusOf(alice)), uint8(AccountLifecycle.Status.Closed));
     }
 
-    function test_estate_dormantAccount_registrarNamesExecutor_ownerCancelsDuringNotice() public {
+    function test_estate_dormantAccount_onlyTheNamedExecutor_ownerCancelsDuringNotice() public {
         usd.mint(alice, 100e6);
+        vm.prank(alice);
+        life.nameExecutor(alice, executor);
         vm.warp(vm.getBlockTimestamp() + DORMANCY);
         life.markDormant(alice);
+        // Dormancy does not let the registrar pick the executor.
         vm.prank(registrar);
+        vm.expectRevert(AccountLifecycle.NotNamedExecutor.selector);
         life.setEstate(alice, stranger);
+        vm.prank(registrar);
+        life.setEstate(alice, executor);
 
         // Card activity is not the owner's own act, so it leaves the estate pending.
         vm.prank(address(cards));
@@ -295,7 +302,7 @@ contract AccountLifecycleTest is AuthEnv {
         assertEq(life.accountOf(alice).noticeAt, 0);
 
         vm.warp(vm.getBlockTimestamp() + life.ESTATE_NOTICE());
-        vm.prank(stranger);
+        vm.prank(executor);
         vm.expectRevert(abi.encodeWithSelector(AccountLifecycle.AccountState.selector, AccountLifecycle.Status.Active));
         life.settleEstate(alice, noVaults);
         assertEq(usd.balanceOf(alice), 100e6);
