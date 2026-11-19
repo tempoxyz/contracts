@@ -147,8 +147,11 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   always above the conversion's slippage floor. Converted legs never create debt.
 - **Settlement log.** Every step emits one event with the purchase reference and a sequence number;
   captures, charges and refunds carry what the sources covered, and a won dispute counts as a
-  refund of its chargeback (`creditBack`), leaving out what merchant reserves paid the issuer. The issuer's
-  `acknowledgeSettlement(throughSeq)` moves a settled-through cursor, so what is owed rebuilds from events.
+  refund of its chargeback (`creditBack`, registered companions only, which paid the cardholder
+  themselves), leaving out what merchant reserves paid the issuer. A purchase's refunds and what the issuer
+  absorbed only rise and together never pass what it captured. `acknowledgeSettlement(throughSeq)` moves a
+  settled-through cursor, so what is owed rebuilds from events: the issuer acknowledges until an exposure guard
+  is set, then only the guard, and the issuer treasury forwards it only from the sponsor that is owed it.
   `exposure()` reports what open purchases hold, the stand-in part, and the unacknowledged net, which the
   issuer treasury keeps funds behind. With the treasury registered as its exposure guard
   (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase or charge
