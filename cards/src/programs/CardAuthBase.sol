@@ -10,7 +10,8 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 /// @title CardAuthBase
 /// @notice The storage, constants, events and errors CardAuth and CardAuthAdmin share, and the helpers both use.
 ///         CardAuth runs CardAuthAdmin's code by delegatecall over its own storage, so both must lay it out alike:
-///         declare state only here.
+///         declare state only here. No immutables here either: one CardAuthAdmin serves every program, so its code
+///         holds nothing of any one program's.
 // forge-lint: disable-start(unsafe-typecast)
 abstract contract CardAuthBase is ICardAuthState {
     using FixedPointMathLib for uint256;
@@ -56,8 +57,6 @@ abstract contract CardAuthBase is ICardAuthState {
         uint120 cap;
         uint120 used;
     }
-
-    address public immutable SETTLEMENT_ACCOUNT;
 
     address internal _issuer;
     address public pendingIssuer;
@@ -125,12 +124,6 @@ abstract contract CardAuthBase is ICardAuthState {
     error PurchaseNotOpen();
     error SettingPending(uint64 eta);
     error Unauthorized();
-
-    // CardAuth checks it is not zero before it deploys CardAuthAdmin with the same account.
-    // forge-lint: disable-next-line(missing-zero-check)
-    constructor(address settlementAccount) {
-        SETTLEMENT_ACCOUNT = settlementAccount;
-    }
 
     function _onlyIssuer() internal view {
         if (msg.sender != _issuer) revert NotIssuer();

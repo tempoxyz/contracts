@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { CardAuth } from "../../../src/programs/CardAuth.sol";
+import { CardAuthAdmin } from "../../../src/programs/CardAuthAdmin.sol";
 import { CardLegs } from "../../../src/programs/CardLegs.sol";
 import { CardLimits } from "../../../src/programs/CardLimits.sol";
 import { CashSource } from "../../../src/programs/CashSource.sol";
@@ -24,6 +25,8 @@ interface IMockToken {
 ///         `CashSource`, a `SavingsSource` and a credit-like `StubSource` approved as funding sources.
 abstract contract AuthEnv is CoreEnv {
     MockReservationCore internal core = MockReservationCore(RESERVATION_CORE_ADDRESS);
+    /// @dev The one CardAuthAdmin every CardAuth here runs.
+    CardAuthAdmin internal admin;
     CardAuth internal cards;
     CashSource internal cash;
     SavingsSource internal savings;
@@ -47,7 +50,8 @@ abstract contract AuthEnv is CoreEnv {
         vm.allowCheatcodes(RESERVATION_CORE_ADDRESS);
         vm.label(RESERVATION_CORE_ADDRESS, "ReservationCore");
 
-        cards = new CardAuth(issuer, settlement, address(usd));
+        admin = new CardAuthAdmin();
+        cards = new CardAuth(issuer, settlement, address(usd), address(admin));
         cash = new CashSource(cards);
         savings = new SavingsSource(cards, IEarnVault(address(earnVault)), funder);
         line = new StubSource(cards, address(usd));

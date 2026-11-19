@@ -39,6 +39,8 @@ agnostic design and [docs/cards/bridge/](../docs/cards/bridge/README.md) and
   `test/programs/harness/MockReservationCore.sol`, a model of the precompile that changes with the node.
 - Programs are immutable: no upgrade, migration, setter or pause of their own (the provider's pause, read
   live, is the only one). A change of provider or settings is a new program.
+- Programs never create contracts: Zones refuse CREATE and CREATE2 from contracts. Deploy companions (such as
+  `CardAuthAdmin`, one per chain) separately and pass their address; `test/programs/ContractSizes.t.sol` checks it.
 - Bridge's "TS" handler, the `CardFactory` and a program's `BridgeProvider` deploy at deterministic
   addresses that follow their build
   ([docs/cards/bridge/deploy.md](../docs/cards/bridge/deploy.md)): a change to their source, this

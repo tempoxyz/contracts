@@ -23,18 +23,31 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 contract CardAuth is CardAuthBase, ICardAuth {
     using FixedPointMathLib for uint256;
 
-    /// @notice The settings and cardholder code this contract runs by delegatecall; deployed with it, never replaced.
+    /// @notice The settings and cardholder code this contract runs by delegatecall: a CardAuthAdmin deployed on its
+    ///         own and shared by every program on the chain, never replaced.
     address public immutable ADMIN;
+    /// @notice Where captures and payments for the program land.
+    address public immutable SETTLEMENT_ACCOUNT;
+
+    /// @notice `admin` does not hold exactly CardAuthAdmin's code.
+    error InvalidAdmin();
 
     /// @param issuer The program's issuer.
     /// @param settlementAccount Where the sources pay what they take.
     /// @param settlementToken The token the program settles in first, which sets its base units.
-    constructor(address issuer, address settlementAccount, address settlementToken) CardAuthBase(settlementAccount) {
+    /// @param admin A deployed CardAuthAdmin. Zones refuse contract creation from contracts, so the program never
+    ///        deploys it itself.
+    // The code hash check below refuses address(0), which holds no code.
+    // forge-lint: disable-next-item(missing-zero-check)
+    constructor(address issuer, address settlementAccount, address settlementToken, address admin) {
         if (issuer == address(0) || settlementAccount == address(0) || settlementToken == address(0)) {
             revert InvalidAmount();
         }
+        // The admin runs over this contract's storage, so it must be CardAuthAdmin's code and nothing else.
+        if (admin.codehash != keccak256(type(CardAuthAdmin).runtimeCode)) revert InvalidAdmin();
         _issuer = issuer;
-        ADMIN = address(new CardAuthAdmin(settlementAccount));
+        ADMIN = admin;
+        SETTLEMENT_ACCOUNT = settlementAccount;
         eras[0] = CardLegs.Era(settlementToken, uint96(ONE));
     }
 

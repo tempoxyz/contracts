@@ -11,8 +11,6 @@ interface ICardAuthState {
     function ROLE_TREASURY() external view returns (uint8);
     /// @notice How long issuer settings wait before they apply once any owner granted terms.
     function SETTINGS_DELAY() external view returns (uint64);
-    /// @notice Where captures and payments for the program land.
-    function SETTLEMENT_ACCOUNT() external view returns (address);
     /// @notice The shared conversion the program and its sources price tokens with.
     function conversion() external view returns (address);
     /// @notice Whether `account` is one of the program's registered companion contracts.
@@ -40,6 +38,8 @@ interface ICardAuth is ICardAuthState {
         bool charged;
     }
 
+    /// @notice Where captures and payments for the program land.
+    function SETTLEMENT_ACCOUNT() external view returns (address);
     /// @notice Owners that ever granted the program terms.
     function grantedOwners() external view returns (uint64);
     /// @notice The program's issuer (its rotatable root).

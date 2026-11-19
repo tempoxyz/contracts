@@ -7,14 +7,13 @@ import { CardLimits } from "./CardLimits.sol";
 import { ISource } from "./interfaces/ISource.sol";
 
 /// @title CardAuthAdmin
-/// @notice CardAuth's settings, card management and cardholder calls. CardAuth deploys it once and runs it by
-///         delegatecall over CardAuth's own storage, so the code is CardAuth's and nothing here changes after
-///         deployment. Called directly it only touches its own storage, which nothing reads.
+/// @notice CardAuth's settings, card management and cardholder calls. Deployed once, with no constructor arguments
+///         and no immutables, so its code is the same for every program; each CardAuth names it at deployment and runs
+///         it by delegatecall over its own storage, so nothing here changes after deployment. Called directly it only
+///         touches its own storage, which nothing reads.
 // Library calls are linked code, not outside contracts; sources it calls are ones the issuer approved.
 // forge-lint: disable-start(reentrancy-no-eth, calls-loop, unsafe-typecast)
 contract CardAuthAdmin is CardAuthBase {
-    constructor(address settlementAccount) CardAuthBase(settlementAccount) { }
-
     // Issuer.
 
     function issueCard(bytes32 card, address owner, uint40 expiry, CardLimits.Limits calldata limits, uint8 kinds)
