@@ -211,11 +211,24 @@ a vault, a pool pairing that vault's asset with one other stablecoin of equal de
 stablecoin), and a customer ID, all set or all zero. Its `spenderData` is
 `abi.encode(Send(to, token, amount, vault, ref))`, and `to` receives exactly `amount` of `token`:
 
-| `vault`         | `token`                     | Input         | How it pays                                                              |
-| --------------- | --------------------------- | ------------- | ------------------------------------------------------------------------ |
-| Zero            | The withdrawn token         | That token    | Transfers `amount` (a stablecoin or EarnShare)                           |
-| Any vault       | The vault asset             | Its EarnShare | `withdrawExact(amount, to, maxInput)`                                    |
-| Its bound vault | That vault's par stablecoin | Its EarnShare | `withdrawExact` to itself, then the pool at the oracle's exact par price |
+| `vault`         | `token`                     | Input         | How it pays                                                                  |
+| --------------- | --------------------------- | ------------- | ---------------------------------------------------------------------------- |
+| Zero            | The withdrawn token         | That token    | Transfers `amount` (a stablecoin or EarnShare)                               |
+| Any vault       | The vault asset             | Its EarnShare | An exact withdrawal of `amount` to `to` for at most `maxInput` (below)       |
+| Its bound vault | That vault's par stablecoin | Its EarnShare | An exact withdrawal to itself, then the pool at the oracle's exact par price |
+
+An exact withdrawal goes through the vault's callback when the vault reports it by ERC-165 detection:
+it must affirm ERC-165 itself, deny `0xffffffff` and affirm `IEarnVaultWithdrawCallback`, each probe
+capped at 30,000 gas and one return word. The spender then calls
+`withdrawExactWithCallback(amount, receiver, maxInput)`, and the vault calls `earnWithdrawCallback` back
+with its quote, which the spender pays by transfer, so no allowance slot is written. Only the vault
+being redeemed may call back, once, for at most `maxInput` (`NotVault`, `InsufficientInput`), and a
+vault that never calls back cannot settle (`NothingSpent`). That callback is the spender's one entry
+point outside its lock, and `spendFrom` holds the lock around it. The callback path burns at most the
+vault's own quote, so a burn above the quote but within `maxInput` reverts there with
+`ExceedsMaxEarnShares`; on that error alone the spender retries with an exact `maxInput` approval and
+`withdrawExact(amount, receiver, maxInput)`, which is how it redeems from any other vault. It clears
+that approval afterward.
 
 Conversion runs only from the bound vault's asset into its par stablecoin; any other vault, token
 or direction reverts with `ConversionNotAllowed`, so a vault the caller makes up cannot trade through
