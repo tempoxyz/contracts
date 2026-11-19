@@ -195,6 +195,8 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (amount == 0 || amount > MAX_AMOUNT || amount < p.captured || (standIn && amount > p.amount)) {
             revert InvalidAmount();
         }
+        // Tips captured past the authorized amount already count: the new amount adds only what is above them.
+        if (p.captured > p.amount) p.amount = p.captured;
         _role(ROLE_AUTHORIZE, amount > p.amount ? amount - p.amount : 0);
         (CardLimits.Card storage c, address owner) = _card(p);
         CardLegs.Funding[] storage order = _funding[owner][p.version];
@@ -222,16 +224,17 @@ contract CardAuth is CardAuthBase, ICardAuth {
 
     /// @notice Captures `amount` of an open purchase walking the owner's funding order: each source covers what it
     ///         holds and can still cover, then the first cash source charges the rest, free cash and then debt within
-    ///         the owner's terms; the issuer absorbs the rest. Past the owner's capture tolerance it reverts.
+    ///         the owner's terms; the issuer absorbs the rest. Its captures in all stay within the authorized amount
+    ///         plus the owner's capture tolerance on it, and what passes the hold counts against the operator's cap.
     ///         `isFinal` releases what is left.
     function capture(bytes32 ref, uint128 amount, bool isFinal) external {
-        _role(ROLE_AUTHORIZE, 0);
         Purchase memory p = _open(ref);
+        uint256 open = p.amount > p.captured ? p.amount - p.captured : 0;
+        _role(ROLE_AUTHORIZE, amount > open ? amount - open : 0);
         if (amount == 0 && !isFinal) revert InvalidAmount();
         (CardLimits.Card storage c, address owner) = _card(p);
         CardLegs.Funding[] storage order = _funding[owner][p.version];
         uint256 legs = p.flags >> 3;
-        uint256 open = p.amount - p.captured;
         bool standIn = p.flags & STANDIN != 0;
         uint256 covered;
         (covered, legs) = CardLegs.capture(
@@ -240,23 +243,22 @@ contract CardAuth is CardAuthBase, ICardAuth {
             ref,
             owner,
             legs,
-            [uint256(amount), open, p.amount, c.kinds, p.expiresAt],
+            [uint256(amount), open, p.amount, c.kinds, p.expiresAt, p.captured + open - p.amount],
             isFinal,
             standIn
         );
         p.flags = (p.flags & 7) | legs << 3;
         p.captured += amount;
         if (p.captured > MAX_AMOUNT) revert InvalidAmount();
-        if (p.captured > p.amount) {
-            // A tip within tolerance counts against the limits without being checked.
-            _spend(c, owner, address(0), 0, p.captured - p.amount, false);
-            p.amount = p.captured;
-        }
+        // A tip within tolerance counts against the limits without being checked. The authorized amount stays as it
+        // was, the bound for later captures.
+        if (amount > open) _spend(c, owner, address(0), 0, amount - open, false);
+        uint256 left = p.amount > p.captured ? p.amount - p.captured : 0;
         if (isFinal) {
-            _giveBack(c, owner, p, p.amount - p.captured);
-            (p.amount, p.flags) = (p.captured, p.flags & ~OPEN);
+            _giveBack(c, owner, p, left);
+            (p.amount, p.flags, left) = (p.captured, p.flags & ~OPEN, 0);
         }
-        _moveHeld(int256(p.amount - p.captured) - int256(open), standIn);
+        _moveHeld(int256(left) - int256(open), standIn);
         // What the issuer absorbed is captured toward the limits but never refunded: refunds stop at what was covered.
         p.refunded += amount - covered;
         _purchases[ref] = _pack(p);
@@ -273,7 +275,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (block.timestamp < p.expiresAt) _role(ROLE_AUTHORIZE, 0);
         (CardLimits.Card storage c, address owner) = _card(p);
         CardLegs.release(_funding[owner][p.version], ref, owner, p.flags >> 3);
-        uint256 released = p.amount - p.captured;
+        uint256 released = p.amount > p.captured ? p.amount - p.captured : 0;
         _giveBack(c, owner, p, released);
         _moveHeld(-int256(released), p.flags & STANDIN != 0);
         (p.amount, p.flags) = (p.captured, p.flags & ~OPEN);

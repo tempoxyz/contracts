@@ -247,16 +247,18 @@ library CardLegs {
     /// @notice Captures `amount` walking the order: each entry the card allows takes what it holds and what its source
     ///         can still cover for the owner, placing or growing its leg as needed, so free funds of earlier entries
     ///         go before later legs' holds. What no entry covers is charged to the first cash entry: free cash, then
-    ///         debt within the owner's terms; the issuer absorbs the rest. Past `open` plus the owner's tolerance on
-    ///         `total` it reverts, a stand-in too, which captures from its one cash leg. `amounts` is amount, open,
-    ///         total, the card's kinds and the expiry of legs it places. Returns the units covered and the legs.
+    ///         debt within the owner's terms; the issuer absorbs the rest. When the purchase's
+    ///         captures in all would pass `total` plus the owner's tolerance on it, it reverts, a stand-in too, which
+    ///         captures from its one cash leg. `amounts` is amount, open (what it still holds), total (the authorized
+    ///         amount), the card's kinds, the expiry of legs it places, and what earlier captures took past `total`.
+    ///         Returns the units covered and the legs.
     function capture(
         Funding[] storage order,
         mapping(address => uint8) storage kindOf,
         bytes32 ref,
         address owner,
         uint256 legs,
-        uint256[5] memory amounts,
+        uint256[6] memory amounts,
         bool isFinal,
         bool standIn
     ) external returns (uint256 covered, uint256) {
@@ -280,7 +282,8 @@ library CardLegs {
                 uint256 cash = order[bound].source.toleranceBps(owner, order[bound].position);
                 if (cash > tolerance) tolerance = cash;
             }
-            if (amount > amounts[1] + amounts[2] * tolerance / BPS) revert CaptureLimitExceeded();
+            // Bounds the purchase's captures together, so tolerance used by one capture never adds to the next.
+            if (amount + amounts[5] > amounts[1] + amounts[2] * tolerance / BPS) revert CaptureLimitExceeded();
             if (standIn) {
                 Funding memory f = order[lead];
                 uint8 flags = CAPTURE_BEYOND | (isFinal ? CAPTURE_FINAL : 0);
@@ -437,7 +440,7 @@ library CardLegs {
                 card: card,
                 token: token,
                 expiresAt: uint32(word >> 176),
-                held: uint64(open ? amount - captured : 0),
+                held: uint64(open && amount > captured ? amount - captured : 0),
                 captured: uint64(captured),
                 refunded: uint48(word >> 128),
                 open: open,
