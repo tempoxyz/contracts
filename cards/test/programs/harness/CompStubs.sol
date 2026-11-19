@@ -231,6 +231,8 @@ abstract contract CompEnv is CoreEnv {
         vm.allowCheatcodes(RESERVATION_CORE_ADDRESS);
         auth = new CompCardAuth(issuer, settlement, address(usd));
         credit = new CreditSource(auth);
+        vm.prank(issuer);
+        credit.setLender(lender, true);
         treasury = new IssuerTreasury(auth);
         reserves = new MerchantReserves(auth);
         desk = new IssuerDesk(auth, credit, treasury, IEarnVault(address(earnVault)));

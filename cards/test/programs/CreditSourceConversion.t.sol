@@ -40,6 +40,8 @@ contract CreditSourceConversionTest is CompEnv {
         auth = new CompCardAuth(issuer, settlement, address(eur));
         auth.setConversion(address(conv));
         credit = new CreditSource(auth);
+        vm.prank(issuer);
+        credit.setLender(lender, true);
         eur.mint(lender, 10_000e6);
         vm.prank(lender);
         core.approveHolder(address(credit), address(eur), type(uint128).max, 0);
@@ -279,6 +281,8 @@ contract CreditSourceConversionTest is CompEnv {
     function test_settlementTokenInUse_ignoresLinesTheBorrowerNeverAccepted() public {
         auth.setToken(address(eur));
         address stranger = makeAddr("stranger");
+        vm.prank(issuer);
+        credit.setLender(stranger, true);
         vm.prank(stranger);
         uint64 lineId = credit.openLine(bob, 1000e6, due, IEarnVault(address(0)), 0, 0, 0);
         assertEq(credit.settlementTokenInUse(address(auth)), 0);
@@ -296,6 +300,8 @@ contract CreditSourceConversionTest is CompEnv {
         credit.settlementTokenInUse(address(auth));
         uint256 before = gas - gasleft();
         address stranger = makeAddr("stranger");
+        vm.prank(issuer);
+        credit.setLender(stranger, true);
         for (uint160 i = 1; i <= 50; ++i) {
             vm.prank(stranger);
             credit.openLine(address(i + 0x1000), 1e6, due, IEarnVault(address(0)), 0, 0, 0);

@@ -39,6 +39,8 @@ contract CreditSourceTest is CompEnv {
     ///      since the core never pays an account from itself and this source passes the draw straight back.
     function test_ownLine_drawLeavesTheSettlementBalanceWhole() public {
         usd.mint(settlement, 1000e6);
+        vm.prank(issuer);
+        credit.setLender(settlement, true);
         vm.startPrank(settlement);
         core.approveHolder(address(credit), address(usd), type(uint128).max, 0);
         uint64 lineId =
@@ -383,6 +385,35 @@ contract CreditSourceTest is CompEnv {
         vm.prank(operator);
         vm.expectRevert(CreditSource.LineNotOpen.selector);
         credit.redraw(lineId, 1, REF);
+    }
+
+    function test_openLine_onlyLendersTheIssuerAllows() public {
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(CreditSource.NotLender.selector);
+        credit.openLine(stranger, 1, uint64(block.timestamp + 3650 days), IEarnVault(address(0)), 0, 0, 0);
+        assertEq(credit.lineCount(), 0);
+        assertEq(credit.settlementTokenInUse(address(auth)), 0);
+    }
+
+    function test_setLender_onlyTheIssuer_andStoppingALenderKeepsItsOpenLines() public {
+        vm.prank(lender);
+        vm.expectRevert(CreditSource.NotIssuer.selector);
+        credit.setLender(lender, true);
+        uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
+        vm.prank(issuer);
+        vm.expectEmit(address(credit));
+        emit CreditSource.LenderSet(lender, false);
+        credit.setLender(lender, false);
+        assertFalse(credit.isLender(lender));
+        // Its accepted line still draws and still keeps the token in use.
+        _draw(alice, lineId, LEG, 10e6, REF);
+        assertEq(credit.lineOf(lineId).owed, 10e6);
+        assertEq(credit.settlementTokenInUse(address(auth)), 7);
+        // It opens no more.
+        vm.prank(lender);
+        vm.expectRevert(CreditSource.NotLender.selector);
+        credit.openLine(bob, 100e6, uint64(block.timestamp + 30 days), IEarnVault(address(0)), 0, 0, 0);
     }
 
     function test_settlementTokenInUse_whileAnAcceptedLineHasRoom() public {

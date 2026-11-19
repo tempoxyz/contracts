@@ -192,6 +192,68 @@ contract CreditSourceStatementsTest is CompEnv {
         assertEq(credit.statementOf(lineId, 1).paid, 204e6);
     }
 
+    function test_closeStatement_billsOnlyWhatOpenStatementsDoNot_soRepaidDebtIsNeverPastDue() public {
+        _owe(100e6);
+        vm.prank(lender);
+        credit.closeStatement(lineId, uint64(block.timestamp + 10 days));
+        _owe(100e6);
+        vm.prank(lender);
+        uint32 n2 = credit.closeStatement(lineId, uint64(block.timestamp + 40 days));
+        assertEq(credit.statementOf(lineId, n2).balance, 100e6);
+        _repay(200e6);
+        assertEq(credit.lineOf(lineId).owed, 0);
+        // New debt after both statements is the next statement's, not theirs.
+        _owe(50e6);
+        vm.warp(block.timestamp + 41 days);
+        credit.collect(lineId);
+        CreditSource.Statement memory st = credit.statementOf(lineId, n2);
+        assertEq(st.paid, st.balance);
+        assertEq(uint8(st.status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Paid));
+    }
+
+    function test_closeStatement_atMostTwelveOpenAtOnce() public {
+        for (uint256 i; i < 12; ++i) {
+            _owe(1e6);
+            vm.prank(lender);
+            credit.closeStatement(lineId, uint64(block.timestamp + 30 days));
+        }
+        _owe(1e6);
+        vm.prank(lender);
+        vm.expectRevert(CreditSource.InvalidStatement.selector);
+        credit.closeStatement(lineId, uint64(block.timestamp + 30 days));
+        // Paying the oldest makes room for one more.
+        _repay(1e6);
+        vm.prank(lender);
+        uint32 n = credit.closeStatement(lineId, uint64(block.timestamp + 30 days));
+        assertEq(n, 13);
+        assertEq(credit.statementOf(lineId, n).balance, 1e6);
+    }
+
+    function test_closeStatement_billingNothingOpensNothing() public {
+        for (uint256 i; i < 20; ++i) {
+            vm.prank(lender);
+            credit.closeStatement(lineId, uint64(block.timestamp + 30 days));
+        }
+        (uint32 count, uint32 collectFrom, uint32 payFrom) = credit.statementsOf(lineId);
+        assertEq(count, 20);
+        assertEq(collectFrom, 21);
+        assertEq(payFrom, 21);
+    }
+
+    function test_refund_paysOpenStatements_soTheNextBillsOnlyNewDebt() public {
+        _owe(100e6);
+        vm.prank(lender);
+        credit.closeStatement(lineId, uint64(block.timestamp + 10 days));
+        _refundOwed(40e6);
+        assertEq(credit.statementOf(lineId, 1).paid, 40e6);
+        _owe(50e6);
+        vm.prank(lender);
+        uint32 n = credit.closeStatement(lineId, uint64(block.timestamp + 20 days));
+        assertEq(credit.statementOf(lineId, n).balance, 50e6);
+        assertEq(credit.lineOf(lineId).owed, 110e6);
+    }
+
     function test_closeStatement_onlyTheLenderAndAFutureDueDate() public {
         vm.prank(alice);
         vm.expectRevert(CreditSource.NotLender.selector);
@@ -311,12 +373,15 @@ contract CreditSourceStatementsTest is CompEnv {
         vm.prank(alice);
         earnShare.approve(address(credit), 0);
         _autopay(address(earnVault));
+        // The next statement bills only what was drawn since the first.
+        _owe(20e6);
         uint64 next = uint64(vm.getBlockTimestamp() + 1 days);
         vm.prank(lender);
         credit.closeStatement(lineId, next);
+        assertEq(credit.statementOf(lineId, 2).balance, 20e6);
         vm.warp(next);
         credit.collect(lineId);
-        assertEq(credit.lineOf(lineId).owed, 40e6);
+        assertEq(credit.lineOf(lineId).owed, 60e6);
         assertEq(uint8(credit.statementOf(lineId, 2).status), uint8(CreditSource.StatementStatus.PastDue));
     }
 

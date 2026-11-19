@@ -111,7 +111,7 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
 | [`CardAuth`](../../cards/src/programs/CardAuth.sol)                 | The issuer, within owners | Cards, limits, mandates, operators, funding orders and purchases (one slot each); a waterfall over sources. |
 | [`CashSource`](../../cards/src/programs/CashSource.sol)             | None                      | Cash legs: holds on a stablecoin, debt within the owner's caps, stand-ins, conversion at a locked rate.     |
 | [`SavingsSource`](../../cards/src/programs/SavingsSource.sol)       | None (a fixed funder)     | Savings legs: holds on Earn shares, redeemed at capture and paid to the settlement account.                 |
-| [`CreditSource`](../../cards/src/programs/CreditSource.sol)         | Each line's lender        | Credit legs: holds on the lender's balance, statements and autopay, optionally secured by locked shares.    |
+| [`CreditSource`](../../cards/src/programs/CreditSource.sol)         | Issuer-allowed lenders    | Credit legs: holds on the lender's balance, statements and autopay, optionally secured by locked shares.    |
 | [`IssuerTreasury`](../../cards/src/programs/IssuerTreasury.sol)     | The issuer                | Issuer funds that advance payouts within the program's exposure; the settlement token change.               |
 | [`IssuerDesk`](../../cards/src/programs/IssuerDesk.sol)             | The issuer                | Provisional credit while a dispute runs, and its recovery when the merchant wins.                           |
 | [`MerchantReserves`](../../cards/src/programs/MerchantReserves.sol) | The issuer                | Reserves held back on merchants' balances as core pledges, collected to the settlement account.             |

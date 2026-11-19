@@ -32,6 +32,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     uint256 private constant TERM = 30 days;
     uint256 private constant YEAR = 365 days;
     uint256 private constant MAX_AUTOPAY = 4;
+    /// @dev Most statements a line keeps open (not yet paid) at once, which bounds what a repayment walks.
+    uint256 private constant MAX_OPEN_STATEMENTS = 12;
 
     /// @notice The card authorization contract whose purchases draw these lines.
     ICardAuth public immutable PROGRAM;
@@ -119,6 +121,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     mapping(uint64 lineId => mapping(uint32 n => Statement)) internal _statements;
     mapping(uint64 lineId => Statements) public statementsOf;
     mapping(uint64 lineId => address[]) internal _autopay;
+    /// @notice Lenders the issuer lets open lines that the program's purchases draw.
+    mapping(address lender => bool) public isLender;
     /// @dev Accepted, open lines in each token that still have a limit, a balance owed or a live leg.
     mapping(address token => uint256) internal _activeLines;
     mapping(uint64 lineId => bool) internal _active;
@@ -140,6 +144,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     event TermsOffered(uint64 indexed lineId, uint16 aprBps, uint128 maxDebt);
     event LineAccepted(uint64 indexed lineId, uint16 aprBps, uint128 maxDebt);
     event LineClosed(uint64 indexed lineId);
+    event LenderSet(address indexed lender, bool allowed);
     event LimitSet(uint64 indexed lineId, uint128 limit);
     /// @notice A leg changed: what the borrower owes and what the line's legs hold now.
     event Synced(uint64 indexed lineId, bytes32 indexed holdId, uint128 owed, uint128 pending);
@@ -171,6 +176,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     error NoConversion();
     error RepayExceedsLeg(uint256 outstanding, uint256 gross);
     error NotBorrower();
+    error NotIssuer();
     error NotLender();
     error NotProgram();
     error NotUndercollateralized(uint256 owed, uint256 secured);
@@ -196,6 +202,15 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         PROGRAM = program;
     }
 
+    /// @notice Lets lender open lines, or stops it opening more; its open lines stay until closed. Issuer only.
+    function setLender(address lender, bool allowed) external {
+        if (msg.sender != PROGRAM.ISSUER()) revert NotIssuer();
+        // The event follows on the next line.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        isLender[lender] = allowed;
+        emit LenderSet(lender, allowed);
+    }
+
     /// @notice Opens a line from the caller (the lender) to borrower in the program's settlement token, offering
     ///         simple interest of aprBps a year and a bound of maxDebt on what is owed and pending (zero: the limit
     ///         plus a year of interest on it). The borrower accepts before any draw. A zero collateralVault makes it
@@ -209,6 +224,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         uint16 aprBps,
         uint128 maxDebt
     ) external returns (uint64 lineId) {
+        // Only lenders the issuer allows open lines, so only their lines keep the settlement token in use.
+        if (!isLender[msg.sender]) revert NotLender();
         address token = PROGRAM.settlementToken();
         // Due dates are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
@@ -581,8 +598,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _settle(lineId);
     }
 
-    /// @notice Snapshots what the line owes as a statement due at dueAt, as its lender. Repayments pay open
-    ///         statements oldest first.
+    /// @notice Bills what the line owes past its open statements as a statement due at dueAt, as its lender, with at
+    ///         most MAX_OPEN_STATEMENTS open at once. Repayments and refunds pay open statements oldest first.
     function closeStatement(uint64 lineId, uint64 dueAt) external returns (uint32 n) {
         Line storage l = _lines[lineId];
         if (msg.sender != l.lender) revert NotLender();
@@ -592,7 +609,15 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         Statements storage s = statementsOf[lineId];
         n = ++s.count;
         if (s.collectFrom == 0) (s.collectFrom, s.payFrom) = (n, n);
-        uint128 balance = l.owed;
+        if (n - s.payFrom >= MAX_OPEN_STATEMENTS) revert InvalidStatement();
+        // Open statements already bill part of what is owed; this one bills the rest.
+        uint128 billed = _billed(lineId, s.payFrom, n);
+        uint128 balance = l.owed > billed ? l.owed - billed : 0;
+        // A statement billing nothing, with none open before it, is one no repayment or collection need visit.
+        if (balance == 0 && s.payFrom == n) {
+            s.payFrom = n + 1;
+            if (s.collectFrom == n) s.collectFrom = n + 1;
+        }
         _statements[lineId][n] = Statement({
             dueAt: dueAt, status: balance == 0 ? StatementStatus.Paid : StatementStatus.Due, balance: balance, paid: 0
         });
@@ -857,6 +882,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             l.owed -= back - excess;
             // A refund takes from what was borrowed, and interest stays at most what is owed.
             if (interestOf[lineId] > l.owed) interestOf[lineId] = l.owed;
+            // It pays statements as a repayment would, so they never bill more than is owed.
+            _payStatements(lineId, back - excess);
         }
         // forge-lint: disable-next-line(unsafe-typecast)
         (g.held, g.net) = (uint64(h), uint64(net));
@@ -1102,6 +1129,14 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     /// @dev Applies a repayment to the line's statements not yet paid, oldest first.
+    /// @dev What the statements from first up to end (exclusive) still bill: their balances less what was paid.
+    function _billed(uint64 lineId, uint32 first, uint32 end) private view returns (uint128 billed) {
+        for (uint32 i = first; i < end; ++i) {
+            Statement storage st = _statements[lineId][i];
+            if (st.status != StatementStatus.Paid) billed += st.balance - st.paid;
+        }
+    }
+
     function _payStatements(uint64 lineId, uint256 amount) private {
         Statements storage s = statementsOf[lineId];
         uint32 count = s.count;
