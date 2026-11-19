@@ -348,29 +348,23 @@ contract CardAuth is CardAuthBase, ICardAuth {
     }
 
     /// @notice Gives `amount` back to the cardholder's limits and books it refunded without moving money, after the
-    ///         caller paid the cardholder itself. Settlement counts `settles` of it as a refund, negative when the
-    ///         caller recovered more elsewhere (a merchant reserve) than the network charges back. Settle role.
+    ///         caller paid the cardholder itself. Settlement counts `settles` of it as a refund: at most `amount`, and
+    ///         negative (the caller recovered more elsewhere than the network charges back) by at most what the
+    ///         purchase has refunded. Registered companions only.
     function creditBack(bytes32 ref, uint128 amount, int128 settles) external {
-        _role(ROLE_SETTLE, 0);
+        if (!isCompanion[msg.sender]) revert NotCompanion();
         Purchase memory p = _unpack(_purchases[ref]);
-        if (p.index == 0 || p.refunded + amount > p.captured) revert InvalidAmount();
-        (CardLimits.Card storage c, address owner) = _card(p);
         p.refunded += amount;
+        if (
+            p.index == 0 || p.refunded > p.captured || settles > int256(uint256(amount))
+                || -settles > int256(p.refunded)
+        ) {
+            revert InvalidAmount();
+        }
+        (CardLimits.Card storage c, address owner) = _card(p);
         _purchases[ref] = _pack(p);
         _giveBack(c, owner, p, amount);
         emit CreditedBack(ref, amount, CardLegs.creditBack(eras, _state, _ledger, p.era, settles), _step());
-    }
-
-    /// @notice Books `amount` of a purchase the issuer absorbed as covered after it settled it from a merchant
-    ///         reserve, so it can be refunded. Settle role.
-    function reserveSettled(bytes32 ref, uint128 amount) external {
-        _role(ROLE_SETTLE, 0);
-        Purchase memory p = _unpack(_purchases[ref]);
-        if (p.index == 0 || p.era != _state.era || amount > p.refunded) revert InvalidAmount();
-        p.refunded -= amount;
-        _purchases[ref] = _pack(p);
-        _ledger.net += int128(int256(uint256(amount)));
-        emit ReserveSettled(ref, amount, _step());
     }
 
     // Views.

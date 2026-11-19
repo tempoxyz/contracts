@@ -147,7 +147,7 @@ contract CompCardAuth is ICardAuth {
     }
 
     function creditBack(bytes32 ref, uint128 amount, int128 settles) external {
-        if (!this.hasRoles(msg.sender, ROLE_SETTLE)) revert NotSettle();
+        if (!isCompanion[msg.sender]) revert NotCompanion();
         _purchases[ref].refunded += uint64(amount);
         creditedBack[ref] += amount;
         settledBack[ref] += settles;

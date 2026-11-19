@@ -509,7 +509,9 @@ contract CashSourceConversionTest is AuthEnv {
         _fundRefunds(eur, 100e6);
         vm.prank(issuer);
         cards.refund(P1, 25e6);
-        vm.prank(issuer);
+        address desk = makeAddr("desk");
+        _setting(abi.encodeCall(cards.setCompanion, (desk, true)));
+        vm.prank(desk);
         cards.creditBack(P1, 0, -25e6);
         (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet) = cards.ledger();
         assertEq(seq - settledThrough, 2);

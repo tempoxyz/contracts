@@ -98,7 +98,6 @@ abstract contract CardAuthBase is ICardAuthState {
     event PurchaseRefunded(bytes32 indexed ref, uint256 amount, uint256 paid, uint64 seq);
     /// @notice `net` was booked refunded without moving money; settlement counts `paid`, in today's settlement token.
     event CreditedBack(bytes32 indexed ref, uint256 net, int256 paid, uint64 seq);
-    event ReserveSettled(bytes32 indexed ref, uint256 amount, uint64 seq);
     event Revoked(address indexed owner);
     event OperatorSet(address indexed key, uint8 roles, uint256 cap);
     event SourceSet(address indexed source, uint8 kind);

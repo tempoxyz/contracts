@@ -81,10 +81,8 @@ interface ICardAuth is ICardAuthState {
     ///         Settle role.
     function refund(bytes32 ref, uint128 amount) external;
     /// @notice Gives `amount` back to the cardholder's limits and books it refunded without moving money (the caller
-    ///         paid the cardholder itself); settlement counts `settles` of it as a refund, negative when the caller
-    ///         recovered more elsewhere than the network charges back. Settle role.
+    ///         paid the cardholder itself); settlement counts `settles` of it as a refund, at most `amount`, negative
+    ///         by at most what the purchase refunded when the caller recovered more elsewhere than the network charges
+    ///         back. Registered companions only.
     function creditBack(bytes32 ref, uint128 amount, int128 settles) external;
-    /// @notice Books `amount` the issuer absorbed on purchase `ref` as covered after it settled it from a merchant
-    ///         reserve, so it can be refunded. Settle role.
-    function reserveSettled(bytes32 ref, uint128 amount) external;
 }

@@ -731,15 +731,11 @@ contract CardAuthTest is AuthEnv {
         cards.refund(P1, 80e6);
         assertEq(_owed(alice, address(usd), address(cash)), 0);
         assertEq(core.available(alice, address(usd)), 50e6);
-        // Once the issuer recovers what it absorbed from a merchant reserve, that becomes refundable too.
-        vm.prank(issuer);
-        cards.reserveSettled(P1, 20e6);
-        vm.prank(issuer);
-        cards.refund(P1, 20e6);
-        assertEq(core.available(alice, address(usd)), 70e6);
+        // What the issuer absorbed never becomes refundable: the cardholder never paid it.
         vm.prank(issuer);
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 1);
+        assertEq(cards.purchaseOf(P1).refunded, 100e6);
         _assertCoreBalanced();
     }
 
@@ -1293,28 +1289,34 @@ contract CardAuthTest is AuthEnv {
     /// @dev Credit the cardholder already holds (provisional credit a won dispute keeps) settles as a refund, by what the
     ///      caller says the network charges back: negative adds back what a merchant reserve paid instead.
     function test_creditBack_countsAgainstSettlement() public {
+        address desk = makeAddr("desk");
+        _setting(abi.encodeCall(cards.setCompanion, (desk, true)));
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         _capture(P1, 100e6, true);
         _refund(P1, 40e6);
         vm.expectEmit(address(cards));
         emit CardAuthBase.CreditedBack(P1, 50e6, 50e6, 4);
-        vm.prank(issuer);
+        vm.prank(desk);
         cards.creditBack(P1, 50e6, 50e6);
         (uint64 seq,, int128 net,) = cards.ledger();
         assertEq(seq, 4);
         assertEq(net, 10e6);
         vm.expectEmit(address(cards));
         emit CardAuthBase.CreditedBack(P1, 10e6, -5e6, 5);
-        vm.prank(issuer);
+        vm.prank(desk);
         cards.creditBack(P1, 10e6, -5e6);
         (,, net,) = cards.ledger();
         assertEq(net, 15e6);
         assertEq(cards.purchaseOf(P1).refunded, 100e6);
         // Nothing is left to refund or credit back.
-        vm.prank(issuer);
+        vm.prank(desk);
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.creditBack(P1, 1, 1);
+        // Only registered companions credit back, the issuer included.
+        vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.NotCompanion.selector);
+        cards.creditBack(P1, 0, 0);
     }
 
     // Funding order versions, views and storage.

@@ -187,10 +187,8 @@ contract CardAuthSettingsTest is AuthEnv {
         cards.capture("purchase-1", 10e6, true);
         vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.refund("purchase-1", 1e6);
-        vm.expectRevert(CardAuthBase.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.NotCompanion.selector);
         cards.creditBack("purchase-1", 1e6, 1e6);
-        vm.expectRevert(CardAuthBase.Unauthorized.selector);
-        cards.reserveSettled("purchase-1", 1e6);
         vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setOperator(key, 7, 1e6);
         vm.stopPrank();
