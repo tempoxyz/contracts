@@ -44,7 +44,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         bool closed;
         uint16 ltvBps;
         address borrower;
-        /// @dev The yearly interest rate the borrower accepted, in basis points: simple interest on what is owed.
+        /// @dev The yearly interest rate the borrower accepted, in basis points: simple interest on what it lent.
         uint16 aprBps;
         uint64 lastAccrued;
         /// @dev The borrower locks shares in collateralVault as it borrows.
@@ -114,6 +114,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     /// @dev Commitment and lock holds placed so far, numbering their ids.
     mapping(uint64 lineId => uint64) internal _holds;
     mapping(uint64 lineId => mapping(bytes32 ref => RefRepayment)) public repaymentOf;
+    /// @notice The part of what each line owes that is interest, which earns none: interest is simple.
+    mapping(uint64 lineId => uint128) public interestOf;
     mapping(uint64 lineId => mapping(uint32 n => Statement)) internal _statements;
     mapping(uint64 lineId => Statements) public statementsOf;
     mapping(uint64 lineId => address[]) internal _autopay;
@@ -240,7 +242,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (msg.sender != l.borrower) revert NotBorrower();
         Terms memory o = offerOf[lineId];
         if (aprBps != o.aprBps || maxDebt != o.maxDebt || maxDebt < l.limit) revert TermsMismatch();
-        _accrue(lineId, false);
+        _accrue(lineId);
         // forge-lint: disable-next-line(unsafe-typecast)
         (l.accepted, l.aprBps, l.maxDebt, l.lastAccrued) = (true, aprBps, maxDebt, uint64(block.timestamp));
         emit LineAccepted(lineId, aprBps, maxDebt);
@@ -335,7 +337,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         heldUnits = units;
         if (units > now_) {
             if (!_open(l) || l.token != PROGRAM.settlementToken()) revert LineNotOpen();
-            _accrue(lineId, false);
+            _accrue(lineId);
             uint256 credit = availableCredit(lineId);
             // A stand-in leg holds what the line can still give; captures may reach units later.
             if (standIn && units - now_ > credit) heldUnits = now_ + credit;
@@ -399,7 +401,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (units > h) {
             // Past what the leg holds: grow it within the line's credit first. CAPTURE_FREE takes what the credit
             // allows; CAPTURE_BEYOND reverts past it.
-            _accrue(lineId, false);
+            _accrue(lineId);
             uint256 credit = availableCredit(lineId);
             if (units - h > credit && flags & CAPTURE_FREE != 0) units = h + credit;
             if (units - h > credit || units > type(uint64).max) revert CreditExceeded(units - h, credit);
@@ -525,7 +527,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         RefRepayment storage r = repaymentOf[lineId][ref];
         uint256 left = r.repaid - r.redrawn;
         if (left == 0) revert NothingToRedraw();
-        _accrue(lineId, false);
+        _accrue(lineId);
         uint256 credit = _min(availableCredit(lineId), left);
         // forge-lint: disable-next-line(unsafe-typecast)
         drawn = uint128(_min(amount, credit));
@@ -554,7 +556,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @notice Adds the interest the line has earned since it last did, up to the accepted debt bound. Anyone.
     function accrue(uint64 lineId) external nonReentrant {
-        _accrue(lineId, true);
+        _accrue(lineId);
         _settle(lineId);
     }
 
@@ -565,7 +567,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (msg.sender != l.lender) revert NotLender();
         // forge-lint: disable-next-line(block-timestamp)
         if (dueAt <= block.timestamp) revert InvalidStatement();
-        _accrue(lineId, false);
+        _accrue(lineId);
         Statements storage s = statementsOf[lineId];
         n = ++s.count;
         if (s.collectFrom == 0) (s.collectFrom, s.payFrom) = (n, n);
@@ -596,7 +598,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     ///         past due. Anyone may call it.
     function collect(uint64 lineId) external nonReentrant {
         Line storage l = _lines[lineId];
-        _accrue(lineId, false);
+        _accrue(lineId);
         Statements storage s = statementsOf[lineId];
         uint32 count = s.count;
         uint32 n = s.collectFrom;
@@ -615,7 +617,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             if (open != 0) {
                 uint128 covered = _autopayFor(lineId, n, open);
                 if (covered != 0) {
-                    l.owed -= covered;
+                    _reduce(lineId, l, covered);
                     _payStatements(lineId, covered);
                     emit Repaid(lineId, l.borrower, covered, l.owed);
                 }
@@ -635,7 +637,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         Line storage l = _lines[lineId];
         if (msg.sender != l.lender) revert NotLender();
         if (!l.locking) revert InvalidLine();
-        _accrue(lineId, false);
+        _accrue(lineId);
         _lock(lineId);
         IEarnVault vault = l.collateralVault;
         uint256 locked = _heldNow(l.borrower, lockOf[lineId]);
@@ -690,7 +692,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @notice What the line owes with the interest earned since it last accrued.
     function owedNow(uint64 lineId) external view returns (uint256 owed) {
-        (owed,) = _interest(_lines[lineId]);
+        (owed,) = _interest(lineId);
         owed += _lines[lineId].owed;
     }
 
@@ -773,10 +775,17 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     function _repay(uint64 lineId, Line storage l, uint128 amount) private {
-        _accrue(lineId, false);
+        _accrue(lineId);
         if (amount == 0 || amount > l.owed) revert RepayExceedsOwed(amount, l.owed);
-        l.owed -= amount;
+        _reduce(lineId, l, amount);
         _payStatements(lineId, amount);
+    }
+
+    /// @dev Takes a repayment from what the line owes, its interest first.
+    function _reduce(uint64 lineId, Line storage l, uint128 amount) private {
+        l.owed -= amount;
+        uint128 interest = interestOf[lineId];
+        if (interest != 0) interestOf[lineId] = interest > amount ? interest - amount : 0;
     }
 
     function _afterRepay(uint64 lineId, Line storage l, uint128 amount) private {
@@ -790,7 +799,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     function _apply(uint64 lineId, bytes32 id, uint64 gross) private {
         Leg storage g = _legs[id];
         Line storage l = _lines[lineId];
-        _accrue(lineId, false);
+        _accrue(lineId);
         uint128 h = CORE.getHold(l.lender, address(this), id).held;
         uint128 net = gross;
         l.pending = l.pending + h - g.held;
@@ -808,6 +817,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             uint128 back = g.net - net;
             if (back > l.owed) excess = back - l.owed;
             l.owed -= back - excess;
+            // A refund takes from what was borrowed, and interest stays at most what is owed.
+            if (interestOf[lineId] > l.owed) interestOf[lineId] = l.owed;
         }
         // forge-lint: disable-next-line(unsafe-typecast)
         (g.held, g.net) = (uint64(h), uint64(net));
@@ -838,31 +849,37 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     // forge-lint: disable-next-item(block-timestamp)
-    function _interest(Line storage l) private view returns (uint256 interest, bool capped) {
+    /// @dev Simple interest since the last accrual on what the line lent (what it owes less its interest), within the
+    ///      accepted debt bound.
+    function _interest(uint64 lineId) private view returns (uint256 interest, bool capped) {
+        Line storage l = _lines[lineId];
         uint256 owed = l.owed;
-        if (!l.accepted || owed == 0 || l.aprBps == 0 || block.timestamp <= l.lastAccrued) return (0, false);
-        interest = owed * l.aprBps * (block.timestamp - l.lastAccrued) / (YEAR * BPS);
+        uint256 principal = owed - interestOf[lineId];
+        if (!l.accepted || principal == 0 || l.aprBps == 0 || block.timestamp <= l.lastAccrued) return (0, false);
+        interest = principal * l.aprBps * (block.timestamp - l.lastAccrued) / (YEAR * BPS);
         uint256 used = owed + l.pending;
         uint256 room = l.maxDebt > used ? l.maxDebt - used : 0;
         if (interest >= room) (interest, capped) = (room, true);
     }
 
-    /// @dev Adds interest since the last accrual. With carry, time too short to earn a whole unit carries over;
-    ///      otherwise the clock restarts now, as what is owed is about to change.
+    /// @dev Adds interest since the last accrual. Time too short to earn a whole unit carries over, so how often
+    ///      anyone accrues never changes what the borrower pays.
     // forge-lint: disable-next-item(block-timestamp,unsafe-typecast)
-    function _accrue(uint64 lineId, bool carry) private {
+    function _accrue(uint64 lineId) private {
         Line storage l = _lines[lineId];
         if (!l.accepted) return;
-        (uint256 interest, bool capped) = _interest(l);
+        (uint256 interest, bool capped) = _interest(lineId);
         uint256 owed = l.owed;
+        uint256 principal = owed - interestOf[lineId];
         uint64 last = uint64(block.timestamp);
-        if (carry && !capped && owed != 0 && l.aprBps != 0) {
-            uint256 rate = owed * l.aprBps;
+        if (!capped && principal != 0 && l.aprBps != 0) {
+            uint256 rate = principal * l.aprBps;
             last = uint64(l.lastAccrued + (interest * YEAR * BPS + rate - 1) / rate);
         }
         l.lastAccrued = last;
         if (interest == 0) return;
         l.owed = uint128(owed + interest);
+        interestOf[lineId] += uint128(interest);
         emit InterestAccrued(lineId, l.aprBps, uint128(interest), l.owed);
     }
 

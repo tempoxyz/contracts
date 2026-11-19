@@ -27,6 +27,50 @@ contract CreditSourceStatementsTest is CompEnv {
 
     // Interest.
 
+    function test_accrue_interestStaysSimpleHoweverOftenAnyoneAccrues() public {
+        _terms(5000);
+        _owe(500e6);
+        uint256 start = vm.getBlockTimestamp();
+        for (uint256 i = 1; i <= 365; ++i) {
+            vm.warp(start + i * 1 days);
+            credit.accrue(lineId);
+        }
+        // 50% a year on 500 is 250, within a unit of rounding per accrual.
+        assertApproxEqAbs(credit.lineOf(lineId).owed, 750e6, 365);
+        assertLe(credit.lineOf(lineId).owed, 750e6);
+        assertEq(credit.interestOf(lineId), credit.lineOf(lineId).owed - 500e6);
+    }
+
+    function test_collect_frequentCallsStillAccrueInterest() public {
+        _terms(2000);
+        _owe(50e6);
+        uint256 start = vm.getBlockTimestamp();
+        for (uint256 i; i < 3600; ++i) {
+            vm.warp(start + i + 1);
+            credit.collect(lineId);
+        }
+        // 20% a year on 50 for an hour, at most: each whole unit carries the time it took, rounded up in the
+        // borrower's favour, so per-second calls never erase the interest.
+        uint256 exact = uint256(50e6) * 2000 * 3600 / (365 days * 10_000);
+        uint256 interest = credit.lineOf(lineId).owed - 50e6;
+        assertLe(interest, exact);
+        assertGt(interest, exact * 3 / 4);
+    }
+
+    function test_repay_takesInterestFirstSoNoInterestEarnsInterest() public {
+        _terms(5000);
+        _owe(500e6);
+        vm.warp(vm.getBlockTimestamp() + 365 days / 2);
+        credit.accrue(lineId);
+        assertEq(credit.interestOf(lineId), 125e6);
+        _repay(100e6);
+        assertEq(credit.interestOf(lineId), 25e6);
+        vm.warp(vm.getBlockTimestamp() + 365 days / 2);
+        credit.accrue(lineId);
+        // The rest of the year earns on the 500 lent, not on the 25 of interest still owed.
+        assertEq(credit.lineOf(lineId).owed, 525e6 + 125e6);
+    }
+
     function test_accrue_addsTheAcceptedYearlyRateOverTimeElapsed() public {
         _terms(1000);
         _owe(200e6);
