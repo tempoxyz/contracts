@@ -29,6 +29,7 @@ repository=$(jq -er '.repository' "$source_json")
 commit=$(jq -er '.commit' "$source_json")
 contract=$(jq -er '.contract' "$source_json")
 solc=$(jq -er '.solc' "$source_json")
+[[ "$solc" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "source.json solc is not a release version: $solc" >&2; exit 1; }
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "source.json commit is not a full SHA: $commit" >&2; exit 1; }
 source_path=${contract%%:*}
 contract_name=${contract##*:}
