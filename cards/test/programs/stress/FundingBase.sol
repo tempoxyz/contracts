@@ -16,8 +16,9 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 ///         desk and merchant reserves, many cardholders on their own cards, a calendar clock, a seeded generator,
 ///         and the ledger checks every step runs.
 /// @dev Sizes scale with STRESS_SCALE (default 1). Measured outputs print as "STRESS <test> <metric>=<value>".
-///      Runs pause gas metering and meter only the authorizations and captures they measure, so the harness's own
-///      checks never count against the test's gas.
+///      Runs pause gas metering and meter only a sample of the authorizations and captures they measure (reported
+///      as gas_* over the sampled operations, zero for the rest), so the harness's own checks never count against
+///      the test's gas.
 abstract contract FundingBase is AuthEnv {
     /// @dev Monday 2026-01-05 00:00 UTC.
     uint256 internal constant START = 1_767_571_200;
@@ -44,6 +45,7 @@ abstract contract FundingBase is AuthEnv {
     uint256 internal tolBps;
 
     uint256 internal rng;
+    uint256 internal ops;
     uint256 internal residual;
     string internal tag;
 
@@ -134,6 +136,11 @@ abstract contract FundingBase is AuthEnv {
         order[0] = _cashEntry(address(usd), 0);
     }
 
+    /// @dev Meters one operation in eight (per unit of scale), so measured gas stays inside the test's gas limit.
+    function _sample() internal returns (bool) {
+        return ++ops % (8 * _scale()) == 0;
+    }
+
     function _mint(address to, uint256 amount) internal {
         usd.mint(to, amount);
         mintedTo[to] += amount;
@@ -176,7 +183,8 @@ abstract contract FundingBase is AuthEnv {
         returns (uint256 approved, bytes4 err, uint256 gasUsed)
     {
         address m = merchants[uint256(ref) % merchants.length];
-        vm.resumeGasMetering();
+        bool metered = _sample();
+        if (metered) vm.resumeGasMetering();
         uint256 g = gasleft();
         vm.prank(issuer);
         try cards.authorize(card, ref, amount, m, uint64(block.timestamp + 7 days), flags) returns (uint256 a) {
@@ -184,8 +192,10 @@ abstract contract FundingBase is AuthEnv {
         } catch (bytes memory reason) {
             err = bytes4(reason);
         }
-        gasUsed = g - gasleft();
-        vm.pauseGasMetering();
+        if (metered) {
+            gasUsed = g - gasleft();
+            vm.pauseGasMetering();
+        }
         if (approved != 0) {
             authorized[h] += approved;
             costCap[h] += _worth(ref);
@@ -199,14 +209,17 @@ abstract contract FundingBase is AuthEnv {
     {
         uint256 before = _worth(ref);
         uint256 paidBefore = _paid(ref);
-        vm.resumeGasMetering();
+        bool metered = _sample();
+        if (metered) vm.resumeGasMetering();
         uint256 g = gasleft();
         vm.prank(issuer);
         try cards.capture(ref, amount, true) {
             ok = true;
         } catch { }
-        gasUsed = g - gasleft();
-        vm.pauseGasMetering();
+        if (metered) {
+            gasUsed = g - gasleft();
+            vm.pauseGasMetering();
+        }
         covered = _paid(ref) - paidBefore;
         costCap[h] = costCap[h] + _worth(ref) - before;
     }

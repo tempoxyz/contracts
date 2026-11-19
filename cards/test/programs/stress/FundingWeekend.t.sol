@@ -46,6 +46,8 @@ contract FundingWeekendStressTest is FundingBase {
         uint256 captures;
         uint256 captureGas;
         uint256 captureGasMax;
+        uint256 authSampled;
+        uint256 captureSampled;
         uint256 volume;
         uint256 resumeHour;
         uint256 refilled;
@@ -220,8 +222,11 @@ contract FundingWeekendStressTest is FundingBase {
             return;
         }
         ++s.approved;
-        s.authGas += gasUsed;
-        if (gasUsed > s.authGasMax) s.authGasMax = gasUsed;
+        if (gasUsed != 0) {
+            ++s.authSampled;
+            s.authGas += gasUsed;
+            if (gasUsed > s.authGasMax) s.authGasMax = gasUsed;
+        }
         // An approval never takes exposure past the collateral.
         assertLe(treasury.exposure(), treasury.valueOf(), "approval past collateral");
         (uint8 fate, uint256 delay) = _fate();
@@ -276,8 +281,11 @@ contract FundingWeekendStressTest is FundingBase {
             } else {
                 ++s.captures;
                 s.volume += covered;
-                s.captureGas += gasUsed;
-                if (gasUsed > s.captureGasMax) s.captureGasMax = gasUsed;
+                if (gasUsed != 0) {
+                    ++s.captureSampled;
+                    s.captureGas += gasUsed;
+                    if (gasUsed > s.captureGasMax) s.captureGasMax = gasUsed;
+                }
             }
         }
         _checkLedger();
@@ -495,9 +503,9 @@ contract FundingWeekendStressTest is FundingBase {
         _logUsd("swept_to_bank", s.swept);
         _logUsd("refilled_from_bank", s.refilled);
         _log("capture_failures", s.captureFailures);
-        _log("gas_authorize_avg", s.approved == 0 ? 0 : s.authGas / s.approved);
+        _log("gas_authorize_avg", s.authSampled == 0 ? 0 : s.authGas / s.authSampled);
         _log("gas_authorize_max", s.authGasMax);
-        _log("gas_capture_avg", s.captures == 0 ? 0 : s.captureGas / s.captures);
+        _log("gas_capture_avg", s.captureSampled == 0 ? 0 : s.captureGas / s.captureSampled);
         _log("gas_capture_max", s.captureGasMax);
     }
 }
