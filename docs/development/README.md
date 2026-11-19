@@ -196,9 +196,9 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
   `main` does not, so `main` never waits on it. Symbolic proves the
   `EarnFeeMathFuzzTest` `prove*` properties with z3 at a loop bound of 32. TypeScript checks and
   build typechecks one workspace at a time (local `pnpm check:types` runs them in parallel).
-- **PropAMM fixture.** The job checks out the
-  [pinned PropAMM commit](../earn/modules/propamm.md#pinned-directpropamm-fixture) with a short-lived
-  read-only token and fails when the committed
+- **PropAMM fixture.** The job fetches the
+  [pinned PropAMM commit](../earn/modules/propamm.md#pinned-directpropamm-fixture) from the public
+  source repository without a token and fails when the committed
   fixture differs from its build (`test/earn/fixtures/propamm/update.sh --check`).
 - **Local E2E scope.** Each shard runs `pnpm e2e:local -- --variant <kind> --all --shard <n>/2` over
   the pinned images and installs only the `e2e` workspace closure. `.github/actions/e2e-scope` runs
@@ -218,10 +218,8 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC
   token, and a read-only `GITHUB_TOKEN`, and can pass every required check. Without an OIDC token,
   each job's secure runner starts Harden Runner with the inline audit egress policy instead of the
-  StepSecurity policy store and installs no package firewall, with a warning annotation. Two
-  things do not run for a fork: the PropAMM fixture rebuild (the job passes when
-  `test/earn/fixtures/propamm/` is unchanged and fails otherwise, until a maintainer re-verifies the
-  change from a branch in this repository) and the label- and
+  StepSecurity policy store and installs no package firewall, with a warning annotation. One
+  thing does not run for a fork: the label- and
   push-triggered Cyclops audit, which a maintainer starts with a `cyclops audit` comment.
 - **Zones compatibility.** The job checks out Tempo `main` and builds with the Foundry nightly
   Tempo's own CI pins. A failed run on `main` publishes a `zones_compatibility_failure` remediation

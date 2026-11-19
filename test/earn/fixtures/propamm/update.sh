@@ -3,9 +3,10 @@
 #
 # Usage: test/earn/fixtures/propamm/update.sh [--check] [<tempo-propamm checkout>]
 #
-# Without a checkout path, clones tempoxyz/tempo-propamm into a temporary directory with the caller's Git
-# credentials. A given checkout must be clean and at the pinned commit. `--check` rewrites nothing and
-# exits non-zero when the committed fixture differs from the build. Requires git, forge, and jq.
+# Without a checkout path, fetches the pinned commit of the public tempoxyz/tempo-propamm anonymously over
+# HTTPS into a temporary directory. A given checkout must be clean and at the pinned commit. `--check`
+# rewrites nothing and exits non-zero when the committed fixture differs from the build. Requires git,
+# forge, and jq.
 set -euo pipefail
 
 fixture_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
