@@ -157,19 +157,18 @@ Building and testing Earn never needs the PropAMM source repository.
 contract, and compiler of that build.
 
 To move the pin, change `commit` in `source.json` and regenerate the fixture with
-[`update.sh`](../../../test/earn/fixtures/propamm/update.sh), which needs Git, Foundry, `jq`, and read
-access to the source repository:
+[`update.sh`](../../../test/earn/fixtures/propamm/update.sh), which needs Git, Foundry, and `jq`; the source
+repository is public, so no GitHub credentials are needed:
 
 ```bash
-test/earn/fixtures/propamm/update.sh                             # clone the pinned commit with your Git credentials
+test/earn/fixtures/propamm/update.sh                             # fetch the pinned commit anonymously over HTTPS
 test/earn/fixtures/propamm/update.sh ../tempo-propamm            # or build a clean checkout already at that commit
 test/earn/fixtures/propamm/update.sh --check [../tempo-propamm]  # fail on any difference, rewriting nothing
 ```
 
-The `PropAMM fixture` job in the Verify workflow runs the `--check` form for same-repository pull
-requests and `main`. A fork pull request that leaves `test/earn/fixtures/propamm/` unchanged skips the
-rebuild; one that changes it fails until a maintainer re-verifies it from a branch in this
-repository ([CI](../../development/README.md#continuous-integration)).
+The `PropAMM fixture` job in the Verify workflow runs the `--check` form, without a token, for every
+pull request, including those from forks, and `main`
+([CI](../../development/README.md#continuous-integration)).
 
 ## Review
 
