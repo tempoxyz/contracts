@@ -281,8 +281,9 @@ contract MockReservationCore is IReservationCore {
         address resolved = _payee(payee);
         uint64 amt = _amount64(amount);
         _tip20(token);
-        _ensureAllowed(token, owner, resolved, false);
+        // A holder's budget is checked before the owner's policy, as the node does.
         if (msg.sender != owner) _drawBudget(owner, msg.sender, token, amt, 0, amt);
+        _ensureAllowed(token, owner, resolved, false);
         uint128 debt = _pay(token, owner, resolved, amt, standIn, false);
         emit Charged(owner, msg.sender, token, id, resolved, amt, debt);
     }
@@ -372,19 +373,14 @@ contract MockReservationCore is IReservationCore {
         address payee = _payee(request.payee);
         address token = request.token;
         _tip20(token);
-        _ensureAllowed(token, owner, payee, false);
         uint128 free = _available(token, owner);
-        uint64 held;
-        if (request.standIn) {
-            held = free < amt ? uint64(free) : amt;
-        } else if (amt > free) {
-            revert InsufficientAvailable();
-        } else {
-            held = amt;
-        }
+        uint64 held = request.standIn && free < amt ? uint64(free) : amt;
+        // The placer's budget is checked before the owner's policy and balance, as the node does.
+        if (placer != owner) _drawBudget(owner, placer, token, amt, held, 0);
+        _ensureAllowed(token, owner, payee, false);
+        if (held > free) revert InsufficientAvailable();
         uint16 tolerance = _terms[owner][payee][token].toleranceBps;
         uint64 captureLimit = _withTolerance(amt, tolerance);
-        if (placer != owner) _drawBudget(owner, placer, token, amt, held, 0);
         _reserve(token, owner, held);
         _records[owner][placer][request.id] = Record({
             token: token,
@@ -427,9 +423,10 @@ contract MockReservationCore is IReservationCore {
         }
         _ensureVacant(owner, placer, id);
         _tip20(token);
+        // The holder's budget is checked before the owner's policy and balance, as the node does.
+        if (placer != owner) _drawBudget(owner, placer, token, amt, amt, 0);
         _ensureAllowed(token, owner, authority, false);
         if (amt > _available(token, owner)) revert InsufficientAvailable();
-        if (placer != owner) _drawBudget(owner, placer, token, amt, amt, 0);
         _reserve(token, owner, amt);
         _records[owner][placer][id] = Record({
             token: token,
