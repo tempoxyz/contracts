@@ -10,7 +10,7 @@ import { IssuerTreasury } from "../../../src/programs/IssuerTreasury.sol";
 import { MerchantReserves } from "../../../src/programs/MerchantReserves.sol";
 import { ICardAuth } from "../../../src/programs/interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "../../../src/programs/interfaces/IReservationCore.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, ISource } from "../../../src/programs/interfaces/ISource.sol";
+import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "../../../src/programs/interfaces/ISource.sol";
 import { CoreEnv } from "../../core/harness/CoreEnv.sol";
 import { MockReservationCore } from "./MockReservationCore.sol";
 
@@ -188,6 +188,10 @@ contract CompCardAuth is ICardAuth {
         returns (uint256 taken)
     {
         (taken,) = source.capture(owner, bytes32(0), legId, units, CAPTURE_FINAL | CAPTURE_BEYOND);
+    }
+
+    function captureFree(ISource source, address owner, bytes32 legId, uint256 units) external returns (uint256 taken) {
+        (taken,) = source.capture(owner, bytes32(0), legId, units, CAPTURE_FINAL | CAPTURE_FREE);
     }
 
     function release(ISource source, address owner, bytes32 legId) external {

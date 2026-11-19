@@ -282,7 +282,25 @@ contract CreditSourceTest is CompEnv {
         _assertCoreBalanced();
     }
 
-    function test_repayFor_onlyTheProgramOrATreasuryOperator() public {
+    function test_capture_neverGrowsALegOnAClosedLine() public {
+        uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
+        bytes32 leg = bytes32("leg-1");
+        auth.hold(credit, alice, _pos(lineId), leg, 10e6, false);
+        vm.prank(lender);
+        credit.closeLine(lineId);
+        auth.captureBeyond(credit, alice, leg, 900e6);
+        assertEq(credit.lineOf(lineId).owed, 10e6, "only what the hold reserved");
+        // A free capture (a tip, the last leg) neither.
+        bytes32 leg2 = bytes32("leg-2");
+        uint64 other = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
+        auth.hold(credit, alice, _pos(other), leg2, 10e6, false);
+        vm.prank(lender);
+        credit.closeLine(other);
+        auth.captureFree(credit, alice, leg2, 900e6);
+        assertEq(credit.lineOf(other).owed, 10e6);
+    }
+
+    function test_repayFor_onlyACompanionOfTheProgram() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         _draw(alice, lineId, LEG, 100e6, REF);
         usd.mint(operator, 100e6);

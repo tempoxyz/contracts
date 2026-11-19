@@ -390,7 +390,11 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         // A settled leg covers nothing more.
         if (r.token == address(0)) return (0, 0);
         uint256 h = r.held;
-        if (units > h && flags & (CAPTURE_BEYOND | CAPTURE_FREE) == 0) units = h;
+        // A leg grows past its hold only on an open line in today's settlement token, as hold() requires.
+        if (
+            units > h
+                && (flags & (CAPTURE_BEYOND | CAPTURE_FREE) == 0 || !_open(l) || l.token != PROGRAM.settlementToken())
+        ) units = h;
         // forge-lint: disable-start(reentrancy-no-eth)
         if (units > h) {
             // Past what the leg holds: grow it within the line's credit first. CAPTURE_FREE takes what the credit
