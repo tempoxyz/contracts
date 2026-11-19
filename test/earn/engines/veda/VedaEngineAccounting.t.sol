@@ -23,6 +23,13 @@ contract VedaEngineAccountingTest is VedaEngineTestBase {
         assertEq(teller.publicWithdrawCalls(), 0);
     }
 
+    function testDepositLeavesOneUnitStandingAllowance() public {
+        assertEq(asset.allowance(address(engine), address(vault)), 1);
+        asset.mint(address(core), 30);
+        core.deposit(30);
+        assertEq(asset.allowance(address(engine), address(vault)), 1);
+    }
+
     function testValuationUsesSafeAccountantQuoteForActiveAndExactShares() public {
         accountant.setRate(3e6);
         asset.mint(address(core), 30);

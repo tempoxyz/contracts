@@ -150,7 +150,7 @@ contract PropAMMIntegrationTest is Test {
         assertEq(asset.balanceOf(bob), 1_000e6);
         assertEq(share.balanceOf(bob), 0);
         assertEq(engine.totalShares(), 100e6);
-        assertEq(asset.allowance(address(engine), address(pool)), 0);
+        assertEq(asset.allowance(address(engine), address(pool)), 1);
         oracle.set(105_100_000, vm.getBlockTimestamp());
         (uint256 feeAssets,) = vault.accrueFees();
         assertEq(feeAssets, 20_000);
@@ -303,8 +303,8 @@ contract PropAMMIntegrationTest is Test {
         assertEq(share.totalSupply(), 0);
         assertEq(engine.totalShares(), 0);
         assertEq(engine.totalAssets(), 0);
-        assertEq(asset.allowance(address(engine), address(pool)), 0);
-        assertEq(baseToken.allowance(address(engine), address(pool)), 0);
+        assertEq(asset.allowance(address(engine), address(pool)), 1);
+        assertEq(baseToken.allowance(address(engine), address(pool)), 1);
     }
 
     function testNewDepositAfterLossTracksBaseWithoutDilution() public {
@@ -324,6 +324,7 @@ contract PropAMMIntegrationTest is Test {
         uint256 burned = vault.withdrawExact(21e6, alice, expected);
         assertEq(burned, 20e6);
         assertEq(beforeShares - engine.totalShares(), burned);
+        assertEq(baseToken.allowance(address(engine), address(pool)), 1);
         assertEq(_redeem(alice, share.balanceOf(alice), 84e6), 84e6);
     }
 

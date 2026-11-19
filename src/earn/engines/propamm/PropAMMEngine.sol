@@ -7,7 +7,6 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import { IPropAMMVenue, IPropAMMPriceOracle } from "../../../interfaces/external/propamm/IPropAMMVenue.sol";
 
 import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
@@ -21,8 +20,8 @@ import { IEarnVault } from "../../../interfaces/earn/IEarnVault.sol";
 /// @notice Single-position PropAMM engine denominated in its immutable quote asset.
 /// @dev Pool and oracle are immutable. Only the bound EarnVault can move collateral.
 /// Specs for solar-verify (docs/earn/modules/propamm.md, docs/earn/integrations/engines.md):
-/// The OpenZeppelin ReentrancyGuard lock (`_status` is 2 while entered) guards every fund flow.
-/// @custom:reentrancy-guard _status == 2
+/// Every fund flow is nonReentrant through the transient `_entered` flag.
+/// @custom:reentrancy-guard _entered
 /// Owner calls that stay open under the lock cannot unbind or rebind the EarnVault.
 /// @custom:lock-stable earnVault != address(0)
 /// The pool trades two distinct tokens; the oracle age bound and route are nonzero.
@@ -47,8 +46,7 @@ contract PropAMMEngine is
     IEarnEngineExactWithdraw,
     IEarnEngineRedeem,
     IEarnEngineFeeValuation,
-    Ownable2Step,
-    ReentrancyGuard
+    Ownable2Step
 {
     using SafeERC20 for IERC20;
 
@@ -62,6 +60,7 @@ contract PropAMMEngine is
     error InsufficientBacking();
     error QuoteMismatch();
     error ReadDuringSettlement();
+    error ReentrantCall();
 
     event EarnVaultInitialized(address indexed earnVault);
     event Deposited(address indexed earnVault, uint256 assets, uint256 engineShares);
@@ -80,11 +79,21 @@ contract PropAMMEngine is
     string public constant name = "PropAMM Engine";
     string public constant symbol = "propAMM-engine";
     address public earnVault;
-    uint256 private tradeNonce;
+    /// @dev Packed beside `earnVault`, which is nonzero before the first trade, so the first trade ID
+    ///      never writes a slot from zero.
+    uint96 private tradeNonce;
+    bool private transient _entered;
 
     modifier onlyEarnVault() {
         if (msg.sender != earnVault || earnVault == address(0)) revert NotEarnVault();
         _;
+    }
+
+    modifier nonReentrant() {
+        if (_entered) revert ReentrantCall();
+        _entered = true;
+        _;
+        _entered = false;
     }
 
     /// @custom:ensures address(pool) == pool_ && maxOracleAge == maxAge_ && customerId == route_ && earnVault == address(0)
@@ -112,6 +121,10 @@ contract PropAMMEngine is
         shareScale = 10 ** uint256(baseDecimals);
         priceScale = 10 ** (exponent - quoteDecimals);
         customerId = route_;
+        // One-unit standing allowances keep both allowance slots nonzero between trades. Each swap approves
+        // one unit above its amount, and the measured balance checks keep every pull exact.
+        IERC20(quote).forceApprove(pool_, 1);
+        IERC20(base).forceApprove(pool_, 1);
     }
 
     /// Only the owner binds, once, to an EarnVault with code and the same asset; ownership is unchanged.
@@ -160,10 +173,10 @@ contract PropAMMEngine is
     }
 
     /// Valuation reverts mid-settlement and rounds down, in the vault's favour: shares * price / priceScale.
-    /// @custom:ensures _status != 2 && lastPrice > 0
+    /// @custom:ensures !_entered && lastPrice > 0
     /// @custom:ensures result * priceScale <= shares * lastPrice && shares * lastPrice < (result + 1) * priceScale
     function valueOf(uint256 shares) public view returns (uint256) {
-        if (_reentrancyGuardEntered()) revert ReadDuringSettlement();
+        if (_entered) revert ReadDuringSettlement();
         (uint256 price,) = _price();
         return Math.mulDiv(shares, price, priceScale);
     }
@@ -172,9 +185,9 @@ contract PropAMMEngine is
         return valueOf(shares);
     }
 
-    /// @custom:ensures _status != 2 && assets > 0 && shares > 0
+    /// @custom:ensures !_entered && assets > 0 && shares > 0
     function previewWithdraw(uint256 assets) public view returns (uint256 shares) {
-        if (_reentrancyGuardEntered()) revert ReadDuringSettlement();
+        if (_entered) revert ReadDuringSettlement();
         if (assets == 0) revert InvalidAmount();
         (shares,,,) = pool.quoteExactOutputFor(address(this), address(this), customerId, true, assets);
         if (shares == 0) revert InvalidAmount();
@@ -214,9 +227,9 @@ contract PropAMMEngine is
         /// @custom:ghost heldBefore = baseBefore
         IERC20(asset).safeTransferFrom(msg.sender, address(this), assets);
         if (IERC20(asset).balanceOf(address(this)) != cashBefore + assets) revert InexactTransfer();
-        _buy(assets, price, observedAt);
+        // _buy measures the base holding as exactly `baseBefore + shares`, so it is not read again here.
+        shares = _buy(assets, price, observedAt, cashBefore + assets, baseBefore);
         _samePrice(price, observedAt);
-        shares = totalShares() - baseBefore;
         /// @custom:ghost heldAfter = baseBefore + shares
         if (shares == 0) revert InvalidAmount();
         emit Deposited(msg.sender, assets, shares);
@@ -236,32 +249,33 @@ contract PropAMMEngine is
         onlyEarnVault
         returns (uint256 assets)
     {
-        if (shares == 0 || shares > totalShares()) revert InvalidAmount();
+        uint256 baseBefore = totalShares();
+        if (shares == 0 || shares > baseBefore) revert InvalidAmount();
         _route();
         (uint256 price, uint256 observedAt) = _price();
-        uint256 baseBefore = totalShares();
         /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
-        IERC20(baseToken).forceApprove(address(pool), shares);
+        // Exact input: the measured holding below proves the pool pulled `shares`, leaving the standing unit.
+        IERC20(baseToken).forceApprove(address(pool), shares + 1);
         pool.swapExactInput(
             true,
             shares,
             minAssets,
             address(this),
             customerId,
-            bytes32(++tradeNonce),
+            bytes32(uint256(++tradeNonce)),
             block.timestamp,
             price,
             0,
             observedAt
         );
-        IERC20(baseToken).forceApprove(address(pool), 0);
         /// @custom:ghost heldAfter = totalShares()
         if (totalShares() != baseBefore - shares) revert InexactTransfer();
-        assets = IERC20(asset).balanceOf(address(this)) - cashBefore;
+        uint256 cashAfter = IERC20(asset).balanceOf(address(this));
+        assets = cashAfter - cashBefore;
         if (assets == 0 || assets < minAssets) revert InsufficientBacking();
         _samePrice(price, observedAt);
-        _pay(assets, receiver);
+        _pay(assets, receiver, cashAfter);
         emit Redeemed(receiver, shares, assets);
     }
 
@@ -284,16 +298,17 @@ contract PropAMMEngine is
         uint256 baseBefore = totalShares();
         /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
-        IERC20(baseToken).forceApprove(address(pool), maximum);
+        IERC20(baseToken).forceApprove(address(pool), maximum + 1);
         _executeSell(assets, maximum, price, observedAt);
-        IERC20(baseToken).forceApprove(address(pool), 0);
         shares = baseBefore - totalShares();
         /// @custom:ghost heldAfter = baseBefore - shares
         if (shares == 0 || shares > maximum || IERC20(asset).balanceOf(address(this)) != cashBefore + assets) {
             revert InexactTransfer();
         }
+        // Exact output may pull less than `maximum`; bring the leftover back to the standing unit.
+        if (shares != maximum) IERC20(baseToken).forceApprove(address(pool), 1);
         _samePrice(price, observedAt);
-        _pay(assets, receiver);
+        _pay(assets, receiver, cashBefore + assets);
         emit WithdrewExact(receiver, assets, shares);
     }
 
@@ -333,28 +348,30 @@ contract PropAMMEngine is
         if (price != currentPrice || observedAt != currentObservedAt) revert QuoteMismatch();
     }
 
-    function _buy(uint256 assets, uint256 price, uint256 observedAt) private {
+    /// @dev `cashBefore` and `baseBefore` are the engine's measured balances when the swap starts.
+    function _buy(uint256 assets, uint256 price, uint256 observedAt, uint256 cashBefore, uint256 baseBefore)
+        private
+        returns (uint256 received)
+    {
         _route();
         (uint256 minimum, uint256 quotedPrice, uint256 quotedAt,) =
             pool.quoteExactInputFor(address(this), address(this), customerId, false, assets);
         if (quotedPrice != price || quotedAt != observedAt || minimum == 0) revert QuoteMismatch();
-        uint256 cashBefore = IERC20(asset).balanceOf(address(this));
-        uint256 baseBefore = IERC20(baseToken).balanceOf(address(this));
-        IERC20(asset).forceApprove(address(pool), assets);
-        uint256 received = _executeBuy(assets, minimum, price, observedAt);
-        IERC20(asset).forceApprove(address(pool), 0);
+        // Exact input: the measured cash below proves the pool pulled `assets`, leaving the standing unit.
+        IERC20(asset).forceApprove(address(pool), assets + 1);
+        received = _executeBuy(assets, minimum, price, observedAt);
         if (
             received < minimum || IERC20(asset).balanceOf(address(this)) != cashBefore - assets
                 || IERC20(baseToken).balanceOf(address(this)) != baseBefore + received
         ) revert InexactTransfer();
     }
 
-    function _pay(uint256 assets, address receiver) private {
+    /// @dev `beforeEngine` is the engine's measured quote-asset balance before the payment.
+    function _pay(uint256 assets, address receiver, uint256 beforeEngine) private {
         if (receiver == address(0) || receiver == address(this) || receiver == address(pool)) {
             revert InvalidReceiver();
         }
         uint256 beforeRecipient = IERC20(asset).balanceOf(receiver);
-        uint256 beforeEngine = IERC20(asset).balanceOf(address(this));
         IERC20(asset).safeTransfer(receiver, assets);
         if (
             IERC20(asset).balanceOf(receiver) != beforeRecipient + assets
@@ -369,7 +386,7 @@ contract PropAMMEngine is
             minimum,
             address(this),
             customerId,
-            bytes32(++tradeNonce),
+            bytes32(uint256(++tradeNonce)),
             block.timestamp,
             price,
             0,
@@ -387,7 +404,7 @@ contract PropAMMEngine is
             maximum,
             address(this),
             customerId,
-            bytes32(++tradeNonce),
+            bytes32(uint256(++tradeNonce)),
             block.timestamp,
             price,
             0,

@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC20Like } from "../../../interfaces/external/IERC20Like.sol";
 import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineAsyncRedeem } from "../../../interfaces/earn/engines/IEarnEngineAsyncRedeem.sol";
@@ -101,11 +102,17 @@ contract VedaEngine is
     IBoringVault public immutable vault;
     ITeller public teller;
     IBoringQueue public queue;
+    /// @dev Unresolved claims bound to the active `queue`, packed beside it so the count never sits in a
+    ///      slot written from zero (Tempo charges 250,000 gas for each). Retired Queues' counts are parked in
+    ///      `_retiredQueueOpenClaims`.
+    uint96 private _activeQueueOpenClaims;
     IAccountant public accountant;
     /// @notice Maximum age of the latest Veda Accountant rate report accepted for new deposits.
     /// @dev Packed beside `accountant`, which every read of it pairs with.
     uint64 public maxRateAge;
     uint64 public peripheryVersion;
+    /// @dev Claims that have not finalized or cancelled, packed beside the never-zero `peripheryVersion`.
+    uint128 private _unresolvedClaimCount;
     /// @dev Transaction-scoped rate checkpoint. Transient storage is cleared automatically after the
     ///      transaction, so unrelated operations in the same block may consume a newly posted rate.
     bool private transient _rateCheckpointed;
@@ -144,14 +151,8 @@ contract VedaEngine is
 
     mapping(bytes32 requestId => QueueClaim) private _claims;
 
-    /// @notice Unresolved engine claims grouped by their originating Queue. Operators keep an old
-    ///         Queue and solve path available until this count reaches zero.
-    mapping(address requestQueue => uint256 count) public openClaimsByQueue;
-
-    /// @notice Total claims that have not finalized or cancelled. While nonzero, the base asset is
-    ///         never sweepable because an authorized Veda solver may have paid the engine without
-    ///         routing through {VedaForwardingSolver} and therefore without crediting {settled}.
-    uint256 public unresolvedClaimCount;
+    /// @dev Unresolved claims of each Queue other than the active one; {openClaimsByQueue} reads both.
+    mapping(address requestQueue => uint96 count) private _retiredQueueOpenClaims;
 
     /// @notice Aggregate per-asset funding ledger. A request is finalizable only from assets explicitly
     ///         earmarked here, never the engine's raw balance. Each measured credit must independently
@@ -239,6 +240,7 @@ contract VedaEngine is
     error StaleAccountantRate(uint256 updatedAt, uint256 currentTime, uint256 maxAge);
     error SweepExceedsAvailableBalance(address token, uint256 available, uint256 requested);
     error TransferFailed();
+    error UnexpectedAllowance(address spender, uint256 remaining);
     error UnsupportedAccountantFreshness(address accountant);
     error UnexpectedAssetsReceived(uint256 expectedAssets, uint256 actualAssets);
     error UnexpectedVenueSharesQueued(uint256 expectedShares, uint256 actualShares);
@@ -299,6 +301,10 @@ contract VedaEngine is
         baseAsset = baseAsset_;
         _name = name_;
         _symbol = symbol_;
+        // One-unit standing allowances keep each allowance slot nonzero between calls; every pull approves
+        // one more than it moves and leaves exactly that unit.
+        _approve(baseAsset_, address(vault_), 1);
+        if (address(queue_) != address(0)) _approve(address(vault_), address(queue_), 1);
 
         emit VedaEngineInitialized(address(teller_), address(queue_), address(accountant_), version_, maxRateAge_);
     }
@@ -353,12 +359,20 @@ contract VedaEngine is
         ITeller oldTeller = teller;
         IBoringQueue oldQueue = queue;
         IAccountant oldAccountant = accountant;
-        if (address(oldQueue) != address(0) && address(oldQueue) != address(newQueue)) {
-            _forceApprove(address(vault), address(oldQueue), 0);
+        uint96 activeQueueOpenClaims = _activeQueueOpenClaims;
+        if (address(oldQueue) != address(newQueue)) {
+            // Existing claims stay bound to their originating Queue: park the old Queue's count and bring
+            // back any count the new Queue left when it was retired.
+            if (activeQueueOpenClaims != 0) _retiredQueueOpenClaims[address(oldQueue)] += activeQueueOpenClaims;
+            activeQueueOpenClaims = _retiredQueueOpenClaims[address(newQueue)];
+            if (activeQueueOpenClaims != 0) delete _retiredQueueOpenClaims[address(newQueue)];
+            if (address(oldQueue) != address(0)) _approve(address(vault), address(oldQueue), 0);
+            if (address(newQueue) != address(0)) _approve(address(vault), address(newQueue), 1);
         }
 
         teller = newTeller;
         queue = newQueue;
+        _activeQueueOpenClaims = activeQueueOpenClaims;
         accountant = newAccountant;
         peripheryVersion = newVersion;
         _checkpointRate(validatedRate);
@@ -448,15 +462,16 @@ contract VedaEngine is
         _requireFreshAccountantRate(accountant, maxRateAge);
         _checkpointRate();
         _pull(baseAsset, msg.sender, assets);
-        // enter() pulls from the engine into the vault, so approve the VAULT (not the teller).
-        _approveFromZero(baseAsset, address(vault), assets);
+        // enter() pulls from the engine into the vault, so approve the VAULT (not the teller), one unit
+        // above `assets` so an exact pull leaves the standing unit.
+        _approve(baseAsset, address(vault), assets + 1);
 
         uint256 before = vault.balanceOf(address(this));
         // Permissioned bulk deposit: pull from msg.sender == engine, mint unlocked raw shares to
         // `to` == engine. The engine must hold Veda's external bulk-deposit authority.
         teller.bulkDeposit(baseAsset, assets, 0, address(this));
         engineShares = vault.balanceOf(address(this)) - before;
-        _forceApprove(baseAsset, address(vault), 0);
+        _requireStandingAllowance(baseAsset, address(vault));
         if (engineShares == 0) revert NoVenueSharesReceived();
         emit Deposited(msg.sender, assets, engineShares);
     }
@@ -577,7 +592,7 @@ contract VedaEngine is
         if (address(requestQueue) == address(0)) revert QueueUnavailable();
         _checkpointRate();
         uint256 sharesBefore = vault.balanceOf(address(this));
-        _approveFromZero(address(vault), address(requestQueue), queueShares);
+        _approve(address(vault), address(requestQueue), uint256(queueShares) + 1);
         requestId = requestQueue.requestOnChainWithdraw(
             request.assetOut, queueShares, request.discountBps, request.secondsToDeadline
         );
@@ -593,7 +608,6 @@ contract VedaEngine is
         // Queue entry transfers existing BoringVault shares without changing total supply, so unlike
         // Teller mint/burn paths the safe rate must remain identical across the external call.
         _checkpointRate();
-        _forceApprove(address(vault), address(requestQueue), 0);
         if (trackedRequest.amountOfAssets < request.minQueuedAssets) {
             revert QueuedAssetsBelowMinimum(request.minQueuedAssets, trackedRequest.amountOfAssets);
         }
@@ -609,8 +623,9 @@ contract VedaEngine is
         uint88 amountOfAssets = uint88(trackedRequest.amountOfAssets);
         _claims[requestId] =
             QueueClaim({ requestQueue: requestQueue, status: ClaimStatus.Open, amountOfAssets: amountOfAssets });
-        openClaimsByQueue[address(requestQueue)]++;
-        unresolvedClaimCount++;
+        // The request used the active Queue, whose count is packed beside it.
+        _activeQueueOpenClaims++;
+        _unresolvedClaimCount++;
         emit RedeemRequested(requestId, request.assetOut, queueShares);
     }
 
@@ -789,14 +804,14 @@ contract VedaEngine is
     ///         (3) every other token remains bounded by funds earmarked in {settled}.
     /// Only the owner sweeps, never the BoringVault share backing, never the base asset while claims are open.
     /// @custom:ensures old(owner()) == msg.sender && to != address(0) && token != address(vault)
-    /// @custom:ensures token == baseAsset ==> old(unresolvedClaimCount) == 0
+    /// @custom:ensures token == baseAsset ==> old(_unresolvedClaimCount) == 0
     function sweepDust(address token, address to, uint256 amount) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         // Backing custody: raw BoringVault shares are the engine's entire backing and are NEVER dust.
         if (token == address(vault)) revert CannotSweepEngineBacking();
         // The Queue can pay `request.user == engine` through any authorized Veda solver. Until every
         // claim closes, an unearmarked base-asset balance may therefore be an externally solved payout.
-        uint256 unresolved = unresolvedClaimCount;
+        uint256 unresolved = _unresolvedClaimCount;
         if (token == baseAsset && unresolved != 0) revert BaseAssetSweepBlocked(unresolved);
         uint256 have = IERC20Like(token).balanceOf(address(this));
         // Never touch aggregate funds earmarked to request-level claimable failed payouts.
@@ -815,6 +830,20 @@ contract VedaEngine is
 
     function rate() external view returns (uint256) {
         return accountant.getRateInQuoteSafe(baseAsset);
+    }
+
+    /// @notice Unresolved engine claims grouped by their originating Queue. Operators keep an old
+    ///         Queue and solve path available until this count reaches zero.
+    function openClaimsByQueue(address requestQueue) external view returns (uint256 count) {
+        if (requestQueue == address(queue)) return _activeQueueOpenClaims;
+        return _retiredQueueOpenClaims[requestQueue];
+    }
+
+    /// @notice Total claims that have not finalized or cancelled. While nonzero, the base asset is
+    ///         never sweepable because an authorized Veda solver may have paid the engine without
+    ///         routing through {VedaForwardingSolver} and therefore without crediting {settled}.
+    function unresolvedClaimCount() external view returns (uint256) {
+        return _unresolvedClaimCount;
     }
 
     /// @notice Timestamp used by the deposit freshness guard for the active Accountant.
@@ -966,8 +995,10 @@ contract VedaEngine is
     }
 
     function _closeClaim(QueueClaim storage c) private {
-        openClaimsByQueue[address(c.requestQueue)]--;
-        unresolvedClaimCount--;
+        IBoringQueue requestQueue = c.requestQueue;
+        if (requestQueue == queue) _activeQueueOpenClaims--;
+        else _retiredQueueOpenClaims[address(requestQueue)]--;
+        _unresolvedClaimCount--;
     }
 
     function _validateContract(address account) private view {
@@ -1051,17 +1082,16 @@ contract VedaEngine is
         if (!IERC20Like(token).transfer(to, amount)) revert TransferFailed();
     }
 
-    /// @dev Every mutable approval is cleared before the successful frame returns. A reverted frame
-    ///      also rolls the approval back, so the zero-at-rest invariant permits a direct exact set.
-    function _approveFromZero(address token, address spender, uint256 amount) private {
+    /// @dev Sets an allowance directly. At rest the engine allows at most one unit (base asset to the
+    ///      BoringVault, BoringVault shares to the active Queue), and both tokens accept a direct set over it.
+    function _approve(address token, address spender, uint256 amount) private {
         if (!IERC20Like(token).approve(spender, amount)) revert TransferFailed();
     }
 
-    /// @dev Zero-then-set safe approve with bool checks (USDT-style).
-    function _forceApprove(address token, address spender, uint256 amount) private {
-        if (!IERC20Like(token).approve(spender, 0)) revert TransferFailed();
-        if (amount != 0) {
-            if (!IERC20Like(token).approve(spender, amount)) revert TransferFailed();
-        }
+    /// @dev A pull approved one unit above its amount leaves exactly the standing unit, proving the spender
+    ///      took the whole amount and keeps no more than one unit at rest.
+    function _requireStandingAllowance(address token, address spender) private view {
+        uint256 remaining = IERC20(token).allowance(address(this), spender);
+        if (remaining != 1) revert UnexpectedAllowance(spender, remaining);
     }
 }

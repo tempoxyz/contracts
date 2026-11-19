@@ -176,7 +176,7 @@ Review `PropAMMEngine` together with the pinned DirectPropAMM execution behavior
 recipient registry, and the actual token implementations; production configuration and
 independent sign-off are outside local CI.
 
-Preserve one-vault custody, exact balance-delta accounting, zero residual pool allowances, pinned
+Preserve one-vault custody, exact balance-delta accounting, at most one unit of standing pool allowance, pinned
 oracle and scale consistency, same-price settlement checks, reentrancy guards (including
 `ReadDuringSettlement` for valuation reads mid-trade), and the absence of a privileged sweep.
 

@@ -6,7 +6,6 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
@@ -21,15 +20,15 @@ import { IEarnVault } from "../../../interfaces/earn/IEarnVault.sol";
 ///      absorbed surplus. Base asset sent directly to the engine is raw surplus the EarnVault quarantines.
 ///      There is no venue, oracle, or expiring valuation, so it does not advertise fee valuation.
 /// Specs (docs/earn/modules/hold.md, docs/earn/integrations/engines.md):
-/// The OpenZeppelin ReentrancyGuard lock (`_status` is 2 while entered) guards every fund flow.
-/// @custom:reentrancy-guard _status == 2
+/// Every fund flow is nonReentrant through the transient `_entered` flag.
+/// @custom:reentrancy-guard _entered
 /// @custom:lock-stable earnVault != address(0)
 /// Ghost record of the engine's base-asset holding (its engine shares) before and after each call.
 /// @custom:ghost uint256 heldBefore
 /// @custom:ghost uint256 heldAfter
 /// Solvency: every deposit, redemption and exact withdrawal reports exactly the measured change in the base
 /// asset the engine holds, so the EarnVault's engine-share ledger moves with the holding.
-contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem, Ownable2Step, ReentrancyGuard {
+contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem, Ownable2Step {
     using SafeERC20 for IERC20;
 
     error InvalidConfiguration();
@@ -39,6 +38,7 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
     error InvalidReceiver();
     error InexactTransfer();
     error InsufficientAssetsReceived();
+    error ReentrantCall();
 
     event EarnVaultInitialized(address indexed earnVault);
     event Deposited(address indexed earnVault, uint256 assets, uint256 engineShares);
@@ -50,10 +50,18 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
     string public name;
     string public symbol;
     address public earnVault;
+    bool private transient _entered;
 
     modifier onlyEarnVault() {
         if (msg.sender != earnVault || earnVault == address(0)) revert NotEarnVault();
         _;
+    }
+
+    modifier nonReentrant() {
+        if (_entered) revert ReentrantCall();
+        _entered = true;
+        _;
+        _entered = false;
     }
 
     /// @param asset_ The base asset; must have code and nonzero metadata decimals no greater than 77.

@@ -176,8 +176,11 @@ ERC-4626 engine hold no base asset between calls, so each deposit recreates thei
 After a new stack is bound, send it a one-time residue that keeps those slots nonzero:
 
 - 1 base unit of the vault asset to the EarnVault
-- 1 base unit to its engine, only for an `erc4626` engine (Veda's settlement checks and PropAMM's
-  idle cash read the engine's whole balance, so those engines hold none)
+- 1 base unit to its engine, for an `erc4626` engine
+- 1 base unit of the quote asset to a `propamm` engine: its idle cash otherwise goes from zero to the
+  trade amount and back on every call. The engine's balance checks are before/after deltas, so the
+  unit stays idle cash it never trades or pays out
+- nothing to a Veda engine, whose settlement checks read its whole base-asset balance
 
 Only an EarnVault from a factory release that includes this change counts up to 1 unit of EarnShare it
 holds as burned (TIP-20 burns only the caller's balance, so every exit moves shares to the vault
@@ -190,7 +193,7 @@ Never send EarnShare to anything when its EarnVault predates both changes, which
 recorded before them. That vault cannot burn it, so supply could never return to zero: after every
 other holder exits and that unit's backing rounds to zero, deposits and whole-pool migration revert.
 
-Every EarnVault and ERC-4626 engine balance check is a before/after delta, so the residue never
+Every EarnVault, ERC-4626 engine and PropAMM engine balance check is a before/after delta, so the residue never
 counts as user assets; it stays with the contract for good. Measured on real TIP-20
 (`test/spend/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and on a
 vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The residue is a plain transfer outside the

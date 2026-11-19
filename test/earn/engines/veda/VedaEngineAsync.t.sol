@@ -46,8 +46,25 @@ contract VedaEngineAsyncTest is VedaEngineTestBase {
         assertEq(engine.unresolvedClaimCount(), 0);
     }
 
+    function testFirstRequestWritesOnlyItsClaimSlot() public {
+        // The claim counters share slots with the active Queue and the periphery version, and the Queue
+        // allowance keeps its standing unit, so the first request writes no other engine slot from zero.
+        vault.mint(address(engine), 40);
+
+        vm.startStateDiffRecording();
+        bytes32 id = core.requestRedeem(40, address(asset), 0, 3600);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        (uint256 created, bytes32 createdSlot) = _countCreatedSlots(accesses, address(engine));
+        assertEq(created, 1);
+        assertEq(createdSlot, keccak256(abi.encode(id, CLAIMS_SLOT)));
+        assertEq(vault.allowance(address(engine), address(queue)), 1);
+        assertEq(engine.openClaimsByQueue(address(queue)), 1);
+        assertEq(engine.unresolvedClaimCount(), 1);
+    }
+
     function testRequestWritesOneNewClaimSlot() public {
-        _request(30); // the first request also creates the per-Queue and unresolved counters
+        _request(30); // an earlier claim stays open
         vault.mint(address(engine), 40);
 
         vm.startStateDiffRecording();
@@ -336,7 +353,7 @@ contract VedaEngineAsyncTest is VedaEngineTestBase {
     function _assertNoRequestSideEffects(uint256 expectedEngineShares) private view {
         assertEq(vault.balanceOf(address(engine)), expectedEngineShares);
         assertEq(vault.balanceOf(address(queue)), 0);
-        assertEq(vault.allowance(address(engine), address(queue)), 0);
+        assertEq(vault.allowance(address(engine), address(queue)), 1);
         assertEq(queue.nonce(), 1);
         assertEq(engine.openClaimsByQueue(address(queue)), 0);
         assertEq(engine.unresolvedClaimCount(), 0);

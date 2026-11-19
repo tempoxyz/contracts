@@ -20,8 +20,9 @@ accounting specification for contracts, tests, and integrations; this file is no
   only at exact par with measured 1:1 output, and cleans up temporary balances and approvals except
   standing maximums to its immutable EarnVault and pool and its source Portal. A standing allowance
   is only for a spender that cannot change and moves the holder's tokens only inside the holder's
-  own call, so a one-unit residue at rest stays safe; Veda's engine keeps exact approvals
-  because it holds settled payouts. A
+  own call, so a one-unit residue at rest stays safe. Veda's and PropAMM's engines approve exact
+  pulls and keep at most one unit standing, never a maximum approval, because Veda's engine holds
+  settled payouts. A
   same-asset router binds no pool. Do not add caller-selected tokens, vaults, or destinations.
 - Reward periphery has no issuer authority; preserve measured solvency, domain-separated cumulative
   entitlements, settlement replay protection, and unpaid entitlement after failed transfers.
