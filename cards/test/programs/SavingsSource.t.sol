@@ -94,7 +94,7 @@ contract SavingsSourceTest is AuthEnv {
         vm.prank(address(cards));
         savings.refund(alice, bytes32(0), ID, 40e6);
         assertEq(savings.refundable(alice, bytes32(0), ID), 110e6);
-        (bool placed, uint120 captured, uint120 refunded) = savings.legs(ID);
+        (bool placed, uint120 captured, uint120 refunded,) = savings.legs(ID);
         assertTrue(placed);
         assertEq(captured, 150e6);
         assertEq(refunded, 40e6);
@@ -287,6 +287,151 @@ contract SavingsSourceTest is AuthEnv {
         new SavingsSource(cards, IEarnVault(address(0)), funder);
         vm.expectRevert(SavingsSource.ZeroAddress.selector);
         new SavingsSource(CardAuth(address(0)), IEarnVault(address(earnVault)), funder);
+    }
+
+    /// @dev While captures defer, a new leg holds only what the float can still pay past earlier promises, a leg
+    ///      placed before the deferral cannot grow, and every promised capture is paid from the float.
+    function test_hold_duringDeferral_cappedAtTheFloat() public {
+        _thinFloat(100e6);
+        _place(ID, 300e6);
+        _startDeferral(ID, 30e6);
+        (bool active, uint8 epoch, uint128 promised) = savings.deferral();
+        assertTrue(active);
+        assertEq(epoch, 1);
+        assertEq(promised, 0);
+        uint256 floatLeft = usd.balanceOf(address(savings));
+        assertApproxEqAbs(floatLeft, 70e6, 1);
+        // The earlier leg keeps what it holds and grows no further.
+        uint256 before = _leg(ID).held;
+        assertEq(_place(ID, 400e6), earnVault.previewRedeem(before));
+        assertEq(_leg(ID).held, before);
+        // A new leg holds what the float pays for, its tolerance included.
+        uint256 got = _place(ID2, 500e6);
+        uint256 limit = _leg(ID2).captureLimit;
+        assertLe(earnVault.previewRedeem(limit), floatLeft);
+        assertGt(got, 50e6);
+        (,, promised) = savings.deferral();
+        assertEq(promised, _leg(ID2).captureLimit);
+        (,,, uint8 promisedIn) = savings.legs(ID2);
+        assertEq(promisedIn, 1);
+        // A third leg finds nothing left.
+        assertEq(_place(bytes32("leg-3"), 10e6), 0);
+        // The promised leg captures in full from the float, up to its capture limit.
+        vm.prank(address(cards));
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID2, got * 2, CAPTURE_BEYOND | CAPTURE_FINAL);
+        assertEq(paid, earnVault.previewRedeem(limit));
+        (,, promised) = savings.deferral();
+        assertEq(promised, 0);
+        _assertCoreBalanced();
+    }
+
+    /// @dev With a capture tolerance, a new leg's hold leaves room for its capture limit within the float, and a
+    ///      capture past the hold up to that limit is paid from the float.
+    function test_hold_duringDeferral_floatCoversTheCaptureLimit() public {
+        _setTolerance(alice, address(savings), address(earnShare), 2000);
+        _thinFloat(100e6);
+        _place(ID, 300e6);
+        _startDeferral(ID, 30e6);
+        uint256 floatLeft = usd.balanceOf(address(savings));
+        uint256 got = _place(ID2, 500e6);
+        uint256 limit = _leg(ID2).captureLimit;
+        assertEq(limit, _leg(ID2).held * 12 / 10);
+        assertLe(earnVault.previewRedeem(limit), floatLeft);
+        assertGt(earnVault.previewRedeem(limit), floatLeft - 3);
+        vm.prank(address(cards));
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID2, got * 12 / 10, CAPTURE_BEYOND | CAPTURE_FINAL);
+        assertApproxEqAbs(paid, got * 12 / 10, 2);
+        _assertCoreBalanced();
+    }
+
+    /// @dev While captures defer, a leg without a promise captures only the float the promises leave and leaves
+    ///      the rest to the order's later entries, rather than reverting.
+    function test_capture_duringDeferral_unpromisedLegTakesWhatTheFloatLeaves() public {
+        _thinFloat(100e6);
+        _place(ID, 300e6);
+        _startDeferral(ID, 30e6);
+        uint256 got = _place(ID2, 40e6);
+        assertEq(got, 40e6);
+        (,, uint128 promised) = savings.deferral();
+        uint256 owed = earnVault.previewRedeem(promised);
+        uint256 floatLeft = usd.balanceOf(address(savings));
+        vm.prank(address(cards));
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 270e6, CAPTURE_FINAL);
+        assertLe(paid, floatLeft - owed);
+        assertGt(paid, floatLeft - owed - 2);
+        assertEq(_leg(ID).token, address(0));
+        // The promise survives: the promised leg still captures in full.
+        vm.prank(address(cards));
+        (paid,) = savings.capture(alice, bytes32(0), ID2, 40e6, CAPTURE_FINAL);
+        assertEq(paid, 40e6);
+        _assertCoreBalanced();
+    }
+
+    /// @dev A release or a partial capture gives the promise back; holds return to normal once a redemption works.
+    function test_deferral_promisesFollowTheLegAndEndOnARedemption() public {
+        _thinFloat(100e6);
+        _place(ID, 300e6);
+        _startDeferral(ID, 30e6);
+        _place(ID2, 40e6);
+        uint256 limit = _leg(ID2).captureLimit;
+        (,, uint128 promised) = savings.deferral();
+        assertEq(promised, limit);
+        vm.prank(address(cards));
+        savings.capture(alice, bytes32(0), ID2, 10e6, 0);
+        (,, promised) = savings.deferral();
+        assertEq(promised, _leg(ID2).captureLimit);
+        assertLt(promised, limit);
+        vm.prank(address(cards));
+        savings.release(alice, bytes32(0), ID2);
+        (,, promised) = savings.deferral();
+        assertEq(promised, 0);
+        // The venue redeems again: the funder's redemption ends the deferral.
+        vm.clearMockedCalls();
+        uint256 held = savings.heldShares();
+        vm.prank(funder);
+        savings.redeemHeld(held, 1);
+        (bool active, uint8 epoch,) = savings.deferral();
+        assertFalse(active);
+        assertEq(epoch, 1);
+        assertEq(_place(bytes32("leg-3"), 500e6), 500e6);
+        // A leg promised in the ended deferral is not promised in the next one.
+        _startDeferral(bytes32("leg-3"), 10e6);
+        (active, epoch, promised) = savings.deferral();
+        assertTrue(active);
+        assertEq(epoch, 2);
+        assertEq(promised, 0);
+        _assertCoreBalanced();
+    }
+
+    /// @dev A capture that the venue redeems ends a deferral on its own.
+    function test_deferral_endsWhenACaptureRedeems() public {
+        _thinFloat(100e6);
+        _place(ID, 300e6);
+        _startDeferral(ID, 30e6);
+        vm.clearMockedCalls();
+        vm.prank(address(cards));
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 50e6, 0);
+        assertEq(paid, 50e6);
+        (bool active,,) = savings.deferral();
+        assertFalse(active);
+        assertEq(_place(ID2, 500e6), 500e6);
+    }
+
+    /// @dev Leaves `amount` of float in the source.
+    function _thinFloat(uint256 amount) internal {
+        vm.prank(funder);
+        savings.withdraw(address(usd), funder, FLOAT - amount);
+    }
+
+    /// @dev Makes the vault refuse every redemption to the settlement account, then defers a capture of `units` on
+    ///      leg `id`.
+    function _startDeferral(bytes32 id, uint256 units) internal {
+        vm.mockCallRevert(
+            address(earnVault), abi.encodePacked(bytes4(keccak256("redeem(uint256,address,uint256)"))), "illiquid"
+        );
+        vm.prank(address(cards));
+        (uint256 paid,) = savings.capture(alice, bytes32(0), id, units, 0);
+        assertEq(paid, units);
     }
 
     function _place(bytes32 id, uint256 units) internal returns (uint256) {

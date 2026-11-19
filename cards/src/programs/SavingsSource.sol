@@ -18,8 +18,9 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 ///         is not the settlement token. A refund deposits the issuer's cash back into the vault and refunds the shares
 ///         it mints. Savings never create debt or take charges.
 /// @dev Deployed with a fixed vault and funder. When the vault quotes but cannot redeem at once, the float pays the
-///      settlement account and the shares wait here for the funder's `redeemHeld`. `position` is unused. Not
-///      upgradeable.
+///      settlement account and the shares wait here for the funder's `redeemHeld`. From that first deferred capture
+///      until a redemption works again, new legs hold only what the float can still pay for past what earlier such
+///      legs may capture, so the order's later entries hold the rest. `position` is unused. Not upgradeable.
 /// @custom:reentrancy-guard _locked
 // Calls go to the fixed core, the fixed vault and the program's own Conversion, inside program-driven steps.
 // forge-lint: disable-start(reentrancy-no-eth, calls-loop)
@@ -31,6 +32,7 @@ contract SavingsSource is ISource {
 
     /// @notice What the source is: savings.
     uint8 public constant KIND = 2;
+    uint256 internal constant BPS = 10_000;
     /// @notice The card authorization contract this source serves.
     ICardAuth public immutable PROGRAM;
     /// @notice Where every capture is paid.
@@ -44,23 +46,37 @@ contract SavingsSource is ISource {
     address public immutable FUNDER;
 
     /// @notice What a leg captured and was refunded, in settlement units. `placed` is written with the leg's first
-    ///         hold, so its captures and refunds write an existing slot.
+    ///         hold, so its captures and refunds write an existing slot. `promisedIn` is the deferral epoch whose
+    ///         float the leg may capture against, zero when none.
     struct Leg {
         bool placed;
         uint120 captured;
         uint120 refunded;
+        uint8 promisedIn;
+    }
+
+    /// @notice Whether captures are deferring onto the float, the epoch of the current or last deferral (never zero
+    ///         once one began), and the shares legs placed in it may still capture (their capture limits).
+    struct Deferral {
+        bool active;
+        uint8 epoch;
+        uint128 promised;
     }
 
     /// @notice Shares left here by deferred redemptions and refund surpluses, the only shares the funder may take.
     uint256 public heldShares;
     /// @notice Each leg's captures and refunds, by leg id.
     mapping(bytes32 => Leg) public legs;
+    /// @notice The current or last deferral.
+    Deferral public deferral;
 
     bool private transient _locked;
 
     event Captured(address indexed owner, bytes32 indexed legId, uint256 shares, uint256 paid, bool deferred);
     event Refunded(address indexed owner, bytes32 indexed legId, uint256 assets, uint256 shares);
     event Redeemed(uint256 shares, uint256 assets);
+    event DeferralStarted(uint8 epoch);
+    event DeferralEnded(uint8 epoch);
 
     error ExceedsHeldShares(uint256 shares, uint256 held);
     error InsufficientFloat(uint256 assets, uint256 float_);
@@ -131,6 +147,15 @@ contract SavingsSource is ISource {
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
         bool live = h.token != address(0);
         uint256 most = (live ? h.held : 0) + CORE.available(owner, SHARE);
+        Deferral memory d = deferral;
+        bool promised;
+        if (d.active) {
+            // While captures defer, only a new leg or one already promised in this deferral grows, by what the float
+            // can still pay for.
+            promised = !live || legs[legId].promisedIn == d.epoch;
+            uint256 cap = (live ? h.held : 0) + (promised ? _floatRoom(owner, d.promised) : 0);
+            if (cap < most) most = cap;
+        }
         // No shares to hold: skip pricing them.
         uint256 shares = units == 0 || most == 0 ? 0 : _sharesFor(units);
         if (shares > most) {
@@ -138,16 +163,24 @@ contract SavingsSource is ISource {
             units = _value(shares);
         }
         if (shares == 0 || units == 0) {
-            if (live) CORE.release(owner, address(this), legId);
+            if (live) {
+                CORE.release(owner, address(this), legId);
+                if (promised) _repromise(d, h.captureLimit, 0);
+            }
             return 0;
         }
         if (!live) {
-            if (!legs[legId].placed) legs[legId].placed = true;
+            Leg storage g = legs[legId];
+            if (!g.placed) g.placed = true;
+            if (promised) g.promisedIn = d.epoch;
             CORE.holdFrom(
                 owner, IReservationCore.HoldRequest(SHARE, legId, shares.toUint128(), expiresAt, address(this), false)
             );
         } else if (shares != h.held) {
             CORE.adjust(owner, address(this), legId, shares.toUint128());
+        }
+        if (promised) {
+            _repromise(d, live ? h.captureLimit : 0, CORE.getHold(owner, address(this), legId).captureLimit);
         }
         return units;
     }
@@ -168,13 +201,27 @@ contract SavingsSource is ISource {
             // CAPTURE_BEYOND stays within the hold's tolerance; CAPTURE_FREE grows the hold to what it takes.
             if (!free && most > h.captureLimit) most = h.captureLimit;
         }
+        Leg storage g = legs[legId];
+        Deferral memory d = deferral;
+        bool promised = d.active && g.promisedIn == d.epoch;
+        // While captures defer, one takes at most what the float pays past the other legs' promises; the order's
+        // later entries cover the rest.
+        uint256 others = promised ? uint256(d.promised).zeroFloorSub(h.captureLimit) : d.promised;
+        if (d.active) {
+            uint256 room = _floatShares(others);
+            if (most > room) most = room;
+        }
         if (shares > most) shares = most;
         if (shares == 0 && !isFinal) return (0, 0);
         if (shares > h.captureLimit) CORE.adjust(owner, address(this), legId, shares.toUint128());
         CORE.capture(owner, address(this), legId, shares.toUint128(), isFinal);
+        // The leg's promise becomes what it may still capture: nothing after a final capture.
+        if (promised) {
+            _repromise(d, h.captureLimit, isFinal ? 0 : CORE.getHold(owner, address(this), legId).captureLimit);
+        }
         if (shares == 0) return (0, 0);
-        paid = _redeem(owner, legId, shares, units);
-        legs[legId].captured += paid.toUint120();
+        paid = _redeem(owner, legId, shares, units, d, others);
+        g.captured += paid.toUint120();
         return (paid, paid);
     }
 
@@ -183,7 +230,11 @@ contract SavingsSource is ISource {
     }
 
     function release(address owner, bytes32, bytes32 legId) external onlyProgram {
-        if (CORE.getHold(owner, address(this), legId).token != address(0)) CORE.release(owner, address(this), legId);
+        IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
+        if (h.token == address(0)) return;
+        CORE.release(owner, address(this), legId);
+        Deferral memory d = deferral;
+        if (d.active && legs[legId].promisedIn == d.epoch) _repromise(d, h.captureLimit, 0);
     }
 
     function refund(address owner, bytes32, bytes32 legId, uint256 units) external onlyProgram {
@@ -210,6 +261,7 @@ contract SavingsSource is ISource {
         _takeHeld(shares);
         assets = VAULT.redeem(shares, address(this), minAssets);
         emit Redeemed(shares, assets);
+        _endDeferral(deferral);
     }
 
     /// @notice Withdraws float or held shares to `to`.
@@ -227,8 +279,12 @@ contract SavingsSource is ISource {
     }
 
     /// @dev Redeems `shares` and pays the settlement account up to `units` settlement units' worth. Returns the
-    ///      settlement units paid.
-    function _redeem(address owner, bytes32 legId, uint256 shares, uint256 units) private returns (uint256 paid) {
+    ///      settlement units paid. A deferred capture uses only the float that the `others` shares other legs were
+    ///      promised in deferral `d` leave, and starts a deferral; a redemption that works ends it.
+    function _redeem(address owner, bytes32 legId, uint256 shares, uint256 units, Deferral memory d, uint256 others)
+        private
+        returns (uint256 paid)
+    {
         address settlement = PROGRAM.settlementToken();
         uint256 quote = VAULT.previewRedeem(shares);
         if (quote == 0) revert NoQuote();
@@ -237,9 +293,17 @@ contract SavingsSource is ISource {
         uint256 assets;
         try VAULT.redeem(shares, to, quote) returns (uint256 redeemed) {
             assets = redeemed;
+            _endDeferral(d);
         } catch {
             // The vault quotes but cannot redeem now: the float pays and the shares wait for the funder.
             uint256 float_ = IERC20Like(ASSET).balanceOf(address(this));
+            if (!d.active) {
+                d.epoch = d.epoch == type(uint8).max ? 1 : d.epoch + 1;
+                deferral = Deferral(true, d.epoch, 0);
+                emit DeferralStarted(d.epoch);
+            } else if (others != 0) {
+                float_ = float_.zeroFloorSub(VAULT.previewRedeem(others));
+            }
             if (float_ < quote) revert InsufficientFloat(quote, float_);
             heldShares += shares;
             (assets, deferred) = (quote, true);
@@ -277,6 +341,37 @@ contract SavingsSource is ISource {
         uint256 assets =
             settlement == ASSET ? units : Conversion(PROGRAM.conversion()).quoteOut(ASSET, settlement, units);
         return VAULT.previewWithdraw(assets);
+    }
+
+    /// @dev Shares the float pays for past `promised` shares, rounded down.
+    function _floatShares(uint256 promised) private view returns (uint256) {
+        uint256 float_ = IERC20Like(ASSET).balanceOf(address(this));
+        uint256 owedAssets = promised == 0 ? 0 : VAULT.previewRedeem(promised);
+        if (float_ <= owedAssets) return 0;
+        // Shares that withdraw the free float round up; one fewer redeems for no more than it.
+        return VAULT.previewWithdraw(float_ - owedAssets).zeroFloorSub(1);
+    }
+
+    /// @dev Shares a promised leg of `owner` may still grow by: what the float pays for past `promised` shares, so
+    ///      that its capture limit (the hold plus the owner's tolerance) stays within it.
+    function _floatRoom(address owner, uint256 promised) private view returns (uint256) {
+        uint16 tol = CORE.payeeTerms(owner, address(this), SHARE).toleranceBps;
+        return _floatShares(promised) * BPS / (BPS + tol);
+    }
+
+    /// @dev Replaces a promised leg's capture limit `from` with `to` in the current deferral's promises.
+    function _repromise(Deferral memory d, uint256 from, uint256 to) private {
+        if (from == to) return;
+        d.promised = (uint256(d.promised).zeroFloorSub(from) + to).toUint128();
+        deferral.promised = d.promised;
+    }
+
+    /// @dev Ends deferral `d` if active: its promises lapse and legs hold as usual again.
+    function _endDeferral(Deferral memory d) private {
+        if (!d.active) return;
+        (d.active, d.promised) = (false, 0);
+        deferral = Deferral(false, d.epoch, 0);
+        emit DeferralEnded(d.epoch);
     }
 
     function _budgetRoom(address owner, uint256 free) private view returns (uint256) {

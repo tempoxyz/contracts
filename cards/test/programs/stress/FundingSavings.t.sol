@@ -88,12 +88,17 @@ contract FundingSavingsStressTest is FundingBase {
         return CardLegs.Funding(savings, bytes32(0));
     }
 
-    /// @dev A float of $40 per holder covers about two hours of the spike: captures fail for most of the weekend.
+    /// @dev A float of $40 per holder covers about two hours of the spike. Once captures defer, savings holds only what
+    ///      the float can still pay, so cash behind it takes the rest and no capture waits for the venue.
     function test_stress_savingsIlliquidDuringSpike_thinFloat() public {
         _setUp(40e6);
         tag = "savings_thin_float";
         _run();
-        assertGt(s.floatFailures, 0, "the float never ran out");
+        assertGt(s.deferred, 0, "no capture deferred");
+        assertEq(s.floatFailures, 0, "a capture waited for the float");
+        assertEq(s.maxDelay, 0, "a capture waited");
+        assertLe(s.savingsDuringOutage, float0, "savings paid past the float");
+        assertGt(s.cashDuringOutage, 0, "cash took nothing during the outage");
     }
 
     /// @dev A float of $1,000 per holder carries the whole weekend.
