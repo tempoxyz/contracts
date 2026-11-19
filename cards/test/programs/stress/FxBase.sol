@@ -95,6 +95,9 @@ abstract contract FxBase is AuthEnv {
     uint256 internal firstOpen;
     Stats internal st;
 
+    /// @dev Converted tokens each captured purchase took from its cardholder.
+    mapping(bytes32 ref => uint256) internal spentOf;
+
     /// @dev Supply of each token outside the known parties, fixed by _baseline.
     mapping(address token => uint256) internal outside;
 
@@ -425,6 +428,7 @@ abstract contract FxBase is AuthEnv {
         st.issuerGap += gap;
         if (gap > 0 && uint256(gap) * BPS / b.amount > st.maxGapBps) st.maxGapBps = uint256(gap) * BPS / b.amount;
         uint256 spent = holderBefore - _holderTokens(b.k);
+        spentOf[b.ref] = spent;
         if (b.legs == 1) {
             uint256 promised = uint256(b.amount).mulDivUp(ONE, b.lock);
             // The cardholder never pays more converted tokens than the rate it was shown promised.
