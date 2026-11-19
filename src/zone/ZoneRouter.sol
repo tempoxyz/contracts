@@ -57,6 +57,9 @@ contract ZoneRouter is IWithdrawalReceiver {
     uint8 public constant OP_REDEEM = 1 << 1;
     uint8 public constant OP_SPEND = 1 << 2;
     uint8 private constant ALL_OPS = OP_DEPOSIT | OP_REDEEM | OP_SPEND;
+    /// @dev Head sizes of CallbackData and SpendData: one word per member, dynamic members as offsets.
+    uint256 private constant CALLBACK_DATA_HEAD = 6 * 32;
+    uint256 private constant SPEND_DATA_HEAD = 5 * 32;
 
     /// @notice A router's complete, immutable configuration.
     /// @dev Earn ops require the Earn bindings and forbid them otherwise; Spend requires spenders and
@@ -348,11 +351,11 @@ contract ZoneRouter is IWithdrawalReceiver {
 
         if (Op(rawOp) == Op.Spend) {
             // An exact spend already measured the balance back at inputBalanceBefore, and nothing moved since.
-            if (!_handleSpend(
-                    sourcePortal, token, amount, inputBalanceBefore + amount, abi.decode(callbackData, (SpendData))
-                )) return IWithdrawalReceiver.onWithdrawalReceived.selector;
+            if (!_handleSpend(sourcePortal, token, amount, inputBalanceBefore + amount, _spendData(callbackData))) {
+                return IWithdrawalReceiver.onWithdrawalReceived.selector;
+            }
         } else {
-            CallbackData memory data = abi.decode(callbackData, (CallbackData));
+            CallbackData calldata data = _callbackData(callbackData);
             Operation memory operation = Operation({
                 minVaultAssets: data.minVaultAssets,
                 minEarnShares: data.minEarnShares,
@@ -380,7 +383,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         address token,
         uint128 amount,
         uint256 balanceBefore,
-        SpendData memory data
+        SpendData calldata data
     ) private returns (bool returnedChange) {
         if (!isSpender[data.spender]) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
@@ -440,9 +443,8 @@ contract ZoneRouter is IWithdrawalReceiver {
         view
         returns (uint128 fee)
     {
-        if (!IZonePortal(sourcePortal).isTokenEnabled(token) || !IZonePortal(sourcePortal).areDepositsActive(token)) {
-            revert InvalidReturnToken();
-        }
+        // The Portal's areDepositsActive is false for a token it has not enabled or has paused.
+        if (!IZonePortal(sourcePortal).areDepositsActive(token)) revert InvalidReturnToken();
         fee = _checkDepositFee(sourcePortal, maxDepositFee);
     }
 
@@ -457,7 +459,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         address sourcePortal,
         address token,
         uint128 amount,
-        ZoneReturn memory zoneReturn,
+        ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
         _validateSourceReturn(sourcePortal, earnShare, zoneReturn);
@@ -481,7 +483,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     function _handleRedeem(
         address sourcePortal,
         uint128 amount,
-        ZoneReturn memory zoneReturn,
+        ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
         _validateSourceReturn(sourcePortal, privateAsset, zoneReturn);
@@ -570,20 +572,55 @@ contract ZoneRouter is IWithdrawalReceiver {
         /// @custom:assert msg.sender == ZONE_MESSENGER_ADDRESS && sourcePortal == portal && amount != 0
     }
 
-    function _validateSourceReturn(address sourcePortal, address token, ZoneReturn memory zoneReturn) private view {
+    function _validateSourceReturn(address sourcePortal, address token, ZoneReturn calldata zoneReturn) private view {
         if (zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        if (!IZonePortal(sourcePortal).isTokenEnabled(token) || !IZonePortal(sourcePortal).areDepositsActive(token)) {
-            revert InvalidReturnToken();
-        }
+        // The Portal's areDepositsActive is false for a token it has not enabled or has paused.
+        if (!IZonePortal(sourcePortal).areDepositsActive(token)) revert InvalidReturnToken();
     }
 
-    function _depositEncrypted(address sourcePortal, address token, uint128 amount, ZoneReturn memory zoneReturn)
+    function _depositEncrypted(address sourcePortal, address token, uint128 amount, ZoneReturn calldata zoneReturn)
         private
         returns (bytes32 hash)
     {
         // The constructor set the standing Portal approval for both Earn ops' return tokens.
         hash = IZonePortal(sourcePortal)
             .depositEncrypted(token, amount, zoneReturn.keyIndex, zoneReturn.encrypted, zoneReturn.refundRecipient);
+    }
+
+    /// @dev Ops 0 and 1's tuple, read in place at the offset _decodeRawOp checked. Its head must fit the
+    ///      callback data, as abi.decode requires; member reads check their own offsets and values.
+    /// Not proved: solar-verify does not model assigning a calldata struct pointer, so callers see an
+    /// arbitrary tuple, as they did from abi.decode.
+    /// @custom:trusted
+    function _callbackData(bytes calldata callbackData) private pure returns (CallbackData calldata data) {
+        uint256 tuple = _tupleStart(callbackData, CALLBACK_DATA_HEAD);
+        assembly {
+            data := tuple
+        }
+    }
+
+    /// @dev Op 2's tuple, read in place like _callbackData. Not proved, for the same reason.
+    /// @custom:trusted
+    function _spendData(bytes calldata callbackData) private pure returns (SpendData calldata data) {
+        uint256 tuple = _tupleStart(callbackData, SPEND_DATA_HEAD);
+        assembly {
+            data := tuple
+        }
+    }
+
+    /// @dev The calldata position of the callback's tuple, once its head of headSize bytes fits.
+    function _tupleStart(bytes calldata callbackData, uint256 headSize) private pure returns (uint256 tuple) {
+        // Member reads bound offsets by the end of msg.data. The callback data is the last argument, so it
+        // ends msg.data exactly when its length is whole words, as abi.encode output is; requiring that
+        // keeps every read inside the callback data, as abi.decode does.
+        uint256 start;
+        assembly {
+            start := callbackData.offset
+        }
+        if (start + callbackData.length != msg.data.length) revert BadFlow();
+        uint256 tupleOffset = abi.decode(callbackData, (uint256));
+        if (tupleOffset > callbackData.length || callbackData.length - tupleOffset < headSize) revert BadFlow();
+        tuple = start + tupleOffset;
     }
 
     /// @custom:ensures callbackData.length >= 32
