@@ -1,8 +1,8 @@
 {
   "adjust_upCashLeg": "161061",
-  "authorize_cashAndSavings": "3021593",
-  "authorize_singleCashLeg": "1655521",
-  "authorize_standIn": "1653282",
+  "authorize_cashAndSavings": "3021563",
+  "authorize_singleCashLeg": "1655506",
+  "authorize_standIn": "1653287",
   "capture_beyondHoldIntoDebt": "1016161",
   "capture_cashAndSavings": "371315",
   "capture_finalCashLeg": "147426",
