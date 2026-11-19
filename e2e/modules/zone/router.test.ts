@@ -37,7 +37,7 @@ describe('validateRouter', () => {
       const { client, deployment, allowances } = routerFixture()
       allowances.set(allowanceKey(token, spender), 1n)
       await expect(validateRouter(client, deployment)).rejects.toThrow(
-        `EarnRouter retains an allowance at rest: ${label}`,
+        `ZoneRouter retains an allowance at rest: ${label}`,
       )
     },
   )
@@ -58,7 +58,7 @@ describe('validateRouter', () => {
     const { client, deployment, allowances } = routerFixture()
     allowances.set(allowanceKey(asset, earnVault), maxUint256 - 1n)
     await expect(validateRouter(client, deployment)).rejects.toThrow(
-      'EarnRouter retains an allowance at rest: vault asset to EarnVault',
+      'ZoneRouter retains an allowance at rest: vault asset to EarnVault',
     )
   })
 
@@ -79,7 +79,7 @@ describe('validateRouter', () => {
     const { client, deployment } = routerFixture()
     delete deployment.network.zone
     await expect(validateRouter(client, deployment)).rejects.toThrow(
-      'EarnRouter has no source Portal',
+      'ZoneRouter has no source Portal',
     )
   })
 
@@ -87,7 +87,7 @@ describe('validateRouter', () => {
     const { client, deployment, flows } = routerFixture()
     flows[3] = true
     await expect(validateRouter(client, deployment)).rejects.toThrow(
-      'EarnRouter advertises an unknown flow',
+      'ZoneRouter advertises a third op',
     )
   })
 
@@ -101,7 +101,7 @@ describe('validateRouter', () => {
 
   it('does nothing for a deployment without a router', async () => {
     const { client, deployment, reads } = routerFixture()
-    delete deployment.contracts.earnRouter
+    delete deployment.contracts.zoneRouter
     await expect(validateRouter(client, deployment)).resolves.toBeUndefined()
     expect(reads).toEqual([])
   })
@@ -147,7 +147,7 @@ describe('routerIntegrity', () => {
       const { context, allowances } = routerFixture()
       allowances.set(allowanceKey(token, spender), 1n)
       await expect(routerIntegrity(context)).rejects.toThrow(
-        `EarnRouter retains an allowance at rest: ${label}`,
+        `ZoneRouter retains an allowance at rest: ${label}`,
       )
     },
   )
@@ -178,7 +178,7 @@ describe('routerIntegrity', () => {
 
   it('does nothing for a deployment without a router', async () => {
     const { context, reads } = routerFixture()
-    delete context.contracts.earnRouter
+    delete context.contracts.zoneRouter
     expect(await routerIntegrity(context)).toBeUndefined()
     expect(reads).toEqual([])
   })
@@ -253,7 +253,7 @@ function routerFixture(options: { sameAsset?: boolean } = {}) {
     },
   } as unknown as DeploymentPublicClient
   const deployment = {
-    contracts: { asset, earnShare, earnVault, earnRouter: router },
+    contracts: { asset, earnShare, earnVault, zoneRouter: router },
     network: { zone: { portal } },
     capabilities: { privateRouting: true },
     modes: {},

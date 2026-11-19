@@ -12,24 +12,24 @@ export type ZoneConfiguration = ZoneIdentity & {
   rpcUrl: string
 }
 
-/** The router's optional stack fields: the network's Zone, the router, and the private mode. */
-export type ZoneRouterStack = {
+/** The Zone slice's optional stack fields: the network's Zone, its Earn router, and the private mode. */
+export type ZoneStack = {
   network: { zone: ZoneConfiguration }
-  contracts: { earnRouter: Address }
+  contracts: { zoneRouter: Address }
   modes: { private: PrivateModeConfiguration }
 }
 
 /**
- * A stack's router fields: the network's Zone and, with a router, the router and the private mode
- * whose one private asset both enters and leaves the Zone.
+ * A stack's Zone fields: the network's Zone and, with an Earn-mode ZoneRouter on it, the router and
+ * the private mode whose one private asset both enters and leaves the Zone.
  */
-export function zoneRouterStackFields(
+export function zoneStackFields(
   zone: ZoneConfiguration,
-  router?: { earnRouter: Address; privateAsset: Address },
+  router?: { zoneRouter: Address; privateAsset: Address },
 ) {
   return {
     network: { zone },
-    contracts: router ? { earnRouter: router.earnRouter } : {},
+    contracts: router ? { zoneRouter: router.zoneRouter } : {},
     modes: router
       ? {
           private: {

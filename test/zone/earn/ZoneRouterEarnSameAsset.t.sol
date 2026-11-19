@@ -9,9 +9,8 @@ import { ZoneRouterEarnTestBase } from "./ZoneRouterEarnTestBase.sol";
 import { EarnVault } from "../../../src/earn/core/EarnVault.sol";
 import { ERC4626Engine } from "../../../src/earn/engines/erc4626/ERC4626Engine.sol";
 import { ZONE_MESSENGER_ADDRESS } from "../../../src/interfaces/external/tempo/IZone.sol";
-import { SingleZoneEarnRouter } from "../../../src/earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev Port of Earn's SingleZoneEarnRouterSameAssetTest: a ZoneRouter whose private asset is the vault asset
+/// @dev A ZoneRouter whose private asset is the vault asset
 ///      deposits and redeems it without a pool.
 contract ZoneRouterEarnSameAssetTest is ZoneRouterEarnTestBase {
     function setUp() public override {
@@ -40,7 +39,7 @@ contract ZoneRouterEarnSameAssetTest is ZoneRouterEarnTestBase {
             bytes32(0),
             address(earnA),
             uint128(ONE),
-            _callback(SingleZoneEarnRouter.Flow.Redeem, uint128(ONE), 0, uint128(ONE + 1))
+            _callback(ZoneRouter.Op.Redeem, uint128(ONE), 0, uint128(ONE + 1))
         );
         vm.expectRevert(abi.encodeWithSelector(ERC4626Engine.InsufficientAssetsReceived.selector, ONE + 1, ONE));
         router.onWithdrawalReceived(
@@ -49,7 +48,7 @@ contract ZoneRouterEarnSameAssetTest is ZoneRouterEarnTestBase {
             bytes32(0),
             address(earnA),
             uint128(ONE),
-            _callback(SingleZoneEarnRouter.Flow.Redeem, uint128(ONE + 1), 0, uint128(ONE))
+            _callback(ZoneRouter.Op.Redeem, uint128(ONE + 1), 0, uint128(ONE))
         );
         vm.stopPrank();
 
@@ -60,7 +59,7 @@ contract ZoneRouterEarnSameAssetTest is ZoneRouterEarnTestBase {
 
     function testRejectsMismatchedTokens() public {
         assetA.mint(address(router), ONE);
-        bytes memory data = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        bytes memory data = _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0);
 
         vm.startPrank(ZONE_MESSENGER_ADDRESS);
         alternate.mint(address(router), ONE);
@@ -74,7 +73,7 @@ contract ZoneRouterEarnSameAssetTest is ZoneRouterEarnTestBase {
             bytes32(0),
             address(assetA),
             uint128(ONE),
-            _callback(SingleZoneEarnRouter.Flow.Redeem, uint128(ONE), 0, uint128(ONE))
+            _callback(ZoneRouter.Op.Redeem, uint128(ONE), 0, uint128(ONE))
         );
 
         portalA.setToken(address(earnA), false, false);

@@ -128,7 +128,7 @@ the automation entry points.
   against the profiles they hold
   ([profiles in another repository](profiles/README.md#profiles-in-another-repository)).
 - Tempo node builds point their `EARN_ROOT` at this repository's root, compile `src/earn/` and
-  `src/demo/`, and consume the `SingleZoneEarnRouter` and `DemoParPool` outputs.
+  `src/demo/`, and consume the `DemoParPool` output.
 
 ## Guide maintenance
 

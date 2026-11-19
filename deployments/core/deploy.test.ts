@@ -678,7 +678,7 @@ describe('retained historical direct creation', () => {
         const fetch = fixture.dependencies.fetch.getMockImplementation()!
         fixture.dependencies.fetch.mockResolvedValue(new Response('{}', { status: 503 }))
         // Isolate external activation while exercising its real post-publication dispatch.
-        const step = deploymentStep('authorize-router')
+        const step = deploymentStep('authorize-zone-router')
         const activationPlan = vi.spyOn(Plan, 'activationActions').mockReturnValue([
           {
             id: step.id,

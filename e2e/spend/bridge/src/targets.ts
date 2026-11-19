@@ -621,7 +621,7 @@ async function localEarn(
   if (!earn) throw new Error('the local Earn stack is not ready for the program')
   return {
     earn,
-    conversion: { privateAsset: state.alternateAsset, pool: state.earnRouterPool.pool },
+    conversion: { privateAsset: state.alternateAsset, pool: state.routerPool.pool },
   }
 }
 

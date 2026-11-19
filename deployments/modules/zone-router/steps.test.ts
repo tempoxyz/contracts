@@ -1009,7 +1009,7 @@ describe('Zone router seeds', () => {
   })
 
   test('asks the Portal about EarnShare for a Spend router the profile does not tie to Earn', async () => {
-    // No Earn ops and no same-Zone single-Zone router: only the Portal says EarnShare is withdrawn.
+    // No Earn ops: only the Portal says EarnShare is withdrawn.
     const plan = await zoneRouterSeedPlan(
       seedChain({ profile: spendOnly, enabled: [outputs.earnShare], restarts: true }) as never,
       spendOnly,

@@ -4,7 +4,7 @@ import { requireRouterProvenance } from './provenance.js'
 
 const options = {
   address: `0x${'1'.repeat(40)}` as const,
-  contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter' as const,
+  contract: 'src/zone/ZoneRouter.sol:ZoneRouter' as const,
   constructorArgs: `0x${'2'.repeat(64)}` as const,
 }
 const code = '0x600160005260206000f3' as const

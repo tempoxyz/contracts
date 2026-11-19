@@ -13,11 +13,14 @@ const local: LocalTargets = {
   venueOrEngine: address('7e'),
   policyId: 5n,
   zoneId: 1,
-  conversion: { privateAsset: address('a1'), pool: address('9001') },
-  vaultAsset: address('ba5e'),
+  router: {
+    privateAsset: address('a1'),
+    pool: address('9001'),
+    customerId: `0x${'ac'.repeat(32)}`,
+  },
 }
-// A synthetic hosted profile with protected access, a Zone, and a pooled router; shared tests do
-// not depend on a customer's live configuration.
+// A synthetic hosted profile with protected access and a Zone; shared tests do not depend on a
+// customer's live configuration.
 const hosted = parseEarnDeploymentProfile({
   version: 3,
   id: 'acme-mainnet',
@@ -34,15 +37,7 @@ const hosted = parseEarnDeploymentProfile({
       },
     },
   },
-  zone: {
-    id: 2,
-    enableEarnShare: true,
-    router: {
-      privateAsset: address('a2'),
-      pool: address('9002'),
-      customerId: `0x${'ac'.repeat(32)}`,
-    },
-  },
+  zone: { id: 2, enableEarnShare: true },
 })
 
 describe('local deployment profiles', () => {
@@ -58,10 +53,8 @@ describe('local deployment profiles', () => {
       engine: { kind: 'erc4626', venue: local.venueOrEngine },
       access: { kind: 'tip403-whitelist', policyId: '5' },
       core: hosted.core,
-      zone: {
-        id: 1,
-        router: { ...local.conversion, customerId: source.zone!.router.customerId },
-      },
+      zone: { id: 1, enableEarnShare: true },
+      zoneRouter: { zoneId: 1, ops: ['deposit', 'redeem'], earn: local.router },
     })
     expect(profile.targetYield).toBeUndefined()
     expect(profile.boostRewards).toBeUndefined()

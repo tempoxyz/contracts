@@ -167,7 +167,7 @@ it('passes proxy and CA settings to the actual dependency child without authorit
     vi.stubEnv(name, value)
   runLifecycleStep(
     {
-      action: { id: 'deploy-router' },
+      action: { id: 'deploy-zone-router' },
       root: runRoot,
       arguments: ['script', 'DeployFixture'],
       environment: { PATH: process.env.PATH! },

@@ -1119,7 +1119,7 @@ describe('broadcast receipt recovery', () => {
         chainId: 4217,
         owner: address('4'),
         engine: { kind: 'veda', address: address('1') },
-        zone: { id: 7, enableEarnShare: true, router: { privateAsset: asset } },
+        zoneRouter: { zoneId: 7, ops: ['deposit'], earn: { privateAsset: asset } },
       },
       { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
     )
@@ -1147,17 +1147,8 @@ describe('broadcast receipt recovery', () => {
     )
     chain.readContract.mockImplementation(
       async ({ address: target, functionName }: { address: string; functionName: string }) => {
-        if (target === router)
-          return {
-            allowedZoneId: 7,
-            earnVault: core.earnVault,
-            earnShare: core.earnShare,
-            privateAsset: asset,
-            vaultAsset: asset,
-            pool: zeroAddress,
-            customerId: `0x${'00'.repeat(32)}`,
-            privateAssetIsBase: false,
-          }[functionName]
+        // A fresh factory has deployed no routers.
+        if (target === router && functionName === 'isRouter') return false
         if (target === routerProfile.factories.earn)
           return { predictEarnShare: core.earnShare, predictEarnFees: core.earnFees }[functionName]
         if (target === core.earnVault) return outputs[functionName as keyof typeof outputs]
@@ -1173,10 +1164,10 @@ describe('broadcast receipt recovery', () => {
         ...loadPendingDeployment(profilePath, routerProfile),
         outputs,
         actions: { 'deploy-core': recorded },
-        latestOutputs: { earnRouter: router },
+        latestOutputs: { zoneRouterFactory: router },
       }
       savePendingDeployment(profilePath, routerProfile, pending)
-      const step = deploymentStep('deploy-router')
+      const step = deploymentStep('deploy-zone-router-factory')
       if (step.execution !== 'foundry') throw new Error('expected a Foundry step')
       expect(step.adopt).toBeUndefined()
       const creationBytecode = '0x6001600055' as const
@@ -1190,7 +1181,7 @@ describe('broadcast receipt recovery', () => {
       const calldata = step.input(routerProfile, outputs, foundryOutputPath(root, profilePath))
       const broadcast = join(
         foundryBroadcastPath(root, profilePath),
-        'DeployEarnRouter.s.sol',
+        'DeployZoneRouterFactory.s.sol',
         String(routerProfile.chainId),
       )
       mkdirSync(broadcast, { recursive: true })
@@ -1205,7 +1196,7 @@ describe('broadcast receipt recovery', () => {
         rpcUrl: 'http://chain.test',
         environment: {},
         actions: planEarnDeployment(routerProfile).filter(
-          ({ id }) => id === 'deploy-core' || id === 'deploy-router',
+          ({ id }) => id === 'deploy-core' || id === 'deploy-zone-router-factory',
         ),
       }
       const resumed = await prepareLifecycleStep(options, dependencies)
@@ -1214,8 +1205,10 @@ describe('broadcast receipt recovery', () => {
         ...recorded,
         transactions: [creation],
       })
-      expect(resumed.pending.outputs).toEqual({ ...outputs, earnRouter: router })
-      expect(resumed.pending.actions['deploy-router']?.transactions).toEqual([routerCreation])
+      expect(resumed.pending.outputs).toEqual({ ...outputs, zoneRouterFactory: router })
+      expect(resumed.pending.actions['deploy-zone-router-factory']?.transactions).toEqual([
+        routerCreation,
+      ])
       expect(chain.getTransactionReceipt.mock.calls).toEqual([
         [{ hash: creation }],
         [{ hash: routerCreation }],

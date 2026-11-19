@@ -45,10 +45,10 @@ export type State = OptionalPeriphery & {
   earnShare: Address
   earnVault: Address
   earnFees: Address
-  /** Present when the profile configures a Zone router. */
-  earnRouter?: Address
+  /** The Earn-mode ZoneRouter; present when the profile configures a Zone. */
+  zoneRouter?: Address
   /** Disposable DirectPropAMM pool that converts `alternateAsset` and `baseAsset` at par. */
-  earnRouterPool: RouterPool
+  routerPool: RouterPool
   /** Engine-specific fixtures beside the venue and engine; see `LocalEngine.provision`. */
   engineFixtures: Readonly<Record<string, Address>>
   accessAdministrator: Address
@@ -58,7 +58,7 @@ export type State = OptionalPeriphery & {
 }
 
 /**
- * A second Earn stack whose vault asset is PATHUSD, with a `SingleZoneEarnRouter` that deposits and
+ * A second Earn stack whose vault asset is PATHUSD, with an Earn-mode `ZoneRouter` that deposits and
  * redeems PATHUSD directly: no pool, zero customer ID. It shares the environment's factory, access
  * policy, and Zone. Its EarnVault, EarnFees, and router are policy members, and its EarnShare is
  * enabled on the Portal and mirrored on the Zone before consumers run.
@@ -72,7 +72,7 @@ export type SameAssetRoute = {
   earnShare: Address
   earnVault: Address
   earnFees: Address
-  earnRouter: Address
+  zoneRouter: Address
 }
 
 export type RouterPool = ConversionPool & {

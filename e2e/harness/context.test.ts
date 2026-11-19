@@ -207,7 +207,7 @@ function proofContext(
     deployment: {
       id: 'test',
       engineKind: 'erc4626',
-      contracts: { asset: address, earnRouter: address },
+      contracts: { asset: address, zoneRouter: address },
       operations: {},
       network: {
         name: 'local',

@@ -4,7 +4,7 @@ pragma solidity ^0.8.36;
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// @notice Public stand-in for the DirectPropAMM surface that `SingleZoneEarnRouter` uses.
+/// @notice Public stand-in for the DirectPropAMM surface that `ZoneRouter`'s Earn ops use.
 /// @dev Test scaffolding only, for consumers without access to the private PropAMM artifact.
 ///      It is its own always-fresh par oracle and converts 1:1 from owner-provided inventory.
 ///      Production routers bind a reviewed DirectPropAMM pool; Earn's own local E2E uses one.

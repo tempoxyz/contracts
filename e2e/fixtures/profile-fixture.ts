@@ -243,9 +243,11 @@ function validateProfileFixtureRecord(
   assertHostedFixtureChain(fixture.chainId)
   const stablecoins = fixture.stablecoinFixture
   const zone = configuredZone(profile)
+  // The Earn binding of a ZoneRouter on the profile's Zone: the route a fixture must match.
+  const route = zone && profile.zoneRouter?.zoneId === zone.id ? profile.zoneRouter.earn : undefined
   if (!stablecoins) {
     // Without test stablecoins the stack runs on its deployed asset, and a route needs a fixture.
-    if (zone) throw new Error(`Profile fixture ${profile.id} needs a stablecoin fixture route`)
+    if (route) throw new Error(`Profile fixture ${profile.id} needs a stablecoin fixture route`)
     return
   }
   // An existing engine's venue is read from the engine; hosted validation compares it.
@@ -253,12 +255,12 @@ function validateProfileFixtureRecord(
     throw new Error(`Profile fixture ${profile.id} venue does not match the profile`)
   }
   if (
-    zone &&
-    (getAddress(zone.privateAsset) !== stablecoins.alternateAsset ||
+    route &&
+    (getAddress(route.privateAsset) !== stablecoins.alternateAsset ||
       !stablecoins.conversionPool ||
-      !zone.pool ||
-      getAddress(zone.pool) !== stablecoins.conversionPool.pool ||
-      zone.customerId.toLowerCase() !== stablecoins.conversionPool.customerId)
+      !route.pool ||
+      getAddress(route.pool) !== stablecoins.conversionPool.pool ||
+      route.customerId?.toLowerCase() !== stablecoins.conversionPool.customerId)
   ) {
     throw new Error(`Profile fixture ${profile.id} route does not match the profile`)
   }

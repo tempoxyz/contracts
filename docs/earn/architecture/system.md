@@ -19,7 +19,7 @@ The architecture has four layers:
 
 1. **Core stack:** EarnShare, `EarnVault`, `EarnFees`, and one current engine.
 2. **Yield integration:** a single-EarnVault engine that exclusively holds venue shares.
-3. **Private routing:** one ownerless, immutable `SingleZoneEarnRouter` per Zone-connected stack.
+3. **Private routing:** one ownerless, immutable Earn-mode `ZoneRouter` per Zone-connected stack.
 4. **Optional periphery:** `EarnContributionController`, `EarnMerkleRewardDistributor`, and the Veda
    registry and forwarding solver.
 
@@ -36,7 +36,7 @@ The repository implements:
 - immediate ERC-4626 execution through `ERC4626Engine`;
 - immediate and queued Veda exits through `VedaEngine`;
 - experimental immediate execution against a DirectPropAMM pool through `PropAMMEngine`;
-- same-source-Zone private callbacks through `SingleZoneEarnRouter`, converting a different private
+- same-source-Zone private callbacks through `ZoneRouter`'s Earn ops, converting a different private
   asset at exact 1:1 par through one immutable DirectPropAMM pool;
 - optional one-way contribution orchestration; and
 - an optional EarnShare settlement rail for offchain-computed cumulative reward entitlements.
@@ -73,7 +73,7 @@ flowchart TB
     RewardFunder["Reward funder"]
     RewardOps["Tempo API rewards"]
     Zone["Selected Tempo Zone"]
-    ZoneRouter["SingleZoneEarnRouter<br/>scoped closed-loop callbacks"]
+    ZoneRouter["ZoneRouter (Earn ops)<br/>scoped closed-loop callbacks"]
     Swap["Immutable DirectPropAMM pool<br/>1:1 par conversion"]
     Controller["EarnContributionController<br/>optional"]
     Rewards["EarnMerkleRewardDistributor<br/>optional EarnShare-only settlement"]
@@ -192,7 +192,7 @@ boundaries, not the safety of an operator-selected venue or valuation.
 
 ## Private routing
 
-An optional ownerless `SingleZoneEarnRouter`, deployed after its EarnVault, lets accounts in one
+An optional ownerless Earn-mode `ZoneRouter`, deployed after its EarnVault, lets accounts in one
 Tempo Zone deposit and redeem through authenticated withdrawal callbacks, converting a fixed private
 asset at exact par when it differs from the vault asset. It holds no economic state and has no
 authority over the EarnVault, which stores no route configuration. Its contract, flows, and trust
@@ -323,7 +323,7 @@ transaction order is in [flows](flows.md).
 | Final engine owner           | Engine-specific operational settings                                                                                                                                                                   |
 | Anyone                       | `accrueFees`, `contribute`, `absorbEngineShareSurplus`, and a ready `executeDistributorFeeUpdate`                                                                                                      |
 
-`EarnFees` and `SingleZoneEarnRouter` have no owner. The role-bearing seats need not share one
+`EarnFees` and `ZoneRouter` have no owner. The role-bearing seats need not share one
 account; a zero guardian or janitor leaves that seat empty. Engine-specific roles, such as Veda's
 BoringVault owner and forwarding-solver owner, are on each [engine's
 page](../integrations/engines.md).

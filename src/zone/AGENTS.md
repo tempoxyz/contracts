@@ -19,9 +19,8 @@ tests (`test/zone/`) and deployment scripts (`script/zone/`). The
   (which moves the router's tokens only inside a `depositEncrypted` call the router makes) and
   standing maximums to the immutable EarnVault and pool (which pull only from `msg.sender`), and no
   `senderTag` emitted or stored. A spender gets at most the callback's `maxInput`; everything else
-  returns through the source Portal.
-- `SingleZoneEarnRouter` stays in `src/earn/router/` until its consumers move; ops 0 and 1 here must
-  accept its callback data byte for byte.
+  returns through the source Portal. Earn ops take no caller-selected token, vault, or destination,
+  and a same-asset Earn binding has no pool.
 
 Validate from the repository root with `forge fmt --check`, `forge lint --deny warnings src/zone`,
 `forge build --sizes src/zone`, and `FOUNDRY_PROFILE=ci forge test --match-path 'test/zone/**'`,

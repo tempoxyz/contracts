@@ -49,7 +49,7 @@ const outputs: Record<
   'earn-funding-helper': state.stablecoinFixture,
   'earn-token': state.earnShare,
   'earn-vault': state.earnVault,
-  'earn-router': state.earnRouter,
+  'earn-router': state.zoneRouter,
 }
 try {
   try {
@@ -63,7 +63,7 @@ try {
       console.log(`${name}: ${value}`)
     }
   }
-  if (!state.earnRouter) throw new Error('The devnet stack deployed no Earn router')
+  if (!state.zoneRouter) throw new Error('The devnet stack deployed no Earn ZoneRouter')
   writeFileSync(
     resolve(directory, 'earn-build-provenance.json'),
     `${JSON.stringify(provenance, null, 2)}\n`,

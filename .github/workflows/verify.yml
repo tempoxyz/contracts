@@ -79,7 +79,7 @@ jobs:
           # --brutalize compiles from a temporary copy, where foundry.toml's relative path to the
           # compiler does not resolve.
           FOUNDRY_SOLC: ${{ github.workspace }}/solar-solc
-        run: forge test --brutalize --match-contract SingleZoneEarnRouterAbiFuzzTest --fuzz-runs 4096 -vv
+        run: forge test --brutalize --match-contract ZoneRouterEarnAbiFuzzTest --fuzz-runs 4096 -vv
 
   # Rebuilds the committed DirectPropAMM fixture from its pinned public source, tempoxyz/tempo-propamm,
   # which it fetches without a token.

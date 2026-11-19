@@ -11,8 +11,8 @@ implements `ISpender` from here; nothing in `src/zone/` imports from `src/spend/
 
 ## What is here
 
-- [`ZoneRouter`](../../src/zone/ZoneRouter.sol): ops 0 (Deposit) and 1 (Redeem), byte-compatible with
-  `SingleZoneEarnRouter`, and 2 (Spend), which hands at most the sender's `maxInput` to a listed
+- [`ZoneRouter`](../../src/zone/ZoneRouter.sol): ops 0 (Deposit) and 1 (Redeem), Earn's private
+  routing, and 2 (Spend), which hands at most the sender's `maxInput` to a listed
   spender and returns the rest to the source Zone.
 - [`ZoneRouterFactory`](../../src/zone/ZoneRouterFactory.sol): permissionless CREATE2 deployment at an
   address fixed by the mode, with `predict`, `isRouter` and `RouterDeployed` for Zone admins.

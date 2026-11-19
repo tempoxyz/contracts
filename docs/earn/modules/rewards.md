@@ -151,7 +151,7 @@ distributor address.
 
 **With a new profile stack.** A [profile](../../../profiles/README.md#rewards) may include
 `targetYield` (deploys the controller) and `boostRewards` (deploys the distributor). The lifecycle
-runs `deploy-merkle-distributor` after `deploy-router` and `deploy-contribution-controller` after
+runs `deploy-merkle-distributor` after `deploy-zone-router` and `deploy-contribution-controller` after
 `validate-access` ([step order](../../deployment/deployment.md#authority-boundaries)), both as the
 deployer through `script/earn/deploy/DeployEarnMerkleRewardDistributor.s.sol` and
 `script/earn/deploy/DeployEarnContributionController.s.sol`. Both contracts are owned directly by the

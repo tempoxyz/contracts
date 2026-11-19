@@ -1,38 +1,38 @@
 # Tempo Zones and private routing
 
-This page owns the `zone-router` module: the `SingleZoneEarnRouter` contract, its callback flows,
-par conversion, Zone token enablement and admission, router deployment and activation, client
-integration, failure handling, tests, and the Zone go-live gate. Readers are integrators building
-private deposits and redemptions, operators activating a router, and reviewers.
-
-A profile's separate `zoneRouter` field deploys a different contract beside this one, the
-factory-made [`ZoneRouter`](../../zone/zone-router.md).
+This page owns Earn's `zone` module and its private routing: the Zone a profile targets, its
+discovery and EarnShare enablement, and how private deposits and redemptions run through the Earn
+ops of [`ZoneRouter`](../../zone/zone-router.md): callback flows, par conversion, admission,
+client integration, failure handling, tests, and the Zone go-live gate. The router contract, its
+factory, modes and deployment steps are on the [Zone router](../../zone/zone-router.md) page.
+Readers are integrators building private deposits and redemptions, operators activating a router,
+and reviewers.
 
 Zones are external infrastructure. Audit coverage is in [audits](../audit/README.md#scope). Hosted Zone stacks are listed in
 [hosted environments](../../deployment/hosted-environments.md).
 
 ## Router contract
 
-[`SingleZoneEarnRouter`](../../../src/earn/router/SingleZoneEarnRouter.sol) lets an account inside a Zone
-deposit into, or redeem from, one EarnVault on the parent chain and receive the result back in the
-same Zone. Each instance is ownerless and immutable to one Zone ID, EarnVault, and private asset;
-the vault asset and EarnShare are read from the EarnVault at construction. The private asset decides
-the mode:
+A [`ZoneRouter`](../../../src/zone/ZoneRouter.sol) with ops 0 (Deposit) and 1 (Redeem) enabled
+lets an account inside a Zone deposit into, or redeem from, one EarnVault on the parent chain and
+receive the result back in the same Zone. Each router is ownerless and immutable to one Zone ID,
+EarnVault, and private asset; the vault asset and EarnShare are read from the EarnVault at
+construction. The private asset decides the Earn binding:
 
-- **Conversion router.** A private asset other than the vault asset also binds one DirectPropAMM pool
+- **Conversion binding.** A private asset other than the vault asset also binds one DirectPropAMM pool
   and a nonzero `customerId` (the pool's rounding route and trade-memo identifier). The pool's base
   and quote tokens must be exactly the private and vault assets, in either order
   (`privateAssetIsBase` records which), with equal decimals. Otherwise construction reverts
   `InvalidPool`, `InvalidCustomerId`, or `InvalidRoutePair`.
-- **Same-asset router.** A private asset equal to the vault asset binds a zero pool and customer ID
+- **Same-asset binding.** A private asset equal to the vault asset binds a zero pool and customer ID
   and deposits and redeems that asset directly. A nonzero pool or customer ID reverts
   `InvalidPrivateAsset`.
 
-The private asset may never be zero or the EarnShare. Zone ID zero makes every callback revert. The
-router has no owner, registry, setters, public routing method, or rescue; its only state is a
-reentrancy flag, and it holds no user position. Changing the Zone, EarnVault, private asset, or pool
-means deploying a new router; an old router stays deployed so callbacks already submitted to it can
-complete or bounce.
+The private asset may never be zero or the EarnShare, and the factory refuses Zone ID zero. The
+router has no owner, registry, setters, public routing method, or rescue, and it holds no user
+position. Changing the Zone, EarnVault, private asset, or pool means deploying a new router through
+the factory; an old router stays deployed so callbacks already submitted to it can complete or
+bounce.
 
 Router invariants:
 
@@ -60,18 +60,18 @@ when:
 - the source Portal has the return token (EarnShare for a deposit, the private asset for a
   redemption) enabled with deposits active, and the refund recipient is nonzero.
 
-Callback data (`Abis.earnRouterCallbackData` in `viem/tempo`) carries the flow (`0` deposit, `1`
-redeem), independent `minVaultAssets`, `minEarnShares`, and `minOutputAmount` bounds, an `actionId`,
+Ops 0 and 1's callback data (`Abis.earnRouterCallbackData` in `viem/tempo`) carries the op (`0`
+deposit, `1` redeem), independent `minVaultAssets`, `minEarnShares`, and `minOutputAmount` bounds, an `actionId`,
 and a `ZoneReturn` with the encryption key index, encrypted recipient payload, and refund recipient.
 It has no token, vault, route, Portal, or public recipient, so a caller cannot redirect the
-deployment's route. `supportsFlow` accepts only `0` and `1`. The router ignores the callback
+deployment's route. An Earn-only router's `supportsFlow` accepts only `0` and `1`. The router ignores the callback
 `senderTag` and never emits, stores, or forwards it: accounting does not need it, and a stable
 public label would make private actions easier to correlate.
 
-| Delivered token   | Flow | Operation                                       | Returned to the source Zone |
-| ----------------- | ---- | ----------------------------------------------- | --------------------------- |
-| Private asset     | `0`  | Convert (conversion router), then `deposit`     | EarnShare                   |
-| Private EarnShare | `1`  | `redeem`, then convert back (conversion router) | Private asset               |
+| Delivered token   | Flow | Operation                                        | Returned to the source Zone |
+| ----------------- | ---- | ------------------------------------------------ | --------------------------- |
+| Private asset     | `0`  | Convert (conversion binding), then `deposit`     | EarnShare                   |
+| Private EarnShare | `1`  | `redeem`, then convert back (conversion binding) | Private asset               |
 
 Public callers, including public async redemption, use `EarnVault` directly; a public-to-private
 move is a Tempo Transaction that ends with `ZonePortal.depositEncrypted`. Private async redemption is
@@ -84,7 +84,7 @@ sequenceDiagram
     participant Z as Private Zone account
     participant P as Source Portal
     participant M as Canonical Messenger
-    participant R as SingleZoneEarnRouter
+    participant R as ZoneRouter (Earn ops)
     participant D as Immutable DirectPropAMM pool
     participant A as EarnVault
 
@@ -92,7 +92,7 @@ sequenceDiagram
     P->>M: authenticated callback
     M->>R: onWithdrawalReceived(sourceZoneId, sourcePortal, ..., privateAsset, amountIn, data)
     R->>R: validate messenger, Zone, Portal, token, flow, return token
-    opt conversion router
+    opt conversion binding
         R->>D: swapExactInput at par
         R->>R: measure vault assets; enforce minVaultAssets
     end
@@ -103,8 +103,8 @@ sequenceDiagram
 ```
 
 A redemption mirrors it: the router redeems the EarnShare with `minVaultAssets`, converts the vault
-assets back at par (conversion router only), enforces `minOutputAmount`, and returns the complete
-private-asset output. A same-asset router passes the amount straight through with the same bounds;
+assets back at par (conversion binding only), enforces `minOutputAmount`, and returns the complete
+private-asset output. A same-asset binding passes the amount straight through with the same bounds;
 a deposit whose `minVaultAssets` exceeds the withdrawn amount reverts.
 
 Every successful callback keeps a standing maximum approval to the source Portal (set only when the
@@ -148,7 +148,7 @@ pause flag, whether the pool admits the router as taker and recipient and resolv
 whether the oracle price equals par, and the pool's vault-asset (deposit) and private-asset (redeem)
 inventory. It is a snapshot, not an execution guarantee, and `atPar` ignores report age, so
 deployment inspection and E2E preflight also check the latest report against the pool's
-`maxOracleAge`. A same-asset router returns zero for `pool()`, `customerId()`, and `parPrice()`,
+`maxOracleAge`. A same-asset binding returns zero for `pool()`, `customerId()`, and `parPrice()`,
 false for `privateAssetIsBase()`, and `(false, true, true, type(uint256).max, type(uint256).max)`
 from `liquidityStatus()`; clients detect the mode with `pool() == address(0)`. The EarnVault's
 deposit pause and capacity and the Portal's token readiness still apply in both modes.
@@ -185,7 +185,7 @@ converts 1:1 from owner-funded inventory. Earn's localnet uses the
 
 Every token that crosses the Zone boundary must be enabled on the source Portal: the private asset
 and the EarnShare (a newly deployed EarnShare is not enabled automatically). With a conversion pool
-the vault asset never crosses the boundary; for a same-asset router it is the private asset. Public
+the vault asset never crosses the boundary; for a same-asset binding it is the private asset. Public
 transfers, Portal refunds, and EarnShare movements are enforced by TIP-403; a protected EarnShare's
 required Zone members are listed in [access policy](access.md#required-members).
 
@@ -233,13 +233,13 @@ authorization by hand.
 
 Callback failures decode against the router ABI:
 
-| Error                                                                                                                                | Meaning and response                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                |
-| `InvalidReturnToken`                                                                                                                 | The return token is not enabled, or its deposits are inactive, on the source Portal                                          |
-| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool |
-| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, or output bound was missed, or measured conversion output differed from input                      |
-| `ResidualBalance`, `InvalidRoutePair`                                                                                                | Invariant failure; investigate before retrying                                                                               |
+| Error                                                                                                                                 | Meaning and response                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `OpDisabled`, `ZeroAmount`, `ZeroAddress` | Wrong deployment or malformed callback; rebuild from verified deployment data                                                |
+| `InvalidReturnToken`                                                                                                                  | The return token is not enabled, or its deposits are inactive, on the source Portal                                          |
+| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory`  | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool |
+| `InsufficientOutput`                                                                                                                  | A vault-asset, EarnShare, or output bound was missed, or measured conversion output differed from input                      |
+| `ResidualBalance`, `InvalidRoutePair`                                                                                                 | Invariant failure; investigate before retrying                                                                               |
 
 When the Portal reports `callbackSuccess: false`, the Zone protocol bounces the withdrawal back and
 the processing fee may still be consumed. Do not issue a second refund from the application; fix the
@@ -254,74 +254,72 @@ a Zone does not erase its public history.
 
 ## Deployment and activation
 
-The profile's `zone` block declares the route ([profile schema](../../../profiles/README.md#schema)):
-`id` (a nonzero `uint32` Zone ID), `enableEarnShare: true` (the only accepted value), and `router`
-with `privateAsset` plus, for a conversion router, `pool` and a nonzero bytes32 `customerId` (set
-both or neither). The Zone EVM chain ID is derived from the parent chain ID and Zone ID, never
-authored. The [deployment lifecycle](../../deployment/deployment.md) runs these module steps after the
-core is bound:
+The profile's `zone` block names the Zone ([profile schema](../../../profiles/README.md#schema)):
+`id` (a nonzero `uint32` Zone ID) and `enableEarnShare: true` (the only accepted value). The
+Zone EVM chain ID is derived from the parent chain ID and Zone ID, never authored. Private routing
+is a [`zoneRouter`](../../../profiles/README.md#zone-routers) on the same Zone with `deposit` and
+`redeem` in its `ops` and an `earn` binding: `privateAsset` plus, for a conversion binding, `pool`
+and a nonzero bytes32 `customerId` (set both or neither).
 
-| Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                              |
-| ----------------------- | ---------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/earn/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                 |
-| `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself                                            |
-| `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                         |
-| `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router has callback and return-deposit admission: gateway role when restricted, Account role when gateways are open and access is enforced |
+The [deployment lifecycle](../../deployment/deployment.md) runs this module's step after the core
+is bound; the router's own deployment and activation steps are the
+[Zone router's](../../zone/zone-router.md#deployment):
 
-Before any broadcast, preflight requires code at the private asset and pool and, for a conversion
-router, a pool trading exactly the private and vault assets with equal decimals; for a same-asset
-router it requires the private asset to be the vault asset. Zone discovery starts from the fixed L1
-ZoneFactory predeploy and reads the Portal from `zones(id)`; the Portal must report the same Zone ID,
-the canonical Messenger, a registered encryption key, and the same sequencer set as the Factory.
-`deploy` discovers the Zone from L1 alone, so it does not wait for a new Zone's RPC.
+| Step                 | Phase      | Authority (signer)                                   | Reconciled result                |
+| -------------------- | ---------- | ---------------------------------------------------- | -------------------------------- |
+| `enable-zone-tokens` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`) | The Portal enables the EarnShare |
+
+Before any broadcast, the Zone router's preflight requires code at the private asset and pool and,
+for a conversion binding, a pool trading exactly the private and vault assets with equal decimals;
+for a same-asset binding it requires the private asset to be the vault asset. Zone discovery starts
+from the fixed L1 ZoneFactory predeploy and reads the Portal from `zones(id)`; the Portal must
+report the same Zone ID, the canonical Messenger, a registered encryption key, and the same
+sequencer set as the Factory. `deploy` discovers the Zone from L1 alone, so it does not wait for a
+new Zone's RPC.
 
 `pnpm earn verify` additionally checks the Zone RPC's chain ID and that its Inbox resolves the L1
 Portal. It reaches the Zone through the Tempo API when `TEMPO_API_KEY` is set (which takes
 precedence) or directly at `ZONE_RPC_URL`; without either it fails with a message naming both
 variables, and `pnpm earn verify --skip-zone` verifies everything else and prints
-`Zone: not verified`. Inspection verifies the router's immutable bindings separately from live
-readiness: `deploy` and `verify` report a conversion router's pause, admission, par, oracle
-freshness, and inventory (`Router conversion`) and whether the Portal enables both tokens with
-deposits active (`Zone tokens`) as snapshots that never invalidate the record.
+`Zone: not verified`. `deploy` and `verify` report whether the Portal enables the EarnShare with
+deposits active (`Zone tokens`), and the Zone router's conversion and token readiness, as
+snapshots that never invalidate the record.
 
 Authorities and handoffs:
 
-- **Pool owner.** `authorize-router` executes under `DEPLOYER_PRIVATE_KEY` only when planning proves
-  that key is the pool's `owner()`, or owns the `DirectPropAMMRebalanceController` that owns the pool
-  (calls then go through `controller.execute`). It refuses a pool that redirects the router's
-  recipient, which admission cannot repair, and a router that fails the provenance check below,
-  as does the Zone router's `authorize-zone-router` for its factory and router. Otherwise it emits a
+- **Pool owner.** The Zone router's `authorize-zone-router` admits a converting router on its pool
+  under `DEPLOYER_PRIVATE_KEY` only when planning proves that key is the pool's `owner()`, or owns
+  the `DirectPropAMMRebalanceController` that owns the pool (calls then go through
+  `controller.execute`), and the factory and router pass their provenance checks. It refuses a pool
+  that redirects the router's recipient, which admission cannot repair. Otherwise it emits a
   pool-owner handoff.
-- **Zone administrator.** When tokens or gateway registration are missing, the command still
-  publishes the record and returns the administrator handoff. The administrator checks out the
-  committed profile and record and reruns the same command with only `ZONE_ADMIN_PRIVATE_KEY`. That
-  key must be the Portal `admin()` or the sole owner of a threshold-1 Safe that is the admin, in
-  which case each call goes through the Safe's `execTransaction`; any other key fails rather than
-  sending a transaction. Only missing tokens are enabled. The router needs the callback-gateway
-  role when gateways are restricted, or the Account role when gateways are open but account access
-  is enforced. A mode change revokes the obsolete role and grants the required role in one batch.
-  Before an automatic grant, a read-only constructor simulation of the reviewed local build must
-  produce runtime byte-for-byte equal to the deployed router, including immutable values. Missing
-  or mismatched provenance stops the grant; already-admitted routers cause no new grant.
+- **Zone administrator.** When tokens or router admission are missing, the command still publishes
+  the record and returns the administrator handoff. The administrator checks out the committed
+  profile and record and reruns the same command with only `ZONE_ADMIN_PRIVATE_KEY`. That key must
+  be the Portal `admin()` or the sole owner of a threshold-1 Safe that is the admin, in which case
+  each call goes through the Safe's `execTransaction`; any other key fails rather than sending a
+  transaction. Only missing tokens are enabled, and the router's gateway or account admission
+  follows the Zone router's steps.
 
-Router authorization and Zone activation reconcile independently, so a missing pool owner does not
+Pool authorization and Zone activation reconcile independently, so a missing pool owner does not
 block the Zone administrator. CI, stack projection, and hosted E2E never hold a hosted Zone
 administrator or pool owner key.
 
 ## Tests
 
-- Foundry, under [`test/earn/router/`](../../../test/earn/router/): callback authentication and flows
-  (`SingleZoneEarnRouter.t.sol`), par conversion including off-par and stale-oracle rejection
-  (`SingleZoneEarnRouterConversion.t.sol`), custody and residual balances
-  (`SingleZoneEarnRouterCustody.t.sol`), the same-asset mode (`SingleZoneEarnRouterSameAsset.t.sol`),
-  and callback ABI fuzzing (`SingleZoneEarnRouterAbiFuzz.t.sol`, repeated over brutalized memory on
-  pull requests that change `src/`).
+- Foundry, under [`test/zone/earn/`](../../../test/zone/earn/): callback authentication and flows
+  (`ZoneRouterEarn.t.sol`), par conversion including off-par and stale-oracle rejection
+  (`ZoneRouterEarnConversion.t.sol`), custody and residual balances (`ZoneRouterEarnCustody.t.sol`),
+  the same-asset binding (`ZoneRouterEarnSameAsset.t.sol`), and callback ABI fuzzing
+  (`ZoneRouterEarnAbiFuzz.t.sol`, repeated over brutalized memory on pull requests that change
+  `src/`).
 - E2E, in [`e2e/modules/zone`](../../../e2e/modules/zone/module.ts) (group `zone`, cases requiring the
-  `privateRouting` capability): `zone-lifecycle-swapped`, `zone-third-party-recipient`,
-  `zone-swap-slippage-bounces`, the protected-policy cases `zone-ineligible-private-transfer-blocked`
-  and `zone-ineligible-private-deposit-bounces`, and the migration cases in
-  [existing vault migration](migration.md). Every local stack runs a conversion router over the
-  DirectPropAMM fixture ([localnet PropAMM fixtures](../../development/localnet.md#propamm-fixtures));
+  `privateRouting` capability, which a profile has when an Earn-mode `zoneRouter` sits on its Zone):
+  `zone-lifecycle-swapped`, `zone-third-party-recipient`, `zone-swap-slippage-bounces`, the
+  protected-policy cases `zone-ineligible-private-transfer-blocked` and
+  `zone-ineligible-private-deposit-bounces`, and the migration cases in
+  [existing vault migration](migration.md). Every local stack runs a converting Earn-mode router over
+  the DirectPropAMM fixture ([localnet PropAMM fixtures](../../development/localnet.md#propamm-fixtures));
   localnet's optional same-asset route deploys a second, pool-less router for consumers.
 - Unit tests: Zone discovery and the `--skip-zone` and RPC-selection rules
   ([`outputs.test.ts`](../../../deployments/modules/earn/zone-router/outputs.test.ts)), and the pool-owner,
@@ -337,13 +335,14 @@ first. For a profile with a Zone, record evidence for each item in the release r
    - [ ] The Zone ID and its Factory-registered Portal, the route (private asset, and for conversion
          the pool and route identifier), settlement expectations, and the Zone's operational owner
          are recorded.
-   - [ ] For a conversion router: the pool pair and equal decimals, par oracle and age window,
+   - [ ] For a conversion binding: the pool pair and equal decimals, par oracle and age window,
          deviation guard, inventory owner and funding, and rebalancing process are approved, and the
          pool owner will admit only the final router, with its recipient resolving to itself.
 2. **Router is deployed and activated.**
-   - [ ] The router is deployed only after the EarnVault and Zone are final, and `pnpm earn verify`
-         confirms its source and every immutable (Zone ID, EarnVault, private and vault assets,
-         EarnShare, pool, orientation, route identifier).
+   - [ ] The router is deployed through its factory only after the EarnVault and Zone are final, and
+         `pnpm earn verify` confirms the factory's provenance, the router's mode, and every
+         immutable (Zone ID, ops, EarnVault, private and vault assets, EarnShare, pool, orientation,
+         route identifier).
    - [ ] The Portal enables the private asset and EarnShare with deposits active, registers the router
          as a callback gateway when gateways are restricted, and admits the refund accounts when it
          enforces account admission; a protected EarnShare whitelists every Zone principal.
@@ -361,9 +360,9 @@ first. For a profile with a Zone, record evidence for each item in the release r
 - **A small immutable router, not EarnVault code.** Cross-domain delivery needs Portal encryption,
   callback authentication, refund handling, and transient custody, not new share accounting in the
   size-constrained EarnVault. An ownerless router is cheap to redeploy, so immutable bindings beat
-  unused generality, and the callback ABI encodes the closed-loop destination structurally. Its
-  bindings are specific to one deployment, so the lifecycle creates it directly, with no router
-  factory.
+  unused generality, and the callback ABI encodes the closed-loop destination structurally. One
+  router contract serves Earn and spends: its factory fixes each mode at a predictable address, so
+  Zone administrators can recognize a router before admitting it.
 - **Par conversion through DirectPropAMM.** A private asset and a vault asset from different issuers
   share no issuer-level conversion. A permissioned, operator-funded pool gives holders an exact 1:1
   outcome while its operator rebalances through the issuers' mint and redemption paths outside Earn.

@@ -251,7 +251,7 @@ trailing newline:
 | `earn-funding-helper`  | the `DemoStablecoinFunder` that mints the input token |
 | `earn-token`           | the EarnShare                                         |
 | `earn-vault`           | the EarnVault                                         |
-| `earn-router`          | the Zone router                                       |
+| `earn-router`          | the Earn-mode `ZoneRouter`                            |
 | `earn-source-revision` | the Earn commit that deployed the stack               |
 
 `e2e/harness/workflows-contract.test.ts` pins both entry points, the `zone` group, these files, and

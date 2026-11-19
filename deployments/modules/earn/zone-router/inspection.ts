@@ -1,6 +1,6 @@
 import { getAddress, zeroAddress, type Address, type Hex, type PublicClient } from 'viem'
 
-import { earnRouterAbi, priceOracleAbi, propAMMPoolAbi } from '../../../abis/index.js'
+import { priceOracleAbi, propAMMPoolAbi, zoneRouterAbi } from '../../../abis/index.js'
 import {
   InspectionMismatchError,
   equalAddress,
@@ -16,7 +16,7 @@ export type RouterReadiness = {
   redeemLiquidity: bigint | null
 }
 
-/** Immutable bindings of one `SingleZoneEarnRouter`. */
+/** The Earn binding of one `ZoneRouter`'s immutables. */
 export type ExpectedRouter = {
   router: Address
   zoneId: number
@@ -38,11 +38,11 @@ export async function inspectRouterBinding(
 ): Promise<Address | undefined> {
   const { router, route } = expected
   const [zoneId, vault, privateAsset, vaultAsset, share] = await Promise.all([
-    client.readContract({ address: router, abi: earnRouterAbi, functionName: 'allowedZoneId' }),
-    client.readContract({ address: router, abi: earnRouterAbi, functionName: 'earnVault' }),
-    client.readContract({ address: router, abi: earnRouterAbi, functionName: 'privateAsset' }),
-    client.readContract({ address: router, abi: earnRouterAbi, functionName: 'vaultAsset' }),
-    client.readContract({ address: router, abi: earnRouterAbi, functionName: 'earnShare' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'allowedZoneId' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'earnVault' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'privateAsset' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'vaultAsset' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'earnShare' }),
   ])
   if (zoneId !== expected.zoneId) {
     throw new InspectionMismatchError(`Router Zone is ${zoneId}, expected ${expected.zoneId}`)
@@ -54,11 +54,11 @@ export async function inspectRouterBinding(
   if (!route) return undefined
 
   const [pool, customerId, privateAssetIsBase] = await Promise.all([
-    client.readContract({ address: router, abi: earnRouterAbi, functionName: 'pool' }),
-    client.readContract({ address: router, abi: earnRouterAbi, functionName: 'customerId' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'pool' }),
+    client.readContract({ address: router, abi: zoneRouterAbi, functionName: 'customerId' }),
     client.readContract({
       address: router,
-      abi: earnRouterAbi,
+      abi: zoneRouterAbi,
       functionName: 'privateAssetIsBase',
     }),
   ])
@@ -96,7 +96,7 @@ export async function inspectRouterReadiness(
   try {
     status = await client.readContract({
       address: router,
-      abi: earnRouterAbi,
+      abi: zoneRouterAbi,
       functionName: 'liquidityStatus',
     })
   } catch {

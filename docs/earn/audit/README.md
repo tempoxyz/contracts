@@ -31,8 +31,9 @@ The review also covered the DirectPropAMM pool contract.
 ## Scope
 
 Each report covers its listed components at the version it reviewed. Changes made after a report's
-review are not covered by it; `EarnVault`, `EarnFees`, `ERC4626Engine`, `SingleZoneEarnRouter`,
+review are not covered by it; `EarnVault`, `EarnFees`, `ERC4626Engine`,
 `EarnContributionController`, and `EarnMerkleRewardDistributor` have all changed since.
+`SingleZoneEarnRouter` has been removed; the `ZoneRouter` Earn ops that replace it are not covered.
 
 Neither report covers:
 

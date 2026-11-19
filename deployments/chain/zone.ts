@@ -11,7 +11,7 @@ import {
   type PublicClient,
 } from 'viem'
 
-import { earnRouterAbi } from '../abis/generated.js'
+import { zoneRouterAbi } from '../abis/generated.js'
 import {
   tempoStateAbi,
   zoneFactoryAbi,
@@ -229,7 +229,7 @@ export async function waitForWithdrawalProcessed(
 }
 
 /**
- * The EarnRouter event a processed withdrawal's callback emitted, from the processing receipt:
+ * The Earn event a processed withdrawal's ZoneRouter callback emitted, from the processing receipt:
  * `router`'s event for `earnVault` with the action's ID. Throws when the callback emitted none.
  */
 export async function processedRouterEvent<const Name extends 'EarnDeposit' | 'EarnRedeem'>(
@@ -245,7 +245,7 @@ export async function processedRouterEvent<const Name extends 'EarnDeposit' | 'E
 ) {
   const receipt = await l1Client.getTransactionReceipt({ hash: parameters.transactionHash })
   const event = parseEventLogs({
-    abi: earnRouterAbi,
+    abi: zoneRouterAbi,
     eventName: parameters.eventName,
     logs: receipt.logs,
     strict: true,
@@ -256,7 +256,7 @@ export async function processedRouterEvent<const Name extends 'EarnDeposit' | 'E
       log.args.actionId === parameters.actionId,
   )
   if (!event)
-    throw new Error(`EarnRouter callback emitted no ${parameters.eventName} for its action`)
+    throw new Error(`ZoneRouter callback emitted no ${parameters.eventName} for its action`)
   return event
 }
 

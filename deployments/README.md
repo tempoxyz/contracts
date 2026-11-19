@@ -29,8 +29,8 @@ runs every capability module's inspection, is exported from `/node` only.
 
 - every deployable contract under `src/earn/` and `src/demo/` (not an interface, library, or abstract contract) as
   `<name>Abi`, ordered by source directory with `EarnVault`, `EarnFees`, and `EarnFactory` first.
-  Its only tables are the directory order, one alias (`SingleZoneEarnRouter` exports
-  `earnRouterAbi`), and the Foundry-only contracts it excludes, so a new contract needs no entry; a
+  Its only tables are the directory order and the Foundry-only contracts it excludes, so a new
+  contract needs no entry; a
   contract in a new `src/earn/` directory fails generation until the directory joins the order;
 - the state-changing entry points of every deployment and localnet fixture script as
   `<name>ScriptAbi`; and
@@ -111,7 +111,7 @@ Node-only code.
 Records, resume, source verification, access membership, stacks, and E2E derive from these
 declarations, so none of them gains a step-ID, per-contract, or engine-kind branch. Localnet's
 `localStack` is the exception for Zone fields: its `Deployment.State` carries the Zone and router it
-deployed, and it hands them to the Zone router's `zoneRouterStackFields` itself.
+deployed, and it hands them to the Zone module's `zoneStackFields` itself.
 
 ## Registries
 

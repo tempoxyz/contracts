@@ -1,4 +1,4 @@
-import { earnRouterAbi } from '@tempoxyz/contracts/abis'
+import { zoneRouterAbi } from '@tempoxyz/contracts/abis'
 import { inspectRouterReadiness } from '@tempoxyz/contracts/deployments'
 import { erc20Abi, getAddress, maxUint128, maxUint256, zeroAddress, type Address } from 'viem'
 import type { DeploymentPublicClient, E2eContext, E2eStack } from '../../harness/context.js'
@@ -11,9 +11,9 @@ import { assert, ZONE_CASE_AMOUNT } from '../../harness/support/utils.js'
  */
 export async function validateRouter(client: DeploymentPublicClient, deployment: E2eStack) {
   const { contracts } = deployment
-  const router = contracts.earnRouter
+  const router = contracts.zoneRouter
   if (!router) return
-  const route = { address: router, abi: earnRouterAbi } as const
+  const route = { address: router, abi: zoneRouterAbi } as const
   const [pool, privateAsset, ...flows] = await Promise.all([
     client.readContract({ ...route, functionName: 'pool' }),
     client.readContract({ ...route, functionName: 'privateAsset' }),
@@ -25,8 +25,8 @@ export async function validateRouter(client: DeploymentPublicClient, deployment:
       }),
     ),
   ])
-  assert(flows[0]! && flows[1]!, 'EarnRouter does not support both closed-loop flows')
-  assert(!flows[2] && !flows[3], 'EarnRouter advertises an unknown flow')
+  assert(flows[0]! && flows[1]!, 'ZoneRouter does not support both closed-loop ops')
+  assert(!flows[2] && !flows[3], 'ZoneRouter advertises a third op')
   const converting = getAddress(pool) !== zeroAddress
   // Unsolicited tokens are a preserved baseline, not evidence of operation residue.
   await routerAllowances(client, deployment, { router, pool, privateAsset })
@@ -51,9 +51,9 @@ export async function validateRouter(client: DeploymentPublicClient, deployment:
  * Pool inventory legitimately moves with conversion, so its amounts are not compared.
  */
 export async function routerIntegrity(context: E2eContext) {
-  const router = context.contracts.earnRouter
+  const router = context.contracts.zoneRouter
   if (!router) return undefined
-  const route = { address: router, abi: earnRouterAbi } as const
+  const route = { address: router, abi: zoneRouterAbi } as const
   const [pool, privateAsset, [paused, admitted, atPar]] = await Promise.all([
     context.l1Public.readContract({ ...route, functionName: 'pool' }),
     context.l1Public.readContract({ ...route, functionName: 'privateAsset' }),
@@ -103,7 +103,7 @@ async function routerAllowances(
   const portal = deployment.network.zone?.portal
   assert(
     portal !== undefined && getAddress(portal) !== zeroAddress,
-    'EarnRouter has no source Portal',
+    'ZoneRouter has no source Portal',
   )
   const targets: {
     token: Address
@@ -167,7 +167,7 @@ async function routerAllowances(
           : allowance === maxUint256
       assert(
         allowance === 0n || (standing && isStanding),
-        `EarnRouter retains an allowance at rest: ${label}`,
+        `ZoneRouter retains an allowance at rest: ${label}`,
       )
       // A standing allowance is set by the first operation, so its value is no baseline to compare.
       return standing

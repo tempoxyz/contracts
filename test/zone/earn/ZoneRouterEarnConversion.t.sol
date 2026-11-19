@@ -6,12 +6,11 @@ pragma solidity ^0.8.36;
 
 import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
 import { ZoneRouterEarnTestBase } from "./ZoneRouterEarnTestBase.sol";
-import { IRouterPropAMMPool } from "../../earn/helpers/EarnRouterTestBase.sol";
+import { IRouterPropAMMPool } from "../helpers/ZoneRouterTestBase.sol";
 import { MemoMockToken } from "../../earn/helpers/PropAMMEngineMocks.sol";
 import { ZONE_MESSENGER_ADDRESS } from "../../../src/interfaces/external/tempo/IZone.sol";
-import { SingleZoneEarnRouter } from "../../../src/earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev Port of Earn's SingleZoneEarnRouterConversionTest to ZoneRouter's Earn mode, against the pinned
+/// @dev ZoneRouter's Earn-mode conversion, against the pinned
 ///      DirectPropAMM artifact.
 contract ZoneRouterEarnConversionTest is ZoneRouterEarnTestBase {
     uint256 private constant INVENTORY = POOL_INVENTORY;
@@ -112,7 +111,7 @@ contract ZoneRouterEarnConversionTest is ZoneRouterEarnTestBase {
             bytes32(0),
             address(earnA),
             uint128(5 * ONE),
-            _callback(SingleZoneEarnRouter.Flow.Redeem, uint128(5 * ONE), 0, uint128(5 * ONE))
+            _callback(ZoneRouter.Op.Redeem, uint128(5 * ONE), 0, uint128(5 * ONE))
         );
 
         assertEq(earnA.balanceOf(address(router)), 5 * ONE);

@@ -5,11 +5,10 @@ pragma solidity ^0.8.36;
 
 import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
 import { ZoneRouterEarnTestBase } from "./ZoneRouterEarnTestBase.sol";
-import { IRouterPropAMMPool } from "../../earn/helpers/EarnRouterTestBase.sol";
+import { IRouterPropAMMPool } from "../helpers/ZoneRouterTestBase.sol";
 import { EncryptedDepositPayload, ZONE_MESSENGER_ADDRESS } from "../../../src/interfaces/external/tempo/IZone.sol";
-import { SingleZoneEarnRouter } from "../../../src/earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev Port of Earn's SingleZoneEarnRouterTest to ZoneRouter's Earn mode.
+/// @dev ZoneRouter's Earn mode: deposits, redemptions, and their checks.
 contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
     enum ArbitraryDestination {
         Zone,
@@ -73,7 +72,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
 
     function testRejectsSpoofedMessengerAndMismatchedSourcePortal() public {
         alternate.mint(address(router), ONE);
-        bytes memory data = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        bytes memory data = _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0);
 
         vm.expectRevert(ZoneRouter.NotZoneMessenger.selector);
         router.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
@@ -98,7 +97,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
 
     function testRejectsDifferentCanonicalZone() public {
         alternate.mint(address(router), ONE);
-        bytes memory data = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        bytes memory data = _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0);
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.WrongSourceZone.selector);
@@ -108,9 +107,8 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         assertEq(alternate.balanceOf(address(router)), ONE);
     }
 
-    /// @dev Adapted: SingleZoneEarnRouter deploys with Zone 0 and rejects every callback at runtime;
-    ///      ZoneRouter refuses to deploy one, so no Zone 0 router can exist, and a Zone 0 callback to a
-    ///      deployed router fails as any other Zone's would.
+    /// @dev ZoneRouter refuses to deploy for Zone 0, so no Zone 0 router can exist, and a Zone 0 callback
+    ///      to a deployed router fails as any other Zone's would.
     function testZeroZoneBindingIsFailClosed() public {
         ZoneRouter.Mode memory mode = _earnMode(0, address(alternate), address(pool), CUSTOMER_ID);
         address predicted = factory.predict(mode);
@@ -119,7 +117,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         assertEq(predicted.code.length, 0);
         assertFalse(factory.isRouter(predicted));
 
-        bytes memory data = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        bytes memory data = _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0);
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.WrongSourceZone.selector);
         router.onWithdrawalReceived(0, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
@@ -128,7 +126,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
     /// @dev Ops 0 and 1 read their tuple in place, so the callback data must end the call's calldata.
     function testDepositCallbackDataMustEndTheCalldata() public {
         alternate.mint(address(router), ONE);
-        bytes memory valid = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        bytes memory valid = _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0);
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.BadFlow.selector);
@@ -203,7 +201,7 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
             bytes32(0),
             address(assetA),
             uint128(ONE),
-            _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0)
+            _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0)
         );
 
         assertEq(assetA.balanceOf(address(router)), ONE);

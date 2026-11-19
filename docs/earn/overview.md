@@ -86,7 +86,6 @@ profiles, and the shared tooling also live.
 | ---------------------- | --------------------------------------------------------------------------------------------------- |
 | `src/earn/core/`       | Factory, persistent EarnVault, isolated fees, and fee math.                                         |
 | `src/earn/engines/`    | Single-EarnVault [yield engines](integrations/engines.md), one per kind.                            |
-| `src/earn/router/`     | Canonical ownerless, deployment-scoped private router.                                              |
 | `src/earn/rewards/`    | Optional contribution orchestration and EarnShare-only Merkle reward settlement.                    |
 | `src/interfaces/earn/` | Public Earn interfaces, grouped by core and engines; outside systems in `src/interfaces/external/`. |
 | `src/demo/`            | Test-only venues, fixture funders, and par-oracle pool periphery (built, never deployed).           |

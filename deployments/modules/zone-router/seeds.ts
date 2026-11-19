@@ -75,8 +75,8 @@ const sendSpenderAbi = parseAbi([
 
 /**
  * Whether the profile has the router's Portal enable EarnShare: through this mode's Earn binding, or
- * through the single-Zone router on the same Zone. Planning uses it before any chain read; inspection
- * and seeding read the Portal itself.
+ * through the profile's Zone when it is the same Zone. Planning uses it before any chain read;
+ * inspection and seeding read the Portal itself.
  */
 export function enablesEarnShare(profile: EarnDeploymentProfile) {
   const router = profile.zoneRouter
@@ -120,10 +120,7 @@ export async function zoneRouterSeedPlan(
 
   // Spend moves whatever its Zone withdraws; of the stack's tokens, those are the ones it enables.
   // These are also the only tokens seeded at all: a spender's getters never add a token outside them.
-  // A Spend-only router beside a same-Zone single-Zone router also moves that router's private asset.
-  const sibling = configuredZone(profile)
-  const privateAsset =
-    router.earn?.privateAsset ?? (sibling?.id === router.zoneId ? sibling.privateAsset : undefined)
+  const privateAsset = router.earn?.privateAsset
   const candidates: [label: string, token: Address][] = []
   for (const [label, token] of [
     ...(privateAsset ? [['private asset', privateAsset] as [string, Address]] : []),

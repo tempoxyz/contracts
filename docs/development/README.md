@@ -117,7 +117,7 @@ production receipts.
 
 `pnpm coverage` prints a per-contract summary and writes `out/coverage/lcov.info` using the
 `coverage` Foundry profile. That profile compiles with `--ir-minimum` and skips only
-`SingleZoneEarnRouterAbiFuzz.t.sol`, whose fuzz entry point is too deep for the stack without the
+`ZoneRouterEarnAbiFuzz.t.sol`, whose fuzz entry point is too deep for the stack without the
 optimizer; the router stays covered by its other suites. Tests and deployment scripts are excluded
 from the report. Coverage is informational and not a required check.
 
@@ -192,7 +192,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 
 - **Verify jobs.** Contracts runs the same steps as `verify:contracts`, except that its Forge test
   step skips `test/earn/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
-  fuzzes the whole `SingleZoneEarnRouterAbiFuzzTest` contract over brutalized memory at 4,096 runs;
+  fuzzes the whole `ZoneRouterEarnAbiFuzzTest` contract over brutalized memory at 4,096 runs;
   `main` does not, so `main` never waits on it. Symbolic proves the
   `EarnFeeMathFuzzTest` `prove*` properties with z3 at a loop bound of 32. TypeScript checks and
   build typechecks one workspace at a time (local `pnpm check:types` runs them in parallel).

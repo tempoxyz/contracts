@@ -16,7 +16,7 @@ const resolved = new WeakMap<object, Promise<ZoneRefundRecipients | undefined>>(
  */
 export function zoneRefundRecipients(context: E2eContext) {
   const zone = context.deployment.network.zone
-  if (context.provider !== 'hosted' || !zone || !context.contracts.earnRouter) {
+  if (context.provider !== 'hosted' || !zone || !context.contracts.zoneRouter) {
     return Promise.resolve(undefined)
   }
   let recipients = resolved.get(context.l1Public)

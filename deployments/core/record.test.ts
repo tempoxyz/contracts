@@ -40,15 +40,7 @@ const zoneProfile = parseEarnDeploymentProfile(
     chainId: 4217,
     owner: address('4'),
     engine: { kind: 'veda', address: address('1') },
-    zone: {
-      id: 1,
-      enableEarnShare: true,
-      router: {
-        privateAsset: address('d'),
-        pool: address('e'),
-        customerId: `0x${'c'.repeat(64)}`,
-      },
-    },
+    zone: { id: 1, enableEarnShare: true },
   },
   { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
 )
@@ -143,7 +135,7 @@ describe('deployment records', () => {
       { contracts: { engine }, verifierUrl: null },
       { contracts: {}, verifierUrl: 'https://contracts.tempo.xyz' },
       { contracts: { asset: engine } },
-      { contracts: { earnRouter: engine } },
+      { contracts: { zoneRouter: engine } },
       { contracts: { earnVault: engine } },
       { contracts: { engine: { ...engine, sourceInputsHash: '0x1234' } } },
       { contracts: { engine: { ...engine, match: 'partial' } } },
@@ -225,36 +217,17 @@ describe('deployment records', () => {
       source: {
         ...record().source,
         factoryDeploymentId: profileFactoryDeploymentId(zoneProfile),
-        contracts: {
-          ...record().source.contracts,
-          earnRouter: {
-            kind: 'source',
-            name: 'SingleZoneEarnRouter',
-            match: 'exact_match',
-            sourceInputsHash,
-          },
-        },
       },
       addresses: {
         ...record().addresses,
         zonePortal: address('f'),
         zoneMessenger: zoneMessengerAddress,
         zoneOutbox: address('11'),
-        earnRouter: address('12'),
       },
       runtimeCodeHashes: {
         ...record().runtimeCodeHashes,
         zonePortal: codeHash,
         zoneMessenger: codeHash,
-        earnRouter: codeHash,
-      },
-      actions: {
-        ...record().actions,
-        'deploy-router': {
-          completedAt: '2026-01-01T00:00:00.000Z',
-          verification: 'broadcast',
-          transactions: [transaction],
-        },
       },
     })
     expect(parseEarnDeploymentRecord(deployed, zoneProfile).target).toEqual(deployed.target)

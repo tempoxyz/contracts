@@ -367,8 +367,8 @@ self-recipient selectors, from its verified source or runtime code. The canonica
 
 ## Private Zone flows
 
-A private deposit or redemption is a Zone withdrawal whose parent-chain callback runs the stack's
-`SingleZoneEarnRouter`; a successful Zone transaction does not mean the Earn action succeeded. The
+A private deposit or redemption is a Zone withdrawal whose parent-chain callback runs the Earn ops
+of the stack's `ZoneRouter`; a successful Zone transaction does not mean the Earn action succeeded. The
 viem helpers, event correlation, router revert handling, and bounce-back behavior are in
 [Tempo Zones](../modules/zone-router.md#client-integration).
 

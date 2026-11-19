@@ -65,14 +65,15 @@ async function loadProfileDeployment(
   const { bundle, environment, stack, tempo } = await loadHostedProfileStack(loaded.path, values)
   const definition = environmentDefinitions[environment.id]
   const fixture = loadOptionalProfileFixture(loaded.path, bundle.profile, bundle.record)
-  // Without a fixture, a Zone profile converts through its customer-owned pool and E2E consumes
+  // Without a fixture, a private-mode stack converts through its customer-owned pool and E2E consumes
   // prefunded actors.
+  const privateMode = stack.modes.private
   const stablecoinFixture =
     fixture?.record.stablecoinFixture ??
-    (profileZone
+    (privateMode
       ? {
           baseAsset: stack.contracts.asset,
-          alternateAsset: profileZone.privateAsset,
+          alternateAsset: privateMode.privateAsset,
           venue: stack.contracts.venue,
           funder: null,
         }

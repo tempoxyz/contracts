@@ -112,22 +112,13 @@ describe('Earn deployment profile', () => {
           },
         },
       },
-      zone: {
-        id: 2,
-        enableEarnShare: true,
-        router: {
-          privateAsset: address('a'),
-          pool: address('b'),
-          customerId: `0x${'c'.repeat(64)}`,
-        },
-      },
+      zone: { id: 2, enableEarnShare: true },
       tip403PolicyId: '469',
       boostRewards: { ...boostRewards, treasury: address('16') },
     })
     const members = accessMembers(profile, {
       earnVault: address('e'),
       earnFees: address('f'),
-      earnRouter: address('10'),
       zonePortal: address('11'),
       zoneMessenger: address('12'),
       zoneSequencer0: address('13'),
@@ -140,7 +131,6 @@ describe('Earn deployment profile', () => {
         address('7'),
         address('e'),
         address('f'),
-        address('10'),
         address('11'),
         address('12'),
         address('13'),

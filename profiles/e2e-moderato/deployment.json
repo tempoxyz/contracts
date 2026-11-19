@@ -7,11 +7,11 @@
     "earn": "0x749a947811764a14CD17fE3C7BcC5c470e2Ac5cC",
     "erc4626Engine": "0x0d57c10249eb3a92b7d81bBA6221F80F2865448A"
   },
-  "deploymentIntentHash": "5c3bdd754d7dae0cbe59d2de9e7552f6c89c67962213da2af8959e6fe62a00e1",
+  "deploymentIntentHash": "2b632be6f58584c130023ae6e2f2d69f830e56554d0cd8c1bf4b8e767a2310a6",
   "componentDeploymentIntentHashes": {
     "core": "6d5b200640d99bef9c661d825dc4be0ebbe4fe5930db10b1e8afeeec272219bf",
     "engine": "1201841cf2a91f4560ac453a3c221195d5dc57f68c74104a72d25b055cc491c9",
-    "zone": "bd4688578ee4f6056d7a38fbdcc400999af48c6ca80ba9b8494a7d54e6d1a207",
+    "zone": "3047dcbd7646bb4f415e8f39ccb088b4112f191f86314034c6b89e1cedf0caf1",
     "targetYield": null,
     "boostRewards": null,
     "zoneRouterFactory": null,
@@ -60,12 +60,6 @@
         "sourceInputsHash": "0x46349656a8817b8c6dc43f05e8e5dda434f1a712746b87b57f1c2275e5fafc84",
         "implementation": "0x5E9B9A012b4C8A68A1E48Ebae993F001F1EBf79c",
         "implementationCodeHash": "0x05d2ac6246faa85aa2e68d755e60d2d17c5a66e0b6e57d1946c49968915c40a8"
-      },
-      "earnRouter": {
-        "kind": "source",
-        "name": "SingleZoneEarnRouter",
-        "match": "exact_match",
-        "sourceInputsHash": "0xda86a38a52cf1d9b525ae901d314e950b71321bdc22b8b257dcb994a6624ba82"
       }
     }
   },
@@ -75,8 +69,7 @@
     "engine": "0xf20996795727a528c1e68f81816989cb5a7bb716a90626ba755764aff2de0727",
     "earnFees": "0x70d3f0a433a192d8db9ff956609f9e920faffdedbde819cb20c53faac7eb1602",
     "earnShare": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
-    "earnVault": "0x2267e2e062f38379d4c0a254af36f49c30b5a735f4311dd575958e4c1d87afb1",
-    "earnRouter": "0x21d6e66784ca158cc3801e61bf6c77c00044fd24beaae1455c2155aef3a6af8d"
+    "earnVault": "0x2267e2e062f38379d4c0a254af36f49c30b5a735f4311dd575958e4c1d87afb1"
   },
   "addresses": {
     "zonePortal": "0x5Ad0000000000000000000000000000000000003",
@@ -86,8 +79,7 @@
     "engine": "0x6bd462E528d7215E4B09E07b43B6A95Cd59F3028",
     "earnFees": "0x3d3e6750B67003269404b08C3fdf7Cd6F66b6760",
     "earnShare": "0x20C00000000000000000000054a015ca544260f8",
-    "earnVault": "0x0eb6bc4711Bf400684Df14616e049F4b889eb025",
-    "earnRouter": "0xd4013c3978D00FBEA5c0d050A40F11f6F06a47dF"
+    "earnVault": "0x0eb6bc4711Bf400684Df14616e049F4b889eb025"
   },
   "actions": {
     "deploy-engine": {
@@ -104,11 +96,6 @@
       "completedAt": "2026-10-15T00:27:32.822Z",
       "verification": "broadcast",
       "transactions": ["0xd920240c5516596756e27bf0327a4794f0ffc866537115df1015f035abdcdc22"]
-    },
-    "deploy-router": {
-      "completedAt": "2026-11-17T14:07:47.723Z",
-      "verification": "broadcast",
-      "transactions": ["0x7d3694e01968c17c0ea0f4d0d7dc67ffc72ec3e3d66dddce696c9b6a11800329"]
     }
   }
 }

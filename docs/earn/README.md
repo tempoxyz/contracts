@@ -39,7 +39,7 @@ capability updates one page. The shared engine contract and the recipe for a new
 | Module                  | Page                                             | Covers                                                                     |
 | ----------------------- | ------------------------------------------------ | -------------------------------------------------------------------------- |
 | `engines`               | [Yield engines](integrations/engines.md)         | One page per engine kind, listed in its engine table                       |
-| `zone-router`           | [Zone router](modules/zone-router.md)            | `SingleZoneEarnRouter`, par conversion, Zone activation, go-live           |
+| `zone-router`           | [Zone router](modules/zone-router.md)            | Zone target, private routing via `ZoneRouter`, par conversion, go-live     |
 | `access-policy`         | [Access policy](modules/access.md)               | EarnShare TIP-403 whitelist, required members, `pnpm earn access`          |
 | `rewards`               | [Rewards](modules/rewards.md)                    | Contribution controller, Merkle distributor, `EarnRewardsFactory`          |
 | none                    | [Existing vault migration](modules/migration.md) | Holder opt-in, source-vault composition, stack replacement (E2E in `zone`) |

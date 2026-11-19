@@ -2,6 +2,7 @@ import { performance } from 'node:perf_hooks'
 
 import { getAbiItem, getAddress, type Address, type Hex } from 'viem'
 import { getGasPrice, getTransactionCount } from 'viem/actions'
+import { zoneRouterAbi } from '@tempoxyz/contracts/abis'
 import { Abis, Actions as TempoActions } from 'viem/tempo'
 import { processedRouterEvent, waitForWithdrawalProcessed } from '@tempoxyz/contracts/tempo/zone'
 import {
@@ -46,7 +47,7 @@ import { zoneRefundRecipients } from './refund.js'
 /** PATHUSD moved into the Zone for its fees before each private leg when Zone gas is priced. */
 export const ZONE_FEE_BUFFER = 1_100_000n
 const ZONE_WITHDRAWAL_TRANSACTION_GAS = 10_000_000n
-const depositEvent = getAbiItem({ abi: Abis.earnRouter, name: 'EarnDeposit' })
+const depositEvent = getAbiItem({ abi: zoneRouterAbi, name: 'EarnDeposit' })
 
 /** A private deposit of the router's private asset, the alternate fixture asset. */
 type ZoneDepositInput = {
@@ -186,7 +187,7 @@ export async function zoneDepositExpectBounce(context: E2eContext, input: ZoneDe
   assert(after[2] === before[2], 'bounced deposit changed engine backing')
   assert(
     !depositLogs.some((log) => log.args.actionId === leg.actionId),
-    'bounced deposit emitted a successful EarnRouter event',
+    'bounced deposit emitted a successful ZoneRouter Earn event',
   )
   context.progress.step('RETURN', 'private input bounced after the rejected callback')
   context.progress.step('CHECK', 'EarnShare supply and engine backing remained unchanged')
@@ -216,7 +217,7 @@ export async function zoneDepositExpectRecipientBounce(
   })
   const deposit = portalDeposit(receipt.logs, {
     portal: context.deployment.network.zone.portal,
-    sender: context.contracts.earnRouter,
+    sender: context.contracts.zoneRouter,
     token: earnShare,
     gross: depositLog.args.earnShares,
     hash: depositLog.args.zoneDepositHash,
@@ -224,7 +225,7 @@ export async function zoneDepositExpectRecipientBounce(
   const refundedEarnShares = await waitForRecipientRefund(context, {
     depositHash: deposit.hash,
     token: earnShare,
-    sender: context.contracts.earnRouter,
+    sender: context.contracts.zoneRouter,
     recipient: context.user.address,
     netAmount: deposit.netAmount,
     zoneFromBlock: leg.zoneFromBlock,
@@ -341,7 +342,7 @@ type RouterLegTarget = {
 }
 
 /**
- * One router leg: `owner` withdraws the prepared callback's input from the Zone to the EarnRouter,
+ * One router leg: `owner` withdraws the prepared callback's input from the Zone to the ZoneRouter,
  * which returns the output privately to `recipient` (refunding a bounced return to `owner`'s
  * verified Tempo refund recipient), and the Portal processes it on L1. viem's `prepare` also checks
  * the router's Zone, EarnVault, asset, EarnShare, and flow bindings before anything is submitted.
@@ -354,10 +355,10 @@ async function submitRouterLeg(
   ) => Promise<TempoActions.earn.privateDeposit.prepare.ReturnValue>,
 ) {
   const owner = context.actors[leg.owner]
-  const { earnRouter, earnVault } = context.contracts
+  const { zoneRouter, earnVault } = context.contracts
   const { portal, id: zoneId } = context.deployment.network.zone
   const prepared = await prepare({
-    gateway: earnRouter,
+    gateway: zoneRouter,
     vault: earnVault,
     portalAddress: portal,
     zoneId,
@@ -375,7 +376,7 @@ async function submitRouterLeg(
   })
   const request = sourceWithdrawal(receipt, {
     sender: owner.account.address,
-    to: earnRouter,
+    to: zoneRouter,
     token: prepared.token,
     amount: prepared.amount,
     data: prepared.data,
@@ -385,7 +386,7 @@ async function submitRouterLeg(
   context.progress.step('ZONE', 'private withdrawal submitted', receipt.transactionHash)
   const processed = await waitForWithdrawalProcessed(context.l1Public, {
     portal,
-    to: earnRouter,
+    to: zoneRouter,
     senderTag: request.senderTag,
     fromBlock: prepared.fromBlock,
     pollingInterval: context.pollingInterval,
@@ -395,14 +396,14 @@ async function submitRouterLeg(
     hash: processed.transactionHash,
   })
   const privateAsset = await context.l1Public.readContract({
-    address: earnRouter,
-    abi: Abis.earnRouter,
+    address: zoneRouter,
+    abi: zoneRouterAbi,
     functionName: 'privateAsset',
   })
   assertRouterReceipt(
     callbackReceipt.logs,
     [context.contracts.asset, privateAsset, context.contracts.earnShare],
-    earnRouter,
+    zoneRouter,
   )
   return {
     actionId: prepared.actionId,
@@ -460,7 +461,7 @@ function callbackReverted(context: E2eZoneContext, processed: { transactionHash:
   )
 }
 
-/** The EarnRouter event the Portal's callback emitted for one leg, scoped to this stack. */
+/** The ZoneRouter Earn event the Portal's callback emitted for one leg, scoped to this stack. */
 function routerEvent<const Name extends 'EarnDeposit' | 'EarnRedeem'>(
   context: E2eZoneContext,
   leg: { actionId: Hex; processed: { transactionHash: Hex } },
@@ -468,7 +469,7 @@ function routerEvent<const Name extends 'EarnDeposit' | 'EarnRedeem'>(
 ) {
   return processedRouterEvent(context.l1Public, {
     transactionHash: leg.processed.transactionHash,
-    router: context.contracts.earnRouter,
+    router: context.contracts.zoneRouter,
     earnVault: context.contracts.earnVault,
     actionId: leg.actionId,
     eventName,
@@ -485,7 +486,7 @@ async function routerDelivery(
   })
   const deposit = portalDeposit(receipt.logs, {
     portal: context.deployment.network.zone.portal,
-    sender: context.contracts.earnRouter,
+    sender: context.contracts.zoneRouter,
     token: options.token,
     gross: options.gross,
     hash: options.hash,
@@ -493,7 +494,7 @@ async function routerDelivery(
   await waitForDepositDelivery(context, {
     hash: deposit.hash,
     token: options.token,
-    sender: context.contracts.earnRouter,
+    sender: context.contracts.zoneRouter,
     recipient: context.actors[options.recipient ?? 'user'].account.address,
     amount: deposit.netAmount,
     fromBlock: leg.zoneFromBlock,
@@ -503,7 +504,7 @@ async function routerDelivery(
 
 function routerDeposits(context: E2eZoneContext, fromBlock: bigint) {
   return context.l1Public.getLogs({
-    address: context.contracts.earnRouter,
+    address: context.contracts.zoneRouter,
     event: depositEvent,
     fromBlock,
     toBlock: 'latest',

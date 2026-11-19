@@ -1,14 +1,7 @@
-import {
-  ContractFunctionZeroDataError,
-  decodeFunctionData,
-  getAddress,
-  type Address,
-  type Hex,
-} from 'viem'
+import { ContractFunctionZeroDataError, getAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test, vi } from 'vitest'
 
-import { zonePortalAbi } from '../../../abis/index.js'
 import { zoneFactoryAddress, zoneMessengerAddress } from '../../../chain/zone.js'
 import { parseEarnDeploymentProfile } from '../../../core/profile.js'
 import { presentEarnDeploymentPlan } from '../../../core/plan.js'
@@ -16,14 +9,9 @@ import {
   zoneRouterModeProfile,
   routerReleaseIntent as modeReleaseIntent,
 } from '../../zone-router/profile.js'
-import { zoneRouterProfile, routerReleaseIntent } from './profile.js'
-import {
-  canAdministerZone,
-  enableZoneTokens,
-  registerZoneGateway,
-  zoneAdministrator,
-} from './steps.js'
-import { requireRouterProvenance } from './provenance.js'
+import { zoneProfile } from './profile.js'
+import { canAdministerZone, enableZoneTokens, zoneAdministrator } from './steps.js'
+import { registerZoneRouterGateway } from '../../zone-router/steps.js'
 import { oracleFreshness } from './inspection.js'
 import { preflightRouterRoute } from './index.js'
 
@@ -40,7 +28,7 @@ const profile = parseEarnDeploymentProfile(
     id: 'zone-guards',
     chainId: 42431,
     engine: { kind: 'veda', address: address('1') },
-    zone: { id: 7, enableEarnShare: true, router: { privateAsset: address('6') } },
+    zone: { id: 7, enableEarnShare: true },
     zoneRouter: { zoneId: 7, ops: ['deposit'], earn: { privateAsset: address('6') } },
   },
   { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
@@ -49,7 +37,13 @@ const options = {
   environment: { ZONE_ADMIN_PRIVATE_KEY: key },
   profile,
   rpcUrl: 'https://rpc.invalid',
-  outputs: { zonePortal: portal, earnRouter: router, earnVault: address('e') },
+  outputs: {
+    zonePortal: portal,
+    zoneRouterPortal: portal,
+    zoneRouterFactory: address('fac'),
+    zoneRouter: router,
+    earnVault: address('e'),
+  },
 }
 
 function dependencies(overrides: Record<string, unknown> = {}, role = 0) {
@@ -96,70 +90,13 @@ function dependencies(overrides: Record<string, unknown> = {}, role = 0) {
 }
 
 describe('Zone admission guards', () => {
-  test.each([
-    [true, true, 0, false],
-    [true, true, 2, true],
-    [true, true, 3, false],
-    [true, false, 0, true],
-    [false, true, 0, false],
-    [false, true, 3, true],
-    [false, true, 2, false],
-  ])(
-    'checks both callback and deposit admission (open=%s access=%s role=%s)',
-    async (open, access, role, ready) => {
-      const runtime = dependencies({ isGatewayOpen: open, isAccessEnforced: access }, role)
-      await expect(
-        registerZoneGateway.satisfied(runtime.client as never, profile, options.outputs),
-      ).resolves.toBe(ready)
-    },
-  )
-
-  test.each([
-    [true, 3, ['setGateway', 'setAllowedAccount']],
-    [false, 2, ['setAllowedAccount', 'setGateway']],
-  ] as const)('moves the old role atomically (open=%s)', async (open, role, expected) => {
-    const runtime = dependencies({ isGatewayOpen: open }, role)
-    await registerZoneGateway.execute(options, runtime)
-    expect(runtime.sendTransactionSync).toHaveBeenCalledOnce()
-    const calls = (
-      runtime.sendTransactionSync.mock.calls[0] as unknown as [
-        { calls: { to: Address; data: Hex }[] },
-      ]
-    )[0].calls
-    expect(
-      calls.map((call) => decodeFunctionData({ abi: zonePortalAbi, data: call.data })),
-    ).toEqual([
-      { functionName: expected[0], args: [router, false] },
-      { functionName: expected[1], args: [router, true] },
-    ])
-  })
-
-  test('checks the recovered router implementation before any role grant', async () => {
-    const runtime = dependencies({ isGatewayOpen: false })
-    const error = new Error('noncanonical router')
-    vi.mocked(requireRouterProvenance).mockRejectedValueOnce(error)
-    await expect(
-      registerZoneGateway.execute(
-        {
-          ...options,
-          outputs: {
-            ...options.outputs,
-            earnVault: address('e'),
-          },
-        },
-        runtime,
-      ),
-    ).rejects.toBe(error)
-    expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
-  })
-
-  test('keeps all five Zone administration steps as handoffs until authority is proven', () => {
+  test('keeps all four Zone administration steps as handoffs until authority is proven', () => {
     const plan = presentEarnDeploymentPlan(profile, options.environment)
     const admin = plan.filter((step) => step.authority === 'zone-administrator')
-    expect(admin).toHaveLength(5)
+    expect(admin).toHaveLength(4)
     expect(admin.every((step) => step.execution === 'handoff')).toBe(true)
     expect(enableZoneTokens.probeSigner).toBeTypeOf('function')
-    expect(registerZoneGateway.probeSigner).toBeTypeOf('function')
+    expect(registerZoneRouterGateway.probeSigner).toBeTypeOf('function')
   })
 
   test.each([
@@ -264,7 +201,7 @@ describe('preflightRouterRoute', () => {
       preflightRouterRoute({ getCode, readContract } as never, profile, {
         privateAsset: address('6'),
         earnShare: address('6'),
-        path: 'zone.router',
+        path: 'zoneRouter.earn',
       }),
     ).rejects.toThrow("privateAsset cannot be this vault's EarnShare")
     expect(getCode).not.toHaveBeenCalled()
@@ -283,7 +220,7 @@ describe('preflightRouterRoute', () => {
     await expect(
       preflightRouterRoute(client as never, profile, {
         privateAsset: address('6'),
-        path: 'zone.router',
+        path: 'zoneRouter.earn',
       }),
     ).rejects.toThrow("privateAsset cannot be this vault's EarnShare")
   })
@@ -299,21 +236,15 @@ describe('router release intent', () => {
       'contractRelease',
       2,
     )
-    expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({
-      zone: profile.zone,
-      routerContractRelease: 2,
-    })
-    expect(zoneRouterProfile.components.zone(profile, 'deployment')).toEqual({
+    // The Zone itself deploys no contract, so its intent carries no release.
+    expect(zoneProfile.deploymentIntent(profile)).toEqual({ zone: profile.zone })
+    expect(zoneProfile.components.zone(profile, 'deployment')).toEqual({
       deployment: 'deployment',
       zone: profile.zone,
-      routerContractRelease: 2,
     })
     // Release 1 adds nothing, so records written before releases existed keep their hash.
     expect(modeReleaseIntent(1)).toEqual({})
-    expect(routerReleaseIntent(1)).toEqual({})
     expect(modeReleaseIntent(2)).toEqual({ zoneRouterContractRelease: 2 })
-    expect(routerReleaseIntent(2)).toEqual({ routerContractRelease: 2 })
     expect(modeReleaseIntent(3)).not.toEqual(modeReleaseIntent(2))
-    expect(routerReleaseIntent(3)).not.toEqual(routerReleaseIntent(2))
   })
 })

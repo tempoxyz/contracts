@@ -114,9 +114,9 @@ function localDeployment(
       alternateAsset: deployment.alternateAsset,
       venue: deployment.vault,
       conversionPool: {
-        pool: deployment.earnRouterPool.pool,
-        oracle: deployment.earnRouterPool.oracle,
-        customerId: deployment.earnRouterPool.customerId,
+        pool: deployment.routerPool.pool,
+        oracle: deployment.routerPool.oracle,
+        customerId: deployment.routerPool.customerId,
       },
       funder: deployment.stablecoinFixture,
     },

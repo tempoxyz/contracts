@@ -105,8 +105,8 @@ gas optimization.
 
 **Decision:** `EarnFactory` atomically creates EarnShare, a non-upgradeable EarnVault proxy, and a
 deterministic one-to-one `EarnFees` clone, initializes both modules, attaches the optional existing
-simple whitelist, and records the initial engine. `SingleZoneEarnRouter` is deployed separately
-after the EarnVault exists.
+simple whitelist, and records the initial engine. The Earn-mode `ZoneRouter` is deployed separately, through its own
+factory, after the EarnVault exists.
 
 **Why:** every accounting and issuer invariant should be complete when factory creation returns.
 The router needs the final EarnVault address in its immutable constructor, and keeping it outside
@@ -117,7 +117,7 @@ under the external policy administrator; factory attachment does not create or m
 
 **Decision:** retain only issuance, conversion anchors, engine coordination, async entitlement,
 and pause controls in `EarnVault`. Put fee state in `EarnFees`, venue custody in engines,
-integrator-specific swap and cross-domain execution in the scoped Earn router, and optional funding
+integrator-specific swap and cross-domain execution in the Zone router's Earn ops, and optional funding
 orchestration in `EarnContributionController`.
 
 **Why:** every EarnVault is a permanent accounting contract and its bytecode budget should be
@@ -126,7 +126,7 @@ security boundary rather than being a generic externalization.
 
 ## Deployment stack axes
 
-**Decision:** record engine kind and the scoped `earnRouter` on each stack, with no separate product
+**Decision:** record engine kind and the scoped `zoneRouter` on each stack, with no separate product
 records, and expose the operational `EarnStack` through `@tempoxyz/contracts/deployments/operations`.
 
 **Why:** the engine kind (`erc4626`, `veda`, or `propamm`) describes execution, not the asset, so it

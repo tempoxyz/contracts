@@ -25,7 +25,7 @@ import {
 } from '../../deployments/modules/signer.js'
 export { guardedTransactionRequest, pinnedAuthorityTransport } from './signer.js'
 
-import { zoneRouterModule } from './earn/zone-router/index.js'
+import { zoneModule } from './earn/zone-router/index.js'
 import { zoneRouterModeModule } from './zone-router/index.js'
 import {
   authorizeZoneRouter,
@@ -36,12 +36,7 @@ import {
   admitZoneRouterAccount,
   seedZoneRouter,
 } from './zone-router/steps.js'
-import {
-  authorizeRouter,
-  deployRouter,
-  enableZoneTokens,
-  registerZoneGateway,
-} from './earn/zone-router/steps.js'
+import { enableZoneTokens } from './earn/zone-router/steps.js'
 
 /**
  * Every deployment step, in execution order; a profile's plan is the enabled subset. Each step
@@ -51,15 +46,12 @@ const steps = [
   deployEngine,
   deployCore,
   bindCore,
-  deployRouter,
   deployZoneRouterFactory,
   deployZoneRouter,
   deployMerkleDistributor,
   validateAccess,
   deployContributionController,
-  authorizeRouter,
   enableZoneTokens,
-  registerZoneGateway,
   authorizeZoneRouter,
   enableZoneRouterTokens,
   registerZoneRouterGateway,
@@ -106,7 +98,7 @@ export type RegisteredStep = DeploymentStep & {
 export const capabilityModules: readonly CapabilityModule[] = [
   accessPolicyModule,
   rewardsModule,
-  zoneRouterModule,
+  zoneModule,
   zoneRouterModeModule,
 ]
 

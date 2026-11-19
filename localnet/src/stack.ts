@@ -1,7 +1,7 @@
 import {
   optionalPeriphery,
   profileCapabilities,
-  zoneRouterStackFields,
+  zoneStackFields,
   type EarnStack,
   type OptionalPeripheryKey,
 } from '@tempoxyz/contracts/deployments/operations'
@@ -22,7 +22,7 @@ export function localStack(
   const periphery: Pick<Deployment.State, OptionalPeripheryKey> = deployment
   const name = options.name ?? 'local'
   const profile = deployment.earnProfile
-  const route = zoneRouterStackFields(
+  const route = zoneStackFields(
     {
       name: `${name}-zone`,
       id: deployment.zoneId,
@@ -32,8 +32,8 @@ export function localStack(
       messenger: deployment.zoneMessenger,
       sequencers: [deployment.zoneSequencer],
     },
-    deployment.earnRouter && {
-      earnRouter: deployment.earnRouter,
+    deployment.zoneRouter && {
+      zoneRouter: deployment.zoneRouter,
       privateAsset: deployment.alternateAsset,
     },
   )

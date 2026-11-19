@@ -11,7 +11,6 @@ import {
     ZONE_MESSENGER_ADDRESS,
     ZoneInfo
 } from "../../../src/interfaces/external/tempo/IZone.sol";
-import { SingleZoneEarnRouter } from "../../../src/earn/router/SingleZoneEarnRouter.sol";
 import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../../src/zone/ZoneRouterFactory.sol";
 import { ISpender } from "../../../src/interfaces/zone/ISpender.sol";
@@ -95,26 +94,23 @@ contract RouterTip20GasTest is CoreEnv {
         r = ZoneRouter(new ZoneRouterFactory().deploy(mode));
     }
 
-    function _cb(SingleZoneEarnRouter.Flow flow) internal view returns (bytes memory) {
+    function _cb(ZoneRouter.Op flow) internal view returns (bytes memory) {
         EncryptedDepositPayload memory e;
         e.ciphertext = hex"01";
         return abi.encode(
-            SingleZoneEarnRouter.CallbackData({
-                flow: flow,
+            ZoneRouter.CallbackData({
+                op: flow,
                 minVaultAssets: 1,
                 minEarnShares: 1,
                 minOutputAmount: 1,
                 actionId: bytes32(0),
-                zoneReturn: SingleZoneEarnRouter.ZoneReturn({ keyIndex: 0, encrypted: e, refundRecipient: alice })
+                zoneReturn: ZoneRouter.ZoneReturn({ keyIndex: 0, encrypted: e, refundRecipient: alice })
             })
         );
     }
 
     /// @dev The Portal's transfer and the messenger's callback run in one withdrawal transaction.
-    function _op(ZoneRouter r, address token, uint128 amount, SingleZoneEarnRouter.Flow flow)
-        internal
-        returns (uint256 used)
-    {
+    function _op(ZoneRouter r, address token, uint128 amount, ZoneRouter.Op flow) internal returns (uint256 used) {
         bytes memory data = _cb(flow);
         uint256 before = gasleft();
         portal.send(token, address(r), amount);
@@ -134,10 +130,10 @@ contract RouterTip20GasTest is CoreEnv {
             zr.warm(address(earnShare));
         }
         // First op sets the standing EarnVault approvals; measure the second, a steady-state call.
-        _op(zr, address(usd), 100e6, SingleZoneEarnRouter.Flow.Deposit);
-        _op(zr, address(earnShare), 50e6, SingleZoneEarnRouter.Flow.Redeem);
-        uint256 dep = _op(zr, address(usd), 100e6, SingleZoneEarnRouter.Flow.Deposit);
-        uint256 red = _op(zr, address(earnShare), 50e6, SingleZoneEarnRouter.Flow.Redeem);
+        _op(zr, address(usd), 100e6, ZoneRouter.Op.Deposit);
+        _op(zr, address(earnShare), 50e6, ZoneRouter.Op.Redeem);
+        uint256 dep = _op(zr, address(usd), 100e6, ZoneRouter.Op.Deposit);
+        uint256 red = _op(zr, address(earnShare), 50e6, ZoneRouter.Op.Redeem);
         vm.snapshotValue("router-tip20", string.concat(name, ".deposit"), dep);
         vm.snapshotValue("router-tip20", string.concat(name, ".redeem"), red);
     }
@@ -199,10 +195,10 @@ contract RouterTip20GasTest is CoreEnv {
             zr.warm(address(usd));
             zr.warm(address(earnShare));
         }
-        _op(zr, address(usd), 100e6, SingleZoneEarnRouter.Flow.Deposit);
-        _op(zr, address(earnShare), 50e6, SingleZoneEarnRouter.Flow.Redeem);
-        uint256 dep = _op(zr, address(usd), 100e6, SingleZoneEarnRouter.Flow.Deposit);
-        uint256 red = _op(zr, address(earnShare), 50e6, SingleZoneEarnRouter.Flow.Redeem);
+        _op(zr, address(usd), 100e6, ZoneRouter.Op.Deposit);
+        _op(zr, address(earnShare), 50e6, ZoneRouter.Op.Redeem);
+        uint256 dep = _op(zr, address(usd), 100e6, ZoneRouter.Op.Deposit);
+        uint256 red = _op(zr, address(earnShare), 50e6, ZoneRouter.Op.Redeem);
         assertEq(earnShare.balanceOf(address(zr)), 1);
         vm.snapshotValue("router-tip20", string.concat(name, ".deposit"), dep);
         vm.snapshotValue("router-tip20", string.concat(name, ".redeem"), red);

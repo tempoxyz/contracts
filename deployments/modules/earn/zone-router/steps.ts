@@ -5,11 +5,9 @@ import {
   ContractFunctionRevertedError,
   ContractFunctionZeroDataError,
   concat,
-  encodeAbiParameters,
   encodeFunctionData,
   getAddress,
   pad,
-  parseAbiParameters,
   zeroAddress,
   type Address,
   type Hex,
@@ -17,26 +15,15 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 
 import {
-  deployEarnRouterScriptAbi,
-  earnVaultAbi,
   propAMMPoolAbi,
   propAMMRebalanceControllerAbi,
   safeAbi,
   zonePortalAbi,
 } from '../../../abis/index.js'
-import { InspectionMismatchError } from '../../../chain/inspect.js'
-import { requireRouterProvenance } from './provenance.js'
-import { inspectRouterBinding } from './inspection.js'
 import type { EarnDeploymentProfile } from '../../../core/profile.js'
-import { configuredRouterPool, configuredZone, routerArgs } from './profile.js'
-import {
-  missingZoneTokens,
-  portalRoleCalls,
-  registeredZone,
-  zoneCallbackGatewayRegistered,
-  zoneGatewayDepositsAdmitted,
-} from '../../../chain/zone.js'
-import { zoneRouteTokens } from './index.js'
+import { configuredZone } from './profile.js'
+import { missingZoneTokens, registeredZone } from '../../../chain/zone.js'
+import { zoneTokens } from './index.js'
 import { envPrivateKey } from '../../../chain/runtime.js'
 import {
   authorityClient,
@@ -47,9 +34,6 @@ import {
 } from '../../../../deployments/modules/signer.js'
 import {
   defineAuthorityStep,
-  deployerAuthority,
-  defineFoundryStep,
-  deployedOutputs,
   required,
   requiredOutput,
   type ChainClient,
@@ -71,97 +55,6 @@ export const zoneAdministratorAuthority = {
   label: 'Zone Portal administrator',
   signer: 'ZONE_ADMIN_PRIVATE_KEY',
 } as const satisfies StepAuthority
-
-export const deployRouter = defineFoundryStep({
-  id: 'deploy-router',
-  authority: deployerAuthority,
-  execution: 'foundry',
-  summary: 'Deploy the immutable single-Zone router.',
-  phase: 'deployment',
-  intent: ['zone'],
-  script: 'script/earn/deploy/DeployEarnRouter.s.sol:DeployEarnRouterScript',
-  rawGasEstimate: true,
-  enabled: hasZone,
-  input(profile, outputs, outputPath) {
-    const { route, ...args } = routerArgs(profile, outputs)
-    return encodeFunctionData({
-      abi: deployEarnRouterScriptAbi,
-      functionName: 'run',
-      args: [{ expectedChainId: BigInt(profile.chainId), ...args, ...route, outputPath }],
-    })
-  },
-  source: {
-    output: 'earnRouter',
-    contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
-    accessMember: true,
-    constructorArgs(profile, outputs) {
-      const { zoneId, earnVault, privateAsset, route } = routerArgs(profile, outputs)
-      return encodeAbiParameters(
-        parseAbiParameters(
-          'uint32 zoneId, address earnVault, address privateAsset, address pool, bytes32 customerId',
-        ),
-        [zoneId, earnVault, privateAsset, route.pool, route.customerId],
-      )
-    },
-  },
-  async satisfied(client, profile, outputs) {
-    if (!(await deployedOutputs(client, outputs, ['earnRouter']))) return false
-    const args = routerArgs(profile, outputs)
-    const vaultAsset = await client.readContract({
-      address: args.earnVault,
-      abi: earnVaultAbi,
-      functionName: 'asset',
-    })
-    return inspectRouterBinding(client, {
-      ...args,
-      router: requiredOutput(outputs, 'earnRouter'),
-      earnShare: requiredOutput(outputs, 'earnShare'),
-      vaultAsset,
-    }).then(
-      () => true,
-      (error: unknown) => {
-        if (error instanceof InspectionMismatchError) return false
-        throw error
-      },
-    )
-  },
-})
-
-/** Admits the router on its DirectPropAMM pool; a router whose private asset is the vault asset has no pool. */
-export const authorizeRouter = defineAuthorityStep({
-  id: 'authorize-router',
-  authority: poolAdministrator,
-  execution: 'authority',
-  summary: 'Admit the router as a taker and recipient on its PropAMM pool.',
-  handoffSummary: 'Verify PropAMM pool admission and emit a pool-owner handoff if it is missing.',
-  phase: 'activation',
-  intent: ['zone'],
-  enabled: (profile) => configuredRouterPool(profile) !== undefined,
-  async satisfied(client, profile, outputs) {
-    const router = requiredOutput(outputs, 'earnRouter')
-    const { pool } = required(configuredRouterPool(profile), 'router conversion pool')
-    const { taker, recipient, resolved } = await poolAdmission(client, pool, router)
-    return taker && recipient && getAddress(resolved) === router
-  },
-  handoff: (profile, outputs) =>
-    `First verify the router's canonical implementation and immutable bindings. Then the owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(${requiredOutput(outputs, 'earnRouter')}, true) and setRecipientAllowed(${requiredOutput(outputs, 'earnRouter')}, true), and the pool must resolve that router as its own recipient. When a DirectPropAMMRebalanceController owns the pool, its owner makes both calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the admission onchain and continue.`,
-  signerAvailable: (_profile, environment, proven) =>
-    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
-  probeSigner: (options) => canAuthorizeRouter(options),
-  execute: (options, dependencies) =>
-    admitPoolRouter(
-      options,
-      dependencies,
-      required(configuredRouterPool(options.profile), 'router conversion pool').pool,
-      requiredOutput(options.outputs, 'earnRouter'),
-      (client) =>
-        requireRouterProvenance(client, {
-          address: requiredOutput(options.outputs, 'earnRouter'),
-          contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
-          constructorArgs: deployRouter.source!.constructorArgs(options.profile, options.outputs),
-        }),
-    ),
-})
 
 /**
  * Admits `router` as a taker and recipient on `pool` as the deployer, when it owns the pool directly
@@ -232,7 +125,7 @@ export const enableZoneTokens = defineAuthorityStep({
   id: 'enable-zone-tokens',
   authority: zoneAdministratorAuthority,
   execution: 'authority',
-  summary: 'Enable the exact route token set on the Zone.',
+  summary: 'Enable EarnShare on the Zone.',
   handoffSummary:
     'Verify Zone token readiness and emit a Zone administrator handoff if tokens are missing.',
   phase: 'activation',
@@ -242,16 +135,11 @@ export const enableZoneTokens = defineAuthorityStep({
     Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) =>
     canAdministerZone(options, required(configuredZone(options.profile), 'Zone').id),
-  satisfied: async (client, profile, outputs) =>
-    (
-      await missingZoneTokens(
-        client,
-        requiredOutput(outputs, 'zonePortal'),
-        zoneRouteTokens(profile, outputs),
-      )
-    ).length === 0,
+  satisfied: async (client, _profile, outputs) =>
+    (await missingZoneTokens(client, requiredOutput(outputs, 'zonePortal'), zoneTokens(outputs)))
+      .length === 0,
   handoff: (profile, outputs) =>
-    `Core Zones must enable ${zoneRouteTokens(profile, outputs)
+    `Core Zones must enable ${zoneTokens(outputs)
       .map(([, token]) => token)
       .join(
         ', ',
@@ -260,7 +148,7 @@ export const enableZoneTokens = defineAuthorityStep({
     const administrator = await zoneAdministrator(options, dependencies)
     if (!administrator) return undefined
     const { client, portal, send } = administrator
-    const tokens = zoneRouteTokens(options.profile, options.outputs)
+    const tokens = zoneTokens(options.outputs)
     const missing = new Set(await missingZoneTokens(client, portal, tokens))
     const calls = tokens.flatMap(([label, token]) =>
       missing.has(label)
@@ -280,66 +168,6 @@ export const enableZoneTokens = defineAuthorityStep({
     return send(calls)
   },
 })
-
-export const registerZoneGateway = defineAuthorityStep({
-  id: 'register-zone-gateway',
-  authority: zoneAdministratorAuthority,
-  execution: 'authority',
-  summary: 'Admit the router for callbacks and return deposits under the current Portal mode.',
-  handoffSummary:
-    'Verify callback and return-deposit admission, or emit a Zone administrator handoff.',
-  phase: 'activation',
-  intent: ['zone'],
-  enabled: hasZone,
-  signerAvailable: (_profile, environment, proven) =>
-    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
-  probeSigner: (options) =>
-    canAdministerZone(options, required(configuredZone(options.profile), 'Zone').id),
-  async satisfied(client, _profile, outputs) {
-    const portal = requiredOutput(outputs, 'zonePortal')
-    const router = requiredOutput(outputs, 'earnRouter')
-    const [gateway, deposits] = await Promise.all([
-      zoneCallbackGatewayRegistered(client, portal, router),
-      zoneGatewayDepositsAdmitted(client, portal, router),
-    ])
-    return gateway && deposits
-  },
-  handoff: (profile, outputs) =>
-    `Zone ${configuredZone(profile)?.id} must admit router ${requiredOutput(outputs, 'earnRouter')} on Portal ${requiredOutput(outputs, 'zonePortal')}. First verify the router's canonical implementation and immutable bindings. With restricted gateways, revoke any account role with setAllowedAccount(router, false), then call setGateway(router, true). With open gateways and enforced access, revoke any gateway role with setGateway(router, false), then call setAllowedAccount(router, true). Perform each revoke/grant pair in one batch. Re-run the same pnpm earn deploy command; it will verify both callback and return-deposit admission.`,
-  async execute(options, dependencies) {
-    const administrator = await zoneAdministrator(options, dependencies)
-    if (!administrator) return undefined
-    const { client, portal, send } = administrator
-    const router = requiredOutput(options.outputs, 'earnRouter')
-    const gateway = await zoneCallbackGatewayRegistered(client, portal, router)
-    const deposits = gateway && (await zoneGatewayDepositsAdmitted(client, portal, router))
-    if (gateway && deposits) return { transactions: [] }
-    await requireRouterProvenance(client, {
-      address: router,
-      contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
-      constructorArgs: deployRouter.source!.constructorArgs(options.profile, options.outputs),
-    })
-    return send(
-      await portalRoleCalls(client, portal, router, gateway ? 'account' : 'callbackGateway'),
-    )
-  },
-})
-
-/**
- * Proves whether the configured deployer can admit the router: it owns the PropAMM pool directly, or
- * owns the rebalance controller that owns the pool.
- */
-export async function canAuthorizeRouter(
-  options: {
-    environment: NodeJS.ProcessEnv
-    profile: EarnDeploymentProfile
-    rpcUrl: string
-  },
-  dependencies: Pick<AuthorityDependencies, 'authorityClient'> = { authorityClient },
-) {
-  const conversion = configuredRouterPool(options.profile)
-  return conversion ? canAdministerPool(options, conversion.pool, dependencies) : false
-}
 
 /** Proves whether the configured deployer owns `pool`, directly or through its rebalance controller. */
 export async function canAdministerPool(

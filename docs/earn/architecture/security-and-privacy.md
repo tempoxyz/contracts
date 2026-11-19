@@ -93,7 +93,7 @@ forwarding-solver authorities are in [Veda](../modules/veda.md#contracts).
 
 ### Earn router
 
-The ownerless `SingleZoneEarnRouter` has no authority over EarnVault, its pool, or EarnShare
+An ownerless Earn-mode `ZoneRouter` has no authority over EarnVault, its pool, or EarnShare
 issuance and retains no balances after success; its only allowances are standing maximums to its
 immutable EarnVault and pool. Its authentication, par-conversion
 dependency, and failure behavior are specified in [Tempo Zones](../modules/zone-router.md).

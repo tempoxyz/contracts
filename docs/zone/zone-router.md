@@ -9,9 +9,8 @@ its card provider. The router, its factory and `SendSpender` live in the
 [`src/zone/`](README.md) domain of the repository's one Foundry project, compiled with solar, and import only
 Earn's interfaces. Card spend through it is in the [card spend design](../spend/design.md).
 
-`SingleZoneEarnRouter` ([Earn's zone router](../earn/modules/zone-router.md)) is the router Earn runs in
-production today. `ZoneRouter`'s Earn ops accept its callback data byte for byte and report the same
-views, so Earn clients can move to it.
+Ops 0 and 1 are Earn's private routing; their flows, par conversion and client integration are in
+[Earn's Zone module](../earn/modules/zone-router.md).
 
 ## Modes
 
@@ -22,7 +21,7 @@ router.
 - **`enabledOps`**, a bitmask of Deposit, Redeem and Spend. A disabled op reverts `OpDisabled`.
 - **`spenders`**, the `ISpender` contracts Spend may use, written once by the constructor.
   Required when Spend is enabled, empty otherwise.
-- **`earnVault`, `privateAsset`, `pool`, `customerId`**, as `SingleZoneEarnRouter` binds them.
+- **`earnVault`, `privateAsset`, `pool`, `customerId`**, the Earn binding ([router contract](../earn/modules/zone-router.md#router-contract)).
   Required when Deposit or Redeem is enabled (`pool` and `customerId` only when the private asset is
   not the vault asset), and all zero otherwise.
 
@@ -109,17 +108,17 @@ authorization stay with their owners, as above.
 
 ## Ops
 
-The router reads the first callback word before decoding, so ops 0 and 1 keep
-`SingleZoneEarnRouter`'s layout and `viem/tempo`'s `earnRouterCallbackData` works unchanged.
+The router reads the first callback word, the op, before decoding the rest; ops 0 and 1 use
+`viem/tempo`'s `earnRouterCallbackData` layout.
 
 | Op        | Input                               | What the router does                                            | Back to the Zone |
 | --------- | ----------------------------------- | --------------------------------------------------------------- | ---------------- |
-| 0 Deposit | Private asset                       | As `SingleZoneEarnRouter`                                       | EarnShare        |
-| 1 Redeem  | EarnShare                           | As `SingleZoneEarnRouter`                                       | Private asset    |
+| 0 Deposit | Private asset                       | Converts at par if bound to a pool, deposits into the EarnVault | EarnShare        |
+| 1 Redeem  | EarnShare                           | Redeems from the EarnVault, converts back at par if bound       | Private asset    |
 | 2 Spend   | Any token the source Portal enables | Transfers `maxInput` to a listed spender, measures what it used | Unused input     |
 
 Every return to the source Zone is an encrypted deposit, with a refund recipient, of a token enabled
-with deposits active. Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn`
+with deposits active. Ops 0 and 1 use `ZoneReturn`; Spend's `SpendReturn`
 adds `maxDepositFee` and reverts if the Portal's deposit fee is above it. Any revert bounces the whole
 input to the withdrawal's fallback recipient in the Zone.
 
@@ -166,8 +165,7 @@ the allowance slot again on every callback, which Tempo charges (TIP-1000) again
 gas limit; the Portal is the Zone's own, and the router holds nothing between callbacks. This rests on
 an invariant of the Portal: it moves the router's tokens only inside a `depositEncrypted` call the
 router makes, pulling exactly that deposit's amount. Anyone can
-set it ahead of the first callback with `warm(token)`. Earn ops keep it too, on every router, and
-`SingleZoneEarnRouter` does the same.
+set it ahead of the first callback with `warm(token)`. Earn ops keep it too, on every router.
 
 ## Spenders
 

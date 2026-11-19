@@ -56,7 +56,7 @@ import type {
   Result,
   State,
 } from './deployment/types.js'
-import { earnEngineBindingAbi, earnRouterAbi, zonePortalAbi } from '@tempoxyz/contracts/abis'
+import { earnEngineBindingAbi, zonePortalAbi, zoneRouterAbi } from '@tempoxyz/contracts/abis'
 import { missingZoneTokens, portalRoleCalls, zonePortalRole } from '@tempoxyz/contracts/tempo/zone'
 
 /** Pure profile helpers, so consumers can derive what a variant deploys without a chain. */
@@ -192,7 +192,6 @@ export async function create(options: create.Options): Promise<Result> {
     ? authoredProfile(options.earnProfile)
     : variantProfile({
         access: options.access ?? variantAccess,
-        customerId: routerCustomerId,
         deployer: options.account,
         engineKind: base.engineKind,
         now,
@@ -230,8 +229,11 @@ export async function create(options: create.Options): Promise<Result> {
     venueOrEngine: base.engine ?? base.vault,
     policyId: policy?.policyId,
     zoneId,
-    conversion: { privateAsset: base.stablecoins.alternateAsset, pool: base.routerPool.pool },
-    vaultAsset: base.baseAsset,
+    router: {
+      privateAsset: base.stablecoins.alternateAsset,
+      pool: base.routerPool.pool,
+      customerId: routerCustomerId,
+    },
   }
   const primary = localizeProfile(source, targets)
   const profiles = [
@@ -241,7 +243,7 @@ export async function create(options: create.Options): Promise<Result> {
           sameAssetProfile(primary, {
             ...targets,
             venueOrEngine: base.sameAssetVault,
-            vaultAsset: Config.address.pathUsd,
+            router: { privateAsset: Config.address.pathUsd },
           }),
         ]
       : []),
@@ -285,7 +287,7 @@ export async function create(options: create.Options): Promise<Result> {
     {
       tokens: [Config.address.pathUsd, base.baseAsset, base.stablecoins.alternateAsset],
       gateways: deployments.flatMap(({ outputs }) =>
-        outputs.earnRouter ? [outputs.earnRouter] : [],
+        outputs.zoneRouter ? [outputs.zoneRouter] : [],
       ),
     },
   )
@@ -294,7 +296,7 @@ export async function create(options: create.Options): Promise<Result> {
     await verifyReady(deployment, options.rpcUrl)
     await validateRouter(client, deployment)
     // Private cases need the Zone to mirror each routed EarnShare first.
-    if (deployment.outputs.earnRouter) {
+    if (deployment.outputs.zoneRouter) {
       await Network.waitForToken(
         options.zone.publicRpcUrl,
         required(deployment.outputs, 'earnShare'),
@@ -302,7 +304,6 @@ export async function create(options: create.Options): Promise<Result> {
     }
   }
 
-  const pool = primary.zone?.router.pool ? primary.zone.router : undefined
   const lifecycleTransactions = deployments.flatMap((deployment) =>
     Object.values(deployment.actions).flatMap((action) => action.transactions),
   )
@@ -337,10 +338,10 @@ export async function create(options: create.Options): Promise<Result> {
     earnShare: required(outputs, 'earnShare'),
     earnVault: required(outputs, 'earnVault'),
     earnFees: required(outputs, 'earnFees'),
-    ...(outputs.earnRouter ? { earnRouter: outputs.earnRouter } : {}),
-    earnRouterPool: {
+    ...(outputs.zoneRouter ? { zoneRouter: outputs.zoneRouter } : {}),
+    routerPool: {
       ...base.routerPool,
-      customerId: pool?.customerId ?? routerCustomerId,
+      customerId: primary.zoneRouter?.earn?.customerId ?? routerCustomerId,
       inventory: routerPoolInventory,
     },
     ...optionalPeriphery(outputs),
@@ -356,7 +357,7 @@ export async function create(options: create.Options): Promise<Result> {
             earnShare: required(sameAsset.outputs, 'earnShare'),
             earnVault: required(sameAsset.outputs, 'earnVault'),
             earnFees: required(sameAsset.outputs, 'earnFees'),
-            earnRouter: required(sameAsset.outputs, 'earnRouter'),
+            zoneRouter: required(sameAsset.outputs, 'zoneRouter'),
           },
         }
       : {}),
@@ -409,14 +410,14 @@ const localParPrice = 10n ** 8n
 
 /**
  * The local router checks the shared inspection does not make: it supports exactly the deposit and
- * redeem flows, and a converting router prices at the local par with the full E2E inventory.
+ * redeem ops, and a converting router prices at the local par with the full E2E inventory.
  */
 async function validateRouter(
   client: create.Options['client'],
   { profile, outputs }: ProfileDeployment,
 ) {
-  if (!outputs.earnRouter) return
-  const router = { address: outputs.earnRouter, abi: earnRouterAbi } as const
+  if (!outputs.zoneRouter) return
+  const router = { address: outputs.zoneRouter, abi: zoneRouterAbi } as const
   const flows = await Promise.all(
     [0, 1, 2, 3].map((flow) =>
       client.readContract({ ...router, functionName: 'supportsFlow', args: [flow] }),
@@ -425,7 +426,7 @@ async function validateRouter(
   if (flows.join() !== 'true,true,false,false') {
     throw new Error(`Local ${profile.id} router flow support is ${flows.join()}`)
   }
-  if (!profile.zone?.router.pool) return
+  if (!profile.zoneRouter?.earn?.pool) return
   const [parPrice, [, , , depositLiquidity, redeemLiquidity]] = await Promise.all([
     client.readContract({ ...router, functionName: 'parPrice' }),
     client.readContract({ ...router, functionName: 'liquidityStatus' }),

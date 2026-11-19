@@ -233,11 +233,15 @@ if (fixtures.engine) {
       ]),
     ),
   }
+  // A Zone profile's private routing is an Earn-mode zoneRouter on its Zone, bound to this pair.
   if (zone && conversionPool) {
-    updated.zone = {
-      ...zone,
-      router: {
-        ...object(zone.router, 'profile.zone.router'),
+    const router =
+      original.zoneRouter === undefined
+        ? { zoneId: zone.id, ops: ['deposit', 'redeem'] }
+        : object(original.zoneRouter, 'profile.zoneRouter')
+    updated.zoneRouter = {
+      ...router,
+      earn: {
         privateAsset: stablecoins.alternateAsset,
         pool: conversionPool.pool,
         customerId: conversionPool.customerId,

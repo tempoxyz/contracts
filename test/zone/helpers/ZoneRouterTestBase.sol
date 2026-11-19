@@ -17,9 +17,9 @@ import {
     ZONE_MESSENGER_ADDRESS,
     ZoneInfo
 } from "../../../src/interfaces/external/tempo/IZone.sol";
-import { SingleZoneEarnRouter } from "../../../src/earn/router/SingleZoneEarnRouter.sol";
-import { EarnVaultTestDeployer } from "./EarnVaultTestDeployer.sol";
-import { MemoMockToken, MockRecipientRegistry, PropAMMTestOracle } from "./PropAMMEngineMocks.sol";
+import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
+import { EarnVaultTestDeployer } from "../../earn/helpers/EarnVaultTestDeployer.sol";
+import { MemoMockToken, MockRecipientRegistry, PropAMMTestOracle } from "../../earn/helpers/PropAMMEngineMocks.sol";
 
 interface IRouterPropAMMPool is IPropAMMVenue {
     function roundingCredit(bytes32 routeKey) external view returns (uint256);
@@ -106,14 +106,14 @@ contract RouterMockZonePortal {
     }
 }
 
-abstract contract EarnRouterTestBase is Test {
+abstract contract ZoneRouterTestBase is Test {
     uint256 internal constant ONE = 1e6;
     uint32 internal constant ZONE_A = 7;
     uint32 internal constant ZONE_B = 8;
     uint256 internal constant PAR = 1e8;
     uint256 internal constant POOL_INVENTORY = 100 * ONE;
-    bytes32 internal constant CUSTOMER_ID = keccak256("earn-router-test");
-    bytes32 internal constant ACTION_ID = keccak256("earn-router-action");
+    bytes32 internal constant CUSTOMER_ID = keccak256("zone-router-test");
+    bytes32 internal constant ACTION_ID = keccak256("zone-router-action");
 
     address internal user = makeAddr("user");
     address internal recipient = makeAddr("recipient");
@@ -133,7 +133,7 @@ abstract contract EarnRouterTestBase is Test {
     MemoMockToken internal earnB;
     EarnVault internal earnVaultB;
     MemoMockToken internal alternate;
-    SingleZoneEarnRouter internal router;
+    ZoneRouter internal router;
 
     function setUp() public virtual {
         RouterMockZoneFactory factoryImplementation = new RouterMockZoneFactory();
@@ -199,13 +199,6 @@ abstract contract EarnRouterTestBase is Test {
         pool.unpause();
     }
 
-    /// @dev Deploys a Zone A router for the private asset and admits it to the pool.
-    function _admittedRouter(IRouterPropAMMPool pool) internal returns (SingleZoneEarnRouter router) {
-        router = new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
-        pool.setTakerAllowed(address(router), true);
-        pool.setRecipientAllowed(address(router), true);
-    }
-
     function _deployStack(string memory suffix)
         private
         returns (
@@ -250,20 +243,19 @@ abstract contract EarnRouterTestBase is Test {
     }
 
     /// @dev Encodes a canonical callback that returns to Zone A's refund recipient.
-    function _callback(
-        SingleZoneEarnRouter.Flow flow,
-        uint128 minVaultAssets,
-        uint128 minEarnShares,
-        uint128 minOutputAmount
-    ) internal view returns (bytes memory) {
+    function _callback(ZoneRouter.Op flow, uint128 minVaultAssets, uint128 minEarnShares, uint128 minOutputAmount)
+        internal
+        view
+        returns (bytes memory)
+    {
         return abi.encode(
-            SingleZoneEarnRouter.CallbackData({
-                flow: flow,
+            ZoneRouter.CallbackData({
+                op: flow,
                 minVaultAssets: minVaultAssets,
                 minEarnShares: minEarnShares,
                 minOutputAmount: minOutputAmount,
                 actionId: ACTION_ID,
-                zoneReturn: SingleZoneEarnRouter.ZoneReturn({
+                zoneReturn: ZoneRouter.ZoneReturn({
                     keyIndex: 1, encrypted: _encrypted(), refundRecipient: refundRecipient
                 })
             })
@@ -281,7 +273,7 @@ abstract contract EarnRouterTestBase is Test {
             bytes32(0),
             input,
             uint128(amount),
-            _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(minVaultAssets), uint128(minEarnShares), 0)
+            _callback(ZoneRouter.Op.Deposit, uint128(minVaultAssets), uint128(minEarnShares), 0)
         );
     }
 
@@ -294,7 +286,7 @@ abstract contract EarnRouterTestBase is Test {
             bytes32(0),
             address(earnA),
             uint128(shares),
-            _callback(SingleZoneEarnRouter.Flow.Redeem, uint128(minVaultAssets), 0, uint128(minOutputAmount))
+            _callback(ZoneRouter.Op.Redeem, uint128(minVaultAssets), 0, uint128(minOutputAmount))
         );
     }
 
@@ -318,7 +310,7 @@ abstract contract EarnRouterTestBase is Test {
             bytes32(0),
             input,
             uint128(ONE),
-            _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(minVaultAssets), uint128(minEarnShares), 0)
+            _callback(ZoneRouter.Op.Deposit, uint128(minVaultAssets), uint128(minEarnShares), 0)
         );
 
         assertEq(earnA.totalSupply(), supplyBefore);

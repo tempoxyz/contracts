@@ -6,12 +6,10 @@ pragma solidity ^0.8.36;
 
 import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
 import { ZoneRouterEarnTestBase } from "./ZoneRouterEarnTestBase.sol";
-import { IRouterPropAMMPool, RouterMockZonePortal } from "../../earn/helpers/EarnRouterTestBase.sol";
+import { IRouterPropAMMPool, RouterMockZonePortal } from "../helpers/ZoneRouterTestBase.sol";
 import { IWithdrawalReceiver, ZONE_MESSENGER_ADDRESS } from "../../../src/interfaces/external/tempo/IZone.sol";
-import { SingleZoneEarnRouter } from "../../../src/earn/router/SingleZoneEarnRouter.sol";
 
-/// @dev Port of Earn's SingleZoneEarnRouterAbiFuzzTest to ZoneRouter's Earn mode. Callbacks are encoded with
-///      SingleZoneEarnRouter's own structs; events are ZoneRouter's, which share their topics.
+/// @dev Fuzzes ZoneRouter's Earn-mode callback decoding with ZoneRouter's own structs.
 contract ZoneRouterEarnAbiFuzzTest is ZoneRouterEarnTestBase {
     uint256 private constant LIMIT = 10 * ONE;
 
@@ -40,8 +38,7 @@ contract ZoneRouterEarnAbiFuzzTest is ZoneRouterEarnTestBase {
         uint128 minOutputAmount = uint128(bound(rawMinOutputAmount, 0, amount));
         vm.assume(refund != address(0));
 
-        SingleZoneEarnRouter.Flow flow =
-            redeemFlow ? SingleZoneEarnRouter.Flow.Redeem : SingleZoneEarnRouter.Flow.Deposit;
+        ZoneRouter.Op flow = redeemFlow ? ZoneRouter.Op.Redeem : ZoneRouter.Op.Deposit;
         address token;
         if (redeemFlow) {
             _publicDeposit(user, amount);
@@ -82,13 +79,13 @@ contract ZoneRouterEarnAbiFuzzTest is ZoneRouterEarnTestBase {
             token,
             amount,
             abi.encode(
-                SingleZoneEarnRouter.CallbackData({
-                    flow: flow,
+                ZoneRouter.CallbackData({
+                    op: flow,
                     minVaultAssets: minVaultAssets,
                     minEarnShares: minEarnShares,
                     minOutputAmount: minOutputAmount,
                     actionId: actionId,
-                    zoneReturn: SingleZoneEarnRouter.ZoneReturn({
+                    zoneReturn: ZoneRouter.ZoneReturn({
                         keyIndex: keyIndex, encrypted: _encrypted(), refundRecipient: refund
                     })
                 })
@@ -140,15 +137,13 @@ contract ZoneRouterEarnAbiFuzzTest is ZoneRouterEarnTestBase {
             token,
             amount,
             abi.encode(
-                SingleZoneEarnRouter.CallbackData({
-                    flow: redeemFlow ? SingleZoneEarnRouter.Flow.Redeem : SingleZoneEarnRouter.Flow.Deposit,
+                ZoneRouter.CallbackData({
+                    op: redeemFlow ? ZoneRouter.Op.Redeem : ZoneRouter.Op.Deposit,
                     minVaultAssets: minVaultAssets,
                     minEarnShares: redeemFlow ? 0 : minSecondLeg,
                     minOutputAmount: redeemFlow ? minSecondLeg : 0,
                     actionId: actionId,
-                    zoneReturn: SingleZoneEarnRouter.ZoneReturn({
-                        keyIndex: 1, encrypted: _encrypted(), refundRecipient: user
-                    })
+                    zoneReturn: ZoneRouter.ZoneReturn({ keyIndex: 1, encrypted: _encrypted(), refundRecipient: user })
                 })
             )
         );

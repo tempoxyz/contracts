@@ -9,7 +9,7 @@ import { ZoneRouterFactory } from "../../src/zone/ZoneRouterFactory.sol";
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "../../src/interfaces/zone/IAddressRegistry.sol";
 import { SendSpender } from "../../src/zone/spenders/SendSpender.sol";
 import { ZoneRouterMockPortal } from "./helpers/ZoneRouterMockPortal.sol";
-import { EarnRouterTestBase, IRouterPropAMMPool } from "../earn/helpers/EarnRouterTestBase.sol";
+import { ZoneRouterTestBase, IRouterPropAMMPool } from "./helpers/ZoneRouterTestBase.sol";
 import { MemoMockToken } from "../earn/helpers/PropAMMEngineMocks.sol";
 import { IEarnVault } from "../../src/interfaces/earn/IEarnVault.sol";
 import { IEarnVaultWithdrawCallback, IEarnWithdrawCallback } from "../../src/interfaces/earn/IEarnWithdrawCallback.sol";
@@ -152,7 +152,7 @@ contract VirtualAwareToken is MemoMockToken {
     }
 }
 
-contract SendSpenderTest is EarnRouterTestBase {
+contract SendSpenderTest is ZoneRouterTestBase {
     bytes32 private constant REF = keccak256("send");
     bytes4 private constant MASTER_ID = 0x12345678;
     address private constant VIRTUAL_TO = address(uint160(0x12345678fDFDfDFdFDfdFdfdFDFd000000000001));

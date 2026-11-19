@@ -43,14 +43,14 @@ deposits, and the Outbox queues withdrawals back to L1.
   accounts, registers gateways, and holds the `setAccessMode`/`setGatewayMode` switches in
   `zonePortalAbi`, for consumer-specific setup.
 - `deployment`: `Deployment.State`, with the chain, Zone, and Portal identity, the base asset and
-  fixtures, the primary stack's contracts and `earnRouter` (present only when its profile configures
-  one), `earnProfile` (the localized profile that was deployed), `engineFixtures`, and
+  fixtures, the primary stack's contracts and its Earn-mode `zoneRouter` (present only when its
+  profile has a Zone), `earnProfile` (the localized profile that was deployed), `engineFixtures`, and
   `sameAssetRoute` when requested.
 - `l1 { image, rpcUrl }` and `zone { image, publicRpcUrl, rpcUrl }`, where `zone.rpcUrl` is the
   authenticated private RPC.
 
 `localStack(environment, { name?, publicZoneRpc? })` turns that state into an executable `EarnStack`,
-handing the Zone and router it deployed to the Zone router's `zoneRouterStackFields`. Persisted
+handing the Zone and router it deployed to the Zone module's `zoneStackFields`. Persisted
 stack manifests use `stackManifest` to retain only the L1 and Zone RPC origins: credentials, paths,
 queries, and fragments are removed. Those origins are provenance, not replayable connection
 configuration; in-memory clients keep their configured endpoints.
@@ -59,7 +59,7 @@ Side contracts a kind provisions beyond its venue and engine (the ERC-4626 `morp
 Veda's Accountant, Teller, Queue, registry, solvers, and replacement periphery) are returned by name
 in `deployment.engineFixtures`, which only that kind's modules read.
 
-With `sameAssetRoute: true`, a second stack's vault asset is PATHUSD and its `SingleZoneEarnRouter`
+With `sameAssetRoute: true`, a second stack's vault asset is PATHUSD and its Earn-mode `ZoneRouter`
 binds no pool, so a Zone holding PATHUSD deposits it directly. `deployment.sameAssetRoute` holds its
 asset, venue, engine, EarnVault, EarnShare, EarnFees, and router. Its profile (`sameAssetProfile`) is
 always ERC-4626 and keeps the primary profile's core and access without rewards. It shares the
@@ -99,12 +99,12 @@ Without `earnProfile`, each variant deploys its default profile (`variantProfile
 owner, guardian, and janitor, the fixed and excess fees, both reward
 contracts, and a router through the local conversion pool, with `access` selecting a protected or
 open EarnShare. With `earnProfile`, `localizeProfile` replaces only the profile's external
-dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router private asset and pool) and
-deploys its core settings, principals, rewards, and router customer ID as authored; it rejects a
-profile whose access does not match the local policy. Profiles with a general `zoneRouter` are
-rejected before starting containers or provisioning fixtures: localization of that router's
-source-chain dependencies is not implemented. This does not disable the supported Earn `zone`
-route through `SingleZoneEarnRouter`.
+dependencies (chain, venue or engine, TIP-403 policy, and Zone ID) and deploys its core settings,
+principals, and rewards as authored; it rejects a profile whose access does not match the local
+policy. A profile with a Zone gets an Earn-mode `zoneRouter` on the local Zone over the local
+conversion pool. Profiles that author their own `zoneRouter` are rejected before starting
+containers or provisioning fixtures: localization of that router's source-chain dependencies is not
+implemented.
 
 A kind whose `provision` deploys its engine with `deployAsEngineOwner` (PropAMM, which has no engine
 factory) leaves that engine with a separate funded setup owner, so the lifecycle stops at the

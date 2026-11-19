@@ -4,8 +4,7 @@ pragma solidity ^0.8.36;
 import { ZoneRouter } from "../../../src/zone/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../../src/zone/ZoneRouterFactory.sol";
 import { ISpender } from "../../../src/interfaces/zone/ISpender.sol";
-import { EarnRouterTestBase, IRouterPropAMMPool } from "../../earn/helpers/EarnRouterTestBase.sol";
-import { SingleZoneEarnRouter } from "../../../src/earn/router/SingleZoneEarnRouter.sol";
+import { ZoneRouterTestBase, IRouterPropAMMPool } from "../helpers/ZoneRouterTestBase.sol";
 
 /// @dev A listed spender that the Earn-op suites never reach; it only makes a mode with Spend valid.
 contract IdleSpender is ISpender {
@@ -16,12 +15,10 @@ contract IdleSpender is ISpender {
     }
 }
 
-/// @dev Runs SingleZoneEarnRouter's suites against ZoneRouter in its Earn mode. Routers come from
-///      ZoneRouterFactory, and EarnRouterTestBase's helpers drive them through SingleZoneEarnRouter's
-///      ABI (`router`), which ZoneRouter keeps for ops 0 and 1, so callbacks are encoded with
-///      SingleZoneEarnRouter's own structs. A suite that overrides `_withSpend` repeats every case with
-///      Spend also enabled (ops 7).
-abstract contract ZoneRouterEarnTestBase is EarnRouterTestBase {
+/// @dev Runs the Earn-op suites against ZoneRouter in its Earn mode. Routers come from ZoneRouterFactory,
+///      and ZoneRouterTestBase's helpers drive them through `router`. A suite that overrides `_withSpend`
+///      repeats every case with Spend also enabled (ops 7).
+abstract contract ZoneRouterEarnTestBase is ZoneRouterTestBase {
     ZoneRouterFactory internal factory;
     IdleSpender internal idleSpender;
     ZoneRouter internal zoneRouter;
@@ -42,7 +39,7 @@ abstract contract ZoneRouterEarnTestBase is EarnRouterTestBase {
         return false;
     }
 
-    /// @dev The Earn mode SingleZoneEarnRouter(zoneId, earnVaultA, privateAsset, pool, customerId) maps to.
+    /// @dev A Zone `zoneId` Earn mode over earnVaultA, converting through `pool` unless the asset matches.
     function _earnMode(uint32 zoneId, address privateAsset, address pool, bytes32 customerId)
         internal
         view
@@ -68,7 +65,7 @@ abstract contract ZoneRouterEarnTestBase is EarnRouterTestBase {
         _use(zr);
     }
 
-    /// @dev The ZoneRouter counterpart of `_admittedRouter`: a converting router admitted to `pool`.
+    /// @dev A converting router admitted to `pool`.
     function _admittedZoneRouter(IRouterPropAMMPool pool) internal returns (ZoneRouter zr) {
         zr = _deployZoneRouter(address(alternate), address(pool), CUSTOMER_ID);
         pool.setTakerAllowed(address(zr), true);
@@ -77,6 +74,6 @@ abstract contract ZoneRouterEarnTestBase is EarnRouterTestBase {
 
     function _use(ZoneRouter zr) internal {
         zoneRouter = zr;
-        router = SingleZoneEarnRouter(address(zr));
+        router = zr;
     }
 }

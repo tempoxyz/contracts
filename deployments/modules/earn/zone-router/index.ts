@@ -4,13 +4,7 @@ import { Addresses } from 'viem/tempo'
 import { earnEngineBindingAbi, earnVaultAbi, propAMMPoolAbi } from '../../../abis/index.js'
 import { requireCode } from '../../../chain/inspect.js'
 import { tempoApiRpcUrl } from '../../../chain/tempo.js'
-import {
-  inspectZone,
-  missingZoneTokens,
-  registeredZone,
-  zoneCallbackGatewayRegistered,
-  zoneGatewayDepositsAdmitted,
-} from '../../../chain/zone.js'
+import { inspectZone, missingZoneTokens, registeredZone } from '../../../chain/zone.js'
 import {
   configuredEngineAddress,
   deploysEngine,
@@ -22,18 +16,16 @@ import {
   requiredOutput,
   type CapabilityModule,
 } from '../../../../deployments/modules/module.js'
-import { zoneRouterStackFields } from './stack.js'
-import { inspectRouterBinding, inspectRouterReadiness } from './inspection.js'
+import { zoneStackFields } from './stack.js'
 import { discoverZoneOutputs, isZoneSequencerOutput } from './outputs.js'
-import { configuredZone, routerArgs, zoneIdentityAddresses } from './profile.js'
+import { configuredZone, zoneIdentityAddresses } from './profile.js'
 
 /**
- * The single-Zone router capability: an immutable `SingleZoneEarnRouter` bound to one canonical
- * Zone, its PropAMM conversion pool when the private asset differs from the vault asset, and the
- * Zone token and callback-gateway readiness the Portal administrator owns.
+ * The Zone capability: the canonical Zone a deployment targets, its discovered Portal, Messenger and
+ * sequencers, and the EarnShare enablement its Portal administrator owns. Routing into the Zone is
+ * the Zone router mode's (`zoneRouter`).
  */
-export const zoneRouterModule: CapabilityModule = {
-  preflight: preflightRouter,
+export const zoneModule: CapabilityModule = {
   discover: (options) => discoverZoneOutputs({ ...options, requireLiveZone: options.requireLive }),
   liveCheck: { flag: 'zone', label: 'Zone', applies: (profile) => !!configuredZone(profile) },
   metadataOutput: isZoneSequencerOutput,
@@ -57,53 +49,30 @@ export const zoneRouterModule: CapabilityModule = {
   async inspect(client, profile, outputs) {
     const zone = configuredZone(profile)
     if (!zone) return undefined
-    const router = requiredOutput(outputs, 'earnRouter')
-    await requireCode(client, zone.pool ? { router, pool: zone.pool } : { router })
-    const pool = await inspectRouterBinding(client, {
-      ...routerArgs(profile, outputs),
-      router,
-      earnShare: requiredOutput(outputs, 'earnShare'),
-      vaultAsset: requiredOutput(outputs, 'asset'),
-    })
     const portal = requiredOutput(outputs, 'zonePortal')
-    const tokens = zoneRouteTokens(profile, outputs)
-    const [conversion, disabled, inactive, gateway, deposits] = await Promise.all([
-      // A router whose private asset is the vault asset has no conversion to inspect or report.
-      pool && pool !== zeroAddress ? inspectRouterReadiness(client, router, pool) : undefined,
+    const tokens = zoneTokens(outputs)
+    const [disabled, inactive] = await Promise.all([
       missingZoneTokens(client, portal, tokens),
       missingZoneTokens(client, portal, tokens, { depositsActive: true }),
-      zoneCallbackGatewayRegistered(client, portal, router),
-      zoneGatewayDepositsAdmitted(client, portal, router),
     ])
-    const zoneBlockers = [
-      ...(gateway ? [] : [`Zone ${zone.id} has not registered the router as a callback gateway`]),
-      ...(deposits ? [] : [`Zone ${zone.id} has not admitted the router for return deposits`]),
+    const blockers = [
       ...(disabled.length === 0
         ? []
         : [`Zone ${zone.id} has not enabled ${disabled.join(' and ')}`]),
       ...(inactive.length === 0 ? [] : [`Zone deposits are paused for ${inactive.join(' and ')}`]),
     ]
     return {
-      ...(conversion && {
-        router: {
-          label: 'Router conversion',
-          status: conversion.status,
-          blockers: conversion.blockers,
-          // Inventory in token base units.
-          details: {
-            depositInventory: conversion.depositLiquidity?.toString() ?? null,
-            redeemInventory: conversion.redeemLiquidity?.toString() ?? null,
-          },
-        },
-      }),
       zoneTokens: {
         label: 'Zone tokens',
-        status: zoneBlockers.length === 0 ? 'ready' : 'blocked',
-        blockers: zoneBlockers,
+        status: blockers.length === 0 ? 'ready' : 'blocked',
+        blockers,
       },
     }
   },
-  /** The network's Zone with its live sequencers, once the record's Zone identity still matches. */
+  /**
+   * The network's Zone with its live sequencers, once the record's Zone identity still matches, and
+   * any Earn-mode ZoneRouter on it.
+   */
   async stack({ client, environment, profile, record }) {
     const zone = configuredZone(profile)
     if (!zone) return {}
@@ -114,7 +83,9 @@ export const zoneRouterModule: CapabilityModule = {
     if (live.portal !== portal || live.messenger !== messenger) {
       throw new Error(`Profile ${profile.id} deployment record has stale Zone identity`)
     }
-    return zoneRouterStackFields(
+    // An Earn-mode ZoneRouter on this Zone carries the stack's private mode.
+    const router = profile.zoneRouter?.zoneId === zone.id ? profile.zoneRouter.earn : undefined
+    return zoneStackFields(
       {
         name: environment.id,
         id: zone.id,
@@ -124,42 +95,17 @@ export const zoneRouterModule: CapabilityModule = {
         messenger,
         sequencers: live.sequencers,
       },
-      {
-        earnRouter: requiredOutput(addresses, 'earnRouter'),
-        privateAsset: zone.privateAsset,
+      router && {
+        zoneRouter: requiredOutput(addresses, 'zoneRouter'),
+        privateAsset: router.privateAsset,
       },
     )
   },
 }
 
-/** The router's tokens, which both enter and leave the Zone, labeled for readiness reports. */
-export function zoneRouteTokens(
-  profile: EarnDeploymentProfile,
-  outputs: Record<string, Address>,
-): [label: string, token: Address][] {
-  return [
-    ['EarnShare', requiredOutput(outputs, 'earnShare')],
-    ['private asset', required(configuredZone(profile), 'single-Zone router module').privateAsset],
-  ]
-}
-
-/**
- * The router's private asset and pool must hold code, and its constructor accepts a pool trading
- * exactly the private asset and vault asset, or no pool when the private asset is the vault asset.
- */
-async function preflightRouter(
-  client: Pick<PublicClient, 'getCode' | 'readContract'>,
-  profile: EarnDeploymentProfile,
-  outputs: Record<string, Address> = {},
-) {
-  const zone = configuredZone(profile)
-  if (!zone) return
-  await preflightRouterRoute(client, profile, {
-    privateAsset: zone.privateAsset,
-    pool: zone.pool,
-    path: 'zone.router',
-    earnShare: outputs.earnShare,
-  })
+/** The tokens the Zone must enable, labeled for readiness reports: the profile's EarnShare. */
+export function zoneTokens(outputs: Record<string, Address>): [label: string, token: Address][] {
+  return [['EarnShare', requiredOutput(outputs, 'earnShare')]]
 }
 
 /**

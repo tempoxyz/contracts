@@ -1,49 +1,30 @@
-import { getAddress, zeroAddress, zeroHash, type Address, type Hex } from 'viem'
+import { getAddress, type Address } from 'viem'
 
 import { zoneChainId } from '../../../chain/tempo.js'
 import { zoneMessengerAddress, type ZoneIdentity } from '../../../chain/zone.js'
-import { address, exactKeys, isBytes32, object, positiveInteger } from '../../../core/parse.js'
+import { address, exactKeys, object, positiveInteger } from '../../../core/parse.js'
 import {
-  required,
-  requiredOutput,
   type ProfileSlice,
   type SliceProfile,
   type TargetSlice,
 } from '../../../../deployments/modules/module.js'
-import type { ZoneRouterStack } from './stack.js'
+import type { ZoneRouterFields } from '../../zone-router/profile.js'
+import type { ZoneStack } from './stack.js'
 
-/** The authored single-Zone router: the Zone it serves and how its private asset converts. */
-export type ZoneRouterIntent = {
+/** The authored Zone a deployment targets; its Portal enables the profile's EarnShare. */
+export type ZoneIntent = {
   id: number
   chainId: number
   enableEarnShare: true
-  router: ZoneRouterProfile
 }
 
-/**
- * The router's private asset and, when it differs from the vault asset, its conversion pool. A
- * router whose private asset is the vault asset omits both `pool` and `customerId`.
- */
-export type ZoneRouterProfile =
-  | {
-      privateAsset: Address
-      /** DirectPropAMM pool that converts the private asset and vault asset at par. */
-      pool: Address
-      /** Nonzero pool route and trade-memo identifier. */
-      customerId: Hex
-    }
-  | { privateAsset: Address; pool?: undefined; customerId?: undefined }
-
-/** The profile fields the router slice owns. */
-export type ZoneRouterFields = { zone: ZoneRouterIntent | null }
+/** The profile fields the Zone slice owns. */
+export type ZoneFields = { zone: ZoneIntent | null }
 
 /** The Zone identity a deployment record targets; sequencers are live state, not identity. */
 export type ZoneTarget = Omit<ZoneIdentity, 'sequencers'>
 
-// Bump when the immutable router implementation changes, invalidating pending activation too.
-const routerContractRelease = 2
-
-type ZoneProfile = SliceProfile<ZoneRouterFields>
+type ZoneProfile = SliceProfile<ZoneFields>
 
 /** Recorded Zone identity addresses, discovered from the canonical Factory rather than deployed. */
 export const zoneIdentityAddresses = {
@@ -53,7 +34,7 @@ export const zoneIdentityAddresses = {
 } as const
 
 /** The record target's `zone`: the configured Zone and its discovered Portal and Messenger. */
-const zoneTarget: TargetSlice<'zone', ZoneTarget, ZoneRouterFields> = {
+const zoneTarget: TargetSlice<'zone', ZoneTarget, ZoneFields> = {
   key: 'zone',
   component: 'zone',
   discover(profile, outputs) {
@@ -114,12 +95,12 @@ const zoneTarget: TargetSlice<'zone', ZoneTarget, ZoneRouterFields> = {
 }
 
 /**
- * The `zone` slice: authored Zone router intent, the `zone` intent component and record target,
- * the Zone identity it discovers and the router it deploys, and its private-routing stack fields.
+ * The `zone` slice: the authored Zone, the `zone` intent component and record target, the Zone
+ * identity it discovers, and the network's Zone stack field.
  */
-export const zoneRouterProfile = {
+export const zoneProfile = {
   authoredKeys: ['zone'],
-  parse: (root: Record<string, unknown>, chainId: number): ZoneRouterFields => ({
+  parse: (root: Record<string, unknown>, chainId: number): ZoneFields => ({
     zone:
       root.zone === undefined
         ? null
@@ -132,93 +113,43 @@ export const zoneRouterProfile = {
     return { zone }
   },
   deploymentIntent: (profile: ZoneProfile) =>
-    profile.zone ? { zone: profile.zone, ...routerReleaseIntent() } : { zone: null },
+    profile.zone ? { zone: profile.zone } : { zone: null },
   components: {
     zone: (profile: ZoneProfile, deployment: string) =>
-      profile.zone ? { deployment, zone: profile.zone, ...routerReleaseIntent() } : null,
+      profile.zone ? { deployment, zone: profile.zone } : null,
   },
   externalAddresses: zoneIdentityAddresses,
-  addresses: { earnRouter: 'zone' },
   // Protocol precompiles are authenticated functionally and intentionally have no runtime bytecode.
   codeless: (key: string, value: Address) =>
     key === 'zoneOutbox' || (key === 'zoneMessenger' && getAddress(value) === zoneMessengerAddress),
   target: zoneTarget,
   capabilities: {
-    privateRouting: (profile: ZoneProfile) => profile.zone !== null,
-    routerSwaps: (profile: ZoneProfile) => profile.zone !== null,
+    privateRouting: earnModeOnZone,
+    routerSwaps: earnModeOnZone,
   },
-  // Type-only: declares the stack fields `zoneRouterStackFields` fills.
-  stack: {} as ZoneRouterStack,
-} as const satisfies ProfileSlice<ZoneRouterFields>
+  // Type-only: declares the stack fields `zoneStackFields` fills.
+  stack: {} as ZoneStack,
+} as const satisfies ProfileSlice<ZoneFields>
 
-/** Flattened operational view of the configured Zone router. */
-export function configuredZone(profile: ZoneRouterFields) {
-  if (!profile.zone) return undefined
-  const { router, ...zone } = profile.zone
-  return { ...zone, ...router }
-}
-
-/**
- * The router's constructor arguments, which its deploy input, source verification, and binding
- * checks all derive from. A zero pool and customer ID deploy a router whose private asset is the
- * vault asset.
- */
-export function routerArgs(profile: ZoneRouterFields, outputs: Record<string, Address>) {
-  const zone = required(configuredZone(profile), 'single-Zone router module')
-  return {
-    zoneId: zone.id,
-    earnVault: requiredOutput(outputs, 'earnVault'),
-    privateAsset: zone.privateAsset,
-    route: { pool: zone.pool ?? zeroAddress, customerId: zone.customerId ?? zeroHash },
-  }
-}
-
-/** The configured router's conversion pool, or `undefined` when its private asset is the vault asset. */
-export function configuredRouterPool(profile: ZoneRouterFields) {
-  const router = profile.zone?.router
-  return router?.pool === undefined
-    ? undefined
-    : { pool: router.pool, customerId: router.customerId }
+/** The configured Zone, or `undefined` when the profile targets none. */
+export function configuredZone(profile: ZoneFields) {
+  return profile.zone ?? undefined
 }
 
 function parseZone(value: Record<string, unknown>, parentChainId: number, path: string) {
-  exactKeys(value, path, ['id', 'enableEarnShare', 'router'])
-  const routerValue = object(value.router, `${path}.router`)
-  exactKeys(routerValue, `${path}.router`, ['privateAsset'], ['pool', 'customerId'])
+  exactKeys(value, path, ['id', 'enableEarnShare'])
   const id = positiveInteger(value.id, `${path}.id`)
   if (id > 4_294_967_295) throw new Error(`${path}.id must fit uint32`)
-  const privateAsset = address(routerValue.privateAsset, `${path}.router.privateAsset`)
-  // Omitting both describes a router whose private asset is the vault asset; reconciliation checks that.
-  if ((routerValue.pool === undefined) !== (routerValue.customerId === undefined)) {
-    throw new Error(
-      `${path}.router.pool and ${path}.router.customerId must be set or omitted together`,
-    )
-  }
-  const router: ZoneRouterProfile =
-    routerValue.pool === undefined
-      ? { privateAsset }
-      : {
-          privateAsset,
-          pool: address(routerValue.pool, `${path}.router.pool`),
-          customerId: nonzeroBytes32(routerValue.customerId, `${path}.router.customerId`),
-        }
   if (value.enableEarnShare !== true) throw new Error(`${path}.enableEarnShare must be true`)
-  const zone: ZoneRouterIntent = {
-    id,
-    chainId: zoneChainId(parentChainId, id),
-    enableEarnShare: true,
-    router,
-  }
+  const zone: ZoneIntent = { id, chainId: zoneChainId(parentChainId, id), enableEarnShare: true }
   return zone
 }
 
-function nonzeroBytes32(value: unknown, path: string): Hex {
-  if (!isBytes32(value) || BigInt(value) === 0n)
-    throw new Error(`${path} must be a nonzero 32-byte hex string`)
-  return value.toLowerCase() as Hex
-}
-
-/** Release 1 retains existing record hashes; subsequent releases invalidate both router intents. */
-export function routerReleaseIntent(release: number = routerContractRelease) {
-  return release === 1 ? {} : { routerContractRelease: release }
+/** Whether an Earn-mode ZoneRouter routes private deposits and redemptions into the profile's Zone. */
+function earnModeOnZone(profile: ZoneProfile & Partial<ZoneRouterFields>) {
+  return (
+    profile.zone !== null &&
+    profile.zoneRouter?.zoneId === profile.zone.id &&
+    !!profile.zoneRouter.earn
+  )
 }

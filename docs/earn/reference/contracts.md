@@ -23,7 +23,7 @@ scope is in [audits](../audit/README.md#scope).
 | `ERC4626Engine`, `ERC4626EngineFactory`                       | Per stack, network | [ERC-4626](../modules/erc4626-engine.md)                   |
 | `VedaEngine`, `VedaPeripheryRegistry`, `VedaForwardingSolver` | Per Veda stack     | [Veda](../modules/veda.md#contracts)                       |
 | `PropAMMEngine` (experimental)                                | Per stack          | [PropAMM](../modules/propamm.md)                           |
-| `SingleZoneEarnRouter`                                        | Per Zone route     | [Zones](../modules/zone-router.md#router-contract)         |
+| `ZoneRouter` (Earn ops), `ZoneRouterFactory`                  | Per Zone route     | [Zones](../modules/zone-router.md#router-contract)         |
 | `EarnContributionController`, `EarnMerkleRewardDistributor`   | Optional per stack | [Rewards](../modules/rewards.md)                           |
 | `EarnRewardsFactory`                                          | Network            | [Rewards installation](../modules/rewards.md#installation) |
 

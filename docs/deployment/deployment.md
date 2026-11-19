@@ -461,15 +461,12 @@ the reward treasury.
 | `deploy-engine`                  | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Factory-provisioned engine](../earn/modules/erc4626-engine.md#deployment)      |
 | `deploy-core`                    | deployment | deployer                                                             | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
 | `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role) | Bind EarnVault and atomically transfer the engine to the configured final owner |
-| `deploy-router`                  | deployment | deployer                                                             | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
 | `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
 | `deploy-merkle-distributor`      | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `validate-access`                | deployment | deployer                                                             | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
 | `deploy-contribution-controller` | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
-| `authorize-router`               | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `enable-zone-tokens`             | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `register-zone-gateway`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone/zone-router.md#deployment)                                |
 | `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
 | `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |

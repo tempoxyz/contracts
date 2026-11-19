@@ -74,7 +74,6 @@ describe('local E2E CI', () => {
         const profile = Deployment.localizeProfile(
           Deployment.variantProfile({
             access: Deployment.variantAccess,
-            customerId: Deployment.routerCustomerId,
             deployer,
             engineKind,
             now: 0,
@@ -87,8 +86,11 @@ describe('local E2E CI', () => {
             venueOrEngine: address('7e'),
             policyId: Deployment.variantAccess === 'tip403-whitelist' ? 2n : undefined,
             zoneId: 1,
-            conversion: { privateAsset: address('a1'), pool: address('9001') },
-            vaultAsset: address('ba5e'),
+            router: {
+              privateAsset: address('a1'),
+              pool: address('9001'),
+              customerId: Deployment.routerCustomerId,
+            },
           },
         )
         const target = profileTarget(

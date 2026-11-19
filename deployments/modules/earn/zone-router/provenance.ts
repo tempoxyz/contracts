@@ -12,7 +12,6 @@ const builds = new Map<string, Hex>()
 
 type Contract = {
   contract:
-    | 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter'
     | 'src/zone/ZoneRouter.sol:ZoneRouter'
     | 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory'
 }

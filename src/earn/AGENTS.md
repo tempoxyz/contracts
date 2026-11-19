@@ -16,14 +16,11 @@ accounting specification for contracts, tests, and integrations; this file is no
 - Every installed engine serves one vault, uses its immutable base asset, and advertises a usable
   exit; in-kind entry alone is insufficient. Keep venue-specific behavior behind engine capabilities.
   Veda requests stay bound to their originating Queue; settled assets are not sweepable dust.
-- The router authenticates canonical callbacks, returns through the same source Portal, converts
-  only at exact par with measured 1:1 output, and cleans up temporary balances and approvals except
-  standing maximums to its immutable EarnVault and pool and its source Portal. A standing allowance
-  is only for a spender that cannot change and moves the holder's tokens only inside the holder's
-  own call, so a one-unit residue at rest stays safe. Veda's and PropAMM's engines approve exact
-  pulls and keep at most one unit standing, never a maximum approval, because Veda's engine holds
-  settled payouts. A
-  same-asset router binds no pool. Do not add caller-selected tokens, vaults, or destinations.
+- A standing allowance is only for a spender that cannot change and moves the holder's tokens only
+  inside the holder's own call, so a one-unit residue at rest stays safe. Veda's and PropAMM's
+  engines approve exact pulls and keep at most one unit standing, never a maximum approval, because
+  Veda's engine holds settled payouts. Private routing is the Zone router's
+  ([src/zone/AGENTS.md](../zone/AGENTS.md)).
 - Reward periphery has no issuer authority; preserve measured solvency, domain-separated cumulative
   entitlements, settlement replay protection, and unpaid entitlement after failed transfers.
 - `src/demo/` is test scaffolding (built, never deployed); label experimental integrations honestly.

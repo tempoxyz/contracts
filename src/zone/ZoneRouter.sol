@@ -23,7 +23,7 @@ import {
 /// @notice Ownerless router for one Zone's withdrawal callbacks: Earn deposits and redemptions, and spends
 ///         through spenders fixed at deployment.
 /// @dev Specified in docs/zone/zone-router.md. Every setting is fixed by the constructor; a different
-///      mode is a new router. Ops 0 and 1 keep SingleZoneEarnRouter's callback layout and behavior. Op 2
+///      mode is a new router. Ops 0 and 1 deposit into and redeem from one EarnVault. Op 2
 ///      (Spend) transfers exactly the sender's `maxInput` to a listed spender, measures what it used once
 ///      the spender hands back the rest, and returns the change to the source Zone, so no spender can take
 ///      more than the sender allowed.
@@ -81,7 +81,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         address refundRecipient;
     }
 
-    /// @notice Ops 0 and 1, byte-identical to SingleZoneEarnRouter's callback data.
+    /// @notice Ops 0 and 1: the op, its minimums, an action ID, and the return.
     struct CallbackData {
         Op op;
         uint128 minVaultAssets;
@@ -299,7 +299,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
     }
 
-    /// @notice Pool state and output inventory for each Earn op, as SingleZoneEarnRouter reports it.
+    /// @notice Pool state and output inventory for each Earn op.
     /// @dev Not a guaranteed executable conversion: execution also depends on the pool's oracle freshness
     ///      and deviation guard and on token policy. A router without a pool, including one without Earn
     ///      ops, reports an unpaused, admitted, at-par route with unlimited liquidity.

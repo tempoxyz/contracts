@@ -9,14 +9,13 @@ import { ZoneRouterFactory } from "../../src/zone/ZoneRouterFactory.sol";
 import { ISpender } from "../../src/interfaces/zone/ISpender.sol";
 import { SendSpender } from "../../src/zone/spenders/SendSpender.sol";
 import { ZoneRouterMockPortal } from "./helpers/ZoneRouterMockPortal.sol";
-import { EarnRouterTestBase, IRouterPropAMMPool } from "../earn/helpers/EarnRouterTestBase.sol";
+import { ZoneRouterTestBase, IRouterPropAMMPool } from "./helpers/ZoneRouterTestBase.sol";
 import { MemoMockToken } from "../earn/helpers/PropAMMEngineMocks.sol";
 import {
     EncryptedDepositPayload,
     IZonePortal,
     ZONE_MESSENGER_ADDRESS
 } from "../../src/interfaces/external/tempo/IZone.sol";
-import { SingleZoneEarnRouter } from "../../src/earn/router/SingleZoneEarnRouter.sol";
 
 /// @dev A spender whose behavior each test picks. The router sends it `maxInput` up front: pay `use`
 ///      of it to `payee` and hand back the rest, optionally try to pull more from the router, hand back
@@ -70,7 +69,7 @@ contract MockSpender is ISpender {
     }
 }
 
-contract ZoneRouterTest is EarnRouterTestBase {
+contract ZoneRouterTest is ZoneRouterTestBase {
     ZoneRouterFactory internal factory;
     MockSpender internal spender;
     IRouterPropAMMPool internal pool;
@@ -99,37 +98,38 @@ contract ZoneRouterTest is EarnRouterTestBase {
     // Modes and the factory
     // ---------------------------------------------------------------------------------------------
 
-    function testEarnModeIsByteCompatibleWithSingleZoneEarnRouter() public {
-        ZoneRouter zr = _earnRouter(false);
+    function testEarnModeDepositsAndRedeems() public {
+        ZoneRouter zr = _earnModeRouter(false);
         alternate.mint(address(zr), ONE);
-        // Callback data encoded with SingleZoneEarnRouter's own struct.
-        bytes memory data = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        bytes memory data = _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0);
         vm.prank(ZONE_MESSENGER_ADDRESS);
         zr.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
         assertEq(earnA.balanceOf(address(portalA)), ONE);
         _assertEmpty(zr);
 
         portalA.release(address(earnA), address(zr), ONE);
-        bytes memory redeem = _callback(SingleZoneEarnRouter.Flow.Redeem, uint128(ONE), 0, uint128(ONE));
+        bytes memory redeem = _callback(ZoneRouter.Op.Redeem, uint128(ONE), 0, uint128(ONE));
         vm.prank(ZONE_MESSENGER_ADDRESS);
         zr.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(earnA), uint128(ONE), redeem);
         assertEq(alternate.balanceOf(address(portalA)), ONE);
         _assertEmpty(zr);
     }
 
-    /// @notice The Earn preset reports the same views clients read from SingleZoneEarnRouter.
-    function testEarnModeReportsTheSameViewsAsSingleZoneEarnRouter() public {
-        ZoneRouter zr = _earnRouter(false);
-        SingleZoneEarnRouter legacy = _admittedRouter(pool);
-        assertEq(zr.parPrice(), legacy.parPrice());
-        assertEq(zr.privateAssetIsBase(), legacy.privateAssetIsBase());
-        (bool p1, bool a1, bool r1, uint256 d1, uint256 l1) = zr.liquidityStatus();
-        (bool p2, bool a2, bool r2, uint256 d2, uint256 l2) = legacy.liquidityStatus();
-        assertEq(abi.encode(p1, a1, r1, d1, l1), abi.encode(p2, a2, r2, d2, l2));
-        assertTrue(a1, "admitted");
-        for (uint8 flow = 0; flow < 2; flow++) {
-            assertEq(zr.supportsFlow(flow), legacy.supportsFlow(flow));
-        }
+    /// @notice The Earn preset reports the pool's par price, admission, and inventory, and only ops 0 and 1.
+    function testEarnModeReportsPoolViews() public {
+        ZoneRouter zr = _earnModeRouter(false);
+        assertEq(zr.parPrice(), PAR);
+        assertEq(zr.privateAssetIsBase(), pool.baseToken() == address(alternate));
+        (bool paused, bool admitted, bool atPar, uint256 depositLiquidity, uint256 redeemLiquidity) =
+            zr.liquidityStatus();
+        assertFalse(paused);
+        assertTrue(admitted, "admitted");
+        assertTrue(atPar, "at par");
+        assertEq(depositLiquidity, POOL_INVENTORY);
+        assertEq(redeemLiquidity, POOL_INVENTORY);
+        assertTrue(zr.supportsFlow(0));
+        assertTrue(zr.supportsFlow(1));
+        assertFalse(zr.supportsFlow(2));
     }
 
     function testFactoryDeploysAtPredictedAddressOnce() public {
@@ -209,7 +209,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
     }
 
     function testDisabledOpsRevert() public {
-        ZoneRouter earnOnly = _earnRouter(false);
+        ZoneRouter earnOnly = _earnModeRouter(false);
         alternate.mint(address(earnOnly), ONE);
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.OpDisabled.selector);
@@ -219,7 +219,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
 
         ZoneRouter spendOnly = _spendRouter();
         alternate.mint(address(spendOnly), ONE);
-        bytes memory deposit = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        bytes memory deposit = _callback(ZoneRouter.Op.Deposit, uint128(ONE), uint128(ONE), 0);
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(ZoneRouter.OpDisabled.selector);
         spendOnly.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), deposit);
@@ -277,7 +277,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
 
     /// @notice An Earn-only router cannot be warmed, so it never holds a standing Portal approval.
     function testWarmSetsAnEarnOnlyRoutersPortalApproval() public {
-        ZoneRouter zr = _earnRouter(false);
+        ZoneRouter zr = _earnModeRouter(false);
         zr.warm(address(alternate));
         assertEq(alternate.allowance(address(zr), address(portalA)), type(uint256).max);
     }
@@ -554,7 +554,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
         mode.spenders[0] = address(spender);
     }
 
-    function _earnRouter(bool withSpend) internal returns (ZoneRouter zr) {
+    function _earnModeRouter(bool withSpend) internal returns (ZoneRouter zr) {
         zr = ZoneRouter(factory.deploy(_earnMode(withSpend)));
         pool.setTakerAllowed(address(zr), true);
         pool.setRecipientAllowed(address(zr), true);

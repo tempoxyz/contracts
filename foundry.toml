@@ -71,7 +71,7 @@ out = "out/coverage"
 invariant = { runs = 64, depth = 32 }
 # Coverage compiles with minimal IR optimization, under which this test's fuzz entrypoint is too
 # deep for the stack; the router it exercises stays covered by the other router suites.
-skip = ["SingleZoneEarnRouterAbiFuzz"]
+skip = ["ZoneRouterEarnAbiFuzz"]
 
 [profile.coverage.coverage]
 report = ["summary", "lcov"]

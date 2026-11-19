@@ -117,7 +117,7 @@ function fixture(redacted: boolean) {
     actors,
     zoneProofClient: client,
     assets: { base: address, alternate: address },
-    contracts: { earnRouter: address, earnShare: address },
+    contracts: { zoneRouter: address, earnShare: address },
     deployment: {
       contracts: { earnVault: address, engine: address, earnShare: address, venue: address },
       capabilities: { inKindDeposit: true },

@@ -528,7 +528,7 @@ async function runCli(
       stablecoinFixture: address,
       earnShare: address,
       earnVault: address,
-      earnRouter: address,
+      zoneRouter: address,
     }
   })
   const argv = process.argv

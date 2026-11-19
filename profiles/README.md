@@ -54,13 +54,10 @@ set to `null`; an empty `core` or `core.fees` object is rejected. Top-level keys
 
 - `tip403PolicyId`: attaches an existing simple whitelist; omission means open access. Its
   [required members](../docs/earn/modules/access.md#required-members) are derived from the deployment.
-- `zone`: the complete private integration: Zone `id`, `enableEarnShare: true`, and a nested
-  `router` with the one immutable route. `router.privateAsset` is singular because one router
-  supports exactly one pair; another private asset needs another router. With a conversion pool,
-  `router.pool` is the DirectPropAMM pool that trades exactly that pair with equal decimals, and
-  `router.customerId` is its nonzero bytes32 route identifier. When `privateAsset` is the vault
-  asset, omit both `pool` and `customerId` (setting only one is rejected). The Zone chain ID is
-  derived from `chainId` and `zone.id` using the protocol's reserved ranges.
+- `zone`: the Zone the stack connects to: its `id` and `enableEarnShare: true`, which has the
+  Portal enable the EarnShare. The Zone chain ID is derived from `chainId` and `zone.id` using the
+  protocol's reserved ranges. Private routing into it is a `zoneRouter` with `deposit` and `redeem`
+  on the same Zone.
 - `zoneRouter`: one [`ZoneRouter`](../docs/zone/zone-router.md) mode and the factory that deploys
   it ([Zone routers](#zone-routers)).
 - `targetYield` and `boostRewards`: optional reward periphery ([rewards](#rewards)).
@@ -86,8 +83,8 @@ protected-item and three-slot rules.
 ## Zone routers
 
 `zoneRouter` deploys one [`ZoneRouter`](../docs/zone/zone-router.md#modes) through a
-`ZoneRouterFactory`, from the [Zone router](../docs/zone/README.md). It sits beside
-`zone`, whose `SingleZoneEarnRouter` it does not replace. Card and Earn on one Zone:
+`ZoneRouterFactory`, from the [Zone router](../docs/zone/README.md). With `deposit` and `redeem` on
+the profile's `zone`, it is that stack's private routing. Card and Earn on one Zone:
 
 ```json
 {
@@ -110,8 +107,11 @@ protected-item and three-slot rules.
 - `ops` lists `deposit`, `redeem` and `spend` in that order, at least one; it is the mode's
   `enabledOps` bitmask.
 - `earn` is required with `deposit` or `redeem` and rejected otherwise. The router binds the
-  profile's own EarnVault; `privateAsset`, `pool` and `customerId` follow `zone.router`'s rules
-  (omit both `pool` and `customerId` when the private asset is the vault asset).
+  profile's own EarnVault. `privateAsset` is singular because one router supports exactly one pair;
+  another private asset needs another router. With a conversion pool, `pool` is the DirectPropAMM
+  pool that trades exactly that pair with equal decimals, and `customerId` is its nonzero bytes32
+  route identifier. When `privateAsset` is the vault asset, omit both `pool` and `customerId`
+  (setting only one is rejected).
 - `spenders`, required with `spend` and rejected otherwise, lists the deployed `ISpender`
   contracts, such as a `SendSpender` from
   [Zone Router Release](../docs/deployment/deployment.md#zone-router-releases) or a card program's
@@ -254,7 +254,7 @@ without one is refused:
   pass its ready inspection, and the profile names it.
 - Any other kind (testnets only) gets a test stablecoin pair, a `DemoStablecoinFunder` holding
   their issuer roles, a venue with locked seed liquidity, and, for a Zone profile, the router's
-  conversion pool, so the lifecycle's `authorize-router` step admits the router.
+  conversion pool, so the lifecycle's `authorize-zone-router` step admits the router.
 
 Before anything is signed, it checks that the RPC serves the profile's chain and, when a
 `deployment.json` exists, that `DEPLOYER_PRIVATE_KEY` signs as its `deployer`. A broadcast tops up

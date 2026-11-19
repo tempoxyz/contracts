@@ -26,7 +26,7 @@ export {
   type EarnDeploymentProfile,
 } from './core/profile.js'
 export { configuredZone } from './modules/earn/zone-router/profile.js'
-export { zoneRouterStackFields } from './modules/earn/zone-router/stack.js'
+export { zoneStackFields } from './modules/earn/zone-router/stack.js'
 export {
   engineFactories,
   factoryReleaseEntryPoint,

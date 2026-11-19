@@ -8,7 +8,8 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test, vi } from 'vitest'
 
 import { executeAvailableAuthority } from '../../deployments/modules/index.js'
-import { authorizeRouter, canAuthorizeRouter } from './earn/zone-router/steps.js'
+import { canAdministerPool } from './earn/zone-router/steps.js'
+import { authorizeZoneRouter } from './zone-router/steps.js'
 import { requireRouterProvenance } from './earn/zone-router/provenance.js'
 import {
   earnEngineBindingAbi,
@@ -31,14 +32,10 @@ const profile = parseEarnDeploymentProfile(
     chainId: 42431,
     owner: address('4'),
     engine: { kind: 'veda', address: address('1') },
-    zone: {
-      id: 1,
-      enableEarnShare: true,
-      router: {
-        privateAsset: address('6'),
-        pool: address('7'),
-        customerId: `0x${'c'.repeat(64)}`,
-      },
+    zoneRouter: {
+      zoneId: 1,
+      ops: ['deposit', 'redeem'],
+      earn: { privateAsset: address('6'), pool: address('7'), customerId: `0x${'c'.repeat(64)}` },
     },
     tip403PolicyId: '469',
   },
@@ -49,6 +46,8 @@ const outputs = {
   earnVault: address('e'),
   earnShare: address('b'),
   zonePortal: address('8'),
+  zoneRouterFactory: address('fac'),
+  zoneRouterPortal: address('8'),
 }
 const engineOwnerKey = `0x${'1'.repeat(64)}` as const
 const engineOwner = privateKeyToAccount(engineOwnerKey).address
@@ -120,9 +119,10 @@ function execute(
 }
 
 /** Whether the deployer key proves it can admit the router on its pool. */
-function canAuthorize(dependencies: Parameters<typeof canAuthorizeRouter>[1]) {
-  return canAuthorizeRouter(
+function canAuthorize(dependencies: Parameters<typeof canAdministerPool>[2]) {
+  return canAdministerPool(
     { environment: { DEPLOYER_PRIVATE_KEY: authorityKey }, profile, rpcUrl: 'https://rpc.invalid' },
+    address('7'),
     dependencies,
   )
 }
@@ -181,9 +181,9 @@ describe('deployment authority adapters', () => {
     const runtime = mockDependencies([safe, [authorityAccount], 1n, false, false])
     const result = await execute(
       profile,
-      'register-zone-gateway',
+      'register-zone-router-gateway',
       { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
-      { ...outputs, earnRouter: router },
+      { ...outputs, zoneRouter: router },
       runtime.dependencies,
     )
     expect(result).toEqual({ transactions: [receiptHash] })
@@ -209,9 +209,9 @@ describe('deployment authority adapters', () => {
     await expect(
       execute(
         profile,
-        'register-zone-gateway',
+        'register-zone-router-gateway',
         { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
-        { ...outputs, earnRouter: address('9') },
+        { ...outputs, zoneRouter: address('9') },
         runtime.dependencies,
       ),
     ).rejects.toThrow('does not control Portal')
@@ -234,14 +234,14 @@ describe('deployment authority adapters', () => {
     })
     const result = await execute(
       profile,
-      'register-zone-gateway',
+      'register-zone-router-gateway',
       { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
-      { ...outputs, earnRouter: router },
+      { ...outputs, zoneRouter: router },
       runtime.dependencies,
     )
     // An open gateway needs no role read, so Portals without `hasRole` still reconcile.
     expect(runtime.readContract).toHaveBeenCalledTimes(
-      scenario.gatewayOpen ? 4 : scenario.registered ? 5 : 4,
+      scenario.gatewayOpen ? 2 : scenario.registered ? 3 : 4,
     )
     if (!scenario.gatewayOpen) {
       expect(runtime.readContract.mock.calls[2]![0]).toMatchObject({
@@ -283,9 +283,9 @@ describe('deployment authority adapters', () => {
     const runtime = mockDependencies([authorityAccount, false, false, router])
     const result = await execute(
       profile,
-      'authorize-router',
+      'authorize-zone-router',
       { DEPLOYER_PRIVATE_KEY: authorityKey },
-      { ...outputs, earnRouter: router },
+      { ...outputs, zoneRouter: router },
       runtime.dependencies,
     )
     expect(result).toEqual({ transactions: [receiptHash] })
@@ -322,9 +322,9 @@ describe('deployment authority adapters', () => {
     ])
     const result = await execute(
       profile,
-      'authorize-router',
+      'authorize-zone-router',
       { DEPLOYER_PRIVATE_KEY: authorityKey },
-      { ...outputs, earnRouter: router },
+      { ...outputs, zoneRouter: router },
       runtime.dependencies,
     )
     expect(result).toEqual({ transactions: [receiptHash] })
@@ -368,27 +368,28 @@ describe('deployment authority adapters', () => {
   test('checks the recovered router implementation before pool admission', async () => {
     const router = address('d')
     const error = new Error('noncanonical router')
-    vi.mocked(requireRouterProvenance).mockRejectedValueOnce(error)
+    // The factory's provenance holds; the router's does not.
+    vi.mocked(requireRouterProvenance).mockResolvedValueOnce(undefined).mockRejectedValueOnce(error)
     const runtime = mockDependencies([authorityAccount, false, false, router])
     await expect(
       execute(
         profile,
-        'authorize-router',
+        'authorize-zone-router',
         { DEPLOYER_PRIVATE_KEY: authorityKey },
-        { ...outputs, earnRouter: router },
+        { ...outputs, zoneRouter: router },
         runtime.dependencies,
       ),
     ).rejects.toBe(error)
     expect(vi.mocked(requireRouterProvenance).mock.lastCall?.[1]).toMatchObject({
       address: router,
-      contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
+      contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
     })
     expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
   })
 
   test('asks the pool owner to verify the router before admitting it', () => {
-    expect(authorizeRouter.handoff(profile, { ...outputs, earnRouter: address('d') })).toMatch(
-      /^First verify the router's canonical implementation and immutable bindings\. Then the owner of PropAMM pool/,
+    expect(authorizeZoneRouter.handoff(profile, { ...outputs, zoneRouter: address('d') })).toMatch(
+      /verify the router's canonical implementation and immutable bindings\. Then the owner of PropAMM pool/,
     )
   })
 
@@ -397,9 +398,9 @@ describe('deployment authority adapters', () => {
     await expect(
       execute(
         profile,
-        'authorize-router',
+        'authorize-zone-router',
         { DEPLOYER_PRIVATE_KEY: authorityKey },
-        { ...outputs, earnRouter: address('d') },
+        { ...outputs, zoneRouter: address('d') },
         runtime.dependencies,
       ),
     ).rejects.toThrow('remove the recipient redirect')

@@ -4,12 +4,13 @@ import {
   parseEarnDeploymentProfile,
   type EarnDeploymentProfile,
 } from '@tempoxyz/contracts/deployments/operations'
-import type { Address, Hex } from 'viem'
+import type { Address } from 'viem'
 
 import { localEngines } from '../engines/index.js'
 import type { AccessKind, EngineKind } from './types.js'
 
 type AuthoredProfile = ReturnType<typeof authoredProfile>
+type ZoneRouterEarn = NonNullable<EarnDeploymentProfile['zoneRouter']>['earn'] & {}
 
 /** Disposable replacements for a profile's chain-specific dependencies. */
 export type LocalTargets = {
@@ -21,10 +22,8 @@ export type LocalTargets = {
   /** The local whitelist that stands in for the profile's TIP-403 policy. */
   policyId?: bigint | undefined
   zoneId: number
-  /** The router private asset and conversion pool for a profile whose router converts. */
-  conversion: { privateAsset: Address; pool: Address }
-  /** The vault asset, which a pool-less router takes as its private asset. */
-  vaultAsset: Address
+  /** The Earn binding of the Earn-mode ZoneRouter a profile with a Zone deploys on it. */
+  router: ZoneRouterEarn
 }
 
 const rewardInterval = 300
@@ -34,11 +33,10 @@ export const variantAccess: AccessKind = 'tip403-whitelist'
 
 /**
  * The profile each local variant deploys when no profile is supplied: fees on, both reward
- * contracts, and a pooled Zone router. Principals are the disposable accounts.
+ * contracts, and a Zone. Principals are the disposable accounts.
  */
 export function variantProfile(options: {
   access: AccessKind
-  customerId: Hex
   deployer: Address
   engineKind: EngineKind
   now: number
@@ -66,15 +64,7 @@ export function variantProfile(options: {
       },
     },
     ...(options.access === 'tip403-whitelist' ? { tip403PolicyId: '2' } : {}),
-    zone: {
-      id: 1,
-      enableEarnShare: true,
-      router: {
-        privateAsset: options.deployer,
-        pool: options.deployer,
-        customerId: options.customerId,
-      },
-    },
+    zone: { id: 1, enableEarnShare: true },
     targetYield: {
       ...window,
       annualRate: { bps: 500 },
@@ -99,8 +89,8 @@ export function isProtected(profile: AuthoredProfile) {
 
 /**
  * Retargets an authored profile at the disposable chain. Only external dependencies change: chain,
- * venue or engine, TIP-403 policy, Zone ID, and router assets and pool. Core settings, principals,
- * rewards, and the router's customer ID are deployed as authored.
+ * venue or engine, TIP-403 policy, and Zone ID. Core settings, principals, and rewards are deployed
+ * as authored. A profile with a Zone also gets an Earn-mode ZoneRouter on it over `local.router`.
  */
 export function localizeProfile(source: AuthoredProfile, local: LocalTargets) {
   assertLocalProfile(source)
@@ -121,13 +111,8 @@ export function localizeProfile(source: AuthoredProfile, local: LocalTargets) {
     ...(local.policyId === undefined ? {} : { tip403PolicyId: local.policyId.toString() }),
     ...(zone
       ? {
-          zone: {
-            id: local.zoneId,
-            enableEarnShare: zone.enableEarnShare,
-            router: zone.router.pool
-              ? { ...local.conversion, customerId: zone.router.customerId }
-              : { privateAsset: local.vaultAsset },
-          },
+          zone: { id: local.zoneId, enableEarnShare: zone.enableEarnShare },
+          zoneRouter: { zoneId: local.zoneId, ops: ['deposit', 'redeem'], earn: local.router },
         }
       : {}),
   }
@@ -138,11 +123,15 @@ export function localizeProfile(source: AuthoredProfile, local: LocalTargets) {
   })
 }
 
-/** The PATHUSD stack: the primary profile's core and access, a pool-less router, no rewards. */
+/**
+ * The PATHUSD stack: the primary profile's core and access, no rewards, and a router over
+ * `local.router`, which binds PATHUSD with no pool.
+ */
 export function sameAssetProfile(primary: EarnDeploymentProfile, local: LocalTargets) {
   const {
     targetYield: _targetYield,
     boostRewards: _boostRewards,
+    zoneRouter: _zoneRouter,
     ...source
   } = authoredProfile(primary)
   return localizeProfile(
@@ -150,11 +139,7 @@ export function sameAssetProfile(primary: EarnDeploymentProfile, local: LocalTar
       ...source,
       id: `${primary.id}-same-asset`,
       engine: localEngines.erc4626.profileEngine(local.venueOrEngine),
-      zone: {
-        id: local.zoneId,
-        enableEarnShare: true,
-        router: { privateAsset: local.vaultAsset },
-      },
+      zone: { id: local.zoneId, enableEarnShare: true },
     },
     local,
   )

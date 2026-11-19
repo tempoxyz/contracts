@@ -102,7 +102,6 @@ jobs:
         run: |
           bash scripts/build-zones-test-artifacts.sh
           test -s crates/zones/contracts/out/DemoParPool.sol/DemoParPool.json
-          test -s crates/zones/contracts/out/SingleZoneEarnRouter.sol/SingleZoneEarnRouter.json
 
       - name: Run Earn Zone integration
         id: integration

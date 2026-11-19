@@ -221,7 +221,7 @@ export type E2eZoneContext = E2eContext & {
   deployment: E2eStack & {
     network: EarnStack['network'] & { zone: NonNullable<EarnStack['network']['zone']> }
   }
-  contracts: E2eContext['contracts'] & { earnRouter: `0x${string}` }
+  contracts: E2eContext['contracts'] & { zoneRouter: `0x${string}` }
   actors: Record<E2eActor, E2eContext['actors'][E2eActor] & { zone: ZoneActorClients }>
   policyZoneClient: NonNullable<E2eContext['policyZoneClient']>
   zoneProofClient: NonNullable<E2eContext['zoneProofClient']>
@@ -232,8 +232,8 @@ export function requireE2eZone(context: E2eContext): asserts context is E2eZoneC
   if (!context.deployment.network.zone || !context.actors.user.zone) {
     throw new Error(`E2E deployment ${context.deploymentId} has no Zone target`)
   }
-  if (!context.contracts.earnRouter) {
-    throw new Error(`E2E deployment ${context.deploymentId} has no EarnRouter`)
+  if (!context.contracts.zoneRouter) {
+    throw new Error(`E2E deployment ${context.deploymentId} has no Earn ZoneRouter`)
   }
 }
 

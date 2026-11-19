@@ -24,11 +24,9 @@ const camel = (name: string) =>
  * Every deployable contract under `src/earn/` and `src/demo/` (not an interface, library, or abstract contract) exports
  * `<name>Abi`, so a new contract or engine needs no entry here unless it is excluded or renamed.
  */
-const sourceDirectories = ['core', 'engines', 'router', 'rewards', 'demo']
+const sourceDirectories = ['core', 'engines', 'rewards', 'demo']
 /** Core contracts lead in this order; every other contract follows its directory by file name. */
 const leadingContracts = ['EarnVault', 'EarnFees', 'EarnFactory']
-/** Export names that differ from the contract name. */
-const aliases: Record<string, string> = { SingleZoneEarnRouter: 'earnRouterAbi' }
 /** Contracts deployed only through Foundry, whose ABIs no TypeScript consumer calls. */
 const excluded = [
   'DemoParPool',
@@ -50,7 +48,7 @@ const sourceContracts = [
     return { contract: contract!, directory, file }
   })
 })
-for (const contract of [...leadingContracts, ...Object.keys(aliases), ...excluded]) {
+for (const contract of [...leadingContracts, ...excluded]) {
   if (!sourceContracts.some((source) => source.contract === contract)) {
     throw new Error(`${contract} is not a contract under src/`)
   }
@@ -65,7 +63,7 @@ const contracts = sourceContracts
     return left.directory - right.directory || rank(left.contract) - rank(right.contract)
   })
   .map(({ contract, file }) => {
-    const name = aliases[contract] ?? `${camel(contract)}Abi`
+    const name = `${camel(contract)}Abi`
     return [name, `out/${file}/${contract}.json`] as const
   })
 
