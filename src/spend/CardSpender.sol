@@ -161,7 +161,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
 
         uint256 expected;
         if (PAYOUT_TARGET == address(0)) {
-            _spendDirect(s, maxInput, payee);
+            _spendDirect(s, token, maxInput, payee);
         } else if (s.fromVault == 0) {
             // A payout uses exactly the stablecoin spend, so a target cannot keep the rest as a buffer.
             expected = s.amount;
@@ -184,8 +184,11 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         /// @custom:assert PAYOUT_TARGET != address(0) && s.fromVault == 0 ==> consumed == s.amount
         /// @custom:assert PAYOUT_TARGET != address(0) && s.fromVault != 0 ==> consumed <= expected
         if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
-        if (unused != 0) _tokenCall(token, IERC20Like.transfer.selector, msg.sender, unused, TRANSFER_FAILED);
-        if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
+        // With nothing unused the balance read above already equals the baseline, and nothing has moved since.
+        if (unused != 0) {
+            _tokenCall(token, IERC20Like.transfer.selector, msg.sender, unused, TRANSFER_FAILED);
+            if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
+        }
 
         emit CardSpent(
             s.ref, msg.sender, s.destination, s.token, s.amount, s.fromVault, s.fromVault == 0 ? 0 : consumed, true
@@ -351,7 +354,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
 
     /// @dev A direct private spend, from the `maxInput` the router sent. The vault prices shares itself and
     ///      reverts when the cost is above the cap, the lower of `maxInput` and `maxShares`.
-    function _spendDirect(CardSpend memory s, uint256 maxInput, address payee) private {
+    function _spendDirect(CardSpend memory s, address share, uint256 maxInput, address payee) private {
         if (s.fromVault == 0) {
             if (s.amount > maxInput) revert InsufficientInput();
             /// @custom:assert s.amount <= maxInput
@@ -362,7 +365,8 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         uint256 cap = s.maxShares != 0 && s.maxShares < maxInput ? s.maxShares : maxInput;
         /// @custom:assert cap <= maxInput && (s.maxShares == 0 || cap <= s.maxShares)
         /// @custom:assert cap == maxInput || cap == s.maxShares
-        _redeem(v, v.earnShare(), s, payee, cap);
+        // `share` is the input token, which spendFrom already matched to the vault's EarnShare.
+        _redeem(v, share, s, payee, cap);
     }
 
     /// @dev Burns at most `cap` of the program's shares for exactly `s.fromVault` to `s.destination`. Earn's

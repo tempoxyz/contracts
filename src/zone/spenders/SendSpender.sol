@@ -8,6 +8,7 @@ import { IERC20Allowance } from "../../interfaces/external/IERC20Allowance.sol";
 import { ISpender } from "../../interfaces/zone/ISpender.sol";
 import { SpenderAuth } from "./SpenderAuth.sol";
 import { IEarnVault } from "../../interfaces/earn/IEarnVault.sol";
+import { IEarnVaultWithdrawCallback, IEarnWithdrawCallback } from "../../interfaces/earn/IEarnWithdrawCallback.sol";
 import { IERC20Like } from "../../interfaces/external/IERC20Like.sol";
 import { IPropAMMPriceOracle, IPropAMMVenue } from "../../interfaces/external/propamm/IPropAMMVenue.sol";
 
@@ -22,9 +23,10 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "../../interfaces/external/pr
 ///      pays and hands every unused unit straight back. Whoever builds the callback picks the vault and
 ///      recipient and spends only their own input, which the router caps at `maxInput`; only the bound
 ///      vault's EarnShare reaches the pool, and only from its asset into the paired stablecoin. With a
-///      conversion binding it keeps a standing maximum `convertAsset` allowance to its immutable pool. Tokens
-///      sent here outside a router's spend are not rescued; only that pool could pull stranded `convertAsset`.
-///      It neither emits nor stores the Zone's sender commitment.
+///      conversion binding it keeps a standing maximum `convertAsset` allowance to its immutable pool. A vault
+///      that reports the callback withdrawal is paid by transfer inside {earnWithdrawCallback}; any other vault
+///      gets an exact approval cleared afterward. Tokens sent here outside a router's spend are not rescued; only
+///      that pool could pull stranded `convertAsset`. It neither emits nor stores the Zone's sender commitment.
 /// @custom:reentrancy-guard locked
 /// gAllowance tracks temporary allowances only; the standing allowance to the immutable pool is outside it.
 /// @custom:ghost mapping(address => mapping(address => uint256)) gAllowance
@@ -38,12 +40,12 @@ import { IPropAMMPriceOracle, IPropAMMVenue } from "../../interfaces/external/pr
 /// @custom:invariant address(convertVault) != address(0) ==> parToken != convertAsset
 /// @custom:invariant address(convertVault) == address(0) ==> convertAsset == address(0) && parToken == address(0)
 /// @custom:invariant address(convertVault) == address(0) ==> !assetIsBase
-contract SendSpender is ISpender {
+contract SendSpender is ISpender, IEarnWithdrawCallback {
     /// @notice One send: `to` receives exactly `amount` of `token`.
     /// @dev With `vault` zero, `token` is the withdrawn token. Otherwise the input is `vault`'s
-    ///      EarnShare, redeemed with `withdrawExact` into `token`, which is the vault asset or, only for
-    ///      `convertVault`, `parToken` through `pool`. A virtual `to` (TIP-1022) is paid through its
-    ///      registered master. `ref` is the sender's own reference.
+    ///      EarnShare, redeemed exactly (through the vault's callback when it has one) into `token`, which is
+    ///      the vault asset or, only for `convertVault`, `parToken` through `pool`. A virtual `to` (TIP-1022)
+    ///      is paid through its registered master. `ref` is the sender's own reference.
     struct Send {
         address to;
         address token;
@@ -65,8 +67,15 @@ contract SendSpender is ISpender {
     /// @notice The stablecoin `convertAsset` converts into, the pool's other token; zero without conversion.
     address public immutable parToken;
     bool private immutable assetIsBase;
+    /// @dev EarnVault's error when a burn exceeds its cap; under the callback the cap is the vault's own quote.
+    bytes4 private constant EXCEEDS_MAX_EARN_SHARES = 0xee29738d; // ExceedsMaxEarnShares()
 
     bool private transient locked;
+    /// @dev Set only while a redemption waits on {earnWithdrawCallback}: the vault that may call it, the
+    ///      EarnShare it pays and the most it may pay.
+    address private transient callbackVault;
+    address private transient callbackShare;
+    uint256 private transient callbackMax;
 
     error ConversionNotAllowed();
     error DestinationNotPaid();
@@ -79,6 +88,7 @@ contract SendSpender is ISpender {
     error InvalidVault();
     error NothingSpent();
     error NotRouter();
+    error NotVault();
     error Reentrancy();
     error ResidualBalance(address token);
     error TokenCallFailed();
@@ -201,19 +211,15 @@ contract SendSpender is ISpender {
             /// @custom:assert send.token != token && asset != token && converts == (send.token != asset)
             /// @custom:assert converts ==> send.vault == address(convertVault) && asset == convertAsset
             /// @custom:assert converts ==> send.token == parToken
-            _safeApprove(token, send.vault, maxInput);
-            /// @custom:assert gAllowance[token][send.vault] == maxInput
+            // A vault with the callback is paid by transfer inside it, so no allowance slot is written.
+            bool callback = _hasWithdrawCallback(send.vault);
             if (!converts && payee == send.to) {
-                // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
-                // forge-lint: disable-next-line(reentrancy-no-eth)
-                IEarnVault(send.vault).withdrawExact(send.amount, send.to, maxInput);
+                _withdraw(send.vault, token, callback, send.amount, send.to, maxInput);
             } else {
                 // Redeemed here first when it converts, or when `to` is virtual: Earn's engines measure the
                 // literal receiver, which a virtual address never is, so this spender transfers to it instead.
                 uint256 assetBefore = IERC20Like(asset).balanceOf(address(this));
-                // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
-                // forge-lint: disable-next-line(reentrancy-no-eth)
-                IEarnVault(send.vault).withdrawExact(send.amount, address(this), maxInput);
+                _withdraw(send.vault, token, callback, send.amount, address(this), maxInput);
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore + send.amount) {
                     revert InsufficientInput();
                 }
@@ -223,7 +229,6 @@ contract SendSpender is ISpender {
                 /// @custom:assert converts || payee != send.to
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore) revert ResidualBalance(asset);
             }
-            _safeApprove(token, send.vault, 0);
             /// @custom:assert gAllowance[token][send.vault] == 0
         }
 
@@ -234,9 +239,12 @@ contract SendSpender is ISpender {
         if (unused >= maxInput) revert NothingSpent();
         /// @custom:assert unused < maxInput
         /// @custom:ghost gReturnedBefore = gSent[token][msg.sender]
-        if (unused != 0) _safeTransfer(token, msg.sender, unused);
+        // With nothing unused the balance read above already equals the baseline.
+        if (unused != 0) {
+            _safeTransfer(token, msg.sender, unused);
+            if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
+        }
         /// @custom:assert gSent[token][msg.sender] == gReturnedBefore + unused
-        if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
         if (send.token != token && IERC20Like(send.token).balanceOf(address(this)) != outputBaseline) {
             revert ResidualBalance(send.token);
         }
@@ -244,11 +252,75 @@ contract SendSpender is ISpender {
         emit Sent(send.ref, send.to, token, send.token, send.amount, maxInput - unused, unused);
     }
 
+    /// @inheritdoc IEarnWithdrawCallback
+    /// @dev Only the vault a running spend redeems through, once, for at most that spend's `maxInput`. It is the
+    ///      one entry point without the lock, which spendFrom holds around it; {_withdraw} arms it.
+    function earnWithdrawCallback(uint256 earnShares) external override {
+        address vault = callbackVault;
+        if (vault == address(0) || msg.sender != vault) revert NotVault();
+        if (earnShares > callbackMax) revert InsufficientInput();
+        callbackVault = address(0);
+        _safeTransfer(callbackShare, vault, earnShares);
+    }
+
     /// @notice The pool's par price, or zero without a pool.
     /// @custom:ensures address(pool) == address(0) ==> result == 0
     function parPrice() public view returns (uint256) {
         if (address(pool) == address(0)) return 0;
         return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
+    }
+
+    /// @dev Redeems exactly `amount` of `vault`'s asset to `receiver` for at most `maxInput` of its EarnShare
+    ///      `share`, leaving no allowance. The callback burns at most the vault's own quote, so a burn above it
+    ///      but within `maxInput` reverts there; only that error retries through an exact approval.
+    function _withdraw(address vault, address share, bool callback, uint256 amount, address receiver, uint256 maxInput)
+        private
+    {
+        // spendFrom holds the lock until it returns; earnWithdrawCallback admits only `vault`, once, during this call.
+        // forge-lint: disable-start(reentrancy-no-eth)
+        if (callback) {
+            callbackVault = vault;
+            callbackShare = share;
+            callbackMax = maxInput;
+            try IEarnVaultWithdrawCallback(vault).withdrawExactWithCallback(amount, receiver, maxInput) {
+                // The callback clears callbackVault, so a vault that skipped it took nothing.
+                if (callbackVault != address(0)) revert NothingSpent();
+                return;
+            } catch (bytes memory reason) {
+                if (keccak256(reason) != keccak256(abi.encodeWithSelector(EXCEEDS_MAX_EARN_SHARES))) {
+                    assembly ("memory-safe") {
+                        revert(add(reason, 0x20), mload(reason))
+                    }
+                }
+            }
+            // The revert undid the callback's transfer; disarm it so nothing can call back during the retry.
+            callbackVault = address(0);
+        }
+        _safeApprove(share, vault, maxInput);
+        IEarnVault(vault).withdrawExact(amount, receiver, maxInput);
+        _safeApprove(share, vault, 0);
+        // forge-lint: disable-end(reentrancy-no-eth)
+    }
+
+    /// @dev Whether `vault` reports the callback withdrawal by ERC-165 detection: it affirms ERC-165 itself,
+    ///      denies 0xffffffff (so a fallback answering true to everything fails) and affirms the interface.
+    function _hasWithdrawCallback(address vault) private view returns (bool) {
+        return _supportsInterface(vault, 0x01ffc9a7) == 1 && _supportsInterface(vault, 0xffffffff) == 0
+            && _supportsInterface(vault, type(IEarnVaultWithdrawCallback).interfaceId) == 1;
+    }
+
+    /// @dev `vault`'s ERC-165 answer for `interfaceId`: 1 or 0, or 2 for a failed call or any other return.
+    ///      Capped at ERC-165's 30,000 gas and one return word, so a caller-chosen vault cannot burn the spend's gas.
+    function _supportsInterface(address vault, bytes4 interfaceId) private view returns (uint256 answer) {
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            mstore(ptr, shl(224, 0x01ffc9a7))
+            mstore(add(ptr, 4), interfaceId)
+            mstore(0x00, 2)
+            let ok := staticcall(30000, vault, ptr, 0x24, 0x00, 0x20)
+            answer := mload(0x00)
+            if or(or(iszero(ok), lt(returndatasize(), 0x20)), gt(answer, 1)) { answer := 2 }
+        }
     }
 
     /// @dev Who a transfer to `to` credits: its TIP-1022 master if it is a virtual address, else `to`.
@@ -279,7 +351,7 @@ contract SendSpender is ISpender {
             _callOptionalReturn(convertAsset, abi.encodeCall(IERC20Like.approve, (address(pool), 0)));
             _callOptionalReturn(convertAsset, abi.encodeCall(IERC20Like.approve, (address(pool), type(uint256).max)));
         }
-        // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
+        // spendFrom holds the lock until it returns; earnWithdrawCallback admits only the vault being redeemed.
         // forge-lint: disable-start(reentrancy-no-eth)
         pool.swapExactInput(
             assetIsBase, amount, amount, address(this), customerId, bytes32(0), block.timestamp, parPrice(), 0, 0
@@ -304,7 +376,7 @@ contract SendSpender is ISpender {
     }
 
     function _callOptionalReturn(address token, bytes memory data) private {
-        // Every entry point is nonReentrant; the lock is released only after spendFrom returns.
+        // spendFrom holds the lock until it returns; earnWithdrawCallback admits only the vault being redeemed.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         (bool ok, bytes memory returnData) = token.call(data);
         if (!ok) revert TokenCallFailed();

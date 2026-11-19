@@ -12,6 +12,7 @@ import { ZoneRouterMockPortal } from "./helpers/ZoneRouterMockPortal.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "../earn/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "../earn/helpers/PropAMMEngineMocks.sol";
 import { IEarnVault } from "../../src/interfaces/earn/IEarnVault.sol";
+import { IEarnVaultWithdrawCallback, IEarnWithdrawCallback } from "../../src/interfaces/earn/IEarnWithdrawCallback.sol";
 import { IPropAMMVenue } from "../../src/interfaces/external/propamm/IPropAMMVenue.sol";
 import { ZONE_MESSENGER_ADDRESS } from "../../src/interfaces/external/tempo/IZone.sol";
 
@@ -44,6 +45,79 @@ contract PassThroughVault {
 
     function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares) external returns (uint256) {
         MemoMockToken(earnShare).transferFrom(msg.sender, address(this), maxEarnShares);
+        MemoMockToken(asset).transfer(receiver, assets);
+        return maxEarnShares;
+    }
+}
+
+/// @dev Calls a spender's withdraw callback from outside the vault it is redeeming through.
+contract CallbackIntruder {
+    function poke(address spender, uint256 earnShares) external {
+        IEarnWithdrawCallback(spender).earnWithdrawCallback(earnShares);
+    }
+}
+
+/// @dev Reports the callback withdrawal and pays its asset from its own funds, calling back as `mode` says.
+contract CallbackVault {
+    enum Mode {
+        Once,
+        Twice,
+        AboveMax,
+        Skip,
+        // Pays in through the callback, then reverts as EarnVault does when the burn exceeds its quote.
+        AboveQuote,
+        // Has another contract call back while the spend runs.
+        Intrude
+    }
+
+    error ExceedsMaxEarnShares();
+
+    address public immutable earnShare;
+    address public immutable asset;
+    CallbackIntruder public immutable intruder = new CallbackIntruder();
+    Mode public mode;
+    bool public deniesErc165;
+    bool public probeRunsOutOfGas;
+
+    constructor(address earnShare_, address asset_) {
+        earnShare = earnShare_;
+        asset = asset_;
+    }
+
+    function setMode(Mode mode_) external {
+        mode = mode_;
+    }
+
+    function setProbe(bool deniesErc165_, bool probeRunsOutOfGas_) external {
+        deniesErc165 = deniesErc165_;
+        probeRunsOutOfGas = probeRunsOutOfGas_;
+    }
+
+    function supportsInterface(bytes4 id) external view returns (bool) {
+        for (uint256 i; probeRunsOutOfGas; ++i) { }
+        return id == type(IEarnVaultWithdrawCallback).interfaceId || (id == 0x01ffc9a7 && !deniesErc165);
+    }
+
+    function withdrawExact(uint256 assets, address receiver, uint256 maxEarnShares) external returns (uint256) {
+        MemoMockToken(earnShare).transferFrom(msg.sender, address(this), maxEarnShares);
+        MemoMockToken(asset).transfer(receiver, assets);
+        return maxEarnShares;
+    }
+
+    function withdrawExactWithCallback(uint256 assets, address receiver, uint256 maxEarnShares)
+        external
+        returns (uint256)
+    {
+        if (mode == Mode.AboveQuote) {
+            IEarnWithdrawCallback(msg.sender).earnWithdrawCallback(maxEarnShares);
+            revert ExceedsMaxEarnShares();
+        }
+        if (mode == Mode.Intrude) intruder.poke(msg.sender, maxEarnShares);
+        if (mode != Mode.Skip) {
+            IEarnWithdrawCallback(msg.sender)
+                .earnWithdrawCallback(mode == Mode.AboveMax ? maxEarnShares + 1 : maxEarnShares);
+        }
+        if (mode == Mode.Twice) IEarnWithdrawCallback(msg.sender).earnWithdrawCallback(1);
         MemoMockToken(asset).transfer(receiver, assets);
         return maxEarnShares;
     }
@@ -455,6 +529,114 @@ contract SendSpenderTest is EarnRouterTestBase {
         earnA.transfer(address(plainSends), 4 * ONE);
         vm.expectRevert(SendSpender.DestinationNotPaid.selector);
         _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(thief)));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Callback withdrawals
+    // ---------------------------------------------------------------------------------------------
+
+    function testRedeemsThroughTheVaultCallbackWithoutAnAllowance() public {
+        _shares(10 * ONE);
+        uint256 maxShares = earnVaultA.previewWithdraw(3 * ONE) + 2;
+        earnA.transfer(address(plainSends), maxShares);
+        vm.expectCall(
+            address(plainSends), abi.encodeWithSelector(IEarnWithdrawCallback.earnWithdrawCallback.selector), 1
+        );
+        vm.expectCall(address(earnA), abi.encodeWithSignature("approve(address,uint256)"), 0);
+        _spendAsRouter(plainSends, address(earnA), maxShares, _send(address(assetA), 3 * ONE, address(earnVaultA)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.balanceOf(address(sendRouter)), 2);
+        _assertEmpty(plainSends);
+    }
+
+    function testConvertsThroughTheVaultCallbackWithoutAnAllowance() public {
+        _shares(10 * ONE);
+        uint256 maxShares = earnVaultA.previewWithdraw(3 * ONE) + 2;
+        earnA.transfer(address(sends), maxShares);
+        vm.expectCall(address(sends), abi.encodeWithSelector(IEarnWithdrawCallback.earnWithdrawCallback.selector), 1);
+        vm.expectCall(address(earnA), abi.encodeWithSignature("approve(address,uint256)"), 0);
+        _spendAsRouter(sends, address(earnA), maxShares, _send(address(alternate), 3 * ONE, address(earnVaultA)));
+        assertEq(alternate.balanceOf(to), 3 * ONE);
+        _assertEmpty(sends);
+    }
+
+    function testOnlyTheRedeemingVaultCanCallBack() public {
+        vm.expectRevert(SendSpender.NotVault.selector);
+        plainSends.earnWithdrawCallback(1);
+        vm.prank(address(earnVaultA));
+        vm.expectRevert(SendSpender.NotVault.selector);
+        plainSends.earnWithdrawCallback(1);
+    }
+
+    function testAVaultCannotCallBackTwice() public {
+        _expectCallbackVaultReverts(CallbackVault.Mode.Twice, abi.encodeWithSelector(SendSpender.NotVault.selector));
+    }
+
+    function testAVaultCannotTakeMoreThanMaxInput() public {
+        _expectCallbackVaultReverts(
+            CallbackVault.Mode.AboveMax, abi.encodeWithSelector(SendSpender.InsufficientInput.selector)
+        );
+    }
+
+    function testAVaultThatSkipsTheCallbackCannotSettle() public {
+        _expectCallbackVaultReverts(CallbackVault.Mode.Skip, abi.encodeWithSelector(SendSpender.NothingSpent.selector));
+    }
+
+    function testAnotherContractCannotCallBackDuringASpend() public {
+        _expectCallbackVaultReverts(CallbackVault.Mode.Intrude, abi.encodeWithSelector(SendSpender.NotVault.selector));
+    }
+
+    function testABurnAboveTheQuoteRetriesThroughAnExactApproval() public {
+        CallbackVault vault = _callbackVault(CallbackVault.Mode.AboveQuote);
+        vm.expectCall(address(vault), abi.encodeWithSignature("withdrawExact(uint256,address,uint256)"), 1);
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.balanceOf(address(vault)), 4 * ONE);
+        assertEq(earnA.allowance(address(plainSends), address(vault)), 0);
+        _assertEmpty(plainSends);
+    }
+
+    function testOnlyAVaultAffirmingErc165WithdrawsThroughTheCallback() public {
+        _expectApprovalPath(true, false);
+    }
+
+    function testAProbeThatRunsOutOfGasFallsBackToTheApproval() public {
+        _expectApprovalPath(false, true);
+    }
+
+    function testACallbackVaultThatCallsBackOnceSettles() public {
+        CallbackVault vault = _callbackVault(CallbackVault.Mode.Once);
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.balanceOf(address(vault)), 4 * ONE);
+        _assertEmpty(plainSends);
+    }
+
+    function _callbackVault(CallbackVault.Mode mode) internal returns (CallbackVault vault) {
+        vault = new CallbackVault(address(earnA), address(assetA));
+        vault.setMode(mode);
+        assetA.mint(address(vault), 3 * ONE);
+        _shares(4 * ONE);
+        earnA.transfer(address(plainSends), 4 * ONE);
+    }
+
+    function _expectApprovalPath(bool deniesErc165, bool probeRunsOutOfGas) internal {
+        CallbackVault vault = _callbackVault(CallbackVault.Mode.Once);
+        vault.setProbe(deniesErc165, probeRunsOutOfGas);
+        vm.expectCall(address(vault), abi.encodeWithSignature("withdrawExact(uint256,address,uint256)"), 1);
+        vm.expectCall(
+            address(vault), abi.encodeWithSelector(IEarnVaultWithdrawCallback.withdrawExactWithCallback.selector), 0
+        );
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.allowance(address(plainSends), address(vault)), 0);
+        _assertEmpty(plainSends);
+    }
+
+    function _expectCallbackVaultReverts(CallbackVault.Mode mode, bytes memory reason) internal {
+        CallbackVault vault = _callbackVault(mode);
+        vm.expectRevert(reason);
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
     }
 
     function testSendsThroughARouterAndReturnsTheChangeToTheZone() public {
