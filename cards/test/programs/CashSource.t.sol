@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLegs } from "../../src/programs/CardLegs.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { CashSource } from "../../src/programs/CashSource.sol";
@@ -120,7 +121,7 @@ contract CashSourceTest is AuthEnv {
         // 80 held + 20 free cash + 15 debt; the issuer absorbs the last 5.
         vm.prank(issuer);
         vm.expectEmit(true, false, false, false, address(cards));
-        emit CardAuth.PurchaseCaptured(P1, 120e6, 115e6, true, false, 0);
+        emit CardAuthBase.PurchaseCaptured(P1, 120e6, 115e6, true, false, 0);
         cards.capture(P1, 120e6, true);
         // The debt is the owner's to the cash source: the settlement account receives what the owner had.
         assertEq(usd.balanceOf(settlement), 100e6);
@@ -244,7 +245,7 @@ contract CashSourceTest is AuthEnv {
         _capture(P2, 110e6, true);
         assertEq(usd.balanceOf(settlement), 110e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseNotOpen.selector);
+        vm.expectRevert(CardAuthBase.PurchaseNotOpen.selector);
         cards.capture(P2, 1e6, true);
     }
 
@@ -327,10 +328,10 @@ contract CashSourceTest is AuthEnv {
         _capture(P1, 100e6, true);
         _fundRefunds(200e6);
         vm.startPrank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 80e6 + 1);
         cards.refund(P1, 80e6);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 1);
         vm.stopPrank();
         assertEq(usd.balanceOf(alice), 80e6);

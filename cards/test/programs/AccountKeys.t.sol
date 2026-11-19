@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { AccountKeys } from "../../src/programs/AccountKeys.sol";
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 
@@ -67,7 +68,7 @@ contract AccountKeysTest is AuthEnv {
         assertFalse(keys.signsFor(alice, alice));
         // The card program follows the registry: the old key no longer freezes the card, the listed one does.
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotCardOwner.selector);
+        vm.expectRevert(CardAuthBase.NotCardOwner.selector);
         cards.setOwnStatus(CARD, 1);
         vm.prank(phone);
         cards.setOwnStatus(CARD, 1);
@@ -104,7 +105,7 @@ contract AccountKeysTest is AuthEnv {
         assertFalse(keys.signsFor(alice, phone));
         assertEq(usd.balanceOf(alice), 100e6);
         vm.prank(phone);
-        vm.expectRevert(CardAuth.NotCardOwner.selector);
+        vm.expectRevert(CardAuthBase.NotCardOwner.selector);
         cards.setOwnStatus(CARD, 1);
         vm.prank(laptop);
         cards.setOwnStatus(CARD, 1);
@@ -158,7 +159,7 @@ contract AccountKeysTest is AuthEnv {
 
     function test_setCompanions_onlyIssuer() public {
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setCompanions(address(0), address(0), address(0), address(0));
     }
 }

@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLegs } from "../../src/programs/CardLegs.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
@@ -60,7 +61,7 @@ contract CardAuthTest is AuthEnv {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         vm.expectEmit(address(cards));
-        emit CardAuth.PurchaseCaptured(P1, 100e6, 100e6, true, false, 2);
+        emit CardAuthBase.PurchaseCaptured(P1, 100e6, 100e6, true, false, 2);
         _capture(P1, 100e6, true);
 
         assertEq(usd.balanceOf(settlement), 100e6);
@@ -107,7 +108,7 @@ contract CardAuthTest is AuthEnv {
         _authorize(P1, 100e6);
         _capture(P1, 100e6, true);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseNotOpen.selector);
+        vm.expectRevert(CardAuthBase.PurchaseNotOpen.selector);
         cards.capture(P1, 100e6, true);
         // The core refuses a second capture of the settled leg too, even by the source that placed it.
         bytes32 id = cards.legId(P1, CASH_LEG);
@@ -121,7 +122,7 @@ contract CardAuthTest is AuthEnv {
         _authorize(P1, 400e6);
         vm.warp(vm.getBlockTimestamp() + 7 days);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseExpired.selector);
+        vm.expectRevert(CardAuthBase.PurchaseExpired.selector);
         cards.capture(P1, 400e6, true);
         // The core enforces hard expiry whoever captures.
         bytes32 id = cards.legId(P1, CASH_LEG);
@@ -142,7 +143,7 @@ contract CardAuthTest is AuthEnv {
         usd.mint(alice, 1000e6);
         _authorize(P1, 100e6);
         vm.prank(bob);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.release(P1);
     }
 
@@ -152,7 +153,7 @@ contract CardAuthTest is AuthEnv {
         uint64 expiresAt = cards.purchaseOf(P1).expiresAt;
         vm.warp(expiresAt - 1);
         vm.prank(bob);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.release(P1);
         // An operator with only the settle role cannot release a live purchase either.
         address settler = makeAddr("settler");
@@ -160,19 +161,19 @@ contract CardAuthTest is AuthEnv {
         vm.prank(issuer);
         cards.setOperator(settler, settleRole, 1e12);
         vm.prank(settler);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.release(P1);
 
         vm.warp(expiresAt);
         vm.expectEmit(address(cards));
-        emit CardAuth.PurchaseReleased(P1, 100e6, 2);
+        emit CardAuthBase.PurchaseReleased(P1, 100e6, 2);
         vm.prank(bob);
         cards.release(P1);
         assertEq(usd.balanceOf(alice), 1000e6);
         assertEq(_hold(alice, P1, CASH_LEG).token, address(0));
         // Once ended it cannot be released again.
         vm.prank(bob);
-        vm.expectRevert(CardAuth.PurchaseNotOpen.selector);
+        vm.expectRevert(CardAuthBase.PurchaseNotOpen.selector);
         cards.release(P1);
         _assertCoreBalanced();
     }
@@ -191,11 +192,11 @@ contract CardAuthTest is AuthEnv {
     function test_onlyIssuerOrOperator() public {
         usd.mint(alice, 1000e6);
         vm.prank(alice);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
         _authorize(P1, 1e6);
         vm.prank(alice);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.capture(P1, 1e6, true);
     }
 
@@ -203,12 +204,12 @@ contract CardAuthTest is AuthEnv {
         usd.mint(alice, 1000e6);
         _authorize(P1, 1e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseExists.selector);
+        vm.expectRevert(CardAuthBase.PurchaseExists.selector);
         cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
         // Nor after it ends.
         _capture(P1, 1e6, true);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseExists.selector);
+        vm.expectRevert(CardAuthBase.PurchaseExists.selector);
         cards.authorize(CARD, P1, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
@@ -217,7 +218,7 @@ contract CardAuthTest is AuthEnv {
     function test_frozenCard_refused() public {
         usd.mint(alice, 1000e6);
         vm.prank(bob);
-        vm.expectRevert(CardAuth.NotCardOwner.selector);
+        vm.expectRevert(CardAuthBase.NotCardOwner.selector);
         cards.setOwnStatus(CARD, 1);
         vm.prank(alice);
         cards.setOwnStatus(CARD, 1);
@@ -297,7 +298,7 @@ contract CardAuthTest is AuthEnv {
             CardLimits.Usage({ committed: 100e6, day: day, month: month, daySpent: 100e6, monthSpent: 100e6 });
         bytes memory data = abi.encode(usage, ids, windows, merchants, spent);
 
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.carryUsage(alice, data);
         vm.startPrank(issuer);
         cards.carryUsage(alice, data);
@@ -344,10 +345,10 @@ contract CardAuthTest is AuthEnv {
         cards.setLimits(CARD, _limits(200e6, 200e6, 1000e6), 1);
         // Nobody else sets them.
         vm.prank(bob);
-        vm.expectRevert(CardAuth.NotCardOwner.selector);
+        vm.expectRevert(CardAuthBase.NotCardOwner.selector);
         cards.setLimits(CARD, _limits(800e6, 2000e6, 8000e6), 2);
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setLimits(CARD, _limits(100e6, 200e6, 1000e6), 0);
 
         vm.prank(alice);
@@ -444,7 +445,7 @@ contract CardAuthTest is AuthEnv {
         // A late presentment of a purchase authorized under the grant still charges once its hold ended.
         vm.warp(vm.getBlockTimestamp() + 8 days);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseExists.selector);
+        vm.expectRevert(CardAuthBase.PurchaseExists.selector);
         cards.charge(CARD, P1, 100e6, merchant);
         vm.prank(bob);
         cards.release(P1);
@@ -535,7 +536,7 @@ contract CardAuthTest is AuthEnv {
         assertEq(cards.cardOf(CARD).window.daySpent, 40e6);
         // Without PARTIAL the same request declines.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InsufficientAvailable.selector);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
         cards.authorize(CARD, P2, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
@@ -563,7 +564,7 @@ contract CardAuthTest is AuthEnv {
         vm.prank(issuer);
         cards.setOperator(key, 0, 0);
         vm.prank(key);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.capture(P1, 10e6, true);
     }
 
@@ -577,20 +578,20 @@ contract CardAuthTest is AuthEnv {
         vm.prank(key);
         cards.authorize(CARD, P1, 30e6, merchant, uint64(block.timestamp + 1 days), 0);
         vm.prank(key);
-        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.authorize(CARD, P2, 30e6, merchant, uint64(block.timestamp + 1 days), 0);
         // An increment uses the cap by what it adds.
         vm.prank(key);
         cards.adjust(P1, 50e6);
         vm.prank(key);
-        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.adjust(P1, 50e6 + 1);
         assertEq(cards.operatorOf(key).used, 50e6);
         // A settle-only operator cannot authorize.
         vm.prank(issuer);
         cards.setOperator(key, settleRole, 50e6);
         vm.prank(key);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.authorize(CARD, P2, 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
@@ -701,7 +702,7 @@ contract CardAuthTest is AuthEnv {
         _setDebtCap(alice, address(cash), address(usd), 30e6);
         // 50 available plus 30 of debt: the issuer carries the other 20.
         vm.expectEmit(address(cards));
-        emit CardAuth.PurchaseCaptured(P1, 100e6, 80e6, true, true, 1);
+        emit CardAuthBase.PurchaseCaptured(P1, 100e6, 80e6, true, true, 1);
         vm.prank(issuer);
         cards.charge(CARD, P1, 100e6, merchant);
         assertEq(usd.balanceOf(settlement), 50e6);
@@ -723,7 +724,7 @@ contract CardAuthTest is AuthEnv {
         _fundRefund(101e6);
         // The sources covered 80; the 20 the issuer absorbed is not refundable.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 81e6);
         // The refund repays the debt and restores the cash.
         vm.prank(issuer);
@@ -737,14 +738,14 @@ contract CardAuthTest is AuthEnv {
         cards.refund(P1, 20e6);
         assertEq(core.available(alice, address(usd)), 70e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 1);
         _assertCoreBalanced();
     }
 
     function test_charge_nothingToTake_absorbsAllAndHasNoLeg() public {
         vm.expectEmit(address(cards));
-        emit CardAuth.PurchaseCaptured(P1, 40e6, 0, true, true, 1);
+        emit CardAuthBase.PurchaseCaptured(P1, 40e6, 0, true, true, 1);
         vm.prank(issuer);
         cards.charge(CARD, P1, 40e6, merchant);
         // No leg paid: only the record that the reference was charged.
@@ -756,12 +757,12 @@ contract CardAuthTest is AuthEnv {
         // Nothing was taken from the owner, so there is nothing to refund.
         _fundRefund(1e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 1e6);
         // The same reference cannot be charged twice.
         usd.mint(alice, 100e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseExists.selector);
+        vm.expectRevert(CardAuthBase.PurchaseExists.selector);
         cards.charge(CARD, P1, 40e6, merchant);
     }
 
@@ -774,7 +775,7 @@ contract CardAuthTest is AuthEnv {
         cards.charge(CARD, P1, 100e6, merchant);
         // A replayed presentment of the same reference does not charge the owner again.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseExists.selector);
+        vm.expectRevert(CardAuthBase.PurchaseExists.selector);
         cards.charge(CARD, P1, 100e6, merchant);
         assertEq(usd.balanceOf(settlement), 100e6);
         assertEq(usd.balanceOf(alice), 900e6);
@@ -822,7 +823,7 @@ contract CardAuthTest is AuthEnv {
         usd.mint(alice, 100e6);
         _authorize(P1, 50e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.PurchaseExists.selector);
+        vm.expectRevert(CardAuthBase.PurchaseExists.selector);
         cards.charge(CARD, P1, 50e6, merchant);
     }
 
@@ -912,7 +913,7 @@ contract CardAuthTest is AuthEnv {
         usd.mint(alice, 30e6);
         _savings(alice, 20e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InsufficientAvailable.selector);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
         cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
         assertEq(core.reserved(alice, address(usd)), 0);
         assertEq(core.reserved(alice, address(earnShare)), 0);
@@ -926,7 +927,7 @@ contract CardAuthTest is AuthEnv {
         assertEq(cards.sourceKind(address(savings)), 0);
         // The owner's order still lists it, but new purchases skip it.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InsufficientAvailable.selector);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
         cards.authorize(CARD, P2, 50e6, merchant, uint64(block.timestamp + 1 days), 0);
         // And no new order can list it.
         vm.expectRevert(CardLegs.InvalidOrder.selector);
@@ -999,7 +1000,7 @@ contract CardAuthTest is AuthEnv {
         assertApproxEqAbs(savings.refundable(alice, bytes32(0), savingsId), 10e6, 2);
 
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 50e6);
         // The rest restores savings up to what it captured, then cash.
         vm.prank(issuer);
@@ -1112,7 +1113,7 @@ contract CardAuthTest is AuthEnv {
         assertEq(usd.balanceOf(alice), 30e6);
         assertEq(cards.purchaseOf(P1).refunded, 100e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 1);
         _assertSourcesEmpty();
         _assertCoreBalanced();
@@ -1124,7 +1125,7 @@ contract CardAuthTest is AuthEnv {
         _capture(P1, 50e6, true);
         _fundRefund(100e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 51e6);
         vm.prank(issuer);
         cards.refund(P1, 50e6);
@@ -1194,10 +1195,10 @@ contract CardAuthTest is AuthEnv {
         cards.adjust(P1, 30e6);
         // Not past the offline approval, and not back up after coming down either.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.adjust(P1, 41e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.adjust(P1, 35e6);
     }
 
@@ -1248,7 +1249,7 @@ contract CardAuthTest is AuthEnv {
         vm.stopPrank();
         // Without a conversion the token covers nothing.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InsufficientAvailable.selector);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
         cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), 0);
 
         // One unit of the token is worth 1.25 settlement units.
@@ -1297,14 +1298,14 @@ contract CardAuthTest is AuthEnv {
         _capture(P1, 100e6, true);
         _refund(P1, 40e6);
         vm.expectEmit(address(cards));
-        emit CardAuth.CreditedBack(P1, 50e6, 50e6, 4);
+        emit CardAuthBase.CreditedBack(P1, 50e6, 50e6, 4);
         vm.prank(issuer);
         cards.creditBack(P1, 50e6, 50e6);
         (uint64 seq,, int128 net,) = cards.ledger();
         assertEq(seq, 4);
         assertEq(net, 10e6);
         vm.expectEmit(address(cards));
-        emit CardAuth.CreditedBack(P1, 10e6, -5e6, 5);
+        emit CardAuthBase.CreditedBack(P1, 10e6, -5e6, 5);
         vm.prank(issuer);
         cards.creditBack(P1, 10e6, -5e6);
         (,, net,) = cards.ledger();
@@ -1312,7 +1313,7 @@ contract CardAuthTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).refunded, 100e6);
         // Nothing is left to refund or credit back.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.creditBack(P1, 1, 1);
     }
 

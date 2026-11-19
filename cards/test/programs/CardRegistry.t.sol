@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { CardRegistry } from "../../src/programs/CardRegistry.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
@@ -97,7 +98,7 @@ contract CardRegistryTest is AuthEnv {
 
     function test_setExpiry_onlyIssuer() public {
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setCard(CARD, 1, uint40(block.timestamp + 10 days));
     }
 }

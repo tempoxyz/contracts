@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { IssuerTreasury } from "../../src/programs/IssuerTreasury.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 
@@ -81,7 +82,7 @@ contract ExposureGuardTest is AuthEnv {
         cards.setExposureGuard(address(0));
         assertEq(cards.exposureGuard(), address(treasury), "removal waits too");
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setExposureGuard(address(0));
         vm.warp(cards.pendingSetting(keccak256(off)));
         vm.prank(issuer);

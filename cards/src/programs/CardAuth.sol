@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { AccountKeys } from "./AccountKeys.sol";
+import { CardAuthAdmin } from "./CardAuthAdmin.sol";
+import { CardAuthBase } from "./CardAuthBase.sol";
 import { CardLegs } from "./CardLegs.sol";
 import { CardLimits } from "./CardLimits.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IExposureGuard } from "./interfaces/IExposureGuard.sol";
-import { ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
 /// @title CardAuth
@@ -20,302 +20,128 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 // Amounts are checked against MAX_AMOUNT (48 bits) on entry, packed fields are read at their stored widths, and base
 // units are checked to fit before they are cast.
 // forge-lint: disable-start(reentrancy-no-eth, calls-loop, unsafe-typecast)
-contract CardAuth is ICardAuth {
+contract CardAuth is CardAuthBase, ICardAuth {
     using FixedPointMathLib for uint256;
 
-    uint8 public constant ROLE_AUTHORIZE = 1;
-    uint8 public constant ROLE_SETTLE = 2;
-    uint8 public constant ROLE_TREASURY = 4;
-    /// @notice Source kinds.
-    uint8 public constant CASH = 1;
-    uint8 public constant SAVINGS = 2;
-    uint8 public constant CREDIT = 4;
-    /// @notice authorize flags: approve what the sources hold when they hold less; a stand-in approved offline.
-    uint8 public constant PARTIAL = 1;
-    uint8 public constant STAND_IN = 2;
-    uint64 public constant SETTINGS_DELAY = 2 days;
-    /// @notice Most order entries an owner may list.
-    uint256 public constant MAX_LEGS = 4;
-
-    uint256 internal constant ONE = 1e18;
-    uint256 internal constant MAX_AMOUNT = type(uint48).max;
-    // Purchase word: card number [0,32), amount [32,80), captured [80,128), refunded [128,176), expiresAt [176,208),
-    // local day [208,224), grant epoch [224,232), order version [232,240), settlement era [240,248), flags [248,256).
-    // Flags: open, stand-in, charged, then one bit per order entry it drew on.
-    uint256 internal constant OPEN = 1;
-    uint256 internal constant STANDIN = 2;
-    uint256 internal constant CHARGED = 4;
-
-    struct Purchase {
-        uint32 index;
-        uint256 amount;
-        uint256 captured;
-        uint256 refunded;
-        uint64 expiresAt;
-        uint32 day;
-        uint8 epoch;
-        uint8 version;
-        uint8 era;
-        uint256 flags;
-    }
-
-    struct Operator {
-        uint8 roles;
-        uint120 cap;
-        uint120 used;
-    }
-
-    address public immutable SETTLEMENT_ACCOUNT;
-
-    address internal _issuer;
-    address public pendingIssuer;
-    address public accountKeys;
-    address public identityRules;
-    address public lifecycle;
-    address public conversion;
-    CardLegs.State internal _state;
-    CardLegs.Ledger internal _ledger;
-    mapping(uint8 era => CardLegs.Era) public eras;
-    mapping(bytes32 id => uint64 eta) public pendingSetting;
-    mapping(address key => Operator) internal _operators;
-    /// @notice The kind of each source the issuer approved; zero for one it did not or stopped.
-    mapping(address source => uint8 kind) public sourceKind;
-    mapping(address account => bool) public isCompanion;
-    mapping(bytes32 card => CardLimits.Card) internal _cards;
-    mapping(uint32 index => bytes32 card) public cardAt;
-    mapping(bytes32 card => bytes32 next) public replacedBy;
-    mapping(address owner => CardLimits.Grant) public grants;
-    mapping(address owner => CardLimits.Usage) public usageOf;
-    mapping(address owner => mapping(address merchant => CardLimits.Mandate)) public mandates;
-    mapping(address owner => uint8 version) public fundingVersion;
-    mapping(address owner => mapping(uint8 version => CardLegs.Funding[])) internal _funding;
-    mapping(bytes32 ref => uint256) internal _purchases;
-    /// @notice Asked after every step that raises the program's exposure; zero for none.
-    address public exposureGuard;
-
-    event PurchaseAuthorized(
-        bytes32 indexed ref, bytes32 indexed card, address indexed owner, uint256 amount, uint256 legs, uint64 seq
-    );
-    event PurchaseAdjusted(bytes32 indexed ref, uint256 amount, uint256 legs, uint64 seq);
-    /// @notice `amount` was captured or charged; the sources covered `covered` and the issuer absorbed the rest.
-    event PurchaseCaptured(
-        bytes32 indexed ref, uint256 amount, uint256 covered, bool isFinal, bool charged, uint64 seq
-    );
-    event PurchaseReleased(bytes32 indexed ref, uint256 released, uint64 seq);
-    /// @notice `amount` was refunded in the purchase's token, `paid` in today's settlement token.
-    event PurchaseRefunded(bytes32 indexed ref, uint256 amount, uint256 paid, uint64 seq);
-    /// @notice `net` was booked refunded without moving money; settlement counts `paid`, in today's settlement token.
-    event CreditedBack(bytes32 indexed ref, uint256 net, int256 paid, uint64 seq);
-    event ReserveSettled(bytes32 indexed ref, uint256 amount, uint64 seq);
-    event Revoked(address indexed owner);
-    event OperatorSet(address indexed key, uint8 roles, uint256 cap);
-    event SourceSet(address indexed source, uint8 kind);
-    event CompanionSet(address indexed account, bool active);
-    event CompanionsSet(address accountKeys, address identityRules, address lifecycle, address conversion);
-    event ExposureGuardSet(address guard);
-    event IssuerOffered(address indexed issuer, address indexed next);
-    event IssuerTransferred(address indexed previous, address indexed next);
-    event SettingProposed(bytes32 indexed id, bytes data, uint64 eta);
-    event SettingCancelled(bytes32 indexed id);
-
-    error CaptureLimitExceeded();
-    error InsufficientAvailable();
-    error InvalidAmount();
-    error InvalidOrder();
-    error NotCardOwner();
-    error NotCompanion();
-    error NotIssuer();
-    error OperatorCapExceeded();
-    error PurchaseExists();
-    error PurchaseExpired();
-    error PurchaseNotOpen();
-    error SettingPending(uint64 eta);
-    error Unauthorized();
+    /// @notice The settings and cardholder code this contract runs by delegatecall; deployed with it, never replaced.
+    address public immutable ADMIN;
 
     /// @param issuer The program's issuer.
     /// @param settlementAccount Where the sources pay what they take.
     /// @param settlementToken The token the program settles in first, which sets its base units.
-    constructor(address issuer, address settlementAccount, address settlementToken) {
+    constructor(address issuer, address settlementAccount, address settlementToken) CardAuthBase(settlementAccount) {
         if (issuer == address(0) || settlementAccount == address(0) || settlementToken == address(0)) {
             revert InvalidAmount();
         }
         _issuer = issuer;
-        SETTLEMENT_ACCOUNT = settlementAccount;
+        ADMIN = address(new CardAuthAdmin(settlementAccount));
         eras[0] = CardLegs.Era(settlementToken, uint96(ONE));
     }
 
-    // Issuer.
+    // Settings, card management and cardholder calls, run by ADMIN over this contract's storage.
 
-    function issueCard(bytes32 card, address owner, uint40 expiry, CardLimits.Limits calldata limits, uint8 kinds)
-        external
-    {
-        _onlyIssuer();
-        CardLimits.issue(_cards[card], card, owner, expiry, limits, kinds, _newIndex(card), _scale());
+    function issueCard(bytes32, address, uint40, CardLimits.Limits calldata, uint8) external {
+        _delegate();
     }
 
     /// @notice Replaces `oldCard` with `newCard`; open purchases follow the replacement.
-    function replaceCard(bytes32 oldCard, bytes32 newCard, uint40 expiry) external {
-        _onlyIssuer();
-        CardLimits.replace(_cards[oldCard], _cards[newCard], oldCard, newCard, expiry, _newIndex(newCard));
-        replacedBy[oldCard] = newCard;
+    function replaceCard(bytes32, bytes32, uint40) external {
+        _delegate();
     }
 
     /// @notice Sets a card's spending cap in units, expiry, or status (as CardLimits.set reads `what`).
-    function setCard(bytes32 card, uint8 what, uint256 value) external {
-        _onlyIssuer();
-        CardLimits.set(_cards[card], card, what, value, _scale());
+    function setCard(bytes32, uint8, uint256) external {
+        _delegate();
     }
 
     /// @notice Carries an owner's usage counted on another instance of the program: `data` is the ABI encoding of
     ///         (Usage usage, bytes32[] cards, Window[] windows, address[] merchants, Mandate[] spent), as CardLimits.carry
     ///         reads it.
-    function carryUsage(address owner, bytes calldata data) external {
-        _onlyIssuer();
-        CardLimits.carry(_cards, mandates[owner], usageOf[owner], owner, data);
+    function carryUsage(address, bytes calldata) external {
+        _delegate();
     }
 
     /// @notice Gives `key` the role bits `roles` and a cumulative cap of `cap` units; zero roles removes it.
-    function setOperator(address key, uint8 roles, uint256 cap) external {
-        _onlyIssuer();
-        uint256 base;
-        if (roles != 0) {
-            base = _base(cap);
-            if (roles > 7 || base == 0 || base > type(uint120).max) revert InvalidAmount();
-        }
-        _operators[key] = Operator(roles, uint120(base), 0);
-        emit OperatorSet(key, roles, cap);
+    function setOperator(address, uint8, uint256) external {
+        _delegate();
     }
 
     /// @notice Approves `source` as a funding source after the settings delay, or stops it at once. A stopped
     ///         source still settles the purchases it holds.
-    function setSource(address source, bool approved) external {
-        _onlyIssuer();
-        if (!_settle(!approved)) return;
-        uint8 kind = approved ? ISource(source).KIND() : 0;
-        if (approved && kind != CASH && kind != SAVINGS && kind != CREDIT) revert InvalidOrder();
-        sourceKind[source] = kind;
-        emit SourceSet(source, kind);
+    function setSource(address, bool) external {
+        _delegate();
     }
 
     /// @notice Registers a companion contract (treasury, desk, reserves) after the settings delay, or removes one at
     ///         once.
-    function setCompanion(address account, bool active) external {
-        _onlyIssuer();
-        if (!_settle(!active)) return;
-        // The event follows on the next line.
-        // forge-lint: disable-next-line(missing-events-access-control)
-        isCompanion[account] = active;
-        emit CompanionSet(account, active);
+    function setCompanion(address, bool) external {
+        _delegate();
     }
 
     /// @notice Sets the account key registry, identity rules, account lifecycle and conversion the program follows.
-    // Zero is meaningful for each: owners sign as themselves, no identity check, no lifecycle, no conversion.
-    // forge-lint: disable-next-item(missing-zero-check)
-    function setCompanions(address accountKeys_, address identityRules_, address lifecycle_, address conversion_)
-        external
-    {
-        _onlyIssuer();
-        if (!_settle(false)) return;
-        (accountKeys, identityRules, lifecycle, conversion) = (accountKeys_, identityRules_, lifecycle_, conversion_);
-        emit CompanionsSet(accountKeys_, identityRules_, lifecycle_, conversion_);
+    function setCompanions(address, address, address, address) external {
+        _delegate();
     }
 
     /// @notice Sets the guard asked after every step that raises the program's exposure (zero for none), after the
     ///         settings delay.
-    // Zero turns the check off.
-    // forge-lint: disable-next-item(missing-zero-check)
-    function setExposureGuard(address guard) external {
-        _onlyIssuer();
-        if (!_settle(false)) return;
-        exposureGuard = guard;
-        emit ExposureGuardSet(guard);
+    function setExposureGuard(address) external {
+        _delegate();
     }
 
-    function cancelSetting(bytes32 id) external {
-        _onlyIssuer();
-        delete pendingSetting[id];
-        emit SettingCancelled(id);
+    function cancelSetting(bytes32) external {
+        _delegate();
     }
 
-    // Zero is how the issuer withdraws an offer.
-    // forge-lint: disable-next-item(missing-zero-check)
-    function transferIssuer(address next) external {
-        _onlyIssuer();
-        // The event follows on the next line.
-        // forge-lint: disable-next-line(missing-events-access-control)
-        pendingIssuer = next;
-        emit IssuerOffered(msg.sender, next);
+    function transferIssuer(address) external {
+        _delegate();
     }
 
     function acceptIssuer() external {
-        if (msg.sender != pendingIssuer) revert NotIssuer();
-        emit IssuerTransferred(_issuer, msg.sender);
-        // IssuerTransferred, just above, records both changes.
-        // forge-lint: disable-start(missing-events-access-control)
-        _issuer = msg.sender;
-        delete pendingIssuer;
-        // forge-lint: disable-end(missing-events-access-control)
+        _delegate();
     }
 
     /// @notice Acknowledges purchase steps through `throughSeq` as settled off chain.
-    function acknowledgeSettlement(uint64 throughSeq) external {
-        _onlyIssuer();
-        CardLegs.acknowledge(_ledger, throughSeq);
+    function acknowledgeSettlement(uint64) external {
+        _delegate();
     }
 
-    // Companions.
-
-    function useOperatorCap(address operator, uint256 value) external {
-        if (!isCompanion[msg.sender]) revert NotCompanion();
-        _useCap(operator, value);
+    function useOperatorCap(address, uint256) external {
+        _delegate();
     }
 
-    function setSettlementToken(address token, uint256 scale) external {
-        if (!isCompanion[msg.sender]) revert NotCompanion();
-        CardLegs.switchToken(eras, _state, _ledger, token, scale);
+    function setSettlementToken(address, uint256) external {
+        _delegate();
     }
-
-    // Cardholder.
 
     /// @notice Freezes (1), unfreezes (2) or closes (3) the caller's card.
-    function setOwnStatus(bytes32 card, uint8 how) external {
-        CardLimits.setOwnStatus(_ownedCard(card), card, how);
+    function setOwnStatus(bytes32, uint8) external {
+        _delegate();
     }
 
     /// @notice Sets a card's limits: `how` 0 the issuer raises them within the ceiling the owner allows, 1 the owner
     ///         lowers them (and the ceiling with them), 2 the owner sets the ceiling.
-    function setLimits(bytes32 card, CardLimits.Limits calldata limits, uint8 how) external {
-        CardLimits.Card storage c = _cards[card];
-        if (how == 0) _onlyIssuer();
-        else _ownedCard(card);
-        CardLimits.setLimits(c, card, limits, how, _scale());
+    function setLimits(bytes32, CardLimits.Limits calldata, uint8) external {
+        _delegate();
     }
 
-    function setMandate(address merchant, bool revoked, uint96 monthlyLimit) external {
-        CardLimits.setMandate(mandates[msg.sender][merchant], merchant, revoked, monthlyLimit, _scale());
+    function setMandate(address, bool, uint96) external {
+        _delegate();
     }
 
     /// @notice Lists the approved sources the caller's purchases draw on, in order. Open purchases keep the order
     ///         they were placed under. Versions count modulo 256.
-    function setFunding(CardLegs.Funding[] calldata order) external {
-        uint8 version;
-        unchecked {
-            version = fundingVersion[msg.sender] + 1;
-        }
-        CardLegs.setOrder(_funding[msg.sender][version], sourceKind, order, version);
-        fundingVersion[msg.sender] = version;
+    function setFunding(CardLegs.Funding[] calldata) external {
+        _delegate();
     }
 
     /// @notice Grants the program `given` terms across the caller's cards, starting their usage afresh.
-    function grant(CardLimits.Terms calldata given) external {
-        if (CardLimits.grant(grants[msg.sender], usageOf[msg.sender], given, eras[_state.era].scale)) {
-            ++_state.grantedOwners;
-        }
+    function grant(CardLimits.Terms calldata) external {
+        _delegate();
     }
 
     function revoke() external {
-        grants[msg.sender].active = false;
-        emit Revoked(msg.sender);
+        _delegate();
     }
 
     // Purchases.
@@ -619,47 +445,11 @@ contract CardAuth is ICardAuth {
         if (guard != address(0)) IExposureGuard(guard).checkExposure();
     }
 
-    function _onlyIssuer() private view {
-        if (msg.sender != _issuer) revert NotIssuer();
-    }
-
     /// @dev Requires `role` and counts `value` against an operator's cap.
     function _role(uint8 role, uint256 value) private {
         if (msg.sender == _issuer) return;
         if (_operators[msg.sender].roles & role == 0) revert Unauthorized();
         if (value != 0) _useCap(msg.sender, value);
-    }
-
-    function _useCap(address operator, uint256 value) private {
-        if (operator == _issuer) return;
-        Operator storage k = _operators[operator];
-        uint256 used = k.used + _base(value);
-        if (k.roles == 0 || used > k.cap) revert OperatorCapExceeded();
-        k.used = uint120(used);
-    }
-
-    /// @dev Whether the issuer's setting applies now: at once when `immediate` or before any owner granted terms,
-    ///      else on the same call SETTINGS_DELAY after the first, which records it and returns false.
-    function _settle(bool immediate) private returns (bool) {
-        if (immediate || _state.grantedOwners == 0) return true;
-        bytes32 id = keccak256(msg.data);
-        uint64 eta = pendingSetting[id];
-        if (eta == 0) {
-            eta = uint64(block.timestamp) + SETTINGS_DELAY;
-            pendingSetting[id] = eta;
-            emit SettingProposed(id, msg.data, eta);
-            return false;
-        }
-        // Setting delays are days long; a few seconds of validator skew does not change them.
-        // forge-lint: disable-next-line(block-timestamp)
-        if (block.timestamp < eta) revert SettingPending(eta);
-        delete pendingSetting[id];
-        return true;
-    }
-
-    function _newIndex(bytes32 card) private returns (uint32 index) {
-        index = ++_state.cards;
-        cardAt[index] = card;
     }
 
     /// @dev Checks a card can start a purchase and returns its owner.
@@ -712,15 +502,6 @@ contract CardAuth is ICardAuth {
         CardLimits.giveBackOn(g, usageOf[owner], c.window, epoch, p.day, base);
     }
 
-    /// @dev The card's owner acts through its own key or the keys it listed in the account key registry.
-    function _ownedCard(bytes32 card) private view returns (CardLimits.Card storage c) {
-        c = _cards[card];
-        address owner = c.owner;
-        address keys = accountKeys;
-        bool signs = keys == address(0) ? owner == msg.sender : AccountKeys(keys).signsFor(owner, msg.sender);
-        if (!signs || c.status == CardLimits.Status.None) revert NotCardOwner();
-    }
-
     /// @dev Returns `data`, already ABI-encoded, as this call's return data.
     function _return(bytes memory data) private pure {
         assembly ("memory-safe") {
@@ -740,21 +521,11 @@ contract CardAuth is ICardAuth {
         seq = ++_ledger.seq;
     }
 
-    /// @dev `amount` of today's units in base units.
-    function _base(uint256 amount) private view returns (uint256) {
-        uint256 scale = eras[_state.era].scale;
-        return scale == ONE ? amount : amount.mulDiv(ONE, scale);
-    }
-
     /// @dev `amount` booked in era `era`'s token, in today's settlement token units.
     // A refund of an earlier era's purchase rounds up, in the cardholder's favour.
     function _today(uint256 amount, uint8 era) private view returns (uint256) {
         uint8 current = _state.era;
         return era == current ? amount : amount.mulDivUp(eras[current].scale, eras[era].scale);
-    }
-
-    function _scale() private view returns (uint256) {
-        return eras[_state.era].scale;
     }
 
     function _pack(Purchase memory p) private pure returns (uint256 w) {
@@ -774,6 +545,18 @@ contract CardAuth is ICardAuth {
         p.version = uint8(w >> 232);
         p.era = uint8(w >> 240);
         p.flags = w >> 248;
+    }
+
+    /// @dev Runs this call's CardAuthAdmin code over this contract's storage and returns or reverts with its result.
+    function _delegate() private {
+        address admin = ADMIN;
+        assembly ("memory-safe") {
+            calldatacopy(0, 0, calldatasize())
+            let ok := delegatecall(gas(), admin, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            if iszero(ok) { revert(0, returndatasize()) }
+            return(0, returndatasize())
+        }
     }
 }
 // forge-lint: disable-end(reentrancy-no-eth, calls-loop, unsafe-typecast)

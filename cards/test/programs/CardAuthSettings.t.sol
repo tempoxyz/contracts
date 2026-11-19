@@ -2,6 +2,7 @@
 pragma solidity ^0.8.36;
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 import { StubSource } from "./harness/StubSource.sol";
@@ -44,7 +45,7 @@ contract CardAuthSettingsTest is AuthEnv {
         bytes32 id = keccak256(data);
         uint64 eta = uint64(vm.getBlockTimestamp()) + cards.SETTINGS_DELAY();
         vm.expectEmit(address(cards));
-        emit CardAuth.SettingProposed(id, data, eta);
+        emit CardAuthBase.SettingProposed(id, data, eta);
         vm.prank(issuer);
         cards.setSource(source, true);
         assertEq(cards.sourceKind(source), 0);
@@ -52,12 +53,12 @@ contract CardAuthSettingsTest is AuthEnv {
 
         vm.warp(eta - 1);
         vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(CardAuth.SettingPending.selector, eta));
+        vm.expectRevert(abi.encodeWithSelector(CardAuthBase.SettingPending.selector, eta));
         cards.setSource(source, true);
         // Only the issuer applies it.
         vm.warp(eta);
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setSource(source, true);
         vm.prank(issuer);
         cards.setSource(source, true);
@@ -104,9 +105,9 @@ contract CardAuthSettingsTest is AuthEnv {
     }
 
     function test_companionOnly_operatorCapAndSettlementToken() public {
-        vm.expectRevert(CardAuth.NotCompanion.selector);
+        vm.expectRevert(CardAuthBase.NotCompanion.selector);
         cards.useOperatorCap(issuer, 1);
-        vm.expectRevert(CardAuth.NotCompanion.selector);
+        vm.expectRevert(CardAuthBase.NotCompanion.selector);
         cards.setSettlementToken(address(otherUsd), 1e18);
     }
 
@@ -116,10 +117,10 @@ contract CardAuthSettingsTest is AuthEnv {
         vm.prank(issuer);
         cards.setSource(source, true);
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.cancelSetting(id);
         vm.expectEmit(address(cards));
-        emit CardAuth.SettingCancelled(id);
+        emit CardAuthBase.SettingCancelled(id);
         vm.prank(issuer);
         cards.cancelSetting(id);
         assertEq(cards.pendingSetting(id), 0);
@@ -134,20 +135,20 @@ contract CardAuthSettingsTest is AuthEnv {
     function test_transferIssuer_takesTwoSteps() public {
         address key = makeAddr("key");
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.transferIssuer(next);
         vm.expectEmit(address(cards));
-        emit CardAuth.IssuerOffered(issuer, next);
+        emit CardAuthBase.IssuerOffered(issuer, next);
         vm.prank(issuer);
         cards.transferIssuer(next);
         assertEq(cards.pendingIssuer(), next);
         // Until it is accepted the issuer keeps its role, and only the offered address can accept.
         assertEq(cards.ISSUER(), issuer);
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.acceptIssuer();
         vm.expectEmit(address(cards));
-        emit CardAuth.IssuerTransferred(issuer, next);
+        emit CardAuthBase.IssuerTransferred(issuer, next);
         vm.prank(next);
         cards.acceptIssuer();
         assertEq(cards.ISSUER(), next);
@@ -155,11 +156,11 @@ contract CardAuthSettingsTest is AuthEnv {
 
         // The previous issuer loses every power; the new one has them.
         vm.startPrank(issuer);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setOperator(key, 1, 100e6);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.issueCard(CARD, alice, uint40(block.timestamp + 365 days), _limits(500e6, 1000e6, 5000e6), 7);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.authorize(CARD, "p", 1e6, merchant, uint64(block.timestamp + 1 days), 0);
         vm.stopPrank();
         vm.startPrank(next);
@@ -184,24 +185,24 @@ contract CardAuthSettingsTest is AuthEnv {
         vm.startPrank(key);
         cards.authorize(CARD, "purchase-1", 10e6, merchant, uint64(block.timestamp + 1 days), 0);
         cards.capture("purchase-1", 10e6, true);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.refund("purchase-1", 1e6);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.creditBack("purchase-1", 1e6, 1e6);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.reserveSettled("purchase-1", 1e6);
-        vm.expectRevert(CardAuth.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.NotIssuer.selector);
         cards.setOperator(key, 7, 1e6);
         vm.stopPrank();
         // A key needs a cap, and zero roles remove it.
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.setOperator(key, treasury, 0);
         vm.prank(issuer);
         cards.setOperator(key, 0, 0);
         assertEq(cards.operatorOf(key).roles, 0);
         vm.prank(key);
-        vm.expectRevert(CardAuth.Unauthorized.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.authorize(CARD, "purchase-2", 1e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
@@ -223,10 +224,10 @@ contract CardAuthSettingsTest is AuthEnv {
         assertEq(op.cap, 100e6);
         assertEq(op.used, 90e6);
         vm.prank(companion);
-        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.useOperatorCap(key, 10e6 + 1);
         vm.prank(key);
-        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.charge(CARD, "purchase-3", 10e6 + 1, merchant);
         // An increment counts only what it adds.
         vm.prank(key);

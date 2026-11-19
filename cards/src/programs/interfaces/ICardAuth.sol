@@ -1,10 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+/// @title ICardAuthState
+/// @notice The settings a card authorization contract keeps as public state, which companions read.
+interface ICardAuthState {
+    /// @notice Role bits: authorize (authorize, adjust, capture, charge, release), settle (refund, credit back,
+    ///         reserve settlement), treasury (settlement token and treasury companions' own calls).
+    function ROLE_AUTHORIZE() external view returns (uint8);
+    function ROLE_SETTLE() external view returns (uint8);
+    function ROLE_TREASURY() external view returns (uint8);
+    /// @notice How long issuer settings wait before they apply once any owner granted terms.
+    function SETTINGS_DELAY() external view returns (uint64);
+    /// @notice Where captures and payments for the program land.
+    function SETTLEMENT_ACCOUNT() external view returns (address);
+    /// @notice The shared conversion the program and its sources price tokens with.
+    function conversion() external view returns (address);
+    /// @notice Whether `account` is one of the program's registered companion contracts.
+    function isCompanion(address account) external view returns (bool);
+}
+
 /// @title ICardAuth
 /// @notice What companion contracts (sources, the issuer treasury, the issuer desk, merchant reserves) read from and
 ///         call on a card authorization contract. Amounts are settlement-token units.
-interface ICardAuth {
+interface ICardAuth is ICardAuthState {
     /// @notice A purchase as CardAuth records it, in units of the settlement token it was booked in (`token`).
     ///         `captured` is everything captured or charged; `refunded` is what was refunded or credited back plus
     ///         what the issuer absorbed because the sources could not cover it, so `captured - refunded` is what can
@@ -22,27 +40,14 @@ interface ICardAuth {
         bool charged;
     }
 
-    /// @notice Role bits: authorize (authorize, adjust, capture, charge, release), settle (refund, credit back,
-    ///         reserve settlement), treasury (settlement token and treasury companions' own calls).
-    function ROLE_AUTHORIZE() external view returns (uint8);
-    function ROLE_SETTLE() external view returns (uint8);
-    function ROLE_TREASURY() external view returns (uint8);
-    /// @notice How long issuer settings wait before they apply once any owner granted terms.
-    function SETTINGS_DELAY() external view returns (uint64);
     /// @notice Owners that ever granted the program terms.
     function grantedOwners() external view returns (uint64);
     /// @notice The program's issuer (its rotatable root).
     function ISSUER() external view returns (address);
-    /// @notice Where captures and payments for the program land.
-    function SETTLEMENT_ACCOUNT() external view returns (address);
     /// @notice The token the program settles in now.
     function settlementToken() external view returns (address);
-    /// @notice The shared conversion the program and its sources price tokens with.
-    function conversion() external view returns (address);
     /// @notice Whether `operator` holds every role bit in `roles` (the issuer holds them all).
     function hasRoles(address operator, uint8 roles) external view returns (bool);
-    /// @notice Whether `account` is one of the program's registered companion contracts.
-    function isCompanion(address account) external view returns (bool);
     /// @notice Counts `value` against `operator`'s cumulative cap; reverts past it. Companions only, for the
     ///         operator that called them; the issuer has no cap.
     function useOperatorCap(address operator, uint256 value) external;

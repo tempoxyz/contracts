@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLegs } from "../../src/programs/CardLegs.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { Conversion } from "../../src/programs/Conversion.sol";
@@ -343,7 +344,7 @@ contract CashSourceConversionTest is AuthEnv {
         usd.mint(alice, 100e6);
         assertEq(cash.coverable(alice, _position(address(usd), 0)), 0);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InsufficientAvailable.selector);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
         cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 7 days), 0);
     }
 
@@ -422,7 +423,7 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).refunded, 10e6);
         _fundRefunds(eur, 80e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 70e6 + 1);
         vm.prank(issuer);
         cards.refund(P1, 70e6);
@@ -463,10 +464,10 @@ contract CashSourceConversionTest is AuthEnv {
 
     function test_setSettlementToken_companionOnly() public {
         vm.prank(alice);
-        vm.expectRevert(CardAuth.NotCompanion.selector);
+        vm.expectRevert(CardAuthBase.NotCompanion.selector);
         cards.setSettlementToken(address(eur), EUR_SCALE);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.NotCompanion.selector);
+        vm.expectRevert(CardAuthBase.NotCompanion.selector);
         cards.setSettlementToken(address(eur), EUR_SCALE);
     }
 
@@ -487,12 +488,12 @@ contract CashSourceConversionTest is AuthEnv {
         // The cash leg converts the euros back to dollars at the reference rate.
         assertEq(usd.balanceOf(alice), 60e6 + paid * 1.1e18 / 1e18);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 15.01e6);
         vm.prank(issuer);
         cards.refund(P1, 15e6);
         vm.prank(issuer);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 0.01e6);
         assertEq(cards.purchaseOf(P1).refunded, 40e6);
     }
@@ -593,18 +594,18 @@ contract CashSourceConversionTest is AuthEnv {
         vm.stopPrank();
         otherUsd.mint(alice, 500e6);
         vm.prank(key);
-        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), 0);
         // A stand-in approval counts too.
         uint8 standIn = cards.STAND_IN();
         vm.prank(key);
-        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), standIn);
         vm.prank(key);
         cards.authorize(CARD, P2, 50e6, merchant, uint64(block.timestamp + 7 days), 0);
         // An increase counts what it adds.
         vm.prank(key);
-        vm.expectRevert(CardAuth.OperatorCapExceeded.selector);
+        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.adjust(P2, 52.81e6);
         vm.prank(key);
         cards.adjust(P2, 52.8e6);

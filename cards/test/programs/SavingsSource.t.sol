@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 import { CardAuth } from "../../src/programs/CardAuth.sol";
+import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { SavingsSource } from "../../src/programs/SavingsSource.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
@@ -255,10 +256,10 @@ contract SavingsSourceTest is AuthEnv {
         usd.mint(issuer, 1000e6);
         vm.startPrank(issuer);
         usd.approve(address(cards), type(uint256).max);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(bytes32("p1"), 100e6 + 1);
         cards.refund(bytes32("p1"), 100e6);
-        vm.expectRevert(CardAuth.InvalidAmount.selector);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(bytes32("p1"), 1);
         vm.stopPrank();
         assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - before), 100e6, 1);
