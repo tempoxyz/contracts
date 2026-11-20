@@ -199,6 +199,33 @@ abstract contract CardSpenderBehavior is CoreEnv {
         program.spendFrom(address(usd), uint256(type(uint128).max) + 1, abi.encode(s));
     }
 
+    /// @dev The spend is read in place from calldata, with abi.decode's checks: data too short for the whole
+    ///      tuple, or an address word with bits above 160, reverts without data.
+    function test_revert_spendFrom_malformedData() public {
+        CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "malformed");
+        vm.prank(router);
+        usd.transfer(address(program), 1e6);
+        bytes memory short = abi.encode(s);
+        assembly ("memory-safe") {
+            mstore(short, sub(mload(short), 1))
+        }
+        vm.prank(router);
+        vm.expectRevert(bytes(""));
+        program.spendFrom(address(usd), 1e6, short);
+        // The high byte of each address word: program, token, destination and vault.
+        uint256[4] memory words = [uint256(0), 1, 3, 5];
+        for (uint256 i; i < words.length; ++i) {
+            bytes memory dirty = abi.encode(s);
+            dirty[words[i] * 32] = 0x01;
+            vm.prank(router);
+            vm.expectRevert(bytes(""));
+            program.spendFrom(address(usd), 1e6, dirty);
+        }
+        vm.prank(router);
+        program.spendFrom(address(usd), 1e6, abi.encode(s));
+        assertEq(usd.balanceOf(pooledWallet), 1e6, "the well-formed spend still settles");
+    }
+
     /// @dev Tokens left in the program outside a spend cannot top up a spend above its `maxInput`.
     function test_revert_spendFrom_amountAboveMaxInput() public {
         vm.prank(router);

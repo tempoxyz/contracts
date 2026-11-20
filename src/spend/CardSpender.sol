@@ -138,7 +138,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     /// @custom:ensures 0 < maxInput && maxInput <= type(uint128).max
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
         if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
-        CardSpend memory s = abi.decode(data, (CardSpend));
+        CardSpend calldata s = _decodeSpend(data);
         if (maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
         address input;
         if (s.fromVault == 0) {
@@ -247,7 +247,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     // ------------------------------------------------------------------
 
     /// @dev Checks `s` and returns its payee: who a transfer to `s.destination` credits.
-    function _check(CardSpend memory s, address payer, bool isPrivate) private view returns (address payee) {
+    function _check(CardSpend calldata s, address payer, bool isPrivate) private view returns (address payee) {
         if (s.program != address(this)) revert WrongProgram(s.program);
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
         // Only TIP-20s settle: no transfer callbacks, fees or rebases to upset the exact-credit checks. A vault's
@@ -343,18 +343,27 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
 
     /// @dev Whether `vault` reports {IEarnVaultWithdrawCallback}; a vault deployed before it has no
     ///      `supportsInterface` and reads as false.
-    function _hasWithdrawCallback(address vault) private view returns (bool) {
-        (bool ok, uint256 word) =
-            _readWord(vault, abi.encodeWithSelector(0x01ffc9a7, type(IEarnVaultWithdrawCallback).interfaceId));
-        if (!ok || word != 1) return false;
-        // ERC-165 requires 0xffffffff to read false, which rules out a fallback answering true to everything.
-        (ok, word) = _readWord(vault, abi.encodeWithSelector(0x01ffc9a7, bytes4(0xffffffff)));
-        return ok && word == 0;
+    ///      Each query must succeed and return at least one word; a vault without code returns none.
+    function _hasWithdrawCallback(address vault) private view returns (bool supported) {
+        bytes4 interfaceId = type(IEarnVaultWithdrawCallback).interfaceId;
+        assembly ("memory-safe") {
+            mstore(0x00, shl(224, 0x01ffc9a7)) // supportsInterface(bytes4)
+            mstore(0x04, interfaceId)
+            if and(staticcall(gas(), vault, 0x00, 0x24, 0x00, 0x20), gt(returndatasize(), 0x1f)) {
+                // ERC-165 requires 0xffffffff to read false, which rules out a fallback answering true to everything.
+                if eq(mload(0x00), 1) {
+                    mstore(0x00, shl(224, 0x01ffc9a7))
+                    mstore(0x04, shl(224, 0xffffffff))
+                    let ok := staticcall(gas(), vault, 0x00, 0x24, 0x00, 0x20)
+                    supported := and(and(ok, gt(returndatasize(), 0x1f)), iszero(mload(0x00)))
+                }
+            }
+        }
     }
 
     /// @dev A direct private spend, from the `maxInput` the router sent. The vault prices shares itself and
     ///      reverts when the cost is above the cap, the lower of `maxInput` and `maxShares`.
-    function _spendDirect(CardSpend memory s, address share, uint256 maxInput, address payee) private {
+    function _spendDirect(CardSpend calldata s, address share, uint256 maxInput, address payee) private {
         if (s.fromVault == 0) {
             if (s.amount > maxInput) revert InsufficientInput();
             /// @custom:assert s.amount <= maxInput
@@ -373,7 +382,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     ///      engines check the literal receiver's balance, so a virtual destination is redeemed to the program
     ///      first and transferred on. The approval to the vault is a standing maximum (TIP-1000); the provider
     ///      decides on every spend which vaults may be used, and the program holds only a seed between spends.
-    function _redeem(ITempoEarnVault v, address share, CardSpend memory s, address payee, uint256 cap)
+    function _redeem(ITempoEarnVault v, address share, CardSpend calldata s, address payee, uint256 cap)
         private
         returns (uint256 burned)
     {
@@ -434,7 +443,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
 
     /// @dev Approves the payout target for the input tokens (standing maxima, TIP-1000) and calls it with the
     ///      provider's payout data, bubbling up its revert.
-    function _payout(CardSpend memory s, address tokenA, address tokenB) private {
+    function _payout(CardSpend calldata s, address tokenA, address tokenB) private {
         address target = PAYOUT_TARGET;
         if (tokenA != address(0)) _approve(tokenA, target, type(uint128).max);
         if (tokenB != address(0)) _approve(tokenB, target, type(uint128).max);
@@ -452,17 +461,45 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     ///      the registry (empty return data) it is `to`; an unregistered virtual address reverts, as the
     ///      transfer would.
     function _payee(address to) private view returns (address) {
-        (bool ok, bytes memory ret) =
-            ADDRESS_REGISTRY_ADDRESS.staticcall(abi.encodeCall(IAddressRegistry.resolveRecipient, (to)));
-        if (!ok) {
-            assembly ("memory-safe") {
-                revert(add(ret, 0x20), mload(ret))
+        address registry = ADDRESS_REGISTRY_ADDRESS;
+        bytes4 selector = IAddressRegistry.resolveRecipient.selector;
+        uint256 size;
+        uint256 word;
+        assembly ("memory-safe") {
+            mstore(0x00, selector)
+            mstore(0x04, to)
+            let ok := staticcall(gas(), registry, 0x00, 0x24, 0x00, 0x20)
+            size := returndatasize()
+            if iszero(ok) {
+                let m := mload(0x40)
+                returndatacopy(m, 0x00, size)
+                revert(m, size)
             }
+            word := mload(0x00)
         }
-        if (ret.length == 0) return to;
-        if (ret.length != 32) revert UnresolvedRecipient();
-        /// @custom:assert ret.length == 32
-        return abi.decode(ret, (address));
+        if (size == 0) return to;
+        if (size != 32) revert UnresolvedRecipient();
+        /// @custom:assert size == 32
+        // As abi.decode would: a word with bits above the address reverts without data.
+        if (word >> 160 != 0) revert();
+        // casting to 'uint160' is safe because the word was just checked to have no bits above 160
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return address(uint160(word));
+    }
+
+    /// @dev `data` as a CardSpend, read in place rather than copied to memory, with abi.decode's checks: the
+    ///      whole tuple fits in `data` and every address word is clean, or it reverts without data.
+    ///      Not proved: the verifier does not model the assembly that points `s` into `data`.
+    function _decodeSpend(bytes calldata data) private pure returns (CardSpend calldata s) {
+        // CardSpend is nine static words, so its head is the whole tuple and every member lies inside `data`.
+        if (data.length < 0x120) revert();
+        assembly ("memory-safe") {
+            s := data.offset
+            // program, token, destination and vault: words 0, 1, 3 and 5.
+            let dirty := or(shr(160, calldataload(s)), shr(160, calldataload(add(s, 0x20))))
+            dirty := or(dirty, or(shr(160, calldataload(add(s, 0x60))), shr(160, calldataload(add(s, 0xa0)))))
+            if dirty { revert(0x00, 0x00) }
+        }
     }
 
     /// @dev Sets a standing maximum approval of `token` to `spender` when it is below `amount`.

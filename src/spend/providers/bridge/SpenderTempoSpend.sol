@@ -187,7 +187,7 @@ contract SpenderTempoSpend is SpenderBase {
     function publicCall(bytes calldata data) external override {
         bytes2 action = _prefix(data);
         require(action == "PS", PrefixUnknown(action));
-        _spend(abi.decode(data[2:], (Spend)));
+        _spend(_decodeSpend(data[2:]));
     }
 
     function publicGetCall(bytes calldata data) external view override returns (bytes memory) {
@@ -201,7 +201,7 @@ contract SpenderTempoSpend is SpenderBase {
     // Settlement
     // ------------------------------------------------------------------
 
-    function _spend(Spend memory s) private {
+    function _spend(Spend calldata s) private {
         IBridgeSpenderFactory factory = IBridgeSpenderFactory(address(FACTORY));
         require(_isCanonical(s.spenderId), WrongProgram(s.spenderId));
         // Implied by `_isCanonical` under the vendored factory, which registers an ID once and deploys its clone
@@ -237,7 +237,7 @@ contract SpenderTempoSpend is SpenderBase {
     /// @dev Pulls only the shares `s.fromVault` costs, burns them and returns any the vault left over. Earn's
     ///      engines check the literal receiver's balance, so a virtual destination is redeemed to the clone
     ///      first and transferred on.
-    function _withdrawFromEarn(Spend memory s, address payee) private returns (uint256 burned) {
+    function _withdrawFromEarn(Spend calldata s, address payee) private returns (uint256 burned) {
         address vault = s.vault;
         ITempoEarnVault v = ITempoEarnVault(vault);
         uint256 required = v.previewWithdraw(s.fromVault);
@@ -288,16 +288,43 @@ contract SpenderTempoSpend is SpenderBase {
     ///      Without the registry (empty return data) it is `to`; an unregistered virtual address reverts,
     ///      as the transfer would.
     function _payee(address to) private view returns (address) {
-        (bool ok, bytes memory ret) =
-            ADDRESS_REGISTRY_ADDRESS.staticcall(abi.encodeCall(IAddressRegistry.resolveRecipient, (to)));
-        if (!ok) {
-            assembly ("memory-safe") {
-                revert(add(ret, 0x20), mload(ret))
+        address registry = ADDRESS_REGISTRY_ADDRESS;
+        bytes4 selector = IAddressRegistry.resolveRecipient.selector;
+        uint256 size;
+        uint256 word;
+        assembly ("memory-safe") {
+            mstore(0x00, selector)
+            mstore(0x04, to)
+            let ok := staticcall(gas(), registry, 0x00, 0x24, 0x00, 0x20)
+            size := returndatasize()
+            if iszero(ok) {
+                let m := mload(0x40)
+                returndatacopy(m, 0x00, size)
+                revert(m, size)
             }
+            word := mload(0x00)
         }
-        if (ret.length == 0) return to;
-        require(ret.length == 32, UnresolvedRecipient());
-        return abi.decode(ret, (address));
+        if (size == 0) return to;
+        require(size == 32, UnresolvedRecipient());
+        // As abi.decode would: a word with bits above the address reverts without data.
+        if (word >> 160 != 0) revert();
+        // casting to 'uint160' is safe because the word was just checked to have no bits above 160
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return address(uint160(word));
+    }
+
+    /// @dev `data` as a Spend, read in place rather than copied to memory, with abi.decode's checks: the whole
+    ///      tuple fits in `data` and every address word is clean, or it reverts without data.
+    function _decodeSpend(bytes calldata data) private pure returns (Spend calldata s) {
+        // Spend is eight static words, so its head is the whole tuple and every member lies inside `data`.
+        if (data.length < 0x100) revert();
+        assembly ("memory-safe") {
+            s := data.offset
+            // token, destination and vault: words 1, 3 and 4.
+            let dirty := or(shr(160, calldataload(add(s, 0x20))), shr(160, calldataload(add(s, 0x60))))
+            dirty := or(dirty, shr(160, calldataload(add(s, 0x80))))
+            if dirty { revert(0x00, 0x00) }
+        }
     }
 
     /// @dev Value of `from`'s shares in `vault` when it holds `token`. A vault that cannot report

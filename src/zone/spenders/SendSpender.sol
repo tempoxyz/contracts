@@ -165,10 +165,10 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
     /// @custom:ensures 0 < maxInput && maxInput <= type(uint128).max
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
         if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
-        _spendFrom(token, maxInput, abi.decode(data, (Send)));
+        _spendFrom(token, maxInput, _decodeSend(data));
     }
 
-    function _spendFrom(address token, uint256 maxInput, Send memory send) private {
+    function _spendFrom(address token, uint256 maxInput, Send calldata send) private {
         if (send.to == address(0) || send.token == address(0)) revert ZeroAddress();
         if (send.amount == 0 || maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
         // Paying the router would strand the output there: it measures and returns only the input token.
@@ -327,17 +327,45 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
     ///      Without the registry (empty return data) it is `to`; an unregistered virtual address reverts,
     ///      as the transfer would.
     function _payee(address to) private view returns (address) {
-        (bool ok, bytes memory returnData) =
-            ADDRESS_REGISTRY_ADDRESS.staticcall(abi.encodeCall(IAddressRegistry.resolveRecipient, (to)));
-        if (!ok) {
-            assembly ("memory-safe") {
-                revert(add(returnData, 0x20), mload(returnData))
+        address registry = ADDRESS_REGISTRY_ADDRESS;
+        bytes4 selector = IAddressRegistry.resolveRecipient.selector;
+        uint256 size;
+        uint256 word;
+        assembly ("memory-safe") {
+            mstore(0x00, selector)
+            mstore(0x04, to)
+            let ok := staticcall(gas(), registry, 0x00, 0x24, 0x00, 0x20)
+            size := returndatasize()
+            if iszero(ok) {
+                let m := mload(0x40)
+                returndatacopy(m, 0x00, size)
+                revert(m, size)
             }
+            word := mload(0x00)
         }
-        if (returnData.length == 0) return to;
-        if (returnData.length != 32) revert UnresolvedRecipient();
-        /// @custom:assert returnData.length == 32
-        return abi.decode(returnData, (address));
+        if (size == 0) return to;
+        if (size != 32) revert UnresolvedRecipient();
+        /// @custom:assert size == 32
+        // As abi.decode would: a word with bits above the address reverts without data.
+        if (word >> 160 != 0) revert();
+        // casting to 'uint160' is safe because the word was just checked to have no bits above 160
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return address(uint160(word));
+    }
+
+    /// @dev `data` as a Send, read in place rather than copied to memory, with abi.decode's checks: the whole
+    ///      tuple fits in `data` and every word is clean for its type, or it reverts without data.
+    ///      Not proved: the verifier does not model the assembly that points `send` into `data`.
+    function _decodeSend(bytes calldata data) private pure returns (Send calldata send) {
+        // Send is five static words, so its head is the whole tuple and every member lies inside `data`.
+        if (data.length < 0xa0) revert();
+        assembly ("memory-safe") {
+            send := data.offset
+            // to, token and vault are addresses (words 0, 1 and 3); amount is a uint128 (word 2).
+            let dirty := or(shr(160, calldataload(send)), shr(160, calldataload(add(send, 0x20))))
+            dirty := or(dirty, or(shr(128, calldataload(add(send, 0x40))), shr(160, calldataload(add(send, 0x60)))))
+            if dirty { revert(0x00, 0x00) }
+        }
     }
 
     /// @dev Swaps exactly `amount` of `convertAsset` for exactly `amount` of `parToken` at the oracle's par
