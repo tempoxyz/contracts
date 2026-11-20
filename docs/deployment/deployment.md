@@ -182,6 +182,12 @@ After a new stack is bound, send it a one-time residue that keeps those slots no
   unit stays idle cash it never trades or pays out
 - nothing to a Veda engine, whose settlement checks read its whole base-asset balance
 
+The `seed-engine` activation step sends the engine's unit for `erc4626` and `propamm` stacks: the
+profile's deployer transfers 1 base unit of the stack asset to the bound engine when the engine holds
+none. It is best effort. A run without the deployer key, a deployer holding none of the asset, or a
+token policy that refuses the transfer records the step without sending, and nothing waits on it.
+The EarnVault's unit is still sent by hand.
+
 Only an EarnVault from a factory release that includes this change counts up to 1 unit of EarnShare it
 holds as burned (TIP-20 burns only the caller's balance, so every exit moves shares to the vault
 first). Send such a vault 1 unit of EarnShare, from a small first deposit, after confirming from the
@@ -196,8 +202,8 @@ other holder exits and that unit's backing rounds to zero, deposits and whole-po
 Every EarnVault, ERC-4626 engine and PropAMM engine balance check is a before/after delta, so the residue never
 counts as user assets; it stays with the contract for good. Measured on real TIP-20
 (`test/spend/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and on a
-vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The residue is a plain transfer outside the
-recorded deployment actions, so it adds no step to existing deployment records.
+vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The EarnVault and EarnShare units are plain transfers
+outside the recorded deployment actions.
 
 Zone routers, their `SendSpender`s and card programs (`CardSpender`) hold a token only while a call
 runs, so each callback or spend recreates the balance slot of every token it handles. Tempo charges
@@ -469,6 +475,7 @@ the reward treasury.
 | `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
 | `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
 | `seed-zone-router`               | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Zone router](../zone/zone-router.md#deployment)                                |
+| `seed-engine`                    | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Gas residue after deployment](#gas-residue-after-deployment)                   |
 
 Deployment scripts receive only `DEPLOYER_PRIVATE_KEY`; Forge never receives another authority
 key. Read-only version, build, provenance, source-verification, and formatting subprocesses receive

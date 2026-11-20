@@ -23,6 +23,7 @@ export const erc4626 = defineEngine({
   engineContract: 'ERC4626Engine',
   engineSource: 'src/earn/engines/erc4626/ERC4626Engine.sol',
   venueLabel: 'ERC-4626 vault',
+  idleAssetResidue: true,
   periphery: [],
   capabilities: {
     inKindDeposit: true,

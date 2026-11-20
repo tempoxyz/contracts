@@ -161,6 +161,7 @@ export const propamm = defineEngine({
   engineContract: 'PropAMMEngine',
   engineSource: 'src/earn/engines/propamm/PropAMMEngine.sol',
   venueLabel: 'PropAMM base token',
+  idleAssetResidue: true,
   periphery: [],
   capabilities: {
     inKindDeposit: false,
