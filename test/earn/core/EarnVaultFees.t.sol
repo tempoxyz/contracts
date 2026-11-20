@@ -479,6 +479,25 @@ contract EarnVaultFeesTest is Test {
         assertTrue(earnVault.isAccountingAligned());
     }
 
+    /// @dev A slot holding only the marker, left after carried remainders are consumed to zero, is cleared without events.
+    function testDisableClearsMarkerOnlyRemainderSlot() public {
+        FeeConfig memory config;
+        config.fixedFeeCount = 1;
+        config.fixedFees[0] = FixedFeeRecipient(fixedRecipient, 10_000);
+        _deploy(config);
+
+        vm.store(address(fees), _remaindersSlot(1), bytes32(uint256(1) << 255));
+        assertEq(fees.feeRemainder(1, 0), 0);
+
+        vm.recordLogs();
+        earnVault.disableFees();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertNotEq(logs[i].topics[0], EarnFees.FeeDustWaived.selector);
+        }
+        assertEq(vm.load(address(fees), _remaindersSlot(1)), bytes32(0));
+    }
+
     function testEarnShareScaleIsZeroUntilInitialized() public {
         EarnFees implementation = new EarnFees();
         assertEq(implementation.earnShareScale(), 0);

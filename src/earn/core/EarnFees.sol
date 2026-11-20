@@ -987,7 +987,8 @@ contract EarnFees is IEarnFees {
     /// @custom:succeeds-if true
     function _waiveRemainders(uint64 configId) internal {
         uint256 packed = _feeRemainders[configId];
-        if (packed & ~REMAINDERS_MARKER == 0) return;
+        // A marker-only word still holds the slot, so only an empty word skips the delete.
+        if (packed == 0) return;
         /// @custom:invariant i <= MAX_FIXED_FEE_RECIPIENTS + 1
         for (uint256 i = 0; i <= MAX_FIXED_FEE_RECIPIENTS; i++) {
             uint256 remainder = _remainderAt(packed, i);
