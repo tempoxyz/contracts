@@ -12,6 +12,8 @@ contract FxDevaluationStressTest is FxBase {
     uint256 internal constant RATE = 0.05e18;
     uint64 internal constant LIFE = 7 days;
     uint256 internal constant DAYS = 16;
+    /// @dev IssuerTreasury.FX_STRESS_BPS: the share of open converted holds the sponsor's collateral backs.
+    uint256 internal constant FX_STRESS_BPS = 1000;
 
     uint256 internal n;
 
@@ -55,6 +57,18 @@ contract FxDevaluationStressTest is FxBase {
     /// @dev As at 25%: cardholders 10% more tokens (6% at the market), the issuer 1 - 1.1 * 0.6 = 34%.
     function test_stress_devalue40PctInOneDay() public {
         _assertSplit(_devalue("devalue_40pct_1d", 4000, 1), 3400, 600);
+    }
+
+    /// @dev fx-policy.md: band, tolerance and the exposure guard's FX stress share (10% of open) cover an overnight
+    ///      move up to about 18% (1 - 0.9 / 1.1 = 18.2%). Past it the issuer's loss exceeds what collateral backs.
+    function test_stress_collateralCoversAnEighteenPctOvernightMove() public {
+        uint256 open = _devalue("devalue_18pct_1d", 1800, 1);
+        assertLe(st.issuerGap, int256(open * FX_STRESS_BPS / BPS), "18% move: issuer loss past the collateral");
+    }
+
+    function test_stress_collateralFallsShortOfANineteenPctOvernightMove() public {
+        uint256 open = _devalue("devalue_19pct_1d", 1900, 1);
+        assertGt(st.issuerGap, int256(open * FX_STRESS_BPS / BPS), "19% move: issuer loss within the collateral");
     }
 
     /// @dev Daily steps within the band and the cardholders' tolerance: every capture goes through on time, the issuer

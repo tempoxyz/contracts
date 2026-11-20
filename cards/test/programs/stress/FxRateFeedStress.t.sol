@@ -69,6 +69,10 @@ contract FxRateFeedStressTest is FxBase {
         assertEq(st.expired, 0, "a weekend outage expired purchases");
         // Captures fail only while the venue sits outside the band, and only for the day the rate needs to catch up.
         assertLe(st.captureFails, 2 * n, "captures failed past a day");
+        // The second weekend's 3% gap passes the band: the issuer pays at most the band and the cardholders the rest.
+        assertEq(maxGap, 300, "market gap");
+        assertLe(st.maxGapBps, cash.FX_BAND_BPS(), "issuer paid past the band");
+        assertGt(st.holderShare, 0, "cardholders paid nothing past the band");
     }
 
     /// @dev The keeper's last round is Wednesday 09:00 and it comes back ten days later; the market stays flat. The
