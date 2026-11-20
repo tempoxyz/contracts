@@ -345,10 +345,11 @@ are:
 - The pause, the destination and the vault are the clone's to enforce, in the same call, so the program
   does not ask `BridgeProvider` first: the clone refuses a paused factory (`FactoryPaused`) and a "TS"
   handler it would not route for the program (`SpenderHandlerDisabled`, `SpenderHandlerNotAllowed`), and
-  the handler a destination the factory does not authorize for `spenderId` (`DestinationNotAuthorized`),
-  a vault the clone does not allow, and one that does not hold `token` (`VaultNotAllowed`,
-  `IncorrectAssetForVault`). The program's `paused()` view still reads `factory.paused()` and the "TS"
-  routing through the provider, for Bridge's backend to check before it sends a spend.
+  the handler a destination the factory does not authorize for `spenderId` (`DestinationNotAuthorized`)
+  and a vault the clone does not allow (`VaultNotAllowed`). A vault that does not hold `token` never
+  credits it, so the handler's exact-credit check reverts the spend (`DestinationNotCredited`). The
+  program's `paused()` view still reads `factory.paused()` and the "TS" routing through the provider,
+  for Bridge's backend to check before it sends a spend.
 - Destinations serve both paths: the handler does not tell them apart, so Bridge governance must
   authorize only settlement wallets every cardholder shares, which then serve private spends too.
 - The program pays through the clone (`BridgeProvider.CLONE`, read once in the program's constructor)

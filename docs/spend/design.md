@@ -110,12 +110,14 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 - `CardSpend.program` is this program (`WrongProgram`); `amount` is above zero and `fromVault` at most
   `amount` (`InvalidAmount`).
 - `token` is a TIP-20 (`UnsupportedToken`), so no transfer callback, fee or rebase can upset the
-  exact-credit checks. An Earn spend's vault holds `token`, so its asset is a TIP-20 too.
+  exact-credit checks.
 - A program that pays directly asks its provider: it has not paused the program (`ProgramPaused`), it
   authorizes the destination for this payer, token and path (`DestinationNotAuthorized`), and an Earn
-  spend's vault is allowed and holds `token` (`VaultNotAllowed`, `IncorrectAssetForVault`). A program
-  that pays through a payout target leaves those rules to the target, which enforces them in the same call
-  (`ICardProviderPayout`); asking the provider first would only repeat them. Either way a spend burns at
+  spend's vault is allowed (`VaultNotAllowed`). The program does not ask the vault for its asset: a vault
+  whose asset is not `token` never credits `token`, so the exact-credit checks revert the whole spend
+  (`DestinationNotCredited`), shares included. A program that pays through a payout target leaves those
+  rules to the target, which enforces them in the same call (`ICardProviderPayout`); asking the provider
+  first would only repeat them. Either way a spend burns at
   most `maxShares` (`ShareCostExceeded`; zero accepts the live price).
 - The destination's balance of `token` rises by exactly `amount` (`DestinationNotCredited`).
 - A private destination may be neither the calling router nor an alias resolving to it

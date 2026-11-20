@@ -94,11 +94,12 @@ contract SpenderTempoSpendTest is TempoEnv {
         );
     }
 
-    /// @notice Earn shares redeem into the vault's own asset, so the spend must settle in it.
+    /// @notice Earn shares redeem into the vault's own asset, so a spend in another token never credits the
+    ///         destination and reverts.
     function test_spendFromEarnSettlesInTheVaultAsset() public {
         Spend memory s = _earn(10e6, 10e6, 0);
         s.token = address(_createToken("Test USD", "TUSD"));
-        _expectRevert(alice, s, abi.encodeWithSelector(SpenderTempoSpend.IncorrectAssetForVault.selector));
+        _expectRevert(alice, s, abi.encodeWithSelector(SpenderBase.DestinationNotCredited.selector));
     }
 
     function test_spendRejectsVaultPortionAboveAmount() public {

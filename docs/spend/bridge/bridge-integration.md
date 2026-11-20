@@ -283,7 +283,7 @@ only bounces, so they show up when Bridge simulates the callback or traces the s
   kept or skipped part of the input) and `Reentrancy`; on `spendFrom` also `NotRouter`,
   `WrongInputToken`, `InsufficientInput`, `NothingSpent` and `ResidualBalance`.
 - **The handler:** `WrongProgram`, `DestinationNotAuthorized`, `DestinationNotCredited`,
-  `InvalidAmount`, `VaultNotAllowed`, `IncorrectAssetForVault`, `ShareCostExceeded`, and
+  `InvalidAmount`, `VaultNotAllowed`, `ShareCostExceeded`, and
   `PipelineDisabled` on the pull path.
 - **The router:** `NotZoneMessenger`, `WrongSourceZone`, `InvalidSourcePortal`, `BadFlow`,
   `OpDisabled`, `UnknownSpender`, `InvalidMaxInput`, `InvalidSpend`, `InvalidReturnToken`,

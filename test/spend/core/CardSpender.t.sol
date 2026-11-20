@@ -363,6 +363,8 @@ abstract contract CardSpenderBehavior is CoreEnv {
         program.spend(s);
     }
 
+    /// @dev Nothing asks the vault for its asset: it pays `usd`, so the destination is never credited in
+    ///      `otherUsd` and the whole spend reverts, shares included.
     function test_revert_incorrectAssetForVault() public {
         // The vault holds `usd`; the spend asks it for `otherUsd`, which the provider accepts.
         mock.setToken(address(otherUsd), true);
@@ -371,16 +373,18 @@ abstract contract CardSpenderBehavior is CoreEnv {
         s.token = address(otherUsd);
         vm.prank(alice);
         earnShare.approve(address(program), type(uint256).max);
+        uint256 aliceShares = earnShare.balanceOf(alice);
         vm.prank(alice);
-        vm.expectRevert(CardSpender.IncorrectAssetForVault.selector);
+        vm.expectRevert(CardSpender.DestinationNotCredited.selector);
         program.spend(s);
+        assertEq(earnShare.balanceOf(alice), aliceShares, "the payer keeps its shares");
 
         uint256 shares = _depositEarn(router, 100e6);
         s.destination = pooledWallet;
         vm.prank(router);
         earnShare.transfer(address(program), shares);
         vm.prank(router);
-        vm.expectRevert(CardSpender.IncorrectAssetForVault.selector);
+        vm.expectRevert(CardSpender.DestinationNotCredited.selector);
         program.spendFrom(address(earnShare), shares, abi.encode(s));
     }
 

@@ -52,7 +52,6 @@ library SpenderTempoSpendStorageLib {
 contract SpenderTempoSpend is SpenderBase {
     error DestinationNotAuthorized(address destination);
     error ExpectedBooleanByte();
-    error IncorrectAssetForVault();
     error InvalidVault();
     error ShareCostExceeded(uint256 required, uint256 maxShares);
     error PipelineDisabled();
@@ -224,7 +223,8 @@ contract SpenderTempoSpend is SpenderBase {
         uint256 sharesBurned;
         if (s.fromVault != 0) {
             require(_storage().allowedVaults[s.vault], VaultNotAllowed());
-            require(ITempoEarnVault(s.vault).asset() == s.token, IncorrectAssetForVault());
+            // A vault whose asset is not `s.token` cannot credit the payee in it, so the exact-credit checks
+            // below revert the spend without asking the vault for its asset first.
             sharesBurned = _withdrawFromEarn(s, payee);
         }
         require(IERC20(s.token).balanceOf(payee) == before + s.amount, DestinationNotCredited());
