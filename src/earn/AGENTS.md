@@ -25,7 +25,7 @@ accounting specification for contracts, tests, and integrations; this file is no
   settled payouts. A
   same-asset router binds no pool. Do not add caller-selected tokens, vaults, or destinations.
 - Reward periphery has no issuer authority; preserve measured solvency, domain-separated cumulative
-  entitlements, settlement replay protection, and unpaid entitlement after failed transfers.
+  entitlements, root-version replay protection, and unpaid entitlement after failed transfers.
 - `src/demo/` is test scaffolding (built, never deployed); label experimental integrations honestly.
 
 Domain references: the [engine contract](../../docs/earn/integrations/engines.md) and each capability's

@@ -273,13 +273,13 @@ describe('assertVerifiedCreationTransaction', () => {
     const cases = [
       { version: '0.8.36+commit.e7a91fc7.solar.0.2.3', item: '43000203', accepted: true },
       {
-        version: '0.8.38+commit.ed481551.solar.0.3.0-dev',
-        item: text('0.3.0-dev+commit.ed481551'),
+        version: '0.8.38+commit.f1b75c64.solar.0.3.0-dev',
+        item: text('0.3.0-dev+commit.f1b75c64'),
         accepted: true,
       },
       { version: '0.8.38+commit.0a1b2c3d.solar.0.3.1', item: text('0.3.1'), accepted: true },
       {
-        version: '0.8.38+commit.ed481551.solar.0.3.0-dev',
+        version: '0.8.38+commit.f1b75c64.solar.0.3.0-dev',
         item: text('0.3.0-dev+commit.0badc0de'),
         accepted: false,
       },

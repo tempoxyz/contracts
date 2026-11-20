@@ -30,7 +30,7 @@ the mode:
 
 The private asset may never be zero or the EarnShare. Zone ID zero makes every callback revert. The
 router has no owner, registry, setters, public routing method, or rescue; its only state is a
-reentrancy flag, and it holds no user position. Changing the Zone, EarnVault, private asset, or pool
+transient reentrancy flag, and it holds no user position. Changing the Zone, EarnVault, private asset, or pool
 means deploying a new router; an old router stays deployed so callbacks already submitted to it can
 complete or bounce.
 

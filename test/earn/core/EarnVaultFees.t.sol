@@ -4,6 +4,7 @@ pragma solidity ^0.8.36;
 // EarnVault-to-EarnFees economic-equivalence coverage.
 import { Test } from "forge-std/Test.sol";
 import { Vm } from "forge-std/Vm.sol";
+import { Clones } from "@openzeppelin/contracts/proxy/Clones.sol";
 
 import { Simple4626Vault } from "../../../src/demo/Simple4626Vault.sol";
 import { EarnVault } from "../../../src/earn/core/EarnVault.sol";
@@ -52,6 +53,26 @@ contract EarnVaultFeesTest is Test {
         assertEq(share.balanceOf(user), 100 ether);
         assertEq(share.balanceOf(secondUser), 100 ether);
         assertEq(fees.highWaterMark(), 1 ether);
+    }
+
+    function testSteadyDepositSkipsBaselineRatchetThatWouldChangeNothing() public {
+        _deposit(user, 100 ether);
+        vm.recordLogs();
+        _deposit(secondUser, 100 ether);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != EarnFees.FeeBaselinesInitialized.selector);
+        }
+        assertEq(fees.highWaterMark(), 1 ether);
+
+        // Value above the mark is charged by the next checkpoint, after which the deposit again leaves nothing
+        // to raise; the mark is the post-fee value either way.
+        asset.mint(address(venue), 10 ether);
+        _deposit(user, 100 ether);
+        FeePreview memory preview = fees.previewAccruedFees();
+        assertEq(preview.totalFeeAssets, 0);
+        assertGt(fees.highWaterMark(), 1 ether);
+        assertGt(fees.claimableEarnShares(fixedRecipient), 0);
     }
 
     function testQuarantinedEngineSharesAreNotFeeableUntilAbsorbed() public {
@@ -461,6 +482,7 @@ contract EarnVaultFeesTest is Test {
         asset.mint(address(venue), 9_999);
         earnVault.accrueFees();
         assertEq(fees.feeRemainder(1, 0), 6_666);
+        assertNotEq(vm.load(address(fees), _remaindersSlot(1)), bytes32(0));
 
         vm.expectEmit(address(fees));
         emit EarnFees.FeeDustWaived(1, 0, 6_666);
@@ -472,7 +494,35 @@ contract EarnVaultFeesTest is Test {
         for (uint8 slot = 0; slot <= 4; slot++) {
             assertEq(fees.feeRemainder(1, slot), 0);
         }
+        // The disabled configuration never accrues again, so waiving clears its slot, marker included.
+        assertEq(vm.load(address(fees), _remaindersSlot(1)), bytes32(0));
         assertTrue(earnVault.isAccountingAligned());
+    }
+
+    /// @dev A slot holding only the marker, left after carried remainders are consumed to zero, is cleared without events.
+    function testDisableClearsMarkerOnlyRemainderSlot() public {
+        FeeConfig memory config;
+        config.fixedFeeCount = 1;
+        config.fixedFees[0] = FixedFeeRecipient(fixedRecipient, 10_000);
+        _deploy(config);
+
+        vm.store(address(fees), _remaindersSlot(1), bytes32(uint256(1) << 255));
+        assertEq(fees.feeRemainder(1, 0), 0);
+
+        vm.recordLogs();
+        earnVault.disableFees();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertNotEq(logs[i].topics[0], EarnFees.FeeDustWaived.selector);
+        }
+        assertEq(vm.load(address(fees), _remaindersSlot(1)), bytes32(0));
+    }
+
+    function testEarnShareScaleIsZeroUntilInitialized() public {
+        EarnFees implementation = new EarnFees();
+        assertEq(implementation.earnShareScale(), 0);
+        assertEq(EarnFees(Clones.clone(address(implementation))).earnShareScale(), 0);
+        assertEq(EarnFees(address(fees)).earnShareScale(), 10 ** share.decimals());
     }
 
     function testOperatorDisableWaivesUncrystallizedGrowthAndReactivatesProspectively() public {
@@ -528,7 +578,7 @@ contract EarnVaultFeesTest is Test {
 
     function testEarnFeesMutationsAreRestrictedToItsImmutableEarnVault() public {
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.accrueFees();
+        fees.accrueFees(1 ether, 1 ether, true);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
         fees.setFeeConfig(_fixedConfig(fixedRecipient, 100));
@@ -537,7 +587,7 @@ contract EarnVaultFeesTest is Test {
         fees.disableFees(address(this));
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.initializeBaselines();
+        fees.initializeBaselines(1 ether, 1 ether);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
         fees.recordRedeemRequest(bytes32(uint256(1)), 1 ether, 1 ether);
@@ -658,6 +708,11 @@ contract EarnVaultFeesTest is Test {
         for (uint256 k; k < distinct; ++k) {
             if (before[k] == last[k]) ++count;
         }
+    }
+
+    /// @dev EarnFees keeps `_feeRemainders` at storage slot 5 (`forge inspect EarnFees storageLayout`).
+    function _remaindersSlot(uint64 configId) private pure returns (bytes32) {
+        return keccak256(abi.encode(configId, uint256(5)));
     }
 }
 

@@ -221,10 +221,11 @@ Zone's portal and the program's to its clone. Without them the program's first s
 them, which costs that spend about 250k more gas each. The clone's approval to each allowed vault is
 set when governance allows it with `UV`.
 
-For Earn, also send 1 unit of the EarnShare to the vault itself. `withdrawExact` pulls the shares it
-burns into the vault before burning them, so without a seed every Earn spend creates and clears the
-vault's own balance slot (about 250k). The vault never reads its own EarnShare balance, so the unit only
-stays there (the last holder's full exit leaves it behind), and it serves every program on the vault.
+For Earn, the vault itself must hold 1 unit of its EarnShare. `withdrawExact` pulls the shares it
+burns into the vault before burning them, so without that unit every Earn spend creates and clears the
+vault's own balance slot (about 250k). A vault from the current release mints the unit to itself in
+`initialize` and counts it as burned, so send it nothing: a second unit is not exempt and stays as active
+supply that nobody can exit. The unit serves every program on the vault.
 
 For Earn, also send 1 unit of the EarnShare to the program's clone. The clone holds the shares an
 Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
