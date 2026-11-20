@@ -52,7 +52,7 @@ test('a solar build that does not name its version is refused before broadcast',
     ),
   ).toThrow('does not report a source-verifiable build')
   expect(() =>
-    solarVerificationArguments('./solar-solc', 'Version: 0.8.38+commit.ed48155.solar.0.3.0 dev\n'),
+    solarVerificationArguments('./solar-solc', 'Version: 0.8.38+commit.f1b75c6.solar.0.3.0 dev\n'),
   ).toThrow('does not report a source-verifiable build')
 })
 
@@ -60,11 +60,11 @@ test('a solar prerelease build is passed to the verifier by its exact version', 
   expect(
     solarVerificationArguments(
       './solar-solc',
-      'solar the Solidity compiler\nVersion: 0.8.38+commit.ed481551.solar.0.3.0-dev\n',
+      'solar the Solidity compiler\nVersion: 0.8.38+commit.f1b75c64.solar.0.3.0-dev\n',
     ),
   ).toEqual([
     '--compiler-version',
-    '0.8.38+commit.ed481551.solar.0.3.0-dev',
+    '0.8.38+commit.f1b75c64.solar.0.3.0-dev',
     '--compilation-profile',
     'default',
   ])
