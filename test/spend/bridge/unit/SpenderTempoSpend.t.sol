@@ -109,6 +109,30 @@ contract SpenderTempoSpendTest is TempoEnv {
         _expectRevert(alice, _stable(0), abi.encodeWithSelector(SpenderBase.InvalidAmount.selector));
     }
 
+    /// @dev The spend is read in place from calldata, with abi.decode's checks: data too short for the whole
+    ///      tuple, or an address word with bits above 160, reverts without data.
+    function test_spendRejectsMalformedData() public {
+        bytes memory short = _psCall(_stable(1e6));
+        assembly ("memory-safe") {
+            mstore(short, sub(mload(short), 1))
+        }
+        vm.prank(alice);
+        vm.expectRevert(bytes(""));
+        _cloneCall(short);
+        // The high byte of each address word (token, destination and vault), after the four prefix bytes.
+        uint256[3] memory words = [uint256(1), 3, 4];
+        for (uint256 i; i < words.length; ++i) {
+            bytes memory dirty = _psCall(_stable(1e6));
+            dirty[4 + words[i] * 32] = 0x01;
+            vm.prank(alice);
+            vm.expectRevert(bytes(""));
+            _cloneCall(dirty);
+        }
+        uint256 before = usd.balanceOf(settlement);
+        _spendAs(alice, _stable(1e6));
+        assertEq(usd.balanceOf(settlement) - before, 1e6, "the well-formed spend still settles");
+    }
+
     /// @notice Only TIP-20s settle, so a token with fees, callbacks or rebases is refused up front.
     function test_spendRejectsNonTip20Token() public {
         FeeOnTransferToken token = new FeeOnTransferToken();

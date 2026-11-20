@@ -523,6 +523,27 @@ contract SendSpenderTest is EarnRouterTestBase {
         _spendAsRouter(sends, address(alternate), 2 * ONE, _send(address(alternate), ONE, address(0)));
     }
 
+    /// @dev The send is read in place from calldata, with abi.decode's checks: data too short for the whole
+    ///      tuple, an address word with bits above 160 or an amount above uint128 reverts without data.
+    function testRejectsMalformedSendData() public {
+        alternate.mint(address(sends), ONE);
+        bytes memory short = _send(address(alternate), ONE, address(0));
+        assembly ("memory-safe") {
+            mstore(short, sub(mload(short), 1))
+        }
+        vm.expectRevert(bytes(""));
+        _spendAsRouter(sends, address(alternate), ONE, short);
+        // The high byte of each word with a narrower type: to, token, amount and vault.
+        for (uint256 word; word < 4; ++word) {
+            bytes memory dirty = _send(address(alternate), ONE, address(0));
+            dirty[word * 32] = 0x01;
+            vm.expectRevert(bytes(""));
+            _spendAsRouter(sends, address(alternate), ONE, dirty);
+        }
+        _spendAsRouter(sends, address(alternate), ONE, _send(address(alternate), ONE, address(0)));
+        assertEq(alternate.balanceOf(to), ONE, "the well-formed send still settles");
+    }
+
     function testAVaultThatDoesNotPayCannotSettle() public {
         ThievingVault thief = new ThievingVault(address(earnA), address(assetA));
         _shares(4 * ONE);
