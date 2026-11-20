@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 import {
-  configuredZone,
+  privateRoute,
   type EarnDeploymentProfile,
 } from '@tempoxyz/contracts/deployments/operations'
 import type { EarnDeploymentRecord } from '@tempoxyz/contracts/deployments/node'
@@ -242,9 +242,8 @@ function validateProfileFixtureRecord(
   }
   assertHostedFixtureChain(fixture.chainId)
   const stablecoins = fixture.stablecoinFixture
-  const zone = configuredZone(profile)
-  // The Earn binding of a ZoneRouter on the profile's Zone: the route a fixture must match.
-  const route = zone && profile.zoneRouter?.zoneId === zone.id ? profile.zoneRouter.earn : undefined
+  // The Earn binding of a private ZoneRouter on the profile's Zone: the route a fixture must match.
+  const route = privateRoute(profile)
   if (!stablecoins) {
     // Without test stablecoins the stack runs on its deployed asset, and a route needs a fixture.
     if (route) throw new Error(`Profile fixture ${profile.id} needs a stablecoin fixture route`)

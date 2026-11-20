@@ -145,11 +145,19 @@ function parseZone(value: Record<string, unknown>, parentChainId: number, path: 
   return zone
 }
 
+/**
+ * The Earn binding of the profile's ZoneRouter when it routes private deposits and redemptions into
+ * the profile's Zone: on that Zone, with exactly Deposit and Redeem enabled.
+ */
+export function privateRoute(profile: ZoneFields & Partial<ZoneRouterFields>) {
+  const { zone, zoneRouter } = profile
+  if (!zone || zoneRouter?.zoneId !== zone.id) return undefined
+  const { earn, ops } = zoneRouter
+  if (ops.length !== 2 || ops[0] !== 'deposit' || ops[1] !== 'redeem') return undefined
+  return earn
+}
+
 /** Whether an Earn-mode ZoneRouter routes private deposits and redemptions into the profile's Zone. */
 function earnModeOnZone(profile: ZoneProfile & Partial<ZoneRouterFields>) {
-  return (
-    profile.zone !== null &&
-    profile.zoneRouter?.zoneId === profile.zone.id &&
-    !!profile.zoneRouter.earn
-  )
+  return privateRoute(profile) !== undefined
 }

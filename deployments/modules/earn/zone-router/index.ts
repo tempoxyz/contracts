@@ -18,7 +18,7 @@ import {
 } from '../../../../deployments/modules/module.js'
 import { zoneStackFields } from './stack.js'
 import { discoverZoneOutputs, isZoneSequencerOutput } from './outputs.js'
-import { configuredZone, zoneIdentityAddresses } from './profile.js'
+import { configuredZone, privateRoute, zoneIdentityAddresses } from './profile.js'
 
 /**
  * The Zone capability: the canonical Zone a deployment targets, its discovered Portal, Messenger and
@@ -83,8 +83,8 @@ export const zoneModule: CapabilityModule = {
     if (live.portal !== portal || live.messenger !== messenger) {
       throw new Error(`Profile ${profile.id} deployment record has stale Zone identity`)
     }
-    // An Earn-mode ZoneRouter on this Zone carries the stack's private mode.
-    const router = profile.zoneRouter?.zoneId === zone.id ? profile.zoneRouter.earn : undefined
+    // An Earn-mode ZoneRouter with Deposit and Redeem on this Zone carries the stack's private mode.
+    const router = privateRoute(profile)
     return zoneStackFields(
       {
         name: environment.id,
