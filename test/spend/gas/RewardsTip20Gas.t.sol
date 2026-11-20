@@ -16,7 +16,7 @@ import { EarnMerkleRewardDistributor } from "../../../src/earn/rewards/EarnMerkl
 ///         already funded once, so the measured calls are steady-state ones. The `vault-residue` variants
 ///         also leave the deployment runbook's one base unit with the EarnVault and its engine, so their
 ///         asset balance slots stay nonzero between fundings, as on a deployed stack.
-///         `FOUNDRY_PROFILE=spend forge test --match-path test/spend/gas/*` writes the results to snapshots/.
+///         `FOUNDRY_PROFILE=spend forge test --match-path 'test/spend/gas/*'` writes the results to snapshots/.
 contract RewardsTip20GasTest is CoreEnv {
     EarnMerkleRewardDistributor internal distributor;
     EarnContributionController internal controller;

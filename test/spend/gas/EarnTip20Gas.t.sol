@@ -6,7 +6,7 @@ import { CoreEnv } from "../core/harness/CoreEnv.sol";
 /// @notice EarnVault user paths measured on real TIP-20 precompiles, where every zero-to-nonzero storage
 ///         write is charged as a new slot (TIP-1000). Earn's own gas suite uses mock ERC-20s and cannot
 ///         see that cost, and `snapshotGasLastCall` leaves the new-slot charge out, so each call is
-///         measured with `gasleft`. `FOUNDRY_PROFILE=spend forge test --match-path test/spend/gas/*` writes the results to snapshots/.
+///         measured with `gasleft`. `FOUNDRY_PROFILE=spend forge test --match-path 'test/spend/gas/*'` writes the results to snapshots/.
 contract EarnTip20GasTest is CoreEnv {
     address internal returning = makeAddr("gas.returning");
     address internal newcomer = makeAddr("gas.newcomer");

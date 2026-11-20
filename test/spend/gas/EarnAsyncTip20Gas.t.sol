@@ -20,7 +20,7 @@ import { CoreMockAsyncEngine, CoreMockToken } from "../../earn/helpers/EarnVault
 /// @notice EarnVault async exits measured on real TIP-20 precompiles, where every zero-to-nonzero storage write
 ///         is charged as a new slot (TIP-1000), over a mock async engine and a fee configuration that records a
 ///         fee snapshot per request. Each call is measured with `gasleft`, since `snapshotGasLastCall` leaves the
-///         new-slot charge out. `FOUNDRY_PROFILE=spend forge test --match-path test/spend/gas/*` writes the results
+///         new-slot charge out. `FOUNDRY_PROFILE=spend forge test --match-path 'test/spend/gas/*'` writes the results
 ///         to snapshots/.
 contract EarnAsyncTip20GasTest is Test {
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
