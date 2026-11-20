@@ -261,17 +261,19 @@ contract CashSource is ISource, ISettlementTokenGuard {
             if (!ok) return (0, 0);
             cost = c.quoteOut(token, settlement, units);
         }
-        uint256 tokens = cost;
-        if (rate != 0) {
-            tokens = _bandPrice(units, rate, cost);
-            uint256 limit = units.mulDivUp(ONE, rate).mulDiv(BPS + tolerance, BPS);
-            if (tokens > limit) tokens = limit;
-        }
-        uint256 most = _excessRoom(owner, token, false, tokens, false);
+        uint256 price = rate == 0 ? cost : _bandPrice(units, rate, cost);
+        uint256 most = _excessRoom(owner, token, false, price, false);
+        // The owner's tolerance on the locked price caps what it pays; the issuer pays the rest of the purchase.
+        uint256 limit = rate == 0 ? price : units.mulDivUp(ONE, rate).mulDiv(BPS + tolerance, BPS);
+        bool capped = most > limit;
+        if (capped) most = limit;
         if (most == 0) return (0, 0);
         CORE.charge(owner, token, legId, most.toUint128(), address(this), false);
         paid = _swap(c, token, settlement, legId, units, most, cost, rate, band);
-        covered = most == tokens ? units : units.mulDiv(most, tokens);
+        // Short of the price, the owner's tokens cover their share of it and the rest falls to later sources.
+        covered = capped || most == price ? units : units.mulDiv(most, price);
+        // What the swap fetched past that (a favourable move, or rounding) stays with the settlement account.
+        if (paid > covered) paid = covered;
         _paid(legId, settlement, most, covered);
     }
 
@@ -382,17 +384,27 @@ contract CashSource is ISource, ISettlementTokenGuard {
             band = 0;
             cost = c.quoteOut(token, settlement, units);
         }
-        // The owner's share stops at the capture limit; the issuer pays the rest of the purchase.
-        uint256 limit = _bandPrice(units, rate, cost);
-        if (limit > h.captureLimit) limit = h.captureLimit;
-        uint256 tokens = limit;
+        // What the owner can put toward the band price: its hold and, past it, free tokens.
+        uint256 price = _bandPrice(units, rate, cost);
+        uint256 tokens = price;
         if (tokens > h.held) tokens = h.held + (beyond ? _excessRoom(owner, token, false, tokens - h.held, false) : 0);
+        bool capped = tokens > h.captureLimit;
+        if (capped) tokens = h.captureLimit;
         if (tokens == 0) return (0, 0);
         CORE.capture(owner, address(this), legId, tokens.toUint128(), false);
         _setLock(legId, rate, tokens < h.held ? h.held - tokens : 0);
         paid = _swap(c, token, settlement, legId, units, tokens, cost, rate, band);
-        // Tokens short of the limit (the owner had no more) leave the rest to the purchase's other legs.
-        covered = tokens == limit ? units : units.mulDiv(tokens, limit);
+        // The owner's tokens cover their share of the band price; the rest falls to the purchase's later legs.
+        covered = tokens == price ? units : units.mulDiv(tokens, price);
+        if (capped) {
+            // Stopped by the capture limit, the issuer pays the rest of what the hold was placed for (its tokens at the
+            // locked rate), never the part of the purchase beyond it.
+            uint256 own = uint256(h.held).mulDiv(rate, ONE);
+            if (own > units) own = units;
+            if (own > covered) covered = own;
+        }
+        // What the swap fetched past that (a favourable move, or rounding) stays with the settlement account.
+        if (paid > covered) paid = covered;
         _paid(legId, settlement, tokens, covered);
     }
 

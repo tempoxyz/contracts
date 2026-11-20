@@ -129,7 +129,10 @@ contract CashSourceConversionTest is AuthEnv {
         uint256 paid = usd.balanceOf(settlement);
         assertEq(paid, 50e6 * BID / 1e18);
         assertGt(paid, placed * BID / 1e18);
-        assertEq(cards.purchaseOf(P1).refunded, 80e6 - paid);
+        // The leg reports at most what its euros covered at the locked price, rounded down; the unit of rounding the
+        // swap fetched past it stays with the settlement account.
+        assertApproxEqAbs(cards.purchaseOf(P1).refunded, 80e6 - paid, 1);
+        assertGe(cards.purchaseOf(P1).refunded, 80e6 - paid);
     }
 
     function test_partialReversal_keepsTheLockedRateRoundedUp() public {

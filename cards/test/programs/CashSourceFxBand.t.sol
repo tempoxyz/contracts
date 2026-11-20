@@ -175,6 +175,51 @@ contract CashSourceFxBandTest is AuthEnv {
         assertApproxEqAbs(usd.balanceOf(settlement), 38e6 * BID / 1e18 + 44e6 - covered, 1);
     }
 
+    function test_splitPurchase_nextLegIsAskedWhatTheConvertedLegLeft() public {
+        // The euros fund a part of the purchase: an 11 euro hold, a 12.10 capture limit at the 10% tolerance.
+        vm.prank(alice);
+        eur.transfer(address(0xdead), 989e6);
+        usd.mint(alice, 40e6);
+        _authorize(P1, 40e6);
+        IReservationCore.HoldRecord memory h = _cashHold(P1);
+        assertEq(h.held, 11e6);
+        assertEq(h.captureLimit, 12.1e6);
+        uint256 rate = cash.lockedRate(cards.legId(P1, TOKEN_LEG));
+        _capture(P1, 40e6, true);
+        // The euros cover their share of the purchase at the locked price; the dollars are asked for the rest.
+        uint256 covered = uint256(40e6).mulDiv(11e6, FixedPointMathLib.mulDivUp(40e6, 1e18, rate));
+        assertApproxEqAbs(covered, uint256(11e6) * rate / 1e18, 1);
+        assertEq(eur.balanceOf(alice), 0);
+        assertEq(usd.balanceOf(alice), covered);
+        assertLe(cards.purchaseOf(P1).refunded, 1, "nothing falls to the issuer");
+        assertApproxEqAbs(usd.balanceOf(settlement), 40e6, 1);
+    }
+
+    function test_splitPurchase_capturePastCash_neverReportsMorePaidThanCovered() public {
+        // Euro balances around what captures past the hold need, so the dollars pay any rest; each rounds differently.
+        for (uint256 i; i < 24; ++i) {
+            uint256 balance = 37e6 + i * 111_111;
+            uint128 amount = uint128(41e6 + (i % 4) * 1e6);
+            bytes32 ref = keccak256(abi.encode("past-cash", i));
+            uint256 before = eur.balanceOf(alice);
+            if (before > balance) {
+                vm.prank(alice);
+                eur.transfer(address(0xdead), before - balance);
+            } else {
+                eur.mint(alice, balance - before);
+            }
+            usd.mint(alice, 10e6);
+            uint256 stlBefore = usd.balanceOf(settlement);
+            _authorize(ref, 40e6);
+            _capture(ref, amount, true);
+            uint256 got = usd.balanceOf(settlement) - stlBefore;
+            uint256 absorbed = cards.purchaseOf(ref).refunded;
+            // The program records no more than the settlement account received, and the dollars pay what is left.
+            assertGe(got + absorbed, amount, "recorded past what was paid");
+            assertLe(absorbed, 1);
+        }
+    }
+
     // The reference rate.
 
     function test_staleReference_noLongerBlocksTheCaptureOfALiveHold() public {

@@ -150,8 +150,10 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   the issuer carrying an adverse difference and keeping a favourable one (the surplus tokens go to the
   settlement account); past it the owner pays the venue's price moved 2% in its favour (fewer tokens on an
   adverse move, more on a favourable one). The owner's tokens stop at the hold's capture limit (its payee
-  tolerance) and take free balance past the hold as other captures do; what the capped tokens leave is the
-  issuer's, recorded as absorbed. A trusted `CashSource` captures through the Conversion's anchored path
+  tolerance) and take free balance past the hold as other captures do. When the capture limit stops them, the
+  issuer pays the rest of what the hold was placed for (recorded as absorbed); when the owner runs out of tokens,
+  they cover their share of the band price and the purchase's later legs pay the rest. A leg never reports
+  more paid than covered: what a swap fetches past that stays with the settlement account. A trusted `CashSource` captures through the Conversion's anchored path
   (`quoteOutAnchored`, `swapExactInAnchored`, `swapExactOutAnchored`), which checks the venue against the locked rate
   within `FX_BAND_BPS` plus the owner's tolerance instead of the reference rate and its age, so a stale feed no
   longer stalls captures; a venue past that band captures only once the reference rate agrees with it. An
