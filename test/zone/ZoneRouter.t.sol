@@ -11,7 +11,11 @@ import { SendSpender } from "../../src/zone/spenders/SendSpender.sol";
 import { ZoneRouterMockPortal } from "./helpers/ZoneRouterMockPortal.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "../earn/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "../earn/helpers/PropAMMEngineMocks.sol";
-import { EncryptedDepositPayload, ZONE_MESSENGER_ADDRESS } from "../../src/interfaces/external/tempo/IZone.sol";
+import {
+    EncryptedDepositPayload,
+    IZonePortal,
+    ZONE_MESSENGER_ADDRESS
+} from "../../src/interfaces/external/tempo/IZone.sol";
 import { SingleZoneEarnRouter } from "../../src/earn/router/SingleZoneEarnRouter.sol";
 
 /// @dev A spender whose behavior each test picks. The router sends it `maxInput` up front: pay `use`
@@ -349,15 +353,47 @@ contract ZoneRouterTest is EarnRouterTestBase {
 
     /// @notice With maxInput below the amount there is always change, so a return the Portal would refuse
     ///         reverts before the spender runs (a re-entering spender would revert otherwise).
+    /// @dev The router reads callback members in place, so the callback data must end the call's calldata:
+    ///      a callback with a partial trailing word, or calldata running past it, bounces.
+    function testSpendCallbackDataMustEndTheCalldata() public {
+        ZoneRouter zr = _spendRouter();
+        spender.configure(MockSpender.Behavior.Pay, ONE, payee);
+        alternate.mint(address(zr), 2 * ONE);
+        bytes memory valid = _spend(address(spender), ONE, 0);
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        vm.expectRevert(ZoneRouter.BadFlow.selector);
+        zr.onWithdrawalReceived(
+            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), bytes.concat(valid, hex"00")
+        );
+
+        bytes memory call = abi.encodeCall(
+            zr.onWithdrawalReceived, (ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), valid)
+        );
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        (bool ok, bytes memory reason) = address(zr).call(bytes.concat(call, bytes32(0)));
+        assertFalse(ok);
+        assertEq(reason, abi.encodeWithSelector(ZoneRouter.BadFlow.selector));
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        (ok,) = address(zr).call(call);
+        assertTrue(ok);
+        assertEq(alternate.balanceOf(payee), ONE);
+    }
+
     function testSpendChecksTheChangeReturnBeforeTheSpenderPays() public {
         ZoneRouter zr = _spendRouter();
         spender.configure(MockSpender.Behavior.Reenter, 0, payee);
         portalA.setToken(address(alternate), true, false);
         _expectSpendRevert(zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
-        portalA.setToken(address(alternate), false, true);
-        _expectSpendRevert(zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
-
+        // The ZonePortal reports deposits inactive for a token it has disabled, or while it is paused.
         portalA.setToken(address(alternate), true, true);
+        vm.mockCall(
+            address(portalA), abi.encodeCall(IZonePortal.areDepositsActive, (address(alternate))), abi.encode(false)
+        );
+        _expectSpendRevert(zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
+        vm.clearMockedCalls();
+
         portalA.setDepositFee(100);
         _expectSpendRevert(
             zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.DepositFeeTooHigh.selector, uint128(100))

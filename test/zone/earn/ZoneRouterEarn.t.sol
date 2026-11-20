@@ -125,6 +125,30 @@ contract ZoneRouterEarnTest is ZoneRouterEarnTestBase {
         router.onWithdrawalReceived(0, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
     }
 
+    /// @dev Ops 0 and 1 read their tuple in place, so the callback data must end the call's calldata.
+    function testDepositCallbackDataMustEndTheCalldata() public {
+        alternate.mint(address(router), ONE);
+        bytes memory valid = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        vm.expectRevert(ZoneRouter.BadFlow.selector);
+        router.onWithdrawalReceived(
+            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), bytes.concat(valid, hex"00")
+        );
+
+        bytes memory call = abi.encodeCall(
+            router.onWithdrawalReceived, (ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), valid)
+        );
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        (bool ok, bytes memory reason) = address(router).call(bytes.concat(call, bytes32(0)));
+        assertFalse(ok);
+        assertEq(reason, abi.encodeWithSelector(ZoneRouter.BadFlow.selector));
+        assertEq(earnA.totalSupply(), 0);
+
+        _deposit(ONE, ONE, ONE);
+        assertEq(portalA.depositCount(), 1);
+    }
+
     function testCannotSelectAnotherEarnVault() public {
         alternate.mint(address(router), ONE);
         bytes memory callerSelectedVaultData = abi.encode(

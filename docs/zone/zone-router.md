@@ -123,6 +123,11 @@ with deposits active. Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spe
 adds `maxDepositFee` and reverts if the Portal's deposit fee is above it. Any revert bounces the whole
 input to the withdrawal's fallback recipient in the Zone.
 
+The router reads each op's tuple in place from calldata rather than copying it to memory. Its
+member reads are bounded by the end of the call's calldata, so the callback data must end it: a
+callback whose length is not whole words (an `abi.encode` result with stray bytes after it)
+reverts `BadFlow`. The ZoneMessenger's typed call always ends with the callback data.
+
 ### Spend
 
 Callback data: `op`, `spender`, `maxInput`, `spenderData` and `SpendReturn`. With the Portal's 64-byte
