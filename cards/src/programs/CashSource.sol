@@ -22,8 +22,9 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 ///         difference and keeping a favourable one; past the band the owner pays the venue's price less FX_BAND_BPS in
 ///         the owner's favour. The owner never pays past the hold's capture limit; what it does not buy falls to the
 ///         issuer. A late charge of a purchase whose hold expired prices the same way against the rate it locked.
-///         Converted legs never create debt. A refund of a converted leg pays the token back at the rate its
-///         captures and charges paid, whatever the market or the reference rates do since.
+///         The band's tolerance is the one the core fixed into the hold when it was placed, never the owner's terms at
+///         capture. Converted legs never create debt. A refund of a converted leg pays the token back at the rate its
+///         captures and charges paid the settlement account, whatever the market or the reference rates do since.
 /// @dev `position`: the token in its low 160 bits and the owner's maximum conversion cost in basis points in the 16
 ///      bits above. Everything this contract receives in the settlement token is paid on to the settlement account in
 ///      the same call; repayments of debt arrive later and `sweep` forwards them. Not upgradeable.
@@ -37,9 +38,12 @@ contract CashSource is ISource, ISettlementTokenGuard {
     IReservationCore internal constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
     uint256 internal constant ONE = 1e18;
     uint256 internal constant BPS = 10_000;
-    uint256 internal constant LOW = type(uint128).max;
+    uint256 internal constant RATE_MASK = type(uint112).max;
     /// @notice How far the venue may move from a converted leg's locked rate before its owner shares the move.
     uint256 public constant FX_BAND_BPS = 200;
+    /// @dev The widest band around a locked rate this source asks for, tolerance included: Conversion's
+    ///      MAX_ANCHOR_BAND_BPS.
+    uint256 internal constant MAX_ANCHOR_BAND_BPS = 2000;
 
     /// @notice What the source is: cash.
     uint8 public constant KIND = 1;
@@ -49,16 +53,18 @@ contract CashSource is ISource, ISettlementTokenGuard {
     /// @notice Where every capture and charge is paid.
     address public immutable SETTLEMENT_ACCOUNT;
 
-    /// @notice What a converted leg's captures and charges spent of its token and covered in a settlement token, less
-    ///         what refunds gave back: the rate its refunds pay the token back at.
+    /// @notice What a converted leg's captures and charges spent of its token and paid the settlement account in a
+    ///         settlement token (never what the issuer absorbed), less what refunds gave back: the rate its refunds pay
+    ///         the token back at.
     struct Paid {
         uint128 tokens;
         uint128 units;
     }
 
-    /// @dev A converted leg's locked rate (settlement units per token unit, 18 decimals) in the low 128 bits and, in
+    /// @dev A converted leg's locked rate (settlement units per token unit, 18 decimals) in the low 112 bits, the
+    ///      capture tolerance in basis points the core fixed into its hold when it was placed in the 16 above, and, in
     ///      the high 128, the settlement value its open hold counts toward openConverted. An expired hold keeps its
-    ///      rate, valued at zero, for a late charge.
+    ///      rate and tolerance, valued at zero, for a late charge.
     mapping(bytes32 legId => uint256) private _locks;
     /// @notice What a converted leg paid in each settlement token, which its refunds in that token convert back at.
     mapping(bytes32 legId => mapping(address settlement => Paid)) public paidOf;
@@ -106,7 +112,13 @@ contract CashSource is ISource, ISettlementTokenGuard {
 
     /// @notice The rate a converted leg locked: settlement units per token unit, with 18 decimals; zero for none.
     function lockedRate(bytes32 legId) public view returns (uint256) {
-        return _locks[legId] & LOW;
+        return _locks[legId] & RATE_MASK;
+    }
+
+    /// @notice The capture tolerance in basis points a converted leg's hold was placed with: what its band and late
+    ///         charge use, whatever the owner's terms say since; zero for none.
+    function lockedTolerance(bytes32 legId) public view returns (uint256) {
+        return _locks[legId] >> 112 & type(uint16).max;
     }
 
     function held(address owner, bytes32, bytes32 legId) public view returns (uint256) {
@@ -150,8 +162,13 @@ contract CashSource is ISource, ISettlementTokenGuard {
         address settlement = PROGRAM.settlementToken();
         uint256 rate = ONE;
         uint256 tokens = units;
+        uint256 tolerance;
         if (token != settlement) {
             uint256 locked = lockedRate(legId);
+            // The core fixes a hold's tolerance when it places it, from the owner's terms then; a live hold keeps it.
+            tolerance = live && locked != 0
+                ? lockedTolerance(legId)
+                : CORE.payeeTerms(owner, address(this), token).toleranceBps;
             if (live && units <= uint256(h.held).mulDiv(locked, ONE)) {
                 // A smaller leg keeps the rate it locked.
                 rate = locked;
@@ -177,7 +194,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
                 placed = units.mulDivUp(ONE, rate);
                 CORE.holdFrom(owner, _request(token, legId, placed, expiresAt, true));
             }
-            if (token != settlement) _setLock(legId, rate, placed);
+            if (token != settlement) _setLock(legId, rate, placed, tolerance);
             return units;
         }
         uint256 cap = (live ? h.held : 0) + CORE.available(owner, token);
@@ -191,7 +208,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         }
         if (!live) CORE.holdFrom(owner, _request(token, legId, tokens, expiresAt, false));
         else if (tokens != h.held) _resize(owner, legId, tokens);
-        if (token != settlement) _setLock(legId, rate, tokens);
+        if (token != settlement) _setLock(legId, rate, tokens, tolerance);
         return units;
     }
 
@@ -249,10 +266,10 @@ contract CashSource is ISource, ISettlementTokenGuard {
         uint256 tolerance;
         if (rate != 0) {
             // A late charge consumes the rate its expired hold locked and prices against it as a capture would, the
-            // owner's tolerance on what that rate promised standing in for the capture limit.
-            _setLock(legId, 0, 0);
-            tolerance = CORE.payeeTerms(owner, address(this), token).toleranceBps;
-            band = FX_BAND_BPS + tolerance;
+            // tolerance the hold was placed with on what that rate promised standing in for the capture limit.
+            tolerance = lockedTolerance(legId);
+            _setLock(legId, 0, 0, 0);
+            band = _band(tolerance);
             cost = _anchoredCost(c, token, settlement, units, rate, band);
         }
         if (cost == 0) {
@@ -263,7 +280,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         }
         uint256 price = rate == 0 ? cost : _bandPrice(units, rate, cost);
         uint256 most = _excessRoom(owner, token, false, price, false);
-        // The owner's tolerance on the locked price caps what it pays; the issuer pays the rest of the purchase.
+        // The hold's tolerance on the locked price caps what the owner pays; the issuer pays the rest of the purchase.
         uint256 limit = rate == 0 ? price : units.mulDivUp(ONE, rate).mulDiv(BPS + tolerance, BPS);
         bool capped = most > limit;
         if (capped) most = limit;
@@ -274,7 +291,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         covered = capped || most == price ? units : units.mulDiv(most, price);
         // What the swap fetched past that (a favourable move, or rounding) stays with the settlement account.
         if (paid > covered) paid = covered;
-        _paid(legId, settlement, most, covered);
+        _paid(legId, settlement, most, paid);
     }
 
     /// @notice Ends a leg. A converted leg whose hold expired (or that the core already ended) keeps its locked rate
@@ -286,11 +303,11 @@ contract CashSource is ISource, ISettlementTokenGuard {
         bool expired = h.token == address(0) || block.timestamp >= h.expiresAt;
         if (h.token != address(0)) CORE.release(owner, address(this), legId);
         uint256 rate = lockedRate(legId);
-        if (rate != 0) _setLock(legId, expired ? rate : 0, 0);
+        if (rate != 0) _setLock(legId, expired ? rate : 0, 0, lockedTolerance(legId));
     }
 
-    /// @dev A converted leg pays back, for what its captures and charges covered in today's settlement token, the
-    ///      tokens they spent at the same rate, out of the Conversion's float (or, when it is short or does not trust
+    /// @dev A converted leg pays back, for what its captures and charges paid in today's settlement token, the tokens
+    ///      they spent at the same rate, out of the Conversion's float (or, when it is short or does not trust
     ///      this source, bought at the venue); a refund past that converts at today's price.
     function refund(address owner, bytes32 position, bytes32 legId, uint256 units) external onlyProgram {
         (address token,) = _decode(position);
@@ -377,7 +394,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         bool beyond
     ) private returns (uint256 paid, uint256 covered) {
         Conversion c = _conversion();
-        uint256 band = FX_BAND_BPS + CORE.payeeTerms(owner, address(this), token).toleranceBps;
+        uint256 band = _band(lockedTolerance(legId));
         uint256 cost = _anchoredCost(c, token, settlement, units, rate, band);
         if (cost == 0) {
             // Past the band and the owner's tolerance the venue prices only while the reference rates agree with it.
@@ -392,7 +409,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (capped) tokens = h.captureLimit;
         if (tokens == 0) return (0, 0);
         CORE.capture(owner, address(this), legId, tokens.toUint128(), false);
-        _setLock(legId, rate, tokens < h.held ? h.held - tokens : 0);
+        _setLock(legId, rate, tokens < h.held ? h.held - tokens : 0, lockedTolerance(legId));
         paid = _swap(c, token, settlement, legId, units, tokens, cost, rate, band);
         // The owner's tokens cover their share of the band price; the rest falls to the purchase's later legs.
         covered = tokens == price ? units : units.mulDiv(tokens, price);
@@ -405,7 +422,9 @@ contract CashSource is ISource, ISettlementTokenGuard {
         }
         // What the swap fetched past that (a favourable move, or rounding) stays with the settlement account.
         if (paid > covered) paid = covered;
-        _paid(legId, settlement, tokens, covered);
+        // Refunds of what the settlement account was paid give back every token spent; the issuer's share is never
+        // refunded.
+        _paid(legId, settlement, tokens, paid);
     }
 
     /// @dev The tokens `units` cost at the venue, checked against the locked `rate` within `band` basis points when
@@ -423,6 +442,13 @@ contract CashSource is ISource, ISettlementTokenGuard {
         }
     }
 
+    /// @dev The band around a locked rate for a hold placed with `tolerance`: FX_BAND_BPS plus the tolerance, at most
+    ///      the widest band the Conversion accepts.
+    function _band(uint256 tolerance) private pure returns (uint256) {
+        uint256 most = MAX_ANCHOR_BAND_BPS - FX_BAND_BPS;
+        return FX_BAND_BPS + (tolerance < most ? tolerance : most);
+    }
+
     /// @dev What the owner pays in tokens for `units` the venue sells for `cost`, against the locked `rate`: the
     ///      locked price while the venue is within FX_BAND_BPS of it, else the venue's price moved FX_BAND_BPS toward
     ///      the owner (fewer tokens on an adverse move, more on a favourable one).
@@ -434,7 +460,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         return high < locked ? high : locked;
     }
 
-    /// @dev Adds what a converted capture or charge spent and covered to the rate the leg's refunds pay back at.
+    /// @dev Adds what a converted capture or charge spent and paid to the rate the leg's refunds pay back at.
     function _paid(bytes32 legId, address settlement, uint256 tokens, uint256 units) private {
         Paid storage p = paidOf[legId][settlement];
         (p.tokens, p.units) = (p.tokens + tokens.toUint128(), p.units + units.toUint128());
@@ -580,14 +606,15 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (cost > tokens) tokens = cost;
     }
 
-    /// @dev Sets a converted leg's locked `rate` (zero drops it) with `tokens` open in its hold, keeping openConverted
-    ///      in step.
-    function _setLock(bytes32 legId, uint256 rate, uint256 tokens) private {
+    /// @dev Sets a converted leg's locked `rate` (zero drops it) and its hold's `tolerance` with `tokens` open in its
+    ///      hold, keeping openConverted in step.
+    function _setLock(bytes32 legId, uint256 rate, uint256 tokens, uint256 tolerance) private {
         uint256 word = _locks[legId];
         uint256 value = tokens.mulDiv(rate, ONE);
         uint256 before = word >> 128;
         if (value != before) openConverted = openConverted + value - before;
-        uint256 next = rate == 0 ? 0 : rate.toUint128() | uint256(value.toUint128()) << 128;
+        uint256 next =
+            rate == 0 ? 0 : rate.toUint112() | uint256(tolerance.toUint16()) << 112 | uint256(value.toUint128()) << 128;
         if (next != word) _locks[legId] = next;
     }
 
@@ -598,7 +625,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
 
     function _release(address owner, bytes32 legId) private {
         CORE.release(owner, address(this), legId);
-        if (_locks[legId] != 0) _setLock(legId, 0, 0);
+        if (_locks[legId] != 0) _setLock(legId, 0, 0, 0);
     }
 
     function _forward(address token) private {

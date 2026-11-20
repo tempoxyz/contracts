@@ -75,6 +75,8 @@ contract Conversion {
     uint64 public constant RATE_STEP_WINDOW = 1 days;
     /// @notice How long a scheduled reference rate waits before it may be set.
     uint64 public constant RATE_DELAY = 2 days;
+    /// @notice The widest band around an anchor the anchored quotes and swaps accept, in basis points.
+    uint256 public constant MAX_ANCHOR_BAND_BPS = 2000;
     /// @dev Amount a rate is measured on; venues price linearly, so a large probe keeps rounding out of the rate.
     uint256 internal constant PROBE = 1e10;
     IStablecoinDEX internal constant DEX = IStablecoinDEX(0xDEc0000000000000000000000000000000000000);
@@ -147,6 +149,7 @@ contract Conversion {
     error RateDeviates(address tokenIn, address tokenOut, uint256 quoted, uint256 fair);
     /// @notice An anchored quote or swap strays from the caller's anchor by more than the caller's band.
     error RateBeyondAnchor(address tokenIn, address tokenOut, uint256 quoted, uint256 fair);
+    error BandTooWide(uint256 bandBps);
     error Slippage(uint256 amount, uint256 bound);
     error MinOutTooLow(uint256 minOut, uint256 floor);
     error InvalidAmount();
@@ -320,13 +323,14 @@ contract Conversion {
 
     /// @notice What tokenIn exactly amountOut of tokenOut costs at the venue, checked against `anchor` (units of
     ///         tokenOut per unit of tokenIn, 18 decimals) rather than the reference rates: reverts RateBeyondAnchor
-    ///         while it strays more than bandBps from the cost at the anchor. Neither the reference rates nor their age
-    ///         bear on it.
+    ///         while it strays more than bandBps from the cost at the anchor, and BandTooWide past MAX_ANCHOR_BAND_BPS.
+    ///         Neither the reference rates nor their age bear on it.
     function quoteOutAnchored(address tokenIn, address tokenOut, uint256 amountOut, uint256 anchor, uint256 bandBps)
         public
         view
         returns (uint256 cost)
     {
+        _checkBand(bandBps);
         if (tokenIn == tokenOut || amountOut == 0) return amountOut;
         if (anchor == 0) revert InvalidAmount();
         cost = _routeOut(tokenIn, tokenOut, amountOut);
@@ -371,7 +375,8 @@ contract Conversion {
     }
 
     /// @notice Spends exactly amountIn of a trusted program's tokenIn for tokenOut, paid to recipient, at the venue's
-    ///         price: reverts RateBeyondAnchor when it fetches less than amountIn at `anchor` less bandBps.
+    ///         price: reverts RateBeyondAnchor when it fetches less than amountIn at `anchor` less bandBps, and
+    ///         BandTooWide past MAX_ANCHOR_BAND_BPS.
     function swapExactInAnchored(
         address tokenIn,
         address tokenOut,
@@ -381,18 +386,19 @@ contract Conversion {
         address recipient
     ) external returns (uint256 out) {
         if (!trusted[msg.sender]) revert Unauthorized();
+        _checkBand(bandBps);
         if (amountIn == 0) return 0;
         SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
         out = _swapRoute(tokenIn, tokenOut, amountIn);
         uint256 fair = amountIn.mulDiv(anchor, RATE_ONE);
-        uint256 floor = bandBps >= BPS ? 0 : fair.mulDiv(BPS - bandBps, BPS);
-        if (out < floor) revert RateBeyondAnchor(tokenIn, tokenOut, out, fair);
+        if (out < fair.mulDiv(BPS - bandBps, BPS)) revert RateBeyondAnchor(tokenIn, tokenOut, out, fair);
         SafeTransferLib.safeTransfer(tokenOut, recipient, out);
         emit Swapped(msg.sender, tokenIn, tokenOut, amountIn, out, recipient);
     }
 
     /// @notice Buys exactly amountOut of tokenOut for recipient with at most maxIn of a trusted program's tokenIn, at
-    ///         the venue's price: reverts RateBeyondAnchor when it costs more than amountOut at `anchor` plus bandBps.
+    ///         the venue's price: reverts RateBeyondAnchor when it costs more than amountOut at `anchor` plus bandBps,
+    ///         and BandTooWide past MAX_ANCHOR_BAND_BPS.
     function swapExactOutAnchored(
         address tokenIn,
         address tokenOut,
@@ -403,6 +409,7 @@ contract Conversion {
         address recipient
     ) external returns (uint256 spent) {
         if (!trusted[msg.sender]) revert Unauthorized();
+        _checkBand(bandBps);
         if (amountOut == 0) return 0;
         uint256 fair = amountOut.mulDivUp(RATE_ONE, anchor);
         spent = _routeOut(tokenIn, tokenOut, amountOut);
@@ -451,6 +458,11 @@ contract Conversion {
     function _agrees(address tokenIn, address tokenOut, uint256 quoted, uint256 fair) private pure {
         uint256 moved = quoted > fair ? quoted - fair : fair - quoted;
         if (moved > 1 && moved * BPS > fair * MAX_SLIPPAGE_BPS) revert RateDeviates(tokenIn, tokenOut, quoted, fair);
+    }
+
+    /// @dev Reverts BandTooWide past MAX_ANCHOR_BAND_BPS, so no anchored price goes without a floor.
+    function _checkBand(uint256 bandBps) private pure {
+        if (bandBps > MAX_ANCHOR_BAND_BPS) revert BandTooWide(bandBps);
     }
 
     function _onlyOwner() private view {

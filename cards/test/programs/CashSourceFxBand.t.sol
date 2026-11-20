@@ -79,9 +79,10 @@ contract CashSourceFxBandTest is AuthEnv {
         assertEq(paid, held * (BID * 985 / 1000) / 1e18);
         assertLt(paid, 100e6);
         assertEq(cards.purchaseOf(P1).refunded, 100e6 - paid, "the issuer absorbs the move");
+        // Refunds count what the settlement account was paid, the issuer's share apart.
         (uint128 tokens, uint128 units) = cash.paidOf(cards.legId(P1, TOKEN_LEG), address(usd));
         assertEq(tokens, held);
-        assertEq(units, 100e6);
+        assertEq(units, paid);
     }
 
     function test_withinBand_favourable_ownerPaysTheLockedPriceAndTheIssuerKeepsTheGain() public {
@@ -139,10 +140,10 @@ contract CashSourceFxBandTest is AuthEnv {
         assertEq(paid, uint256(h.captureLimit) * moved / 1e18);
         assertEq(usd.balanceOf(alice), 0);
         assertEq(cards.purchaseOf(P1).refunded, 100e6 - paid, "the issuer pays what the cap leaves");
-        // Refunds pay back at the rate the capture paid: every euro for what the euros covered.
+        // Refunds pay back at the rate the capture paid: every euro for what the settlement account got for them.
         (uint128 tokens, uint128 units) = cash.paidOf(cards.legId(P1, TOKEN_LEG), address(usd));
         assertEq(tokens, h.captureLimit);
-        assertEq(units, 100e6, "the euros covered the purchase, the issuer paying past the limit");
+        assertEq(units, paid, "the issuer's share past the limit is never refunded");
     }
 
     function test_pastBand_capShortfall_issuerPaysNotTheNextLeg() public {
@@ -296,6 +297,104 @@ contract CashSourceFxBandTest is AuthEnv {
         cards.capture(P1, 100e6, true);
     }
 
+    // The tolerance a hold was placed with.
+
+    function test_holdKeepsItsTolerance_narrowedAfterAuthorization_captureStillPricesInTheBand() public {
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        assertEq(cash.lockedTolerance(leg), 1000);
+        // The owner narrows its terms after authorizing; the hold and its band keep the 10% it was placed with.
+        _setTolerance(alice, address(cash), address(eur), 0);
+        bid.setPrice(BID * 95 / 100);
+        uint256 cost = _cost(100e6);
+        _capture(P1, 100e6, true);
+        assertEq(1000e6 - eur.balanceOf(alice), cost * (BPS - band) / BPS);
+        assertApproxEqAbs(usd.balanceOf(settlement), 98e6, 1);
+    }
+
+    function test_holdKeepsItsTolerance_narrowedAfterAuthorization_lateChargeStillPricesInTheBand() public {
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        _setTolerance(alice, address(cash), address(eur), 0);
+        vm.warp(block.timestamp + 7 days);
+        cards.release(P1);
+        assertEq(cash.lockedTolerance(leg), 1000, "an expired hold keeps its tolerance for a late charge");
+        bid.setPrice(BID * 95 / 100);
+        uint256 cost = _cost(100e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        assertEq(1000e6 - eur.balanceOf(alice), cost * (BPS - band) / BPS);
+        assertApproxEqAbs(usd.balanceOf(settlement), 98e6, 1);
+        assertEq(cash.lockedTolerance(leg), 0, "the late charge consumes it");
+    }
+
+    function test_holdKeepsItsTolerance_lateChargeCappedByIt() public {
+        _authorize(P1, 100e6);
+        uint256 held = _cashHold(P1).held;
+        vm.warp(block.timestamp + 7 days);
+        cards.release(P1);
+        // Raising the terms after the hold lapsed does not raise what a late charge may take.
+        _setTolerance(alice, address(cash), address(eur), 1800);
+        bid.setPrice(BID * 85 / 100);
+        Rates.set(conv, address(eur), 1.1e18 * 85 / 100);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        assertEq(1000e6 - eur.balanceOf(alice), uint256(held) * 11 / 10, "the hold's 10% caps the late charge");
+    }
+
+    function test_holdKeepsItsTolerance_widenedAfterAuthorization_bandStaysBounded() public {
+        _authorize(P1, 100e6);
+        _setTolerance(alice, address(cash), address(eur), type(uint16).max);
+        uint256 before = eur.balanceOf(alice);
+        // A venue paying a fifth of the locked price is past the hold's band: refused while the reference disagrees.
+        bid.setPrice(BID / 5);
+        vm.prank(issuer);
+        vm.expectPartialRevert(Conversion.RateDeviates.selector);
+        cards.capture(P1, 100e6, true);
+        assertEq(eur.balanceOf(alice), before);
+        assertEq(usd.balanceOf(settlement), 0);
+    }
+
+    function test_holdKeepsItsTolerance_resizeKeepsIt() public {
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        _setTolerance(alice, address(cash), address(eur), 0);
+        vm.prank(issuer);
+        cards.adjust(P1, 120e6);
+        assertEq(cash.lockedTolerance(leg), 1000);
+    }
+
+    function test_holdTolerancePastTheWidestBand_bandStopsThere() public {
+        _setTolerance(alice, address(cash), address(eur), 5000);
+        _authorize(P1, 100e6);
+        assertEq(cash.lockedTolerance(cards.legId(P1, TOKEN_LEG)), 5000);
+        // The band stops at the Conversion's widest: a 15% move prices against the lock, a 25% one does not.
+        bid.setPrice(BID * 85 / 100);
+        _capture(P1, 50e6, false);
+        bid.setPrice(BID * 75 / 100);
+        vm.prank(issuer);
+        vm.expectPartialRevert(Conversion.RateDeviates.selector);
+        cards.capture(P1, 50e6, true);
+    }
+
+    function test_anchoredQuotesAndSwaps_refuseABandPastTheWidest() public {
+        uint256 most = conv.MAX_ANCHOR_BAND_BPS();
+        assertEq(most, 2000);
+        conv.quoteOutAnchored(address(eur), address(usd), 100e6, BID, most);
+        vm.expectRevert(abi.encodeWithSelector(Conversion.BandTooWide.selector, most + 1));
+        conv.quoteOutAnchored(address(eur), address(usd), 100e6, BID, most + 1);
+        conv.setTrusted(address(this), true);
+        eur.mint(address(this), 100e6);
+        eur.approve(address(conv), type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(Conversion.BandTooWide.selector, BPS));
+        conv.swapExactInAnchored(address(eur), address(usd), 10e6, BID, BPS, address(this));
+        vm.expectRevert(abi.encodeWithSelector(Conversion.BandTooWide.selector, most + 1));
+        conv.swapExactOutAnchored(address(eur), address(usd), 10e6, 20e6, BID, most + 1, address(this));
+        assertEq(
+            conv.swapExactInAnchored(address(eur), address(usd), 10e6, BID, most, address(this)), 10e6 * BID / 1e18
+        );
+    }
+
     // Late presentments.
 
     function test_latePresentment_pricesAgainstTheRateThePurchaseLocked() public {
@@ -349,12 +448,57 @@ contract CashSourceFxBandTest is AuthEnv {
         usd.approve(address(cards), type(uint256).max);
         cards.refund(P1, 49e6);
         vm.stopPrank();
-        // 49% of what the euros covered gives back 49% of the euros, whatever the venue does since.
-        assertEq(eur.balanceOf(alice), 1000e6 - spent + spent * 49 / 100);
+        // A share of what the euros paid the settlement account gives back that share of the euros, whatever the
+        // venue does since.
+        assertEq(eur.balanceOf(alice), 1000e6 - spent + spent * 49e6 / paid);
         // Refunds stop at what the settlement account was paid.
         vm.prank(issuer);
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, uint128(paid - 49e6 + 1));
+        // The rest gives back every euro spent.
+        vm.prank(issuer);
+        cards.refund(P1, uint128(paid - 49e6));
+        assertEq(eur.balanceOf(alice), 1000e6);
+    }
+
+    function test_fullRefund_withinBandAdverse_returnsEveryTokenSpent() public {
+        _authorize(P1, 100e6);
+        uint256 held = _cashHold(P1).held;
+        bid.setPrice(BID * 985 / 1000);
+        _capture(P1, 100e6, true);
+        assertGt(cards.purchaseOf(P1).refunded, 0, "the issuer absorbs the move");
+        uint256 floatBefore = eur.balanceOf(address(conv));
+        uint256 amount = _refundAll(P1);
+        assertEq(amount, usd.balanceOf(settlement), "a full refund is what the settlement account was paid");
+        assertEq(eur.balanceOf(alice), 1000e6, "every euro back");
+        assertEq(floatBefore - eur.balanceOf(address(conv)), held, "the float pays them out");
+        (uint128 tokens, uint128 units) = cash.paidOf(cards.legId(P1, TOKEN_LEG), address(usd));
+        assertEq(tokens, 0);
+        assertEq(units, 0);
+    }
+
+    function test_fullRefund_cappedByTheCaptureLimit_returnsEveryTokenSpent() public {
+        _authorize(P1, 100e6);
+        IReservationCore.HoldRecord memory h = _cashHold(P1);
+        bid.setPrice(BID * 70 / 100);
+        Rates.set(conv, address(eur), 1.1e18 * 70 / 100);
+        _capture(P1, 100e6, true);
+        assertEq(1000e6 - eur.balanceOf(alice), h.captureLimit);
+        _refundAll(P1);
+        assertEq(eur.balanceOf(alice), 1000e6, "every euro back, the issuer's share past the limit apart");
+    }
+
+    function test_fullRefund_lateChargePastTheBand_returnsEveryTokenSpent() public {
+        _authorize(P1, 100e6);
+        vm.warp(block.timestamp + 7 days);
+        cards.release(P1);
+        bid.setPrice(BID * 95 / 100);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        (, uint128 units) = cash.paidOf(cards.legId(P1, TOKEN_LEG), address(usd));
+        assertEq(units, usd.balanceOf(settlement));
+        _refundAll(P1);
+        assertEq(eur.balanceOf(alice), 1000e6);
     }
 
     // Part captures and the open total.
@@ -433,9 +577,19 @@ contract CashSourceFxBandTest is AuthEnv {
 
     // Helpers.
 
-    /// @dev What the venue asks in euros for `units` dollars, whatever the reference rate.
+    /// @dev What the venue asks in euros for `units` dollars, whatever the reference rate (within the widest band).
     function _cost(uint256 units) internal view returns (uint256) {
-        return conv.quoteOutAnchored(address(eur), address(usd), units, BID, BPS);
+        return conv.quoteOutAnchored(address(eur), address(usd), units, BID, conv.MAX_ANCHOR_BAND_BPS());
+    }
+
+    /// @dev Refunds all the purchase still may and returns how much.
+    function _refundAll(bytes32 ref) internal returns (uint256 amount) {
+        amount = cards.purchaseOf(ref).captured - cards.purchaseOf(ref).refunded;
+        usd.mint(issuer, amount);
+        vm.startPrank(issuer);
+        usd.approve(address(cards), type(uint256).max);
+        cards.refund(ref, uint128(amount));
+        vm.stopPrank();
     }
 
     function _value(bytes32 ref) internal view returns (uint256) {
