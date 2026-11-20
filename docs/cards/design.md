@@ -143,10 +143,27 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   to what each captured, in reverse order, and the cash or savings leg the rest, never past what the
   sources covered; debt the owner owes a source is forgiven first. `charge` posts with no hold: the
   owner's cash sources cover it, debt included, and the issuer absorbs the rest.
-- **Conversion.** A cash leg in a stablecoin other than the settlement token locks the rate when placed
-  and converts what it captures through the program's `Conversion`: at the locked rate while the market
-  stays within the owner's tolerance, at today's price past it, never past the owner's maximum cost and
-  always above the conversion's slippage floor. Converted legs never create debt.
+- **Conversion.** A cash leg in a stablecoin other than the settlement token locks the rate when placed,
+  only while the `Conversion` quotes it against a fresh reference rate (`MAX_RATE_AGE`) within its slippage band
+  and the owner's maximum cost. Its captures keep that rate for the whole leg, part captures included, and
+  price what the owner pays against it (`FX_BAND_BPS`, 2%): within the band the owner pays the locked price,
+  the issuer carrying an adverse difference and keeping a favourable one (the surplus tokens go to the
+  settlement account); past it the owner pays the venue's price moved 2% in its favour (fewer tokens on an
+  adverse move, more on a favourable one). The owner's tokens stop at the hold's capture limit (its payee
+  tolerance) and take free balance past the hold as other captures do; what the capped tokens leave is the
+  issuer's, recorded as absorbed. A trusted `CashSource` captures through the Conversion's anchored path
+  (`quoteOutAnchored`, `swapExactInAnchored`, `swapExactOutAnchored`), which checks the venue against the locked rate
+  within `FX_BAND_BPS` plus the owner's tolerance instead of the reference rate and its age, so a stale feed no
+  longer stalls captures; a venue past that band captures only once the reference rate agrees with it. An
+  untrusted source keeps the reference path. A hold that expires keeps its locked rate (in the same slot) for
+  a late `charge`, which prices the same way and consumes it; a reversal of a live hold drops it. Refunds pay
+  the token back at the rate its captures and charges paid. Converted legs never create debt.
+- **Open converted value.** `CashSource.openConverted()` sums every open converted hold's settlement value at
+  its locked rate, kept in the high half of the leg's lock slot and updated on hold, resize, capture and
+  release. A hold the core ends at expiry counts until someone releases the purchase (anyone may, after
+  expiry), so the total drifts above the truth only by expired holds nobody released yet, the same lag as
+  CardAuth's own held total. `IssuerTreasury.stressedExposure()` adds `FX_STRESS_BPS` (10%) of the `openConverted`
+  of every source in `fxSources` to `exposure()`, and the guard and collateral release check that.
 - **Settlement log.** Every step emits one event with the purchase reference and a sequence number;
   captures, charges and refunds carry what the sources covered, and a won dispute counts as a
   refund of its chargeback (`creditBack`, registered companions only, which paid the cardholder
