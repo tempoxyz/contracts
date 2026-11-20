@@ -3,12 +3,19 @@ pragma solidity ^0.8.36;
 
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
+import { Vm } from "forge-std/Vm.sol";
+
 import { CreditSource } from "../../src/programs/CreditSource.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
 import { CompEnv } from "./harness/CompStubs.sol";
 
 /// @notice Credit line interest within the debt bound the borrower accepted, statements and autopay.
 contract CreditSourceStatementsTest is CompEnv {
+    /// @dev Bounds on collect over twelve past-due statements on the core model: a retry with nothing to draw, and one
+    ///      paying all twelve from cash (about 165,000 and 3,400,000 when written).
+    uint256 internal constant DRY_COLLECT_GAS = 250_000;
+    uint256 internal constant FULL_COLLECT_GAS = 4_500_000;
+
     uint64 internal due;
     uint64 internal lineId;
     uint256 internal draws;
@@ -344,12 +351,206 @@ contract CreditSourceStatementsTest is CompEnv {
         assertEq(s.paid, 30e6);
         assertEq(uint8(s.status), uint8(CreditSource.StatementStatus.PastDue));
         assertEq(credit.lineOf(lineId).owed, 50e6);
-        // A past-due statement is not collected again; the borrower repays it.
+        // Once autopay has the rest, the next collection pays the past-due statement in full.
         usd.mint(alice, 50e6);
         credit.collect(lineId);
+        s = credit.statementOf(lineId, 1);
+        assertEq(s.paid, 80e6);
+        assertEq(uint8(s.status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertEq(credit.chargeableAt(lineId), 0);
+    }
+
+    function test_collect_retriesAPastDueStatementOnceAutopayIsFunded() public {
+        _approveCash();
+        _autopay(address(usd));
+        _owe(80e6);
+        uint64 dueAt = _closeDue(1 days);
+        // Nothing to draw from: the collection misses and the statement goes past due.
+        vm.warp(dueAt);
+        credit.collect(lineId);
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.PastDue));
+        assertEq(credit.chargeableAt(lineId), dueAt + credit.CHARGE_OFF_GRACE());
+
+        // The borrower funds autopay later: anyone's next collection pays the statement and clears the clock.
+        vm.warp(dueAt + 10 days);
+        usd.mint(alice, 100e6);
+        uint256 lenderBefore = usd.balanceOf(lender) + core.reserved(lender, address(usd));
+        vm.expectEmit(address(credit));
+        emit CreditSource.Autopaid(lineId, 1, address(usd), 80e6);
+        vm.expectEmit(address(credit));
+        emit CreditSource.Repaid(lineId, alice, 80e6, 0);
+        vm.expectEmit(address(credit));
+        emit CreditSource.StatementCollected(lineId, 1, 80e6, 80e6, CreditSource.StatementStatus.Paid);
+        vm.prank(bob);
+        credit.collect(lineId);
+        CreditSource.Statement memory s = credit.statementOf(lineId, 1);
+        assertEq(s.paid, 80e6);
+        assertEq(uint8(s.status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertEq(credit.chargeableAt(lineId), 0);
+        assertEq(usd.balanceOf(alice), 20e6);
+        assertEq(usd.balanceOf(lender) + core.reserved(lender, address(usd)) - lenderBefore, 80e6);
+        (, uint32 collectFrom, uint32 payFrom) = credit.statementsOf(lineId);
+        assertEq(collectFrom, 2);
+        assertEq(payFrom, 2);
+        // Collecting again takes nothing more.
+        credit.collect(lineId);
+        assertEq(usd.balanceOf(alice), 20e6);
+        _assertCoreBalanced();
+    }
+
+    function test_collect_paysPastDueStatementsOldestFirstUntilFundsRunOut() public {
+        _approveCash();
+        _autopay(address(usd));
+        uint64[3] memory dues;
+        uint128[3] memory balances = [uint128(30e6), 40e6, 50e6];
+        for (uint256 i; i < 3; ++i) {
+            _owe(balances[i]);
+            dues[i] = _closeDue(1 days);
+            vm.warp(dues[i]);
+            credit.collect(lineId);
+            assertEq(
+                uint8(credit.statementOf(lineId, uint32(i + 1)).status), uint8(CreditSource.StatementStatus.PastDue)
+            );
+        }
+        uint256 grace = credit.CHARGE_OFF_GRACE();
+        assertEq(credit.chargeableAt(lineId), dues[0] + grace);
+
+        // Enough for the first two and part of the third.
+        usd.mint(alice, 100e6);
+        vm.expectEmit(address(credit));
+        emit CreditSource.Autopaid(lineId, 1, address(usd), 30e6);
+        vm.expectEmit(address(credit));
+        emit CreditSource.Autopaid(lineId, 2, address(usd), 40e6);
+        vm.expectEmit(address(credit));
+        emit CreditSource.Autopaid(lineId, 3, address(usd), 30e6);
+        vm.expectEmit(address(credit));
+        emit CreditSource.StatementCollected(lineId, 3, 50e6, 30e6, CreditSource.StatementStatus.PastDue);
+        credit.collect(lineId);
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(uint8(credit.statementOf(lineId, 2).status), uint8(CreditSource.StatementStatus.Paid));
+        CreditSource.Statement memory third = credit.statementOf(lineId, 3);
+        assertEq(third.paid, 30e6);
+        assertEq(uint8(third.status), uint8(CreditSource.StatementStatus.PastDue));
+        assertEq(usd.balanceOf(alice), 0);
+        // What the statements still bill is what the line owes: nothing counted twice.
+        assertEq(credit.lineOf(lineId).owed, 20e6);
+        assertEq(third.balance - third.paid, credit.lineOf(lineId).owed);
+        (,, uint32 payFrom) = credit.statementsOf(lineId);
+        assertEq(payFrom, 3);
+        // The third keeps its own due date: chargeableAt moves to it, not past it.
+        assertEq(credit.chargeableAt(lineId), dues[2] + grace);
+        _assertCoreBalanced();
+    }
+
+    function test_collect_partialPaymentOfAPastDueStatementKeepsItsClock() public {
+        _approveCash();
+        _autopay(address(usd));
+        _owe(80e6);
+        uint64 dueAt = _closeDue(1 days);
+        vm.warp(dueAt);
+        credit.collect(lineId);
+        uint256 at = credit.chargeableAt(lineId);
+        assertEq(at, dueAt + credit.CHARGE_OFF_GRACE());
+
+        vm.warp(dueAt + 20 days);
+        usd.mint(alice, 30e6);
+        vm.expectEmit(address(credit));
+        emit CreditSource.StatementCollected(lineId, 1, 80e6, 30e6, CreditSource.StatementStatus.PastDue);
+        credit.collect(lineId);
+        assertEq(credit.statementOf(lineId, 1).paid, 30e6);
         assertEq(credit.lineOf(lineId).owed, 50e6);
-        _repay(50e6);
-        assertEq(credit.statementOf(lineId, 1).paid, 80e6);
+        assertEq(credit.chargeableAt(lineId), at, "a partial payment leaves the clock where it was");
+
+        vm.warp(dueAt + 40 days);
+        usd.mint(alice, 50e6);
+        credit.collect(lineId);
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(credit.chargeableAt(lineId), 0);
+    }
+
+    function test_collect_nothingToPayChangesNothing() public {
+        // No statements yet.
+        credit.collect(lineId);
+        _approveCash();
+        _autopay(address(usd));
+        _owe(80e6);
+        uint64 dueAt = _closeDue(1 days);
+        vm.warp(dueAt);
+        credit.collect(lineId);
+        CreditSource.Statement memory before = credit.statementOf(lineId, 1);
+        (uint32 count, uint32 collectFrom, uint32 payFrom) = credit.statementsOf(lineId);
+        // Still nothing in autopay: a retry pays nothing and reports nothing.
+        vm.warp(dueAt + 7 days);
+        vm.recordLogs();
+        credit.collect(lineId);
+        _assertNoCollectionLogs();
+        CreditSource.Statement memory after_ = credit.statementOf(lineId, 1);
+        assertEq(after_.paid, before.paid);
+        assertEq(uint8(after_.status), uint8(CreditSource.StatementStatus.PastDue));
+        (uint32 count_, uint32 collectFrom_, uint32 payFrom_) = credit.statementsOf(lineId);
+        assertEq(count_, count);
+        assertEq(collectFrom_, collectFrom);
+        assertEq(payFrom_, payFrom);
+        assertEq(credit.lineOf(lineId).owed, 80e6);
+        assertEq(credit.chargeableAt(lineId), dueAt + credit.CHARGE_OFF_GRACE());
+    }
+
+    function test_collect_paysTheStatementDueNotAnOlderOneNotYetDue() public {
+        _approveCash();
+        _autopay(address(usd));
+        _owe(100e6);
+        _closeDue(30 days);
+        _owe(50e6);
+        uint64 second = _closeDue(5 days);
+        usd.mint(alice, 500e6);
+        vm.warp(second);
+        credit.collect(lineId);
+        // Only the statement that fell due is collected, and the payment is its own.
+        CreditSource.Statement memory s2 = credit.statementOf(lineId, 2);
+        assertEq(s2.paid, 50e6);
+        assertEq(uint8(s2.status), uint8(CreditSource.StatementStatus.Paid));
+        assertEq(credit.statementOf(lineId, 1).paid, 0);
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Due));
+        assertEq(usd.balanceOf(alice), 450e6);
+        assertEq(credit.lineOf(lineId).owed, 100e6);
+        (, uint32 collectFrom, uint32 payFrom) = credit.statementsOf(lineId);
+        assertEq(collectFrom, 1);
+        assertEq(payFrom, 1);
+        assertEq(credit.chargeableAt(lineId), second + 25 days + credit.CHARGE_OFF_GRACE());
+    }
+
+    function test_collect_twelvePastDueStatementsStayBounded() public {
+        _approveCash();
+        _autopay(address(usd), address(earnVault));
+        for (uint256 i; i < 12; ++i) {
+            _owe(10e6);
+            vm.warp(_closeDue(1 days));
+            credit.collect(lineId);
+        }
+        (uint32 count,, uint32 payFrom) = credit.statementsOf(lineId);
+        assertEq(count, 12);
+        assertEq(payFrom, 1);
+        // With nothing in autopay a retry visits the twelve and stops drawing after the first miss.
+        uint256 start = gasleft();
+        credit.collect(lineId);
+        uint256 dry = start - gasleft();
+        // Funded, one collection pays all twelve.
+        usd.mint(alice, 120e6);
+        start = gasleft();
+        credit.collect(lineId);
+        uint256 full = start - gasleft();
+        for (uint32 n = 1; n <= 12; ++n) {
+            assertEq(uint8(credit.statementOf(lineId, n).status), uint8(CreditSource.StatementStatus.Paid));
+        }
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertEq(credit.chargeableAt(lineId), 0);
+        (, uint32 collectFrom_, uint32 payFrom_) = credit.statementsOf(lineId);
+        assertEq(collectFrom_, 13);
+        assertEq(payFrom_, 13);
+        assertLt(dry, DRY_COLLECT_GAS, "a retry with nothing to draw stays cheap");
+        assertLt(full, FULL_COLLECT_GAS, "twelve statements in one collection");
     }
 
     function test_collect_neverTakesHeldOrUnapprovedFunds() public {
@@ -468,6 +669,29 @@ contract CreditSourceStatementsTest is CompEnv {
             payee: bob,
             standIn: false
         });
+    }
+
+    function _approveCash() internal {
+        vm.prank(alice);
+        usd.approve(address(credit), type(uint256).max);
+    }
+
+    /// @dev The lender closes a statement due `after` from now.
+    function _closeDue(uint256 after_) internal returns (uint64 dueAt) {
+        dueAt = uint64(vm.getBlockTimestamp() + after_);
+        vm.prank(lender);
+        credit.closeStatement(lineId, dueAt);
+    }
+
+    function _assertNoCollectionLogs() internal {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(credit)) continue;
+            bytes32 topic = logs[i].topics[0];
+            assertTrue(topic != CreditSource.Autopaid.selector, "no autopay");
+            assertTrue(topic != CreditSource.Repaid.selector, "no repayment");
+            assertTrue(topic != CreditSource.StatementCollected.selector, "no statement change");
+        }
     }
 
     function _autopay(address a) internal {

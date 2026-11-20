@@ -214,6 +214,81 @@ contract CreditSourceRecoveryTest is CompEnv {
         assertEq(credit.lineOf(lineId).owed, 0);
     }
 
+    function test_chargeOff_refusedOnceAutopayPaysThePastDueStatement() public {
+        uint64 lineId = _securedLine(1000e6, 0);
+        _autopayCash(lineId);
+        _draw(alice, lineId, LEG, 400e6, REF);
+        uint64 dueAt = _statement(lineId);
+        // The collection on the due date finds nothing to draw.
+        vm.warp(dueAt);
+        credit.collect(lineId);
+        uint256 at = dueAt + credit.CHARGE_OFF_GRACE();
+        assertEq(credit.chargeableAt(lineId), at);
+        // A month later the borrower funds autopay and a keeper's collection pays the statement.
+        vm.warp(dueAt + 30 days);
+        usd.mint(alice, 400e6);
+        vm.prank(keeper);
+        credit.collect(lineId);
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertEq(credit.chargeableAt(lineId), 0);
+        vm.warp(at);
+        vm.prank(lender);
+        vm.expectRevert(abi.encodeWithSelector(CreditSource.NotChargeable.selector, 0));
+        credit.chargeOff(lineId);
+        _assertCoreBalanced();
+    }
+
+    function test_chargeOff_afterAPartialRetryKeepsTheDueDateAndSellsOnlyTheRest() public {
+        uint64 lineId = _securedLine(1000e6, 0);
+        _autopayCash(lineId);
+        _draw(alice, lineId, LEG, 400e6, REF);
+        uint64 dueAt = _statement(lineId);
+        vm.warp(dueAt);
+        credit.collect(lineId);
+        uint256 at = dueAt + credit.CHARGE_OFF_GRACE();
+        // Autopay later covers a quarter: the debt falls, the clock does not move.
+        vm.warp(dueAt + 30 days);
+        usd.mint(alice, 100e6);
+        credit.collect(lineId);
+        assertEq(credit.lineOf(lineId).owed, 300e6);
+        assertEq(credit.chargeableAt(lineId), at);
+        vm.warp(at - 1);
+        vm.prank(lender);
+        vm.expectRevert(abi.encodeWithSelector(CreditSource.NotChargeable.selector, at));
+        credit.chargeOff(lineId);
+        vm.warp(at);
+        uint256 lenderBefore = _lenderTotal();
+        vm.prank(lender);
+        credit.chargeOff(lineId);
+        assertEq(_lenderTotal() - lenderBefore, 300e6, "the sale covers only what the retry left owed");
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertTrue(credit.lineOf(lineId).closed);
+        _assertCoreBalanced();
+    }
+
+    function test_collect_afterAShortChargeOffDrawsAutopayTowardWhatIsStillOwed() public {
+        uint64 lineId = _securedLine(1000e6, 0);
+        _autopayCash(lineId);
+        _draw(alice, lineId, LEG, 400e6, REF);
+        // The venue loses 70%: the locked shares fetch about $300 against $400 owed.
+        uint256 loss = usd.balanceOf(address(venue)) * 7 / 10;
+        vm.prank(address(venue));
+        usd.transfer(address(0xdead), loss);
+        uint64 dueAt = _statement(lineId);
+        vm.warp(dueAt + credit.CHARGE_OFF_GRACE());
+        vm.prank(lender);
+        credit.chargeOff(lineId);
+        uint128 left = credit.lineOf(lineId).owed;
+        assertGt(left, 0);
+        // What stays owed stays billed to the past-due statement, which autopay pays once funded.
+        usd.mint(alice, 500e6);
+        credit.collect(lineId);
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertEq(usd.balanceOf(alice), 500e6 - left);
+        assertEq(uint8(credit.statementOf(lineId, 1).status), uint8(CreditSource.StatementStatus.Paid));
+        _assertCoreBalanced();
+    }
+
     function test_chargeOff_sellsWhatIsOwedAndFreesTheRest() public {
         uint64 lineId = _securedLine(1000e6, 1000);
         uint256 shares = earnShare.balanceOf(alice);
@@ -336,6 +411,15 @@ contract CreditSourceRecoveryTest is CompEnv {
         vm.startPrank(alice);
         core.approveHolder(address(credit), address(earnShare), type(uint128).max, 0);
         credit.enableLocking(lineId);
+        vm.stopPrank();
+    }
+
+    function _autopayCash(uint64 lineId) internal {
+        address[] memory sources = new address[](1);
+        sources[0] = address(usd);
+        vm.startPrank(alice);
+        credit.setAutopay(lineId, sources);
+        usd.approve(address(credit), type(uint256).max);
         vm.stopPrank();
     }
 

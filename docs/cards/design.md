@@ -167,11 +167,13 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   30-day core hold. Anything that touches the line in the last half of that term (`RENEW_WINDOW`), including
   anyone's `relock`, renews it for a full term; once it lapses, `relock` locks again whatever of those shares
   is still there while the line owes anything, and frees them once it owes nothing. Past its loan-to-value the
-  lender `liquidate`s just enough to restore it. Once a statement stays unpaid `CHARGE_OFF_GRACE` (60 days,
-  fixed for every line, so part of what each borrower accepts) past its due date, the lender `chargeOff`s the
-  line: it closes, and locked shares worth what it owes (principal and simple interest) sell at the price used
-  to size the sale; the lender takes what is owed, the borrower any surplus, and what is still owed after
-  every locked share sold stays owed.
+  lender `liquidate`s just enough to restore it. Autopay (`collect`, which anyone may call) pays every unpaid
+  statement that has fallen due, oldest first and past-due ones included, until the borrower's sources run short;
+  a partial payment lowers what is owed but keeps the statement's due date. Once a statement stays unpaid
+  `CHARGE_OFF_GRACE` (60 days, fixed for every line, so part of what each borrower accepts) past its due date,
+  the lender `chargeOff`s the line: it closes, and locked shares worth what it owes (principal and simple
+  interest) sell at the price used to size the sale; the lender takes what is owed, the borrower any surplus,
+  and what is still owed after every locked share sold stays owed.
 - **Out of scope.** Interest beyond credit lines' simple rate, fees, rewards, escheat and estates are
   issuer services, built from plain transfers, holds and charges.
 

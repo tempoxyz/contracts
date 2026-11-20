@@ -17,8 +17,9 @@ import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfac
 ///         captured, net of refunds, plus simple interest at the yearly rate it accepted, never past the debt bound
 ///         it accepted. A secured line locks the borrower's Earn shares as it borrows, at its loan-to-value, and the
 ///         lender may sell locked shares that no longer cover it. Statements close at the lender's call and collect
-///         through the borrower's autopay sources. Once a statement has been unpaid CHARGE_OFF_GRACE past its due date,
-///         the lender may charge the line off: close it and sell locked shares worth up to everything owed.
+///         through the borrower's autopay sources until paid. Once a statement has been unpaid CHARGE_OFF_GRACE past
+///         its due date, the lender may charge the line off: close it and sell locked shares worth up to everything
+///         owed.
 /// @dev Amounts across ISource are settlement units; a line lends the program's settlement token at opening, so a
 ///      unit is a token unit. Positions are line ids.
 /// @custom:reentrancy-guard _locked
@@ -655,38 +656,57 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         emit AutopaySet(lineId, sources);
     }
 
-    /// @notice Collects every statement that has fallen due through the borrower's autopay sources; one still short is
-    ///         past due. Anyone may call it.
+    /// @notice Collects every unpaid statement that has fallen due through the borrower's autopay sources, oldest
+    ///         first, past-due ones included, until the sources run short; one still short is past due. A partial
+    ///         payment lowers what a statement bills but keeps its due date, so chargeableAt moves only once it is paid
+    ///         in full. Anyone may call it, as often as it likes.
     function collect(uint64 lineId) external nonReentrant {
         Line storage l = _lines[lineId];
         _accrue(lineId);
         Statements storage s = statementsOf[lineId];
-        uint32 count = s.count;
-        uint32 n = s.collectFrom;
+        (uint32 count, uint32 collectFrom, uint32 n) = (s.count, s.collectFrom, s.payFrom);
+        // Past-due statements sit from payFrom on, behind collectFrom; closeStatement keeps at most
+        // MAX_OPEN_STATEMENTS of them open.
+        if (collectFrom < n) n = collectFrom;
         if (n == 0) return;
         bool front = true;
+        bool dry;
+        bool settled;
         for (; n <= count; ++n) {
             Statement storage st = _statements[lineId][n];
-            // forge-lint: disable-next-line(block-timestamp)
-            if (st.status != StatementStatus.Due || st.dueAt > block.timestamp) {
-                if (front && st.status != StatementStatus.Due) s.collectFrom = n + 1;
-                else front = false;
-                continue;
-            }
-            uint128 open = st.balance - st.paid;
-            if (open > l.owed) open = l.owed;
-            if (open != 0) {
-                uint128 covered = _autopayFor(lineId, n, open);
+            StatementStatus status = st.status;
+            if (status != StatementStatus.Paid) {
+                // forge-lint: disable-next-line(block-timestamp)
+                if (status == StatementStatus.Due && st.dueAt > block.timestamp) {
+                    front = false;
+                    continue;
+                }
+                uint128 open = st.balance - st.paid;
+                if (open > l.owed) open = l.owed;
+                uint128 covered;
+                // Once the sources fall short of one statement they have nothing left for the next.
+                if (open != 0 && !dry) {
+                    covered = _autopayFor(lineId, n, open);
+                    dry = covered < open;
+                }
                 if (covered != 0) {
                     _reduce(lineId, l, covered);
-                    _payStatements(lineId, covered);
+                    // The payment is this statement's, whatever older ones are not yet due.
+                    st.paid += covered;
                     emit Repaid(lineId, l.borrower, covered, l.owed);
                 }
+                StatementStatus next =
+                    st.paid >= st.balance || l.owed == 0 ? StatementStatus.Paid : StatementStatus.PastDue;
+                if (next != status || covered != 0) {
+                    st.status = next;
+                    if (next == StatementStatus.Paid) settled = true;
+                    emit StatementCollected(lineId, n, st.balance, st.paid, next);
+                }
             }
-            st.status = st.paid >= st.balance || l.owed == 0 ? StatementStatus.Paid : StatementStatus.PastDue;
-            emit StatementCollected(lineId, n, st.balance, st.paid, st.status);
-            if (front) s.collectFrom = n + 1;
+            if (front && n >= collectFrom) collectFrom = n + 1;
         }
+        s.collectFrom = collectFrom;
+        if (settled) _skipPaid(s, lineId);
         _settle(lineId);
     }
 
@@ -739,7 +759,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     /// @notice When the lender may charge the line off: CHARGE_OFF_GRACE after the earliest due date among its unpaid
-    ///         statements, zero while it owes nothing or has none.
+    ///         statements, zero while it owes nothing or has none. A statement paid in part keeps its due date.
     function chargeableAt(uint64 lineId) public view returns (uint256 at) {
         if (_lines[lineId].owed == 0) return 0;
         Statements storage s = statementsOf[lineId];
@@ -1226,6 +1246,12 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             st.paid += uint128(part);
             amount -= part;
         }
+        _skipPaid(s, lineId);
+    }
+
+    /// @dev Moves payFrom past the statements now paid, to the first one still owing anything.
+    function _skipPaid(Statements storage s, uint64 lineId) private {
+        (uint32 first, uint32 count) = (s.payFrom, s.count);
         while (first <= count) {
             Statement storage st = _statements[lineId][first];
             if (st.status != StatementStatus.Paid && st.paid < st.balance) break;
