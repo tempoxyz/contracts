@@ -134,6 +134,9 @@ that by checkpointing sub-precision growth repeatedly; rounding never increases 
 
 After a base-asset or in-kind deposit, `EarnFees.initializeBaselines` raises the high-water mark,
 and an excess target, to the post-entry value when that is higher. Baselines never fall on entry.
+When the deposit's checkpoint valued the pool, `accrueFees` also returns the lowest baseline it
+left, and the EarnVault skips `initializeBaselines` (and its `FeeBaselinesInitialized` event) when
+the post-entry value does not exceed it, since the call would change nothing.
 This keeps venue precision that pooling makes representable, for example after a dust-sized first
 position, classified as principal rather than accrual.
 

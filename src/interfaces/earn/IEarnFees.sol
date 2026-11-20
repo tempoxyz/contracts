@@ -18,7 +18,7 @@ interface IEarnFees {
 
     function accrueFees(uint256 activeSupply, uint256 activeAssets, bool valuationFresh)
         external
-        returns (FeePreview memory result);
+        returns (FeePreview memory result, uint256 baselineFloor, uint256 scale);
     function setFeeConfig(FeeConfig calldata config) external returns (uint64 configId);
     function validateFeeConfig(FeeConfig calldata config) external view;
     function disableFees(address operator) external;

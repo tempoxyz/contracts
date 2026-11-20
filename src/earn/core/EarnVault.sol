@@ -3,6 +3,7 @@ pragma solidity ^0.8.36;
 
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import { EarnFeeMath } from "./EarnFeeMath.sol";
 import { IEarnFees } from "../../interfaces/earn/IEarnFees.sol";
 import { IEarnShare } from "../../interfaces/earn/IEarnShare.sol";
 import { IEarnVault } from "../../interfaces/earn/IEarnVault.sol";
@@ -643,8 +644,14 @@ contract EarnVault is IEarnVault {
 
         // The checkpoint mints fee EarnShare only into a nonzero supply, so `currentSupply` is zero exactly when the
         // supply before it was.
-        (FeePreview memory accruedFees, uint256 currentSupply, uint256 backing, uint256 rawSharesBefore) =
-            _accrueFeesRaw();
+        (
+            FeePreview memory accruedFees,
+            uint256 currentSupply,
+            uint256 backing,
+            uint256 rawSharesBefore,
+            uint256 baselineFloor,
+            uint256 floorScale
+        ) = _accrueFeesRaw();
         bool restarted = _isUnbackedHeld(currentSupply, accruedFees.activeAssets, backing);
         uint256 strandedEngineShares;
         if (restarted) strandedEngineShares = _restartEmptyAnchor();
@@ -672,9 +679,12 @@ contract EarnVault is IEarnVault {
             _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter);
         _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
-        if (currentSupply == 0 || accruedFees.activeAssets != 0 || restarted) {
+        if (currentSupply == 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
             _initializeFeeBaselines(supplyAfter, heldAfter);
+        } else if (accruedFees.activeAssets != 0) {
+            /// @custom:ghost baselineEntries = baselineEntries + 1
+            _ratchetFeeBaselines(supplyAfter, heldAfter, baselineFloor, floorScale);
         }
         // The first entry into an empty pool always updates the fee baselines.
         /// @custom:assert currentSupply == 0 ==> baselineEntries == old(baselineEntries) + 1
@@ -725,7 +735,8 @@ contract EarnVault is IEarnVault {
 
         // The checkpoint mints fee EarnShare only into a nonzero supply, so `currentSupply` is zero exactly when the
         // supply before it was.
-        (FeePreview memory accruedFees, uint256 currentSupply,) = _accrueFees();
+        (FeePreview memory accruedFees, uint256 currentSupply,,, uint256 baselineFloor, uint256 floorScale) =
+            _accrueFeesRaw();
         bool restarted = _isUnbacked(currentSupply, accruedFees.activeAssets);
         uint256 strandedEngineShares;
         if (restarted) strandedEngineShares = _restartEmptyAnchor();
@@ -755,9 +766,12 @@ contract EarnVault is IEarnVault {
         (uint256 supplyAfter, uint256 heldAfter) = _reanchorAfterEntry(rateEngineShares, rateEarnShares);
         _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
-        if (currentSupply == 0 || accruedFees.activeAssets != 0 || restarted) {
+        if (currentSupply == 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
             _initializeFeeBaselines(supplyAfter, heldAfter);
+        } else if (accruedFees.activeAssets != 0) {
+            /// @custom:ghost baselineEntries = baselineEntries + 1
+            _ratchetFeeBaselines(supplyAfter, heldAfter, baselineFloor, floorScale);
         }
         // The first entry into an empty pool always updates the fee baselines.
         /// @custom:assert currentSupply == 0 ==> baselineEntries == old(baselineEntries) + 1
@@ -1857,14 +1871,22 @@ contract EarnVault is IEarnVault {
     /// @dev No contract of its own: it calls out mid-update, so the verifier inlines it into each caller, which
     ///      holds the lock and the invariants. _reanchorAtRest's contract gives the anchor facts.
     function _accrueFees() internal returns (FeePreview memory result, uint256 supply, uint256 backing) {
-        (result, supply, backing,) = _accrueFeesRaw();
+        (result, supply, backing,,,) = _accrueFeesRaw();
     }
 
-    /// @dev {_accrueFees}, also returning the engine's raw share count it read. While fees are off EarnFees
-    ///      would return an empty result, so the call is skipped.
+    /// @dev {_accrueFees}, also returning the engine's raw share count it read and EarnFees' baseline floor with
+    ///      the EarnShare scale it is measured in. While fees are off EarnFees would return an empty result, so
+    ///      the call is skipped.
     function _accrueFeesRaw()
         internal
-        returns (FeePreview memory result, uint256 supply, uint256 backing, uint256 raw)
+        returns (
+            FeePreview memory result,
+            uint256 supply,
+            uint256 backing,
+            uint256 raw,
+            uint256 baselineFloor,
+            uint256 floorScale
+        )
     {
         /// @custom:ghost feeCheckpoints = feeCheckpoints + 1
         // Neither the checkpoint nor the fee mint moves engine shares, so one raw read serves both.
@@ -1875,7 +1897,7 @@ contract EarnVault is IEarnVault {
             bool fresh = supplyBefore != 0 && isFeeValuationFresh();
             uint256 managed = _managedEngineShares;
             uint256 assets = fresh ? IEarnEngine(engine).valueOf(raw < managed ? raw : managed) : 0;
-            result = IEarnFees(earnFees).accrueFees(supplyBefore, assets, fresh);
+            (result, baselineFloor, floorScale) = IEarnFees(earnFees).accrueFees(supplyBefore, assets, fresh);
             if (result.totalFeeEarnShares != 0) {
                 IEarnShare(earnShare).mint(earnFees, result.totalFeeEarnShares);
             }
@@ -1889,6 +1911,16 @@ contract EarnVault is IEarnVault {
     ///      supply and managed backing an entry's reanchor just left; that backing's value is totalAssets().
     function _initializeFeeBaselines(uint256 supply, uint256 held) internal {
         if (feesActiveCached) IEarnFees(earnFees).initializeBaselines(supply, _baselineAssets(supply, held));
+    }
+
+    /// @dev After an entry whose checkpoint valued the pool, EarnFees raises a baseline only for a value per
+    ///      EarnShare (rounded up, at its own scale) above the floor it returned, which nothing lowers within the
+    ///      call. At or below it the call would change nothing, so it is skipped.
+    function _ratchetFeeBaselines(uint256 supply, uint256 held, uint256 baselineFloor, uint256 floorScale) internal {
+        if (!feesActiveCached) return;
+        uint256 assets = _baselineAssets(supply, held);
+        if (supply != 0 && EarnFeeMath.valuePerEarnShareUp(assets, floorScale, supply) <= baselineFloor) return;
+        IEarnFees(earnFees).initializeBaselines(supply, assets);
     }
 
     /// @dev EarnFees ignores the value for an empty supply, so it is read only for a live one.

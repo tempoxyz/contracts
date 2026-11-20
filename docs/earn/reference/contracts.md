@@ -258,7 +258,8 @@ module, or the EarnVault.
 supplies the accounting context, passing active EarnShare supply, active assets and valuation
 freshness to `accrueFees` and `initializeBaselines`, and separately mints any fee EarnShare they
 return.
-`initializeBaselines` runs after a principal deposit and only raises baselines.
+`initializeBaselines` runs after a principal deposit and only raises baselines; the EarnVault skips
+it when the post-entry value is at or below the baseline floor `accrueFees` returned.
 
 ### Events
 

@@ -269,15 +269,20 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
     /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + result.totalFeeEarnShares
     /// @custom:ensures forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a)) + _specCreditedTo(result, a)
+    /// @custom:ensures result.activeAssets != 0 ==> baselineFloor <= highWaterMark && scale == _earnShareScale()
+    /// @custom:ensures result.activeAssets != 0 && _feeConfigs[currentFeeConfigId].excess.enabled ==> baselineFloor <= _specTargetNow()
     /// @dev The vault passes its active EarnShare supply, active assets and valuation freshness; only the vault
     ///      reaches this, so the values carry the same trust as reading them back from it. `activeAssets` is read
-    ///      only for a nonzero supply and a fresh valuation.
+    ///      only for a nonzero supply and a fresh valuation. For a checkpoint that valued the pool,
+    ///      `baselineFloor` is a value per EarnShare at or below every baseline it leaves, and `scale` the
+    ///      EarnShare scale it is measured in, so a principal entry ending at or below it would leave
+    ///      `initializeBaselines` nothing to raise. Both are zero otherwise.
     function accrueFees(uint256 activeSupply, uint256 activeAssets, bool valuationFresh)
         external
         onlyEarnVault
-        returns (FeePreview memory result)
+        returns (FeePreview memory result, uint256 baselineFloor, uint256 scale)
     {
-        result = _accrueFees(activeSupply, activeAssets, valuationFresh);
+        (result, baselineFloor, scale) = _accrueFees(activeSupply, activeAssets, valuationFresh);
     }
 
     /// @notice Installs a valid configuration under the next id and re-enables fees (fees.md, "Configuration and authority").
@@ -560,29 +565,30 @@ contract EarnFees is IEarnFees {
     /// Not proved: two of its target-ratchet postconditions; the solver gives no answer for them.
     function _accrueFees(uint256 earnShareSupply, uint256 activeAssets, bool valuationFresh)
         internal
-        returns (FeePreview memory result)
+        returns (FeePreview memory result, uint256 baselineFloor, uint256 scale)
     {
-        if (feesDisabled) return result;
+        if (feesDisabled) return (result, 0, 0);
         StoredFeeConfig storage storedConfig = _feeConfigs[currentFeeConfigId];
         StoredExcessFee memory excess = storedConfig.excess;
-        if (excess.fixedFeeCount == 0 && !excess.enabled) return result;
-        if (earnShareSupply == 0) return result;
-        if (!valuationFresh) return result;
+        if (excess.fixedFeeCount == 0 && !excess.enabled) return (result, 0, 0);
+        if (earnShareSupply == 0) return (result, 0, 0);
+        if (!valuationFresh) return (result, 0, 0);
         if (feeBaselinesPending) {
             feeBaselinesPending = false;
             _initializeFeeBaselines(earnShareSupply, activeAssets);
-            return result;
+            return (result, 0, 0);
         }
 
         /// @custom:ghost checkpointSupply = earnShareSupply
         result.activeAssets = activeAssets;
-        uint256 scale = _earnShareScale();
+        scale = _earnShareScale();
         result.preFeeValuePerEarnShare = EarnFeeMath.valuePerEarnShare(activeAssets, scale, earnShareSupply);
         // With no value above the high-water mark, fee allocation cannot change any remainder or
         // the high-water mark. Preserve the target ratchet and observable preview fields while
         // avoiding the full config copy, remainder reads/writes, and allocation loop on the common
         // no-new-yield path.
-        if (result.preFeeValuePerEarnShare <= highWaterMark) {
+        uint256 mark = highWaterMark;
+        if (result.preFeeValuePerEarnShare <= mark) {
             result.postFeeValuePerEarnShare = EarnFeeMath.valuePerEarnShareUp(activeAssets, scale, earnShareSupply);
             if (excess.enabled) {
                 result.targetValuePerEarnShare =
@@ -592,10 +598,17 @@ contract EarnFees is IEarnFees {
                     targetStartedAt = uint40(block.timestamp);
                 }
             }
-            emit FeesAccrued(
-                currentFeeConfigId, result.activeAssets, 0, 0, 0, highWaterMark, result.targetValuePerEarnShare
-            );
-            return result;
+            emit FeesAccrued(currentFeeConfigId, result.activeAssets, 0, 0, 0, mark, result.targetValuePerEarnShare);
+            // The mark is unchanged, and a target restarted now equals its base, so it is now the larger of the
+            // two values just compared.
+            baselineFloor = mark;
+            if (excess.enabled) {
+                uint256 targetNow = result.postFeeValuePerEarnShare > result.targetValuePerEarnShare
+                    ? result.postFeeValuePerEarnShare
+                    : result.targetValuePerEarnShare;
+                if (targetNow < baselineFloor) baselineFloor = targetNow;
+            }
+            return (result, baselineFloor, scale);
         }
 
         uint256[5] memory nextRemainders;
@@ -604,7 +617,7 @@ contract EarnFees is IEarnFees {
                 activeAssets: activeAssets,
                 earnShareSupply: earnShareSupply,
                 earnShareScale: scale,
-                highWaterMark: highWaterMark,
+                highWaterMark: mark,
                 targetBase: targetBase,
                 targetStartedAt: targetStartedAt,
                 timestamp: block.timestamp
@@ -620,12 +633,17 @@ contract EarnFees is IEarnFees {
         if (result.totalFeeEarnShares != 0) {
             _creditCalculatedAllocations(currentFeeConfigId, result);
         }
-        if (result.preFeeValuePerEarnShare > highWaterMark) highWaterMark = result.postFeeValuePerEarnShare;
+        if (result.preFeeValuePerEarnShare > mark) {
+            mark = result.postFeeValuePerEarnShare;
+            highWaterMark = mark;
+        }
 
         if (excess.enabled && result.postFeeValuePerEarnShare > result.targetValuePerEarnShare) {
             targetBase = result.postFeeValuePerEarnShare;
             targetStartedAt = uint40(block.timestamp);
         }
+        // The target, when enabled, is now at least the post-fee value.
+        baselineFloor = mark < result.postFeeValuePerEarnShare ? mark : result.postFeeValuePerEarnShare;
 
         emit FeesAccrued(
             currentFeeConfigId,
@@ -633,7 +651,7 @@ contract EarnFees is IEarnFees {
             result.positiveAccrualAssets,
             result.totalFeeAssets,
             result.totalFeeEarnShares,
-            highWaterMark,
+            mark,
             result.targetValuePerEarnShare
         );
     }
