@@ -1525,6 +1525,37 @@ contract CardAuthTest is AuthEnv {
         _authorize(P1, 10e6);
     }
 
+    /// @dev On a Zone the registry refuses calls from contracts; authorization then goes ahead and the token's own
+    ///      policy applies when the purchase captures.
+    function test_authorize_goesAheadWhenTheRegistryRefusesContractCalls() public {
+        usd.mint(alice, 1000e6);
+        ITIP403Registry registry = StdPrecompiles.TIP403_REGISTRY;
+        uint64 policy = registry.createPolicy(address(this), ITIP403Registry.PolicyType.BLACKLIST);
+        usd.changeTransferPolicyId(policy);
+        vm.mockCallRevert(
+            address(registry),
+            abi.encodeCall(ITIP403Registry.isAuthorizedRecipient, (policy, settlement)),
+            abi.encodeWithSignature("OnlyPrecompiles()")
+        );
+        _authorize(P1, 10e6);
+        assertTrue(cards.purchaseOf(P1).open);
+    }
+
+    /// @dev Any other registry failure stops the authorization with the registry's own error.
+    function test_authorize_passesOnOtherRegistryFailures() public {
+        usd.mint(alice, 1000e6);
+        ITIP403Registry registry = StdPrecompiles.TIP403_REGISTRY;
+        uint64 policy = registry.createPolicy(address(this), ITIP403Registry.PolicyType.BLACKLIST);
+        usd.changeTransferPolicyId(policy);
+        bytes memory failure = abi.encodeWithSignature("Unavailable()");
+        vm.mockCallRevert(
+            address(registry), abi.encodeWithSelector(ITIP403Registry.isAuthorizedRecipient.selector), failure
+        );
+        vm.prank(issuer);
+        vm.expectRevert(failure);
+        cards.authorize(CARD, P1, 10e6, merchant, uint64(block.timestamp + 1 days), 0);
+    }
+
     /// @dev Credit the cardholder already holds (provisional credit a won dispute keeps) settles as a refund, by what the
     ///      caller says the network charges back: negative adds back what a merchant reserve paid instead.
     function test_creditBack_countsAgainstSettlement() public {

@@ -10,6 +10,7 @@ import { IExposureGuard } from "./interfaces/IExposureGuard.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title CardAuth
 /// @notice A card program's authorization contract: its cards, the owners' grants and limits, merchant mandates,
@@ -469,12 +470,26 @@ contract CardAuth is CardAuthBase, ICardAuth {
 
     /// @dev Refuses a new hold while the settlement token's TIP-403 policy keeps the settlement account from receiving
     ///      it: the purchase could never capture.
+    /// @dev keccak256 of the Zone registry's refusal, OnlyPrecompiles().
+    bytes32 private constant ONLY_PRECOMPILES = keccak256(abi.encodeWithSignature("OnlyPrecompiles()"));
+
     function _checkSettlementAccount() private view {
         address token = eras[_state.era].token;
         uint64 policy = ITIP20(token).transferPolicyId();
         // Policy 1 authorizes every account.
-        if (policy != 1 && !StdPrecompiles.TIP403_REGISTRY.isAuthorizedRecipient(policy, SETTLEMENT_ACCOUNT)) {
-            revert SettlementAccountBlocked();
+        if (policy == 1) return;
+        (bool ok, bytes memory out) = address(StdPrecompiles.TIP403_REGISTRY)
+            .staticcall(abi.encodeCall(ITIP403Registry.isAuthorizedRecipient, (policy, SETTLEMENT_ACCOUNT)));
+        if (ok) {
+            if (!abi.decode(out, (bool))) revert SettlementAccountBlocked();
+            return;
+        }
+        // Zones refuse registry calls from contracts (OnlyPrecompiles()); their token transfers still apply the
+        // policy when the purchase captures.
+        if (keccak256(out) != ONLY_PRECOMPILES) {
+            assembly ("memory-safe") {
+                revert(add(out, 32), mload(out))
+            }
         }
     }
 
