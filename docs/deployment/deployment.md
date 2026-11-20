@@ -205,6 +205,14 @@ counts as user assets; it stays with the contract for good. Measured on real TIP
 vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The EarnVault and EarnShare units are plain transfers
 outside the recorded deployment actions.
 
+[Reward periphery](../earn/modules/rewards.md) pulls the vault asset from a funder and passes it on in
+the same call, so each funding recreates the funding contract's balance slot. After a contribution
+controller or Merkle distributor is deployed or installed, send it 1 base unit of the vault asset.
+The controller never measures its own balance and the distributor checks only that its balance did
+not grow, so the unit stays with the contract for good; neither has a rescue path, so send no more.
+Measured on real TIP-20 (`test/spend/gas/RewardsTip20Gas.t.sol`), it cuts a controller `fund` from
+670k to 420k gas and a distributor `fundAndPublishRoot` from 960k to 713k.
+
 Zone routers, their `SendSpender`s and card programs (`CardSpender`) hold a token only while a call
 runs, so each callback or spend recreates the balance slot of every token it handles. Tempo charges
 250,000 gas for a slot written from zero, unless a TIP-1060 storage credit from a slot the same

@@ -210,7 +210,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         uint256 earnShareBalanceBefore = IERC20Like(earnShare).balanceOf(address(this));
         _safeTransferFrom(asset, funder, address(this), assets);
         // A standing maximum allowance for the immutable EarnVault: Tempo charges every zero-to-nonzero allowance as a new storage slot. This
-        // distributor holds no base asset between calls (checked below).
+        // distributor keeps no pulled base asset between calls (checked below).
         if (IERC20Allowance(asset).allowance(address(this), address(earnVault)) < assets) {
             _safeApprove(asset, address(earnVault), 0);
             _safeApprove(asset, address(earnVault), type(uint256).max);

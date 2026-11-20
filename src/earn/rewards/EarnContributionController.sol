@@ -35,8 +35,8 @@ interface IContributionTarget {
 /// Ghost record of the supply the last supply check accepted.
 /// @custom:ghost uint256 checkedSupply
 /// Solvency: the controller never holds what it contributes. Every successful leg pulls exactly the requested
-/// assets; the only allowance it keeps is a standing one to the immutable EarnVault (see _contributeExact).
-/// Not proved: that the controller's asset balance returns to its prior value after each leg; the vault's
+/// assets; the only allowance it keeps is a standing one to the immutable EarnVault (see _contribute).
+/// Not proved: that the controller's asset balance returns to its prior value after each call; the vault's
 /// contribute pull is not measured here.
 contract EarnContributionController is Ownable2Step {
     IContributionTarget public immutable earnVault;
@@ -115,8 +115,9 @@ contract EarnContributionController is Ownable2Step {
     }
 
     /// @notice Pulls an all-or-nothing contribution batch from multiple funders.
-    /// @dev The fee-inclusive supply bound is checked once before the first contribution. A provider
-    ///      or venue failure reverts every leg, preventing partial multi-provider settlement.
+    /// @dev The fee-inclusive supply bound is checked once before any pull. Every leg is pulled first and
+    ///      the sum enters the EarnVault as one contribution, so the controller's and engine's asset
+    ///      balances are written once per batch. A provider or venue failure reverts every leg.
     /// Only the owner funds, only while active, with at least two legs of equal-length arrays, every funder
     /// nonzero and every amount positive; the total covers every leg.
     /// @custom:ensures old(owner()) == msg.sender && old(active)
@@ -148,10 +149,11 @@ contract EarnContributionController is Ownable2Step {
         /// @custom:invariant forall uint256 j :: j < length ==> funders[j] != address(0) && requestedAssets[j] > 0
         for (uint256 i; i < length; ++i) {
             uint256 amount = requestedAssets[i];
-            _contributeExact(funders[i], amount);
+            _pullExact(funders[i], amount);
             totalFundedAssets += amount;
             emit Funded(funders[i], amount, amount);
         }
+        _contribute(totalFundedAssets);
     }
 
     /// @notice Atomic provider pull, live-supply check, and contribution leg used only through `fund`.
@@ -164,7 +166,8 @@ contract EarnContributionController is Ownable2Step {
         if (msg.sender != address(this)) revert NotSelf();
 
         _checkEarnShareSupply(maxEarnShareSupply);
-        _contributeExact(funder, requestedAssets);
+        _pullExact(funder, requestedAssets);
+        _contribute(requestedAssets);
         fundedAssets = requestedAssets;
     }
 
@@ -183,16 +186,21 @@ contract EarnContributionController is Ownable2Step {
 
     /// The contract invariants hold on entry (it is called from verified entry points only).
     /// @custom:requires address(earnVault) != address(0) && asset != address(0)
-    /// A contribution pulls exactly the requested assets before the vault pulls them.
-    function _contributeExact(address funder, uint256 requestedAssets) private {
+    /// Every leg pulls exactly the requested assets before the vault pulls them.
+    function _pullExact(address funder, uint256 requestedAssets) private {
         _safeTransferFrom(asset, funder, address(this), requestedAssets);
         /// @custom:assert lastPulled == requestedAssets
+    }
+
+    /// The contract invariants hold on entry (it is called from verified entry points only).
+    /// @custom:requires address(earnVault) != address(0) && asset != address(0)
+    function _contribute(uint256 assets) private {
         // A standing maximum allowance for the immutable EarnVault: Tempo charges every zero-to-nonzero allowance as a new storage slot.
-        if (IERC20Allowance(asset).allowance(address(this), address(earnVault)) < requestedAssets) {
+        if (IERC20Allowance(asset).allowance(address(this), address(earnVault)) < assets) {
             _safeApprove(asset, address(earnVault), 0);
             _safeApprove(asset, address(earnVault), type(uint256).max);
         }
-        earnVault.contribute(requestedAssets);
+        earnVault.contribute(assets);
     }
 
     /// @notice Stops or restarts future funding calls without touching the vault or existing rewards.
