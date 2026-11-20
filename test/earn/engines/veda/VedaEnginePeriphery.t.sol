@@ -163,6 +163,35 @@ contract VedaEnginePeripheryTest is VedaEngineTestBase {
         assertEq(uint256(status), uint256(VedaEngine.ClaimStatus.Cancelled));
     }
 
+    function testQueueRotationKeepsPerQueueCountsAndStandingAllowances() public {
+        bytes32 oldId = _request(40);
+        assertEq(vault.allowance(address(engine), address(queue)), 1);
+
+        (MockAccountant newAccountant, MockTeller newTeller, MockQueue newQueue) = _newPeriphery(1e6);
+        _rotate(newTeller, newQueue, newAccountant, 1e6, 1e6);
+        assertEq(vault.allowance(address(engine), address(queue)), 0);
+        assertEq(vault.allowance(address(engine), address(newQueue)), 1);
+
+        bytes32 newId = _request(30);
+        assertEq(engine.openClaimsByQueue(address(queue)), 1);
+        assertEq(engine.openClaimsByQueue(address(newQueue)), 1);
+        assertEq(engine.unresolvedClaimCount(), 2);
+
+        // Reinstalling the first Queue makes its parked count active again and parks the second Queue's.
+        uint256 rate = accountant.getRate();
+        _rotate(teller, queue, accountant, rate, rate);
+        assertEq(engine.openClaimsByQueue(address(queue)), 1);
+        assertEq(engine.openClaimsByQueue(address(newQueue)), 1);
+        assertEq(vault.allowance(address(engine), address(queue)), 1);
+        assertEq(vault.allowance(address(engine), address(newQueue)), 0);
+
+        assertEq(core.cancelRedeem(newId), 30);
+        assertEq(engine.openClaimsByQueue(address(newQueue)), 0);
+        assertEq(core.cancelRedeem(oldId), 40);
+        assertEq(engine.openClaimsByQueue(address(queue)), 0);
+        assertEq(engine.unresolvedClaimCount(), 0);
+    }
+
     function testQueueRemovalDisablesNewRequestsButPreservesExistingCancellation() public {
         bytes32 id = _request(40);
 

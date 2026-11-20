@@ -14,6 +14,7 @@ interface IERC20T {
 contract MockAsset {
     uint8 public constant decimals = 6;
     uint16 public feeBps;
+    bool public zeroFirstApprovals;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
@@ -25,7 +26,13 @@ contract MockAsset {
         feeBps = feeBps_;
     }
 
+    function setZeroFirstApprovals(bool zeroFirstApprovals_) external {
+        zeroFirstApprovals = zeroFirstApprovals_;
+    }
+
     function approve(address spender, uint256 amount) external returns (bool) {
+        // USDT-style tokens refuse to change a nonzero allowance to another nonzero value.
+        if (zeroFirstApprovals && amount != 0 && allowance[msg.sender][spender] != 0) revert("approve from zero");
         allowance[msg.sender][spender] = amount;
         return true;
     }

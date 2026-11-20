@@ -10,7 +10,7 @@ import type { EarnDeploymentProfile } from '../core/profile.js'
 import { accessPolicyModule } from './earn/access-policy/index.js'
 import { validateAccess } from './earn/access-policy/steps.js'
 import { bindCore, deployCore } from './earn/core/steps.js'
-import { deployEngine } from './earn/engines/steps.js'
+import { deployEngine, seedEngine } from './earn/engines/steps.js'
 import type {
   AuthorityStep,
   CapabilityModule,
@@ -65,6 +65,7 @@ const steps = [
   registerZoneRouterGateway,
   admitZoneRouterAccount,
   seedZoneRouter,
+  seedEngine,
 ] as const
 
 unique(

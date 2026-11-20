@@ -319,7 +319,9 @@ stock solver boringRedeemSolve accepts the supported request tuple, Teller, and 
 
 For each deficit-covering solve, the authorized solver approves an exact base-asset amount to the
 forwarder immediately before `solveAndForward(requestIds, true)`; never leave a standing allowance.
-Verify the refund and that both allowances return to zero.
+Verify the refund and that both forwarder allowances return to zero. The engine itself keeps a
+one-unit standing allowance of base asset to the BoringVault and of vault shares to the active Queue,
+and its deposits and requests leave exactly that unit.
 
 Before committing the generated `deployment.json`, which does not replace the Veda release record,
 confirm the engine is bound only to the new EarnVault, the registry and periphery are the reviewed
