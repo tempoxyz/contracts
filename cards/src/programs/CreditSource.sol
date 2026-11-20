@@ -17,7 +17,8 @@ import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfac
 ///         captured, net of refunds, plus simple interest at the yearly rate it accepted, never past the debt bound
 ///         it accepted. A secured line locks the borrower's Earn shares as it borrows, at its loan-to-value, and the
 ///         lender may sell locked shares that no longer cover it. Statements close at the lender's call and collect
-///         through the borrower's autopay sources.
+///         through the borrower's autopay sources. Once a statement has been unpaid CHARGE_OFF_GRACE past its due date,
+///         the lender may charge the line off: close it and sell locked shares worth up to everything owed.
 /// @dev Amounts across ISource are settlement units; a line lends the program's settlement token at opening, so a
 ///      unit is a token unit. Positions are line ids.
 /// @custom:reentrancy-guard _locked
@@ -34,6 +35,12 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     uint256 private constant MAX_AUTOPAY = 4;
     /// @dev Most statements a line keeps open (not yet paid) at once, which bounds what a repayment walks.
     uint256 private constant MAX_OPEN_STATEMENTS = 12;
+    /// @notice A commitment or lock hold touched in the last RENEW_WINDOW of its term renews for a full term, so a
+    ///         weekly keeper may miss a run and still renew a lock before it lapses.
+    uint256 public constant RENEW_WINDOW = TERM / 2;
+    /// @notice How long a statement stays unpaid past its due date before the lender may charge the line off. One
+    ///         constant for every line, so it is part of the terms each borrower accepts.
+    uint256 public constant CHARGE_OFF_GRACE = 60 days;
 
     /// @notice The card authorization contract whose purchases draw these lines.
     ICardAuth public immutable PROGRAM;
@@ -158,6 +165,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     event LockingEnabled(uint64 indexed lineId);
     event Locked(uint64 indexed lineId, bytes32 holdId, uint128 shares);
     event Liquidated(uint64 indexed lineId, uint128 shares, uint256 assets, uint128 owed);
+    /// @notice The lender charged the line off, selling shares for assets toward what it owed; owed is what is left.
+    event ChargedOff(uint64 indexed lineId, uint128 shares, uint256 assets, uint128 owed);
     event InterestAccrued(uint64 indexed lineId, uint16 aprBps, uint128 interest, uint128 owed);
     event StatementClosed(uint64 indexed lineId, uint32 indexed n, uint128 balance, uint64 dueAt);
     event StatementCollected(
@@ -174,6 +183,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     error InvalidStatement();
     error LineNotOpen();
     error NoConversion();
+    error NotChargeable(uint256 chargeableAt);
+    error NothingToSell();
     error RepayExceedsLeg(uint256 outstanding, uint256 gross);
     error NotBorrower();
     error NotIssuer();
@@ -255,7 +266,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     /// @notice The borrower accepts the offered terms, which must be aprBps and maxDebt. Interest so far accrues at the
-    ///         earlier rate first.
+    ///         earlier rate first. Every line also carries the fixed charge-off rule (chargeOff, CHARGE_OFF_GRACE).
     function acceptLine(uint64 lineId, uint16 aprBps, uint128 maxDebt) external nonReentrant {
         Line storage l = _lines[lineId];
         if (msg.sender != l.borrower) revert NotBorrower();
@@ -283,9 +294,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     function closeLine(uint64 lineId) external nonReentrant {
         Line storage l = _lines[lineId];
         if (msg.sender != l.lender && msg.sender != l.borrower) revert NotLender();
-        l.closed = true;
-        if (lineIdOf[l.lender][l.borrower] == lineId) delete lineIdOf[l.lender][l.borrower];
-        emit LineClosed(lineId);
+        _close(lineId, l);
         _settle(lineId);
     }
 
@@ -300,7 +309,9 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         _lock(lineId);
     }
 
-    /// @notice Renews the line's commitment and share lock at today's balances and price. Anyone may call it.
+    /// @notice Moves the line's commitment and share lock to today's balances and price, renewing either for a full term
+    ///         in the last RENEW_WINDOW of its term. A lapsed lock is taken over: the shares it held lock again while
+    ///         the line owes anything, and stay free once it owes nothing. Anyone may call it.
     function relock(uint64 lineId) external nonReentrant {
         _settle(lineId);
     }
@@ -702,21 +713,44 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         for (uint256 i; i < 16 && cover < locked && !_sound(l, used, locked, cover); ++i) {
             ++cover;
         }
-        // forge-lint: disable-next-line(unsafe-typecast)
-        shares = uint128(cover);
-        // forge-lint: disable-next-line(reentrancy-no-eth)
-        CORE.capture(l.borrower, address(this), lockOf[lineId], shares, false);
-        ILineVenue venue = vault.asset() == l.token ? ILineVenue(address(0)) : _venue();
-        assets = ProgramVenue.redeemTo(venue, vault, shares, l.token, address(this));
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint128 credited = assets < l.owed ? uint128(assets) : l.owed;
-        // The lender takes what is owed; what the sale fetched past it is the borrower's.
-        SafeTransferLib.safeTransfer(l.token, l.lender, credited);
-        if (assets > credited) SafeTransferLib.safeTransfer(l.token, l.borrower, assets - credited);
-        _reduce(lineId, l, credited);
-        _payStatements(lineId, credited);
+        (shares, assets) = _sell(lineId, l, cover);
         emit Liquidated(lineId, shares, assets, l.owed);
         _settle(lineId);
+    }
+
+    /// @notice Once a statement of the line has been unpaid CHARGE_OFF_GRACE past its due date, the lender closes the
+    ///         line and sells locked shares worth what it owes (principal and simple interest), or all of them when
+    ///         they fetch less, at today's price. The lender takes the proceeds toward what is owed, any surplus is the
+    ///         borrower's, and shares no longer needed unlock.
+    function chargeOff(uint64 lineId) external nonReentrant returns (uint128 shares, uint256 assets) {
+        Line storage l = _lines[lineId];
+        if (msg.sender != l.lender) revert NotLender();
+        if (!l.locking) revert InvalidLine();
+        uint256 at = chargeableAt(lineId);
+        // forge-lint: disable-next-line(block-timestamp)
+        if (at == 0 || block.timestamp < at) revert NotChargeable(at);
+        _accrue(lineId);
+        if (!l.closed) _close(lineId, l);
+        _lock(lineId);
+        uint256 locked = _heldNow(l.borrower, lockOf[lineId]);
+        (shares, assets) = _sell(lineId, l, _min(l.collateralVault.previewWithdraw(_assetsFor(l, l.owed)), locked));
+        emit ChargedOff(lineId, shares, assets, l.owed);
+        _settle(lineId);
+    }
+
+    /// @notice When the lender may charge the line off: CHARGE_OFF_GRACE after the earliest due date among its unpaid
+    ///         statements, zero while it owes nothing or has none.
+    function chargeableAt(uint64 lineId) public view returns (uint256 at) {
+        if (_lines[lineId].owed == 0) return 0;
+        Statements storage s = statementsOf[lineId];
+        uint32 count = s.count;
+        // closeStatement keeps at most MAX_OPEN_STATEMENTS from payFrom on.
+        for (uint32 n = s.payFrom; n != 0 && n <= count; ++n) {
+            Statement storage st = _statements[lineId][n];
+            if (st.status == StatementStatus.Paid || st.paid >= st.balance) continue;
+            uint256 due = uint256(st.dueAt) + CHARGE_OFF_GRACE;
+            if (at == 0 || due < at) at = due;
+        }
     }
 
     /// @notice Credit the line can still draw: its limit (at most the debt bound), or for a secured line the lower of
@@ -791,6 +825,30 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     ///         leg keeps that token from changing (reason 7).
     function settlementTokenInUse(address) external view returns (uint8) {
         return _activeLines[PROGRAM.settlementToken()] != 0 ? IN_USE_LINES : 0;
+    }
+
+    /// @dev Sells cover locked shares at today's price: the lender takes the proceeds up to what is owed, and what the
+    ///      sale fetched past it is the borrower's.
+    // forge-lint: disable-next-item(reentrancy-no-eth,unsafe-typecast)
+    function _sell(uint64 lineId, Line storage l, uint256 cover) private returns (uint128 shares, uint256 assets) {
+        if (cover == 0) revert NothingToSell();
+        shares = uint128(cover);
+        CORE.capture(l.borrower, address(this), lockOf[lineId], shares, false);
+        IEarnVault vault = l.collateralVault;
+        ILineVenue venue = vault.asset() == l.token ? ILineVenue(address(0)) : _venue();
+        assets = ProgramVenue.redeemTo(venue, vault, shares, l.token, address(this));
+        uint128 credited = assets < l.owed ? uint128(assets) : l.owed;
+        SafeTransferLib.safeTransfer(l.token, l.lender, credited);
+        if (assets > credited) SafeTransferLib.safeTransfer(l.token, l.borrower, assets - credited);
+        _reduce(lineId, l, credited);
+        _payStatements(lineId, credited);
+    }
+
+    /// @dev Stops new draws on the line. What is owed stays owed.
+    function _close(uint64 lineId, Line storage l) private {
+        l.closed = true;
+        if (lineIdOf[l.lender][l.borrower] == lineId) delete lineIdOf[l.lender][l.borrower];
+        emit LineClosed(lineId);
     }
 
     function _onlyCompanion() private view {
@@ -993,7 +1051,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     }
 
     /// @dev Moves this contract's hold id on owner's token to target (at most what the owner can back less `keep`),
-    ///      renewing it within a day of expiry. Returns the hold's id (zero when none) and whether anything changed.
+    ///      renewing it in the last RENEW_WINDOW of its term. A lapsed hold ends first, so what it held backs the one
+    ///      that replaces it. Returns the hold's id (zero when none) and whether anything changed.
     function _move(
         address owner,
         address token,
@@ -1009,10 +1068,14 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (id != bytes32(0)) {
             h = CORE.getHold(owner, address(this), id);
             live = h.token != address(0) && h.expiresAt > block.timestamp;
+            if (!live && h.token != address(0)) CORE.releaseExpired(owner, address(this), id);
         }
         uint256 backed = CORE.available(owner, token) + (live ? h.held : 0);
         target = _min(target, backed > keep ? backed - keep : 0);
-        bool renew = live && h.expiresAt < block.timestamp + 1 days && expiresAt > h.expiresAt;
+        // A hold the owner's allowance could not replace stays as it is, so lowering the allowance never makes a
+        // repayment or release fail.
+        bool renew = live && h.expiresAt < block.timestamp + RENEW_WINDOW && expiresAt > h.expiresAt
+            && (bestEffort || _admits(owner, token, h.held, target));
         if (live && !renew) {
             if (target == h.held) return (id, false);
             if (target == 0) {
@@ -1030,7 +1093,6 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             return (id, true);
         }
         if (live) CORE.release(owner, address(this), id);
-        else if (h.token != address(0)) CORE.releaseExpired(owner, address(this), id);
         if (target == 0) return (bytes32(0), true);
         id = keccak256(abi.encode(lineId, ++_holds[lineId]));
         IReservationCore.HoldRequest memory req = IReservationCore.HoldRequest({
@@ -1045,6 +1107,12 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             return (bytes32(0), true);
         }
         return (id, true);
+    }
+
+    /// @dev Whether owner's allowance for this contract admits replacing its hold of held with one of target.
+    function _admits(address owner, address token, uint256 held, uint256 target) private view returns (bool) {
+        IReservationCore.Budget memory b = CORE.budget(owner, address(this), token);
+        return b.limit != 0 && uint256(b.spent) + b.outstanding + target <= uint256(b.limit) + held;
     }
 
     // forge-lint: disable-end(unsafe-typecast)

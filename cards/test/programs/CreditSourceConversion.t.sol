@@ -239,6 +239,37 @@ contract CreditSourceConversionTest is CompEnv {
         assertLe(toBorrower, 1e3);
     }
 
+    /// @dev A charge-off sells shares worth what is owed at the venue price it sells at: the lender takes what is owed
+    ///      and the borrower the units of rounding past it.
+    function test_chargeOff_paysTheLenderWhatIsOwedAndTheBorrowerTheRest() public {
+        uint64 lineId = _lockedLine();
+        _owe(lineId, 300e6);
+        uint64 dueAt = uint64(block.timestamp + 21 days);
+        vm.prank(lender);
+        credit.closeStatement(lineId, dueAt);
+        vm.warp(dueAt + credit.CHARGE_OFF_GRACE());
+        // Meanwhile the venue sells dollars 1% dearer, and the reference rate follows.
+        ask.setPrice(ASK * 101 / 100);
+        bid.setPrice(BID * 101 / 100);
+        Rates.set(conv, address(eur), 1.111e18);
+        uint256 shares = earnShare.balanceOf(alice) + core.reserved(alice, address(earnShare));
+        uint256 lenderBefore = eur.balanceOf(lender) + core.reserved(lender, address(eur));
+        uint256 borrowerBefore = eur.balanceOf(alice);
+        vm.prank(lender);
+        (uint128 sold, uint256 assets) = credit.chargeOff(lineId);
+        uint256 toLender = eur.balanceOf(lender) + core.reserved(lender, address(eur)) - lenderBefore;
+        uint256 toBorrower = eur.balanceOf(alice) - borrowerBefore;
+        assertEq(toLender, 300e6, "the lender takes everything owed");
+        assertEq(toBorrower, assets - 300e6, "the borrower takes the rest of the sale");
+        assertLe(toBorrower, 1e3);
+        assertEq(credit.lineOf(lineId).owed, 0);
+        assertEq(credit.lockOf(lineId), bytes32(0));
+        assertEq(earnShare.balanceOf(alice), shares - sold);
+        assertEq(usd.balanceOf(address(credit)), 0);
+        assertEq(eur.balanceOf(address(credit)), 0);
+        _assertCoreBalanced();
+    }
+
     function _lockedLine() internal returns (uint64 lineId) {
         lineId = _line(600e6, IEarnVault(address(earnVault)), 5000);
         usd.mint(alice, 1100e6);

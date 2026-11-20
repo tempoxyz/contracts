@@ -163,6 +163,15 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
 - **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus
   the owner's budget, so no share debt arises; it keeps standing approvals to its vault. When the vault
   quotes but cannot redeem, the float pays and the shares wait for the funder.
+- **Secured credit.** A line secured by Earn shares locks shares worth what it owes at its loan-to-value in a
+  30-day core hold. Anything that touches the line in the last half of that term (`RENEW_WINDOW`), including
+  anyone's `relock`, renews it for a full term; once it lapses, `relock` locks again whatever of those shares
+  is still there while the line owes anything, and frees them once it owes nothing. Past its loan-to-value the
+  lender `liquidate`s just enough to restore it. Once a statement stays unpaid `CHARGE_OFF_GRACE` (60 days,
+  fixed for every line, so part of what each borrower accepts) past its due date, the lender `chargeOff`s the
+  line: it closes, and locked shares worth what it owes (principal and simple interest) sell at the price used
+  to size the sale; the lender takes what is owed, the borrower any surplus, and what is still owed after
+  every locked share sold stays owed.
 - **Out of scope.** Interest beyond credit lines' simple rate, fees, rewards, escheat and estates are
   issuer services, built from plain transfers, holds and charges.
 

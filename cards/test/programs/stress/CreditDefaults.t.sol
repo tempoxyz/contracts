@@ -9,9 +9,10 @@ import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 /// @notice A year of secured credit lines with defaults: dozens of borrowers draw weekly on lines secured by Earn
 ///         shares at 50-80% loan-to-value, accrue simple interest, get monthly statements collected through autopay,
 ///         and 10-30% of them default (moving their free money and shares away). The collateral's price falls 20-50%
-///         in two steps; the lender liquidates every week. After every week: usd is conserved over every party, the
-///         core holds exactly what it reserves, a liquidation pays the lender at most what is owed and the borrower
-///         the surplus, and no borrower pays more than it drew plus simple interest on it.
+///         in two steps; the lender liquidates every week and charges off lines with a statement unpaid past the grace
+///         period. After every week: usd is conserved over every party, the core holds exactly what it reserves, a
+///         liquidation or charge-off pays the lender at most what is owed and the borrower the surplus, and no borrower
+///         pays more than it drew plus simple interest on it.
 contract CreditDefaultsStressTest is CompEnv {
     uint256 internal constant YEAR = 365 days;
 
@@ -64,6 +65,13 @@ contract CreditDefaultsStressTest is CompEnv {
         uint256 lastLiquidationWeek;
         uint256 withdrawnAfterLapse;
         uint256 relocks;
+        uint256 lapsedRelocks;
+        uint256 chargeOffs;
+        uint256 chargeOffsPerforming;
+        uint256 chargeOffProceeds;
+        uint256 lenderFromChargeOffs;
+        uint256 surplusFromChargeOffs;
+        uint256 chargeOffShort;
     }
 
     Borrower[] internal bs;
@@ -106,38 +114,43 @@ contract CreditDefaultsStressTest is CompEnv {
     }
 
     /// @notice Same year at stable prices: defaulted borrowers' collateral covers their debt at its loan-to-value,
-    ///         so the lender can never sell it. Liquidation only trims the interest that pushes a line past its
-    ///         ratio; the principal stays owed and the locked shares stay locked for as long as anyone relocks them.
-    function test_stress_defaultsAtStablePrices_principalNeverRecovered() public {
+    ///         so liquidation only trims the interest that pushes a line past its ratio. Once a defaulted line's
+    ///         statement is CHARGE_OFF_GRACE past due, the lender charges it off and sells locked shares worth what it
+    ///         owes, so by the end of the tail no defaulted principal is left owed against locked collateral. A
+    ///         borrower who never defaulted but left a statement that far past due (autopay tries a statement once)
+    ///         is charged off the same way.
+    function test_stress_defaultsAtStablePrices_chargedOff() public {
         string memory t = "creditStable";
         _configure(60, 2000, 0);
         _run(keccak256("credit-stable"));
         _report(t);
         (uint256 loss, uint256 stuck, uint256 stuckLines) = _losses();
         assertEq(loss, 0, "the collateral covers every defaulted line");
-        // Current behaviour: past-due principal on a line within its ratio has no path to recovery.
-        assertGt(stuck, 0, "defaulted principal stays owed against locked collateral");
-        assertGt(stuckLines, 0);
+        assertGt(m.chargeOffs, 0, "the lender charged defaulted lines off");
+        assertEq(stuck, 0, "no defaulted principal stays owed against locked collateral");
+        assertEq(stuckLines, 0);
     }
 
-    /// @notice The same year at stable prices with a keeper that only runs weekly (collect, relock through it, and
-    ///         liquidate). A line's 30-day lock renews only within its last day, so a weekly run misses that window
-    ///         about six times in seven; the lock lapses, anyone may end it, and every defaulted borrower walks away
-    ///         with its collateral. The lender loses the defaulted principal although prices never moved.
-    function test_stress_weeklyKeeperLetsLocksLapse() public {
+    /// @notice The same year at stable prices with a keeper that only runs weekly (collect and liquidate, which
+    ///         move the lock). A lock renews for a full term whenever it is touched in the last RENEW_WINDOW of its
+    ///         30-day term, which every weekly run reaches at least twice, so no lock lapses and the lender loses
+    ///         nothing.
+    function test_stress_weeklyKeeperKeepsLocks() public {
         string memory t = "creditWeeklyKeeper";
         _configure(60, 2000, 0);
         cfg.dailyRelock = false;
         _run(keccak256("credit-stable"));
         _report(t);
-        (uint256 loss,,) = _losses();
-        assertGt(m.withdrawnAfterLapse, 0, "defaulted borrowers withdrew collateral whose lock lapsed");
-        assertGt(loss, 0, "the lender lost defaulted principal at stable prices");
+        (uint256 loss, uint256 stuck,) = _losses();
+        assertEq(m.withdrawnAfterLapse, 0, "no lock lapsed for a defaulted borrower to withdraw");
+        assertEq(loss, 0, "the lender lost nothing at stable prices");
+        assertEq(stuck, 0, "defaulted lines were charged off");
     }
 
-    /// @notice A keeper outage longer than the 30-day lock term: nobody collects, relocks or liquidates for 6 weeks
-    ///         right after the first price drop. Locks lapse, defaulted borrowers move their shares away, and the
-    ///         lender is left unsecured.
+    /// @notice A keeper outage longer than the 30-day lock term: nobody collects, relocks, liquidates or charges off
+    ///         for 6 weeks right after the first price drop. Locks lapse, defaulted borrowers move their shares away
+    ///         at once, and the lender is left unsecured on those; performing borrowers' lapsed locks are taken over
+    ///         again when the keeper returns.
     function test_stress_lockLapsesDuringKeeperOutage() public {
         string memory t = "creditLockLapse";
         _configure(60, 2000, 3000);
@@ -146,6 +159,7 @@ contract CreditDefaultsStressTest is CompEnv {
         _run(keccak256("credit-lapse"));
         _report(t);
         assertGt(m.withdrawnAfterLapse, 0, "defaulted borrowers withdrew collateral whose lock lapsed");
+        assertGt(m.lapsedRelocks, 0, "the keeper took lapsed locks over again");
     }
 
     /// @notice Fuzzed default rate (10-30%), price fall (20-50%) and seed over a smaller book; every weekly invariant
@@ -233,7 +247,7 @@ contract CreditDefaultsStressTest is CompEnv {
         for (week = 1; week <= cfg.weeks_ + cfg.tailWeeks; ++week) {
             bool trading = week <= cfg.weeks_;
             bool keeper = !(week >= cfg.outageFrom && week < cfg.outageFrom + cfg.outageWeeks);
-            // The renewal window is open strictly inside the lock's last day, so the keeper looks twice a day.
+            // A daily keeper looks twice a day for locks to renew or take over.
             for (uint256 h; h < 14; ++h) {
                 vm.warp(block.timestamp + 12 hours);
                 if (keeper && cfg.dailyRelock) _relockDue();
@@ -248,6 +262,7 @@ contract CreditDefaultsStressTest is CompEnv {
                 if (keeper) {
                     _collect(b);
                     _liquidate(b);
+                    _chargeOff(b);
                 }
                 m.maxOwed = _max(m.maxOwed, credit.lineOf(b.lineId).owed);
             }
@@ -269,15 +284,19 @@ contract CreditDefaultsStressTest is CompEnv {
         usd.transfer(dead, loss);
     }
 
-    /// @dev A lock renews only within its last day, so a keeper watches every line's lock expiry.
+    /// @dev Renews every lock in its renewal window, and takes over a lapsed lock while its line owes anything.
     function _relockDue() internal {
+        uint256 window = credit.RENEW_WINDOW();
         for (uint256 i; i < bs.length; ++i) {
             bytes32 id = credit.lockOf(bs[i].lineId);
             if (id == bytes32(0)) continue;
             uint64 expiresAt = core.getHold(bs[i].who, address(credit), id).expiresAt;
-            if (expiresAt > block.timestamp && expiresAt < block.timestamp + 1 days) {
+            if (expiresAt > block.timestamp && expiresAt < block.timestamp + window) {
                 credit.relock(bs[i].lineId);
                 ++m.relocks;
+            } else if (expiresAt != 0 && expiresAt <= block.timestamp && credit.lineOf(bs[i].lineId).owed != 0) {
+                credit.relock(bs[i].lineId);
+                ++m.lapsedRelocks;
             }
         }
     }
@@ -394,6 +413,39 @@ contract CreditDefaultsStressTest is CompEnv {
         }
     }
 
+    /// @dev The lender charges off a line once a statement is CHARGE_OFF_GRACE past due.
+    function _chargeOff(Borrower storage b) internal {
+        uint256 at = credit.chargeableAt(b.lineId);
+        if (at == 0 || block.timestamp < at) return;
+        uint256 owedNow = credit.owedNow(b.lineId);
+        uint128 owedBefore = credit.lineOf(b.lineId).owed;
+        uint256 lenderBefore = _lenderTotal();
+        uint256 borrowerBefore = usd.balanceOf(b.who);
+        vm.prank(lender);
+        try credit.chargeOff(b.lineId) returns (uint128, uint256 assets) {
+            uint256 toLender = _lenderTotal() - lenderBefore;
+            uint256 toBorrower = usd.balanceOf(b.who) - borrowerBefore;
+            uint128 left = credit.lineOf(b.lineId).owed;
+            assertEq(toLender + toBorrower, assets, "the sale's proceeds all land");
+            assertEq(toLender, owedNow - left, "the lender takes what the line no longer owes");
+            if (toBorrower != 0) assertEq(left, 0, "surplus only once the debt is paid");
+            if (left != 0) assertEq(credit.lockedShares(b.lineId), 0, "a short sale sells every locked share");
+            assertTrue(credit.lineOf(b.lineId).closed, "a charged-off line is closed");
+            m.interestAccrued += left + toLender - owedBefore;
+            ++m.chargeOffs;
+            if (!b.defaulted) ++m.chargeOffsPerforming;
+            if (left != 0) ++m.chargeOffShort;
+            m.chargeOffProceeds += assets;
+            m.lenderFromChargeOffs += toLender;
+            m.surplusFromChargeOffs += toBorrower;
+            b.paid += uint128(toLender);
+            b.surplus += uint128(toBorrower);
+            if (b.defaulted) _moveAway(b);
+        } catch (bytes memory reason) {
+            assertEq(bytes4(reason), CreditSource.NothingToSell.selector, "charge-off refused only with nothing locked");
+        }
+    }
+
     // Invariants.
 
     function _check() internal {
@@ -422,7 +474,7 @@ contract CreditDefaultsStressTest is CompEnv {
     }
 
     /// @dev Unrecoverable: owed on lines with no collateral left. Stuck: owed on defaulted lines whose collateral
-    ///      covers it at the ratio, which the lender cannot sell.
+    ///      covers it, which the lender has not yet charged off.
     function _losses() internal view returns (uint256 loss, uint256 stuck, uint256 stuckLines) {
         for (uint256 i; i < bs.length; ++i) {
             Borrower storage b = bs[i];
@@ -478,6 +530,13 @@ contract CreditDefaultsStressTest is CompEnv {
         _log(t, "last_liquidation_week", m.lastLiquidationWeek);
         _log(t, "withdrawn_after_lapse_usd", m.withdrawnAfterLapse / 1e6);
         _log(t, "keeper_relocks", m.relocks);
+        _log(t, "keeper_lapsed_relocks", m.lapsedRelocks);
+        _log(t, "charge_offs", m.chargeOffs);
+        _log(t, "charge_offs_of_performing", m.chargeOffsPerforming);
+        _log(t, "charge_offs_short", m.chargeOffShort);
+        _log(t, "charge_off_proceeds_usd", m.chargeOffProceeds / 1e6);
+        _log(t, "lender_from_charge_offs_usd", m.lenderFromChargeOffs / 1e6);
+        _log(t, "surplus_from_charge_offs_usd", m.surplusFromChargeOffs / 1e6);
         _log(t, "liquidate_other_reverts", m.maxUndercollateralized);
         _log(t, "liquidate_other_revert_selector", uint32(lastRevert));
     }
