@@ -243,8 +243,8 @@ holds, which counts as burned so a standing residue keeps its balance slot. `ini
 to the EarnVault, so its balance slot is never empty. When active supply is zero,
 managed backing is zero too: the next action moves any engine shares left over to surplus.
 
-`isAccountingAligned()` reports this equality. Between a residue transfer to the vault and the next
-action that restates the anchor, it also accepts the equality on full total supply. Deposits and exits change backing and supply
+`isAccountingAligned()` reports this equality and nothing else: the anchor stores active supply, which
+never counts the minted unit, so no other supply needs checking. Deposits and exits change backing and supply
 proportionally. Fee mints add supply without backing; contributions and surplus absorption add
 backing without supply.
 Each restates the anchor against the resulting pair.
