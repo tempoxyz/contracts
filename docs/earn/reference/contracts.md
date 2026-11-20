@@ -255,7 +255,9 @@ module, or the EarnVault.
 
 `accrueFees`, `setFeeConfig`, `disableFees`, `initializeBaselines`, `recordRedeemRequest`,
 `closeRedeemRequest`, and `settleCancelledRedeem` mutate the fee state machine. The EarnVault
-supplies the accounting context and separately mints any fee EarnShare they return.
+supplies the accounting context, passing active EarnShare supply, active assets and valuation
+freshness to `accrueFees` and `initializeBaselines`, and separately mints any fee EarnShare they
+return.
 `initializeBaselines` runs after a principal deposit and only raises baselines.
 
 ### Events

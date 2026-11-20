@@ -269,8 +269,15 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
     /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + result.totalFeeEarnShares
     /// @custom:ensures forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a)) + _specCreditedTo(result, a)
-    function accrueFees() external onlyEarnVault returns (FeePreview memory result) {
-        result = _accrueFees();
+    /// @dev The vault passes its active EarnShare supply, active assets and valuation freshness; only the vault
+    ///      reaches this, so the values carry the same trust as reading them back from it. `activeAssets` is read
+    ///      only for a nonzero supply and a fresh valuation.
+    function accrueFees(uint256 activeSupply, uint256 activeAssets, bool valuationFresh)
+        external
+        onlyEarnVault
+        returns (FeePreview memory result)
+    {
+        result = _accrueFees(activeSupply, activeAssets, valuationFresh);
     }
 
     /// @notice Installs a valid configuration under the next id and re-enables fees (fees.md, "Configuration and authority").
@@ -316,7 +323,8 @@ contract EarnFees is IEarnFees {
 
         if (_configHasFees(config)) {
             if (!wasActive || reactivated) {
-                _initializeFeeBaselines();
+                uint256 earnShareSupply = _activeSupply();
+                _initializeFeeBaselines(earnShareSupply, earnShareSupply == 0 ? 0 : _activeAssets());
             } else if (config.excess.enabled) {
                 if (oldExcess.enabled) {
                     targetBase = oldTargetNow;
@@ -373,8 +381,9 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures targetBase != old(targetBase) ==> targetBase > old(_specTargetNow()) && targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures !old(_specFeesActive()) ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
     /// @custom:ensures !_feeConfigs[currentFeeConfigId].excess.enabled ==> targetBase == old(targetBase) && targetStartedAt == old(targetStartedAt)
-    function initializeBaselines() external onlyEarnVault {
-        if (_feesActive()) _updateBaselinesAfterPrincipalEntry();
+    /// @dev The vault passes its active EarnShare supply and active assets after the entry, as for `accrueFees`.
+    function initializeBaselines(uint256 activeSupply, uint256 activeAssets) external onlyEarnVault {
+        if (_feesActive()) _updateBaselinesAfterPrincipalEntry(activeSupply, activeAssets);
     }
 
     /// @notice Snapshots a fee-active request's burned EarnShare, value, high-water value and target value.
@@ -549,22 +558,23 @@ contract EarnFees is IEarnFees {
     ///      each fixed rate's floor of `positiveAccrualAssets`, plus the excess rate's floor of its base;
     ///      `EarnFeeMath.preview`'s contract bounds the fee only from above.
     /// Not proved: two of its target-ratchet postconditions; the solver gives no answer for them.
-    function _accrueFees() internal returns (FeePreview memory result) {
+    function _accrueFees(uint256 earnShareSupply, uint256 activeAssets, bool valuationFresh)
+        internal
+        returns (FeePreview memory result)
+    {
         if (feesDisabled) return result;
         StoredFeeConfig storage storedConfig = _feeConfigs[currentFeeConfigId];
         StoredExcessFee memory excess = storedConfig.excess;
         if (excess.fixedFeeCount == 0 && !excess.enabled) return result;
-        uint256 earnShareSupply = _activeSupply();
         if (earnShareSupply == 0) return result;
-        if (!_feeValuationFresh()) return result;
+        if (!valuationFresh) return result;
         if (feeBaselinesPending) {
             feeBaselinesPending = false;
-            _initializeFeeBaselines();
+            _initializeFeeBaselines(earnShareSupply, activeAssets);
             return result;
         }
 
         /// @custom:ghost checkpointSupply = earnShareSupply
-        uint256 activeAssets = _activeAssets();
         result.activeAssets = activeAssets;
         uint256 scale = _earnShareScale();
         result.preFeeValuePerEarnShare = EarnFeeMath.valuePerEarnShare(activeAssets, scale, earnShareSupply);
@@ -781,15 +791,14 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures !_feeConfigs[currentFeeConfigId].excess.enabled ==> targetBase == 0 && targetStartedAt == 0
     /// @custom:ensures targetStartedAt == 0 || targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures highWaterMark == 0 || targetBase == 0 || targetStartedAt == uint40(block.timestamp)
-    function _initializeFeeBaselines() internal {
-        uint256 earnShareSupply = _activeSupply();
+    function _initializeFeeBaselines(uint256 earnShareSupply, uint256 activeAssets) internal {
         if (earnShareSupply == 0) {
             highWaterMark = 0;
             targetBase = 0;
             targetStartedAt = 0;
             return;
         }
-        uint256 valuePerShare = EarnFeeMath.valuePerEarnShareUp(_activeAssets(), _earnShareScale(), earnShareSupply);
+        uint256 valuePerShare = EarnFeeMath.valuePerEarnShareUp(activeAssets, _earnShareScale(), earnShareSupply);
         highWaterMark = valuePerShare;
         if (_feeConfigs[currentFeeConfigId].excess.enabled) {
             targetBase = valuePerShare;
@@ -806,11 +815,10 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures targetBase != old(targetBase) ==> targetBase > old(_specTargetNow()) && targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures targetBase == old(targetBase) ==> targetStartedAt == old(targetStartedAt)
     /// @custom:ensures !_feeConfigs[currentFeeConfigId].excess.enabled ==> targetBase == old(targetBase)
-    function _updateBaselinesAfterPrincipalEntry() internal {
-        uint256 earnShareSupply = _activeSupply();
+    function _updateBaselinesAfterPrincipalEntry(uint256 earnShareSupply, uint256 activeAssets) internal {
         if (earnShareSupply == 0) return;
 
-        uint256 valuePerShare = EarnFeeMath.valuePerEarnShareUp(_activeAssets(), _earnShareScale(), earnShareSupply);
+        uint256 valuePerShare = EarnFeeMath.valuePerEarnShareUp(activeAssets, _earnShareScale(), earnShareSupply);
         if (valuePerShare > highWaterMark) highWaterMark = valuePerShare;
 
         StoredExcessFee memory excess = _feeConfigs[currentFeeConfigId].excess;

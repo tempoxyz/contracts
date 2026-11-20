@@ -16,11 +16,13 @@ interface IEarnFees {
 
     function initialize(address earnVault, address earnShare, FeeConfig calldata initialConfig) external;
 
-    function accrueFees() external returns (FeePreview memory result);
+    function accrueFees(uint256 activeSupply, uint256 activeAssets, bool valuationFresh)
+        external
+        returns (FeePreview memory result);
     function setFeeConfig(FeeConfig calldata config) external returns (uint64 configId);
     function validateFeeConfig(FeeConfig calldata config) external view;
     function disableFees(address operator) external;
-    function initializeBaselines() external;
+    function initializeBaselines(uint256 activeSupply, uint256 activeAssets) external;
 
     function recordRedeemRequest(bytes32 requestId, uint256 burnedEarnShares, uint256 requestValue) external;
     function closeRedeemRequest(bytes32 requestId) external;

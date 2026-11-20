@@ -41,8 +41,9 @@ configuration:
 
 - only its EarnVault can checkpoint, configure, disable, ratchet baselines, or record and settle
   async-request snapshots;
-- it reads active assets and valuation freshness from its EarnVault and never chooses an engine or
-  moves backing;
+- it takes active EarnShare supply, active assets and valuation freshness from its EarnVault, as
+  arguments to `accrueFees` and `initializeBaselines` and by reading the EarnVault elsewhere, and
+  never chooses an engine or moves backing;
 - it has no issuer role: the EarnVault calls `EarnFees.accrueFees`, then mints the returned
   `totalFeeEarnShares` to `EarnFees`;
 - it credits recipient ledgers and holds the fee EarnShare backing them; recipients claim directly;

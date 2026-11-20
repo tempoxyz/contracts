@@ -668,12 +668,13 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
-        (, uint256 heldAfter) = _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter);
+        (uint256 supplyAfter, uint256 heldAfter) =
+            _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter);
         _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (currentSupply == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
-            _initializeFeeBaselines();
+            _initializeFeeBaselines(supplyAfter, heldAfter);
         }
         // The first entry into an empty pool always updates the fee baselines.
         /// @custom:assert currentSupply == 0 ==> baselineEntries == old(baselineEntries) + 1
@@ -751,12 +752,12 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
-        (, uint256 heldAfter) = _reanchorAfterEntry(rateEngineShares, rateEarnShares);
+        (uint256 supplyAfter, uint256 heldAfter) = _reanchorAfterEntry(rateEngineShares, rateEarnShares);
         _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (currentSupply == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
-            _initializeFeeBaselines();
+            _initializeFeeBaselines(supplyAfter, heldAfter);
         }
         // The first entry into an empty pool always updates the fee baselines.
         /// @custom:assert currentSupply == 0 ==> baselineEntries == old(baselineEntries) + 1
@@ -1185,11 +1186,13 @@ contract EarnVault is IEarnVault {
             // turn the returned backing into fresh contribution headroom.
             _reanchorAtRest();
         } else {
-            _reanchorAfterEntry(rateEngineShares, rateEarnShares);
+            (uint256 pooledSupply, uint256 pooledBacking) = _reanchorAfterEntry(rateEngineShares, rateEarnShares);
             // The active pool was just checkpointed and the queued growth was just charged, so the mark may
             // only rise to the pooled value. Otherwise a small active pool, such as a seed unit whose value
             // rounds down, leaves the mark low and the next checkpoint charges the queued growth again.
-            if (chargePending) IEarnFees(earnFees).initializeBaselines();
+            if (chargePending) {
+                IEarnFees(earnFees).initializeBaselines(pooledSupply, _baselineAssets(pooledSupply, pooledBacking));
+            }
         }
 
         if (receiver.code.length != 0) {
@@ -1864,21 +1867,33 @@ contract EarnVault is IEarnVault {
         returns (FeePreview memory result, uint256 supply, uint256 backing, uint256 raw)
     {
         /// @custom:ghost feeCheckpoints = feeCheckpoints + 1
+        // Neither the checkpoint nor the fee mint moves engine shares, so one raw read serves both.
+        raw = rawEngineShares();
         if (feesActiveCached) {
-            result = IEarnFees(earnFees).accrueFees();
+            uint256 supplyBefore = _activeSupply();
+            // EarnFees reads freshness only for a live supply, and the value (totalAssets()) only when also fresh.
+            bool fresh = supplyBefore != 0 && isFeeValuationFresh();
+            uint256 managed = _managedEngineShares;
+            uint256 assets = fresh ? IEarnEngine(engine).valueOf(raw < managed ? raw : managed) : 0;
+            result = IEarnFees(earnFees).accrueFees(supplyBefore, assets, fresh);
             if (result.totalFeeEarnShares != 0) {
                 IEarnShare(earnShare).mint(earnFees, result.totalFeeEarnShares);
             }
         }
         // Reconcile the conversion anchor even when no fee shares were minted. Unsolicited positive
         // engine-share drift remains quarantined, while a custody shortfall reduces managed backing.
-        raw = rawEngineShares();
         (supply, backing) = _reanchorAtRestRaw(raw, _activeSupply());
     }
 
-    /// @dev EarnFees ratchets baselines only while fees are active, so the call is skipped otherwise.
-    function _initializeFeeBaselines() internal {
-        if (feesActiveCached) IEarnFees(earnFees).initializeBaselines();
+    /// @dev EarnFees ratchets baselines only while fees are active, so the call is skipped otherwise. Takes the
+    ///      supply and managed backing an entry's reanchor just left; that backing's value is totalAssets().
+    function _initializeFeeBaselines(uint256 supply, uint256 held) internal {
+        if (feesActiveCached) IEarnFees(earnFees).initializeBaselines(supply, _baselineAssets(supply, held));
+    }
+
+    /// @dev EarnFees ignores the value for an empty supply, so it is read only for a live one.
+    function _baselineAssets(uint256 supply, uint256 held) internal view returns (uint256) {
+        return supply == 0 ? 0 : IEarnEngine(engine).valueOf(held);
     }
 
     /// @dev Moves `assets` from the caller into the engine and records the measured engine-share increase.

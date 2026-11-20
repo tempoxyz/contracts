@@ -558,7 +558,7 @@ contract EarnVaultFeesTest is Test {
 
     function testEarnFeesMutationsAreRestrictedToItsImmutableEarnVault() public {
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.accrueFees();
+        fees.accrueFees(1 ether, 1 ether, true);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
         fees.setFeeConfig(_fixedConfig(fixedRecipient, 100));
@@ -567,7 +567,7 @@ contract EarnVaultFeesTest is Test {
         fees.disableFees(address(this));
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.initializeBaselines();
+        fees.initializeBaselines(1 ether, 1 ether);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
         fees.recordRedeemRequest(bytes32(uint256(1)), 1 ether, 1 ether);
