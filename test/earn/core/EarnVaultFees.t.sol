@@ -55,6 +55,26 @@ contract EarnVaultFeesTest is Test {
         assertEq(fees.highWaterMark(), 1 ether);
     }
 
+    function testSteadyDepositSkipsBaselineRatchetThatWouldChangeNothing() public {
+        _deposit(user, 100 ether);
+        vm.recordLogs();
+        _deposit(secondUser, 100 ether);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != EarnFees.FeeBaselinesInitialized.selector);
+        }
+        assertEq(fees.highWaterMark(), 1 ether);
+
+        // Value above the mark is charged by the next checkpoint, after which the deposit again leaves nothing
+        // to raise; the mark is the post-fee value either way.
+        asset.mint(address(venue), 10 ether);
+        _deposit(user, 100 ether);
+        FeePreview memory preview = fees.previewAccruedFees();
+        assertEq(preview.totalFeeAssets, 0);
+        assertGt(fees.highWaterMark(), 1 ether);
+        assertGt(fees.claimableEarnShares(fixedRecipient), 0);
+    }
+
     function testQuarantinedEngineSharesAreNotFeeableUntilAbsorbed() public {
         _deposit(user, 100 ether);
 
@@ -558,7 +578,7 @@ contract EarnVaultFeesTest is Test {
 
     function testEarnFeesMutationsAreRestrictedToItsImmutableEarnVault() public {
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.accrueFees();
+        fees.accrueFees(1 ether, 1 ether, true);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
         fees.setFeeConfig(_fixedConfig(fixedRecipient, 100));
@@ -567,7 +587,7 @@ contract EarnVaultFeesTest is Test {
         fees.disableFees(address(this));
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.initializeBaselines();
+        fees.initializeBaselines(1 ether, 1 ether);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
         fees.recordRedeemRequest(bytes32(uint256(1)), 1 ether, 1 ether);
