@@ -355,8 +355,8 @@ library CardLegs {
                     if (isFinal) finals |= 1 << i;
                     covered += paid;
                 } else {
-                    uint256 t = g.source.charge(owner, g.position, id, rest, false);
-                    if (t != 0) (covered, legs, finals) = (covered + t, legs | 1 << i, finals | 1 << i);
+                    (uint256 paid, uint256 took) = g.source.charge(owner, g.position, id, rest, false);
+                    if (took != 0) (covered, legs, finals) = (covered + paid, legs | 1 << i, finals | 1 << i);
                 }
                 break;
             }
@@ -379,10 +379,10 @@ library CardLegs {
         for (uint256 i; i < order.length && rest != 0; ++i) {
             Funding memory f = order[i];
             if (kindOf[address(f.source)] != CASH) continue;
-            uint256 t = f.source.charge(owner, f.position, legId(ref, i), rest, false);
-            if (t != 0) (rest, legs) = (rest - t, legs | 1 << i);
+            (uint256 paid, uint256 took) = f.source.charge(owner, f.position, legId(ref, i), rest, false);
+            if (took != 0) (covered, rest, legs) = (covered + paid, rest - took, legs | 1 << i);
         }
-        return (amount - rest, legs);
+        return (covered, legs);
     }
 
     /// @notice Ends every leg.

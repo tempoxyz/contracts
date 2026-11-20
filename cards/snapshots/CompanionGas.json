@@ -17,9 +17,9 @@
   "reserves_collectReserve": "126780",
   "reserves_reserve": "1854291",
   "reserves_reserveDispute": "1122262",
-  "treasury_fundIssuerDebt": "311609",
-  "treasury_payOut": "571336",
-  "treasury_payOutAdvanced": "882162",
-  "treasury_postCollateral": "798004",
+  "treasury_fundIssuerDebt": "311631",
+  "treasury_payOut": "571358",
+  "treasury_payOutAdvanced": "882184",
+  "treasury_postCollateral": "798026",
   "treasury_seize": "361011"
 }

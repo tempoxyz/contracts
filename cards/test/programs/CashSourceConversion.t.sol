@@ -19,9 +19,9 @@ import { Rates } from "./harness/Rates.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 
 /// @notice Purchases funded in another stablecoin through the cash source, and issuers settling in one: rate locks at
-///         authorization, the capture that pays the issuer exactly, slippage within the owner's tolerance, re-quotes
-///         once it lapses, reversals that keep the leg's share rounded up, refunds at the rate the capture paid, reference rates
-///         the Conversion owner moves, and moving the program to another settlement token.
+///         authorization, the capture that pays the issuer exactly, reversals that keep the leg's share rounded up,
+///         refunds at the rate the capture paid, reference rates the Conversion owner moves, and moving the program to
+///         another settlement token. CashSourceFxBand.t.sol covers how captures price once the market moves.
 contract CashSourceConversionTest is AuthEnv {
     bytes32 internal constant P1 = bytes32("purchase-1");
     bytes32 internal constant P2 = bytes32("purchase-2");
@@ -116,82 +116,6 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(
             cash.coverable(alice, _position(address(eur), 30)), 200e6 * conv.rate(address(eur), address(usd)) / 1e18
         );
-    }
-
-    function test_capture_withinToleranceThePriceTheHoldLocked() public {
-        vm.prank(alice);
-        conv.setRateTolerance(address(cash), 200);
-        _tokenFirst(100);
-        eur.mint(alice, 200e6);
-        _authorize(P1, 100e6);
-        uint256 held = _cashHold(P1, TOKEN_LEG).held;
-        // The euro falls 1%: the cardholder pays only the euros the hold locked, and the issuer carries the slippage.
-        bid.setPrice(BID * 99 / 100);
-        Rates.set(conv, address(eur), 1.1e18 * 99 / 100);
-        assertFalse(_lapsed(cards.legId(P1, TOKEN_LEG)));
-        _capture(P1, 100e6, true);
-        uint256 paid = usd.balanceOf(settlement);
-        assertEq(paid, held * (BID * 99 / 100) / 1e18);
-        assertLt(paid, 100e6);
-        assertEq(eur.balanceOf(alice), 200e6 - held);
-        assertEq(cards.purchaseOf(P1).refunded, 100e6 - paid, "the issuer absorbs the slippage");
-    }
-
-    /// @dev A part capture pays at the lock; the rest of the leg is held again at today's rate, as a new lock.
-    function test_partCapture_relocksTheRestAtTodaysRate() public {
-        vm.prank(alice);
-        conv.setRateTolerance(address(cash), 200);
-        _tokenFirst(100);
-        eur.mint(alice, 200e6);
-        _authorize(P1, 100e6);
-        bytes32 leg = cards.legId(P1, TOKEN_LEG);
-        uint256 first = cash.lockedRate(leg);
-        bid.setPrice(BID * 99 / 100);
-        Rates.set(conv, address(eur), 1.1e18 * 99 / 100);
-        _capture(P1, 40e6, false);
-        uint256 rate = cash.lockedRate(leg);
-        assertLt(rate, first);
-        assertApproxEqAbs(cash.held(alice, _position(address(eur), 100), leg), 60e6, 1);
-        assertEq(_cashHold(P1, TOKEN_LEG).held, _up(60e6, rate));
-        _assertCoreBalanced();
-    }
-
-    function test_capture_pastToleranceRequotesAndCostsTheCardholderMore() public {
-        vm.prank(alice);
-        conv.setRateTolerance(address(cash), 200);
-        // The owner lets the cash source capture up to 10% past a hold.
-        _setTolerance(alice, address(cash), address(eur), 1000);
-        _tokenFirst(100);
-        eur.mint(alice, 200e6);
-        _authorize(P1, 100e6);
-        uint256 held = _cashHold(P1, TOKEN_LEG).held;
-        bid.setPrice(BID * 95 / 100);
-        Rates.set(conv, address(eur), 1.1e18 * 95 / 100);
-        uint256 cost = conv.quoteOut(address(eur), address(usd), 100e6);
-        _capture(P1, 100e6, true);
-        assertEq(usd.balanceOf(settlement), 100e6);
-        uint256 spent = 200e6 - eur.balanceOf(alice);
-        assertGt(spent, held);
-        assertEq(spent, cost);
-    }
-
-    function test_capture_pastTolerance_neverPastWhatTheOwnerAllowsPastTheHold() public {
-        vm.prank(alice);
-        conv.setRateTolerance(address(cash), 200);
-        _tokenFirst(100);
-        eur.mint(alice, 200e6);
-        _authorize(P1, 100e6);
-        uint256 held = _cashHold(P1, TOKEN_LEG).held;
-        bid.setPrice(BID * 95 / 100);
-        Rates.set(conv, address(eur), 1.1e18 * 95 / 100);
-        assertTrue(_lapsed(cards.legId(P1, TOKEN_LEG)));
-        // The lock lapsed, but with no tolerance past the hold the owner spends only the hold; the issuer gets what
-        // it buys and absorbs the rest.
-        _capture(P1, 100e6, true);
-        assertEq(eur.balanceOf(alice), 200e6 - held);
-        uint256 paid = usd.balanceOf(settlement);
-        assertLt(paid, 100e6);
-        assertEq(cards.purchaseOf(P1).refunded, 100e6 - paid);
     }
 
     function test_capture_neverSpendsMoreThanTheOwnerHas() public {
@@ -804,13 +728,6 @@ contract CashSourceConversionTest is AuthEnv {
             if (token == address(0)) return scale;
             scale = next;
         }
-    }
-
-    function _lapsed(bytes32 leg) internal returns (bool lapsed) {
-        uint256 locked = cash.lockedRate(leg);
-        uint256 current = conv.rate(address(eur), address(usd));
-        vm.prank(address(cash));
-        lapsed = conv.lapsed(alice, locked, current);
     }
 
     function _cashHold(bytes32 ref, uint256 leg) internal view returns (IReservationCore.HoldRecord memory) {

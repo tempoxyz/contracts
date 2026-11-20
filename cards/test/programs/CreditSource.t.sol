@@ -148,7 +148,8 @@ contract CreditSourceTest is CompEnv {
         // A settled leg covers nothing more, and releasing it does nothing.
         assertEq(auth.capture(credit, alice, LEG, 1e6, true, REF), 0);
         auth.release(credit, alice, LEG);
-        assertEq(credit.charge(alice, _pos(lineId), LEG, 1e6, true), 0);
+        (uint256 paid, uint256 covered) = credit.charge(alice, _pos(lineId), LEG, 1e6, true);
+        assertEq(paid + covered, 0);
         assertEq(credit.KIND(), 4);
         assertEq(credit.toleranceBps(alice, _pos(lineId)), 0);
     }

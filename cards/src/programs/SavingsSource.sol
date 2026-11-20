@@ -225,8 +225,8 @@ contract SavingsSource is ISource {
         return (paid, paid);
     }
 
-    function charge(address, bytes32, bytes32, uint256, bool) external view onlyProgramView returns (uint256) {
-        return 0;
+    function charge(address, bytes32, bytes32, uint256, bool) external view onlyProgramView returns (uint256, uint256) {
+        return (0, 0);
     }
 
     function release(address owner, bytes32, bytes32 legId) external onlyProgram {

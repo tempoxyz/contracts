@@ -1,15 +1,15 @@
 {
-  "adjust_upCashLeg": "161814",
-  "authorize_cashAndSavings": "3024555",
-  "authorize_singleCashLeg": "1656156",
-  "authorize_standIn": "1653240",
-  "capture_beyondHoldIntoDebt": "1018482",
-  "capture_cashAndSavings": "373797",
-  "capture_finalCashLeg": "147448",
-  "capture_partialCashLeg": "142487",
-  "charge_cash": "663637",
+  "adjust_upCashLeg": "161821",
+  "authorize_cashAndSavings": "3024507",
+  "authorize_singleCashLeg": "1656108",
+  "authorize_standIn": "1653204",
+  "capture_beyondHoldIntoDebt": "1018574",
+  "capture_cashAndSavings": "373937",
+  "capture_finalCashLeg": "147500",
+  "capture_partialCashLeg": "142539",
+  "charge_cash": "663672",
   "refund_cashAndSavings": "586788",
   "refund_cashLeg": "384224",
   "refund_charge": "384224",
-  "release_cashLeg": "132071"
+  "release_cashLeg": "132159"
 }

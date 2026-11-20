@@ -165,17 +165,6 @@ contract ConversionTest is CoreEnv {
         assertEq(conv.costBps(address(eur), address(usd), 1.2e18), 0);
     }
 
-    function test_lapsed_followsTheOwnersToleranceForTheCallingProgram() public {
-        vm.prank(alice);
-        conv.setRateTolerance(trustedProgram, 200);
-        vm.startPrank(trustedProgram);
-        assertFalse(conv.lapsed(alice, 1e18, 1.02e18));
-        assertTrue(conv.lapsed(alice, 1e18, 1.0201e18));
-        vm.stopPrank();
-        // Another program sees no tolerance, so its locks never lapse.
-        assertFalse(conv.lapsed(alice, 1e18, 2e18));
-    }
-
     function test_configuration_isTheOwnersAlone() public {
         vm.startPrank(bob);
         vm.expectRevert(Conversion.Unauthorized.selector);
@@ -186,8 +175,6 @@ contract ConversionTest is CoreEnv {
         conv.setTrusted(bob, true);
         vm.expectRevert(Conversion.Unauthorized.selector);
         conv.sweep(address(eur), bob, 1);
-        vm.expectRevert(Conversion.InvalidAmount.selector);
-        conv.setRateTolerance(trustedProgram, 10_001);
         vm.stopPrank();
     }
 

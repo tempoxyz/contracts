@@ -54,11 +54,12 @@ interface ISource {
         returns (uint256 paid, uint256 covered);
 
     /// @notice Charges up to `units` with no hold: the owner's free funds, then debt to this source within the
-    ///         owner's debt cap (with `standIn`, the offline cap where higher). Returns the units it covered; zero
-    ///         for a source that does not charge.
+    ///         owner's debt cap (with `standIn`, the offline cap where higher). Returns the units paid to the
+    ///         settlement account and the units of the purchase it covered, as capture does; zeros for a source that
+    ///         does not charge.
     function charge(address owner, bytes32 position, bytes32 legId, uint256 units, bool standIn)
         external
-        returns (uint256 taken);
+        returns (uint256 paid, uint256 covered);
 
     /// @notice Ends leg `legId`, returning what it holds; an expired hold ends as expired. Does nothing for a leg
     ///         already settled.

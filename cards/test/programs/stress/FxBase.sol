@@ -7,6 +7,7 @@ import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 import { CardLegs } from "../../../src/programs/CardLegs.sol";
 import { CardLimits } from "../../../src/programs/CardLimits.sol";
 import { Conversion } from "../../../src/programs/Conversion.sol";
+import { IReservationCore } from "../../../src/programs/interfaces/IReservationCore.sol";
 import { FixedPricePool } from "../../venues/FixedPricePool.sol";
 import { AuthEnv } from "../harness/AuthEnv.sol";
 import { Rates } from "../harness/Rates.sol";
@@ -22,6 +23,8 @@ abstract contract FxBase is AuthEnv {
     uint256 internal constant ONE = 1e18;
     uint256 internal constant BPS = 10_000;
     uint256 internal constant DEPTH = 1e15;
+    /// @dev How far past a hold every cardholder lets the cash source capture the converted token.
+    uint16 internal constant HOLDER_TOLERANCE_BPS = 1000;
     /// @dev Monday 2026-11-02 00:00 UTC; simulations start a week later, also on a Monday.
     uint256 internal constant MONDAY = 1_793_577_600;
 
@@ -72,6 +75,9 @@ abstract contract FxBase is AuthEnv {
         /// @dev The same at the reference rate.
         int256 holderCostRef;
         uint256 bought;
+        /// @dev Market value of the converted tokens cardholders paid past (negative: short of) the rate their
+        ///      purchase locked, captures and late charges of converted-only purchases together.
+        int256 holderShare;
     }
 
     ITIP20Token internal lcl;
@@ -168,11 +174,18 @@ abstract contract FxBase is AuthEnv {
             core.approveHolder(address(cash), address(lcl), type(uint128).max, 0);
             core.approveHolder(address(cash), address(usd), type(uint128).max, 0);
             cards.setFunding(order);
+            core.setPayeeTerms(address(cash), _converted(), _toleranceTerms(h));
             cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
             vm.stopPrank();
             if (tokens != 0) ITIP20Token(_converted()).mint(h, tokens);
             if (plain != 0) ITIP20Token(_settlementToken()).mint(h, plain);
         }
+    }
+
+    /// @dev h's payee terms for the cash source on the converted token, with HOLDER_TOLERANCE_BPS.
+    function _toleranceTerms(address h) internal view returns (IReservationCore.PayeeTerms memory t) {
+        t = core.payeeTerms(h, address(cash), _converted());
+        t.toleranceBps = HOLDER_TOLERANCE_BPS;
     }
 
     /// @dev Fixes what lies outside the known parties and gives the issuer refund money, so later checks see anything
@@ -395,6 +408,7 @@ abstract contract FxBase is AuthEnv {
         uint256 spent = holderBefore - _holderTokens(b.k);
         uint256 promised = b.lock == 0 ? 0 : uint256(b.amount).mulDivUp(ONE, b.lock);
         if (b.legs & 1 != 0 && spent > promised) st.lateHolderExtra += _atMarket(spent - promised);
+        if (b.legs == 1 && promised != 0) st.holderShare += int256(_atMarket(spent)) - int256(_atMarket(promised));
         return true;
     }
 
@@ -431,13 +445,14 @@ abstract contract FxBase is AuthEnv {
         spentOf[b.ref] = spent;
         if (b.legs == 1) {
             uint256 promised = uint256(b.amount).mulDivUp(ONE, b.lock);
-            // The cardholder never pays more converted tokens than the rate it was shown promised.
-            assertLe(spent, promised + 1, "paid past the locked rate");
+            // The cardholder never pays more converted tokens than the hold's capture limit lets it.
+            assertLe(spent, promised.mulDiv(BPS + HOLDER_TOLERANCE_BPS, BPS) + 2, "paid past the capture limit");
             // The issuer loses at most what the venue's move since the swipe takes from the cardholder's tokens.
             uint256 floor = uint256(b.amount).mulDiv(_bid(), b.lock);
             if (floor > b.amount) floor = b.amount;
             assertGe(got + 2, floor, "issuer lost past the market move");
             if (spent > promised) st.overLock += spent - promised;
+            st.holderShare += int256(_atMarket(spent)) - int256(_atMarket(promised));
             st.holderCost += int256(_atMarket(spent)) - int256(uint256(b.amount));
             st.holderCostRef += int256(_atRef(spent)) - int256(uint256(b.amount));
             st.bought += b.amount;
@@ -536,6 +551,7 @@ abstract contract FxBase is AuthEnv {
         _logAmount(test, "holder_cost_vs_reference", st.holderCostRef);
         _logAmount(test, "holder_bought_converted", int256(st.bought));
         _log(test, "holder_tokens_over_lock", st.overLock);
+        _logAmount(test, "holder_fx_share", st.holderShare);
     }
 
     function _decimal(int256 value, uint256 decimals) internal pure returns (string memory) {

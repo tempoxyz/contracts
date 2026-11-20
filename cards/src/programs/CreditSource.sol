@@ -465,8 +465,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @inheritdoc ISource
     /// @dev Credit never charges without a hold.
-    function charge(address, bytes32, bytes32, uint256, bool) external pure returns (uint256) {
-        return 0;
+    function charge(address, bytes32, bytes32, uint256, bool) external pure returns (uint256, uint256) {
+        return (0, 0);
     }
 
     /// @inheritdoc ISource

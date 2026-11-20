@@ -21,6 +21,10 @@ interface IConvertAtMid {
         returns (uint256 out);
 }
 
+interface IOpenConverted {
+    function openConverted() external view returns (uint256);
+}
+
 interface ITIP20Memo {
     function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
 }
@@ -47,6 +51,10 @@ contract IssuerTreasury is IExposureGuard {
     uint8 private constant IN_USE_HELD = 6;
     uint8 private constant IN_USE_ISSUER_DEBT = 8;
     uint8 private constant PLEDGE = 2;
+    uint256 private constant BPS = 10_000;
+    /// @notice The share of open converted holds' settlement value the collateral must also cover, for a move of the
+    ///         converted token before they capture.
+    uint256 public constant FX_STRESS_BPS = 1000;
 
     ICardAuth public immutable PROGRAM;
 
@@ -54,6 +62,8 @@ contract IssuerTreasury is IExposureGuard {
     mapping(address token => uint256) internal _funds;
     /// @notice Contracts sizing money in the settlement token, asked before it changes.
     address[] public tokenGuards;
+    /// @notice Funding sources whose open converted holds count toward the collateral at FX_STRESS_BPS.
+    address[] public fxSources;
     mapping(bytes32 id => uint64 eta) public pendingSetting;
     uint64 internal _charges;
 
@@ -81,6 +91,7 @@ contract IssuerTreasury is IExposureGuard {
     event SettingCanceled(bytes32 indexed id);
     event SettlementTokenSet(address indexed token, address indexed previous, uint256 scale);
     event TokenGuardsSet(address[] guards);
+    event FxSourcesSet(address[] sources);
     event CollateralPosted(address indexed sponsor, bytes32 pledgeId, uint128 units);
     event CollateralReleased(uint256 value, uint256 units);
     event CollateralSeized(address indexed to, uint256 value, uint256 units);
@@ -226,6 +237,21 @@ contract IssuerTreasury is IExposureGuard {
         emit TokenGuardsSet(guards);
     }
 
+    /// @notice Funding sources whose open converted holds the collateral covers at FX_STRESS_BPS. Appending to the
+    ///         current list applies at once, since it can only raise what the collateral covers; anything else waits
+    ///         the delay.
+    function setFxSources(address[] calldata sources) external onlyIssuer {
+        address[] storage current = fxSources;
+        uint256 n = current.length;
+        bool appends = sources.length >= n;
+        for (uint256 i; appends && i < n; ++i) {
+            appends = sources[i] == current[i];
+        }
+        if (!_settle(appends)) return;
+        fxSources = sources;
+        emit FxSourcesSet(sources);
+    }
+
     /// @notice Drops a proposed setting.
     function cancelSetting(bytes32 id) external onlyIssuer {
         delete pendingSetting[id];
@@ -257,10 +283,25 @@ contract IssuerTreasury is IExposureGuard {
         return held + unsettled;
     }
 
-    /// @notice Reverts when the program's exposure is past what its live sponsor collateral is worth. The program asks
-    ///         it after every step that raises its exposure once the issuer registers this contract as its guard.
+    /// @notice The exposure the collateral must cover: exposure() plus FX_STRESS_BPS of what the fxSources' open
+    ///         converted holds are worth in the settlement token at the rates they locked.
+    // At most the sources the issuer set.
+    // forge-lint: disable-next-item(calls-loop)
+    function stressedExposure() public view returns (uint256 due) {
+        due = exposure();
+        address[] storage sources = fxSources;
+        uint256 open;
+        for (uint256 i; i < sources.length; ++i) {
+            open += IOpenConverted(sources[i]).openConverted();
+        }
+        if (open != 0) due += open.mulDivUp(FX_STRESS_BPS, BPS);
+    }
+
+    /// @notice Reverts when the program's stressed exposure is past what its live sponsor collateral is worth. The
+    ///         program asks it after every step that raises its exposure once the issuer registers this contract as
+    ///         its guard.
     function checkExposure() external view {
-        uint256 due = exposure();
+        uint256 due = stressedExposure();
         if (due == 0) return;
         uint256 value = valueOf();
         if (due > value) revert ExposureAboveCollateral(due, value);
@@ -302,12 +343,13 @@ contract IssuerTreasury is IExposureGuard {
         emit CollateralPosted(sponsor, id, h.held);
     }
 
-    /// @notice The sponsor releases collateral worth value, never below the program's exposure in what still covers it.
+    /// @notice The sponsor releases collateral worth value, never below the program's stressed exposure in what still
+    ///         covers it.
     function release(uint256 value) external nonReentrant {
         Collateral storage c = _sponsored();
         uint256 current = valueOf();
         uint256 remaining = current > value ? current - value : 0;
-        uint256 due = exposure();
+        uint256 due = stressedExposure();
         if (remaining < due) revert BelowExposure(remaining, due);
         uint256 units = _unitsDown(c, value);
         _take(c, units, false);

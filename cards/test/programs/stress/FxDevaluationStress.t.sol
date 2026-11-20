@@ -33,33 +33,44 @@ contract FxDevaluationStressTest is FxBase {
         _baseline(1_000_000e6);
     }
 
+    /// @dev Past the band: the cardholders pay the market less FX_BAND_BPS (8% of the move), the issuer the band.
     function test_stress_devalue10PctInOneDay() public {
-        _devalue("devalue_10pct_1d", 1000, 1);
+        _assertSplit(_devalue("devalue_10pct_1d", 1000, 1), 200, 800);
     }
 
     function test_stress_devalue10PctOverFiveDays() public {
         _devalue("devalue_10pct_5d", 1000, 5);
     }
 
+    /// @dev Past the capture limit: the cardholders pay 10% more tokens than the lock (7.5% of the purchase at the
+    ///      fallen market), the issuer the rest (1 - 1.1 * 0.75 = 17.5%), once the reference rate confirms the move.
     function test_stress_devalue25PctInOneDay() public {
-        _devalue("devalue_25pct_1d", 2500, 1);
+        _assertSplit(_devalue("devalue_25pct_1d", 2500, 1), 1750, 750);
     }
 
     function test_stress_devalue25PctOverThreeDays() public {
         _devalue("devalue_25pct_3d", 2500, 3);
     }
 
+    /// @dev As at 25%: cardholders 10% more tokens (6% at the market), the issuer 1 - 1.1 * 0.6 = 34%.
     function test_stress_devalue40PctInOneDay() public {
-        _devalue("devalue_40pct_1d", 4000, 1);
+        _assertSplit(_devalue("devalue_40pct_1d", 4000, 1), 3400, 600);
     }
 
+    /// @dev Daily steps within the band and the cardholders' tolerance: every capture goes through on time, the issuer
+    ///      paying at most the band on any purchase.
     function test_stress_devalue40PctOverFiveDays() public {
         _devalue("devalue_40pct_5d", 4000, 5);
+        assertEq(st.captureFails, 0, "captures stalled");
+        assertEq(st.lateCharged, 0, "purchases charged late");
+        assertLe(st.maxGapBps, cash.FX_BAND_BPS(), "issuer paid past the band");
     }
 
-    /// @dev The reverse move: LCL gains 10% in a day. The issuer keeps none of the gain on purchases held across it.
+    /// @dev The reverse move: LCL gains 10% in a day. The issuer keeps the band; the cardholders get the rest back.
     function test_stress_appreciate10PctInOneDay() public {
-        _devalue("appreciate_10pct_1d", 0, 1);
+        uint256 open = _devalue("appreciate_10pct_1d", 0, 1);
+        assertApproxEqAbs(st.issuerGap, -int256(open * 200 / BPS), open * 50 / BPS, "issuer keeps the band");
+        assertApproxEqAbs(st.holderShare, -int256(open * 800 / BPS), open * 50 / BPS, "cardholders get the rest");
     }
 
     /// @dev Any drop of up to 50% over one to six days ends with rates caught up, nothing stuck and the issuer's loss
@@ -73,7 +84,7 @@ contract FxDevaluationStressTest is FxBase {
     }
 
     /// @dev Runs DAYS days, the move falling on days 2 to 2 + moveDays - 1. dropBps zero means a 10% rise instead.
-    function _devalue(string memory t, uint256 dropBps, uint256 moveDays) internal {
+    function _devalue(string memory t, uint256 dropBps, uint256 moveDays) internal returns (uint256) {
         vm.pauseGasMetering();
         uint256 start = vm.getBlockTimestamp();
         uint256 target = dropBps == 0 ? RATE * 11_000 / BPS : RATE * (BPS - dropBps) / BPS;
@@ -132,7 +143,17 @@ contract FxDevaluationStressTest is FxBase {
         assertTrue(_quotes(), "still not quoting");
         // Every purchase was paid for: captured, or charged late once rates quoted again.
         assertEq(st.captures + st.lateCharged, st.swipes - st.declined, "purchases left unpaid");
-        if (dropBps == 0) assertEq(st.issuerGap, 0, "issuer gained or lost on a rise");
+        // On a rise the issuer never loses; on a drop the cardholders never gain.
+        if (dropBps == 0) assertLe(st.issuerGap, 0, "issuer lost on a rise");
+        else assertGe(st.holderShare, 0, "cardholders gained on a drop");
+        return o.openAtMove;
+    }
+
+    /// @dev What the issuer lost and the cardholders paid past their locks, against the share of what converted
+    ///      purchases held open at the move the policy gives each (within 0.5% of it, for rounding and spread).
+    function _assertSplit(uint256 open, uint256 issuerBps, uint256 holderBps) internal view {
+        assertApproxEqAbs(st.issuerGap, int256(open * issuerBps / BPS), open * 50 / BPS, "issuer share");
+        assertApproxEqAbs(st.holderShare, int256(open * holderBps / BPS), open * 50 / BPS, "cardholder share");
     }
 
     /// @dev What converted purchases hold open, in settlement units.

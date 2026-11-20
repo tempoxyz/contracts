@@ -111,8 +111,6 @@ contract Conversion {
     mapping(address token => uint64) public rateUpdatedAt;
     mapping(address token => RateWindow) public rateWindowOf;
     mapping(address token => ScheduledRate) public scheduledRateOf;
-    /// @notice Basis points the market may move from a rate a program's purchase locked; zero keeps every lock.
-    mapping(address owner => mapping(address program => uint32)) public rateToleranceBps;
     /// @notice Programs that may convert at the reference rate out of this contract's float (refunds and reversals).
     mapping(address program => bool) public trusted;
 
@@ -121,7 +119,6 @@ contract Conversion {
     event ReferenceRateScheduled(address indexed token, uint256 rate, uint64 readyAt);
     event VenueSet(address indexed tokenIn, address indexed tokenOut, address pool, bool baseToQuote);
     event ReferenceRateSet(address indexed token, uint256 rate);
-    event RateToleranceSet(address indexed owner, address indexed program, uint32 toleranceBps);
     event TrustedSet(address indexed program, bool trusted);
     event ConvertedAt(
         address indexed program, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut
@@ -148,6 +145,8 @@ contract Conversion {
     error RateStepTooLarge(address token, uint256 rate);
     /// @notice The venue's quote strays more than MAX_SLIPPAGE_BPS from the reference rates.
     error RateDeviates(address tokenIn, address tokenOut, uint256 quoted, uint256 fair);
+    /// @notice An anchored quote or swap strays from the caller's anchor by more than the caller's band.
+    error RateBeyondAnchor(address tokenIn, address tokenOut, uint256 quoted, uint256 fair);
     error Slippage(uint256 amount, uint256 bound);
     error MinOutTooLow(uint256 minOut, uint256 floor);
     error InvalidAmount();
@@ -235,13 +234,6 @@ contract Conversion {
         emit ReferenceRateScheduled(token, rate_, readyAt);
     }
 
-    /// @notice The caller's tolerance for every rate a program's purchases lock on its funds.
-    function setRateTolerance(address program, uint32 toleranceBps) external {
-        if (toleranceBps > BPS) revert InvalidAmount();
-        rateToleranceBps[msg.sender][program] = toleranceBps;
-        emit RateToleranceSet(msg.sender, program, toleranceBps);
-    }
-
     function setTrusted(address program, bool trusted_) external onlyOwner {
         trusted[program] = trusted_;
         emit TrustedSet(program, trusted_);
@@ -326,13 +318,21 @@ contract Conversion {
         return got >= fair ? 0 : (fair - got).mulDivUp(BPS, fair);
     }
 
-    /// @notice Whether the market moved from locked to current by more than the owner's tolerance for the calling
-    ///         program.
-    function lapsed(address owner_, uint256 locked, uint256 current) external view returns (bool) {
-        uint256 tolerance = rateToleranceBps[owner_][msg.sender];
-        if (tolerance == 0 || locked == 0) return false;
-        uint256 moved = current > locked ? current - locked : locked - current;
-        return moved * BPS > locked * tolerance;
+    /// @notice What tokenIn exactly amountOut of tokenOut costs at the venue, checked against `anchor` (units of
+    ///         tokenOut per unit of tokenIn, 18 decimals) rather than the reference rates: reverts RateBeyondAnchor
+    ///         while it strays more than bandBps from the cost at the anchor. Neither the reference rates nor their age
+    ///         bear on it.
+    function quoteOutAnchored(address tokenIn, address tokenOut, uint256 amountOut, uint256 anchor, uint256 bandBps)
+        public
+        view
+        returns (uint256 cost)
+    {
+        if (tokenIn == tokenOut || amountOut == 0) return amountOut;
+        if (anchor == 0) revert InvalidAmount();
+        cost = _routeOut(tokenIn, tokenOut, amountOut);
+        uint256 fair = amountOut.mulDivUp(RATE_ONE, anchor);
+        uint256 moved = cost > fair ? cost - fair : fair - cost;
+        if (moved > 1 && moved * BPS > fair * bandBps) revert RateBeyondAnchor(tokenIn, tokenOut, cost, fair);
     }
 
     // Swaps.
@@ -348,13 +348,7 @@ contract Conversion {
         if (minOut == 0) minOut = floor;
         else if (minOut < floor) revert MinOutTooLow(minOut, floor);
         SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
-        if (tokenIn == tokenOut) {
-            out = amountIn;
-        } else if (venues[tokenIn][tokenOut].exists) {
-            out = _swapIn(tokenIn, tokenOut, amountIn);
-        } else {
-            out = _swapIn(HUB, tokenOut, _swapIn(tokenIn, HUB, amountIn));
-        }
+        out = _swapRoute(tokenIn, tokenOut, amountIn);
         if (out < minOut) revert Slippage(out, minOut);
         SafeTransferLib.safeTransfer(tokenOut, recipient, out);
         emit Swapped(msg.sender, tokenIn, tokenOut, amountIn, out, recipient);
@@ -371,15 +365,51 @@ contract Conversion {
         spent = _routeOut(tokenIn, tokenOut, amountOut);
         if (spent > maxIn) revert Slippage(spent, maxIn);
         SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), spent);
-        if (tokenIn == tokenOut) {
-            // Nothing to trade.
-        } else if (venues[tokenIn][tokenOut].exists) {
-            _swapOut(tokenIn, tokenOut, amountOut, spent);
-        } else {
-            uint256 hub = _quoteOut(HUB, tokenOut, amountOut);
-            _swapOut(tokenIn, HUB, hub, spent);
-            _swapOut(HUB, tokenOut, amountOut, hub);
-        }
+        _swapOutRoute(tokenIn, tokenOut, amountOut, spent);
+        SafeTransferLib.safeTransfer(tokenOut, recipient, amountOut);
+        emit Swapped(msg.sender, tokenIn, tokenOut, spent, amountOut, recipient);
+    }
+
+    /// @notice Spends exactly amountIn of a trusted program's tokenIn for tokenOut, paid to recipient, at the venue's
+    ///         price: reverts RateBeyondAnchor when it fetches less than amountIn at `anchor` less bandBps.
+    function swapExactInAnchored(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 anchor,
+        uint256 bandBps,
+        address recipient
+    ) external returns (uint256 out) {
+        if (!trusted[msg.sender]) revert Unauthorized();
+        if (amountIn == 0) return 0;
+        SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
+        out = _swapRoute(tokenIn, tokenOut, amountIn);
+        uint256 fair = amountIn.mulDiv(anchor, RATE_ONE);
+        uint256 floor = bandBps >= BPS ? 0 : fair.mulDiv(BPS - bandBps, BPS);
+        if (out < floor) revert RateBeyondAnchor(tokenIn, tokenOut, out, fair);
+        SafeTransferLib.safeTransfer(tokenOut, recipient, out);
+        emit Swapped(msg.sender, tokenIn, tokenOut, amountIn, out, recipient);
+    }
+
+    /// @notice Buys exactly amountOut of tokenOut for recipient with at most maxIn of a trusted program's tokenIn, at
+    ///         the venue's price: reverts RateBeyondAnchor when it costs more than amountOut at `anchor` plus bandBps.
+    function swapExactOutAnchored(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountOut,
+        uint256 maxIn,
+        uint256 anchor,
+        uint256 bandBps,
+        address recipient
+    ) external returns (uint256 spent) {
+        if (!trusted[msg.sender]) revert Unauthorized();
+        if (amountOut == 0) return 0;
+        uint256 fair = amountOut.mulDivUp(RATE_ONE, anchor);
+        spent = _routeOut(tokenIn, tokenOut, amountOut);
+        if (spent > fair.mulDiv(BPS + bandBps, BPS)) revert RateBeyondAnchor(tokenIn, tokenOut, spent, fair);
+        if (spent > maxIn) revert Slippage(spent, maxIn);
+        SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), spent);
+        _swapOutRoute(tokenIn, tokenOut, amountOut, spent);
         SafeTransferLib.safeTransfer(tokenOut, recipient, amountOut);
         emit Swapped(msg.sender, tokenIn, tokenOut, spent, amountOut, recipient);
     }
@@ -440,6 +470,25 @@ contract Conversion {
     function _routeOut(address tokenIn, address tokenOut, uint256 amountOut) private view returns (uint256) {
         if (venues[tokenIn][tokenOut].exists) return _quoteOut(tokenIn, tokenOut, amountOut);
         return _quoteOut(tokenIn, HUB, _quoteOut(HUB, tokenOut, amountOut));
+    }
+
+    /// @dev Swaps exactly amountIn this contract holds, directly or through the hub; returns what it got.
+    function _swapRoute(address tokenIn, address tokenOut, uint256 amountIn) private returns (uint256) {
+        if (tokenIn == tokenOut) return amountIn;
+        if (venues[tokenIn][tokenOut].exists) return _swapIn(tokenIn, tokenOut, amountIn);
+        return _swapIn(HUB, tokenOut, _swapIn(tokenIn, HUB, amountIn));
+    }
+
+    /// @dev Buys exactly amountOut with the `spent` this contract holds, directly or through the hub.
+    function _swapOutRoute(address tokenIn, address tokenOut, uint256 amountOut, uint256 spent) private {
+        if (tokenIn == tokenOut) return;
+        if (venues[tokenIn][tokenOut].exists) {
+            _swapOut(tokenIn, tokenOut, amountOut, spent);
+            return;
+        }
+        uint256 hub = _quoteOut(HUB, tokenOut, amountOut);
+        _swapOut(tokenIn, HUB, hub, spent);
+        _swapOut(HUB, tokenOut, amountOut, hub);
     }
 
     function _quoteIn(address tokenIn, address tokenOut, uint256 amountIn) private view returns (uint256 out) {
