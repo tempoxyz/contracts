@@ -675,8 +675,14 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
-        (uint256 supplyAfter, uint256 heldAfter) =
-            _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter);
+        // The mint is the only supply change since the checkpoint. It moves the residue allowance only when it
+        // lands in this vault, so that case reads the supply again.
+        (uint256 supplyAfter, uint256 heldAfter) = _reanchorAfterEntryRaw(
+            rateEngineShares,
+            rateEarnShares,
+            rawSharesAfter,
+            receiver == address(this) ? _activeSupply() : currentSupply + earnShares
+        );
         _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (currentSupply == 0 || restarted) {
@@ -763,7 +769,13 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
-        (uint256 supplyAfter, uint256 heldAfter) = _reanchorAfterEntry(rateEngineShares, rateEarnShares);
+        // As in a deposit, the mint is the only supply change since the checkpoint.
+        (uint256 supplyAfter, uint256 heldAfter) = _reanchorAfterEntryRaw(
+            rateEngineShares,
+            rateEarnShares,
+            rawEngineShares(),
+            receiver == address(this) ? _activeSupply() : currentSupply + earnShares
+        );
         _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (currentSupply == 0 || restarted) {
@@ -1709,15 +1721,15 @@ contract EarnVault is IEarnVault {
         internal
         returns (uint256 supply, uint256 held)
     {
-        return _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawEngineShares());
+        return _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawEngineShares(), _activeSupply());
     }
 
-    /// @dev {_reanchorAfterEntry} with the engine's raw share count the caller just read.
-    function _reanchorAfterEntryRaw(uint256 rateEngineShares, uint256 rateEarnShares, uint256 raw)
+    /// @dev {_reanchorAfterEntry} with the engine's raw share count and the active supply the caller just read.
+    function _reanchorAfterEntryRaw(uint256 rateEngineShares, uint256 rateEarnShares, uint256 raw, uint256 supply_)
         internal
         returns (uint256 supply, uint256 held)
     {
-        supply = _activeSupply();
+        supply = supply_;
         uint256 represented = Math.mulDiv(supply, rateEngineShares, rateEarnShares);
         if (_managedEngineShares > represented) _managedEngineShares = represented;
         return _reanchorAtRestRaw(raw, supply);
