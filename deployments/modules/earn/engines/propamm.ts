@@ -1,6 +1,7 @@
 import {
   erc20Abi,
   getAddress,
+  isAddressEqual,
   toFunctionSelector,
   zeroHash,
   zeroAddress,
@@ -170,12 +171,21 @@ export const propamm = defineEngine({
     exactWithdraw: true,
     asyncRedeem: false,
   },
-  recognizes: async (client, engine) =>
-    (await client.readContract({
-      address: engine,
-      abi: propAMMEngineAbi,
-      functionName: 'pool',
-    })) !== zeroAddress,
+  // A managed-pool engine also answers pool(), but only a single-pair pool names its own base token:
+  // that read reverts on a managed pool, and readEngineKind takes a failed recognizer as no match.
+  recognizes: async (client, engine) => {
+    const [pool, baseToken] = await Promise.all([
+      client.readContract({ address: engine, abi: propAMMEngineAbi, functionName: 'pool' }),
+      client.readContract({ address: engine, abi: propAMMEngineAbi, functionName: 'baseToken' }),
+    ])
+    if (pool === zeroAddress) return false
+    const poolBase = await client.readContract({
+      address: pool,
+      abi: propAMMPoolAbi,
+      functionName: 'baseToken',
+    })
+    return isAddressEqual(poolBase, baseToken)
+  },
   shareScale: (client, engine) =>
     client.readContract({
       address: engine,

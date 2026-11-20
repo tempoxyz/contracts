@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Rebuilds the committed DirectPropAMM fixture from the tempoxyz/tempo-propamm commit in source.json.
+# Rebuilds a committed PropAMM fixture from the tempoxyz/tempo-propamm commit its source file pins: the
+# DirectPropAMM fixture from source.json by default, or the fixture of the source file `--source` names
+# (managed.source.json for ManagedDirectPropAMM). Each fixture is named after its contract.
 #
-# Usage: test/earn/fixtures/propamm/update.sh [--check] [<tempo-propamm checkout>]
+# Usage: test/earn/fixtures/propamm/update.sh [--check] [--source <file>] [<tempo-propamm checkout>]
 #
 # Without a checkout path, fetches the pinned commit of the public tempoxyz/tempo-propamm anonymously over
 # HTTPS into a temporary directory and requires it to be on that repository's main branch. A given checkout must be clean and at the pinned commit. `--check`
@@ -10,14 +12,21 @@
 set -euo pipefail
 
 fixture_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-fixture="$fixture_dir/DirectPropAMM.json"
 source_json="$fixture_dir/source.json"
 
 check=false
 checkout=''
-for arg in "$@"; do
+while (($# > 0)); do
+  arg=$1
+  shift
   case "$arg" in
     --check) check=true ;;
+    --source)
+      (($# > 0)) || { echo "--source needs a file name" >&2; exit 2; }
+      # Only a source file beside this script is accepted, by name.
+      source_json="$fixture_dir/$(basename "$1")"
+      shift
+      ;;
     -*) echo "unknown option: $arg" >&2; exit 2 ;;
     *)
       [[ -z "$checkout" ]] || { echo "expected at most one tempo-propamm checkout path" >&2; exit 2; }
@@ -26,17 +35,31 @@ for arg in "$@"; do
   esac
 done
 
+[[ -f "$source_json" ]] || { echo "no source file $source_json" >&2; exit 2; }
+# Each source file builds one contract, fixed here by the file's name, so editing a source file cannot
+# make a check rebuild and compare the other fixture.
+case "$(basename "$source_json")" in
+  source.json) expected_contract=contracts/src/DirectPropAMM.sol:DirectPropAMM ;;
+  managed.source.json) expected_contract=contracts/src/managed/ManagedDirectPropAMM.sol:ManagedDirectPropAMM ;;
+  *) echo "unknown source file $source_json" >&2; exit 2 ;;
+esac
 repository=$(jq -er '.repository' "$source_json")
 commit=$(jq -er '.commit' "$source_json")
 contract=$(jq -er '.contract' "$source_json")
 solc=$(jq -er '.solc' "$source_json")
-[[ "$solc" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "source.json solc is not a release version: $solc" >&2; exit 1; }
-[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "source.json commit is not a full SHA: $commit" >&2; exit 1; }
+[[ "$contract" == "$expected_contract" ]] || {
+  echo "$source_json contract must be $expected_contract, got $contract" >&2
+  exit 1
+}
+[[ "$solc" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "$source_json solc is not a release version: $solc" >&2; exit 1; }
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "$source_json commit is not a full SHA: $commit" >&2; exit 1; }
 # Only the upstream repository is accepted, so a source.json edit cannot point the check elsewhere.
 upstream=tempoxyz/tempo-propamm
-[[ "$repository" == "$upstream" ]] || { echo "source.json repository must be $upstream, got $repository" >&2; exit 1; }
+[[ "$repository" == "$upstream" ]] || { echo "$source_json repository must be $upstream, got $repository" >&2; exit 1; }
 source_path=${contract%%:*}
 contract_name=${contract##*:}
+[[ "$contract_name" =~ ^[A-Za-z0-9_]+$ ]] || { echo "$source_json contract is not <path>:<name>: $contract" >&2; exit 1; }
+fixture="$fixture_dir/$contract_name.json"
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
@@ -63,7 +86,7 @@ head=$(git -C "$checkout" rev-parse HEAD)
 }
 
 git -C "$checkout" submodule update --quiet --init --depth 1
-# The deployed DirectPropAMM was built with solc, so build with the solc version source.json names
+# The deployed pools are built with solc, so build with the solc version the source file names
 # rather than the source repository's default compiler, into scratch output and cache directories so
 # no artifact the checkout already holds is reused. Forge also lints the PropAMM sources on build;
 # show its output only when the build fails.
@@ -82,15 +105,15 @@ jq -e '(.bytecode.linkReferences | length) == 0 and (.deployedBytecode.linkRefer
   "$artifact" >/dev/null || { echo "$contract needs library linking" >&2; exit 1; }
 
 jq '{abi, bytecode: {object: .bytecode.object}, deployedBytecode: {object: .deployedBytecode.object}}' \
-  "$artifact" >"$scratch/DirectPropAMM.json"
+  "$artifact" >"$scratch/fixture.json"
 
 if [[ "$check" == true ]]; then
-  if ! cmp -s "$scratch/DirectPropAMM.json" "$fixture"; then
+  if ! cmp -s "$scratch/fixture.json" "$fixture"; then
     echo "$fixture does not match $repository@$commit; run $0 to regenerate it" >&2
     exit 1
   fi
   echo "$fixture matches $repository@$commit"
 else
-  mv "$scratch/DirectPropAMM.json" "$fixture"
+  mv "$scratch/fixture.json" "$fixture"
   echo "wrote $fixture from $repository@$commit"
 fi

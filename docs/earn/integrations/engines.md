@@ -15,6 +15,9 @@ Every kind supports immediate redemption and exact withdrawal. Tooling, localnet
 read each kind's properties from the shared
 [engine registry](../../../deployments/modules/earn/engines/index.ts) instead of branching on the kind.
 
+`ManagedPropAMMEngine`, over one pair of a ManagedDirectPropAMM pool, is not deployed and is not a
+registered kind; the [PropAMM page](../modules/propamm.md#managed-pools) owns it.
+
 ## Engine contract
 
 [`IEarnEngine`](../../../src/interfaces/earn/engines/IEarnEngine.sol) defines single-client custody and
