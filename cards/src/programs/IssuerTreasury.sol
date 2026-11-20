@@ -25,7 +25,18 @@ interface IOpenConverted {
     function openConverted() external view returns (uint256);
 }
 
+/// @dev The program's funding-source registry and pending settings, which say whether a source is approved.
+interface ISourceRegistry {
+    function pendingSetting(bytes32 id) external view returns (uint64);
+    function setSource(address source, bool approved) external;
+    function sourceKind(address source) external view returns (uint8);
+}
+
 interface ITIP20Memo {
+    function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
+}
+
+interface ITIP20MemoFrom {
     function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
 }
 
@@ -55,6 +66,8 @@ contract IssuerTreasury is IExposureGuard {
     /// @notice The share of open converted holds' settlement value the collateral must also cover, for a move of the
     ///         converted token before they capture.
     uint256 public constant FX_STRESS_BPS = 1000;
+    /// @notice The most funding sources fxSources lists at once.
+    uint256 public constant MAX_FX_SOURCES = 8;
 
     ICardAuth public immutable PROGRAM;
 
@@ -62,7 +75,7 @@ contract IssuerTreasury is IExposureGuard {
     mapping(address token => uint256) internal _funds;
     /// @notice Contracts sizing money in the settlement token, asked before it changes.
     address[] public tokenGuards;
-    /// @notice Funding sources whose open converted holds count toward the collateral at FX_STRESS_BPS.
+    /// @notice The program's funding sources whose open converted holds count toward the collateral at FX_STRESS_BPS.
     address[] public fxSources;
     mapping(bytes32 id => uint64 eta) public pendingSetting;
     uint64 internal _charges;
@@ -77,6 +90,8 @@ contract IssuerTreasury is IExposureGuard {
     }
 
     Collateral public collateral;
+    /// @notice The Earn vault each sponsor accepts as collateral; collateral in the settlement token needs none.
+    mapping(address sponsor => IEarnVault) public acceptedVault;
     /// @notice What the sponsor seized and has not yet applied to an acknowledged settlement.
     uint256 public seized;
 
@@ -91,7 +106,9 @@ contract IssuerTreasury is IExposureGuard {
     event SettingCanceled(bytes32 indexed id);
     event SettlementTokenSet(address indexed token, address indexed previous, uint256 scale);
     event TokenGuardsSet(address[] guards);
-    event FxSourcesSet(address[] sources);
+    event FxSourceAdded(address indexed source);
+    event FxSourceRemoved(address indexed source);
+    event CollateralAccepted(address indexed sponsor, IEarnVault vault);
     event CollateralPosted(address indexed sponsor, bytes32 pledgeId, uint128 units);
     event CollateralReleased(uint256 value, uint256 units);
     event CollateralSeized(address indexed to, uint256 value, uint256 units);
@@ -100,6 +117,7 @@ contract IssuerTreasury is IExposureGuard {
     error AboveExposure(uint256 value, uint256 room);
     error BelowExposure(uint256 remaining, uint256 exposure);
     error ExposureAboveCollateral(uint256 exposure, uint256 collateral);
+    error FxSourceRefused(address source);
     error IssuerFundsShort(uint256 needed, uint256 available);
     error NoConversion();
     error NotIssuer();
@@ -175,7 +193,9 @@ contract IssuerTreasury is IExposureGuard {
 
     /// @notice Pays amount of the settlement token from the settlement account to to with memo. What the account
     ///         lacks, the issuer's funds advance, and the account owes it here as core debt within the cap it set; the
-    ///         core repays it first from what the account receives. The settlement account, the issuer or a treasury
+    ///         core repays it first from what the account receives. Only the advance counts against the account's
+    ///         budget for this contract, and it joins what the account already owes here, lapsing with it. With an
+    ///         advance the payment comes from this contract. The settlement account, the issuer or a treasury
     ///         operator (within its cap) calls it.
     function payOut(address to, uint256 amount, bytes32 memo) external nonReentrant returns (uint256 advanced) {
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
@@ -189,16 +209,20 @@ contract IssuerTreasury is IExposureGuard {
             advanced = amount - free;
             uint256 held = issuerFunds(token);
             if (held < advanced) revert IssuerFundsShort(advanced, held);
-            // The account's debt here is forgiven first, so the advance reaches it whole, and charged again below
-            // together with the advance: only the advance leaves this contract.
-            bytes32 id = _chargeId();
-            uint256 before = _forgive(account, token, id);
-            SafeTransferLib.safeTransfer(token, account, advanced);
-            ITIP20Memo(token).transferFromWithMemo(account, to, amount, memo);
+            // What the account holds free comes here first, so the charge finds nothing free and the whole advance,
+            // and only it, becomes the account's debt: never routed through the account, where it would repay old
+            // debt instead. This contract then pays the whole amount, so only the advance leaves its funds.
+            // From the program's own settlement account, which the caller is or acts for above.
+            // forge-lint: disable-next-line(arbitrary-send-erc20)
+            if (free != 0) SafeTransferLib.safeTransferFrom(token, account, address(this), free);
+            // At most the issuer's funds, which the core's 128-bit debt cap bounds.
             // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.charge(account, token, id, uint128(before + advanced), address(this), false);
+            CORE.charge(account, token, _chargeId(), uint128(advanced), address(this), false);
+            ITIP20Memo(token).transferWithMemo(to, amount, memo);
         } else {
-            ITIP20Memo(token).transferFromWithMemo(account, to, amount, memo);
+            // From the program's own settlement account, which the caller is or acts for above.
+            // forge-lint: disable-next-line(arbitrary-send-erc20)
+            ITIP20MemoFrom(token).transferFromWithMemo(account, to, amount, memo);
         }
         emit IssuerPaid(to, token, amount, advanced, memo);
     }
@@ -237,19 +261,36 @@ contract IssuerTreasury is IExposureGuard {
         emit TokenGuardsSet(guards);
     }
 
-    /// @notice Funding sources whose open converted holds the collateral covers at FX_STRESS_BPS. Appending to the
-    ///         current list applies at once, since it can only raise what the collateral covers; anything else waits
-    ///         the delay.
-    function setFxSources(address[] calldata sources) external onlyIssuer {
-        address[] storage current = fxSources;
-        uint256 n = current.length;
-        bool appends = sources.length >= n;
-        for (uint256 i; appends && i < n; ++i) {
-            appends = sources[i] == current[i];
+    /// @notice Lists a funding source of the program in fxSources, so its open converted holds count toward the
+    ///         collateral: one the program approved, or whose approval waits the program's settings delay. Anyone
+    ///         may, the sponsor above all, so the stress share never waits on the issuer. The source must answer
+    ///         openConverted.
+    function addFxSource(address source) external {
+        address[] storage sources = fxSources;
+        if (sources.length >= MAX_FX_SOURCES || _listed(source) || !_approved(source)) revert FxSourceRefused(source);
+        IOpenConverted(source).openConverted();
+        sources.push(source);
+        emit FxSourceAdded(source);
+    }
+
+    /// @notice Takes a source out of fxSources: anyone, once the program neither approves it nor waits to, and it has
+    ///         no open converted value or does not answer openConverted at all; the sponsor at any time, as its own
+    ///         cover.
+    function removeFxSource(address source) external {
+        address[] storage sources = fxSources;
+        uint256 n = sources.length;
+        uint256 i;
+        while (i < n && sources[i] != source) ++i;
+        if (i == n) revert FxSourceRefused(source);
+        address sponsor = collateral.sponsor;
+        if (sponsor == address(0) || msg.sender != sponsor) {
+            if (_approved(source)) revert FxSourceRefused(source);
+            (bool ok, bytes memory data) = source.staticcall(abi.encodeCall(IOpenConverted.openConverted, ()));
+            if (ok && data.length >= 32 && abi.decode(data, (uint256)) != 0) revert FxSourceRefused(source);
         }
-        if (!_settle(appends)) return;
-        fxSources = sources;
-        emit FxSourcesSet(sources);
+        sources[i] = sources[n - 1];
+        sources.pop();
+        emit FxSourceRemoved(source);
     }
 
     /// @notice Drops a proposed setting.
@@ -284,15 +325,15 @@ contract IssuerTreasury is IExposureGuard {
     }
 
     /// @notice The exposure the collateral must cover: exposure() plus FX_STRESS_BPS of what the fxSources' open
-    ///         converted holds are worth in the settlement token at the rates they locked.
-    // At most the sources the issuer set.
+    ///         converted holds are worth in the settlement token at the rates they locked, each capped at 2^128.
+    // At most MAX_FX_SOURCES sources.
     // forge-lint: disable-next-item(calls-loop)
     function stressedExposure() public view returns (uint256 due) {
         due = exposure();
         address[] storage sources = fxSources;
         uint256 open;
         for (uint256 i; i < sources.length; ++i) {
-            open += IOpenConverted(sources[i]).openConverted();
+            open += _min(IOpenConverted(sources[i]).openConverted(), type(uint128).max);
         }
         if (open != 0) due += open.mulDivUp(FX_STRESS_BPS, BPS);
     }
@@ -311,11 +352,22 @@ contract IssuerTreasury is IExposureGuard {
         return tokenGuards.length;
     }
 
+    function fxSourcesLength() external view returns (uint256) {
+        return fxSources.length;
+    }
+
+    /// @notice The caller accepts vault's shares as the collateral it is sponsor of (zero for none): the settlement
+    ///         account posts a vault only for a sponsor that accepts it.
+    function acceptCollateral(IEarnVault vault) external {
+        acceptedVault[msg.sender] = vault;
+        emit CollateralAccepted(msg.sender, vault);
+    }
+
     /// @notice Records the settlement account's pledge of sponsor collateral at pledgeId(n), n from 1 to MAX_PLEDGES:
     ///         a core pledge it placed with this contract as payee, standing at least COVER_TERM, of the settlement
-    ///         token or of one Earn vault's shares (vault nonzero). A slot is free again once its pledge ended. The
-    ///         asset changes only while no pledge is live, and the sponsor only while nothing is live, seized or
-    ///         exposed.
+    ///         token or of one Earn vault's shares (vault nonzero) that the sponsor accepts. A slot is free again once
+    ///         its pledge ended. The sponsor and the asset change only while no pledge is live and nothing is seized
+    ///         or exposed.
     // forge-lint: disable-next-item(block-timestamp)
     function post(address sponsor, IEarnVault vault, uint256 n) external nonReentrant {
         address account = PROGRAM.SETTLEMENT_ACCOUNT();
@@ -323,10 +375,14 @@ contract IssuerTreasury is IExposureGuard {
         if (n == 0 || n > MAX_PLEDGES) revert TooManyPledges();
         if (sponsor == address(0)) revert WrongSponsor();
         Collateral storage c = collateral;
+        // A vault's value is what the vault reports, so it counts only for a sponsor that accepts it.
+        if (address(vault) != address(0) && acceptedVault[sponsor] != vault) revert WrongAsset();
         address token = address(vault) == address(0) ? PROGRAM.settlementToken() : vault.earnShare();
         if (unitsOf() == 0) {
-            if (sponsor != c.sponsor && (c.sponsor != address(0) && (seized != 0 || exposure() != 0))) {
-                revert WrongSponsor();
+            // The sponsor and the asset stay while the sponsor is still owed, so what it seizes is what it accepted.
+            if (c.sponsor != address(0) && (seized != 0 || stressedExposure() != 0)) {
+                if (sponsor != c.sponsor) revert WrongSponsor();
+                if (token != c.token || vault != c.vault) revert WrongAsset();
             }
             if (address(vault) != address(0)) _toAssets(vault.asset(), 0);
             (c.sponsor, c.token, c.vault, c.slots) = (sponsor, token, vault, 0);
@@ -523,6 +579,23 @@ contract IssuerTreasury is IExposureGuard {
 
     function _chargeId() private returns (bytes32) {
         return keccak256(abi.encode("tempo.cards.issuer-debt", address(this), ++_charges));
+    }
+
+    function _listed(address source) private view returns (bool) {
+        address[] storage sources = fxSources;
+        for (uint256 i; i < sources.length; ++i) {
+            if (sources[i] == source) return true;
+        }
+        return false;
+    }
+
+    /// @dev Whether the program approves source, of any kind, or its approval waits the settings delay.
+    // forge-lint: disable-next-item(block-timestamp)
+    function _approved(address source) private view returns (bool) {
+        ISourceRegistry program = ISourceRegistry(address(PROGRAM));
+        if (program.sourceKind(source) != 0) return true;
+        uint64 eta = program.pendingSetting(keccak256(abi.encodeCall(ISourceRegistry.setSource, (source, true))));
+        return eta != 0 && block.timestamp <= eta + PROGRAM.SETTINGS_WINDOW();
     }
 
     /// @dev Forgives all that account owes this contract in token, through a core refund that pays nothing, and

@@ -168,7 +168,10 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   release. A hold the core ends at expiry counts until someone releases the purchase (anyone may, after
   expiry), so the total drifts above the truth only by expired holds nobody released yet, the same lag as
   CardAuth's own held total. `IssuerTreasury.stressedExposure()` adds `FX_STRESS_BPS` (10%) of the `openConverted`
-  of every source in `fxSources` to `exposure()`, and the guard and collateral release check that.
+  of every source in `fxSources` to `exposure()`, and the guard and collateral release check that. Anyone may
+  list a source the program approves, or has proposed to approve (`addFxSource`, which also checks it answers
+  `openConverted`), so the stress share never waits on the issuer; a source leaves (`removeFxSource`) only once
+  the program no longer approves it and it reports no open converted value, or at once at the sponsor's call.
 - **Settlement log.** Every step emits one event with the purchase reference and a sequence number;
   captures, charges and refunds carry what the sources covered, and a won dispute counts as a
   refund of its chargeback (`creditBack`, registered companions only, which paid the cardholder
@@ -185,7 +188,10 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   the hold and releases still go through. Once a guard is set only the guard replaces or clears it, at once,
   so the issuer never takes back acknowledging what the sponsor is owed.
   A pledge counts toward that collateral only while it stands `COVER_TERM` more (the longest hold plus a week
-  to seize what is still unsettled), and its slot is free again once it ends.
+  to seize what is still unsettled), and its slot is free again once it ends. Earn-vault shares count only for a
+  sponsor that accepted that vault (`acceptCollateral`), and the sponsor and the asset change only while no
+  pledge is live and nothing is seized or exposed. When the settlement account lacks funds for `payOut`, the
+  treasury pays and charges only the advance, which joins what the account already owes it and lapses with it.
 - **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus
   the owner's budget, so no share debt arises; it keeps standing approvals to its vault. When the vault
   quotes but cannot redeem, the float pays and the shares wait for the funder.

@@ -413,10 +413,7 @@ contract CashSourceFxBandTest is AuthEnv {
         treasury.post(sponsor, IEarnVault(address(0)), 1);
         vm.stopPrank();
         _setting(abi.encodeCall(cards.setExposureGuard, (address(treasury))));
-        address[] memory sources = new address[](1);
-        sources[0] = address(cash);
-        vm.prank(issuer);
-        treasury.setFxSources(sources);
+        treasury.addFxSource(address(cash));
         assertEq(treasury.FX_STRESS_BPS(), 1000);
         _authorize(P1, 90e6);
         uint256 open = cash.openConverted();

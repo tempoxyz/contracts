@@ -724,6 +724,9 @@ contract IssuerTreasuryTest is CompEnv {
         usd.mint(settlement, assets);
         shares = _depositEarn(settlement, assets);
         bytes32 id = treasury.pledgeId(1);
+        // The sponsor accepts the vault's shares before the settlement account posts them.
+        vm.prank(sponsor);
+        treasury.acceptCollateral(IEarnVault(address(earnVault)));
         vm.startPrank(settlement);
         // forge-lint: disable-next-line(unsafe-typecast)
         core.pledge(address(treasury), address(earnShare), id, uint128(shares), uint64(block.timestamp + 365 days));
