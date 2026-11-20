@@ -26,9 +26,8 @@ import {
 ///      contains no route, token, vault, or destination selection, and every successful result returns
 ///      through the authenticated source Portal.
 /// Specs for solar-verify (docs/earn/modules/zone-router.md, earn/src/AGENTS.md):
-/// The only state-changing entry point, onWithdrawalReceived, is nonReentrant (`locked` is 1 when free, 2 while held).
-/// @custom:reentrancy-guard locked != 1
-/// @custom:invariant locked == 1 || locked == 2
+/// The only state-changing entry point, onWithdrawalReceived, is nonReentrant (`locked` is set while held).
+/// @custom:reentrancy-guard locked
 /// The route is fixed at construction: a nonzero vault, vault asset and EarnShare, and a nonzero private
 /// asset that is never the EarnShare.
 /// @custom:invariant earnVault != address(0) && vaultAsset != address(0) && earnShare != address(0)
@@ -98,7 +97,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @notice Whether the private asset is the pool's base token; false without a pool.
     bool public immutable privateAssetIsBase;
 
-    uint256 private locked = 1;
+    bool private transient locked;
 
     event EarnDeposit(
         bytes32 indexed actionId,
@@ -140,10 +139,10 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     error ZeroAmount();
 
     modifier nonReentrant() {
-        if (locked != 1) revert ReentrantCall();
-        locked = 2;
+        if (locked) revert ReentrantCall();
+        locked = true;
         _;
-        locked = 1;
+        locked = false;
     }
 
     /// @dev Pass `privateAsset_ == earnVault_.asset()` with a zero pool and customer ID for a router
@@ -242,7 +241,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @custom:ensures lastRefundRecipient != address(0)
     /// Standing approvals go only to the EarnVault, for the vault asset or EarnShare, to the pool, for a route token, or to the source Zone's Portal.
     /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> (spender == earnVault && (t == vaultAsset || t == earnShare)) || (spender == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset)) || spender == sourcePortal
-    /// @custom:ensures locked == 1 && result == IWithdrawalReceiver.onWithdrawalReceived.selector
+    /// @custom:ensures !locked && result == IWithdrawalReceiver.onWithdrawalReceived.selector
     function onWithdrawalReceived(
         uint32 sourceZoneId,
         address sourcePortal,
@@ -334,10 +333,10 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// Conversion only at exact par along the bound pair: measured output equals input, the minimum never
     /// exceeds the input. The pool's standing approval is the only one set here.
     /// Callers convert a nonzero amount.
-    /// @custom:requires locked != 1 && address(pool) != address(0) && amountIn > 0
+    /// @custom:requires locked && address(pool) != address(0) && amountIn > 0
     /// @custom:ensures amountOut == amountIn && amountOut >= minAmountOut
     /// @custom:ensures _isRoutePair(tokenIn, tokenOut)
-    /// @custom:ensures locked != 1
+    /// @custom:ensures locked
     /// @custom:ensures portalDeposits == old(portalDeposits) && lastFlowWasDeposit == old(lastFlowWasDeposit)
     /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> spender == address(pool) && t == tokenIn
     function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, bytes32 actionId)
