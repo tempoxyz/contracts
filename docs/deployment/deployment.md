@@ -217,7 +217,8 @@ controller or Merkle distributor is deployed or installed, send it 1 base unit o
 The controller never measures its own balance and the distributor checks only that its balance did
 not grow, so the unit stays with the contract for good; neither has a rescue path, so send no more.
 Measured on real TIP-20 (`test/spend/gas/RewardsTip20Gas.t.sol`), it cuts a controller `fund` from
-670k to 420k gas and a distributor `fundAndPublishRoot` from 960k to 713k.
+670k to 420k gas and a distributor `fundAndPublishRoot` from 705k to 458k; with the EarnVault and
+engine residue above as well, they cost 168k and 206k.
 
 Zone routers, their `SendSpender`s and card programs (`CardSpender`) hold a token only while a call
 runs, so each callback or spend recreates the balance slot of every token it handles. Tempo charges
