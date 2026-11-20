@@ -151,11 +151,19 @@ contract EarnMerkleRewardDistributorTest is Test {
         );
         uint256 funderBalance = asset.balanceOf(funder);
 
-        // A retry of the same call carries the version it expected before it landed.
+        // A retry of the same call is refused by its settlement ID, and any other settlement still carrying
+        // the version it expected before the first landed is refused by the version.
+        vm.prank(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(EarnMerkleRewardDistributor.SettlementAlreadyConsumed.selector, settlementId)
+        );
+        distributor.fundAndPublishRoot(
+            settlementId, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("one-shot-statement")
+        );
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.StaleRootVersion.selector, 0, 1));
         distributor.fundAndPublishRoot(
-            settlementId, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("one-shot-statement")
+            keccak256("other-settlement"), 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("other")
         );
 
         assertEq(asset.balanceOf(funder), funderBalance);
@@ -190,6 +198,81 @@ contract EarnMerkleRewardDistributorTest is Test {
 
         assertEq(asset.balanceOf(funder), funderBalance);
         assertEq(distributor.rootVersion(), 2);
+    }
+
+    /// @dev An owner that re-reads the version after a landed call and resubmits the same settlement is
+    ///      refused before any asset moves; the next settlement at that version goes through.
+    function testFundAndPublishRootRefusesPreviousSettlementAtRefreshedVersion() public {
+        bytes32 first = keccak256("settlement-a");
+        bytes32 second = keccak256("settlement-b");
+        (bytes32 root,,) = _twoLeafRoot(60 ether, 40 ether);
+        (bytes32 nextRoot,,) = _twoLeafRoot(120 ether, 80 ether);
+        assertEq(distributor.lastSettlementId(), bytes32(0));
+        vm.prank(owner);
+        distributor.fundAndPublishRoot(first, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("s1"));
+        assertEq(distributor.lastSettlementId(), first);
+        uint256 funderBalance = asset.balanceOf(funder);
+        uint256 shareBalance = share.balanceOf(address(distributor));
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.SettlementAlreadyConsumed.selector, first));
+        distributor.fundAndPublishRoot(first, 1, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("s2"));
+        assertEq(asset.balanceOf(funder), funderBalance);
+        assertEq(share.balanceOf(address(distributor)), shareBalance);
+        assertEq(distributor.rootVersion(), 1);
+        assertEq(distributor.merkleRoot(), root);
+
+        vm.expectEmit(true, true, true, true, address(distributor));
+        emit EarnMerkleRewardDistributor.SettlementPublished(second, 2);
+        vm.prank(owner);
+        distributor.fundAndPublishRoot(second, 1, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("s2"));
+        assertEq(distributor.lastSettlementId(), second);
+        assertEq(distributor.rootVersion(), 2);
+        assertEq(asset.balanceOf(funder), funderBalance - 100 ether);
+    }
+
+    function testFuzz_FundAndPublishRootRefusesOnlyThePreviousSettlement(bytes32 first, bytes32 second) public {
+        vm.assume(first != bytes32(0) && second != bytes32(0));
+        (bytes32 root,,) = _twoLeafRoot(60 ether, 40 ether);
+        (bytes32 nextRoot,,) = _twoLeafRoot(120 ether, 80 ether);
+        vm.prank(owner);
+        distributor.fundAndPublishRoot(first, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("s1"));
+        uint256 funderBalance = asset.balanceOf(funder);
+
+        vm.prank(owner);
+        if (second == first) {
+            vm.expectRevert(
+                abi.encodeWithSelector(EarnMerkleRewardDistributor.SettlementAlreadyConsumed.selector, first)
+            );
+            distributor.fundAndPublishRoot(
+                second, 1, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("s2")
+            );
+            assertEq(asset.balanceOf(funder), funderBalance);
+            assertEq(distributor.rootVersion(), 1);
+            assertEq(distributor.lastSettlementId(), first);
+        } else {
+            (, uint64 version) = distributor.fundAndPublishRoot(
+                second, 1, funder, 100 ether, 100 ether, nextRoot, 200 ether, keccak256("s2")
+            );
+            assertEq(version, 2);
+            assertEq(asset.balanceOf(funder), funderBalance - 100 ether);
+            assertEq(distributor.lastSettlementId(), second);
+        }
+    }
+
+    /// @dev The fuzz above draws equal IDs rarely, so the equal case also runs on its own for any ID.
+    function testFuzz_FundAndPublishRootRefusesRepeatedSettlement(bytes32 settlementId) public {
+        vm.assume(settlementId != bytes32(0));
+        (bytes32 root,,) = _twoLeafRoot(60 ether, 40 ether);
+        vm.startPrank(owner);
+        distributor.fundAndPublishRoot(settlementId, 0, funder, 100 ether, 100 ether, root, 100 ether, keccak256("s1"));
+        uint256 funderBalance = asset.balanceOf(funder);
+        vm.expectRevert(
+            abi.encodeWithSelector(EarnMerkleRewardDistributor.SettlementAlreadyConsumed.selector, settlementId)
+        );
+        distributor.fundAndPublishRoot(settlementId, 1, funder, 100 ether, 100 ether, root, 100 ether, keccak256("s2"));
+        vm.stopPrank();
+        assertEq(asset.balanceOf(funder), funderBalance);
     }
 
     function testEntitlementAboveUint128Reverts() public {

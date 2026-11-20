@@ -7,9 +7,9 @@
   "distributor.claim.new-recipient": "563963",
   "distributor.claim.new-recipient.shared-slot": "314654",
   "distributor.claim.returning": "65362",
-  "distributor.fund-and-publish": "705113",
-  "distributor.fund-and-publish.residue": "457713",
-  "distributor.fund-and-publish.residue.vault-residue": "205513",
-  "distributor.fund-and-publish.vault-residue": "457713",
-  "distributor.push-batch.2": "585186"
+  "distributor.fund-and-publish": "710141",
+  "distributor.fund-and-publish.residue": "462741",
+  "distributor.fund-and-publish.residue.vault-residue": "210541",
+  "distributor.fund-and-publish.vault-residue": "462741",
+  "distributor.push-batch.2": "585208"
 }

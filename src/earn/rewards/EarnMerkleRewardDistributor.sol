@@ -86,6 +86,8 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     bool public paused;
 
     mapping(uint256 slot => PaidLanes lanes) private _paid;
+    /// @notice The settlement ID of the latest fundAndPublishRoot; the same ID is refused next time.
+    bytes32 public lastSettlementId;
 
     bool private transient _entered;
 
@@ -121,6 +123,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     error RootTotalExceeded(uint256 requestedAmount, uint256 remainingEntitlement);
     error RootTotalDecreased(uint256 previousTotal, uint256 nextTotal);
     error ReentrantCall();
+    error SettlementAlreadyConsumed(bytes32 settlementId);
     error ZeroSettlementId();
     error StaleRootVersion(uint64 expected, uint64 actual);
     error TokenCallFailed();
@@ -171,12 +174,15 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// @dev `minEarnShares` is a lower bound, not an exact quote. Any excess mint remains available
     ///      to fund later cumulative roots. The final solvency check accounts for both that inventory
     ///      and the shares minted by this call. The expected root version, which rises on every
-    ///      publication, makes a retry revert; the settlement ID is logged for reconciliation.
+    ///      publication, refuses a retry at the old version, and the previous settlement ID is refused
+    ///      at any version. Only that one ID is kept; older IDs are logged by SettlementPublished.
     /// Only the owner funds and publishes, with a positive measured mint, while claims are active.
     /// @custom:ensures old(owner()) == msg.sender && !old(paused) && earnShares > 0
-    /// Replay protection: the settlement ID is nonzero, the expected version matched and the version strictly
-    /// increased, so a retry with the same expected version reverts.
-    /// @custom:ensures settlementId != bytes32(0)
+    /// Replay protection: the settlement ID is nonzero and differs from the previous one, which it replaces;
+    /// the expected version matched and the version strictly increased, so a retry at the same expected
+    /// version, or of the same settlement at a refreshed version, reverts.
+    /// @custom:ensures settlementId != bytes32(0) && settlementId != old(lastSettlementId)
+    /// @custom:ensures lastSettlementId == settlementId
     /// @custom:ensures old(rootVersion) == expectedRootVersion && rootVersion > old(rootVersion) && version == rootVersion
     /// The published root, statement and total are the arguments; the total fits uint128 and never decreases.
     /// @custom:ensures merkleRoot == root && statementHash == statementHash_ && _rootTotalEntitlement == totalEntitlement
@@ -198,9 +204,11 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         bytes32 statementHash_
     ) external onlyOwner nonReentrant returns (uint256 earnShares, uint64 version) {
         if (settlementId == bytes32(0)) revert ZeroSettlementId();
+        if (settlementId == lastSettlementId) revert SettlementAlreadyConsumed(settlementId);
         _requireRootVersion(expectedRootVersion);
         /// @custom:ghost minTotal = _rootTotalEntitlement
         /// @custom:ghost minVersion = rootVersion
+        lastSettlementId = settlementId;
         earnShares = _fundWithAssets(funder, assets, minEarnShares);
         version = _publishRoot(root, totalEntitlement, statementHash_);
         emit SettlementPublished(settlementId, version);
@@ -249,8 +257,8 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// @custom:ensures merkleRoot == root && root != bytes32(0) && _rootTotalEntitlement == totalEntitlement
     /// @custom:ensures statementHash == statementHash_ && statementHash_ != bytes32(0)
     /// @custom:ensures _rootTotalEntitlement - _totalPaid <= measuredBalance
-    /// Payout bookkeeping is untouched.
-    /// @custom:ensures _totalPaid == old(_totalPaid)
+    /// Payout bookkeeping and the last settlement ID are untouched.
+    /// @custom:ensures _totalPaid == old(_totalPaid) && lastSettlementId == old(lastSettlementId)
     /// @custom:ensures forall uint256 i :: cumulativePaid(i) == old(cumulativePaid(i))
     function publishRoot(uint64 expectedRootVersion, bytes32 root, uint256 totalEntitlement, bytes32 statementHash_)
         external

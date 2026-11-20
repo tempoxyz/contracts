@@ -106,15 +106,15 @@ earlier leaf without an index, `abi.encode(chainId, distributor, campaignId, rec
 cumulativeEarnShares)`, record payouts per recipient, and have no `leafVersion()`, which lets
 offchain code tell the two apart.
 
-| Function                                                                                              | Authority             | Behavior                                                                                                            |
-| ----------------------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `fundAndPublishRoot(settlementId, expectedVersion, funder, assets, minEarnShares, root, total, hash)` | Owner                 | Compare-and-set the root version, deposit with a mint floor, publish a fully funded root, and log the settlement ID |
-| `publishRoot(expectedVersion, root, total, statementHash)`                                            | Owner                 | Compare-and-set a fully funded cumulative root and its reconciliation hash                                          |
-| `claim(index, recipient, cumulativeAmount, proof)`                                                    | Anyone                | Pay the leaf's recipient the index's newly owed cumulative difference                                               |
-| `pushBatch(version, indexes, recipients, amounts, multiproof, flags)`                                 | Anyone                | Verify the whole batch, then push each cumulative delta, skipping failed transfers                                  |
-| `setPaused(paused)`                                                                                   | Owner                 | Stop or resume funding, pushes, and claims; while paused, a new root may only restate the same total                |
-| `returnUnspent()`                                                                                     | Anyone after deadline | Send the remaining EarnShare to the immutable treasury                                                              |
-| `transferOwnership` / `acceptOwnership`                                                               | Owner / pending owner | Two-step ownership; renunciation is disabled                                                                        |
+| Function                                                                                              | Authority             | Behavior                                                                                                                                               |
+| ----------------------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `fundAndPublishRoot(settlementId, expectedVersion, funder, assets, minEarnShares, root, total, hash)` | Owner                 | Refuse the previous settlement ID, compare-and-set the root version, deposit with a mint floor, publish a fully funded root, and log the settlement ID |
+| `publishRoot(expectedVersion, root, total, statementHash)`                                            | Owner                 | Compare-and-set a fully funded cumulative root and its reconciliation hash                                                                             |
+| `claim(index, recipient, cumulativeAmount, proof)`                                                    | Anyone                | Pay the leaf's recipient the index's newly owed cumulative difference                                                                                  |
+| `pushBatch(version, indexes, recipients, amounts, multiproof, flags)`                                 | Anyone                | Verify the whole batch, then push each cumulative delta, skipping failed transfers                                                                     |
+| `setPaused(paused)`                                                                                   | Owner                 | Stop or resume funding, pushes, and claims; while paused, a new root may only restate the same total                                                   |
+| `returnUnspent()`                                                                                     | Anyone after deadline | Send the remaining EarnShare to the immutable treasury                                                                                                 |
+| `transferOwnership` / `acceptOwnership`                                                               | Owner / pending owner | Two-step ownership; renunciation is disabled                                                                                                           |
 
 Each interval starts from a cumulative statement computed by Tempo API. When the distributor's
 unreserved EarnShare covers the new liability, the owner calls `publishRoot`; otherwise
@@ -124,11 +124,15 @@ unreserved EarnShare covers the new liability, the owner calls `publishRoot`; ot
 Root totals cannot decrease, and each root must be covered by the distributor's EarnShare balance for
 its total less everything already paid. The check is aggregate, so a corrective root that lowers an
 already-paid recipient's cumulative amount can leave other recipients' unpaid entitlement uncovered;
-the trusted publisher keeps corrections cumulative. The expected root version is checked before any
-asset moves and rises on every publication, so funding and publication succeed or revert together
-and a retry cannot pull twice or replace an unexpected root. The settlement ID (content-addressed by
-Tempo API) must be nonzero; it is not stored, but `SettlementPublished(settlementId, version)` records
-it on chain beside the root version it published.
+the trusted publisher keeps corrections cumulative. Funding and publication succeed or revert
+together, and two checks run before any asset moves. The expected root version rises on every
+publication, so a call carrying a stale version reverts `StaleRootVersion`. The settlement ID
+(content-addressed by Tempo API) must be nonzero, and the distributor keeps the previous one in
+`lastSettlementId`, so resubmitting the settlement that just landed reverts `SettlementAlreadyConsumed`
+at any version, even after the caller re-reads `rootVersion`. Only that one ID is kept: once another
+settlement or a `publishRoot` has intervened, callers dedupe older IDs against the
+`SettlementPublished(settlementId, version)` events, which record every settlement ID beside the root
+version it published.
 
 Funding pulls from an explicit funder within its balance and allowance, keeps a standing maximum
 approval to its immutable EarnVault (Tempo charges every zero-to-nonzero allowance as a new storage
@@ -147,7 +151,12 @@ The deadline is terminal: root publication and every payout path stop, unpaid en
 permanently unpayable, and remaining EarnShare can go only to the treasury. Resolve deferred
 recipients before it passes.
 
-The root publisher is trusted for allocation correctness within the funded budget. The statement
+The root publisher is trusted for allocation correctness within the funded budget. That includes leaf
+indexes: the contract records payouts per index and does not check which recipient an index belongs
+to, so if a root moved an index to another recipient, or gave a recipient a second index, the new
+holder would be paid from that index's or a fresh record, within the root total. Indexes are bound to
+the distributor address for its whole life: the statement builder assigns them insert-only, and a
+campaign recreated at the same distributor address must keep its indexes. The statement
 hash and public events support independent reconstruction but do not make attribution trustless;
 Tempo API's registration, eligibility, attribution, data sources, transaction recovery, and incident
 handling are trusted inputs outside this repository. Public logs cannot attribute encrypted Zone
@@ -215,7 +224,7 @@ API; compiler metadata differs between source revisions, so chains need not shar
 - Controller `fund` reverts `Inactive` while paused, and otherwise records zero for a failed leg,
   including `EarnShareSupplyOutOfBounds`; `fundBatchExact` reverts on any failure.
 - The distributor reverts `Paused`, `ClaimsExpired`, `StaleRootVersion`,
-  `EntitlementTooLarge`, `InsufficientFunding`, `RootTotalDecreased`, or
+  `SettlementAlreadyConsumed`, `EntitlementTooLarge`, `InsufficientFunding`, `RootTotalDecreased`, or
   `PausedLiabilityIncrease` rather than publishing an unsafe root.
 - Contributions benefit whoever holds active EarnShare when they are recognized; there is no
   time-weighted or per-user attribution, and direct permissionless contributions have no supply
