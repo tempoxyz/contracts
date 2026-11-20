@@ -291,7 +291,7 @@ contract ManagedPropAMMEngine is
     {
         uint256 baseBefore = totalShares();
         if (shares == 0 || shares > baseBefore) revert InvalidAmount();
-        _route();
+        _routeExit();
         (uint256 price, uint256 observedAt) = _price();
         /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
@@ -331,7 +331,7 @@ contract ManagedPropAMMEngine is
     /// @custom:ensures heldAfter + shares == heldBefore
     function withdraw(uint256 assets, address receiver) external nonReentrant onlyEarnVault returns (uint256 shares) {
         if (assets == 0) revert InvalidAmount();
-        _route();
+        _routeExit();
         (uint256 price, uint256 observedAt) = _price();
         (uint256 maximum, uint256 quotedPrice, uint256 quotedAt,) =
             pool.quoteExactOutputFor(pairIndex, address(this), customerId, true, assets);
@@ -397,7 +397,7 @@ contract ManagedPropAMMEngine is
         private
         returns (uint256 received)
     {
-        _route();
+        _routeEntry();
         (uint256 minimum, uint256 quotedPrice, uint256 quotedAt,) =
             pool.quoteExactInputFor(pairIndex, address(this), customerId, false, assets);
         if (quotedPrice != price || quotedAt != observedAt || minimum == 0) revert QuoteMismatch();
@@ -459,15 +459,28 @@ contract ManagedPropAMMEngine is
         );
     }
 
-    /// @dev The pool admits the engine on its pair under its sponsor, and the pair has no hook. An unknown or
-    /// removed pair admits nobody.
+    /// @dev The pool admits the engine on its pair under its sponsor. An unknown or removed pair admits nobody.
+    function _listed() private view returns (bool) {
+        return pool.takerAllowed(pairIndex, address(this), sponsorId);
+    }
+
+    /// @dev Deposit admission: the pool admits the engine and the pair has no hook. A hook can charge a fee the
+    /// oracle valuation does not reflect, so the engine takes no new deposits through a hooked pair.
     function _admitted() private view returns (bool) {
-        if (!pool.takerAllowed(pairIndex, address(this), sponsorId)) return false;
+        if (!_listed()) return false;
         (address hook,) = pool.pairHook(pairIndex);
         return hook == address(0);
     }
 
-    function _route() private view {
+    function _routeEntry() private view {
         if (pool.paused() || !_admitted()) revert InvalidConfiguration();
+    }
+
+    /// @dev Exits stop only where the pool itself refuses the swap. The hook rule is a deposit admission check
+    /// and stays out of exit paths, so a hook installed after holders entered cannot trap them: an exit through
+    /// a hooked pair pays the pool's fee-inclusive price, bounded by the caller's minimum (redeem) or by the
+    /// quoted maximum and the vault's share limit (exact withdrawal).
+    function _routeExit() private view {
+        if (pool.paused() || !_listed()) revert InvalidConfiguration();
     }
 }

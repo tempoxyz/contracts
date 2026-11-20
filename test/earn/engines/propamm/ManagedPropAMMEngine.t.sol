@@ -309,16 +309,27 @@ contract ManagedPropAMMEngineTest is Test {
         assertFalse(admitted);
     }
 
-    function testHookInstalledAfterDeploymentRevertsEveryFlow() public {
+    function testHookInstalledAfterDeploymentBlocksDepositsNotExits() public {
         uint256 held = buy(alice, 105e6);
+        uint256 aliceCash = usdc.balanceOf(alice);
         pool.setPairHook(pairIndex, address(this));
-        _assertEveryFlowReverts(held, ManagedPropAMMEngine.InvalidConfiguration.selector);
+
+        vm.prank(alice);
+        vm.expectRevert(ManagedPropAMMEngine.InvalidConfiguration.selector);
+        vault.deposit(105e6);
         (, bool admitted,,,) = engine.liquidityStatus();
         assertFalse(admitted);
+        assertEq(engine.totalShares(), held);
         assertEq(engine.totalAssets(), 105e6);
 
-        pool.setPairHook(pairIndex, address(0));
-        assertEq(vault.redeem(held, alice, 105e6), 105e6);
+        // The hook rule is a deposit admission check: holders still leave both ways.
+        vault.withdraw(21e6, alice);
+        assertEq(engine.totalShares(), held - 20e6);
+        assertEq(vault.redeem(held - 20e6, alice, 84e6), 84e6);
+        assertEq(engine.totalShares(), 0);
+        assertEq(usdc.balanceOf(alice), aliceCash + 105e6);
+        assertEq(usdc.allowance(address(engine), address(pool)), 1);
+        assertEq(baseToken.allowance(address(engine), address(pool)), 1);
     }
 
     function testOutputPaidToAnotherAccountRevertsAtomically() public {

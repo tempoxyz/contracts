@@ -143,7 +143,7 @@ export async function inspectManagedPropAMMEngine(
   const blockers: string[] = []
   if (paused) blockers.push('pool is paused')
   if (access !== 1) blockers.push(accessBlockers[access] ?? 'engine is not admitted as taker')
-  // The engine values its base tokens at the oracle price and refuses a pair whose hook can charge a fee.
+  // The engine values its base tokens at the oracle price and takes no deposit through a pair with a hook.
   if (hook !== zeroAddress) blockers.push('pair has a hook')
   if (!fresh) blockers.push('fee valuation is stale')
   const readiness: EngineReadiness = {

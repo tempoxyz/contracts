@@ -164,10 +164,19 @@ increase. A pool that paid another account would fail those checks and revert.
 
 **Hooks.** A managed pair can carry a hook that charges an input-token fee of up to 10% on quotes
 and swaps. The engine values its base tokens at the oracle price, so a fee would make
-`totalAssets` and `previewRedeem` overstate what an exit pays. The engine therefore refuses a
-pair with a hook, at construction and on every trade (`InvalidConfiguration`), and
-`liquidityStatus().admitted` is false while one is installed. The pool operator can install a hook
-only while the pair is `Closed`.
+`totalAssets` and `previewRedeem` overstate what an exit pays. The engine therefore takes no
+deposit through a pair with a hook: construction and every deposit revert `InvalidConfiguration`,
+and `liquidityStatus().admitted` is false while one is installed. The pool operator can install a
+hook only while the pair is `Closed`.
+
+The hook rule is a deposit admission check and never an exit restriction. If a hook is installed
+after holders entered, redemptions and exact withdrawals still run once the pair reopens, at the
+pool's fee-inclusive price: a redemption pays less than `previewRedeem` and reverts below the
+caller's `minAssets`, and an exact withdrawal burns more shares than the oracle price implies,
+within `previewWithdraw`'s quote and the vault's share limit. While the hook stays, `totalAssets`
+and `previewRedeem` overstate exit proceeds by the fee, so a vault on a hooked pair should be
+wound down or the hook removed. A hook's swap callbacks run inside the engine's settlement, under
+the engine's and the vault's reentrancy guards and the same measured-balance checks.
 
 `liquidityStatus()` returns the same tuple; `venueCash` and `venueBase` are the pool's whole
 balances, which every pair trading that token shares, so another pair's trades change them.
@@ -204,8 +213,10 @@ price-anchor discontinuity, and repeated tiny round trips.
 managed pool, repeat those cases and add the constructor's pair checks (unknown, removed, other
 tokens, reversed tokens, differing decimals, a hook), swaps naming the engine's pair and sponsor on
 a pool with other pairs, an output paid to another account, and each refusal reverting every flow
-with nothing moved: a closed pair, an unlisted or denied engine, sponsor refusals, the pool pause, a
-hook installed later, and a removed pair.
+with nothing moved: a closed pair, an unlisted or denied engine, sponsor refusals, the pool pause,
+and a removed pair. A hook installed later blocks deposits only: against the pinned pool with a 1%
+fee hook, an exact withdrawal and a redemption settle at the pool's fee-inclusive quotes, and a
+redemption demanding the oracle value reverts.
 [`managed-propamm.test.ts`](../../../deployments/modules/earn/engines/managed-propamm.test.ts) covers
 the inspection. No local variant or E2E case runs the managed engine.
 

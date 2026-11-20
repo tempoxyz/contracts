@@ -491,23 +491,51 @@ contract ManagedPropAMMIntegrationTest is Test {
         assertEq(asset.balanceOf(alice), 1_000e6);
     }
 
-    function testHookInstalledAfterDeploymentRevertsEveryFlow() public {
+    function testHookInstalledAfterDeploymentBlocksDepositsNotExits() public {
         _deposit(alice, 105e6);
         pool.closePair(pairIndex);
         pool.setPairHook(pairIndex, address(new ManagedPropAMMTestFeeHook()), 1);
         pool.setPairAccess(pairIndex, IManagedPropAMMVenue.AccessMode.Listed);
-        // The pool would fill at a fee the oracle valuation does not reflect; the engine refuses instead.
+        // The pool fills at a fee the oracle valuation does not reflect, so the engine takes no new deposit.
         assertTrue(pool.takerAllowed(pairIndex, address(engine), 0));
         (uint256 feeInclusive,,,) = pool.quoteExactInputFor(pairIndex, address(engine), ROUTE, true, 100e6);
         assertLt(feeInclusive, engine.valueOf(100e6));
-        _assertEveryFlowReverts(ManagedPropAMMEngine.InvalidConfiguration.selector);
+        uint256 bobCash = asset.balanceOf(bob);
+        vm.expectRevert(ManagedPropAMMEngine.InvalidConfiguration.selector);
+        _deposit(bob, 105e6);
+        assertEq(asset.balanceOf(bob), bobCash);
+        assertEq(share.balanceOf(bob), 0);
         (, bool admitted,,,) = engine.liquidityStatus();
         assertFalse(admitted);
 
-        pool.closePair(pairIndex);
-        pool.setPairHook(pairIndex, address(0), 0);
-        pool.setPairAccess(pairIndex, IManagedPropAMMVenue.AccessMode.Listed);
-        assertEq(_redeem(alice, 100e6, 105e6), 105e6);
+        // Holders are not trapped. A redemption that demands the oracle value still reverts: the caller's
+        // minimum bounds the fee, and nothing moves.
+        uint256 aliceCash = asset.balanceOf(alice);
+        vm.expectRevert();
+        _redeem(alice, 100e6, 105e6);
+        assertEq(engine.totalShares(), 100e6);
+        assertEq(share.balanceOf(alice), 100e6);
+
+        // An exact withdrawal burns the pool's fee-inclusive quote, more than the 20e6 a pair without a hook
+        // takes for the same assets.
+        (uint256 quotedShares,,,) = pool.quoteExactOutputFor(pairIndex, address(engine), ROUTE, true, 21e6);
+        assertGt(quotedShares, 20e6);
+        vm.prank(alice);
+        assertEq(vault.withdrawExact(21e6, alice, 21e6), quotedShares);
+        assertEq(asset.balanceOf(alice), aliceCash + 21e6);
+        assertEq(engine.totalShares(), 100e6 - quotedShares);
+
+        // A redemption pays the pool's fee-inclusive quote, below the oracle valuation.
+        uint256 remaining = 100e6 - quotedShares;
+        (uint256 quotedAssets,,,) = pool.quoteExactInputFor(pairIndex, address(engine), ROUTE, true, remaining);
+        assertLt(quotedAssets, engine.valueOf(remaining));
+        assertEq(_redeem(alice, remaining, quotedAssets), quotedAssets);
+        assertEq(asset.balanceOf(alice), aliceCash + 21e6 + quotedAssets);
+        assertEq(engine.totalShares(), 0);
+        assertEq(share.balanceOf(alice), 0);
+        assertEq(asset.balanceOf(address(engine)), 0);
+        assertEq(asset.allowance(address(engine), address(pool)), 1);
+        assertEq(baseToken.allowance(address(engine), address(pool)), 1);
     }
 
     function testRemovedPairFailsClosed() public {
