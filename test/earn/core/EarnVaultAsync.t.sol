@@ -114,7 +114,7 @@ contract EarnVaultAsyncTest is Test {
         assertEq(core.openRedeemRequestCount(), 1);
         assertEq(core.engineShares(), 6 ether);
         assertEq(core.totalEarnShares(), 6 ether);
-        assertEq(share.balanceOf(address(core)), 0);
+        assertEq(share.balanceOf(address(core)), 1);
         assertTrue(core.isAccountingAligned());
         EarnVault.PendingRedeem memory pending = core.pendingRedeem(finalizeId);
         assertEq(pending.receiver, receiver);
@@ -130,7 +130,7 @@ contract EarnVaultAsyncTest is Test {
         assertEq(core.totalEarnShares(), 6 ether);
         assertEq(core.engineShares(), 6 ether);
         assertEq(asset.balanceOf(receiver), 4 ether);
-        assertEq(share.balanceOf(address(core)), 0);
+        assertEq(share.balanceOf(address(core)), 1);
         assertTrue(core.isAccountingAligned());
 
         // A second request, then cancel: current-value shares mint to the receiver.

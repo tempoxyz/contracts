@@ -176,11 +176,13 @@ contract EarnFactory {
         bytes32 earnFeesSalt = _earnFeesSalt(earnShareSalt);
         earnFees = EarnFees(Clones.cloneDeterministic(earnFeesImplementation, earnFeesSalt));
         IEarnFees(address(earnFees)).initialize(address(earnVault), earnShare, params.fees);
+        // The EarnVault mints its one-unit EarnShare residue while initializing, so it needs the issuer role
+        // first, and the mint lands before the transfer policy can restrict the vault as a recipient.
+        _grantEarnVaultIssuerRole(earnShare, address(earnVault));
         earnVault.initialize(
             params.engine, earnShare, address(earnFees), params.owner, params.controls, params.distributorConfig
         );
 
-        _grantEarnVaultIssuerRole(earnShare, address(earnVault));
         _setTransferPolicy(earnShare, transferPolicyId);
         _relinquishShareAdmin(earnShare);
 

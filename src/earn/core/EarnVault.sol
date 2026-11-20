@@ -276,7 +276,8 @@ contract EarnVault is IEarnVault {
         isImplementation = true;
     }
 
-    /// @notice A fresh proxy is initialized once with its engine, EarnShare, fees module, roles and controls.
+    /// @notice A fresh proxy is initialized once with its engine, EarnShare, fees module, roles and controls, and mints
+    ///         itself the one EarnShare unit {_activeSupply} counts as burned (it needs the issuer role first).
     /// @custom:ensures !old(initialized) && !isImplementation && initialized
     /// @custom:ensures engine == engine_ && earnShare == earnShare_ && earnFees == earnFees_ && operator == operator_
     /// @custom:ensures engine_ != address(0) && earnShare_ != address(0) && earnFees_ != address(0) && operator_ != address(0)
@@ -341,6 +342,9 @@ contract EarnVault is IEarnVault {
         /// @custom:assume earnShareScale > 0
         _resetEmptyAnchor(engine_);
         rewardRateBaseline = anchorEngineShares;
+        // The vault keeps one EarnShare unit for good. {_activeSupply} counts it as burned, so it never claims
+        // backing, and the vault's balance slot stays nonzero across exits. The caller grants the issuer role first.
+        IEarnShare(earnShare_).mint(address(this), SHARE_RESIDUE);
         /// @custom:ghost fixedAsset = asset
         /// @custom:ghost fixedEarnShare = earnShare
         /// @custom:ghost fixedEarnFees = earnFees
@@ -662,8 +666,8 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
-        _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter);
-        _requireWithinManagedAssetsLimit();
+        (, uint256 heldAfter) = _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter);
+        _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (currentSupply == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
@@ -745,8 +749,8 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         /// @custom:assert rateEngineShares == anchorEngineShares && rateEarnShares == anchorEarnShares
         IEarnShare(earnShare).mint(receiver, earnShares);
-        _reanchorAfterEntry(rateEngineShares, rateEarnShares);
-        _requireWithinManagedAssetsLimit();
+        (, uint256 heldAfter) = _reanchorAfterEntry(rateEngineShares, rateEarnShares);
+        _requireWithinManagedAssetsLimit(heldAfter);
         /// @custom:assert maxManagedAssets == 0 || totalAssets() <= maxManagedAssets
         if (currentSupply == 0 || accruedFees.activeAssets != 0 || restarted) {
             /// @custom:ghost baselineEntries = baselineEntries + 1
@@ -1623,6 +1627,15 @@ contract EarnVault is IEarnVault {
         uint256 maximum = maxManagedAssets;
         if (maximum == 0) return;
         uint256 managed = totalAssets();
+        if (managed > maximum) revert MaxManagedAssetsExceeded(maximum, managed);
+    }
+
+    /// @dev {_requireWithinManagedAssetsLimit} for an entry that just restated the anchor: `held` is the managed
+    ///      backing it returned, which equals {engineShares} until custody changes again.
+    function _requireWithinManagedAssetsLimit(uint256 held) internal view {
+        uint256 maximum = maxManagedAssets;
+        if (maximum == 0) return;
+        uint256 managed = IEarnEngine(engine).valueOf(held);
         if (managed > maximum) revert MaxManagedAssetsExceeded(maximum, managed);
     }
 

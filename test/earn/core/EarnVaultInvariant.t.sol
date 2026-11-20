@@ -191,7 +191,7 @@ contract EarnVaultHandler is Test {
     }
 
     function contribute(uint256 assets) external {
-        if (earnShare.totalSupply() == 0) return;
+        if (core.totalEarnShares() == 0) return;
 
         assets = bound(assets, 1, 1e24);
         asset.mint(address(this), assets);
@@ -380,7 +380,7 @@ contract AsyncEarnVaultHandler is Test {
     }
 
     function contribute(uint256 assets) external {
-        if (earnShare.totalSupply() == 0) return;
+        if (core.totalEarnShares() == 0) return;
         assets = bound(assets, 1, 1e24);
         asset.mint(address(this), assets);
         asset.approve(address(core), assets);
@@ -404,7 +404,7 @@ contract AsyncEarnVaultHandler is Test {
     function cancelRedeem(uint256 seed) external {
         bytes32 requestId = _openRequest(seed);
         if (requestId == bytes32(0)) return;
-        bool activePoolWasNonempty = earnShare.totalSupply() != 0;
+        bool activePoolWasNonempty = core.totalEarnShares() != 0;
         uint256 rateBefore = core.normalizedRewardRate();
         uint256 rewardBaselineBefore = core.rewardRateBaseline();
         uint256 engineShares = core.pendingRedeem(requestId).engineShares;
@@ -508,7 +508,8 @@ contract FeeEarnVaultInvariantTest is StdInvariant, Test {
 
     function invariant_earnVaultRetainsNoTokens() public view {
         assertEq(asset.balanceOf(address(core)), 0);
-        assertEq(earnShare.balanceOf(address(core)), 0);
+        // The vault holds only the EarnShare unit it minted to itself at initialization.
+        assertEq(earnShare.balanceOf(address(core)), 1);
     }
 }
 
@@ -558,6 +559,7 @@ contract AsyncEarnVaultInvariantTest is StdInvariant, Test {
 
     function invariant_earnVaultRetainsNoTokens() public view {
         assertEq(asset.balanceOf(address(core)), 0);
-        assertEq(earnShare.balanceOf(address(core)), 0);
+        // The vault holds only the EarnShare unit it minted to itself at initialization.
+        assertEq(earnShare.balanceOf(address(core)), 1);
     }
 }

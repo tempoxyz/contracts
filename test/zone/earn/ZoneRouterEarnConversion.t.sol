@@ -116,7 +116,7 @@ contract ZoneRouterEarnConversionTest is ZoneRouterEarnTestBase {
         );
 
         assertEq(earnA.balanceOf(address(router)), 5 * ONE);
-        assertEq(earnA.totalSupply(), 5 * ONE);
+        assertEq(earnVaultA.totalEarnShares(), 5 * ONE);
         assertEq(assetA.balanceOf(address(router)), 0);
     }
 

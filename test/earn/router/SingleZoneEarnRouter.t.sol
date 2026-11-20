@@ -65,7 +65,7 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
         assertEq(earnA.balanceOf(recipient), 0);
         assertEq(earnA.balanceOf(address(portalA)), 0);
         assertEq(earnA.balanceOf(address(portalB)), 0);
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
     }
 
     function testRejectsSpoofedMessengerAndMismatchedSourcePortal() public {
@@ -93,7 +93,7 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
         vm.expectRevert(SingleZoneEarnRouter.WrongSourceZone.selector);
         router.onWithdrawalReceived(ZONE_B, address(portalB), bytes32(0), address(alternate), uint128(ONE), data);
 
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
         assertEq(alternate.balanceOf(address(router)), ONE);
     }
 
@@ -125,8 +125,8 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
             ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), callerSelectedVaultData
         );
 
-        assertEq(earnA.totalSupply(), 0);
-        assertEq(earnB.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
+        assertEq(earnVaultB.totalEarnShares(), 0);
         assertEq(alternate.balanceOf(address(router)), ONE);
     }
 
@@ -165,7 +165,7 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
         );
 
         assertEq(assetA.balanceOf(address(router)), ONE);
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
     }
 
     function _arbitraryDestinationCallback(ArbitraryDestination destination, bytes memory destinationData)

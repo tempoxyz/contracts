@@ -173,24 +173,9 @@ contract RouterTip20GasTest is CoreEnv {
         _measureCard(true, true, "card.earn-spend.residue.vault-residue");
     }
 
-    function test_gasEarnOnlyRouterShareResidue() public {
-        _seedVaultShares();
-        _measureRouter(false, true, false, "earn-only.share-residue");
-    }
-
-    function test_gasSpendRouterWarmShareResidue() public {
-        _seedVaultShares();
-        _measureRouter(true, true, true, "spend.warm.share-residue");
-    }
-
-    function test_gasCardEarnSpendShareResidue() public {
-        _seedVaultShares();
-        _measureCard(true, true, "card.earn-spend.share-residue");
-    }
-
-    /// @dev Vault residue plus one EarnShare unit with the router, which keeps its EarnShare slot between calls.
+    /// @dev Vault residue (beside the EarnShare unit the vault mints itself) plus one EarnShare unit with the router, which keeps its EarnShare slot between calls.
     function _measureRouterSeed(bool spends, string memory name) internal {
-        _seedVaultShares();
+        _seedVault();
         zr = _router(spends);
         usd.mint(address(zr), 1);
         vm.prank(address(portal));
@@ -218,7 +203,7 @@ contract RouterTip20GasTest is CoreEnv {
 
     /// @dev A later Earn spend from a card program holding one EarnShare unit, after its standing approval exists.
     function test_gasCardEarnSpendSeed() public {
-        _seedVaultShares();
+        _seedVault();
         usd.mint(router, 1_000_000e6);
         _depositEarn(alice, 10_000e6);
         usd.mint(address(program), 1);
@@ -238,7 +223,7 @@ contract RouterTip20GasTest is CoreEnv {
     /// @dev Seeds outlive every holder. After a full exit and the loss of their last backing, a deposit
     ///      restarts the pool instead of reverting for good.
     function test_seedsNeverBlockDeposits() public {
-        _seedVaultShares();
+        _seedVault();
         zr = _router(false);
         vm.startPrank(address(portal));
         earnShare.transfer(address(zr), 1);
@@ -261,7 +246,7 @@ contract RouterTip20GasTest is CoreEnv {
     /// @dev A real position the venue prices at zero for now (paused or impaired) is never written off: a
     ///      restart would move its engine shares to surplus, so even a much larger entry stays refused.
     function test_zeroPricedPositionKeepsDepositsClosed() public {
-        _seedVaultShares();
+        _seedVault();
         uint256 left = usd.balanceOf(address(venue));
         vm.prank(address(venue));
         usd.transfer(makeAddr("sink"), left);
@@ -278,7 +263,7 @@ contract RouterTip20GasTest is CoreEnv {
 
     /// @dev Venue shares the engine values at zero carry no backing, so they never restart an unbacked pool.
     function test_zeroValueInKindEntryNeverRestarts() public {
-        _seedVaultShares();
+        _seedVault();
         zr = _router(false);
         vm.prank(address(portal));
         earnShare.transfer(address(zr), 1);
@@ -308,13 +293,6 @@ contract RouterTip20GasTest is CoreEnv {
         earnShare.approve(address(earnVault), shares);
         earnVault.redeem(shares, holder, 1);
         vm.stopPrank();
-    }
-
-    /// @dev Base-asset residue plus one EarnShare unit with the vault only, as the runbook sends.
-    function _seedVaultShares() internal {
-        _seedVault();
-        vm.prank(address(portal));
-        earnShare.transfer(address(earnVault), 1);
     }
 
     /// @dev The deployment runbook's residue: one base unit with the EarnVault and its ERC-4626 engine.

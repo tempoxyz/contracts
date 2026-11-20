@@ -310,7 +310,7 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
         _redeem(2 * ONE, 2 * ONE, 2 * ONE);
         assertEq(portalA.lastToken(), address(alternate));
         assertEq(portalA.lastAmount(), 2 * ONE);
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
         // The redeem's output went back through the same standing approval and left it standing.
         assertGt(alternate.allowance(address(zr), address(portalA)), type(uint128).max);
         _assertBalances(zr);

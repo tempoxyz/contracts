@@ -124,7 +124,7 @@ contract EarnVaultVenueShareDepositTest is Test {
         assertEq(asset.balanceOf(address(venue)), 100);
         assertEq(venue.totalSupply(), 1);
         assertEq(venue.balanceOf(address(engine)), 1);
-        assertEq(earnShare.totalSupply(), 1);
+        assertEq(earnVault.totalEarnShares(), 1);
         assertEq(earnShare.balanceOf(user), 1);
         assertTrue(earnVault.isAccountingAligned());
     }
@@ -138,14 +138,16 @@ contract EarnVaultVenueShareDepositTest is Test {
         assertEq(asset.balanceOf(receiver), 100);
         assertEq(asset.balanceOf(address(venue)), 0);
         assertEq(venue.totalSupply(), 0);
-        assertEq(earnShare.totalSupply(), 0);
+        assertEq(earnVault.totalEarnShares(), 0);
         assertTrue(earnVault.isAccountingAligned());
     }
 
     function testInKindEntryRejectsEngineWithoutInKindCapability() public {
         CoreMockEngine plainEngine = new CoreMockEngine(asset, 18);
+        // Each vault needs its own EarnShare: initialize refuses one that already has supply.
+        CoreMockToken plainShare = new CoreMockToken("Earn", "EARN", 18);
         EarnVault plainVault = EarnVaultTestDeployer.deploy(
-            address(plainEngine), address(earnShare), address(0x0FF1CE), earnVaultTestNoFees()
+            address(plainEngine), address(plainShare), address(0x0FF1CE), earnVaultTestNoFees()
         );
         asset.mint(user, 10 ether);
         plainEngine.mintShares(user, 5 ether);
@@ -162,7 +164,7 @@ contract EarnVaultVenueShareDepositTest is Test {
         vm.stopPrank();
 
         assertEq(plainEngine.balanceOf(user), 5 ether);
-        assertEq(earnShare.balanceOf(user), 10 ether);
+        assertEq(plainShare.balanceOf(user), 10 ether);
         assertEq(plainVault.engineShares(), 10 ether);
         assertTrue(plainVault.isAccountingAligned());
     }

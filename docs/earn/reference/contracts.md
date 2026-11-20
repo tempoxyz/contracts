@@ -58,12 +58,13 @@ address. `deploy` returns `(earnShare, earnVault, earnFees)` after:
 4. creating EarnShare through the TIP-20 factory at the predicted address, named
    `"<engine name> (Earn)"`, symbol `"<engine symbol>E"`, with an empty currency;
 5. creating the EarnVault ERC-1967 proxy and the deterministic `EarnFees` clone;
-6. initializing `EarnFees`, then the EarnVault, which requires the engine's base interface and an
-   exit capability and an EarnShare with zero supply;
+6. initializing `EarnFees`;
 7. granting the EarnVault the issuer role;
-8. attaching the transfer policy;
-9. revoking the factory's administrator role without a replacement; and
-10. emitting `EarnStackDeployed`.
+8. initializing the EarnVault, which requires the engine's base interface and an exit capability
+   and an EarnShare with zero supply, then mints itself the one EarnShare unit it counts as burned;
+9. attaching the transfer policy;
+10. revoking the factory's administrator role without a replacement; and
+11. emitting `EarnStackDeployed`.
 
 `computeEarnShareSalt`, `predictEarnShare`, and `predictEarnFees` support deployment planning. The
 factory does not deploy the engine, router, Veda solver, or reward periphery. The engine's setup

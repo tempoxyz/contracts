@@ -87,7 +87,7 @@ contract ERC4626EngineTest is Test {
         assertEq(asset.balanceOf(RECEIVER), 30 ether);
         assertEq(earnShare.balanceOf(USER_A), 20 ether);
         assertEq(earnShare.balanceOf(USER_B), 50 ether);
-        assertEq(earnShare.totalSupply(), 70 ether);
+        assertEq(vault.totalEarnShares(), 70 ether);
         assertEq(venue.balanceOf(address(engine)), 70 ether);
         assertEq(vault.previewRedeem(earnShare.balanceOf(USER_B)), 50 ether);
         assertTrue(vault.isAccountingAligned());
@@ -147,7 +147,7 @@ contract ERC4626EngineTest is Test {
     function _assertUntouched() private view {
         assertEq(asset.balanceOf(RECEIVER), 0);
         assertEq(earnShare.balanceOf(USER_A), 50 ether);
-        assertEq(earnShare.totalSupply(), 100 ether);
+        assertEq(vault.totalEarnShares(), 100 ether);
         assertEq(venue.balanceOf(address(engine)), 100 ether);
         assertEq(asset.balanceOf(address(venue)), 100 ether);
         assertTrue(vault.isAccountingAligned());

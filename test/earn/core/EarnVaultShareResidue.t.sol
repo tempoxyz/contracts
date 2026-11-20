@@ -6,7 +6,8 @@ import { EarnVault } from "../../../src/earn/core/EarnVault.sol";
 import { CoreMockEngine, CoreMockToken, earnVaultTestNoFees } from "../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../helpers/EarnVaultTestDeployer.sol";
 
-/// @notice EarnShare the vault holds counts as burned, so a standing residue never blocks a full exit or re-entry.
+/// @notice The vault mints itself one EarnShare unit at initialization and counts it as burned, so that standing
+///         residue never blocks a full exit or re-entry.
 contract EarnVaultShareResidueTest is Test {
     CoreMockToken asset;
     CoreMockToken share;
@@ -32,30 +33,33 @@ contract EarnVaultShareResidueTest is Test {
         share.approve(address(core), type(uint256).max);
     }
 
+    function testInitializeMintsTheResidueToTheVault() public view {
+        assertEq(share.totalSupply(), 1);
+        assertEq(share.balanceOf(address(core)), 1);
+        assertEq(core.totalEarnShares(), 0);
+        assertEq(core.engineShares(), 0);
+        assertTrue(core.isAccountingAligned());
+    }
+
     function testResidueAllowsFullExitAndEmptyPoolReentry() public {
         vm.prank(user);
-        core.deposit(100 ether, user, 1);
-        vm.prank(user);
-        share.transfer(address(core), 1);
-        assertEq(core.totalEarnShares(), 100 ether - 1);
-        // Aligned at once, before any call restates the anchor.
+        uint256 minted = core.deposit(100 ether, user, 1);
+        assertEq(core.totalEarnShares(), minted);
         assertTrue(core.isAccountingAligned());
 
-        uint256 held = share.balanceOf(user);
         vm.prank(user);
-        uint256 assets = core.redeem(held, user, 1);
-        emit log_named_uint("redeemed assets", assets);
-        emit log_named_uint("engine shares left", core.engineShares());
+        core.redeem(minted, user, 1);
         assertEq(core.totalEarnShares(), 0);
+        assertEq(core.engineShares(), 0);
+        assertEq(share.totalSupply(), 1);
         assertEq(share.balanceOf(address(core)), 1);
         assertTrue(core.isAccountingAligned());
 
         // The pool is empty again: the next entry is priced at the empty-pool rate and is not blocked.
         vm.prank(other);
-        uint256 minted = core.deposit(10 ether, other, 1);
-        emit log_named_uint("minted", minted);
-        assertGt(minted, 0);
-        assertEq(core.totalEarnShares(), minted);
+        uint256 minted2 = core.deposit(10 ether, other, 1);
+        assertGt(minted2, 0);
+        assertEq(core.totalEarnShares(), minted2);
         assertEq(share.balanceOf(address(core)), 1);
         assertTrue(core.isAccountingAligned());
     }
@@ -65,7 +69,8 @@ contract EarnVaultShareResidueTest is Test {
         uint256 minted = core.deposit(1 ether, user, 1);
         vm.prank(user);
         share.transfer(address(core), minted - 1);
-        assertEq(core.totalEarnShares(), minted - 1);
+        // The vault already holds its one burned unit, so every transferred unit still counts.
+        assertEq(core.totalEarnShares(), minted);
 
         // The next deposit is priced at the original rate, not one inflated by the transfer.
         vm.prank(other);
@@ -83,8 +88,8 @@ contract EarnVaultShareResidueTest is Test {
         share.transfer(address(core), 1);
         vm.prank(other);
         share.transfer(address(core), minted - 1);
-        // Only one unit counts as burned; the rest remains supply nobody can redeem, as on any transfer to the vault.
-        assertEq(core.totalEarnShares(), minted - 1);
+        // Only the vault's own unit counts as burned; the rest remains supply nobody can redeem.
+        assertEq(core.totalEarnShares(), minted);
         vm.prank(user);
         assertGt(core.deposit(1 ether, user, 1), 0);
         assertTrue(core.isAccountingAligned());
@@ -93,8 +98,6 @@ contract EarnVaultShareResidueTest is Test {
     function testResidueSurvivesRedeemsAndDeposits() public {
         vm.prank(user);
         core.deposit(100 ether, user, 1);
-        vm.prank(user);
-        share.transfer(address(core), 1);
         vm.prank(other);
         core.deposit(50 ether, other, 1);
         vm.prank(user);
@@ -106,28 +109,24 @@ contract EarnVaultShareResidueTest is Test {
         assertTrue(core.isAccountingAligned());
     }
 
-    function testTransferringTheOnlyShareToTheVaultEmptiesBacking() public {
+    function testTransferringTheLastShareToTheVaultKeepsItsBacking() public {
         vm.prank(user);
         uint256 minted = core.deposit(1 ether, user, 1);
         vm.prank(user);
         core.redeem(minted - 1, user, 1);
         assertEq(core.totalEarnShares(), 1);
+        uint256 backing = core.engineShares();
         vm.prank(user);
         share.transfer(address(core), 1);
-        assertEq(core.totalEarnShares(), 0);
-        // Aligned before any call restates the anchor.
+        // The vault's burned allowance is already used, so the unit stays active supply with its backing.
+        assertEq(core.totalEarnShares(), 1);
+        assertEq(core.engineShares(), backing);
         assertTrue(core.isAccountingAligned());
 
-        // The next call restates the anchor and leaves the empty pool with no managed backing.
         vm.prank(other);
         uint256 minted2 = core.deposit(1 ether, other, 1);
         assertGt(minted2, 0);
-        assertEq(core.totalEarnShares(), minted2);
-        assertTrue(core.isAccountingAligned());
-        vm.prank(other);
-        core.redeem(minted2, other, 1);
-        assertEq(core.totalEarnShares(), 0);
-        assertEq(core.engineShares(), 0);
+        assertEq(core.totalEarnShares(), minted2 + 1);
         assertTrue(core.isAccountingAligned());
     }
 }

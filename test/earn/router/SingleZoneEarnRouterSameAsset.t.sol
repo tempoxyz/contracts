@@ -52,7 +52,7 @@ contract SingleZoneEarnRouterSameAssetTest is EarnRouterTestBase {
         vm.stopPrank();
 
         assertEq(earnA.balanceOf(address(router)), ONE);
-        assertEq(earnA.totalSupply(), 2 * ONE);
+        assertEq(earnVaultA.totalEarnShares(), 2 * ONE);
         assertEq(assetA.balanceOf(address(portalA)), 0);
     }
 
@@ -80,7 +80,7 @@ contract SingleZoneEarnRouterSameAssetTest is EarnRouterTestBase {
         router.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(assetA), uint128(ONE), data);
         vm.stopPrank();
 
-        assertEq(earnA.totalSupply(), 0);
+        assertEq(earnVaultA.totalEarnShares(), 0);
         assertEq(assetA.balanceOf(address(router)), ONE);
     }
 

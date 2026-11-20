@@ -239,7 +239,8 @@ convertToEngineShares(totalEarnShares()) == engineShares()
 ```
 
 `totalEarnShares()` is the active supply: EarnShare total supply minus up to 1 unit the EarnVault
-holds, which counts as burned so a standing residue keeps its balance slot. When active supply is zero,
+holds, which counts as burned so a standing residue keeps its balance slot. `initialize` mints that unit
+to the EarnVault, so its balance slot is never empty. When active supply is zero,
 managed backing is zero too: the next action moves any engine shares left over to surplus.
 
 `isAccountingAligned()` reports this equality. Between a residue transfer to the vault and the next
