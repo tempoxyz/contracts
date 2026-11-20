@@ -225,8 +225,7 @@ For Earn, the vault itself must hold 1 unit of its EarnShare. `withdrawExact` pu
 burns into the vault before burning them, so without that unit every Earn spend creates and clears the
 vault's own balance slot (about 250k). A vault from the current release mints the unit to itself in
 `initialize` and counts it as burned, so send it nothing: a second unit is not exempt and stays as active
-supply that nobody can exit. Only a vault from an earlier release whose `earnShare.balanceOf(vault)` is 0
-needs 1 unit sent. Either way the unit serves every program on the vault.
+supply that nobody can exit. The unit serves every program on the vault.
 
 For Earn, also send 1 unit of the EarnShare to the program's clone. The clone holds the shares an
 Earn spend redeems, and the TS handler pays from its caller, never from the clone's own balance, so
