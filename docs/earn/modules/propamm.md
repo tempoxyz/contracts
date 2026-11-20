@@ -153,9 +153,11 @@ access is checked on every trade.
 A pair's access mode is `Closed` (nobody trades), `Listed` (the accounts on a list the pair admits)
 or `Open` (every account the pool does not deny). Before any trade the engine requires the pool to
 be unpaused and `takerAllowed(pairIndex, engine, sponsorId)`, and reverts `InvalidConfiguration`
-otherwise, so a closed pair, an unlisted or denied engine, a disabled, unregistered or unadmitted
-sponsor, and the pool-wide pause each revert the whole deposit, redemption or exact withdrawal with
-nothing moved. Valuation does not depend on access. After a pair is removed its oracle reads zero,
+otherwise, so a closed pair, a denied engine, the pool-wide pause and, on a `Listed` pair, an
+unlisted engine or a disabled, unregistered or unadmitted sponsor each revert the whole deposit,
+redemption or exact withdrawal with nothing moved. An `Open` pair reads no list, so there the
+sponsor's state stops nothing: only the pause, closing the pair and the deny list do. Valuation does
+not depend on access. After a pair is removed its oracle reads zero,
 so valuation and deposits revert `InvalidOracle` and exits revert `InvalidConfiguration`.
 
 Every swap is checked by the engine's own measured balances, as in the single-pair engine: the
@@ -174,8 +176,11 @@ after holders entered, redemptions and exact withdrawals still run once the pair
 pool's fee-inclusive price: a redemption pays less than `previewRedeem` and reverts below the
 caller's `minAssets`, and an exact withdrawal burns more shares than the oracle price implies,
 within `previewWithdraw`'s quote and the vault's share limit. While the hook stays, `totalAssets`
-and `previewRedeem` overstate exit proceeds by the fee, so a vault on a hooked pair should be
-wound down or the hook removed. A hook's swap callbacks run inside the engine's settlement, under
+and `previewRedeem` overstate exit proceeds by the fee, so `isFeeValuationFresh` is false and the
+vault accrues no fee on that valuation, and a vault on a hooked pair should be wound down or the
+hook removed. The vault refuses an exact withdrawal that burns all backing for less than its
+valuation (`ResidualBacking`), which a hook's fee makes the last one do: the last holder leaves by
+redemption. A hook's swap callbacks run inside the engine's settlement, under
 the engine's and the vault's reentrancy guards and the same measured-balance checks.
 
 `liquidityStatus()` returns the same tuple; `venueCash` and `venueBase` are the pool's whole
@@ -187,13 +192,22 @@ admission to the pair and its list (a sponsor's own admin manages that list), a 
 oracle, and the pair's removal. None can move the engine's holdings or change which tokens it
 trades.
 
+Removal is the one that cannot be undone. The pool never reuses a pair index and the engine's
+`pairIndex` is immutable, so once its pair is removed the engine can never sell its base tokens:
+every exit reverts, and so does `migrateEngine`, which redeems from the old engine first. The engine
+has no sweep and no way to name another pair, so its holdings are stranded for good. Closing the
+pair stops trading and can be reversed; the pool operator must never remove a pair an engine holds
+base tokens on.
+
 Deployment follows the [steps above](#deployment) by hand, with the pair index, sponsor id and both
 token addresses added to the recorded inputs, and the pool operator admitting the engine on the
 pair under that sponsor. No profile can name the engine until its kind is registered: the
 [engine definition](../../../deployments/modules/earn/engines/managed-propamm.ts) and its inspection
 (pair tokens, oracle, decimals and scales, hook, and the access outcome as deposit readiness) exist
 beside the registry, not in it ([adding an engine](../integrations/engines.md#recipe) lists what
-registration needs).
+registration needs). Until then tooling refuses a vault whose engine is a managed one: the
+single-pair kind recognizes only an engine whose pool names its own base token, which a managed pool
+does not, so the engine resolves to no kind rather than to the single-pair adapter.
 
 ## Tests
 
@@ -215,8 +229,9 @@ tokens, reversed tokens, differing decimals, a hook), swaps naming the engine's 
 a pool with other pairs, an output paid to another account, and each refusal reverting every flow
 with nothing moved: a closed pair, an unlisted or denied engine, sponsor refusals, the pool pause,
 and a removed pair. A hook installed later blocks deposits only: against the pinned pool with a 1%
-fee hook, an exact withdrawal and a redemption settle at the pool's fee-inclusive quotes, and a
-redemption demanding the oracle value reverts.
+fee hook, an exact withdrawal and a redemption settle at the pool's fee-inclusive quotes, a
+redemption demanding the oracle value reverts, fee valuation reads stale, and an exact withdrawal
+of all backing reverts `ResidualBacking` while the redemption exits.
 [`managed-propamm.test.ts`](../../../deployments/modules/earn/engines/managed-propamm.test.ts) covers
 the inspection. No local variant or E2E case runs the managed engine.
 
@@ -248,7 +263,8 @@ The managed engine's tests deploy `ManagedDirectPropAMM` the same way, from
 [`ManagedDirectPropAMM.json`](../../../test/earn/fixtures/propamm/ManagedDirectPropAMM.json), built from
 the commit [`managed.source.json`](../../../test/earn/fixtures/propamm/managed.source.json) records. The
 two pins move independently; pass `--source managed.source.json` to `update.sh` to rebuild or check
-that one.
+that one. `update.sh` fixes each source file's contract by the file's name, so a source file cannot
+be edited to rebuild and compare the other fixture.
 
 To move the pin, change `commit` in `source.json` and regenerate the fixture with
 [`update.sh`](../../../test/earn/fixtures/propamm/update.sh), which needs Git, Foundry, and `jq`; the source

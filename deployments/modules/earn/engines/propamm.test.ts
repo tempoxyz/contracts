@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest'
-import { zeroHash } from 'viem'
-import { inspectPropAMMEngine } from './propamm.js'
+import { zeroAddress, zeroHash } from 'viem'
+import { readEngineKind } from './index.js'
+import { inspectPropAMMEngine, propamm } from './propamm.js'
 
 const address = (n: number) => `0x${n.toString(16).padStart(40, '0')}` as const
 const engine = address(1)
@@ -79,4 +80,36 @@ test('reports temporary readiness independently of valid deployment bindings', a
   await expect(
     inspectPropAMMEngine(client({ oracle: address(9) }) as never, engine, 'bindings'),
   ).rejects.toThrow('immutable engine oracle')
+})
+
+// An engine whose pool is a managed pool: it answers pool() and baseToken(), but its pool has no baseToken().
+function managedShapedClient() {
+  return {
+    readContract: vi.fn(
+      async ({ address: target, functionName }: { address: string; functionName: string }) => {
+        if (target === engine && functionName === 'pool') return address(4)
+        if (target === engine && functionName === 'baseToken') return address(3)
+        if (functionName === 'supportsInterface') return false
+        throw new Error(`execution reverted: ${functionName}`)
+      },
+    ),
+  }
+}
+
+test('recognizes only an engine whose pool is a single-pair pool', async () => {
+  expect(await propamm.recognizes(client() as never, engine)).toBe(true)
+  expect(await readEngineKind(client({ supportsInterface: false }) as never, engine)).toBe(
+    'propamm',
+  )
+  expect(
+    await propamm.recognizes(client({ [`${address(4)}:baseToken`]: address(9) }) as never, engine),
+  ).toBe(false)
+  expect(await propamm.recognizes(client({ pool: zeroAddress }) as never, engine)).toBe(false)
+})
+
+test('refuses a managed-pool engine instead of resolving it as the single-pair kind', async () => {
+  await expect(propamm.recognizes(managedShapedClient() as never, engine)).rejects.toThrow()
+  await expect(readEngineKind(managedShapedClient() as never, engine)).rejects.toThrow(
+    'unknown or ambiguous engine interfaces',
+  )
 })

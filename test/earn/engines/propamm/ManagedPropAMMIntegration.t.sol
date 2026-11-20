@@ -507,6 +507,8 @@ contract ManagedPropAMMIntegrationTest is Test {
         assertEq(share.balanceOf(bob), 0);
         (, bool admitted,,,) = engine.liquidityStatus();
         assertFalse(admitted);
+        // The oracle valuation leaves the hook's fee out, so no fee accrues on it while the hook stays.
+        assertFalse(vault.isFeeValuationFresh());
 
         // Holders are not trapped. A redemption that demands the oracle value still reverts: the caller's
         // minimum bounds the fee, and nothing moves.
@@ -536,6 +538,32 @@ contract ManagedPropAMMIntegrationTest is Test {
         assertEq(asset.balanceOf(address(engine)), 0);
         assertEq(asset.allowance(address(engine), address(pool)), 1);
         assertEq(baseToken.allowance(address(engine), address(pool)), 1);
+    }
+
+    /// @dev The vault refuses an exact withdrawal that burns all backing for less than its valuation, and a
+    /// hook's fee makes the last one do that. The last holder leaves by redemption instead.
+    function testLastExactWithdrawalThroughAHookedPairRevertsAndRedemptionExits() public {
+        _deposit(alice, 105e6);
+        pool.closePair(pairIndex);
+        pool.setPairHook(pairIndex, address(new ManagedPropAMMTestFeeHook()), 1);
+        pool.setPairAccess(pairIndex, IManagedPropAMMVenue.AccessMode.Listed);
+        (uint256 proceeds,,,) = pool.quoteExactInputFor(pairIndex, address(engine), ROUTE, true, 100e6);
+        assertLt(proceeds, engine.totalAssets());
+        (uint256 sold,,,) = pool.quoteExactOutputFor(pairIndex, address(engine), ROUTE, true, proceeds);
+        assertEq(sold, 100e6);
+
+        uint256 aliceCash = asset.balanceOf(alice);
+        vm.prank(alice);
+        vm.expectRevert(EarnVault.ResidualBacking.selector);
+        vault.withdrawExact(proceeds, alice, 100e6);
+        assertEq(engine.totalShares(), 100e6);
+        assertEq(share.balanceOf(alice), 100e6);
+        assertEq(asset.balanceOf(alice), aliceCash);
+
+        assertEq(_redeem(alice, 100e6, proceeds), proceeds);
+        assertEq(asset.balanceOf(alice), aliceCash + proceeds);
+        assertEq(engine.totalShares(), 0);
+        assertEq(share.balanceOf(alice), 0);
     }
 
     function testRemovedPairFailsClosed() public {

@@ -36,10 +36,21 @@ while (($# > 0)); do
 done
 
 [[ -f "$source_json" ]] || { echo "no source file $source_json" >&2; exit 2; }
+# Each source file builds one contract, fixed here by the file's name, so editing a source file cannot
+# make a check rebuild and compare the other fixture.
+case "$(basename "$source_json")" in
+  source.json) expected_contract=contracts/src/DirectPropAMM.sol:DirectPropAMM ;;
+  managed.source.json) expected_contract=contracts/src/managed/ManagedDirectPropAMM.sol:ManagedDirectPropAMM ;;
+  *) echo "unknown source file $source_json" >&2; exit 2 ;;
+esac
 repository=$(jq -er '.repository' "$source_json")
 commit=$(jq -er '.commit' "$source_json")
 contract=$(jq -er '.contract' "$source_json")
 solc=$(jq -er '.solc' "$source_json")
+[[ "$contract" == "$expected_contract" ]] || {
+  echo "$source_json contract must be $expected_contract, got $contract" >&2
+  exit 1
+}
 [[ "$solc" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "$source_json solc is not a release version: $solc" >&2; exit 1; }
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "$source_json commit is not a full SHA: $commit" >&2; exit 1; }
 # Only the upstream repository is accepted, so a source.json edit cannot point the check elsewhere.

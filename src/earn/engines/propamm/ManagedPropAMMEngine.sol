@@ -233,9 +233,15 @@ contract ManagedPropAMMEngine is
         if (shares == 0) revert InvalidAmount();
     }
 
+    /// A hook's fee is not in the oracle valuation, so the valuation is not fee-grade while one is installed.
     function isFeeValuationFresh() external view returns (bool) {
         try this.oracleObservationTime() returns (uint256 observedAt) {
-            return block.timestamp - observedAt <= maxOracleAge;
+            if (block.timestamp - observedAt > maxOracleAge) return false;
+        } catch {
+            return false;
+        }
+        try pool.pairHook(pairIndex) returns (address hook, uint8) {
+            return hook == address(0);
         } catch {
             return false;
         }

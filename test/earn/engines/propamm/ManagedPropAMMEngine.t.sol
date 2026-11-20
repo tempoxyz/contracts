@@ -321,6 +321,8 @@ contract ManagedPropAMMEngineTest is Test {
         assertFalse(admitted);
         assertEq(engine.totalShares(), held);
         assertEq(engine.totalAssets(), 105e6);
+        // The oracle valuation leaves the hook's fee out, so it is not fee-grade while the hook stays.
+        assertFalse(engine.isFeeValuationFresh());
 
         // The hook rule is a deposit admission check: holders still leave both ways.
         vault.withdraw(21e6, alice);
