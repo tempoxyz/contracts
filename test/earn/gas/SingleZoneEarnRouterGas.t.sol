@@ -19,6 +19,8 @@ abstract contract SingleZoneEarnRouterGasBase is EarnRouterTestBase {
     }
 
     function _cool() internal {
+        // Resolve getters first: calling them after cooling would warm the vault again.
+        address fees = address(earnVaultA.earnFees());
         address[10] memory touched = [
             address(router),
             address(router.pool()),
@@ -35,7 +37,7 @@ abstract contract SingleZoneEarnRouterGasBase is EarnRouterTestBase {
             if (touched[i] != address(0)) vm.cool(touched[i]);
         }
         vm.cool(address(venueA));
-        vm.cool(address(earnVaultA.earnFees()));
+        vm.cool(fees);
         vm.cool(ZONE_FACTORY_ADDRESS);
     }
 
