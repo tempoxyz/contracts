@@ -158,9 +158,13 @@ value without a liquidity dependency.
 
 Allocations are calculated in asset terms first. Each fee carries its sub-unit remainder in
 `EarnFees` storage per configuration and slot, so checkpoint cadence cannot erase or increase fees
-through rounding. The aggregate converts to EarnShare once, and each nonzero allocation receives its
-proportional share rounded down, except the last nonzero allocation in configured order (the excess
-fee follows the fixed fees), which receives the rounding residual.
+through rounding. A configuration's five remainders share one storage slot, which keeps a marker
+bit once a remainder is carried, so waiving them never returns the slot to zero. Each remainder
+stays within a small multiple of `BPS_DENOMINATOR` (the cap never raises their sum), far inside its
+packed field; a value that would not fit reverts rather than truncating. The aggregate converts to
+EarnShare once, and each nonzero allocation receives its proportional share rounded down, except
+the last nonzero allocation in configured order (the excess fee follows the fixed fees), which
+receives the rounding residual.
 
 Installing a new configuration waives the outgoing configuration's remainders and emits
 `FeeDustWaived`, unless an open request snapshot references that configuration; its remainders are

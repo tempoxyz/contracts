@@ -414,6 +414,10 @@ contract EarnVaultFeesTest is Test {
         assertEq(fees.feeRemainder(1, 0), 6_666);
         assertEq(fees.feeRemainder(1, 1), 6_667);
         assertEq(fees.feeRemainder(1, 2), 6_667);
+        // Slots past the excess remainder read zero, as they did before the remainders were packed.
+        assertEq(fees.feeRemainder(1, 3), 0);
+        assertEq(fees.feeRemainder(1, 5), 0);
+        assertEq(fees.feeRemainder(1, type(uint8).max), 0);
 
         address[4] memory recipients = [fixedRecipient, secondFixedRecipient, thirdFixedRecipient, excessRecipient];
         for (uint256 i = 0; i < recipients.length; i++) {
@@ -442,6 +446,33 @@ contract EarnVaultFeesTest is Test {
         assertEq(fees.claimableEarnShares(thirdFixedRecipient), 1);
         assertEq(fees.totalClaimableEarnShares(), 1);
         assertEq(share.balanceOf(address(fees)), 1);
+    }
+
+    /// @dev Disabling waives every carried remainder, emitting each one, and a later checkpoint carries none.
+    function testDisableWaivesPackedRemainders() public {
+        FeeConfig memory config;
+        config.fixedFeeCount = 3;
+        config.fixedFees[0] = FixedFeeRecipient(fixedRecipient, 3_334);
+        config.fixedFees[1] = FixedFeeRecipient(secondFixedRecipient, 3_333);
+        config.fixedFees[2] = FixedFeeRecipient(thirdFixedRecipient, 3_333);
+        _deploy(config);
+
+        _deposit(user, 1 ether);
+        asset.mint(address(venue), 9_999);
+        earnVault.accrueFees();
+        assertEq(fees.feeRemainder(1, 0), 6_666);
+
+        vm.expectEmit(address(fees));
+        emit EarnFees.FeeDustWaived(1, 0, 6_666);
+        vm.expectEmit(address(fees));
+        emit EarnFees.FeeDustWaived(1, 1, 6_667);
+        vm.expectEmit(address(fees));
+        emit EarnFees.FeeDustWaived(1, 2, 6_667);
+        earnVault.disableFees();
+        for (uint8 slot = 0; slot <= 4; slot++) {
+            assertEq(fees.feeRemainder(1, slot), 0);
+        }
+        assertTrue(earnVault.isAccountingAligned());
     }
 
     function testOperatorDisableWaivesUncrystallizedGrowthAndReactivatesProspectively() public {
