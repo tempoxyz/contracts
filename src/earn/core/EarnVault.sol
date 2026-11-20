@@ -1441,10 +1441,8 @@ contract EarnVault is IEarnVault {
     function isAccountingAligned() external view override returns (bool) {
         uint256 supply = totalEarnShares();
         uint256 held = engineShares();
-        if (_aligned(supply, held)) return true;
-        // A residue sent since the last checkpoint is still inside the stored anchor until the next call restates it.
-        uint256 total = IEarnShare(earnShare).totalSupply();
-        return total != supply && _aligned(total, held);
+        // The anchor stores active supply, which never counts the minted residue, so no other pair applies.
+        return _aligned(supply, held);
     }
 
     function _aligned(uint256 supply, uint256 held) internal view returns (bool) {

@@ -41,6 +41,7 @@ interface IEarnVaultFeeContext {
 /// @custom:invariant earnVault != address(0) ==> (currentFeeConfigId >= 1 && initialized)
 /// @custom:invariant _specWithinFeeBounds(currentFeeConfigId)
 /// @custom:invariant forall uint64 c :: _feeConfigs[c].excess.fixedFeeCount <= MAX_FIXED_FEE_RECIPIENTS
+/// @custom:invariant forall uint64 c, uint256 k :: c > currentFeeConfigId ==> _feeConfigs[c].fixedFees[k].account == address(0) && _feeConfigs[c].fixedFees[k].rateBps == 0
 /// @custom:invariant forall bytes32 r :: _pendingFeeSnapshots[r].open ==> _specInstalled(_pendingFeeSnapshots[r].feeConfigId)
 /// @custom:reentrancy-guard initialized && _entered
 contract EarnFees is IEarnFees {
@@ -80,8 +81,8 @@ contract EarnFees is IEarnFees {
 
     mapping(uint64 configId => StoredFeeConfig config) private _feeConfigs;
     /// @dev Five remainders per configuration in one slot, {REMAINDER_BITS} each: fixed recipients 0 to 3, then
-    ///      the excess fee. {REMAINDERS_MARKER} is set with the first carried remainder and stays set, so waiving
-    ///      never returns the slot to zero.
+    ///      the excess fee. {REMAINDERS_MARKER} is set with the first carried remainder and keeps the slot nonzero
+    ///      while the configuration can still accrue; waiving clears it, since a waived configuration never accrues.
     mapping(uint64 configId => uint256 packed) private _feeRemainders;
     mapping(uint64 configId => uint256 count) private _openRequestsByFeeConfig;
 
@@ -188,7 +189,9 @@ contract EarnFees is IEarnFees {
     }
 
     /// @notice One unit of EarnShare in its smallest denomination.
+    /// @dev Zero until {initialize} binds an EarnShare, so an unbound instance never reports a zero-decimal scale.
     function earnShareScale() external view returns (uint256) {
+        if (earnShare == address(0)) return 0;
         return _earnShareScale();
     }
 
@@ -955,6 +958,7 @@ contract EarnFees is IEarnFees {
         return (packed >> (slot * REMAINDER_BITS)) & REMAINDER_MASK;
     }
 
+    /// @custom:requires slot <= MAX_FIXED_FEE_RECIPIENTS
     /// @custom:ensures _remainderAt(result, slot) == remainder
     /// @custom:succeeds-if remainder <= REMAINDER_MASK
     function _withPackedRemainder(uint256 packed, uint256 slot, uint256 remainder) internal pure returns (uint256) {
@@ -983,15 +987,16 @@ contract EarnFees is IEarnFees {
     /// @custom:succeeds-if true
     function _waiveRemainders(uint64 configId) internal {
         uint256 packed = _feeRemainders[configId];
-        if (packed & ~REMAINDERS_MARKER == 0) return;
+        // A marker-only word still holds the slot, so only an empty word skips the delete.
+        if (packed == 0) return;
         /// @custom:invariant i <= MAX_FIXED_FEE_RECIPIENTS + 1
         for (uint256 i = 0; i <= MAX_FIXED_FEE_RECIPIENTS; i++) {
             uint256 remainder = _remainderAt(packed, i);
             // forge-lint: disable-next-line(unsafe-typecast) i is at most MAX_FIXED_FEE_RECIPIENTS.
             if (remainder != 0) emit FeeDustWaived(configId, uint8(i), remainder);
         }
-        // Keep the marker so the slot never returns to zero.
-        _feeRemainders[configId] = REMAINDERS_MARKER;
+        // Every caller waives a configuration that can no longer accrue, so its slot is cleared rather than kept warm.
+        delete _feeRemainders[configId];
     }
 
     function _earnShareScale() internal view returns (uint256) {
