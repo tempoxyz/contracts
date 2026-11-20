@@ -1216,7 +1216,8 @@ contract EarnVault is IEarnVault {
             // The active pool was just checkpointed and the queued growth was just charged, so the mark may
             // only rise to the pooled value. Otherwise a small active pool, such as a seed unit whose value
             // rounds down, leaves the mark low and the next checkpoint charges the queued growth again.
-            if (chargePending) {
+            // EarnFees ignores the call while fees are off, so the pooled backing is valued only when it counts.
+            if (chargePending && feesActiveCached) {
                 IEarnFees(earnFees).initializeBaselines(pooledSupply, _baselineAssets(pooledSupply, pooledBacking));
             }
         }
