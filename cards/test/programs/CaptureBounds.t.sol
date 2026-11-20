@@ -89,21 +89,48 @@ contract CaptureBoundsTest is AuthEnv {
         assertEq(cards.operatorOf(op).used, 20e6);
     }
 
-    function test_capture_tipThenAdjustAddsOnlyAboveCaptured() public {
+    function test_adjust_afterTipPastAuthorization_refused() public {
         _authorize(issuer, 100e6);
         _capture(issuer, 110e6, false);
         assertEq(cards.purchaseOf(P1).held, 0);
-        // Raising the purchase authorizes only what is above the captured 110.
-        vm.prank(issuer);
+        // Neither the captured amount (which would make the tip the new authorized amount) nor any increase moves it.
+        vm.startPrank(issuer);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
+        cards.adjust(P1, 110e6);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.adjust(P1, 130e6);
-        assertEq(cards.purchaseOf(P1).held, 20e6);
+        vm.stopPrank();
+        // What is left of the tolerance on the authorized 100 still captures; then the purchase is at its bound.
+        _capture(issuer, 10e6, false);
+        vm.prank(issuer);
+        vm.expectRevert(CardLegs.CaptureLimitExceeded.selector);
+        cards.capture(P1, 1, true);
+        _capture(issuer, 0, true);
+        assertEq(cards.purchaseOf(P1).captured, 120e6);
         (,,, uint64 daySpent,) = cards.usageOf(alice);
-        assertEq(daySpent, 130e6);
-        (uint256 held,,) = cards.exposure();
-        assertEq(held, 20e6);
-        _capture(issuer, 20e6, true);
-        (held,,) = cards.exposure();
-        assertEq(held, 0);
-        assertEq(cards.purchaseOf(P1).captured, 130e6);
+        assertEq(daySpent, 120e6);
+    }
+
+    function test_adjustBetweenTips_neverRaisesTheCaptureBound() public {
+        uint8 role = cards.ROLE_AUTHORIZE();
+        vm.prank(issuer);
+        cards.setOperator(op, role, 3000e6);
+        uint256 before = usd.balanceOf(alice);
+        _authorize(op, 100e6);
+        _capture(op, 120e6, false);
+        for (uint256 i; i < 3; ++i) {
+            uint256 captured = cards.purchaseOf(P1).captured;
+            vm.prank(op);
+            vm.expectRevert(CardAuthBase.InvalidAmount.selector);
+            cards.adjust(P1, uint128(captured));
+            vm.prank(op);
+            vm.expectRevert(CardLegs.CaptureLimitExceeded.selector);
+            cards.capture(P1, uint128(captured * 2000 / 10_000), false);
+        }
+        assertEq(cards.purchaseOf(P1).captured, 120e6);
+        assertEq(before - usd.balanceOf(alice), 120e6);
+        // The owner's next ordinary purchase still fits the limits.
+        vm.prank(op);
+        cards.authorize(CARD, bytes32("p2"), 1e6, merchant, uint64(block.timestamp + 7 days), 0);
     }
 }

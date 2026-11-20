@@ -278,7 +278,7 @@ library CardLimits {
     ) external returns (uint32 day, uint8 epoch) {
         Limits memory l = c.limits;
         (day,) = _spend(g, u, c.window, [uint256(l.perPurchase), l.daily, l.monthly], total, amount, enforce);
-        if (merchant != address(0)) _useMandate(m, g.terms.utcOffset, amount, enforce);
+        if (merchant != address(0)) _useMandate(m, g.terms.utcOffset, amount, enforce, total != 0);
         // Purchases record the low 8 bits of the epoch and compare them only to it.
         // forge-lint: disable-next-line(unsafe-typecast)
         epoch = uint8(g.epoch);
@@ -483,14 +483,14 @@ library CardLimits {
 
     /// @notice Checks a merchant mandate and counts `amount` toward its monthly limit.
     function useMandate(Mandate storage m, int32 utcOffset, uint256 amount) external {
-        _useMandate(m, utcOffset, amount, true);
+        _useMandate(m, utcOffset, amount, true, true);
     }
 
     /// @dev Without enforce (a tip or late charge the network already took) it counts in full without refusing, so
     ///      giving it back later returns exactly what was counted. A mandate that has counted once keeps counting
     ///      after its limit is lifted, so a limit set again starts from what is still spent.
-    function _useMandate(Mandate storage m, int32 utcOffset, uint256 amount, bool enforce) private {
-        if (enforce && m.revoked) revert MerchantRevoked();
+    function _useMandate(Mandate storage m, int32 utcOffset, uint256 amount, bool enforce, bool charges) private {
+        if (charges && m.revoked) revert MerchantRevoked();
         uint96 limit = m.monthlyLimit;
         uint32 last = m.month;
         if (limit == 0 && last == 0) return;

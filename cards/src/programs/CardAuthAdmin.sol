@@ -44,15 +44,16 @@ contract CardAuthAdmin is CardAuthBase {
         CardLimits.carry(_cards, mandates[owner], usageOf[owner], owner, grants[owner].terms.utcOffset, data);
     }
 
-    /// @notice Gives `key` the role bits `roles` and a cumulative cap of `cap` units; zero roles removes it.
+    /// @notice Gives `key` the role bits `roles` and a cumulative cap of `cap` units; zero roles removes it. The key
+    ///         works until the issuer changes.
     function setOperator(address key, uint8 roles, uint256 cap) external {
         _onlyIssuer();
         uint256 base;
         if (roles != 0) {
             base = _base(cap);
-            if (roles > 7 || base == 0 || base > type(uint120).max) revert InvalidAmount();
+            if (roles > 7 || base == 0 || base > type(uint112).max) revert InvalidAmount();
         }
-        _operators[key] = Operator(roles, uint120(base), 0);
+        _operators[key] = Operator(roles, _generation, uint112(base), 0);
         emit OperatorSet(key, roles, cap);
     }
 
@@ -90,13 +91,19 @@ contract CardAuthAdmin is CardAuthBase {
         emit CompanionsSet(accountKeys_, identityRules_, lifecycle_, conversion_);
     }
 
-    /// @notice Sets the guard asked after every step that raises the program's exposure (zero for none), after the
-    ///         settings delay.
+    /// @notice Sets the guard asked after every step that raises the program's exposure. Without one, the issuer sets
+    ///         it after the settings delay; once one is set, only that guard replaces or clears it, at once, so the
+    ///         party the exposure is owed to decides when it stops being protected.
     // Zero turns the check off.
     // forge-lint: disable-next-item(missing-zero-check)
     function setExposureGuard(address guard) external {
-        _onlyIssuer();
-        if (!_settle(false)) return;
+        address current = exposureGuard;
+        if (current == address(0)) {
+            _onlyIssuer();
+            if (!_settle(false)) return;
+        } else if (msg.sender != current) {
+            revert Unauthorized();
+        }
         exposureGuard = guard;
         emit ExposureGuardSet(guard);
     }
@@ -117,12 +124,16 @@ contract CardAuthAdmin is CardAuthBase {
         emit IssuerOffered(msg.sender, next);
     }
 
+    /// @notice Makes the offered issuer the issuer. Every operator key and settings proposal of the previous issuer
+    ///         stops counting: the new issuer sets its own keys and proposes its own settings.
     function acceptIssuer() external {
         if (msg.sender != pendingIssuer) revert NotIssuer();
         emit IssuerTransferred(_issuer, msg.sender);
-        // IssuerTransferred, just above, records both changes.
+        // IssuerTransferred, just above, records every change.
         // forge-lint: disable-start(missing-events-access-control)
         _issuer = msg.sender;
+        ++_generation;
+        _issuerSince = uint64(block.timestamp);
         delete pendingIssuer;
         // forge-lint: disable-end(missing-events-access-control)
     }

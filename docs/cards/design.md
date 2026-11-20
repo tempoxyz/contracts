@@ -122,8 +122,10 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   owner closes it, lowers its limits and sets the ceiling the issuer may raise them to; the issuer issues,
   replaces and raises within that ceiling. Owners revoke merchants or cap a merchant's monthly spend: a
   purchase's increases, tips and late charges count toward its merchant's cap, and what a release, decrease
-  or refund gives back returns to it. Owners grant the program terms across their cards. Limits and operator caps are kept in the
-  program's first settlement token, so they survive a change of settlement token.
+  or refund gives back returns to it. Stand-ins and late charges count toward the card and merchant limits
+  without being refused by them, but a revoked merchant refuses them. Owners grant the program terms across their cards. Limits and operator caps are kept in the
+  program's first settlement token, so they survive a change of settlement token. An issuer change ends the previous issuer's operator keys and the settings it
+  proposed.
 - **Funding order.** Each owner lists up to four entries, each a source the issuer approved and a
   position at it: for cash the token and the most a conversion may cost, for credit the line. A purchase
   keeps the order it was placed under. A source implements
@@ -138,7 +140,8 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   within the owner's offline cap.
 - **Capture, release, refund.** `capture(ref, amount, isFinal)` takes each leg's hold in order; what the
   holds lack comes from the first cash leg's free funds and then debt within the owner's caps, and the
-  issuer absorbs the rest. A capture past the open amount stays within the owner's capture tolerance.
+  issuer absorbs the rest. A purchase's captures in all stay within its authorized amount plus the owner's
+  capture tolerance on it; once a tip took them past the authorized amount, `adjust` no longer moves it.
   `release` frees every leg (the issuer at any time, anyone after expiry). `refund` pays credit legs back up
   to what each captured, in reverse order, and the cash or savings leg the rest, never past what the
   sources covered; debt the owner owes a source is forgiven first. `charge` posts with no hold: the
@@ -169,14 +172,18 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
 - **Settlement log.** Every step emits one event with the purchase reference and a sequence number;
   captures, charges and refunds carry what the sources covered, and a won dispute counts as a
   refund of its chargeback (`creditBack`, registered companions only, which paid the cardholder
-  themselves), leaving out what merchant reserves paid the issuer. A purchase's refunds and what the issuer
+  themselves), leaving out what merchant reserves paid the issuer; what its credit backs add back to
+  settlement never passes what the purchase refunded. The settlement net counts the whole of every capture
+  and charge, what the issuer absorbed included, since the network settles all of it. A purchase's refunds and what the issuer
   absorbed only rise and together never pass what it captured. `acknowledgeSettlement(throughSeq)` moves a
   settled-through cursor, so what is owed rebuilds from events: the issuer acknowledges until an exposure guard
   is set, then only the guard, and the issuer treasury forwards it only from the sponsor that is owed it.
   `exposure()` reports what open purchases hold, the stand-in part, and the unacknowledged net, which the
   issuer treasury keeps funds behind. With the treasury registered as its exposure guard
-  (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase or charge
-  that takes held plus unsettled past the sponsor collateral; decreases, captures and releases still go through.
+  (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase, charge or
+  capture past the hold that takes held plus unsettled past the sponsor collateral; decreases, captures within
+  the hold and releases still go through. Once a guard is set only the guard replaces or clears it, at once,
+  so the issuer never takes back acknowledging what the sponsor is owed.
   A pledge counts toward that collateral only while it stands `COVER_TERM` more (the longest hold plus a week
   to seize what is still unsettled), and its slot is free again once it ends.
 - **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus

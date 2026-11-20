@@ -127,23 +127,24 @@ contract ExposureGuardTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).captured, 50e6);
     }
 
-    function test_setExposureGuard_waitsTheDelayAndZeroTurnsItOff() public {
-        bytes memory off = abi.encodeCall(cards.setExposureGuard, (address(0)));
+    function test_setExposureGuard_onlyTheGuardTurnsItOff() public {
+        // Neither the issuer nor anyone else removes it; the guard itself does, at once.
         vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.setExposureGuard(address(0));
-        assertEq(cards.exposureGuard(), address(treasury), "removal waits too");
         vm.prank(alice);
-        vm.expectRevert(CardAuthBase.NotIssuer.selector);
+        vm.expectRevert(CardAuthBase.Unauthorized.selector);
         cards.setExposureGuard(address(0));
-        vm.warp(cards.pendingSetting(keccak256(off)));
-        vm.prank(issuer);
+        assertEq(cards.exposureGuard(), address(treasury));
+        vm.prank(address(treasury));
         cards.setExposureGuard(address(0));
         assertEq(cards.exposureGuard(), address(0));
         _authorize(P1, 500e6);
     }
 
     function test_noGuard_noCheck() public {
-        _setting(abi.encodeCall(cards.setExposureGuard, (address(0))));
+        vm.prank(address(treasury));
+        cards.setExposureGuard(address(0));
         _authorize(P1, 400e6);
         vm.prank(issuer);
         cards.charge(CARD, P2, 100e6, merchant);

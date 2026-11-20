@@ -54,13 +54,20 @@ abstract contract CardAuthBase is ICardAuthState {
         uint256 flags;
     }
 
+    /// @notice An operator key's roles, the issuer generation that set it, its cap and what it used of it.
     struct Operator {
         uint8 roles;
-        uint120 cap;
-        uint120 used;
+        /// @dev A key works only in the generation that set it: each issuer change starts a new one.
+        uint16 generation;
+        uint112 cap;
+        uint112 used;
     }
 
     address internal _issuer;
+    /// @dev Issuer changes so far; operator keys set before the latest change stop working.
+    uint16 internal _generation;
+    /// @dev When the issuer last changed: settings proposed then or before it never apply.
+    uint64 internal _issuerSince;
     address public pendingIssuer;
     address public accountKeys;
     address public identityRules;
@@ -90,6 +97,8 @@ abstract contract CardAuthBase is ICardAuthState {
     mapping(bytes32 ref => address merchant) public mandateMerchant;
     /// @dev The latest settlement checkpoints (CardLegs.CHECKPOINTS), a ring the ledger's checkpoint count indexes.
     CardLegs.Checkpoint[8] internal _checkpoints;
+    /// @dev What companions' credit backs added back to settlement for a purchase (negative settles), in its token.
+    mapping(bytes32 ref => uint256) internal _reversed;
 
     event PurchaseAuthorized(
         bytes32 indexed ref, bytes32 indexed card, address indexed owner, uint256 amount, uint256 legs, uint64 seq
@@ -138,13 +147,14 @@ abstract contract CardAuthBase is ICardAuthState {
 
     /// @dev Whether the issuer's setting applies now: at once when `immediate` or before any owner granted terms,
     ///      else on the same call between SETTINGS_DELAY and SETTINGS_WINDOW after it, after the first records it and
-    ///      returns false. A call after the window records it afresh.
+    ///      returns false. A call after the window, or after the issuer changed, records it afresh.
     function _settle(bool immediate) internal returns (bool) {
         if (immediate || _state.grantedOwners == 0) return true;
         bytes32 id = keccak256(msg.data);
         uint64 eta = pendingSetting[id];
+        // A proposal recorded at or before the latest issuer change was the previous issuer's: it never applies.
         // forge-lint: disable-next-line(block-timestamp)
-        if (eta == 0 || block.timestamp > eta + SETTINGS_WINDOW) {
+        if (eta == 0 || block.timestamp > eta + SETTINGS_WINDOW || eta - SETTINGS_DELAY <= _issuerSince) {
             eta = uint64(block.timestamp) + SETTINGS_DELAY;
             pendingSetting[id] = eta;
             emit SettingProposed(id, msg.data, eta);
@@ -185,8 +195,15 @@ abstract contract CardAuthBase is ICardAuthState {
         if (operator == _issuer) return;
         Operator storage k = _operators[operator];
         uint256 used = k.used + _base(value);
-        if (k.roles == 0 || used > k.cap) revert OperatorCapExceeded();
-        k.used = uint120(used);
+        if (!_current(k) || used > k.cap) revert OperatorCapExceeded();
+        // Cap usage is bookkeeping: a key's roles change only through setOperator, which emits OperatorSet.
+        // forge-lint: disable-next-line(missing-events-access-control)
+        k.used = uint112(used);
+    }
+
+    /// @dev Whether `k` is a key the current issuer generation set.
+    function _current(Operator storage k) internal view returns (bool) {
+        return k.roles != 0 && k.generation == _generation;
     }
 }
 // forge-lint: disable-end(unsafe-typecast)

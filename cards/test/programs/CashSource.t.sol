@@ -135,7 +135,8 @@ contract CashSourceTest is AuthEnv {
         assertEq(v.refunded, 5e6);
         (uint256 held,, uint256 unsettled) = cards.exposure();
         assertEq(held, 0);
-        assertEq(unsettled, 115e6);
+        // The network settles all 120, the absorbed 5 included.
+        assertEq(unsettled, 120e6);
         _assertCoreBalanced();
         _assertSourcesEmpty();
 

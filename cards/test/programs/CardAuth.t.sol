@@ -770,8 +770,9 @@ contract CardAuthTest is AuthEnv {
         assertEq(cards.cardOf(CARD).window.daySpent, 100e6);
         // What the issuer absorbed is booked as refunded, so it can never be refunded to the owner.
         assertEq(cards.purchaseOf(P1).refunded, 20e6);
+        // The network settles the whole charge, so the absorbed 20 counts toward settlement with the covered 80.
         (,, int128 net,) = cards.ledger();
-        assertEq(net, 80e6);
+        assertEq(net, 100e6);
         _assertCoreBalanced();
     }
 
