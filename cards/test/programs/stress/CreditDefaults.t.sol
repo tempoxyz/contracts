@@ -7,12 +7,13 @@ import { console } from "forge-std/console.sol";
 import { IEarnVault } from "tempo-earn/interfaces/core/IEarnVault.sol";
 
 /// @notice A year of secured credit lines with defaults: dozens of borrowers draw weekly on lines secured by Earn
-///         shares at 50-80% loan-to-value, accrue simple interest, get monthly statements collected through autopay,
-///         and 10-30% of them default (moving their free money and shares away). The collateral's price falls 20-50%
-///         in two steps; the lender liquidates every week and charges off lines with a statement unpaid past the grace
-///         period. After every week: usd is conserved over every party, the core holds exactly what it reserves, a
-///         liquidation or charge-off pays the lender at most what is owed and the borrower the surplus, and no borrower
-///         pays more than it drew plus simple interest on it.
+///         shares at 50-80% loan-to-value, accrue simple interest, get monthly statements collected weekly through
+///         autopay until paid, and 10-30% of them default (moving their free money and shares away); the rest keep
+///         earning after the year and pay down what they owe. The collateral's price falls 20-50% in two steps; the
+///         lender liquidates every week and charges off lines with a statement unpaid past the grace period. After
+///         every week: usd is conserved over every party, the core holds exactly what it reserves, a liquidation or
+///         charge-off pays the lender at most what is owed and the borrower the surplus, and no borrower pays more
+///         than it drew plus simple interest on it.
 contract CreditDefaultsStressTest is CompEnv {
     uint256 internal constant YEAR = 365 days;
 
@@ -109,6 +110,7 @@ contract CreditDefaultsStressTest is CompEnv {
         _run(keccak256("credit-crash"));
         _report(t);
         assertGt(m.liquidations, 0, "the lender liquidated");
+        assertEq(m.chargeOffsPerforming, 0, "only defaulted lines are charged off");
         (uint256 loss,,) = _losses();
         assertGt(loss, 0, "past the loan-to-value, the lender loses what the collateral no longer covers");
     }
@@ -117,8 +119,8 @@ contract CreditDefaultsStressTest is CompEnv {
     ///         so liquidation only trims the interest that pushes a line past its ratio. Once a defaulted line's
     ///         statement is CHARGE_OFF_GRACE past due, the lender charges it off and sells locked shares worth what it
     ///         owes, so by the end of the tail no defaulted principal is left owed against locked collateral. A
-    ///         borrower who never defaulted but left a statement that far past due (autopay tries a statement once)
-    ///         is charged off the same way.
+    ///         borrower who never defaults but misses a collection pays the past-due statement through a later
+    ///         collection once its paycheck lands, so only defaulted lines are charged off.
     function test_stress_defaultsAtStablePrices_chargedOff() public {
         string memory t = "creditStable";
         _configure(60, 2000, 0);
@@ -127,6 +129,7 @@ contract CreditDefaultsStressTest is CompEnv {
         (uint256 loss, uint256 stuck, uint256 stuckLines) = _losses();
         assertEq(loss, 0, "the collateral covers every defaulted line");
         assertGt(m.chargeOffs, 0, "the lender charged defaulted lines off");
+        assertEq(m.chargeOffsPerforming, 0, "a later collection pays what a borrower who never defaults missed");
         assertEq(stuck, 0, "no defaulted principal stays owed against locked collateral");
         assertEq(stuckLines, 0);
     }
@@ -145,6 +148,7 @@ contract CreditDefaultsStressTest is CompEnv {
         assertEq(m.withdrawnAfterLapse, 0, "no lock lapsed for a defaulted borrower to withdraw");
         assertEq(loss, 0, "the lender lost nothing at stable prices");
         assertEq(stuck, 0, "defaulted lines were charged off");
+        assertEq(m.chargeOffsPerforming, 0, "only defaulted lines are charged off");
     }
 
     /// @notice A keeper outage longer than the 30-day lock term: nobody collects, relocks, liquidates or charges off
@@ -160,6 +164,8 @@ contract CreditDefaultsStressTest is CompEnv {
         _report(t);
         assertGt(m.withdrawnAfterLapse, 0, "defaulted borrowers withdrew collateral whose lock lapsed");
         assertGt(m.lapsedRelocks, 0, "the keeper took lapsed locks over again");
+        // Collections missed during the outage are paid once the keeper returns.
+        assertEq(m.chargeOffsPerforming, 0, "only defaulted lines are charged off");
     }
 
     /// @notice Fuzzed default rate (10-30%), price fall (20-50%) and seed over a smaller book; every weekly invariant
@@ -257,7 +263,7 @@ contract CreditDefaultsStressTest is CompEnv {
                 Borrower storage b = bs[i];
                 if (!b.defaulted && week >= b.defaultWeek) _default(b);
                 if (b.defaulted) _sweepLapsed(b);
-                if (!b.defaulted && trading) _live(b, i);
+                if (!b.defaulted) _live(b, i, trading);
                 if (trading && week % 4 == 0) _statement(b);
                 if (keeper) {
                     _collect(b);
@@ -301,10 +307,11 @@ contract CreditDefaultsStressTest is CompEnv {
         }
     }
 
-    function _live(Borrower storage b, uint256 i) internal {
-        // A weekly paycheck that covers what a performing borrower spends.
+    function _live(Borrower storage b, uint256 i, bool trading) internal {
+        // A weekly paycheck that covers what a performing borrower spends; it keeps coming after the year, when the
+        // borrower stops spending and pays down what it still owes through autopay.
         _mint(b.who, 120e6);
-        if (!_chance(4000)) return;
+        if (!trading || !_chance(4000)) return;
         uint256 room = credit.availableCredit(b.lineId);
         uint256 amount = _min(_between(20, 400) * 1e6, room);
         if (amount < 1e6) {
