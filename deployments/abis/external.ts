@@ -2,7 +2,7 @@ import { erc4626Abi, parseAbi } from 'viem'
 
 /**
  * Hand-maintained ABIs for contracts built outside this repository: Tempo Zone predeploys, the
- * PropAMM pool, oracle, and controller, the Veda periphery, and the Morpho fee wrapper. The pinned
+ * PropAMM pools, oracle, and controller, the Veda periphery, and the Morpho fee wrapper. The pinned
  * DirectPropAMM test fixture (`test/fixtures/propamm/`) is a test build, not the deployed pool
  * interface, so it is not a source of truth.
  * Earn contract ABIs come from `generated.ts`; token ABIs from `viem` (`erc20Abi`, `erc4626Abi`) and
@@ -95,6 +95,21 @@ export const propAMMPoolAbi = parseAbi([
   'function takerAllowed(address taker) view returns (bool)',
   'function unpause()',
   'function withdraw(address token, address recipient, uint256 amount, bytes32 memo)',
+])
+
+/**
+ * `ManagedDirectPropAMM`, one pool holding many pairs: the pair, access, pause, and quote reads an
+ * engine over one of its pairs depends on. `access` is the pair's mode: `None` 0 (no live pair),
+ * `Closed` 1, `Listed` 2, `Open` 3. `takerAccess` is 1 when a swap would pass the access check.
+ */
+export const managedPropAMMPoolAbi = parseAbi([
+  'struct Pair { address base; address quote; address oracle; uint8 baseDecimals; uint8 quoteDecimals; uint8 oracleDecimals; uint256 priceScale; uint256 maxOracleAge; uint256 maxPriceDeviationBps; uint8 access; }',
+  'function pair(uint16 pairIndex) view returns (Pair)',
+  'function pairHook(uint16 pairIndex) view returns (address hook, uint8 flags)',
+  'function paused() view returns (bool)',
+  'function quoteExactInputFor(uint16 pairIndex, address taker, bytes32 customerId, bool baseToQuote, uint256 amountIn) view returns (uint256 amountOut, uint256 price, uint256 updatedAt, uint256 creditAfter)',
+  'function takerAccess(uint16 pairIndex, address taker, uint64 sponsorId) view returns (uint8)',
+  'function takerAllowed(uint16 pairIndex, address taker, uint64 sponsorId) view returns (bool)',
 ])
 
 /** A conversion pool's price oracle, such as `PushPriceOracle`. */

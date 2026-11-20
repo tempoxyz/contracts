@@ -2,7 +2,9 @@
 
 This page owns the `propamm` engine kind: `PropAMMEngine`, its pricing and freshness rules,
 deployment, authorities, failure modes, tests, and the pinned DirectPropAMM fixture that both this
-engine's tests and the [Zone router](zone-router.md)'s par conversion use. The shared engine
+engine's tests and the [Zone router](zone-router.md)'s par conversion use. It also owns
+`ManagedPropAMMEngine`, the same engine over one pair of a [managed pool](#managed-pools), which is
+not deployed. The shared engine
 contract is in [yield engines](../integrations/engines.md).
 
 `PropAMMEngine` is experimental and outside the completed [audits](../audit/README.md#scope).
@@ -118,6 +120,72 @@ windows. Earn's guardian pause cannot unpause the pool, change its permissions, 
 liquidity, and there is no async fallback or privileged sweep. Never bypass user output bounds to
 force an exit.
 
+## Managed pools
+
+[`ManagedPropAMMEngine`](../../../src/earn/engines/propamm/ManagedPropAMMEngine.sol) is the counterpart of
+`PropAMMEngine` for a `ManagedDirectPropAMM`, one pool that holds many pairs. It is **not deployed**:
+it has no reviewed release, no profile and no registered engine kind, and localnet and E2E do not
+provision it. It is experimental and outside the completed [audits](../audit/README.md#scope).
+
+Everything on this page about `PropAMMEngine` holds for it (custody, accounting, rounding,
+[pricing](#pricing-and-rounding-credit), [freshness](#freshness), capabilities, events, errors, and
+the absence of setters and of a sweep) except where the pool differs:
+
+| `PropAMMEngine`                                                  | `ManagedPropAMMEngine`                                                                 |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Bound to one pool, which is one pair                             | Bound to one pool and one of its pairs: immutable `pairIndex`                          |
+| Reads its tokens and oracle from the pool                        | Takes its tokens as arguments and requires the pair to trade exactly them              |
+| Trades under the pool's one taker list                           | Trades under an immutable `sponsorId`: 0 for the pair's home list, or a sponsor's list |
+| Names itself as the swap recipient                               | Names no recipient: the pool pays a swap's output to its caller, the engine            |
+| Route credit keyed by taker, recipient, and route                | Route credit keyed by pair, taker, and route                                           |
+| Admitted when taker and recipient are allowed and not redirected | Admitted when the pair's access check passes for the engine and the pair has no hook   |
+| Onchain metadata `PropAMM Engine` / `propAMM-engine`             | `Managed PropAMM Engine` / `managed-propAMM-engine`                                    |
+
+The constructor is
+`ManagedPropAMMEngine(pool, pairIndex, sponsorId, asset, baseToken, owner, maxOracleAge, customerId)`.
+It reads `pool.pair(pairIndex)` and reverts `InvalidConfiguration` unless that pair's base is
+`baseToken` and its quote is `asset`. An unknown or removed pair reads all zero, so it matches no
+token; the pool never reuses a pair's index or changes a pair's tokens. On top of the single-pair
+engine's checks, the pair's recorded decimals and price scale must equal the ones the tokens and
+the oracle report, and the pair must have no hook. `sponsorId` is not validated at construction:
+access is checked on every trade.
+
+A pair's access mode is `Closed` (nobody trades), `Listed` (the accounts on a list the pair admits)
+or `Open` (every account the pool does not deny). Before any trade the engine requires the pool to
+be unpaused and `takerAllowed(pairIndex, engine, sponsorId)`, and reverts `InvalidConfiguration`
+otherwise, so a closed pair, an unlisted or denied engine, a disabled, unregistered or unadmitted
+sponsor, and the pool-wide pause each revert the whole deposit, redemption or exact withdrawal with
+nothing moved. Valuation does not depend on access. After a pair is removed its oracle reads zero,
+so valuation and deposits revert `InvalidOracle` and exits revert `InvalidConfiguration`.
+
+Every swap is checked by the engine's own measured balances, as in the single-pair engine: the
+input token falls by exactly the amount sold, and the output the engine reports is its measured
+increase. A pool that paid another account would fail those checks and revert.
+
+**Hooks.** A managed pair can carry a hook that charges an input-token fee of up to 10% on quotes
+and swaps. The engine values its base tokens at the oracle price, so a fee would make
+`totalAssets` and `previewRedeem` overstate what an exit pays. The engine therefore refuses a
+pair with a hook, at construction and on every trade (`InvalidConfiguration`), and
+`liquidityStatus().admitted` is false while one is installed. The pool operator can install a hook
+only while the pair is `Closed`.
+
+`liquidityStatus()` returns the same tuple; `venueCash` and `venueBase` are the pool's whole
+balances, which every pair trading that token shares, so another pair's trades change them.
+
+The pool operator has more ways to stop execution than a single-pair pool's administrators: the
+pool-wide pause, the pair's access mode, the home list, the deny list, the sponsor's registration,
+admission to the pair and its list (a sponsor's own admin manages that list), a hook, the pair's
+oracle, and the pair's removal. None can move the engine's holdings or change which tokens it
+trades.
+
+Deployment follows the [steps above](#deployment) by hand, with the pair index, sponsor id and both
+token addresses added to the recorded inputs, and the pool operator admitting the engine on the
+pair under that sponsor. No profile can name the engine until its kind is registered: the
+[engine definition](../../../deployments/modules/earn/engines/managed-propamm.ts) and its inspection
+(pair tokens, oracle, decimals and scales, hook, and the access outcome as deposit readiness) exist
+beside the registry, not in it ([adding an engine](../integrations/engines.md#recipe) lists what
+registration needs).
+
 ## Tests
 
 ```bash
@@ -131,6 +199,15 @@ future and zero prices, oracle replacement, fee-on-transfer tokens, reentrancy a
 decimal configurations, the two freshness windows, rounding credit, donations and quarantined
 surplus, illiquidity, revoked admission, pause and recipient blocks,
 price-anchor discontinuity, and repeated tiny round trips.
+
+`ManagedPropAMMEngine.t.sol` and `ManagedPropAMMIntegration.t.sol`, the second against the pinned
+managed pool, repeat those cases and add the constructor's pair checks (unknown, removed, other
+tokens, reversed tokens, differing decimals, a hook), swaps naming the engine's pair and sponsor on
+a pool with other pairs, an output paid to another account, and each refusal reverting every flow
+with nothing moved: a closed pair, an unlisted or denied engine, sponsor refusals, the pool pause, a
+hook installed later, and a removed pair.
+[`managed-propamm.test.ts`](../../../deployments/modules/earn/engines/managed-propamm.test.ts) covers
+the inspection. No local variant or E2E case runs the managed engine.
 
 The `propamm` local variant runs every shared E2E case its capabilities allow over the pinned pool,
 a disposable 6-decimal base token, an always-fresh oracle, and a recipient registry
@@ -156,6 +233,12 @@ Building and testing Earn never needs the PropAMM source repository.
 [`source.json`](../../../test/earn/fixtures/propamm/source.json) records the repository, full commit,
 contract, and compiler of that build.
 
+The managed engine's tests deploy `ManagedDirectPropAMM` the same way, from
+[`ManagedDirectPropAMM.json`](../../../test/earn/fixtures/propamm/ManagedDirectPropAMM.json), built from
+the commit [`managed.source.json`](../../../test/earn/fixtures/propamm/managed.source.json) records. The
+two pins move independently; pass `--source managed.source.json` to `update.sh` to rebuild or check
+that one.
+
 To move the pin, change `commit` in `source.json` and regenerate the fixture with
 [`update.sh`](../../../test/earn/fixtures/propamm/update.sh), which needs Git, Foundry, and `jq`; the source
 repository is public, so no GitHub credentials are needed:
@@ -164,9 +247,10 @@ repository is public, so no GitHub credentials are needed:
 test/earn/fixtures/propamm/update.sh                             # fetch the pinned commit anonymously over HTTPS
 test/earn/fixtures/propamm/update.sh ../tempo-propamm            # or build a clean checkout already at that commit
 test/earn/fixtures/propamm/update.sh --check [../tempo-propamm]  # fail on any difference, rewriting nothing
+test/earn/fixtures/propamm/update.sh --source managed.source.json [--check] [../tempo-propamm]
 ```
 
-The `PropAMM fixture` job in the Verify workflow runs the `--check` form, without a token, for every
+The `PropAMM fixture` job in the Verify workflow runs the `--check` form of both, without a token, for every
 pull request, including those from forks, and `main`
 ([CI](../../development/README.md#continuous-integration)).
 
@@ -174,7 +258,9 @@ pull request, including those from forks, and `main`
 
 Review `PropAMMEngine` together with the pinned DirectPropAMM execution behavior, oracle,
 recipient registry, and the actual token implementations; production configuration and
-independent sign-off are outside local CI.
+independent sign-off are outside local CI. Review `ManagedPropAMMEngine` the same way against the
+pinned ManagedDirectPropAMM, with the pair's access configuration, its sponsor and the hook rule in
+place of the recipient registry.
 
 Preserve one-vault custody, exact balance-delta accounting, at most one unit of standing pool allowance, pinned
 oracle and scale consistency, same-price settlement checks, reentrancy guards (including
