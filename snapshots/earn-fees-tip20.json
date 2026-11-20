@@ -1,8 +1,8 @@
 {
-  "claim.all": "323434",
+  "claim.all": "318559",
   "deposit.steady": "196198",
-  "deposit.yield": "501749",
-  "deposit.yield.after-claims": "1492949",
+  "deposit.yield": "501841",
+  "deposit.yield.after-claims": "751141",
   "redeem.steady": "173754",
-  "redeem.yield": "481305"
+  "redeem.yield": "481397"
 }

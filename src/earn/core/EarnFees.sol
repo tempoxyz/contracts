@@ -29,7 +29,9 @@ interface IEarnVaultFeeContext {
 ///      docs/earn/architecture/fees.md. The spec helpers at the end are never executed.
 /// @custom:ghost uint256 sumClaimable
 /// @custom:ghost uint256 checkpointSupply
-/// @custom:invariant totalClaimableEarnShares == sumClaimable
+/// @custom:invariant totalClaimableEarnShares() == sumClaimable
+/// @custom:invariant _totalClaimableEarnShares == 0 || _totalClaimableEarnShares == sumClaimable + 1
+/// @custom:invariant _totalClaimableEarnShares == 0 ==> (sumClaimable == 0 && forall address a :: _claimableEarnShares[a] == 0)
 /// @dev Solvency: recorded fee EarnShare grows only by what the vault mints or re-enters here (`accrueFees`,
 ///      `settleCancelledRedeem`) and shrinks only by what `claim` transfers out.
 ///      Not proved: `totalClaimableEarnShares` is at most this contract's EarnShare balance; it rests on the vault
@@ -103,8 +105,10 @@ contract EarnFees is IEarnFees {
     }
 
     mapping(bytes32 requestId => StoredFeeSnapshot snapshot) private _pendingFeeSnapshots;
-    mapping(address recipient => uint256 earnShares) public claimableEarnShares;
-    uint256 public totalClaimableEarnShares;
+    /// @dev Each recipient's claimable EarnShare plus one once it has been credited, and the same for the total, so a
+    ///      full claim leaves the slot nonzero and the next credit rewrites it instead of creating it again.
+    mapping(address recipient => uint256 storedEarnShares) private _claimableEarnShares;
+    uint256 private _totalClaimableEarnShares;
     uint256 private _disableEpoch;
 
     uint256 private constant REMAINDER_BITS = 48;
@@ -162,7 +166,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures !old(initialized) && initialized
     /// @custom:ensures earnVault == earnVault_ && earnShare == earnShare_ && earnVault_ != address(0) && earnShare_ != address(0)
     /// @custom:ensures currentFeeConfigId == 1 && _specStored(1, initialConfig) && _specValidConfig(initialConfig)
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares)
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares())
     /// Not proved: the verifier does not finish this function within its time limit.
     function initialize(address earnVault_, address earnShare_, FeeConfig calldata initialConfig) external {
         if (initialized) revert AlreadyInitialized();
@@ -180,6 +184,18 @@ contract EarnFees is IEarnFees {
         currentFeeConfigId = 1;
         _storeFeeConfig(1, initialConfig);
         emit FeeConfigurationSet(1, keccak256(abi.encode(initialConfig)), false);
+    }
+
+    /// @notice EarnShare `recipient` may claim.
+    function claimableEarnShares(address recipient) public view returns (uint256 earnShares) {
+        uint256 stored = _claimableEarnShares[recipient];
+        return stored == 0 ? 0 : stored - 1;
+    }
+
+    /// @notice EarnShare all recipients may claim together.
+    function totalClaimableEarnShares() public view returns (uint256) {
+        uint256 stored = _totalClaimableEarnShares;
+        return stored == 0 ? 0 : stored - 1;
     }
 
     function feeConfig(uint64 configId) external view returns (FeeConfig memory) {
@@ -251,8 +267,8 @@ contract EarnFees is IEarnFees {
     /// @notice Charges fees above the high-water mark; the vault mints exactly the returned fee EarnShare here.
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares) + result.totalFeeEarnShares
-    /// @custom:ensures forall address a :: claimableEarnShares[a] == old(claimableEarnShares[a]) + _specCreditedTo(result, a)
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + result.totalFeeEarnShares
+    /// @custom:ensures forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a)) + _specCreditedTo(result, a)
     function accrueFees() external onlyEarnVault returns (FeePreview memory result) {
         result = _accrueFees();
     }
@@ -262,7 +278,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
     /// @custom:ensures _specValidConfig(config) && configId == old(currentFeeConfigId) + 1 && currentFeeConfigId == configId
     /// @custom:ensures _specStored(configId, config) && !feesDisabled
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares)
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares())
     /// @custom:ensures !_configHasFees(config) ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
     /// @custom:ensures (_configHasFees(config) && !config.excess.enabled) ==> targetBase == 0 && targetStartedAt == 0
     /// @custom:ensures (_configHasFees(config) && old(_specFeesActive())) ==> highWaterMark == old(highWaterMark)
@@ -270,7 +286,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures (config.excess.enabled && old(_specFeesActive())) ==> targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures (config.excess.enabled && old(_specFeesActive() && _feeConfigs[currentFeeConfigId].excess.enabled)) ==> targetBase == old(_specTargetNow())
     /// @custom:ensures (old(feesDisabled) || old(_feeConfigs[currentFeeConfigId].excess.openRequests) == 0) ==> _specRemaindersWaived(old(currentFeeConfigId))
-    /// @custom:ensures forall address a :: claimableEarnShares[a] == old(claimableEarnShares[a])
+    /// @custom:ensures forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a))
     /// @custom:ensures _disableEpoch == old(_disableEpoch) && forall bytes32 r :: _pendingFeeSnapshots[r].disableEpoch == old(_pendingFeeSnapshots[r].disableEpoch)
     /// @custom:ensures forall bytes32 r :: _pendingFeeSnapshots[r].open == old(_pendingFeeSnapshots[r].open) && _pendingFeeSnapshots[r].feeConfigId == old(_pendingFeeSnapshots[r].feeConfigId)
     /// @custom:ensures forall bytes32 r :: _pendingFeeSnapshots[r].burnedEarnShares == old(_pendingFeeSnapshots[r].burnedEarnShares) && _pendingFeeSnapshots[r].requestValue == old(_pendingFeeSnapshots[r].requestValue) && _pendingFeeSnapshots[r].requestedAt == old(_pendingFeeSnapshots[r].requestedAt)
@@ -332,7 +348,7 @@ contract EarnFees is IEarnFees {
     /// @notice Disabling stops charging, voids open request snapshots' charges and waives current remainders.
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
-    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares == old(totalClaimableEarnShares)
+    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
     /// @custom:ensures feesDisabled && _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
     /// @custom:ensures !old(feesDisabled) ==> !feeBaselinesPending && _disableEpoch == old(_disableEpoch) + 1
     /// @custom:ensures !old(feesDisabled) ==> _specRemaindersWaived(currentFeeConfigId)
@@ -352,7 +368,7 @@ contract EarnFees is IEarnFees {
     ///      any valuation precision recovered by pooling favor holders through an upward-only ratchet.
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
-    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares == old(totalClaimableEarnShares)
+    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
     /// @custom:ensures highWaterMark >= old(highWaterMark)
     /// @custom:ensures targetBase != old(targetBase) ==> targetBase > old(_specTargetNow()) && targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures !old(_specFeesActive()) ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
@@ -364,7 +380,7 @@ contract EarnFees is IEarnFees {
     /// @notice Snapshots a fee-active request's burned EarnShare, value, high-water value and target value.
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
-    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares == old(totalClaimableEarnShares)
+    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
     /// @custom:ensures _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
     /// @custom:ensures !old(_specFeesActive()) ==> _pendingFeeSnapshots[requestId].open == old(_pendingFeeSnapshots[requestId].open)
     /// @custom:ensures old(_pendingFeeSnapshots[requestId].open) ==> _pendingFeeSnapshots[requestId].open
@@ -407,7 +423,7 @@ contract EarnFees is IEarnFees {
 
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
-    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares == old(totalClaimableEarnShares)
+    /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
     /// @custom:ensures !_pendingFeeSnapshots[requestId].open
     /// @custom:ensures old(_pendingFeeSnapshots[requestId].open) ==> _specClosed(requestId, old(_pendingFeeSnapshots[requestId].feeConfigId), old(_feeConfigs[_pendingFeeSnapshots[requestId].feeConfigId].excess.openRequests))
     /// @custom:ensures !old(_pendingFeeSnapshots[requestId].open) ==> _pendingFeeSnapshots[requestId].disableEpoch == old(_pendingFeeSnapshots[requestId].disableEpoch)
@@ -424,7 +440,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
     /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId)
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares) + feeEarnShares
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + feeEarnShares
     /// @custom:ensures feeEarnShares <= totalReentryEarnShares && !_pendingFeeSnapshots[requestId].open
     /// @custom:ensures !old(_specChargesPending(requestId)) ==> feeEarnShares == 0
     /// @custom:ensures old(_pendingFeeSnapshots[requestId].open) ==> _specClosed(requestId, old(_pendingFeeSnapshots[requestId].feeConfigId), old(_feeConfigs[_pendingFeeSnapshots[requestId].feeConfigId].excess.openRequests))
@@ -484,24 +500,25 @@ contract EarnFees is IEarnFees {
     function claim(address to, uint256 earnShares) external nonReentrant {
         if (to == address(0) || to == address(this) || to == earnVault) revert InvalidFeeClaimReceiver();
         if (earnShares == 0) revert ZeroAmount();
-        uint256 claimable = claimableEarnShares[msg.sender];
-        if (earnShares > claimable) revert InsufficientClaimableEarnShares();
+        uint256 stored = _claimableEarnShares[msg.sender];
+        // A recipient never credited stores zero and claims nothing; a credited one stores its claim plus one.
+        if (stored == 0 || earnShares > stored - 1) revert InsufficientClaimableEarnShares();
 
-        claimableEarnShares[msg.sender] = claimable - earnShares;
+        _claimableEarnShares[msg.sender] = stored - earnShares;
         /// @custom:ghost sumClaimable = sumClaimable - earnShares
-        totalClaimableEarnShares -= earnShares;
-        /// @custom:assert claimableEarnShares[msg.sender] == old(claimableEarnShares[msg.sender]) - earnShares
-        /// @custom:assert forall address a :: a != msg.sender ==> claimableEarnShares[a] == old(claimableEarnShares[a])
-        /// @custom:assert totalClaimableEarnShares == old(totalClaimableEarnShares) - earnShares
+        _totalClaimableEarnShares -= earnShares;
+        /// @custom:assert claimableEarnShares(msg.sender) == old(claimableEarnShares(msg.sender)) - earnShares
+        /// @custom:assert forall address a :: a != msg.sender ==> claimableEarnShares(a) == old(claimableEarnShares(a))
+        /// @custom:assert totalClaimableEarnShares() == old(totalClaimableEarnShares()) - earnShares
         /// @custom:assert earnVault == old(earnVault) && earnShare == old(earnShare) && currentFeeConfigId == old(currentFeeConfigId)
         _safeTransfer(earnShare, to, earnShares);
         emit FeeEarnSharesClaimed(msg.sender, to, earnShares);
     }
 
     /// @custom:ensures currentFeeConfigId == old(currentFeeConfigId) && feesDisabled == old(feesDisabled)
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares) + result.totalFeeEarnShares
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + result.totalFeeEarnShares
     /// @custom:ensures sumClaimable == old(sumClaimable) + result.totalFeeEarnShares
-    /// @custom:ensures forall address a :: claimableEarnShares[a] == old(claimableEarnShares[a]) + _specCreditedTo(result, a)
+    /// @custom:ensures forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a)) + _specCreditedTo(result, a)
     /// @custom:ensures result.totalFeeEarnShares == EarnFeeMath.allocatedFeeEarnShares(result)
     /// @custom:ensures result.totalFeeAssets <= result.positiveAccrualAssets
     /// @custom:ensures !old(_specFeesActive()) ==> EarnFeeMath.chargesNothing(result) && result.activeAssets == 0
@@ -647,14 +664,14 @@ contract EarnFees is IEarnFees {
     }
 
     /// @custom:requires fees.allocationCount <= MAX_FIXED_FEE_RECIPIENTS + 1
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares) + EarnFeeMath.allocatedFeeEarnShares(fees)
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + EarnFeeMath.allocatedFeeEarnShares(fees)
     /// @custom:ensures sumClaimable == old(sumClaimable) + EarnFeeMath.allocatedFeeEarnShares(fees)
-    /// @custom:ensures forall address a :: claimableEarnShares[a] == old(claimableEarnShares[a]) + _specCreditedTo(fees, a)
+    /// @custom:ensures forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a)) + _specCreditedTo(fees, a)
     function _creditCalculatedAllocations(uint64 configId, FeePreview memory fees) internal {
         /// @custom:invariant i <= fees.allocationCount
-        /// @custom:invariant totalClaimableEarnShares == old(totalClaimableEarnShares) + EarnFeeMath.sumFeeEarnShares(fees, i)
+        /// @custom:invariant totalClaimableEarnShares() == old(totalClaimableEarnShares()) + EarnFeeMath.sumFeeEarnShares(fees, i)
         /// @custom:invariant sumClaimable == old(sumClaimable) + EarnFeeMath.sumFeeEarnShares(fees, i)
-        /// @custom:invariant forall address a :: claimableEarnShares[a] == old(claimableEarnShares[a]) + _specCreditedToFirst(fees, a, i)
+        /// @custom:invariant forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a)) + _specCreditedToFirst(fees, a, i)
         for (uint256 i = 0; i < fees.allocationCount; i++) {
             uint256 earnShares = fees.allocations[i].feeEarnShares;
             if (earnShares != 0) {
@@ -665,10 +682,10 @@ contract EarnFees is IEarnFees {
 
     /// @custom:requires fees.allocationCount <= MAX_FIXED_FEE_RECIPIENTS + 1
     /// @custom:requires fees.totalFeeAssets <= EarnFeeMath.allocatedFeeAssets(fees)
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares) + _specCharged(fees, feeEarnShares)
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + _specCharged(fees, feeEarnShares)
     /// @custom:ensures sumClaimable == old(sumClaimable) + _specCharged(fees, feeEarnShares)
-    /// @custom:ensures forall address a :: claimableEarnShares[a] >= old(claimableEarnShares[a])
-    /// @custom:ensures forall address a :: !_specIsRecipient(fees, a) ==> claimableEarnShares[a] == old(claimableEarnShares[a])
+    /// @custom:ensures forall address a :: claimableEarnShares(a) >= old(claimableEarnShares(a))
+    /// @custom:ensures forall address a :: !_specIsRecipient(fees, a) ==> claimableEarnShares(a) == old(claimableEarnShares(a))
     function _creditAllocatedFeeEarnShares(uint64 configId, FeePreview memory fees, uint256 feeEarnShares) internal {
         if (feeEarnShares == 0 || fees.totalFeeAssets == 0) return;
         uint256 assigned;
@@ -682,11 +699,11 @@ contract EarnFees is IEarnFees {
         /// @custom:assert last != type(uint256).max
         /// @custom:invariant i <= fees.allocationCount && last < fees.allocationCount && fees.allocations[last].feeAssets != 0
         /// @custom:invariant forall uint256 k :: (k < fees.allocationCount && k > last) ==> fees.allocations[k].feeAssets == 0
-        /// @custom:invariant i <= last ==> totalClaimableEarnShares == old(totalClaimableEarnShares) + assigned
-        /// @custom:invariant i > last ==> totalClaimableEarnShares == old(totalClaimableEarnShares) + feeEarnShares
-        /// @custom:invariant totalClaimableEarnShares - old(totalClaimableEarnShares) == sumClaimable - old(sumClaimable)
-        /// @custom:invariant forall address a :: claimableEarnShares[a] >= old(claimableEarnShares[a])
-        /// @custom:invariant forall address a :: !_specIsRecipient(fees, a) ==> claimableEarnShares[a] == old(claimableEarnShares[a])
+        /// @custom:invariant i <= last ==> totalClaimableEarnShares() == old(totalClaimableEarnShares()) + assigned
+        /// @custom:invariant i > last ==> totalClaimableEarnShares() == old(totalClaimableEarnShares()) + feeEarnShares
+        /// @custom:invariant totalClaimableEarnShares() - old(totalClaimableEarnShares()) == sumClaimable - old(sumClaimable)
+        /// @custom:invariant forall address a :: claimableEarnShares(a) >= old(claimableEarnShares(a))
+        /// @custom:invariant forall address a :: !_specIsRecipient(fees, a) ==> claimableEarnShares(a) == old(claimableEarnShares(a))
         for (uint256 i = 0; i < fees.allocationCount; i++) {
             uint256 earnShares;
             if (i == last) {
@@ -701,14 +718,16 @@ contract EarnFees is IEarnFees {
         }
     }
 
-    /// @custom:ensures claimableEarnShares[account] == old(claimableEarnShares[account]) + earnShares
-    /// @custom:ensures forall address a :: a != account ==> claimableEarnShares[a] == old(claimableEarnShares[a])
-    /// @custom:ensures totalClaimableEarnShares == old(totalClaimableEarnShares) + earnShares
+    /// @custom:ensures claimableEarnShares(account) == old(claimableEarnShares(account)) + earnShares
+    /// @custom:ensures forall address a :: a != account ==> claimableEarnShares(a) == old(claimableEarnShares(a))
+    /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares()) + earnShares
     /// @custom:ensures sumClaimable == old(sumClaimable) + earnShares
     function _creditFeeEarnShares(uint64 configId, address account, uint256 feeAssets, uint256 earnShares) internal {
-        claimableEarnShares[account] += earnShares;
+        uint256 stored = _claimableEarnShares[account];
+        _claimableEarnShares[account] = (stored == 0 ? 1 : stored) + earnShares;
         /// @custom:ghost sumClaimable = sumClaimable + earnShares
-        totalClaimableEarnShares += earnShares;
+        uint256 storedTotal = _totalClaimableEarnShares;
+        _totalClaimableEarnShares = (storedTotal == 0 ? 1 : storedTotal) + earnShares;
         emit FeeEarnSharesAllocated(configId, account, feeAssets, earnShares);
     }
 

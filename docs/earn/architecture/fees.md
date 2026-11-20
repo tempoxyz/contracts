@@ -207,10 +207,15 @@ treated as non-expiring. `setFeeConfig` and `executeDistributorFeeUpdate` revert
 
 ## Claims
 
-A checkpoint increases `claimableEarnShares[recipient]`; the recipient then calls
+A checkpoint increases `claimableEarnShares(recipient)`; the recipient then calls
 `EarnFees.claim(to, earnShares)`. Only the recorded recipient can spend its ledger, and `to` cannot
 be zero, `EarnFees`, or the EarnVault. Removing a recipient affects only future accrual; earned
 EarnShare stays claimable.
+
+Each recipient's ledger and the total are stored one above their value once first credited, so a
+full claim leaves both slots nonzero. The next checkpoint, paid by whoever deposits or exits,
+rewrites them instead of creating new slots (Tempo charges 250,000 gas for each slot first written
+nonzero).
 
 Recipients are never called during accrual, so a blocked or reverting recipient cannot stop
 deposits, exits, contributions, or other recipients; only its own claim fails. Claimed and unclaimed
