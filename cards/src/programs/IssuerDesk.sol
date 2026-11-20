@@ -333,7 +333,13 @@ contract IssuerDesk is ISettlementTokenGuard {
         uint256 left = CREDIT.redrawable(lineId, ref);
         // forge-lint: disable-next-line(unsafe-typecast)
         if (left < want) want = uint128(left);
-        if (want != 0) drawn = CREDIT.redraw(lineId, want, ref);
+        // A redraw the lender refuses (its budget, funds or commitment) leaves the line repaid; the cardholder owes the
+        // rest like any other recovery, so the merchant's win always closes.
+        if (want != 0) {
+            try CREDIT.redraw(lineId, want, ref) returns (uint128 redrawn) {
+                drawn = redrawn;
+            } catch { }
+        }
         // What the merchant's win did not draw again stays repaid.
         CREDIT.limitRedraw(lineId, ref, 0);
     }
