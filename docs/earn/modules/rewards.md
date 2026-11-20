@@ -72,9 +72,11 @@ event and set a reviewed gas limit, or estimation may choose the cheaper caught-
 
 For two or more providers, Tempo API submits one ordered `fundBatchExact` call that checks the supply
 bound once and settles every amount atomically; one failed or underfunded leg reverts the batch and
-never charges another wallet for its shortfall. The controller cannot mint, change EarnVault
-configuration, or withdraw backing, has no withdrawal or rescue path, and retains no assets after a
-call. It keeps a standing maximum asset approval to its immutable EarnVault (Tempo charges every
+never charges another wallet for its shortfall. The batch pulls every leg first, emitting `Funded`
+per funder, and then makes a single `contribute` call for the sum, so the EarnVault emits one
+`Contributed` event per batch. The controller cannot mint, change EarnVault
+configuration, or withdraw backing, has no withdrawal or rescue path, and retains nothing it pulls
+after a call. It keeps a standing maximum asset approval to its immutable EarnVault (Tempo charges every
 zero-to-nonzero allowance as a new storage slot), so only that EarnVault could pull asset sent to the
 controller directly. It can be paused, replaced, or omitted without affecting ordinary Earn behavior.
 Providers can always call `EarnVault.contribute` directly.
@@ -114,8 +116,9 @@ succeed or revert together and a retry cannot pull twice or replace an unexpecte
 
 Funding pulls from an explicit funder within its balance and allowance, keeps a standing maximum
 approval to its immutable EarnVault (Tempo charges every zero-to-nonzero allowance as a new storage
-slot), deposits, checks that the distributor's base-asset balance did not grow, and measures the EarnShare minted. Do not send base assets directly to the
-distributor: it has no base-asset rescue, and `returnUnspent` moves only EarnShare.
+slot), deposits, checks that the distributor's base-asset balance did not grow, and measures the EarnShare minted. Beyond the one-unit
+[gas residue](../../deployment/deployment.md#gas-residue-after-deployment), do not send base assets
+directly to the distributor: it has no base-asset rescue, and `returnUnspent` moves only EarnShare.
 
 `pushBatch` verifies the complete multiproof before any transfer and pays only each recipient's
 cumulative delta. A failed transfer is skipped (`PayoutSkipped`) without consuming the entitlement

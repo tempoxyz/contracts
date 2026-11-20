@@ -2,7 +2,7 @@
 pragma solidity ^0.8.36;
 
 // Optional contribution-orchestration coverage.
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 
 import { EarnVault } from "../../../src/earn/core/EarnVault.sol";
 import { ERC4626Engine, IERC4626Vault } from "../../../src/earn/engines/erc4626/ERC4626Engine.sol";
@@ -52,6 +52,32 @@ contract EarnContributionControllerTest is Test {
 
         assertEq(rewards.fund(primaryFunder, 1.5 ether, 100 ether), 0);
         assertEq(earnVault.engineShares(), 100 ether);
+        assertEq(asset.balanceOf(address(rewards)), 0);
+    }
+
+    function testFundBatchExactPullsEveryLegThenContributesTheSumOnce() public {
+        address[] memory funders = new address[](2);
+        funders[0] = primaryFunder;
+        funders[1] = secondaryFunder;
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = 1.5 ether;
+        amounts[1] = 2 ether;
+        uint256 engineSharesBefore = earnVault.engineShares();
+
+        vm.recordLogs();
+        assertEq(rewards.fundBatchExact(funders, amounts, 1000 ether), 3.5 ether);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 contributions;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(earnVault) || logs[i].topics[0] != EarnVault.Contributed.selector) continue;
+            ++contributions;
+            assertEq(address(uint160(uint256(logs[i].topics[1]))), address(rewards));
+            (uint256 assets,,,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
+            assertEq(assets, 3.5 ether);
+        }
+        assertEq(contributions, 1);
+        assertEq(earnVault.engineShares(), engineSharesBefore + 3.5 ether);
         assertEq(asset.balanceOf(address(rewards)), 0);
     }
 
