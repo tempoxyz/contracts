@@ -30,6 +30,15 @@ contract VedaEngineAccountingTest is VedaEngineTestBase {
         assertEq(asset.allowance(address(engine), address(vault)), 1);
     }
 
+    function testDepositSetsAllowanceThroughZeroForZeroFirstTokens() public {
+        asset.setZeroFirstApprovals(true);
+        asset.mint(address(core), 60);
+        core.deposit(30);
+        core.deposit(30);
+        assertEq(asset.allowance(address(engine), address(vault)), 1);
+        assertEq(vault.balanceOf(address(engine)), 60);
+    }
+
     function testValuationUsesSafeAccountantQuoteForActiveAndExactShares() public {
         accountant.setRate(3e6);
         asset.mint(address(core), 30);

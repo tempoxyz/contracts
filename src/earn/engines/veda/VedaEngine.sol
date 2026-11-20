@@ -1082,10 +1082,19 @@ contract VedaEngine is
         if (!IERC20Like(token).transfer(to, amount)) revert TransferFailed();
     }
 
-    /// @dev Sets an allowance directly. At rest the engine allows at most one unit (base asset to the
-    ///      BoringVault, BoringVault shares to the active Queue), and both tokens accept a direct set over it.
+    /// @dev Sets an allowance over the one-unit standing allowance. A token that refuses to change a
+    ///      nonzero allowance to another nonzero value, or returns no data, takes the set through zero.
     function _approve(address token, address spender, uint256 amount) private {
-        if (!IERC20Like(token).approve(spender, amount)) revert TransferFailed();
+        if (_tryApprove(token, spender, amount)) return;
+        if (!_tryApprove(token, spender, 0) || !_tryApprove(token, spender, amount)) revert TransferFailed();
+    }
+
+    /// @dev Whether approve succeeded: it did not revert and returned true, or returned nothing from a contract.
+    function _tryApprove(address token, address spender, uint256 amount) private returns (bool) {
+        (bool success, bytes memory result) = token.call(abi.encodeCall(IERC20Like.approve, (spender, amount)));
+        if (!success) return false;
+        if (result.length == 0) return token.code.length != 0;
+        return result.length >= 32 && abi.decode(result, (bool));
     }
 
     /// @dev A pull approved one unit above its amount leaves exactly the standing unit, proving the spender
