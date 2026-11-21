@@ -77,8 +77,11 @@ contract CardsE2EDeploy is Script, RainStack {
         if (input.earn) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
+        // The fresh factory's second collateral: index 0 is the cardholder's.
+        uint256[] memory pooledIndexes = new uint256[](1);
+        pooledIndexes[0] = 1;
         // Pooled collateral takes public spends too, as a partner-managed program's does.
-        RainProvider provider = new RainProvider(address(rain.factory), tokens, vaults, pooled, true);
+        RainProvider provider = new RainProvider(address(rain.factory), tokens, vaults, pooled, pooledIndexes, true);
         // The router factory first: only its routers may call the program's spendFrom.
         ZoneRouterFactory routerFactory = new ZoneRouterFactory();
         CardFactory cardFactory = new CardFactory(address(routerFactory));

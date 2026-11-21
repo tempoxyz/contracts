@@ -183,8 +183,8 @@ contract RainProviderTest is RainEnv {
         for (uint256 n; n <= 6; ++n) {
             address[] memory tokens = _addresses("t", n);
             address[] memory vaults = _addresses("v", n);
-            address[] memory pooled = _addresses("c", n);
-            RainProvider p = new RainProvider(address(rain.factory), tokens, vaults, pooled, true);
+            (address[] memory pooled, uint256[] memory pooledIndexes) = _collaterals(n);
+            RainProvider p = new RainProvider(address(rain.factory), tokens, vaults, pooled, pooledIndexes, true);
             for (uint256 i; i < n; ++i) {
                 assertTrue(p.isAcceptedToken(tokens[i]));
                 assertTrue(p.isAllowedVault(vaults[i]));
@@ -205,7 +205,37 @@ contract RainProviderTest is RainEnv {
         address[] memory tokens = _addresses("t", 6);
         tokens[5] = address(0);
         vm.expectRevert(RainProvider.ZeroAddress.selector);
-        new RainProvider(address(rain.factory), tokens, new address[](0), new address[](0), true);
+        new RainProvider(address(rain.factory), tokens, new address[](0), new address[](0), new uint256[](0), true);
+    }
+
+    /// @notice Pooled collateral Rain's factory did not create at the given index is refused at deployment.
+    function test_revert_pooledNotRainCollateral() public {
+        address[] memory pooled = new address[](1);
+        pooled[0] = programCollateral;
+        uint256[] memory pooledIndexes = new uint256[](1);
+        pooledIndexes[0] = aliceIndex;
+        vm.expectRevert(abi.encodeWithSelector(RainProvider.NotRainCollateral.selector, programCollateral, aliceIndex));
+        new RainProvider(address(rain.factory), new address[](0), new address[](0), pooled, pooledIndexes, true);
+        pooled[0] = makeAddr("lookalike");
+        pooledIndexes[0] = 999;
+        vm.expectRevert(abi.encodeWithSelector(RainProvider.NotRainCollateral.selector, pooled[0], 999));
+        new RainProvider(address(rain.factory), new address[](0), new address[](0), pooled, pooledIndexes, true);
+    }
+
+    /// @notice Pooled collateral without one factory index each is refused at deployment.
+    function test_revert_pooledIndexLengthMismatch() public {
+        address[] memory pooled = new address[](1);
+        pooled[0] = programCollateral;
+        vm.expectRevert(RainProvider.LengthMismatch.selector);
+        new RainProvider(address(rain.factory), new address[](0), new address[](0), pooled, new uint256[](0), true);
+    }
+
+    function _collaterals(uint256 n) private returns (address[] memory list, uint256[] memory indexes) {
+        list = new address[](n);
+        indexes = new uint256[](n);
+        for (uint256 i; i < n; ++i) {
+            (list[i], indexes[i]) = _createCollateral(string.concat("c", vm.toString(i)), makeAddr("pooled.owner"));
+        }
     }
 
     function _addresses(string memory prefix, uint256 n) private returns (address[] memory list) {
