@@ -368,11 +368,18 @@ contract MockQueue {
 
 /// @dev Stand-in for the EarnVault single client: forwards the onlyEarnVault engine calls and receives the
 ///      finalize callback (with a revert toggle to drive the degrade-to-skip path).
+/// @dev Called by {MockCore} after each successful finalize, inside the engine's payout frame.
+interface IMockFinalizeHook {
+    function onFinalize(bytes32 requestId) external;
+}
+
 contract MockCore {
     VedaEngine public engine;
     MockAsset public immutable assetToken;
     bool public depositsPaused;
     bool public revertFinalize;
+    IMockFinalizeHook public finalizeHook;
+    mapping(bytes32 => bool) public revertFinalizeFor;
     mapping(bytes32 => uint256) public finalizedAmount;
 
     constructor(MockAsset asset_) {
@@ -385,6 +392,14 @@ contract MockCore {
 
     function setRevertFinalize(bool v) external {
         revertFinalize = v;
+    }
+
+    function setRevertFinalizeFor(bytes32 requestId, bool v) external {
+        revertFinalizeFor[requestId] = v;
+    }
+
+    function setFinalizeHook(IMockFinalizeHook hook) external {
+        finalizeHook = hook;
     }
 
     function setDepositsPaused(bool paused) external {
@@ -486,7 +501,8 @@ contract MockCore {
     }
 
     function finalizeRedeem(bytes32 requestId, address, uint256 amount) external {
-        require(!revertFinalize, "CORE_REVERT");
+        require(!revertFinalize && !revertFinalizeFor[requestId], "CORE_REVERT");
         finalizedAmount[requestId] = amount;
+        if (address(finalizeHook) != address(0)) finalizeHook.onFinalize(requestId);
     }
 }
