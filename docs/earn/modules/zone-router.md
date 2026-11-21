@@ -43,7 +43,7 @@ Router invariants:
    Portal.
 3. Conversion happens only at the pool oracle's exact par price with measured output equal to input,
    and the router retains no operation balance after success. Its only allowances at rest are standing
-   maximums to its immutable EarnVault and pool, because Tempo charges every zero-to-nonzero allowance
+   maximums to its immutable EarnVault, pool and source Portal, set once at construction, because Tempo charges every zero-to-nonzero allowance
    as a new storage slot; neither can pull a balance the router does not hold.
 
 ## Authentication and callback
@@ -108,8 +108,8 @@ assets back at par (conversion router only), enforces `minOutputAmount`, and ret
 private-asset output. A same-asset router passes the amount straight through with the same bounds;
 a deposit whose `minVaultAssets` exceeds the withdrawn amount reverts.
 
-Every successful callback keeps a standing maximum approval to the source Portal (set only when the
-current allowance falls short; the Portal moves the router's tokens only inside a
+Every successful callback uses the standing maximum approval to the source Portal that the constructor
+set (a TIP-20 never spends a maximum allowance down; the Portal moves the router's tokens only inside a
 `depositEncrypted` call the router makes), calls `depositEncrypted`, verifies that each touched balance is back at its pre-call
 value, and emits `EarnDeposit` or `EarnRedeem` with the `actionId` and the Portal's deposit hash.
 Success proves the Portal queued the encrypted deposit, not that the Zone has credited it.
@@ -132,7 +132,7 @@ which input converts to identical output. For each conversion the router:
 
 1. selects the direction from the flow and the immutable pair;
 2. records its input and output balances;
-3. tops its standing pool allowance up to the maximum if it is below `amountIn`;
+3. relies on the standing maximum pool allowance set at construction;
 4. calls `swapExactInput` with `minAmountOut = amountIn`, the current block as deadline, `actionId` as
    the trade ID, `parPrice()` as the expected price, zero tolerance, and no minimum observation time;
 5. takes `amountOut` from the measured output-balance delta and requires `amountOut == amountIn`; and
