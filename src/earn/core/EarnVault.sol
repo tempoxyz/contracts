@@ -1198,7 +1198,9 @@ contract EarnVault is IEarnVault {
         if (totalReentryEarnShares == 0) revert InsufficientOutput();
 
         uint256 feeEarnShares = IEarnFees(earnFees)
-            .settleCancelledRedeem(requestId, returnedValue, activeSupply, activeAssets, totalReentryEarnShares);
+            .settleCancelledRedeem(
+                requestId, burnedEarnShares, returnedValue, activeSupply, activeAssets, totalReentryEarnShares
+            );
         if (feeEarnShares != 0) IEarnShare(earnShare).mint(earnFees, feeEarnShares);
         uint256 receiverEarnShares = totalReentryEarnShares - feeEarnShares;
 

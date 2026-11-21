@@ -381,8 +381,10 @@ contract EarnVaultAsyncTest is Test {
 
         IEarnFees feeModule = IEarnFees(feeCore.earnFees());
         IEarnFees.PendingFeeSnapshot memory pending = feeModule.pendingFeeSnapshot(requestId);
+        assertEq(pending.burnedEarnShares, 4 ether);
         assertEq(pending.requestValue, 4 ether);
         assertEq(pending.feeConfigId, 1);
+        assertTrue(pending.open);
 
         feeEngine.setRate(1.2 ether);
         FeeConfig memory noFees;
@@ -397,6 +399,9 @@ contract EarnVaultAsyncTest is Test {
         assertGt(feeModule.claimableEarnShares(feeRecipient), activeFeeShares);
         assertEq(feeShare.balanceOf(receiver), 4 ether);
         assertFalse(feeCore.pendingRedeem(requestId).open);
+        pending = feeModule.pendingFeeSnapshot(requestId);
+        assertEq(pending.burnedEarnShares, 0);
+        assertFalse(pending.open);
         assertTrue(feeCore.isAccountingAligned());
     }
 
