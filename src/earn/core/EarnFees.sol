@@ -21,7 +21,7 @@ interface IEarnVaultPendingRedeem {
     function pendingRedeem(bytes32 requestId)
         external
         view
-        returns (address receiver, address requester, uint256 burnedEarnShares, uint256 engineShares, bool open);
+        returns (address receiver, address requester, uint256 burnedEarnShares, bool open);
 }
 
 interface IEarnVaultFeeContext {
@@ -239,7 +239,7 @@ contract EarnFees is IEarnFees {
     }
 
     function _vaultBurnedEarnShares(bytes32 requestId) internal view returns (uint256 burnedEarnShares) {
-        (,, burnedEarnShares,,) = IEarnVaultPendingRedeem(earnVault).pendingRedeem(requestId);
+        (,, burnedEarnShares,) = IEarnVaultPendingRedeem(earnVault).pendingRedeem(requestId);
     }
 
     /// @custom:ensures result ==> _specChargesPending(requestId)

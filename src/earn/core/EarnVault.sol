@@ -44,7 +44,8 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 ///      and flows.md. Spec arithmetic is over mathematical integers. The `fixed*` ghosts record what
 ///      `initialize` set, so the invariants below say those fields never change afterwards; `currentEngine`,
 ///      `currentOperator` and `currentDistributor` move only where the role handoff or migration writes them.
-///      `openCount` mirrors every write of a pending request's `open` flag. `entered` mirrors the transient
+///      `openCount` mirrors every write that opens or closes a pending request (a nonzero `requester` marks it
+///      open). `entered` mirrors the transient
 ///      `_entered` lock flag in ghost state, so invariants that hold only between locked calls can name it.
 /// @custom:ghost address fixedAsset
 /// @custom:ghost address fixedEarnShare
@@ -76,17 +77,17 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 /// @custom:invariant pendingDistributor != address(0) ==> distributor != address(0)
 /// @custom:invariant !_pendingDistributorFeeUpdate.pending ==> _specNoDistributorFeeUpdate()
 /// @custom:invariant initialized && !entered ==> _anchorEngineShares == _managedEngineShares || _specEmptyAnchor()
-/// @custom:invariant forall bytes32 id :: _pending[id].open ==> _specLiveRequest(id)
-/// @custom:invariant forall bytes32 id :: !_pending[id].open ==> _specClosedRequest(id)
+/// @custom:invariant forall bytes32 id :: _pending[id].requester != address(0) ==> _specLiveRequest(id)
+/// @custom:invariant forall bytes32 id :: _pending[id].requester == address(0) ==> _specClosedRequest(id)
 /// @dev Between calls the anchor is the managed engine-share count over the live supply (or the empty-pool
 ///      anchor), so the supply converts exactly to its managed backing. An open request holds a nonzero burned
-///      EarnShare amount and a nonzero queued engine-share amount, and a closed one holds neither.
+///      EarnShare amount, and a closed one holds no burned EarnShare, stored receiver or fee-snapshot flag.
 ///      `feeCheckpoints` counts fee checkpoints, `baselineEntries` principal-entry baseline updates, and
 ///      `cappedManagedShares` is the managed count at the latest capacity check.
 ///      Not proved: the anchor's EarnShare side equals the live EarnShare supply between calls; the supply is
 ///      another contract's state, read only inside calls.
-///      Not proved: the queued engine shares of all open requests sum to what the engine still holds for them,
-///      and the engine pays each at least what it committed; both are the engine's state.
+///      Not proved: the engine still holds the queued engine shares of every open request and pays each at
+///      least what it committed; both are the engine's state, and the vault does not store the queued count.
 ///      Not proved: fee EarnShare minted in a checkpoint never exceeds the positive accrual it charges; that
 ///      bound is EarnFees' own contract, which the vault reads only through its interface.
 contract EarnVault is IEarnVault {
@@ -121,7 +122,7 @@ contract EarnVault is IEarnVault {
     bool public override depositsPaused;
     /// @dev Open async requests, read through {openRedeemRequestCount}. Packed beside the never-zero `engine`,
     ///      so a request into an empty queue writes no slot from zero (Tempo charges 250,000 gas for each). The
-    ///      width is out of reach: every request writes three new slots.
+    ///      width is out of reach: every request writes at least one new slot.
     uint56 private _openRedeemRequestCount;
     address public override asset;
     address public override earnShare;
@@ -157,19 +158,19 @@ contract EarnVault is IEarnVault {
         address receiver;
         address requester;
         uint256 burnedEarnShares;
-        uint256 engineShares;
         bool open;
     }
 
-    /// @dev Stored form of {PendingRedeem} in three slots; {pendingRedeem} widens it back. `receiver` stays zero
-    ///      when it is the requester, so a self-paying request leaves its first slot unwritten; read it through
-    ///      {_receiverOf}.
+    /// @dev Stored form of {PendingRedeem}; {pendingRedeem} widens it back. The first slot packs the requester,
+    ///      the burned EarnShare and whether the request recorded an EarnFees snapshot. A nonzero `requester`
+    ///      marks the request open, and closing deletes the record. `receiver` stays zero when it is the
+    ///      requester, so a self-paying request writes one new slot; read it through {_receiverOf}. The queued
+    ///      engine shares are not stored: the engine holds them, and cancellation measures what it returns.
     struct StoredRedeem {
-        address receiver;
         address requester;
-        bool open;
-        uint128 burnedEarnShares;
-        uint128 engineShares;
+        uint88 burnedEarnShares;
+        bool feeSnapshot;
+        address receiver;
     }
 
     mapping(bytes32 requestId => StoredRedeem) private _pending;
@@ -1039,7 +1040,7 @@ contract EarnVault is IEarnVault {
     /// @dev The queued backing and burned EarnShare leave active accounting atomically. If the engine
     ///      request fails, the entire transaction—including the burn—reverts.
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) + 1 && engine == old(engine)
-    /// @custom:ensures _managedEngineShares + _pending[requestId].engineShares <= old(_managedEngineShares)
+    /// @custom:ensures _managedEngineShares < old(_managedEngineShares)
     /// @custom:ensures _specRecordedRequest(requestId, msg.sender, receiver, earnShares)
     function requestRedeem(uint256 earnShares, bytes calldata engineData, address receiver)
         external
@@ -1053,7 +1054,7 @@ contract EarnVault is IEarnVault {
     /// @notice Requests redemption to `receiver`, ordered consistently with other explicit-receiver calls.
     /// @dev Equivalent to the legacy overload with `engineData` before `receiver`.
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) + 1 && engine == old(engine)
-    /// @custom:ensures _managedEngineShares + _pending[requestId].engineShares <= old(_managedEngineShares)
+    /// @custom:ensures _managedEngineShares < old(_managedEngineShares)
     /// @custom:ensures _specRecordedRequest(requestId, msg.sender, receiver, earnShares)
     function requestRedeem(uint256 earnShares, address receiver, bytes calldata engineData)
         external
@@ -1067,7 +1068,7 @@ contract EarnVault is IEarnVault {
     /// @notice Requests redemption with the caller as both requester and stored receiver.
     /// @dev Separate selector for access keys scoped to self-recipient calls.
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) + 1 && engine == old(engine)
-    /// @custom:ensures _managedEngineShares + _pending[requestId].engineShares <= old(_managedEngineShares)
+    /// @custom:ensures _managedEngineShares < old(_managedEngineShares)
     /// @custom:ensures _specRecordedRequest(requestId, msg.sender, msg.sender, earnShares)
     function requestRedeem(uint256 earnShares, bytes calldata engineData)
         external
@@ -1103,9 +1104,9 @@ contract EarnVault is IEarnVault {
         _recordPendingRedeem(requestId, msg.sender, receiver, earnShares, engineSharesToRedeem);
         // The burned EarnShare and the queued engine shares agree at the post-checkpoint anchor, within the
         // one-basis-point conversion bound, and the queued shares left active backing.
-        /// @custom:assert _pending[requestId].engineShares == engineSharesToRedeem && _pending[requestId].burnedEarnShares == earnShares
+        /// @custom:assert _pending[requestId].burnedEarnShares == earnShares
         /// @custom:assert _pending[requestId].receiver == (receiver == msg.sender ? address(0) : receiver)
-        /// @custom:assert _pending[requestId].requester == msg.sender && _pending[requestId].open
+        /// @custom:assert _pending[requestId].requester == msg.sender
         /// @custom:assert engineSharesToRedeem == earnShares * _anchorEngineShares / _anchorEarnShares
         /// @custom:assert _specAcceptableLoss(earnShares, engineSharesToRedeem * _anchorEarnShares / _anchorEngineShares)
 
@@ -1118,21 +1119,26 @@ contract EarnVault is IEarnVault {
     /// @notice ENGINE-ONLY. Forwards a solved queued payout to the stored receiver and closes the
     ///         pending claim. No EarnShare is burned here because it was burned at request time.
     /// @notice Only the engine finalizes, in the vault's asset, an open request, which closes.
-    /// @custom:ensures msg.sender == engine && asset_ == asset && old(_pending[requestId].open) && !_pending[requestId].open
+    /// @custom:ensures msg.sender == engine && asset_ == asset && old(_pending[requestId].requester) != address(0)
+    /// @custom:ensures _pending[requestId].requester == address(0)
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) - 1 && engine == old(engine)
     /// @custom:ensures _specClosedRequest(requestId)
     function finalizeRedeem(bytes32 requestId, address asset_, uint256 amount) external nonReentrant {
         if (msg.sender != engine) revert NotEngine();
         if (asset_ != asset) revert FinalizedAssetMismatch(asset_);
         StoredRedeem storage p = _pending[requestId];
-        if (!p.open) revert RequestNotOpen(requestId);
+        address requester = p.requester;
+        if (requester == address(0)) revert RequestNotOpen(requestId);
 
         address receiver = _receiverOf(p);
         uint256 earnShares = p.burnedEarnShares;
+        bool feeSnapshot = p.feeSnapshot;
         /// @custom:ghost openCount = openCount - 1
         delete _pending[requestId];
         _openRedeemRequestCount -= 1;
-        IEarnFees(earnFees).closeRedeemRequest(requestId);
+        // EarnFees holds a snapshot only for a request that recorded one here, and closing a request without
+        // one changes nothing there, so such a request skips the call.
+        if (feeSnapshot) IEarnFees(earnFees).closeRedeemRequest(requestId);
 
         // The engine already sent `amount` of `asset_` here; forward it to the stored receiver.
         if (amount != 0) _safeTransfer(asset_, receiver, amount);
@@ -1150,7 +1156,8 @@ contract EarnVault is IEarnVault {
     /// @param minReceiverEarnShares Nonzero minimum EarnShare that the stored receiver must receive.
     /// @notice The requester or the async janitor cancels an open request, which closes.
     /// @custom:ensures msg.sender == old(_pending[requestId].requester) || msg.sender == old(asyncJanitor)
-    /// @custom:ensures old(_pending[requestId].open) && !_pending[requestId].open && minReceiverEarnShares != 0
+    /// @custom:ensures old(_pending[requestId].requester) != address(0) && _pending[requestId].requester == address(0)
+    /// @custom:ensures minReceiverEarnShares != 0
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) - 1 && engine == old(engine)
     /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 1 && _specClosedRequest(requestId)
     /// @dev Not proved: when the cancellation reopens an empty pool, the fee baselines restart at the
@@ -1161,8 +1168,9 @@ contract EarnVault is IEarnVault {
     function cancelRedeem(bytes32 requestId, uint256 minReceiverEarnShares) external override nonReentrant {
         if (minReceiverEarnShares == 0) revert ZeroMinimumEarnShares();
         StoredRedeem storage p = _pending[requestId];
-        if (!p.open) revert RequestNotOpen(requestId);
-        if (msg.sender != p.requester && msg.sender != asyncJanitor) revert NotRequesterOrJanitor();
+        address requester = p.requester;
+        if (requester == address(0)) revert RequestNotOpen(requestId);
+        if (msg.sender != requester && msg.sender != asyncJanitor) revert NotRequesterOrJanitor();
 
         address receiver = _receiverOf(p);
         uint256 burnedEarnShares = p.burnedEarnShares;
@@ -1508,15 +1516,16 @@ contract EarnVault is IEarnVault {
         return _convertToEngineShares(supply) == held;
     }
 
-    /// @notice Reads the stored fields of the pending async request `requestId`.
+    /// @notice Reads the async request `requestId`: its receiver, requester, burned EarnShare, and whether it is
+    ///         open. A closed or unknown request reads as all zero.
     function pendingRedeem(bytes32 requestId) external view returns (PendingRedeem memory) {
         StoredRedeem storage p = _pending[requestId];
+        address requester = p.requester;
         return PendingRedeem({
             receiver: _receiverOf(p),
-            requester: p.requester,
+            requester: requester,
             burnedEarnShares: p.burnedEarnShares,
-            engineShares: p.engineShares,
-            open: p.open
+            open: requester != address(0)
         });
     }
 
@@ -2023,17 +2032,21 @@ contract EarnVault is IEarnVault {
         uint256 engineShares_
     ) internal {
         StoredRedeem storage pending = _pending[requestId];
-        if (pending.open) revert DuplicateRequest(requestId);
+        if (pending.requester != address(0)) revert DuplicateRequest(requestId);
         // A request too large for the packed record reverts rather than truncating.
-        if (earnShares > type(uint128).max || engineShares_ > type(uint128).max) revert ExceedsMaxEarnShares();
-        // A self-paying request leaves the receiver slot zero; {_receiverOf} reads it back as the requester.
-        pending.receiver = receiver == requester ? address(0) : receiver;
-        pending.burnedEarnShares = uint128(earnShares);
-        pending.engineShares = uint128(engineShares_);
-        pending.requester = requester;
+        if (earnShares > type(uint88).max) revert ExceedsMaxEarnShares();
+        // Set exactly when EarnFees is asked for a snapshot, so finalization closes only a recorded one.
+        bool feeSnapshot = feesActiveCached && isFeeValuationFresh();
+        // A closed record is all zero, so a self-paying request leaves the receiver slot unwritten;
+        // {_receiverOf} reads it back as the requester.
+        if (receiver != requester) pending.receiver = receiver;
+        // Bounded above, so the downcast cannot truncate.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        pending.burnedEarnShares = uint88(earnShares);
+        pending.feeSnapshot = feeSnapshot;
         /// @custom:ghost openCount = openCount + 1
-        pending.open = true;
-        if (feesActiveCached && isFeeValuationFresh()) {
+        pending.requester = requester;
+        if (feeSnapshot) {
             uint256 requestValue = IEarnEngine(engine).valueOf(engineShares_);
             IEarnFees(earnFees).recordRedeemRequest(requestId, earnShares, requestValue);
         }
@@ -2150,16 +2163,14 @@ contract EarnVault is IEarnVault {
             _anchorEngineShares != 0 && _anchorEarnShares == earnShareScale && rewardRateBaseline == _anchorEngineShares;
     }
 
-    /// @custom:spec Request `id` holds a receiver (stored, or its requester when none is stored), a nonzero burned
-    ///      EarnShare amount and nonzero queued engine shares.
+    /// @custom:spec Request `id` holds a nonzero burned EarnShare amount.
     function _specLiveRequest(bytes32 id) internal view returns (bool) {
-        return (_pending[id].receiver != address(0) || _pending[id].requester != address(0))
-            && _pending[id].burnedEarnShares != 0 && _pending[id].engineShares != 0;
+        return _pending[id].burnedEarnShares != 0;
     }
 
-    /// @custom:spec Request `id` holds no burned EarnShare and no queued engine shares.
+    /// @custom:spec Request `id` holds no burned EarnShare, no stored receiver and no fee-snapshot flag.
     function _specClosedRequest(bytes32 id) internal view returns (bool) {
-        return _pending[id].burnedEarnShares == 0 && _pending[id].engineShares == 0;
+        return _pending[id].burnedEarnShares == 0 && _pending[id].receiver == address(0) && !_pending[id].feeSnapshot;
     }
 
     /// @custom:spec No distributor fee update is scheduled.
@@ -2174,7 +2185,7 @@ contract EarnVault is IEarnVault {
         view
         returns (bool)
     {
-        return _pending[requestId].open && _pending[requestId].requester == requester
+        return _pending[requestId].requester == requester
             && _pending[requestId].receiver == (receiver == requester ? address(0) : receiver)
             && _pending[requestId].burnedEarnShares == earnShares;
     }
