@@ -9,6 +9,7 @@ import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineAsyncRedeem } from "../../../interfaces/earn/engines/IEarnEngineAsyncRedeem.sol";
 import { IEarnEngineExactWithdraw } from "../../../interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineFeeValuation } from "../../../interfaces/earn/engines/IEarnEngineFeeValuation.sol";
+import { IEarnEngineHeldDeposit } from "../../../interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 import { IEarnEngineRedeem } from "../../../interfaces/earn/engines/IEarnEngineRedeem.sol";
 import {
     IAccountant,
@@ -94,6 +95,7 @@ contract VedaEngine is
     IEarnEngineExactWithdraw,
     IEarnEngineFeeValuation,
     IEarnEngineAsyncRedeem,
+    IEarnEngineHeldDeposit,
     Ownable2Step
 {
     // The registry is owned through the underlying BoringVault administration. This engine's owner
@@ -462,6 +464,22 @@ contract VedaEngine is
         _requireFreshAccountantRate(accountant, maxRateAge);
         _checkpointRate();
         _pull(baseAsset, msg.sender, assets);
+        engineShares = _depositToVenue(assets);
+    }
+
+    /// Only the bound EarnVault calls it, after transferring `assets` of the base asset here.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// A deposit credits a positive measured venue-share delta.
+    /// @custom:ensures engineShares > 0
+    function depositHeld(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
+        _requireFreshAccountantRate(accountant, maxRateAge);
+        _checkpointRate();
+        engineShares = _depositToVenue(assets);
+    }
+
+    /// @dev Deposits `assets` the engine holds into the venue: the one-unit-over allowance and the standing
+    ///      allowance check bound the Teller's pull to exactly `assets`, so earmarked funds never move.
+    function _depositToVenue(uint256 assets) private returns (uint256 engineShares) {
         // enter() pulls from the engine into the vault, so approve the VAULT (not the teller), one unit
         // above `assets` so an exact pull leaves the standing unit.
         _approve(baseAsset, address(vault), assets + 1);
@@ -877,6 +895,7 @@ contract VedaEngine is
             || interfaceId == type(IEarnEngineRedeem).interfaceId
             || interfaceId == type(IEarnEngineExactWithdraw).interfaceId
             || interfaceId == type(IEarnEngineFeeValuation).interfaceId
+            || interfaceId == type(IEarnEngineHeldDeposit).interfaceId
             || (interfaceId == type(IEarnEngineAsyncRedeem).interfaceId && address(queue) != address(0));
     }
 

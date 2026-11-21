@@ -81,8 +81,9 @@ contract RouterMockZonePortal {
         return enabled[token];
     }
 
+    /// @dev Like the real Portal, deposits are active only for an enabled token.
     function areDepositsActive(address token) external view returns (bool) {
-        return depositsActive[token];
+        return enabled[token] && depositsActive[token];
     }
 
     function depositEncrypted(

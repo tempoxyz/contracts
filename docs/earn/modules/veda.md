@@ -23,8 +23,8 @@ is set once; `maxRateAge` is nonzero. Construction validates the registry's curr
 `VedaEngineInitialized`; rotations and freshness-policy changes emit `VedaPeripheryUpdated` and
 `MaxRateAgeUpdated`.
 
-The engine advertises `IEarnEngineRedeem`, `IEarnEngineExactWithdraw`, and
-`IEarnEngineFeeValuation`, plus `IEarnEngineAsyncRedeem` only while its active Queue is nonzero. It
+The engine advertises `IEarnEngineRedeem`, `IEarnEngineExactWithdraw`, `IEarnEngineFeeValuation`,
+and `IEarnEngineHeldDeposit`, plus `IEarnEngineAsyncRedeem` only while its active Queue is nonzero. It
 has no in-kind entry, so the EarnVault rejects a queued request before burning EarnShare when the
 engine is immediate-only.
 

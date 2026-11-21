@@ -13,6 +13,7 @@ import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineExactWithdraw } from "../../../interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "../../../interfaces/earn/engines/IEarnEngineRedeem.sol";
 import { IEarnEngineFeeValuation } from "../../../interfaces/earn/engines/IEarnEngineFeeValuation.sol";
+import { IEarnEngineHeldDeposit } from "../../../interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import { IEarnVault } from "../../../interfaces/earn/IEarnVault.sol";
@@ -46,6 +47,7 @@ contract PropAMMEngine is
     IEarnEngineExactWithdraw,
     IEarnEngineRedeem,
     IEarnEngineFeeValuation,
+    IEarnEngineHeldDeposit,
     Ownable2Step
 {
     using SafeERC20 for IERC20;
@@ -151,17 +153,18 @@ contract PropAMMEngine is
         emit EarnVaultInitialized(vault_);
     }
 
-    /// Advertises ERC-165, the engine, exact withdraw, redeem and fee valuation, and nothing else.
+    /// Advertises ERC-165, the engine, exact withdraw, redeem, fee valuation and held deposit, and nothing else.
     /// @custom:ensures id == type(IERC165).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngine).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineExactWithdraw).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineRedeem).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineFeeValuation).interfaceId ==> result
-    /// @custom:ensures result ==> (id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId || id == type(IEarnEngineFeeValuation).interfaceId)
+    /// @custom:ensures id == type(IEarnEngineHeldDeposit).interfaceId ==> result
+    /// @custom:ensures result ==> (id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId || id == type(IEarnEngineFeeValuation).interfaceId || id == type(IEarnEngineHeldDeposit).interfaceId)
     function supportsInterface(bytes4 id) external pure returns (bool) {
         return id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId
             || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId
-            || id == type(IEarnEngineFeeValuation).interfaceId;
+            || id == type(IEarnEngineFeeValuation).interfaceId || id == type(IEarnEngineHeldDeposit).interfaceId;
     }
 
     function totalShares() public view returns (uint256) {
@@ -229,6 +232,32 @@ contract PropAMMEngine is
         if (IERC20(asset).balanceOf(address(this)) != cashBefore + assets) revert InexactTransfer();
         // _buy measures the base holding as exactly `baseBefore + shares`, so it is not read again here.
         shares = _buy(assets, price, observedAt, cashBefore + assets, baseBefore);
+        _samePrice(price, observedAt);
+        /// @custom:ghost heldAfter = baseBefore + shares
+        if (shares == 0) revert InvalidAmount();
+        emit Deposited(msg.sender, assets, shares);
+    }
+
+    /// Only the bound EarnVault calls it, after transferring `assets` here and checking the engine's credit;
+    /// the binding survives, and the trade gets a fresh trade ID.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
+    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// A deposit of positive assets credits positive shares, admitted only with a fresh oracle observation.
+    /// @custom:ensures assets > 0 && shares > 0
+    /// @custom:ensures 0 < lastObservedAt && lastObservedAt <= block.timestamp && block.timestamp - lastObservedAt <= maxOracleAge
+    /// The shares credited are exactly the measured increase in the base tokens the engine holds.
+    /// @custom:ensures heldAfter == heldBefore + shares
+    function depositHeld(uint256 assets) external nonReentrant onlyEarnVault returns (uint256 shares) {
+        if (assets == 0) revert InvalidAmount();
+        (uint256 price, uint256 observedAt) = _price();
+        if (block.timestamp - observedAt > maxOracleAge) revert InvalidOracle();
+        // The EarnVault measured this engine's credit of exactly `assets` before calling; _buy proves the pool
+        // pulled exactly `assets` of this balance.
+        uint256 cash = IERC20(asset).balanceOf(address(this));
+        if (cash < assets) revert InexactTransfer();
+        uint256 baseBefore = totalShares();
+        /// @custom:ghost heldBefore = baseBefore
+        shares = _buy(assets, price, observedAt, cash, baseBefore);
         _samePrice(price, observedAt);
         /// @custom:ghost heldAfter = baseBefore + shares
         if (shares == 0) revert InvalidAmount();
