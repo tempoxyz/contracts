@@ -28,6 +28,7 @@ interface IEarnFees {
     function closeRedeemRequest(bytes32 requestId) external;
     function settleCancelledRedeem(
         bytes32 requestId,
+        uint256 burnedEarnShares,
         uint256 returnedValue,
         uint256 activeSupply,
         uint256 activeAssets,
