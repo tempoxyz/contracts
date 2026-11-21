@@ -53,8 +53,9 @@ when:
 
 - `msg.sender` is the canonical Zone Messenger (`ZONE_MESSENGER_ADDRESS`);
 - `sourceZoneId` equals `allowedZoneId`;
-- `ZoneFactory.zones(sourceZoneId).portal` equals `sourcePortal`, and
-  `ZoneFactory.isZonePortal(sourcePortal)` is true (`ZONE_FACTORY_ADDRESS`);
+- `sourcePortal` is the Zone's Portal the constructor read from `ZoneFactory.zones(allowedZoneId)`
+  and checked with `ZoneFactory.isZonePortal` (`ZONE_FACTORY_ADDRESS`): a Zone's Portal never changes,
+  so a router for a nonzero Zone without one can't be deployed;
 - the amount is nonzero and the delivered token is the private asset (deposit) or the EarnShare
   (redeem); and
 - the source Portal has the return token (EarnShare for a deposit, the private asset for a

@@ -78,11 +78,16 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(SingleZoneEarnRouter.InvalidSourcePortal.selector);
         router.onWithdrawalReceived(ZONE_A, address(portalB), bytes32(0), address(alternate), uint128(ONE), data);
+    }
+
+    function testConstructorRequiresRegisteredZonePortal() public {
+        // The Portal is read once at construction: a Zone without a registered Portal can't get a router.
+        vm.expectRevert(SingleZoneEarnRouter.InvalidSourcePortal.selector);
+        new SingleZoneEarnRouter(ZONE_A + 100, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
 
         zoneFactory.setPortal(address(portalA), false);
-        vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(SingleZoneEarnRouter.InvalidSourcePortal.selector);
-        router.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
+        new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
     }
 
     function testRejectsDifferentCanonicalZone() public {
