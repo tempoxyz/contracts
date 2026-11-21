@@ -186,7 +186,9 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase, charge or
   capture past the hold that takes held plus unsettled past the sponsor collateral; decreases, captures within
   the hold and releases still go through. Once a guard is set only the guard replaces or clears it, at once,
-  so the issuer never takes back acknowledging what the sponsor is owed.
+  so the issuer never takes back acknowledging what the sponsor is owed. The treasury hands the guard on
+  (`handOffGuard`): the sponsor at any time, the issuer before a sponsor is named or once no collateral is
+  live and nothing is seized or exposed.
   A pledge counts toward that collateral only while it stands `COVER_TERM` more (the longest hold plus a week
   to seize what is still unsettled), and its slot is free again once it ends. Earn-vault shares count only for a
   sponsor that accepted that vault (`acceptCollateral`), and the sponsor and the asset change only while no

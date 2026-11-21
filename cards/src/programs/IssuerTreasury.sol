@@ -32,6 +32,11 @@ interface ISourceRegistry {
     function sourceKind(address source) external view returns (uint8);
 }
 
+/// @dev The program's exposure guard, which only the current guard replaces or clears once one is set.
+interface IGuardSetting {
+    function setExposureGuard(address guard) external;
+}
+
 interface ITIP20Memo {
     function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
 }
@@ -118,6 +123,7 @@ contract IssuerTreasury is IExposureGuard {
     error BelowExposure(uint256 remaining, uint256 exposure);
     error ExposureAboveCollateral(uint256 exposure, uint256 collateral);
     error FxSourceRefused(address source);
+    error GuardInUse();
     error IssuerFundsShort(uint256 needed, uint256 available);
     error NoConversion();
     error NotIssuer();
@@ -451,6 +457,20 @@ contract IssuerTreasury is IExposureGuard {
         if (applied > room) revert AboveExposure(applied, room);
         seized -= applied;
         emit SettlementAcknowledged(throughSeq, applied);
+    }
+
+    /// @notice Hands the program's exposure guard from this contract to next (zero for none). The sponsor may at any
+    ///         time, as the party the exposure is owed to; the issuer before a sponsor is named, or once no collateral
+    ///         is live and nothing is seized or exposed.
+    function handOffGuard(address next) external nonReentrant {
+        address sponsor = collateral.sponsor;
+        if (msg.sender != sponsor) {
+            if (msg.sender != PROGRAM.ISSUER()) revert NotSponsor();
+            if (sponsor != address(0) && (unitsOf() != 0 || seized != 0 || stressedExposure() != 0)) {
+                revert GuardInUse();
+            }
+        }
+        IGuardSetting(address(PROGRAM)).setExposureGuard(next);
     }
 
     /// @notice Records the program's net as of its latest purchase step (at a network cut-off), for a later
