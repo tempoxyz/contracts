@@ -64,8 +64,15 @@ contract CardAuthAdmin is CardAuthBase {
         if (!_settle(!approved)) return;
         uint8 kind = approved ? ISource(source).KIND() : 0;
         if (approved && kind != CASH && kind != SAVINGS && kind != CREDIT) revert InvalidOrder();
+        if (kind == CASH) _listCash(source);
         sourceKind[source] = kind;
         emit SourceSet(source, kind);
+    }
+
+    /// @notice The cash sources the issuer approved, at most eight: a stopped one stays while it may hold converted
+    ///         tokens, so an exposure guard counts every converted hold from the moment its source is approved.
+    function cashSources() external view returns (address[] memory) {
+        return _cashSources;
     }
 
     /// @notice Registers a companion contract (treasury, desk, reserves) after the settings delay, or removes one at
@@ -152,6 +159,28 @@ contract CardAuthAdmin is CardAuthBase {
     function checkpointSettlement() external returns (uint64) {
         _onlyAcknowledger();
         return CardLegs.checkpoint(_ledger, _checkpoints);
+    }
+
+    /// @dev Adds `source` to the cash sources unless listed: in the place of a stopped one that reports no open
+    ///      converted value (or does not answer), else at the end while fewer than MAX_CASH_SOURCES are listed.
+    function _listCash(address source) private {
+        address[] storage list = _cashSources;
+        uint256 n = list.length;
+        uint256 place = n;
+        for (uint256 i; i < n; ++i) {
+            address s = list[i];
+            if (s == source) return;
+            if (place == n && sourceKind[s] == 0 && _drained(s)) place = i;
+        }
+        if (place < n) list[place] = source;
+        else if (n < MAX_CASH_SOURCES) list.push(source);
+        else revert InvalidOrder();
+    }
+
+    /// @dev Whether a stopped cash source reports no open converted value, or does not answer openConverted.
+    function _drained(address source) private view returns (bool) {
+        (bool ok, bytes memory data) = source.staticcall(abi.encodeWithSignature("openConverted()"));
+        return !ok || data.length < 32 || abi.decode(data, (uint256)) == 0;
     }
 
     /// @dev The exposure guard once the issuer set one, for the party the exposure is owed to; without one, the issuer.

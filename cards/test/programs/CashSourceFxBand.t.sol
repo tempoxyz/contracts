@@ -17,7 +17,8 @@ import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 /// @notice Captures and late charges of purchases funded in another stablecoin: the owner pays the locked price while
 ///         the venue stays within FX_BAND_BPS of it, the venue's price moved FX_BAND_BPS toward the owner past it, never
 ///         past the hold's capture limit; captures of live holds need no fresh reference rate; the exposure guard
-///         counts open converted holds at FX_STRESS_BPS.
+///         counts open converted holds at their token's stress figure; the source keeps an exact open total per
+///         converted token, for at most MAX_CONVERTED_TOKENS tokens at once.
 contract CashSourceFxBandTest is AuthEnv {
     using FixedPointMathLib for uint256;
 
@@ -36,6 +37,7 @@ contract CashSourceFxBandTest is AuthEnv {
     FixedPricePool internal bid;
     FixedPricePool internal ask;
     uint256 internal band;
+    uint256 internal _tokenCount;
 
     function setUp() public {
         _deployPrograms();
@@ -545,6 +547,114 @@ contract CashSourceFxBandTest is AuthEnv {
         assertEq(cash.openConverted(), 0);
     }
 
+    // Per-token totals.
+
+    function test_openConvertedOf_keepsAnExactTotalPerTokenThatReturnsToZero() public {
+        (ITIP20Token gbp,) = _secondToken();
+        _authorize(P1, 100e6);
+        _fundIn(gbp);
+        _authorize(P2, 50e6);
+        _authorize(P3, 30e6);
+        uint256 e = cash.openConvertedOf(address(eur));
+        uint256 g = cash.openConvertedOf(address(gbp));
+        assertEq(e, _value(P1));
+        assertEq(g, _value(P2) + _value(P3));
+        assertEq(cash.openConverted(), e + g);
+        (address[] memory tokens, uint256[] memory open) = cash.convertedTokens();
+        assertEq(tokens.length, 2);
+        assertEq(tokens[0], address(eur));
+        assertEq(tokens[1], address(gbp));
+        assertEq(open[0], e);
+        assertEq(open[1], g);
+        vm.prank(issuer);
+        cards.adjust(P2, 20e6);
+        assertEq(cash.openConvertedOf(address(gbp)), _value(P2) + _value(P3));
+        assertEq(cash.openConvertedOf(address(eur)), e, "other tokens stay as they were");
+        _capture(P1, 40e6, false);
+        assertEq(cash.openConvertedOf(address(eur)), _value(P1));
+        _capture(P1, 60e6, true);
+        assertEq(cash.openConvertedOf(address(eur)), 0);
+        vm.prank(issuer);
+        cards.release(P2);
+        // An expired hold counts toward its token until anyone releases the purchase.
+        uint256 left = _value(P3);
+        assertEq(cash.openConvertedOf(address(gbp)), left);
+        vm.warp(block.timestamp + 7 days);
+        core.releaseExpired(alice, address(cash), cards.legId(P3, TOKEN_LEG));
+        assertEq(cash.openConvertedOf(address(gbp)), left);
+        cards.release(P3);
+        assertEq(cash.openConvertedOf(address(gbp)), 0);
+        assertEq(cash.openConverted(), 0);
+        // Both keep their place while nothing else needs it.
+        (tokens, open) = cash.convertedTokens();
+        assertEq(tokens.length, 2);
+        assertEq(open[0] + open[1], 0);
+    }
+
+    function test_convertedTokens_aLegThatDoesNotHoldTakesNoPlace() public {
+        (ITIP20Token gbp,) = _secondToken();
+        // The owner holds none of it: the leg holds nothing and the purchase falls to dollars.
+        vm.prank(alice);
+        gbp.transfer(makeAddr("elsewhere"), 1000e6);
+        _fundIn(gbp);
+        usd.mint(alice, 10e6);
+        _authorize(P1, 10e6);
+        assertEq(core.reserved(alice, address(usd)), 10e6);
+        (address[] memory tokens,) = cash.convertedTokens();
+        assertEq(tokens.length, 0);
+    }
+
+    function test_convertedTokens_atMostEightAndADrainedTokenGivesUpItsPlace() public {
+        uint256 max = cash.MAX_CONVERTED_TOKENS();
+        assertEq(max, 8);
+        // Setting each token's reference rate moves the clock, so every token exists before any purchase.
+        ITIP20Token[] memory more = new ITIP20Token[](max);
+        for (uint256 i = 1; i < max; ++i) {
+            (more[i],) = _secondToken();
+        }
+        (ITIP20Token ninth,) = _secondToken();
+        // Each new rate moved the clock past the earlier rates' age: refresh them at the same price.
+        conv.setReferenceRate(address(eur), 1.1e18);
+        for (uint256 i = 1; i < max; ++i) {
+            conv.setReferenceRate(address(more[i]), 1.1e18);
+        }
+        // P1 holds euros; seven more tokens each hold one purchase.
+        _fundIn(eur);
+        _authorize(P1, 10e6);
+        for (uint256 i = 1; i < max; ++i) {
+            _fundIn(more[i]);
+            _authorize(bytes32(i), 10e6);
+            assertGt(cash.openConvertedOf(address(more[i])), 0);
+        }
+        (address[] memory tokens,) = cash.convertedTokens();
+        assertEq(tokens.length, max);
+        // A ninth token finds no place: its leg is not placed and the purchase falls to dollars.
+        _fundIn(ninth);
+        usd.mint(alice, 10e6);
+        _authorize(P2, 10e6);
+        assertEq(core.reserved(alice, address(ninth)), 0);
+        assertEq(cash.openConvertedOf(address(ninth)), 0);
+        assertEq(core.reserved(alice, address(usd)), 10e6);
+        // Once the euro holds close, the ninth token takes the euro's place.
+        _capture(P1, 10e6, true);
+        _authorize(P3, 10e6);
+        assertGt(cash.openConvertedOf(address(ninth)), 0);
+        (tokens,) = cash.convertedTokens();
+        assertEq(tokens.length, max);
+        assertEq(tokens[0], address(ninth));
+        uint256 sum;
+        for (uint256 i = 1; i < max; ++i) {
+            sum += cash.openConvertedOf(address(more[i]));
+        }
+        assertEq(cash.openConverted(), sum + cash.openConvertedOf(address(ninth)));
+        // The euro asks for a place again and finds none until another token drains.
+        _fundIn(eur);
+        usd.mint(alice, 10e6);
+        _authorize(P4, 10e6);
+        assertEq(core.reserved(alice, address(eur)), 0);
+        assertEq(core.reserved(alice, address(usd)), 20e6);
+    }
+
     // The exposure guard.
 
     function test_exposureGuard_countsOpenConvertedHoldsAtTheStressShare() public {
@@ -557,8 +667,7 @@ contract CashSourceFxBandTest is AuthEnv {
         treasury.post(sponsor, IEarnVault(address(0)), 1);
         vm.stopPrank();
         _setting(abi.encodeCall(cards.setExposureGuard, (address(treasury))));
-        treasury.addFxSource(address(cash));
-        assertEq(treasury.FX_STRESS_BPS(), 1000);
+        assertEq(treasury.fxStressOf(address(eur)), 1000);
         _authorize(P1, 90e6);
         uint256 open = cash.openConverted();
         assertEq(treasury.stressedExposure(), treasury.exposure() + open.mulDivUp(1000, BPS));
@@ -576,6 +685,34 @@ contract CashSourceFxBandTest is AuthEnv {
     }
 
     // Helpers.
+
+    /// @dev A token at $1.10 like the euro, with venues, a reference rate, float, the owner's approval and funds.
+    function _secondToken() internal returns (ITIP20Token token, FixedPricePool pool) {
+        string memory id = vm.toString(++_tokenCount);
+        token = _createToken(string.concat("Second ", id), string.concat("SCND", id));
+        pool = new FixedPricePool(address(token), address(usd), BID);
+        FixedPricePool back = new FixedPricePool(address(usd), address(token), ASK);
+        usd.mint(address(pool), 1_000_000e6);
+        token.mint(address(back), 1_000_000e6);
+        conv.setVenue(address(token), address(usd), address(pool), true);
+        conv.setVenue(address(usd), address(token), address(back), false);
+        Rates.set(conv, address(token), 1.1e18);
+        usd.mint(address(conv), 100_000e6);
+        token.mint(address(conv), 100_000e6);
+        vm.prank(alice);
+        core.approveHolder(address(cash), address(token), type(uint128).max, 0);
+        _setTolerance(alice, address(cash), address(token), 1000);
+        token.mint(alice, 1000e6);
+    }
+
+    /// @dev Points the owner's funding order at `token`, then dollars.
+    function _fundIn(ITIP20Token token) internal {
+        CardLegs.Funding[] memory order = new CardLegs.Funding[](2);
+        order[0] = _cashEntry(address(token), 100);
+        order[1] = _cashEntry(address(usd), 100);
+        vm.prank(alice);
+        cards.setFunding(order);
+    }
 
     /// @dev What the venue asks in euros for `units` dollars, whatever the reference rate (within the widest band).
     function _cost(uint256 units) internal view returns (uint256) {

@@ -12,7 +12,8 @@ contract FxDevaluationStressTest is FxBase {
     uint256 internal constant RATE = 0.05e18;
     uint64 internal constant LIFE = 7 days;
     uint256 internal constant DAYS = 16;
-    /// @dev IssuerTreasury.FX_STRESS_BPS: the share of open converted holds the sponsor's collateral backs.
+    /// @dev IssuerTreasury.DEFAULT_FX_STRESS_BPS: the share of open converted holds the sponsor's collateral backs
+    ///      for a token the issuer set no figure for.
     uint256 internal constant FX_STRESS_BPS = 1000;
 
     uint256 internal n;

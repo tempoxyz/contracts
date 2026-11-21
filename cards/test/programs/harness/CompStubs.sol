@@ -113,6 +113,11 @@ contract CompCardAuth is ICardAuth {
         return (_held, _standIn, _unsettled);
     }
 
+    /// @dev The program approves no cash source here, so the issuer treasury counts no converted holds.
+    function cashSources() external pure returns (address[] memory) { }
+
+    function sourceKind(address) external pure returns (uint8) { }
+
     /// @dev Settles every unsettled step.
     function acknowledgeSettlement(uint64) external {
         _unsettled = 0;

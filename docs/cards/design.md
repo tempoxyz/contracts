@@ -163,15 +163,27 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   untrusted source keeps the reference path. A hold that expires keeps its locked rate (in the same slot) for
   a late `charge`, which prices the same way and consumes it; a reversal of a live hold drops it. Refunds pay
   the token back at the rate its captures and charges paid. Converted legs never create debt.
-- **Open converted value.** `CashSource.openConverted()` sums every open converted hold's settlement value at
-  its locked rate, kept in the high half of the leg's lock slot and updated on hold, resize, capture and
-  release. A hold the core ends at expiry counts until someone releases the purchase (anyone may, after
-  expiry), so the total drifts above the truth only by expired holds nobody released yet, the same lag as
-  CardAuth's own held total. `IssuerTreasury.stressedExposure()` adds `FX_STRESS_BPS` (10%) of the `openConverted`
-  of every source in `fxSources` to `exposure()`, and the guard and collateral release check that. Anyone may
-  list a source the program approves, or has proposed to approve (`addFxSource`, which also checks it answers
-  `openConverted`), so the stress share never waits on the issuer; a source leaves (`removeFxSource`) only once
-  the program no longer approves it and it reports no open converted value, or at once at the sponsor's call.
+- **Open converted value.** Each open converted hold's settlement value at its locked rate sits in the high half
+  of the leg's lock slot, updated on hold, resize, capture and release, and `CashSource` keeps an exact running
+  total of it per converted token in one slot per token (`openConvertedOf(token)`; `convertedTokens()` lists
+  them with their totals, `openConverted()` sums them). A source keeps totals for at most
+  `MAX_CONVERTED_TOKENS` (8) tokens: a token whose total is back to zero gives its place to the next, and with
+  every place holding open value a leg in a ninth token is not placed (the purchase falls through to its next
+  entry). A hold the core ends at expiry counts until someone releases the purchase (anyone may, after expiry),
+  so a total drifts above the truth only by expired holds nobody released yet, the same lag as CardAuth's own
+  held total.
+- **FX stress share.** `IssuerTreasury.stressedExposure()` adds to `exposure()`, for every converted token every
+  cash source holds, that token's stress figure (`fxStressOf(token)`, in bps) of its open converted value, and
+  the guard and collateral release check that. The issuer sets a figure per token (`setFxStress`, above zero and
+  at most 10,000): raising one applies at once, since it only makes the guard stricter; lowering one waits the
+  program's settings delay once it granted anyone. A token without a figure counts at `DEFAULT_FX_STRESS_BPS`
+  (10%), which with a 10% payee tolerance covers an overnight move of about 18%; a figure s covers up to
+  1 - (1 - s) / 1.1 (40% covers about 45%). The sources are the program's own list (`CardAuth.cashSources()`):
+  approving a cash source lists it, so its converted holds count from the moment it can place any, with no
+  separate step. A stopped source stays listed (and counted) until its open converted value is back to zero and
+  another approval needs its place; the list holds at most eight, so approving another cash source while each of
+  the eight is approved or still holds converted value reverts. An approved source that stops answering `convertedTokens` makes the guard refuse until the
+  issuer stops it; once stopped, it no longer counts.
 - **Settlement log.** Every step emits one event with the purchase reference and a sequence number;
   captures, charges and refunds carry what the sources covered, and a won dispute counts as a
   refund of its chargeback (`creditBack`, registered companions only, which paid the cardholder

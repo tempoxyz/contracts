@@ -44,6 +44,10 @@ contract CashSource is ISource, ISettlementTokenGuard {
     /// @dev The widest band around a locked rate this source asks for, tolerance included: Conversion's
     ///      MAX_ANCHOR_BAND_BPS.
     uint256 internal constant MAX_ANCHOR_BAND_BPS = 2000;
+    /// @notice The most converted tokens this source keeps open totals for at once. A token whose open total is zero
+    ///         gives its place to the next one; with every place taken by open holds, a leg in another token is not
+    ///         placed and the purchase falls through to its next source.
+    uint256 public constant MAX_CONVERTED_TOKENS = 8;
 
     /// @notice What the source is: cash.
     uint8 public constant KIND = 1;
@@ -73,8 +77,12 @@ contract CashSource is ISource, ISettlementTokenGuard {
     /// @notice Who may owe this source core debt in each token: everyone a capture or charge left owing it, until
     ///         pruneDebtors finds they owe nothing.
     mapping(address token => address[]) public debtors;
-    /// @notice The settlement value of every open converted hold, at the rates they locked.
-    uint256 public openConverted;
+    /// @dev Per converted token: the settlement value of its open converted holds at the rates they locked, above
+    ///      the low 8 bits, which hold its place in _convertedTokens plus one (zero while it has none). A token keeps
+    ///      its place, and so its slot, while its total is zero, until another token needs the place.
+    mapping(address token => uint256) private _converted;
+    /// @dev The converted tokens with a place, at most MAX_CONVERTED_TOKENS.
+    address[] private _convertedTokens;
 
     bool private transient _locked;
 
@@ -121,6 +129,30 @@ contract CashSource is ISource, ISettlementTokenGuard {
         return _locks[legId] >> 112 & type(uint16).max;
     }
 
+    /// @notice The settlement value of every open converted hold, at the rates they locked: the sum of
+    ///         openConvertedOf over convertedTokens.
+    function openConverted() external view returns (uint256 open) {
+        address[] storage tokens = _convertedTokens;
+        for (uint256 i; i < tokens.length; ++i) {
+            open += _converted[tokens[i]] >> 8;
+        }
+    }
+
+    /// @notice The settlement value of the open converted holds in `token`, at the rates they locked.
+    function openConvertedOf(address token) external view returns (uint256) {
+        return _converted[token] >> 8;
+    }
+
+    /// @notice The converted tokens this source keeps open totals for (at most MAX_CONVERTED_TOKENS), each with its
+    ///         openConvertedOf, which is zero for a token whose holds all closed until another token takes its place.
+    function convertedTokens() external view returns (address[] memory tokens, uint256[] memory open) {
+        tokens = _convertedTokens;
+        open = new uint256[](tokens.length);
+        for (uint256 i; i < tokens.length; ++i) {
+            open[i] = _converted[tokens[i]] >> 8;
+        }
+    }
+
     function held(address owner, bytes32, bytes32 legId) public view returns (uint256) {
         uint256 tokens = CORE.getHold(owner, address(this), legId).held;
         uint256 rate = lockedRate(legId);
@@ -156,7 +188,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
         bool live = h.token != address(0);
         if (units == 0) {
-            if (live) _release(owner, legId);
+            if (live) _release(owner, token, legId);
             return 0;
         }
         address settlement = PROGRAM.settlementToken();
@@ -165,6 +197,8 @@ contract CashSource is ISource, ISettlementTokenGuard {
         uint256 tolerance;
         if (token != settlement) {
             uint256 locked = lockedRate(legId);
+            // Every place taken by another token's open holds: the leg stays as it is.
+            if (_placeOf(token) == 0) return live ? uint256(h.held).mulDiv(locked, ONE) : 0;
             // The core fixes a hold's tolerance when it places it, from the owner's terms then; a live hold keeps it.
             tolerance = live && locked != 0
                 ? lockedTolerance(legId)
@@ -189,12 +223,12 @@ contract CashSource is ISource, ISettlementTokenGuard {
             if (tokens > most) tokens = most;
             uint256 placed = h.held;
             if (live) {
-                if (tokens < placed) _resize(owner, legId, placed = tokens);
+                if (tokens < placed) _resize(owner, token, legId, placed = tokens);
             } else {
                 placed = units.mulDivUp(ONE, rate);
                 CORE.holdFrom(owner, _request(token, legId, placed, expiresAt, true));
             }
-            if (token != settlement) _setLock(legId, rate, placed, tolerance);
+            if (token != settlement) _lock(token, legId, rate, placed, tolerance);
             return units;
         }
         uint256 cap = (live ? h.held : 0) + CORE.available(owner, token);
@@ -203,12 +237,12 @@ contract CashSource is ISource, ISettlementTokenGuard {
             units = tokens.mulDiv(rate, ONE);
         }
         if (tokens == 0) {
-            if (live) _release(owner, legId);
+            if (live) _release(owner, token, legId);
             return 0;
         }
         if (!live) CORE.holdFrom(owner, _request(token, legId, tokens, expiresAt, false));
-        else if (tokens != h.held) _resize(owner, legId, tokens);
-        if (token != settlement) _setLock(legId, rate, tokens, tolerance);
+        else if (tokens != h.held) _resize(owner, token, legId, tokens);
+        if (token != settlement) _lock(token, legId, rate, tokens, tolerance);
         return units;
     }
 
@@ -241,7 +275,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         (paid, covered) = _captureConverted(
             owner, token, settlement, legId, h, units, rate, flags & (CAPTURE_BEYOND | CAPTURE_FREE) != 0
         );
-        if (isFinal && (beyond || covered >= units)) _release(owner, legId);
+        if (isFinal && (beyond || covered >= units)) _release(owner, token, legId);
     }
 
     function charge(address owner, bytes32 position, bytes32 legId, uint256 units, bool standIn)
@@ -268,7 +302,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
             // A late charge consumes the rate its expired hold locked and prices against it as a capture would, the
             // tolerance the hold was placed with on what that rate promised standing in for the capture limit.
             tolerance = lockedTolerance(legId);
-            _setLock(legId, 0, 0, 0);
+            _setLock(token, legId, 0, 0, 0);
             band = _band(tolerance);
             cost = _anchoredCost(c, token, settlement, units, rate, band);
         }
@@ -296,14 +330,17 @@ contract CashSource is ISource, ISettlementTokenGuard {
 
     /// @notice Ends a leg. A converted leg whose hold expired (or that the core already ended) keeps its locked rate
     ///         for a late charge; any other drops it. Either way it no longer counts toward openConverted.
-    function release(address owner, bytes32, bytes32 legId) external onlyProgram {
+    function release(address owner, bytes32 position, bytes32 legId) external onlyProgram {
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
+        address token = h.token;
         // Expiries are timestamps by design; a few seconds of validator skew does not change them.
         // forge-lint: disable-next-line(block-timestamp)
-        bool expired = h.token == address(0) || block.timestamp >= h.expiresAt;
-        if (h.token != address(0)) CORE.release(owner, address(this), legId);
+        bool expired = token == address(0) || block.timestamp >= h.expiresAt;
+        if (token != address(0)) CORE.release(owner, address(this), legId);
+        // A hold the core already ended counts toward the token its position names, which placed it.
+        else (token,) = _decode(position);
         uint256 rate = lockedRate(legId);
-        if (rate != 0) _setLock(legId, expired ? rate : 0, 0, lockedTolerance(legId));
+        if (rate != 0) _setLock(token, legId, expired ? rate : 0, 0, lockedTolerance(legId));
     }
 
     /// @dev A converted leg pays back, for what its captures and charges paid in today's settlement token, the tokens
@@ -409,7 +446,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (capped) tokens = h.captureLimit;
         if (tokens == 0) return (0, 0);
         CORE.capture(owner, address(this), legId, tokens.toUint128(), false);
-        _setLock(legId, rate, tokens < h.held ? h.held - tokens : 0, lockedTolerance(legId));
+        _setLock(token, legId, rate, tokens < h.held ? h.held - tokens : 0, lockedTolerance(legId));
         paid = _swap(c, token, settlement, legId, units, tokens, cost, rate, band);
         // The owner's tokens cover their share of the band price; the rest falls to the purchase's later legs.
         covered = tokens == price ? units : units.mulDiv(tokens, price);
@@ -607,25 +644,58 @@ contract CashSource is ISource, ISettlementTokenGuard {
     }
 
     /// @dev Sets a converted leg's locked `rate` (zero drops it) and its hold's `tolerance` with `tokens` open in its
-    ///      hold, keeping openConverted in step.
-    function _setLock(bytes32 legId, uint256 rate, uint256 tokens, uint256 tolerance) private {
+    ///      hold, keeping the open total of its `token` in step. Only hold raises a leg's value, after _place.
+    function _setLock(address token, bytes32 legId, uint256 rate, uint256 tokens, uint256 tolerance) private {
         uint256 word = _locks[legId];
         uint256 value = tokens.mulDiv(rate, ONE);
         uint256 before = word >> 128;
-        if (value != before) openConverted = openConverted + value - before;
+        // Both values fit in 128 bits, so shifting them past the place bits loses nothing.
+        if (value != before) _converted[token] = _converted[token] + (value << 8) - (before << 8);
         uint256 next =
             rate == 0 ? 0 : rate.toUint112() | uint256(tolerance.toUint16()) << 112 | uint256(value.toUint128()) << 128;
         if (next != word) _locks[legId] = next;
     }
 
-    function _resize(address owner, bytes32 legId, uint256 tokens) private {
-        if (tokens == 0) _release(owner, legId);
+    /// @dev Locks a converted leg as _setLock does, first giving its `token` the place _placeOf found unless it has
+    ///      one. Hold calls it only after _placeOf found a place, so a leg that never holds writes no place.
+    function _lock(address token, bytes32 legId, uint256 rate, uint256 tokens, uint256 tolerance) private {
+        if (_converted[token] == 0) {
+            uint256 place = _placeOf(token);
+            address[] storage list = _convertedTokens;
+            if (place > list.length) {
+                list.push(token);
+            } else {
+                delete _converted[list[place - 1]];
+                list[place - 1] = token;
+            }
+            _converted[token] = place;
+        }
+        _setLock(token, legId, rate, tokens, tolerance);
+    }
+
+    /// @dev The place `token` has or would take among the converted tokens, plus one: its own, else a new one while
+    ///      fewer than MAX_CONVERTED_TOKENS exist, else that of the first token whose open total is zero. Zero when
+    ///      every place holds open value.
+    function _placeOf(address token) private view returns (uint256) {
+        uint256 word = _converted[token];
+        if (word != 0) return word & 0xff;
+        address[] storage list = _convertedTokens;
+        uint256 n = list.length;
+        if (n < MAX_CONVERTED_TOKENS) return n + 1;
+        for (uint256 i; i < n; ++i) {
+            if (_converted[list[i]] >> 8 == 0) return i + 1;
+        }
+        return 0;
+    }
+
+    function _resize(address owner, address token, bytes32 legId, uint256 tokens) private {
+        if (tokens == 0) _release(owner, token, legId);
         else CORE.adjust(owner, address(this), legId, tokens.toUint128());
     }
 
-    function _release(address owner, bytes32 legId) private {
+    function _release(address owner, address token, bytes32 legId) private {
         CORE.release(owner, address(this), legId);
-        if (_locks[legId] != 0) _setLock(legId, 0, 0, 0);
+        if (_locks[legId] != 0) _setLock(token, legId, 0, 0, 0);
     }
 
     function _forward(address token) private {

@@ -88,6 +88,11 @@ contract CardAuth is CardAuthBase, ICardAuth {
         _delegate();
     }
 
+    /// @notice The cash sources the issuer approved, a stopped one kept while it may hold converted tokens.
+    function cashSources() external returns (address[] memory) {
+        _delegate();
+    }
+
     /// @notice Registers a companion contract (treasury, desk, reserves) after the settings delay, or removes one at
     ///         once.
     function setCompanion(address, bool) external {

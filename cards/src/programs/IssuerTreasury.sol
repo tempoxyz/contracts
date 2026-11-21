@@ -21,14 +21,14 @@ interface IConvertAtMid {
         returns (uint256 out);
 }
 
-interface IOpenConverted {
-    function openConverted() external view returns (uint256);
+/// @dev A cash source's open converted holds, per converted token.
+interface IConvertedTokens {
+    function convertedTokens() external view returns (address[] memory tokens, uint256[] memory open);
 }
 
-/// @dev The program's funding-source registry and pending settings, which say whether a source is approved.
-interface ISourceRegistry {
-    function pendingSetting(bytes32 id) external view returns (uint64);
-    function setSource(address source, bool approved) external;
+/// @dev The program's approved cash sources, a stopped one kept while it may hold converted tokens.
+interface ICashSources {
+    function cashSources() external view returns (address[] memory);
     function sourceKind(address source) external view returns (uint8);
 }
 
@@ -68,11 +68,9 @@ contract IssuerTreasury is IExposureGuard {
     uint8 private constant IN_USE_ISSUER_DEBT = 8;
     uint8 private constant PLEDGE = 2;
     uint256 private constant BPS = 10_000;
-    /// @notice The share of open converted holds' settlement value the collateral must also cover, for a move of the
-    ///         converted token before they capture.
-    uint256 public constant FX_STRESS_BPS = 1000;
-    /// @notice The most funding sources fxSources lists at once.
-    uint256 public constant MAX_FX_SOURCES = 8;
+    /// @notice The share of a converted token's open holds (their settlement value) the collateral must also cover,
+    ///         for a move of that token before they capture, while the issuer set no figure for it (fxStressOf).
+    uint256 public constant DEFAULT_FX_STRESS_BPS = 1000;
 
     ICardAuth public immutable PROGRAM;
 
@@ -80,9 +78,9 @@ contract IssuerTreasury is IExposureGuard {
     mapping(address token => uint256) internal _funds;
     /// @notice Contracts sizing money in the settlement token, asked before it changes.
     address[] public tokenGuards;
-    /// @notice The program's funding sources whose open converted holds count toward the collateral at FX_STRESS_BPS.
-    address[] public fxSources;
     mapping(bytes32 id => uint64 eta) public pendingSetting;
+    /// @dev The stress figure the issuer set per converted token, in bps; zero for none (DEFAULT_FX_STRESS_BPS).
+    mapping(address token => uint256) internal _fxStress;
     uint64 internal _charges;
 
     /// @notice The sponsor collateral: who receives what is seized, the pledged token, its Earn vault (zero for
@@ -111,8 +109,7 @@ contract IssuerTreasury is IExposureGuard {
     event SettingCanceled(bytes32 indexed id);
     event SettlementTokenSet(address indexed token, address indexed previous, uint256 scale);
     event TokenGuardsSet(address[] guards);
-    event FxSourceAdded(address indexed source);
-    event FxSourceRemoved(address indexed source);
+    event FxStressSet(address indexed token, uint256 bps);
     event CollateralAccepted(address indexed sponsor, IEarnVault vault);
     event CollateralPosted(address indexed sponsor, bytes32 pledgeId, uint128 units);
     event CollateralReleased(uint256 value, uint256 units);
@@ -122,7 +119,7 @@ contract IssuerTreasury is IExposureGuard {
     error AboveExposure(uint256 value, uint256 room);
     error BelowExposure(uint256 remaining, uint256 exposure);
     error ExposureAboveCollateral(uint256 exposure, uint256 collateral);
-    error FxSourceRefused(address source);
+    error InvalidFxStress(uint256 bps);
     error GuardInUse();
     error IssuerFundsShort(uint256 needed, uint256 available);
     error NoConversion();
@@ -267,36 +264,21 @@ contract IssuerTreasury is IExposureGuard {
         emit TokenGuardsSet(guards);
     }
 
-    /// @notice Lists a funding source of the program in fxSources, so its open converted holds count toward the
-    ///         collateral: one the program approved, or whose approval waits the program's settings delay. Anyone
-    ///         may, the sponsor above all, so the stress share never waits on the issuer. The source must answer
-    ///         openConverted.
-    function addFxSource(address source) external {
-        address[] storage sources = fxSources;
-        if (sources.length >= MAX_FX_SOURCES || _listed(source) || !_approved(source)) revert FxSourceRefused(source);
-        IOpenConverted(source).openConverted();
-        sources.push(source);
-        emit FxSourceAdded(source);
+    /// @notice Sets the share of `token`'s open converted holds the collateral must also cover, in bps (above zero, at
+    ///         most 10,000). Raising it applies at once, since it only makes the exposure guard stricter; lowering it
+    ///         waits the program's settings delay once it granted anyone.
+    function setFxStress(address token, uint256 bps) external onlyIssuer {
+        if (bps == 0 || bps > BPS) revert InvalidFxStress(bps);
+        if (!_settle(bps >= fxStressOf(token))) return;
+        _fxStress[token] = bps;
+        emit FxStressSet(token, bps);
     }
 
-    /// @notice Takes a source out of fxSources: anyone, once the program neither approves it nor waits to, and it has
-    ///         no open converted value or does not answer openConverted at all; the sponsor at any time, as its own
-    ///         cover.
-    function removeFxSource(address source) external {
-        address[] storage sources = fxSources;
-        uint256 n = sources.length;
-        uint256 i;
-        while (i < n && sources[i] != source) ++i;
-        if (i == n) revert FxSourceRefused(source);
-        address sponsor = collateral.sponsor;
-        if (sponsor == address(0) || msg.sender != sponsor) {
-            if (_approved(source)) revert FxSourceRefused(source);
-            (bool ok, bytes memory data) = source.staticcall(abi.encodeCall(IOpenConverted.openConverted, ()));
-            if (ok && data.length >= 32 && abi.decode(data, (uint256)) != 0) revert FxSourceRefused(source);
-        }
-        sources[i] = sources[n - 1];
-        sources.pop();
-        emit FxSourceRemoved(source);
+    /// @notice The share of `token`'s open converted holds the collateral must also cover, in bps:
+    ///         DEFAULT_FX_STRESS_BPS until the issuer sets one.
+    function fxStressOf(address token) public view returns (uint256 bps) {
+        bps = _fxStress[token];
+        if (bps == 0) bps = DEFAULT_FX_STRESS_BPS;
     }
 
     /// @notice Drops a proposed setting.
@@ -330,18 +312,34 @@ contract IssuerTreasury is IExposureGuard {
         return held + unsettled;
     }
 
-    /// @notice The exposure the collateral must cover: exposure() plus FX_STRESS_BPS of what the fxSources' open
-    ///         converted holds are worth in the settlement token at the rates they locked, each capped at 2^128.
-    // At most MAX_FX_SOURCES sources.
+    /// @notice The exposure the collateral must cover: exposure() plus, for every cash source the program approved
+    ///         and every converted token it holds, that token's fxStressOf share of what its open holds are worth in
+    ///         the settlement token at the rates they locked (each total capped at 2^128). An approved source that
+    ///         does not answer makes it revert, so the guard refuses until the issuer stops that source.
+    // The program keeps at most eight cash sources, and each source at most eight converted tokens.
     // forge-lint: disable-next-item(calls-loop)
     function stressedExposure() public view returns (uint256 due) {
         due = exposure();
-        address[] storage sources = fxSources;
-        uint256 open;
+        ICashSources program = ICashSources(address(PROGRAM));
+        address[] memory sources = program.cashSources();
+        uint256 weighted;
         for (uint256 i; i < sources.length; ++i) {
-            open += _min(IOpenConverted(sources[i]).openConverted(), type(uint128).max);
+            address[] memory tokens;
+            uint256[] memory open;
+            try IConvertedTokens(sources[i]).convertedTokens() returns (address[] memory t, uint256[] memory o) {
+                (tokens, open) = (t, o);
+            } catch (bytes memory reason) {
+                // A stopped source that stopped answering no longer counts; an approved one keeps the guard refusing.
+                if (program.sourceKind(sources[i]) == 0) continue;
+                assembly ("memory-safe") {
+                    revert(add(reason, 0x20), mload(reason))
+                }
+            }
+            for (uint256 j; j < tokens.length; ++j) {
+                if (open[j] != 0) weighted += _min(open[j], type(uint128).max) * fxStressOf(tokens[j]);
+            }
         }
-        if (open != 0) due += open.mulDivUp(FX_STRESS_BPS, BPS);
+        if (weighted != 0) due += weighted.divUp(BPS);
     }
 
     /// @notice Reverts when the program's stressed exposure is past what its live sponsor collateral is worth. The
@@ -356,10 +354,6 @@ contract IssuerTreasury is IExposureGuard {
 
     function tokenGuardsLength() external view returns (uint256) {
         return tokenGuards.length;
-    }
-
-    function fxSourcesLength() external view returns (uint256) {
-        return fxSources.length;
     }
 
     /// @notice The caller accepts vault's shares as the collateral it is sponsor of (zero for none): the settlement
@@ -599,23 +593,6 @@ contract IssuerTreasury is IExposureGuard {
 
     function _chargeId() private returns (bytes32) {
         return keccak256(abi.encode("tempo.cards.issuer-debt", address(this), ++_charges));
-    }
-
-    function _listed(address source) private view returns (bool) {
-        address[] storage sources = fxSources;
-        for (uint256 i; i < sources.length; ++i) {
-            if (sources[i] == source) return true;
-        }
-        return false;
-    }
-
-    /// @dev Whether the program approves source, of any kind, or its approval waits the settings delay.
-    // forge-lint: disable-next-item(block-timestamp)
-    function _approved(address source) private view returns (bool) {
-        ISourceRegistry program = ISourceRegistry(address(PROGRAM));
-        if (program.sourceKind(source) != 0) return true;
-        uint64 eta = program.pendingSetting(keccak256(abi.encodeCall(ISourceRegistry.setSource, (source, true))));
-        return eta != 0 && block.timestamp <= eta + PROGRAM.SETTINGS_WINDOW();
     }
 
     /// @dev Forgives all that account owes this contract in token, through a core refund that pays nothing, and

@@ -31,6 +31,8 @@ abstract contract CardAuthBase is ICardAuthState {
     uint64 public constant SETTINGS_WINDOW = 7 days;
     /// @notice Most order entries an owner may list.
     uint256 public constant MAX_LEGS = 4;
+    /// @dev Most cash sources _cashSources keeps at once.
+    uint256 internal constant MAX_CASH_SOURCES = 8;
 
     uint256 internal constant ONE = 1e18;
     uint256 internal constant MAX_AMOUNT = type(uint48).max;
@@ -99,6 +101,9 @@ abstract contract CardAuthBase is ICardAuthState {
     CardLegs.Checkpoint[8] internal _checkpoints;
     /// @dev What companions' credit backs added back to settlement for a purchase (negative settles), in its token.
     mapping(bytes32 ref => uint256) internal _reversed;
+    /// @dev The cash sources the issuer approved, the only kind that holds converted tokens, each kept after a stop
+    ///      until its converted holds close and another needs its place.
+    address[] internal _cashSources;
 
     event PurchaseAuthorized(
         bytes32 indexed ref, bytes32 indexed card, address indexed owner, uint256 amount, uint256 legs, uint64 seq
