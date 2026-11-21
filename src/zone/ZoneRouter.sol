@@ -36,8 +36,9 @@ import {
 /// @custom:ghost uint256 gChangeReturned
 /// @custom:invariant allowedZoneId != 0 && portal != address(0)
 /// @custom:invariant enabledOps != 0 && enabledOps <= ALL_OPS
-/// @custom:invariant forall uint256 i :: i < spenderList.length ==> isSpender[spenderList[i]]
-/// @custom:invariant !isSpender[address(0)]
+/// @custom:invariant forall uint256 i :: i < _moreSpenderList.length ==> _moreSpenders[_moreSpenderList[i]]
+/// @custom:invariant !_moreSpenders[address(0)]
+/// @custom:invariant !_MORE_SPENDERS ==> _moreSpenderList.length == 0
 /// @custom:invariant (enabledOps & (OP_DEPOSIT | OP_REDEEM)) == 0 ==> earnVault == address(0) && privateAsset == address(0)
 /// @custom:invariant (enabledOps & (OP_DEPOSIT | OP_REDEEM)) == 0 ==> vaultAsset == address(0) && earnShare == address(0)
 /// @custom:invariant (enabledOps & (OP_DEPOSIT | OP_REDEEM)) != 0 ==> earnVault != address(0) && privateAsset != address(0)
@@ -137,9 +138,21 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @notice Whether the private asset is the pool's base token; false without a pool.
     bool public immutable privateAssetIsBase;
 
-    /// @notice Spenders Spend may use, written once by the constructor.
-    mapping(address spender => bool listed) public isSpender;
-    address[] private spenderList;
+    /// @dev How many spenders are held in immutables.
+    uint256 private constant _INLINE_SPENDERS = 4;
+
+    // The first four spenders are immutables, so a Spend and its spender's router check read no storage;
+    // spenders past the fourth, which modes rarely need, are kept in storage read only when there are more.
+    address private immutable _SPENDER_0;
+    address private immutable _SPENDER_1;
+    address private immutable _SPENDER_2;
+    address private immutable _SPENDER_3;
+    bool private immutable _MORE_SPENDERS;
+
+    /// @dev Spenders past the fourth, written once by the constructor.
+    mapping(address spender => bool listed) private _moreSpenders;
+    /// @dev Spenders past the fourth, in deployment order.
+    address[] private _moreSpenderList;
 
     bool private transient locked;
 
@@ -207,8 +220,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @custom:ensures allowedZoneId == mode.zoneId && enabledOps == mode.enabledOps
     /// @custom:ensures earnVault == mode.earnVault && privateAsset == mode.privateAsset
     /// @custom:ensures address(pool) == mode.pool && customerId == mode.customerId
-    /// @custom:ensures forall uint256 i :: i < spenderList.length ==> spenderList[i] == mode.spenders[i]
-    /// @custom:ensures forall uint256 i, uint256 j :: i < j && j < spenderList.length ==> spenderList[i] != spenderList[j]
+    /// @custom:ensures forall uint256 i :: i < _moreSpenderList.length ==> _moreSpenderList[i] == mode.spenders[i + 4]
+    /// @custom:ensures forall uint256 i, uint256 j :: i < j && j < mode.spenders.length ==> mode.spenders[i] != mode.spenders[j]
     constructor(Mode memory mode) {
         if (mode.zoneId == 0) revert WrongSourceZone();
         address portal_ = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(mode.zoneId).portal;
@@ -239,17 +252,27 @@ contract ZoneRouter is IWithdrawalReceiver {
 
         bool spends = mode.enabledOps & OP_SPEND != 0;
         if (spends != (mode.spenders.length != 0)) revert InvalidSpenders();
-        // Not proved: i <= mode.spenders.length, and so spenderList.length == mode.spenders.length, is not
-        // provable: the loop havocs the length of the memory struct's array (storage push in a loop over it).
-        /// @custom:invariant spenderList.length == i && !isSpender[address(0)]
-        /// @custom:invariant forall uint256 j :: j < i ==> spenderList[j] == mode.spenders[j] && isSpender[spenderList[j]]
-        /// @custom:invariant forall uint256 j, uint256 k :: j < k && k < i ==> spenderList[j] != spenderList[k]
+        // Not proved: i <= mode.spenders.length, and so the stored list's length, is not provable: the loop
+        // havocs the length of the memory struct's array (storage push in a loop over it).
+        /// @custom:invariant !_moreSpenders[address(0)]
+        /// @custom:invariant forall uint256 j :: j < _moreSpenderList.length ==> _moreSpenderList[j] == mode.spenders[j + 4] && _moreSpenders[_moreSpenderList[j]]
+        /// @custom:invariant forall uint256 j, uint256 k :: j < k && k < i ==> mode.spenders[j] != mode.spenders[k]
         for (uint256 i = 0; i < mode.spenders.length; i++) {
             address spender = mode.spenders[i];
-            if (spender == address(0) || spender.code.length == 0 || isSpender[spender]) revert InvalidSpenders();
-            isSpender[spender] = true;
-            spenderList.push(spender);
+            if (spender == address(0) || spender.code.length == 0) revert InvalidSpenders();
+            for (uint256 j = 0; j < i; j++) {
+                if (mode.spenders[j] == spender) revert InvalidSpenders();
+            }
+            if (i >= _INLINE_SPENDERS) {
+                _moreSpenders[spender] = true;
+                _moreSpenderList.push(spender);
+            }
         }
+        _SPENDER_0 = _spenderAt(mode.spenders, 0);
+        _SPENDER_1 = _spenderAt(mode.spenders, 1);
+        _SPENDER_2 = _spenderAt(mode.spenders, 2);
+        _SPENDER_3 = _spenderAt(mode.spenders, 3);
+        _MORE_SPENDERS = mode.spenders.length > _INLINE_SPENDERS;
 
         allowedZoneId = mode.zoneId;
         portal = portal_;
@@ -271,8 +294,28 @@ contract ZoneRouter is IWithdrawalReceiver {
     }
 
     /// @notice The spenders Spend may use, in deployment order.
-    function spenders() external view returns (address[] memory) {
-        return spenderList;
+    function spenders() external view returns (address[] memory list) {
+        uint256 inlineCount = _SPENDER_0 == address(0)
+            ? 0
+            : _SPENDER_1 == address(0) ? 1 : _SPENDER_2 == address(0) ? 2 : _SPENDER_3 == address(0) ? 3 : 4;
+        list = new address[](inlineCount + _moreSpenderList.length);
+        if (inlineCount > 0) list[0] = _SPENDER_0;
+        if (inlineCount > 1) list[1] = _SPENDER_1;
+        if (inlineCount > 2) list[2] = _SPENDER_2;
+        if (inlineCount > 3) list[3] = _SPENDER_3;
+        for (uint256 i = 0; i < _moreSpenderList.length; i++) {
+            list[inlineCount + i] = _moreSpenderList[i];
+        }
+    }
+
+    /// @notice Whether Spend may use `spender`, fixed at deployment.
+    function isSpender(address spender) public view returns (bool) {
+        return spender != address(0)
+            && (spender == _SPENDER_0
+                || spender == _SPENDER_1
+                || spender == _SPENDER_2
+                || spender == _SPENDER_3
+                || (_MORE_SPENDERS && _moreSpenders[spender]));
     }
 
     /// @notice Sets the router's standing approval of `token` to its Zone's Portal, which a spend's
@@ -327,8 +370,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS
     /// @custom:ensures sourceZoneId == allowedZoneId && sourcePortal == portal && amount > 0
     /// @custom:ensures result == IWithdrawalReceiver.onWithdrawalReceived.selector
-    /// @custom:ensures forall address a :: isSpender[a] == old(isSpender[a])
-    /// @custom:ensures spenderList.length == old(spenderList.length)
+    /// @custom:ensures forall address a :: _moreSpenders[a] == old(_moreSpenders[a])
+    /// @custom:ensures _moreSpenderList.length == old(_moreSpenderList.length)
     /// @custom:ensures !locked
     function onWithdrawalReceived(
         uint32 sourceZoneId,
@@ -385,12 +428,12 @@ contract ZoneRouter is IWithdrawalReceiver {
         uint256 balanceBefore,
         SpendData calldata data
     ) private returns (bool returnedChange) {
-        if (!isSpender[data.spender]) revert UnknownSpender();
+        if (!isSpender(data.spender)) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
         // A maxInput below the amount always leaves change, so its return is checked before the spender pays.
         // The fee is checked again once it has paid, since the Portal's fee may change while the spender runs.
-        /// @custom:assert isSpender[data.spender] && data.zoneReturn.refundRecipient != address(0)
+        /// @custom:assert isSpender(data.spender) && data.zoneReturn.refundRecipient != address(0)
         /// @custom:assert 0 < data.maxInput && data.maxInput <= amount
         bool returnChecked = data.maxInput < amount;
         if (returnChecked) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
@@ -645,6 +688,11 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (tokenIn == privateAsset && tokenOut == vaultAsset) return;
         if (tokenIn == vaultAsset && tokenOut == privateAsset) return;
         revert InvalidRoutePair();
+    }
+
+    /// @dev `list`'s entry at `i`, or zero past its end.
+    function _spenderAt(address[] memory list, uint256 i) private pure returns (address) {
+        return i < list.length ? list[i] : address(0);
     }
 
     function _requireBalance(address token, uint256 expected) private view {
