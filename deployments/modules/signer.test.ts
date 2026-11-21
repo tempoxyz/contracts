@@ -152,10 +152,14 @@ describe('final signing intent', () => {
     ).toThrow('signing validity')
   })
   test('rejects a foreign RPC-filled chain immediately before signing through the real SDK', async () => {
-    const client = signingClient({ chainId: '0x1' })
+    const foreign = signingClient({ chainId: '0x1' })
+    await expect(
+      foreign.prepareTransactionRequest(await guardedTransactionRequest(foreign, calls)),
+    ).rejects.toThrow('does not match the target chain')
+    // The SDK now rejects the fill itself; the signing guard still refuses a chain changed after preparation.
+    const client = signingClient({})
     const request = await guardedTransactionRequest(client, calls)
-    const prepared = await client.prepareTransactionRequest(request)
-    expect(prepared.chainId).toBe(1)
+    const prepared = { ...(await client.prepareTransactionRequest(request)), chainId: 1 }
     expect(() =>
       request.account.signTransaction(prepared as never, {
         serializer: client.chain.serializers.transaction,
