@@ -160,7 +160,9 @@ contract EarnVault is IEarnVault {
         bool open;
     }
 
-    /// @dev Stored form of {PendingRedeem} in three slots; {pendingRedeem} widens it back.
+    /// @dev Stored form of {PendingRedeem} in three slots; {pendingRedeem} widens it back. `receiver` stays zero
+    ///      when it is the requester, so a self-paying request leaves its first slot unwritten; read it through
+    ///      {_receiverOf}.
     struct StoredRedeem {
         address receiver;
         address requester;
@@ -1097,6 +1099,8 @@ contract EarnVault is IEarnVault {
         // The burned EarnShare and the queued engine shares agree at the post-checkpoint anchor, within the
         // one-basis-point conversion bound, and the queued shares left active backing.
         /// @custom:assert _pending[requestId].engineShares == engineSharesToRedeem && _pending[requestId].burnedEarnShares == earnShares
+        /// @custom:assert _pending[requestId].receiver == (receiver == msg.sender ? address(0) : receiver)
+        /// @custom:assert _pending[requestId].requester == msg.sender && _pending[requestId].open
         /// @custom:assert engineSharesToRedeem == earnShares * anchorEngineShares / anchorEarnShares
         /// @custom:assert _specAcceptableLoss(earnShares, engineSharesToRedeem * anchorEarnShares / anchorEngineShares)
 
@@ -1117,7 +1121,7 @@ contract EarnVault is IEarnVault {
         StoredRedeem storage p = _pending[requestId];
         if (!p.open) revert RequestNotOpen(requestId);
 
-        address receiver = p.receiver;
+        address receiver = _receiverOf(p);
         uint256 earnShares = p.burnedEarnShares;
         /// @custom:ghost openCount = openCount - 1
         delete _pending[requestId];
@@ -1154,7 +1158,7 @@ contract EarnVault is IEarnVault {
         if (!p.open) revert RequestNotOpen(requestId);
         if (msg.sender != p.requester && msg.sender != asyncJanitor) revert NotRequesterOrJanitor();
 
-        address receiver = p.receiver;
+        address receiver = _receiverOf(p);
         uint256 burnedEarnShares = p.burnedEarnShares;
 
         _accrueFees();
@@ -1491,7 +1495,7 @@ contract EarnVault is IEarnVault {
     function pendingRedeem(bytes32 requestId) external view returns (PendingRedeem memory) {
         StoredRedeem storage p = _pending[requestId];
         return PendingRedeem({
-            receiver: p.receiver,
+            receiver: _receiverOf(p),
             requester: p.requester,
             burnedEarnShares: p.burnedEarnShares,
             engineShares: p.engineShares,
@@ -1994,7 +1998,8 @@ contract EarnVault is IEarnVault {
         if (pending.open) revert DuplicateRequest(requestId);
         // A request too large for the packed record reverts rather than truncating.
         if (earnShares > type(uint128).max || engineShares_ > type(uint128).max) revert ExceedsMaxEarnShares();
-        pending.receiver = receiver;
+        // A self-paying request leaves the receiver slot zero; {_receiverOf} reads it back as the requester.
+        pending.receiver = receiver == requester ? address(0) : receiver;
         pending.burnedEarnShares = uint128(earnShares);
         pending.engineShares = uint128(engineShares_);
         pending.requester = requester;
@@ -2105,15 +2110,22 @@ contract EarnVault is IEarnVault {
         return engineShareAnchor == 0 ? 0 : _specCeilDiv(engineShareAnchor * earnShareScale, supplyAnchor);
     }
 
+    /// @dev The receiver of a stored request: its stored receiver, or its requester when that slot is zero.
+    function _receiverOf(StoredRedeem storage p) internal view returns (address receiver) {
+        receiver = p.receiver;
+        if (receiver == address(0)) receiver = p.requester;
+    }
+
     /// @custom:spec The empty-pool anchor: whole engine share per whole EarnShare, and a fresh reward baseline.
     function _specEmptyAnchor() internal view returns (bool) {
         return anchorEngineShares != 0 && anchorEarnShares == earnShareScale && rewardRateBaseline == anchorEngineShares;
     }
 
-    /// @custom:spec Request `id` holds a receiver, a nonzero burned EarnShare amount and nonzero queued engine shares.
+    /// @custom:spec Request `id` holds a receiver (stored, or its requester when none is stored), a nonzero burned
+    ///      EarnShare amount and nonzero queued engine shares.
     function _specLiveRequest(bytes32 id) internal view returns (bool) {
-        return
-            _pending[id].receiver != address(0) && _pending[id].burnedEarnShares != 0 && _pending[id].engineShares != 0;
+        return (_pending[id].receiver != address(0) || _pending[id].requester != address(0))
+            && _pending[id].burnedEarnShares != 0 && _pending[id].engineShares != 0;
     }
 
     /// @custom:spec Request `id` holds no burned EarnShare and no queued engine shares.
@@ -2134,7 +2146,8 @@ contract EarnVault is IEarnVault {
         returns (bool)
     {
         return _pending[requestId].open && _pending[requestId].requester == requester
-            && _pending[requestId].receiver == receiver && _pending[requestId].burnedEarnShares == earnShares;
+            && _pending[requestId].receiver == (receiver == requester ? address(0) : receiver)
+            && _pending[requestId].burnedEarnShares == earnShares;
     }
 
     /// @custom:spec A configuration keeps the distributor's reserved item as its first fixed fee; without one it

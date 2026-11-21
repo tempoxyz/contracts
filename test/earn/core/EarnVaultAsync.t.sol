@@ -148,6 +148,42 @@ contract EarnVaultAsyncTest is Test {
         assertTrue(core.isAccountingAligned());
     }
 
+    function testSelfPayingRequestReadsRequesterAsReceiverThroughFinalizeAndCancel() public {
+        _deposit(10 ether);
+
+        vm.startPrank(user);
+        share.approve(address(core), type(uint256).max);
+        bytes32 finalizeId = core.requestRedeem(4 ether, "", user);
+        vm.stopPrank();
+
+        // A self-paying request reports its requester as the receiver.
+        EarnVault.PendingRedeem memory pending = core.pendingRedeem(finalizeId);
+        assertEq(pending.receiver, user);
+        assertEq(pending.requester, user);
+        assertEq(pending.burnedEarnShares, 4 ether);
+        assertTrue(pending.open);
+
+        // Finalize pays the requester, then the closed request reads as empty.
+        uint256 assetsBefore = asset.balanceOf(user);
+        asset.mint(address(engine), 4 ether);
+        engine.solve(finalizeId, 4 ether);
+        assertEq(asset.balanceOf(user), assetsBefore + 4 ether);
+        pending = core.pendingRedeem(finalizeId);
+        assertEq(pending.receiver, address(0));
+        assertEq(pending.requester, address(0));
+        assertFalse(pending.open);
+
+        // Cancel mints the re-entry to the requester.
+        vm.prank(user);
+        bytes32 cancelId = core.requestRedeem(2 ether, "", user);
+        uint256 sharesBefore = share.balanceOf(user);
+        vm.prank(user);
+        core.cancelRedeem(cancelId, 2 ether);
+        assertEq(share.balanceOf(user), sharesBefore + 2 ether);
+        assertEq(core.openRedeemRequestCount(), 0);
+        assertTrue(core.isAccountingAligned());
+    }
+
     function testFinalizeSucceedsEvenWhenReceiverCallbackReverts() public {
         RecordingRedeemReceiver recv = new RecordingRedeemReceiver();
         recv.setRevertInCallback(true);
