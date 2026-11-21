@@ -13,8 +13,7 @@ import {
     IZoneFactory,
     IZonePortal,
     ZONE_FACTORY_ADDRESS,
-    ZONE_MESSENGER_ADDRESS,
-    ZoneInfo
+    ZONE_MESSENGER_ADDRESS
 } from "../../interfaces/external/tempo/IZone.sol";
 
 /// @title SingleZoneEarnRouter
@@ -96,6 +95,9 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     bytes32 public immutable customerId;
     /// @notice Whether the private asset is the pool's base token; false without a pool.
     bool public immutable privateAssetIsBase;
+    /// @dev The allowed Zone's Factory-registered Portal, read once at construction; zero for Zone zero.
+    ///      A Zone's Portal never changes and the Factory never deregisters one.
+    address private immutable zonePortal;
 
     bool private transient locked;
 
@@ -176,7 +178,16 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
             }
         }
 
+        address zonePortal_;
+        if (allowedZoneId_ != 0) {
+            zonePortal_ = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(allowedZoneId_).portal;
+            if (zonePortal_ == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zonePortal_)) {
+                revert InvalidSourcePortal();
+            }
+        }
+
         allowedZoneId = allowedZoneId_;
+        zonePortal = zonePortal_;
         earnVault = earnVault_;
         privateAsset = privateAsset_;
         vaultAsset = vaultAsset_;
@@ -251,7 +262,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         bytes calldata callbackData
     ) external override nonReentrant returns (bytes4) {
         if (allowedZoneId == 0 || sourceZoneId != allowedZoneId) revert WrongSourceZone();
-        _validateWithdrawal(sourceZoneId, sourcePortal, amount);
+        _validateWithdrawal(sourcePortal, amount);
         uint256 inputBalanceBefore = IERC20Like(token).balanceOf(address(this)) - amount;
 
         uint256 rawFlow = _decodeRawFlow(callbackData);
@@ -366,14 +377,12 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     }
 
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS && amount > 0
-    function _validateWithdrawal(uint32 sourceZoneId, address sourcePortal, uint128 amount) private view {
+    function _validateWithdrawal(address sourcePortal, uint128 amount) private view {
         if (msg.sender != ZONE_MESSENGER_ADDRESS) revert NotZoneMessenger();
-        ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(sourceZoneId);
-        if (zone.portal != sourcePortal || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(sourcePortal)) {
-            revert InvalidSourcePortal();
-        }
-        /// The source Portal is the one the Zone factory records for the source Zone.
-        /// @custom:assert zone.portal == sourcePortal
+        // Callers check sourceZoneId == allowedZoneId first, so zonePortal is that Zone's registered Portal.
+        if (sourcePortal != zonePortal) revert InvalidSourcePortal();
+        /// The source Portal is the one the Zone factory recorded for the source Zone at construction.
+        /// @custom:assert sourcePortal == zonePortal
         if (amount == 0) revert ZeroAmount();
     }
 
