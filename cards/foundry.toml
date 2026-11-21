@@ -24,6 +24,9 @@ fs_permissions = [
     { access = "read", path = "./test/bridge/harness/fixtures" },
     { access = "read", path = "./test/rain/fixtures" },
     { access = "read", path = "./test/programs/differential/traces" },
+    # CardAuth and CardAuthAdmin build artifacts, for the code ranges test/programs/PaymentCallShape.t.sol checks.
+    { access = "read", path = "./out/CardAuth.sol" },
+    { access = "read", path = "./out/CardAuthAdmin.sol" },
 ]
 remappings = [
     "forge-std/=lib/forge-std/src/",
