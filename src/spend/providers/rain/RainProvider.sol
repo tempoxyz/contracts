@@ -66,6 +66,10 @@ contract RainProvider is ICardProvider {
     );
 
     error ZeroAddress();
+    /// @notice A pooled collateral is not the contract Rain's factory recorded at its given index.
+    error NotRainCollateral(address collateral, uint256 index);
+    /// @notice The pooled collaterals and their factory indexes differ in length.
+    error LengthMismatch();
 
     /// @custom:succeeds-if factory_ != address(0) && (forall uint256 i :: i < tokens_.length ==> tokens_[i] != address(0)) && (forall uint256 i :: i < vaults_.length ==> vaults_[i] != address(0)) && (forall uint256 i :: i < programCollaterals_.length ==> programCollaterals_[i] != address(0))
     /// @custom:ensures FACTORY == factory_ && POOLED_ACCEPTS_PUBLIC == pooledAcceptsPublic_
@@ -77,6 +81,7 @@ contract RainProvider is ICardProvider {
         address[] memory tokens_,
         address[] memory vaults_,
         address[] memory programCollaterals_,
+        uint256[] memory programCollateralIndexes_,
         bool pooledAcceptsPublic_
     ) {
         if (factory_ == address(0)) revert ZeroAddress();
@@ -112,8 +117,15 @@ contract RainProvider is ICardProvider {
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < tokens_.length ==> _moreTokens[tokens_[j]]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < vaults_.length ==> _moreVaults[vaults_[j]]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < i ==> _moreCollaterals[programCollaterals_[j]]
+        if (programCollateralIndexes_.length != programCollaterals_.length) {
+            revert LengthMismatch();
+        }
         for (uint256 i; i < programCollaterals_.length; ++i) {
             if (programCollaterals_[i] == address(0)) revert ZeroAddress();
+            // Proved once here, so a spend to pooled collateral reads no factory state.
+            if (!isRainCollateral(programCollaterals_[i], programCollateralIndexes_[i])) {
+                revert NotRainCollateral(programCollaterals_[i], programCollateralIndexes_[i]);
+            }
             if (i >= _INLINE) _moreCollaterals[programCollaterals_[i]] = true;
         }
         _COLLATERAL_0 = _entry(programCollaterals_, 0);
@@ -125,7 +137,8 @@ contract RainProvider is ICardProvider {
     }
 
     /// @inheritdoc ICardProvider
-    /// @dev `hint` is `destination`'s index in the factory's `collateralProxies`.
+    /// @dev `hint` is `destination`'s index in the factory's `collateralProxies`, unused for pooled collateral,
+    ///      which the constructor proved Rain's factory created.
     /// @custom:ensures result ==> isAcceptedToken(token) && destination != address(0)
     /// @custom:ensures result && isPrivate ==> isProgramCollateral(destination)
     /// @custom:ensures result && isProgramCollateral(destination) ==> isPrivate || POOLED_ACCEPTS_PUBLIC
@@ -134,10 +147,10 @@ contract RainProvider is ICardProvider {
         view
         returns (bool)
     {
-        if (!isAcceptedToken(token) || !isRainCollateral(destination, hint)) return false;
+        if (!isAcceptedToken(token)) return false;
         if (isProgramCollateral(destination)) return isPrivate || POOLED_ACCEPTS_PUBLIC;
         // A private spend reaches only pooled collateral: any other names one cardholder.
-        if (isPrivate) return false;
+        if (isPrivate || !isRainCollateral(destination, hint)) return false;
         // Rain's controller lets any admin withdraw, and an owner can add admins before handing ownership over,
         // so the payer must own the collateral and be its only admin.
         return _owner(destination) == payer && _isSoleAdmin(destination, payer);
@@ -180,8 +193,11 @@ contract RainProvider is ICardProvider {
     /// @custom:ensures collateral == address(0) ==> !result
     function isRainCollateral(address collateral, uint256 index) public view returns (bool) {
         if (collateral == address(0)) return false;
+        // The constructor calls this once per pooled collateral, a list the deployer fixes.
+        // forge-lint: disable-start(calls-loop)
         (bool ok, bytes memory ret) =
             FACTORY.staticcall(abi.encodeCall(IRainCollateralFactory.collateralProxies, (index)));
+        // forge-lint: disable-end(calls-loop)
         return ok && ret.length >= 32 && abi.decode(ret, (address)) == collateral;
     }
 
