@@ -6,6 +6,7 @@ import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.so
 import { CardSpend } from "../../../../src/spend/CardSpend.sol";
 import { CardSpender } from "../../../../src/spend/CardSpender.sol";
 import { ICardProvider } from "../../../../src/interfaces/spend/ICardProvider.sol";
+import { RainProvider } from "../../../../src/spend/providers/rain/RainProvider.sol";
 import { RainEnv } from "../harness/RainEnv.sol";
 
 /// @notice `RainProvider` on a `CardSpender`: which Rain collateral a public and a private spend may
@@ -174,6 +175,44 @@ contract RainProviderTest is RainEnv {
     function test_noPause() public view {
         assertFalse(provider.paused());
         assertFalse(program.paused());
+    }
+
+    /// @notice Every configured token, vault and pooled collateral is a member, however many there are, and
+    ///         nothing else is, the zero address included.
+    function test_configuredSets_anySize() public {
+        for (uint256 n; n <= 6; ++n) {
+            address[] memory tokens = _addresses("t", n);
+            address[] memory vaults = _addresses("v", n);
+            address[] memory pooled = _addresses("c", n);
+            RainProvider p = new RainProvider(address(rain.factory), tokens, vaults, pooled, true);
+            for (uint256 i; i < n; ++i) {
+                assertTrue(p.isAcceptedToken(tokens[i]));
+                assertTrue(p.isAllowedVault(vaults[i]));
+                assertTrue(p.isProgramCollateral(pooled[i]));
+                assertFalse(p.isAcceptedToken(vaults[i]));
+                assertFalse(p.isAllowedVault(pooled[i]));
+                assertFalse(p.isProgramCollateral(tokens[i]));
+            }
+            address outsider = makeAddr("outsider");
+            assertFalse(p.isAcceptedToken(outsider) || p.isAllowedVault(outsider) || p.isProgramCollateral(outsider));
+            assertFalse(
+                p.isAcceptedToken(address(0)) || p.isAllowedVault(address(0)) || p.isProgramCollateral(address(0))
+            );
+        }
+    }
+
+    function test_revert_zeroEntryPastTheInlineEntries() public {
+        address[] memory tokens = _addresses("t", 6);
+        tokens[5] = address(0);
+        vm.expectRevert(RainProvider.ZeroAddress.selector);
+        new RainProvider(address(rain.factory), tokens, new address[](0), new address[](0), true);
+    }
+
+    function _addresses(string memory prefix, uint256 n) private returns (address[] memory list) {
+        list = new address[](n);
+        for (uint256 i; i < n; ++i) {
+            list[i] = makeAddr(string.concat(prefix, vm.toString(i)));
+        }
     }
 
     // ------------------------------------------------------------------
