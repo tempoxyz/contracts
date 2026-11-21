@@ -45,6 +45,9 @@ contract CreditDefaultsStressTest is CompEnv {
         uint256 outageWeeks;
         // The keeper renews locks that fall due each day; otherwise it only acts on the weekly run.
         bool dailyRelock;
+        // Days between runs of a keeper on its own schedule, each of which relocks what is due, collects, liquidates
+        // and charges off every line; zero runs collect, liquidate and charge-off with each week instead.
+        uint256 keeperDays;
     }
 
     struct Metrics {
@@ -73,6 +76,9 @@ contract CreditDefaultsStressTest is CompEnv {
         uint256 lenderFromChargeOffs;
         uint256 surplusFromChargeOffs;
         uint256 chargeOffShort;
+        uint256 keeperRuns;
+        uint256 keeperRenewals;
+        uint256 lapsedLocks;
     }
 
     Borrower[] internal bs;
@@ -80,6 +86,7 @@ contract CreditDefaultsStressTest is CompEnv {
     Metrics internal m;
     uint256 private _seed;
     uint256 internal week;
+    uint256 internal nextKeeperAt;
     bytes4 internal lastRevert;
 
     address internal gone = makeAddr("gone");
@@ -134,20 +141,84 @@ contract CreditDefaultsStressTest is CompEnv {
         assertEq(stuckLines, 0);
     }
 
-    /// @notice The same year at stable prices with a keeper that only runs weekly (collect and liquidate, which
-    ///         move the lock). A lock renews for a full term whenever it is touched in the last RENEW_WINDOW of its
-    ///         30-day term, which every weekly run reaches at least twice, so no lock lapses and the lender loses
-    ///         nothing.
+    /// @notice The same year at stable prices with a keeper that only runs weekly: each run relocks the locks in their
+    ///         renewal window, then collects, liquidates and charges off. A lock renews for a full term whenever it is
+    ///         touched in the last RENEW_WINDOW of its 30-day term, which every weekly run reaches at least twice, so
+    ///         the runs renew the locks of borrowers who stopped drawing, none lapses and the lender loses nothing.
     function test_stress_weeklyKeeperKeepsLocks() public {
         string memory t = "creditWeeklyKeeper";
         _configure(60, 2000, 0);
         cfg.dailyRelock = false;
+        cfg.keeperDays = 7;
         _run(keccak256("credit-stable"));
         _report(t);
         (uint256 loss, uint256 stuck,) = _losses();
+        assertGt(m.keeperRenewals, 0, "the weekly runs renewed locks");
+        assertEq(m.lapsedLocks, 0, "no lock lapsed");
         assertEq(m.withdrawnAfterLapse, 0, "no lock lapsed for a defaulted borrower to withdraw");
         assertEq(loss, 0, "the lender lost nothing at stable prices");
         assertEq(stuck, 0, "defaulted lines were charged off");
+        assertEq(m.chargeOffsPerforming, 0, "only defaulted lines are charged off");
+    }
+
+    /// @notice A weekly keeper that misses every other run, so it runs every 14 days, inside RENEW_WINDOW. Whenever a
+    ///         draw last renewed a lock, some run falls in the last RENEW_WINDOW of its term and renews it, so locks
+    ///         never lapse and the lender loses nothing at stable prices.
+    function test_stress_keeperEvery14DaysKeepsLocks() public {
+        string memory t = "creditKeeper14Days";
+        _configure(60, 2000, 0);
+        cfg.dailyRelock = false;
+        cfg.keeperDays = 14;
+        _run(keccak256("credit-stable"));
+        _report(t);
+        (uint256 loss, uint256 stuck,) = _losses();
+        assertGt(m.keeperRenewals, 0, "the keeper's runs renewed locks");
+        assertEq(m.lapsedLocks, 0, "a run every 14 days renews every lock before it lapses");
+        assertEq(m.withdrawnAfterLapse, 0, "no defaulted borrower withdrew collateral");
+        assertEq(loss, 0, "the lender lost nothing at stable prices");
+        assertEq(stuck, 0, "defaulted lines were charged off");
+        assertEq(m.chargeOffsPerforming, 0, "only defaulted lines are charged off");
+    }
+
+    /// @notice A keeper that runs only every 20 days, past RENEW_WINDOW but inside the 30-day term. A lock a draw
+    ///         renewed shortly before a run is still outside its renewal window at that run and lapses before the next
+    ///         one, so a keeper keeps every lock only while it runs at least once per RENEW_WINDOW, not once per term.
+    ///         The keeper takes each lapsed lock over again on its next run, and the lender loses at most what
+    ///         defaulted borrowers withdrew while their locks were lapsed.
+    function test_stress_keeperEvery20DaysLetsLocksLapse() public {
+        string memory t = "creditKeeper20Days";
+        _configure(60, 2000, 0);
+        cfg.dailyRelock = false;
+        cfg.keeperDays = 20;
+        _run(keccak256("credit-stable"));
+        _report(t);
+        (uint256 loss,,) = _losses();
+        assertGt(m.keeperRenewals, 0, "the keeper's runs renewed locks");
+        assertGt(m.lapsedLocks, 0, "locks renewed between runs lapsed before the next one");
+        assertGt(m.lapsedRelocks, 0, "the keeper took lapsed locks over again");
+        assertEq(_performingLoss(), 0, "every loss sits on a defaulted line");
+        assertLe(loss, m.withdrawnAfterLapse, "the lender loses at most what defaulted borrowers withdrew");
+        assertEq(m.chargeOffsPerforming, 0, "only defaulted lines are charged off");
+    }
+
+    /// @notice A keeper that runs only every 40 days, longer than the 30-day term. Locks of borrowers who stopped
+    ///         drawing lapse between runs: defaulted borrowers move their shares away at once and the lender is left
+    ///         unsecured on those lines, while the keeper takes performing borrowers' lapsed locks over again on its
+    ///         next run, so every loss sits on a defaulted line.
+    function test_stress_keeperSlowerThanLockTerm() public {
+        string memory t = "creditKeeper40Days";
+        _configure(60, 2000, 0);
+        cfg.dailyRelock = false;
+        cfg.keeperDays = 40;
+        _run(keccak256("credit-stable"));
+        _report(t);
+        (uint256 loss,,) = _losses();
+        assertGt(m.lapsedLocks, 0, "locks lapsed between runs");
+        assertGt(m.withdrawnAfterLapse, 0, "defaulted borrowers withdrew collateral whose lock lapsed");
+        assertGt(m.lapsedRelocks, 0, "the keeper took lapsed locks over again");
+        assertGt(loss, 0, "the lender lost what lapsed locks no longer secured");
+        assertEq(_performingLoss(), 0, "every loss sits on a defaulted line");
+        assertLe(loss, m.withdrawnAfterLapse, "the lender loses at most what defaulted borrowers withdrew");
         assertEq(m.chargeOffsPerforming, 0, "only defaulted lines are charged off");
     }
 
@@ -205,7 +276,8 @@ contract CreditDefaultsStressTest is CompEnv {
             totalDropBps: dropBps,
             outageFrom: 0,
             outageWeeks: 0,
-            dailyRelock: true
+            dailyRelock: true,
+            keeperDays: 0
         });
     }
 
@@ -250,6 +322,8 @@ contract CreditDefaultsStressTest is CompEnv {
         vm.pauseGasMetering();
         _seed = uint256(seed);
         _open();
+        // A keeper on its own schedule first runs half a day past a whole number of days, after that day's paychecks.
+        nextKeeperAt = block.timestamp + cfg.keeperDays * 1 days + 12 hours;
         for (week = 1; week <= cfg.weeks_ + cfg.tailWeeks; ++week) {
             bool trading = week <= cfg.weeks_;
             bool keeper = !(week >= cfg.outageFrom && week < cfg.outageFrom + cfg.outageWeeks);
@@ -257,6 +331,11 @@ contract CreditDefaultsStressTest is CompEnv {
             for (uint256 h; h < 14; ++h) {
                 vm.warp(block.timestamp + 12 hours);
                 if (keeper && cfg.dailyRelock) _relockDue();
+                // A keeper on its own schedule runs whenever its next run falls due.
+                if (cfg.keeperDays != 0 && block.timestamp >= nextKeeperAt) {
+                    if (keeper) _keeperRun();
+                    nextKeeperAt += cfg.keeperDays * 1 days;
+                }
             }
             _price();
             for (uint256 i; i < bs.length; ++i) {
@@ -265,15 +344,62 @@ contract CreditDefaultsStressTest is CompEnv {
                 if (b.defaulted) _sweepLapsed(b);
                 if (!b.defaulted) _live(b, i, trading);
                 if (trading && week % 4 == 0) _statement(b);
-                if (keeper) {
+                if (keeper && cfg.keeperDays == 0) {
                     _collect(b);
                     _liquidate(b);
                     _chargeOff(b);
                 }
                 m.maxOwed = _max(m.maxOwed, credit.lineOf(b.lineId).owed);
             }
+            if (keeper && cfg.keeperDays == 0) ++m.keeperRuns;
             _check();
         }
+    }
+
+    /// @dev One keeper run over every line, between the weekly steps.
+    function _keeperRun() internal {
+        ++m.keeperRuns;
+        for (uint256 i; i < bs.length; ++i) {
+            _keep(bs[i]);
+            m.maxOwed = _max(m.maxOwed, credit.lineOf(bs[i].lineId).owed);
+        }
+        _check();
+    }
+
+    /// @dev The keeper relocks one line when its lock is in its renewal window or lapsed while it owes anything, then
+    ///      collects, liquidates and charges it off, and counts what that did to its lock: renewed it for a full term,
+    ///      or found it lapsed and took it over again.
+    function _keep(Borrower storage b) internal {
+        (uint64 expiresBefore, bool liveBefore, bool lapsedBefore) = _lockState(b);
+        bool due = liveBefore && expiresBefore < block.timestamp + credit.RENEW_WINDOW();
+        if (due || (lapsedBefore && credit.lineOf(b.lineId).owed != 0)) {
+            credit.relock(b.lineId);
+            ++m.relocks;
+        }
+        _collect(b);
+        _liquidate(b);
+        _chargeOff(b);
+        (uint64 expiresAfter, bool liveAfter,) = _lockState(b);
+        if (lapsedBefore) {
+            ++m.lapsedLocks;
+            if (liveAfter) ++m.lapsedRelocks;
+        } else if (liveBefore && liveAfter && expiresAfter > expiresBefore) {
+            ++m.keeperRenewals;
+        }
+    }
+
+    /// @dev The line's lock hold: when it expires, whether it is live, and whether it lapsed without anyone ending it.
+    function _lockState(Borrower storage b) internal view returns (uint64 expiresAt, bool live, bool lapsed) {
+        bytes32 id = credit.lockOf(b.lineId);
+        if (id == bytes32(0)) return (0, false, false);
+        (address token, uint64 expires) = _hold(b.who, id);
+        if (token == address(0)) return (0, false, false);
+        return (expires, expires > block.timestamp, expires <= block.timestamp);
+    }
+
+    function _hold(address who, bytes32 id) internal view returns (address token, uint64 expiresAt) {
+        token = core.getHold(who, address(credit), id).token;
+        expiresAt = core.getHold(who, address(credit), id).expiresAt;
     }
 
     /// @dev The collateral's underlying venue loses assets, dropping the Earn share price for everyone.
@@ -300,8 +426,11 @@ contract CreditDefaultsStressTest is CompEnv {
             if (expiresAt > block.timestamp && expiresAt < block.timestamp + window) {
                 credit.relock(bs[i].lineId);
                 ++m.relocks;
+                (uint64 renewedTo, bool live,) = _lockState(bs[i]);
+                if (live && renewedTo > expiresAt) ++m.keeperRenewals;
             } else if (expiresAt != 0 && expiresAt <= block.timestamp && credit.lineOf(bs[i].lineId).owed != 0) {
                 credit.relock(bs[i].lineId);
+                ++m.lapsedLocks;
                 ++m.lapsedRelocks;
             }
         }
@@ -345,7 +474,10 @@ contract CreditDefaultsStressTest is CompEnv {
 
     function _sweepLapsed(Borrower storage b) internal {
         // Anyone may end a lapsed lock; a defaulted borrower does so at once.
-        try core.releaseExpired(b.who, address(credit), credit.lockOf(b.lineId)) { } catch { }
+        (,, bool lapsed) = _lockState(b);
+        try core.releaseExpired(b.who, address(credit), credit.lockOf(b.lineId)) {
+            if (lapsed) ++m.lapsedLocks;
+        } catch { }
         uint256 shares = earnShare.balanceOf(b.who);
         if (shares != 0) m.withdrawnAfterLapse += earnVault.previewRedeem(shares);
         _moveAway(b);
@@ -497,6 +629,18 @@ contract CreditDefaultsStressTest is CompEnv {
         }
     }
 
+    /// @dev Owed past the locked collateral's value on lines whose borrower never defaulted.
+    function _performingLoss() internal view returns (uint256 loss) {
+        for (uint256 i; i < bs.length; ++i) {
+            Borrower storage b = bs[i];
+            if (b.defaulted) continue;
+            uint256 owed = credit.owedNow(b.lineId);
+            uint256 locked = credit.lockedShares(b.lineId);
+            uint256 value = locked == 0 ? 0 : earnVault.previewRedeem(locked);
+            if (value < owed) loss += owed - value;
+        }
+    }
+
     // Output.
 
     function _report(string memory t) internal view {
@@ -536,6 +680,11 @@ contract CreditDefaultsStressTest is CompEnv {
         _log(t, "max_line_owed_usd", m.maxOwed / 1e6);
         _log(t, "last_liquidation_week", m.lastLiquidationWeek);
         _log(t, "withdrawn_after_lapse_usd", m.withdrawnAfterLapse / 1e6);
+        _log(t, "keeper_days", cfg.keeperDays == 0 ? 7 : cfg.keeperDays);
+        _log(t, "keeper_runs", m.keeperRuns);
+        _log(t, "keeper_renewals", m.keeperRenewals);
+        _log(t, "lapsed_locks", m.lapsedLocks);
+        _log(t, "lender_loss_performing_usd", _performingLoss() / 1e6);
         _log(t, "keeper_relocks", m.relocks);
         _log(t, "keeper_lapsed_relocks", m.lapsedRelocks);
         _log(t, "charge_offs", m.chargeOffs);
