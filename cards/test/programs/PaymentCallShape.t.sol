@@ -112,6 +112,29 @@ contract PaymentCallCodeTest is Test {
         }
     }
 
+    /// @notice CardAuth passes the registry's template checks over its whole deployed code, metadata tail included:
+    ///         it does not start with 0xEF, holds no SELFDESTRUCT anywhere in the instruction stream outside push data,
+    ///         and every immutable range lies inside one push's data, so zeroed bytes never run as instructions.
+    function test_template_wholeCodeChecks() public {
+        bytes memory code = address(new CardAuth(address(1), address(2), address(3), address(new CardAuthAdmin()))).code;
+        assertTrue(code[0] != 0xef, "code starts with 0xEF");
+        (Range[] memory ranges,) = _ranges(_artifact("CardAuth"), ".deployedBytecode.immutableReferences");
+        bool[] memory inside = new bool[](ranges.length);
+        for (uint256 i; i < code.length; ++i) {
+            uint8 op = uint8(code[i]);
+            assertTrue(op != SELFDESTRUCT, "SELFDESTRUCT in the instruction stream");
+            if (op < 0x60 || op > 0x7f) continue;
+            uint256 dataEnd = i + 1 + (op - 0x5f);
+            for (uint256 j; j < ranges.length; ++j) {
+                if (ranges[j].start > i && ranges[j].start + ranges[j].length <= dataEnd) inside[j] = true;
+            }
+            i = dataEnd - 1;
+        }
+        for (uint256 j; j < ranges.length; ++j) {
+            assertTrue(inside[j], "immutable range outside push data");
+        }
+    }
+
     /// @notice The scan finds an opcode, and skips push data and embedded CBOR metadata that carry its byte.
     function test_opcodeScan_skipsPushDataAndMetadata() public pure {
         assertTrue(_holds(hex"6000ff", SELFDESTRUCT));
