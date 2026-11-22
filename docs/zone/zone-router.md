@@ -119,9 +119,12 @@ The router reads the first callback word before decoding, so ops 0 and 1 keep
 | 2 Spend   | Any token the source Portal enables | Transfers `maxInput` to a listed spender, measures what it used | Unused input     |
 
 Every return to the source Zone is an encrypted deposit, with a refund recipient, of a token enabled
-with deposits active. Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn`
-adds `maxDepositFee` and reverts if the Portal's deposit fee is above it. Any revert bounces the whole
-input to the withdrawal's fallback recipient in the Zone.
+with deposits active. The router checks the refund recipient itself and leaves the token checks to
+the Portal: its `depositEncrypted` reverts while it is paused, for a token it has not enabled or whose
+deposits are inactive, and for an amount below its deposit fee plus its bounce-back reserve
+(`DepositTooSmall`). Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn`
+adds `maxDepositFee` and reverts if the Portal's deposit fee is above it, a cap the Portal does not
+enforce. Any revert bounces the whole input to the withdrawal's fallback recipient in the Zone.
 
 The router reads each op's tuple in place from calldata rather than copying it to memory. Its
 member reads are bounded by the end of the call's calldata, so the callback data must end it: a
@@ -135,19 +138,17 @@ ciphertext, a `SendSpender` send is 768 of the outbox's 1,024 bytes and a card s
 words of `CardSpend`) 896; a test pins both. A Spend callback:
 
 1. authenticates as ops 0 and 1, and requires the spender to be listed;
-2. requires `0 < maxInput <= amount`; when `maxInput < amount`, so change is certain, requires the
-   token enabled with deposits active on the source Portal and its deposit fee within
-   `maxDepositFee` before the spender runs;
+2. requires `0 < maxInput <= amount` and a nonzero refund recipient;
 3. transfers exactly `maxInput` to the spender and calls `spendFrom(token, maxInput, spenderData)`;
    the spender hands back what it did not use;
 4. requires `0 < used <= maxInput`, measured from its own balance;
 5. returns the change, `amount - used`, to the source Zone when it is not zero, through a standing
-   approval to that Portal (below), after checking the deposit fee again (the Portal's admin may change it
-   while the spender runs) and, when step 2 skipped them, the token checks. The
-   Portal refuses a deposit below its deposit fee plus its bounce-back reserve
-   (`calculateDepositFee() + calculateBouncebackFee()`), so change below that reverts
-   `ChangeBelowDepositFee(change, minimum)` and the whole input bounces. A sender sizes `maxInput`
-   so the change is either zero or at least that minimum;
+   approval to that Portal (below), after checking the deposit fee against `maxDepositFee` (read once
+   the spender has run, since the Portal's admin may change it meanwhile). The Portal refuses the
+   deposit while it is paused, for a token whose deposits are not active, and below its deposit fee
+   plus its bounce-back reserve (`calculateDepositFee() + calculateBouncebackFee()`, reverting
+   `DepositTooSmall`), so the whole input bounces and the spender's payment rolls back with it. A
+   sender sizes `maxInput` so the change is either zero or at least that minimum;
 6. emits `Spent(spender, token, used, change, zoneDepositHash)`, with a zero hash when there is no
    change, and no `senderTag`, action ID or Zone account. The spender emits its own detail. Neither
    event proves a Zone spend alone: bind it to the source Portal's `WithdrawalProcessed` for the

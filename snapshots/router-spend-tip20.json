@@ -1,8 +1,8 @@
 {
-  "card.change": "163827",
-  "card.exact": "140627",
-  "deploy.two-spenders": "6283947",
-  "send.change": "147500",
-  "send.change.redeem-router": "147501",
-  "send.exact": "124531"
+  "card.change": "162629",
+  "card.exact": "140554",
+  "deploy.two-spenders": "6032874",
+  "send.change": "146734",
+  "send.change.redeem-router": "146735",
+  "send.exact": "124458"
 }

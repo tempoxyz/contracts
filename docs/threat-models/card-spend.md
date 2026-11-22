@@ -314,7 +314,7 @@ The design accepts these risks. They are decisions, not gaps.
     `processWithdrawals` can run an L1 operation first. On a Veda engine, an earlier operation in the same
     transaction can pin and then move the Accountant rate (`RateChangedWithinTransaction`).
   - **Fees and gas.** A higher L1 base fee raises the bounce-back fee above the change's margin
-    (`ChangeBelowDepositFee`, `DepositTooSmall`), and a venue's gas can rise past the callback's budget.
+    (the portal's `DepositTooSmall`), and a venue's gas can rise past the callback's budget.
   - **Provider governance in flight.** Bridge's pauser pauses the factory; governance disables or replaces
     the "TS" handler, removes the destination or disallows the vault.
   - **Zone administration in flight.** The admin disables the return token or pauses deposits, raises the
@@ -506,9 +506,11 @@ operator delays batches or withdrawal processing, or the admin raises fees or pa
   abdication of the pause capability prevents new pauses
   (`vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `paused`, `resume`,
   `_requireCapabilityActive`).
-- When a spend leaves nonzero change, a deposit fee above `maxDepositFee`, deposits turned off, or
-  change below the fee plus the bounce-back reserve reverts the callback
-  (`src/zone/ZoneRouter.sol`: `_handleSpend`, `_checkChangeReturn`, `_checkDepositFee`).
+- When a spend leaves nonzero change, a deposit fee above `maxDepositFee` reverts the callback in the
+  router, and deposits turned off, a paused portal, or change below the fee plus the bounce-back
+  reserve revert it in the portal's `depositEncrypted` (`src/zone/ZoneRouter.sol`: `_handleSpend`,
+  `_checkDepositFee`; `vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `_deposit`,
+  `_collectDepositFunds`).
 
 **What limits it today.** The router accepts only its Zone's portal, caps the deposit fee on nonzero
 change and returns change through that portal (`src/zone/ZoneRouter.sol`:
