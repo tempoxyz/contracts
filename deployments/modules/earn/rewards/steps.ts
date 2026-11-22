@@ -48,7 +48,7 @@ export const deployMerkleDistributor = defineFoundryStep({
   phase: 'deployment',
   intent: ['boostRewards'],
   script:
-    'script/deploy/DeployEarnMerkleRewardDistributor.s.sol:DeployEarnMerkleRewardDistributorScript',
+    'script/earn/deploy/DeployEarnMerkleRewardDistributor.s.sol:DeployEarnMerkleRewardDistributorScript',
   enabled: (profile) => Boolean(profile.boostRewards),
   input: (profile, outputs, outputPath) =>
     encodeFunctionData({
@@ -64,7 +64,7 @@ export const deployMerkleDistributor = defineFoundryStep({
     }),
   source: {
     output: 'earnMerkleRewardDistributor',
-    contract: 'src/rewards/EarnMerkleRewardDistributor.sol:EarnMerkleRewardDistributor',
+    contract: 'src/earn/rewards/EarnMerkleRewardDistributor.sol:EarnMerkleRewardDistributor',
     constructorArgs(profile, outputs) {
       const args = distributorArgs(profile, outputs)
       return encodeAbiParameters(
@@ -130,7 +130,7 @@ export const deployContributionController = defineFoundryStep({
   phase: 'deployment',
   intent: ['targetYield'],
   script:
-    'script/deploy/DeployEarnContributionController.s.sol:DeployEarnContributionControllerScript',
+    'script/earn/deploy/DeployEarnContributionController.s.sol:DeployEarnContributionControllerScript',
   enabled: (profile) => Boolean(profile.targetYield),
   input: (profile, outputs, outputPath) =>
     encodeFunctionData({
@@ -147,7 +147,7 @@ export const deployContributionController = defineFoundryStep({
     }),
   source: {
     output: 'earnContributionController',
-    contract: 'src/rewards/EarnContributionController.sol:EarnContributionController',
+    contract: 'src/earn/rewards/EarnContributionController.sol:EarnContributionController',
     constructorArgs: (profile, outputs) =>
       encodeAbiParameters(parseAbiParameters('address earnVault, address owner'), [
         requiredOutput(outputs, 'earnVault'),

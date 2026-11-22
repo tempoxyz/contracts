@@ -40,12 +40,17 @@ sequenceDiagram
     participant T as EarnShare
 
     U->>A: deposit(assets, receiver, minEarnShares)
-    A->>F: accrueFees()
+    A->>F: accrueFees(), while fees are active
     F-->>A: FeePreview
     A->>T: mint(F, totalFeeEarnShares)
     A->>A: reconcile managed shares; require backing if supply is nonzero
-    A->>A: transferFrom(U, A, assets); top up E's standing approval if below assets
-    A->>E: deposit(assets)
+    alt engine has IEarnEngineHeldDeposit
+        A->>A: transferFrom(U, E, assets)
+        A->>E: depositHeld(assets)
+    else
+        A->>A: transferFrom(U, A, assets); top up E's standing approval if below assets
+        A->>E: deposit(assets)
+    end
     E->>V: deposit(assets, E)
     E-->>A: reported engineShares
     A->>A: require reported == measured raw-share increase
@@ -53,12 +58,21 @@ sequenceDiagram
     A->>T: mint(receiver, earnShares)
     A->>A: keep only represented shares managed; re-anchor
     A->>A: require totalAssets <= maxManagedAssets, when set
-    A->>F: initializeBaselines()
+    A->>F: initializeBaselines(), while fees are active
 ```
 
+The EarnVault keeps a copy of `feesActive()`, refreshed by every call that can change it (all of which
+go through the EarnVault), and skips the EarnFees calls while fees are off, since they would return
+nothing and change nothing.
+
 The caller supplies nonzero `assets` and `minEarnShares` and a nonzero receiver; the pause must be
-off. The EarnVault rejects the deposit with `ActiveSupplyWithoutBacking` when supply exists but
-managed backing is worth zero. It converts the measured engine shares at the anchor in force before
+off. When supply exists but managed backing is worth zero, the EarnVault restarts the pool: it moves
+the worthless managed engine shares to surplus and converts at the empty-pool anchor. It admits that
+entry only when those engine shares are at most one basis point of the entry's, the engine values the
+entry above zero, and the unbacked supply dilutes the entrant by at most one basis point, rounding included, and otherwise rejects it with
+`ActiveSupplyWithoutBacking`. An engine that prices a real position at zero for now therefore keeps
+deposits closed. Until a deposit restarts such a pool, `cancelRedeem` of a fee-bearing request reverts
+with `InsufficientOutput`; finalizing the request still works. It converts the measured engine shares at the anchor in force before
 entry, rejects a result below `minEarnShares` or one that leaves more than one basis point of the
 received engine shares unrepresented, mints to the receiver, and leaves any unrepresented remainder
 as surplus. The managed-assets limit is checked against post-deposit managed value, so concurrent
@@ -94,6 +108,17 @@ For asset-denominated withdrawal, `withdrawExact(assets, receiver, maxEarnShares
    paying less than their value, or would burn the entire supply while managed backing remains.
 7. `A` pulls and burns `earnSharesBurned` from the caller and re-anchors; unused EarnShare stays
    with the caller.
+
+`withdrawExactWithCallback(assets, receiver, maxEarnShares)` runs the same steps, except that right after
+step 3, before the engine pays out, it calls `earnWithdrawCallback(requiredEarnShares)` on the caller
+([`IEarnWithdrawCallback`](../../../src/interfaces/earn/IEarnWithdrawCallback.sol)) for the quoted cost, and
+reverts with `EarnSharesNotReceived` unless its EarnShare balance rose by exactly that amount. Accounting
+and fees are settled before the callback, but views read inside it are not: they may count the shares already
+moved to the EarnVault as burned, so price nothing from them there. The callback may not change the engine's custody or value; the withdrawal reverts with `EngineChangedDuringCallback` if it does. The burn may not
+exceed the quote (`ExceedsMaxEarnShares`), and any quoted EarnShare it leaves returns to the caller in
+step 7, reverting with `EarnSharesNotReturned` unless the caller is credited all of it. A contract that spends someone else's shares (a card program) uses it to move them straight
+from their owner to the EarnVault, without a separate `previewWithdraw` quote. The EarnVault reports it
+through ERC-165 (`IEarnVaultWithdrawCallback`), and its lock keeps the callback from entering it again.
 
 The final holder closes the pool with `redeem`.
 
@@ -212,10 +237,15 @@ Optional supply-bounded orchestration around `contribute` is in
    EarnShare unrepresented.
 4. `A` pulls and burns the EarnShare, asks the engine to queue the engine shares with `engineData`,
    and removes them from managed backing.
-5. `A` records the requester, receiver, burned EarnShare, and engine shares under the engine's
-   request ID, rejecting a duplicate ID.
-6. If fees are active and the valuation is fresh, `F.recordRedeemRequest` stores the request's fee
-   snapshot ([queued withdrawals](fees.md#queued-withdrawals)).
+5. `A` records the requester, receiver, and burned EarnShare under the engine's request ID,
+   rejecting a duplicate ID; the engine, not the record, holds the queued engine shares. The record
+   packs the burned EarnShare into `uint88` beside the requester, so a request above that bound
+   (about 3.09 × 10^26 base units) reverts with `ExceedsMaxEarnShares`. A self-paying request stores
+   no separate receiver.
+6. If fees are active and the checkpoint found the valuation fresh, `A` marks the record and
+   `F.recordRedeemRequest` stores the request's fee snapshot with its request time
+   ([queued withdrawals](fees.md#queued-withdrawals)). The snapshot packs its high-water and target
+   values into `uint96` each and reverts with `InvalidFeeConfiguration` above that bound.
 7. `A` increments `openRedeemRequestCount` and re-anchors; active supply and NAV exclude the claim.
 
 The deposit pause does not block requests. Engine-specific request data and validation, such as
@@ -227,10 +257,10 @@ Veda's tracking-Queue readback and absolute payout floor, are on the
 The venue delivers assets to the engine, which transfers them to the EarnVault and calls
 `finalizeRedeem(requestId, asset, amount)`. The EarnVault requires the caller to be its current
 engine, the asset to be its base asset, and the request to be open. It closes the claim, decrements
-`openRedeemRequestCount`, closes the fee snapshot, forwards `amount` to the stored receiver, and, if
-the receiver has code, calls `onRedeemFinalized` inside a `try`, so a reverting receiver cannot block
-finalization. There is no burn or fee checkpoint. Veda's forwarding solver makes the venue solve,
-measured engine credit, and finalization atomic
+`openRedeemRequestCount`, closes the fee snapshot if the request recorded one, forwards `amount` to
+the stored receiver, and, if the receiver has code, calls `onRedeemFinalized` inside a `try`, so a
+reverting receiver cannot block finalization. There is no burn or fee checkpoint. Veda's forwarding
+solver makes the venue solve, measured engine credit, and finalization atomic
 ([Veda queued exits](../modules/veda.md#queued-exits)).
 
 ### Cancellation

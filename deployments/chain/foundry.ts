@@ -25,14 +25,6 @@ export function requireStableFoundryVersion(forgeVersion: string) {
   }
 }
 
-/**
- * The directory of the Foundry project that compiles and runs a step: Earn's `root`, or the sibling
- * project the step names, such as `zone-router`, which builds with its own settings.
- */
-export function foundryProjectRoot(root: string, project?: string) {
-  return project ? resolve(root, '..', project) : root
-}
-
 /** Forge receives only the deployment signer; independent authority keys stay in this process. */
 export function foundryProcessEnvironment(
   environment: Readonly<Record<string, string | undefined>>,
@@ -124,17 +116,21 @@ export function solarVerificationArguments(solc: string, versionOutput: string):
   if (version) return ['--compiler-version', version, '--compilation-profile', 'default']
   if (/solar/i.test(solc) || /solar/i.test(versionOutput)) {
     throw new Error(
-      `${solc} is solar but does not report a source-verifiable build (expected a solc-wrapper version such as 0.8.36+commit.<rev>.solar.<version>); run it through earn/solar-solc`,
+      `${solc} is solar but does not report a source-verifiable build (expected a solc-wrapper version such as 0.8.36+commit.<rev>.solar.<version>); run it through solar-solc`,
     )
   }
   return []
 }
 
-/** The solar build a solc-wrapper `--version` output names, or null for any other compiler. */
+/**
+ * The solar build a solc-wrapper `--version` output names, or null for any other compiler. A
+ * prerelease build (`0.3.0-dev`) is named like a release; the verifier rebuilds either only once it pins it.
+ */
 export function solcWrapperVersion(output: string) {
   return (
-    /^Version: (\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.\d+\.\d+\.\d+)\s*$/m.exec(output)?.[1] ??
-    null
+    /^Version: (\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\s*$/m.exec(
+      output,
+    )?.[1] ?? null
   )
 }
 

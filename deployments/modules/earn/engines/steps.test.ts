@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from 'vitest'
-import { zeroAddress, type Address } from 'viem'
+import { decodeFunctionData, erc20Abi, zeroAddress, type Address, type Hex } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
 import { parseEarnDeploymentProfile } from '../../../core/profile.js'
+import { deploymentStep, executeAvailableAuthority } from '../../index.js'
 import { deployEngine, resolvedEngineStateSatisfied } from './steps.js'
 
 const address = (suffix: string) => `0x${suffix.padStart(40, '0')}` as Address
@@ -99,5 +101,115 @@ describe('resolvedEngineStateSatisfied', () => {
         earnVault: zeroAddress,
       }),
     ).toBe(true)
+  })
+})
+
+describe('seedEngine', () => {
+  const deployerKey = `0x${'4'.repeat(64)}` as const
+  const deployer = privateKeyToAccount(deployerKey).address
+  const receiptHash = `0x${'cd'.repeat(32)}` as const
+  const vault = address('8')
+  const seeded = { ...outputs, earnVault: vault }
+  const propammProfile = parseEarnDeploymentProfile(
+    {
+      version: 1,
+      id: 'engine-seed-test',
+      chainId: 4217,
+      owner: address('4'),
+      engine: { kind: 'propamm', address: address('1') },
+    },
+    { deployer, factories: { earn: address('3'), erc4626Engine: address('5') } },
+  )
+  const run = (
+    balances: Record<string, bigint>,
+    options: { boundTo?: Address; refuses?: boolean } = {},
+  ) => {
+    const sendTransactionSync = vi
+      .fn()
+      .mockResolvedValue({ status: 'success', transactionHash: receiptHash })
+    const result = executeAvailableAuthority(
+      {
+        action: { id: 'seed-engine' },
+        environment: { DEPLOYER_PRIVATE_KEY: deployerKey },
+        outputs: seeded,
+        profile: propammProfile,
+        rpcUrl: 'https://rpc.invalid',
+      },
+      {
+        authorityClient: ((_options: unknown, account: unknown) => ({
+          account,
+          chain: { id: 4217 },
+          getTransactionCount: async () => 0,
+          call: async () => {
+            if (options.refuses) throw new Error('execution reverted')
+            return { data: '0x' }
+          },
+          readContract: async ({
+            functionName,
+            args,
+          }: {
+            functionName: string
+            args?: readonly Address[]
+          }) => {
+            if (functionName === 'earnVault') return options.boundTo ?? vault
+            if (functionName === 'owner') return address('4')
+            if (functionName === 'asset') return outputs.asset
+            if (functionName === 'balanceOf') return balances[args![0]!] ?? 0n
+            throw new Error(`unexpected read ${functionName}`)
+          },
+          sendTransactionSync,
+        })) as never,
+        fundFromFaucet: vi.fn() as never,
+      },
+    )
+    return { result, sendTransactionSync }
+  }
+
+  test('runs for engines that hold no asset between calls, never blocking', async () => {
+    const step = deploymentStep('seed-engine')
+    if (step.execution !== 'authority') throw new Error('expected an authority step')
+    expect(step.attemptWhenSatisfied).toBe(true)
+    expect(step.enabled(propammProfile)).toBe(true)
+    expect(step.enabled(profile)).toBe(true)
+    expect(
+      step.enabled(
+        parseEarnDeploymentProfile(
+          {
+            version: 1,
+            id: 'engine-seed-test',
+            chainId: 4217,
+            owner: address('4'),
+            engine: { kind: 'veda', address: address('1') },
+          },
+          { deployer, factories: { earn: address('3'), erc4626Engine: address('5') } },
+        ),
+      ),
+    ).toBe(false)
+    expect(await step.satisfied({} as never, propammProfile, seeded)).toBe(true)
+  })
+
+  test('sends one base unit of the asset to an empty bound engine', async () => {
+    const { result, sendTransactionSync } = run({ [deployer]: 5n })
+    await expect(result).resolves.toEqual({ transactions: [receiptHash] })
+    const calls = sendTransactionSync.mock.calls[0]![0].calls as { to: Address; data: Hex }[]
+    expect(
+      calls.map((call) => [
+        call.to,
+        ...decodeFunctionData({ abi: erc20Abi, data: call.data }).args!,
+      ]),
+    ).toEqual([[outputs.asset, outputs.engine, 1n]])
+  })
+
+  test('sends nothing when seeded, unfunded, refused, or bound elsewhere', async () => {
+    for (const [balances, options] of [
+      [{ [deployer]: 5n, [outputs.engine]: 1n }, {}],
+      [{}, {}],
+      [{ [deployer]: 5n }, { refuses: true }],
+      [{ [deployer]: 5n }, { boundTo: address('9') }],
+    ] as const) {
+      const { result, sendTransactionSync } = run(balances, options)
+      await expect(result).resolves.toEqual({ transactions: [] })
+      expect(sendTransactionSync).not.toHaveBeenCalled()
+    }
   })
 })

@@ -258,34 +258,80 @@ describe('assertVerifiedCreationTransaction', () => {
     ).not.toThrow()
   })
 
+  test('accepts solar trailers naming its version as bytes or as text, and nothing else', () => {
+    const solarTrailer = (item: string) => {
+      const body = `a2646970667358221220${'5a'.repeat(32)}65736f6c6172${item}`
+      return `fe${body}${(body.length / 2).toString(16).padStart(4, '0')}`
+    }
+    const text = (value: string) => {
+      const head =
+        value.length < 24
+          ? (0x60 + value.length).toString(16)
+          : `78${value.length.toString(16).padStart(2, '0')}`
+      return `${head}${Buffer.from(value, 'latin1').toString('hex')}`
+    }
+    const cases = [
+      { version: '0.8.36+commit.e7a91fc7.solar.0.2.3', item: '43000203', accepted: true },
+      {
+        version: '0.8.38+commit.f1b75c64.solar.0.3.0-dev',
+        item: text('0.3.0-dev+commit.f1b75c64'),
+        accepted: true,
+      },
+      { version: '0.8.38+commit.0a1b2c3d.solar.0.3.1', item: text('0.3.1'), accepted: true },
+      {
+        version: '0.8.38+commit.f1b75c64.solar.0.3.0-dev',
+        item: text('0.3.0-dev+commit.0badc0de'),
+        accepted: false,
+      },
+      { version: '0.8.38+commit.0a1b2c3d.solar.0.3.1', item: '43000300', accepted: false },
+      { version: '0.8.36+commit.e7a91fc7.solar.0.2.3', item: '43000204', accepted: false },
+    ]
+    for (const { version, item, accepted } of cases) {
+      const creationBytecode = `0x6001600055${solarTrailer(item)}` as Hex
+      const fixture = {
+        ...options,
+        creationBytecode,
+        constructorArgs: '0x' as const,
+        compiler: { ...compiler, version },
+        minedTransaction: {
+          ...options.minedTransaction,
+          input: creationBytecode.replace('5a'.repeat(32), '11'.repeat(32)) as Hex,
+        },
+      }
+      const check = expect(() => assertVerifiedCreationTransaction(fixture))
+      if (accepted) check.not.toThrow()
+      else check.toThrow('creation input')
+    }
+  })
+
   test('accepts both adjacent metadata digests in the compiled ZoneRouterFactory', ({ skip }) => {
     let artifact: { bytecode: { object: Hex }; metadata: { compiler: { version: string } } }
     try {
       artifact = JSON.parse(
         readFileSync(
-          new URL(
-            '../../zone-router/out/ZoneRouterFactory.sol/ZoneRouterFactory.json',
-            import.meta.url,
-          ),
+          new URL('../../out/ZoneRouterFactory.sol/ZoneRouterFactory.json', import.meta.url),
           'utf8',
         ),
       )
     } catch (error) {
       // Full verification builds this artifact; TypeScript-only checkouts may not have compiled Solidity.
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-        skip('Run forge build src in zone-router for the compiled factory regression')
+        skip('Run forge build src from the repository root for the compiled factory regression')
       throw error
     }
     const creationBytecode = artifact.bytecode.object
-    // The Zone router compiles with solar: each trailer names solar's version behind its own INVALID delimiter.
-    const trailers = [
-      ...creationBytecode.matchAll(
-        /a2646970667358221220[0-9a-f]{64}65736f6c617243[0-9a-f]{6}0034/gi,
-      ),
-    ]
-    expect(trailers).toHaveLength(2)
+    // The Zone router compiles with solar: each trailer names solar's version behind its own INVALID delimiter
+    // and ends with its byte length, which may differ between solar versions.
+    const size = 2 * (2 + Number.parseInt(creationBytecode.slice(-4), 16))
+    const trailers = [creationBytecode.length - size, creationBytecode.length - 2 * size - 2]
+      .reverse()
+      .map((index) => {
+        const value = creationBytecode.slice(index, index + size)
+        expect(value).toMatch(/^a2646970667358221220[0-9a-f]{64}65736f6c6172/i)
+        return Object.assign([value], { index })
+      })
     expect(creationBytecode.slice(trailers[1]!.index - 2, trailers[1]!.index)).toBe('fe')
-    expect(trailers[0]!.index + trailers[0]![0].length + 2).toBe(trailers[1]!.index)
+    expect(creationBytecode.slice(trailers[0]!.index - 2, trailers[0]!.index)).toBe('fe')
     expect(trailers[1]!.index + trailers[1]![0].length).toBe(creationBytecode.length)
     const cborAuxdata = Object.fromEntries(
       trailers.map((trailer, index) => [

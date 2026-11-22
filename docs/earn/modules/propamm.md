@@ -9,7 +9,7 @@ contract is in [yield engines](../integrations/engines.md).
 
 ## Contract
 
-[`PropAMMEngine`](../../../earn/src/engines/propamm/PropAMMEngine.sol) puts one fixed Tempo DirectPropAMM
+[`PropAMMEngine`](../../../src/earn/engines/propamm/PropAMMEngine.sol) puts one fixed Tempo DirectPropAMM
 pool behind the persistent EarnVault and EarnShare. The engine holds the pool's base token directly
 (not LP shares); its `asset` is the pool's quote token. Deposits buy the base token, redemptions sell
 an exact base quantity, and exact withdrawals sell enough base to deliver the requested quote
@@ -45,7 +45,9 @@ remainder and pays whole units once they accrue. Those valuations omit the credi
 can pay a few quote units more than its preview, depending on earlier trades on the engine's route.
 `previewWithdraw` and the pool's route quotes (`quoteExactInputFor`, `quoteExactOutputFor`) include
 it. Every trade is executed at the price and observation time read at its start, and the engine
-re-reads the oracle afterwards and reverts `QuoteMismatch` if either changed.
+re-reads the oracle afterwards and reverts `QuoteMismatch` if either changed. Each trade's pool trade
+ID is the block number above a count of the engine's trades in that transaction, so IDs label the
+pool's `TradeExecuted` events and are distinct within a transaction, not across transactions.
 
 ### Freshness
 
@@ -69,7 +71,7 @@ final engine owner, EarnVault operator, maximum oracle age, and route identifier
 and oracle decimals are supported and that the pool's base and quote direction matches them, and
 review the pool's token policy and recipient registry, not just its address.
 
-1. Deploy and source-verify `src/engines/propamm/PropAMMEngine.sol:PropAMMEngine` from the current
+1. Deploy and source-verify `src/earn/engines/propamm/PropAMMEngine.sol:PropAMMEngine` from the current
    repository. An existing deployment does not gain new behavior when the repository changes;
    replace it rather than editing a record.
 2. Write a profile whose engine is `{ "kind": "propamm", "address": "0x…" }`
@@ -103,15 +105,15 @@ simulate each complete transaction before signing.
 
 ## Failure modes
 
-| Signal or error                                                                               | Response                                                                       |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Fee valuation stale; deposit reverts `InvalidOracle`                                          | Restore oracle publication; deposits and contributions stay blocked until then |
-| Pool paused, admission revoked, or recipient redirected (`InvalidConfiguration` on any trade) | Confirm administrator intent before restoring access; exits are blocked too    |
-| Low base-token inventory                                                                      | Replenish before deposits                                                      |
-| Low quote-token inventory                                                                     | Replenish before exits; previews are not liquidity guarantees                  |
-| Pool oracle changed or its decimals changed (`InvalidOracle` on every path)                   | Restore the pinned oracle                                                      |
-| TIP-403 transfer denied                                                                       | Repair the denied path with its policy administrator                           |
-| Source or runtime verification changed                                                        | Stop release promotion and investigate provenance                              |
+| Signal or error                                                                                                                                                   | Response                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Fee valuation stale; deposit reverts `InvalidOracle`                                                                                                              | Restore oracle publication; deposits and contributions stay blocked until then |
+| Pool paused or admission revoked (the pool's `Paused`, `TakerNotAllowed`, or `RecipientNotAllowed` on any trade); recipient redirected (a measured-balance check) | Confirm administrator intent before restoring access; exits are blocked too    |
+| Low base-token inventory                                                                                                                                          | Replenish before deposits                                                      |
+| Low quote-token inventory                                                                                                                                         | Replenish before exits; previews are not liquidity guarantees                  |
+| Pool oracle changed or its decimals changed (`InvalidOracle` on every path)                                                                                       | Restore the pinned oracle                                                      |
+| TIP-403 transfer denied                                                                                                                                           | Repair the denied path with its policy administrator                           |
+| Source or runtime verification changed                                                                                                                            | Stop release promotion and investigate provenance                              |
 
 Choose inventory thresholds from expected deposit and redemption sizes, and monitor both freshness
 windows. Earn's guardian pause cannot unpause the pool, change its permissions, or create exit
@@ -121,7 +123,7 @@ force an exit.
 ## Tests
 
 ```bash
-forge test --match-path 'test/engines/propamm/*'
+forge test --match-path 'test/earn/engines/propamm/*'
 pnpm --filter @tempoxyz/contracts abis:check
 pnpm e2e:local -- --variant propamm --all
 ```
@@ -148,26 +150,27 @@ them through the engine definition and the generated ABIs in `@tempoxyz/contract
 ### Pinned DirectPropAMM fixture
 
 Contract tests and localnet deploy `DirectPropAMM` from the committed
-[`test/fixtures/propamm/DirectPropAMM.json`](../../../earn/test/fixtures/propamm/DirectPropAMM.json), which
-holds only its ABI, creation bytecode, and runtime bytecode from an unmodified solc `0.8.30` build.
+[`test/earn/fixtures/propamm/DirectPropAMM.json`](../../../test/earn/fixtures/propamm/DirectPropAMM.json), which
+holds only its ABI, creation bytecode, and runtime bytecode from a solc `0.8.30` build of the
+unmodified source, the compiler the deployed pool was built with: `update.sh` passes that version to
+Forge in place of the source repository's default compiler.
 Building and testing Earn never needs the PropAMM source repository.
-[`source.json`](../../../earn/test/fixtures/propamm/source.json) records the repository, full commit,
+[`source.json`](../../../test/earn/fixtures/propamm/source.json) records the repository, full commit,
 contract, and compiler of that build.
 
 To move the pin, change `commit` in `source.json` and regenerate the fixture with
-[`update.sh`](../../../earn/test/fixtures/propamm/update.sh), which needs Git, Foundry, `jq`, and read
-access to the source repository:
+[`update.sh`](../../../test/earn/fixtures/propamm/update.sh), which needs Git, Foundry, and `jq`; the source
+repository is public, so no GitHub credentials are needed:
 
 ```bash
-test/fixtures/propamm/update.sh                       # clone the pinned commit with your Git credentials
-test/fixtures/propamm/update.sh ../propAMM            # or build a clean checkout already at that commit
-test/fixtures/propamm/update.sh --check [../propAMM]  # fail on any difference, rewriting nothing
+test/earn/fixtures/propamm/update.sh                             # fetch the pinned commit anonymously over HTTPS
+test/earn/fixtures/propamm/update.sh ../tempo-propamm            # or build a clean checkout already at that commit
+test/earn/fixtures/propamm/update.sh --check [../tempo-propamm]  # fail on any difference, rewriting nothing
 ```
 
-The `PropAMM fixture` job in the Verify workflow runs the `--check` form for same-repository pull
-requests and `main`. A fork pull request that leaves `test/fixtures/propamm/` unchanged skips the
-rebuild; one that changes it fails until a maintainer re-verifies it from a branch in this
-repository ([CI](../../development/README.md#continuous-integration)).
+The `PropAMM fixture` job in the Verify workflow runs the `--check` form, without a token, for every
+pull request, including those from forks, and `main`
+([CI](../../development/README.md#continuous-integration)).
 
 ## Review
 
@@ -175,7 +178,7 @@ Review `PropAMMEngine` together with the pinned DirectPropAMM execution behavior
 recipient registry, and the actual token implementations; production configuration and
 independent sign-off are outside local CI.
 
-Preserve one-vault custody, exact balance-delta accounting, zero residual pool allowances, pinned
+Preserve one-vault custody, exact balance-delta accounting, at most one unit of standing pool allowance, pinned
 oracle and scale consistency, same-price settlement checks, reentrancy guards (including
 `ReadDuringSettlement` for valuation reads mid-trade), and the absence of a privileged sweep.
 

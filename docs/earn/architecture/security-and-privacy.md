@@ -160,14 +160,19 @@ unrepresented after floor rounding.
 ### Reentrancy and standing approvals
 
 EarnVault economic calls, `EarnFees.claim`, engine asset paths, and the router callback use local
-reentrancy locks. The EarnVault keeps a standing maximum base-asset approval to its installed engine,
+reentrancy locks. The EarnVault, EarnFees, engine, and router locks are transient flags, so they occupy no
+storage slot (Tempo charges 250,000 gas for each slot first written nonzero), and an EarnVault refuses
+locked calls until it is initialized. The EarnVault keeps a standing maximum base-asset approval to its installed engine,
 topped up only when it is below the amount moved; it holds base assets only within a call, and
 `migrateEngine` revokes the retired engine's approval. The router
 keeps standing maximum approvals only to its immutable EarnVault and pool and its source Zone's
 Portal (Tempo charges every zero-to-nonzero allowance as a new storage slot; the Portal moves the
 router's tokens only inside a `depositEncrypted` call the router makes), performs one downstream call, and verifies touched
 token balances against the operation baseline, so no token balance an allowance could reach survives
-a successful call. External token callbacks remain a trust boundary; a revert rolls back approval and
+a successful call. The Veda and PropAMM engines keep a one-unit standing allowance to each immutable
+venue spender (Veda's BoringVault and active Queue, PropAMM's pool) and approve one unit above each
+pull, then confirm by measured balance or remaining allowance that the spender took exactly the amount
+moved. External token callbacks remain a trust boundary; a revert rolls back approval and
 balance changes atomically.
 
 ### Async claim isolation
@@ -175,7 +180,7 @@ balance changes atomically.
 EarnShare burns when a request is created; the pending entitlement is not active supply or NAV.
 Finalization and cancellation use one stored receiver. The request's fee snapshot pins its
 configuration ID, so active fee changes cannot rewrite prior cancellation terms. Disabling fees
-after the request permanently waives that request's cancellation fees
+at or after the request's recorded time permanently waives that request's cancellation fees
 ([queued withdrawals](fees.md#queued-withdrawals)).
 Cancellation cannot expand the contribution limit
 ([reward-admission limit](system.md#reward-admission-limit)).

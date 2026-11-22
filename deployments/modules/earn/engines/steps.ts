@@ -1,16 +1,28 @@
-import { getAddress, zeroAddress, type Address } from 'viem'
+import {
+  encodeFunctionData,
+  erc20Abi,
+  getAddress,
+  isAddressEqual,
+  zeroAddress,
+  type Address,
+} from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
 import { assertEngineIdentity, resolvePredictedCore } from '../core/steps.js'
-import { readEngineBinding } from './index.js'
-import { earnVaultAbi } from '../../../abis/index.js'
+import { engineDefinitions, readEngineBinding } from './index.js'
+import { envPrivateKey } from '../../../chain/runtime.js'
+import { privateKeyMatches, sendAuthorityCalls } from '../../../../deployments/modules/signer.js'
+import { earnEngineBindingAbi, earnVaultAbi } from '../../../abis/index.js'
 import {
   deploysEngine,
+  engineAddress,
   engineOwnerAccepted,
   profileEngineFactory,
   profileFactoryDeploymentId,
   type EarnDeploymentProfile,
 } from '../../../core/profile.js'
 import {
+  defineAuthorityStep,
   defineFoundryStep,
   deployedOutputs,
   deployerAuthority,
@@ -115,6 +127,71 @@ export const deployEngine = defineFoundryStep({
     throw new Error(
       `RPC did not return the factory creation event for engine ${engine}; retry with a synchronized RPC`,
     )
+  },
+})
+
+/**
+ * Sends an engine that holds no asset between calls 1 base unit of the stack asset, so deposits and
+ * exits never recreate its balance slot. Best effort: an unsent unit never blocks the deployment.
+ */
+export const seedEngine = defineAuthorityStep({
+  id: 'seed-engine',
+  authority: deployerAuthority,
+  execution: 'authority',
+  summary: 'Send the engine 1 base unit of the stack asset when it holds none between calls.',
+  handoffSummary: 'Offer the deployer the engine residue; nothing waits on it.',
+  phase: 'activation',
+  intent: ['engine'],
+  enabled: (profile) => engineDefinitions[profile.engine.kind].idleAssetResidue === true,
+  signerAvailable: (profile, environment) =>
+    privateKeyMatches(environment, deployerAuthority.signer, profile.deployer),
+  // The unit is a gas residue, not a requirement, so verify stays stable whatever the engine holds.
+  satisfied: async () => true,
+  attemptWhenSatisfied: true,
+  handoff: (profile, outputs) =>
+    'Optional: send ' +
+    engineAddress(profile, outputs) +
+    ' 1 base unit of ' +
+    requiredOutput(outputs, 'asset') +
+    ' from the deployer ' +
+    profile.deployer +
+    ' (re-run with its DEPLOYER_PRIVATE_KEY, or transfer it by hand). It keeps the engine balance slot nonzero; nothing waits on it.',
+  async execute(options, dependencies) {
+    const key = envPrivateKey(options.environment, deployerAuthority.signer)
+    if (!key) return undefined
+    const account = privateKeyToAccount(key)
+    if (!isAddressEqual(account.address, options.profile.deployer)) return undefined
+    const client = dependencies.authorityClient(options, account)
+    const engine = engineAddress(options.profile, options.outputs)
+    const asset = requiredOutput(options.outputs, 'asset')
+    // Only the profile's own bound engine is seeded; a unit sent anywhere else is lost.
+    const earnVault = await client.readContract({
+      address: engine,
+      abi: earnEngineBindingAbi,
+      functionName: 'earnVault',
+    })
+    if (getAddress(earnVault) !== requiredOutput(options.outputs, 'earnVault'))
+      return { transactions: [] }
+    const balance = (holder: Address) =>
+      client.readContract({
+        address: asset,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [holder],
+      })
+    if ((await balance(engine)) > 0n || (await balance(account.address)) === 0n)
+      return { transactions: [] }
+    const call = {
+      to: asset,
+      data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [engine, 1n] }),
+    }
+    // A token policy that refuses the transfer leaves the engine unseeded rather than failing the run.
+    try {
+      await client.call({ account: account.address, ...call })
+    } catch {
+      return { transactions: [] }
+    }
+    return sendAuthorityCalls(client, dependencies, options.profile, [call])
   },
 })
 

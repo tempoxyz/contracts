@@ -61,6 +61,11 @@ export type Engine = {
    * profile can then name `engine.venue` instead of a reviewed, deployed `engine.address`.
    */
   factory?: EngineFactory | undefined
+  /**
+   * The engine holds no asset between calls and every balance check it makes is a before/after delta,
+   * so the lifecycle sends it 1 base unit of the stack asset to keep that balance slot nonzero.
+   */
+  idleAssetResidue?: true | undefined
   /** Identifies a supported adapter after an operator changes the vault's current engine. */
   recognizes(client: ReadClient, engine: Address): Promise<boolean>
   /** Runtime capabilities override defaults when an engine's configuration makes them conditional. */

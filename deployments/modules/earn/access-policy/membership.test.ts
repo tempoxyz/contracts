@@ -21,6 +21,8 @@ import {
 
 type Client = Parameters<typeof assertAccessRemovalSafe>[0]
 const address = (value: number): Address => getAddress(`0x${value.toString(16).padStart(40, '0')}`)
+/** The requester of an open claim; `pendingRedeem` reads a closed claim's requester as zero. */
+const claimant = address(0xc1a1)
 
 /** A protected public stack with only the fields access membership reads. */
 function protectedDeployment() {
@@ -107,7 +109,7 @@ describe('access removal safety', () => {
         if (functionName === 'feeConfig') {
           return { fixedFeeCount: 0, fixedFees: [], excess: { enabled: false } }
         }
-        return { open: true, receiver: target }
+        return { receiver: target, requester: claimant }
       }),
     } as unknown as Client
 
@@ -216,8 +218,8 @@ describe('access removal across stacks sharing a policy', () => {
     const sibling = siblingDeployment()
     const client = removalClient({ receiver: master })
     client.pendingRedeem.mockImplementation(async (_id, vault) => ({
-      open: vault === sibling.contracts.earnVault,
       receiver: master,
+      requester: vault === sibling.contracts.earnVault ? claimant : zeroAddress,
     }))
     await expect(
       assertAccessRemovalSafe(client, protectedDeployment(), master, [sibling]),
@@ -424,7 +426,7 @@ describe('access removal outstanding claim scan', () => {
       peak = Math.max(peak, active)
       await new Promise((resolve) => setTimeout(resolve, 0))
       active--
-      return { open: true, receiver: address(0xcafe) }
+      return { receiver: address(0xcafe), requester: claimant }
     })
     await assertAccessRemovalSafe(client, protectedDeployment(), master)
     expect(client.pendingRedeem).toHaveBeenCalledTimes(ids.length)
@@ -437,8 +439,8 @@ describe('access removal outstanding claim scan', () => {
     const ids = Array.from({ length: 40 }, (_, index) => claimId(index))
     client.getLogs.mockResolvedValue(ids.map((id) => claimEvent('RedeemRequested', id)))
     client.pendingRedeem.mockImplementation(async (id) => ({
-      open: true,
       receiver: id === ids.at(-1) ? alias : address(0xcafe),
+      requester: claimant,
     }))
     await expect(assertAccessRemovalSafe(client, protectedDeployment(), master)).rejects.toThrow(
       `open async claim ${ids.at(-1)}`,
@@ -492,8 +494,8 @@ function removalClient(
     },
   )
   const pendingRedeem = vi.fn(async (_requestId: Hex, _vault?: Address) => ({
-    open: options.open ?? true,
     receiver: options.receiver ?? master,
+    requester: (options.open ?? true) ? claimant : zeroAddress,
   }))
   return {
     pendingRedeem,

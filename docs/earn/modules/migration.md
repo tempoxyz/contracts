@@ -132,7 +132,7 @@ guaranteed Zone settlement after the Portal accepts a deposit.
 
 ## Tests
 
-- Foundry: [`EarnVaultVenueShares.t.sol`](../../../earn/test/core/EarnVaultVenueShares.t.sol).
+- Foundry: [`EarnVaultVenueShares.t.sol`](../../../test/earn/core/EarnVaultVenueShares.t.sol).
 - E2E: `public-deposit-existing-venue-shares` (group `public`), and in group `zone`
   [`migration-existing-vault-shares-to-zone`](../../../e2e/modules/zone/migration.ts) and the local-only
   `migration-morpho-fee-wrapper-to-private-earn`, which runs the wrapped-position composition against

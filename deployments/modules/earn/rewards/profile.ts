@@ -13,8 +13,8 @@ type RewardsProfile = SliceProfile<RewardConfiguration>
 
 // Immutable reward periphery has no upgrade path. Bump only the affected release when its deployed
 // runtime changes so profile reconciliation replaces that component without touching core custody.
-const targetYieldContractRelease = 2
-const boostRewardsContractRelease = 5
+const targetYieldContractRelease = 3
+const boostRewardsContractRelease = 6
 
 /**
  * The reward slice: `targetYield` deploys the contribution controller and `boostRewards` the Merkle

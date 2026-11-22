@@ -354,6 +354,63 @@ describe('Earn deployment lifecycle', () => {
     }
   })
 
+  test('offers a satisfied best-effort step once per run that can sign it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-best-effort-'))
+    const step = deploymentStep('seed-zone-router')
+    if (step.execution !== 'authority') throw new Error('Expected authority step')
+    const inspect = vi.spyOn(Inspection, 'inspectEarnDeployment').mockResolvedValue({})
+    const satisfied = vi.spyOn(step, 'satisfied').mockResolvedValue(true)
+    const handoff = vi.spyOn(step, 'handoff').mockReturnValue('Warm the router.')
+    let signer = false
+    const signerAvailable = vi.spyOn(step, 'signerAvailable').mockImplementation(() => signer)
+    const routerProfile = parseEarnDeploymentProfile(
+      {
+        version: 1,
+        id: 'best-effort-test',
+        chainId: 4217,
+        owner: address('4'),
+        engine: { kind: 'veda', address: address('1') },
+        zoneRouter: {
+          zoneId: 7,
+          ops: ['spend'],
+          spenders: [address('5e')],
+          factory: address('fa'),
+        },
+      },
+      { deployer: address('2'), factories: { earn: address('3'), erc4626Engine: address('5') } },
+    )
+    try {
+      const options = {
+        root,
+        profilePath: join(root, 'profile.json'),
+        profile: routerProfile,
+        rpcUrl: 'http://chain.test',
+        environment: {},
+        actions: [{ id: step.id } as never],
+      }
+      // A run that cannot sign records the satisfied step without offering it.
+      const unsigned = await prepareLifecycleStep(options)
+      expect(unsigned).toMatchObject({ kind: 'complete' })
+      if (unsigned.kind !== 'complete') throw new Error('Expected completion')
+      expect(unsigned.pending.actions[step.id]?.transactions).toEqual([])
+      // A later run with the signer is still offered the work, once.
+      signer = true
+      expect(await prepareLifecycleStep(options)).toMatchObject({
+        kind: 'handoff',
+        optional: true,
+      })
+      expect(
+        await prepareLifecycleStep({ ...options, attempted: new Set([step.id]) }),
+      ).toMatchObject({ kind: 'complete' })
+    } finally {
+      inspect.mockRestore()
+      satisfied.mockRestore()
+      handoff.mockRestore()
+      signerAvailable.mockRestore()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('refuses an ownerless unbound engine before deployment but preserves external owner handoffs', async () => {
     const configured = { ...profile, engine: { kind: 'erc4626' as const, address: address('1') } }
     let owner: `0x${string}` = zeroAddress
@@ -657,7 +714,7 @@ describe('Earn deployment lifecycle', () => {
     },
   )
 
-  test('runs a step of a sibling Foundry project from that project', async () => {
+  test('runs a Zone router step from the repository root', async () => {
     const routerProfile = parseEarnDeploymentProfile(
       {
         version: 1,
@@ -678,7 +735,7 @@ describe('Earn deployment lifecycle', () => {
     const checkout = mkdtempSync(join(tmpdir(), 'earn-project-'))
     try {
       const step = await prepareLifecycleStep({
-        root: join(checkout, 'earn'),
+        root: checkout,
         profilePath: join(checkout, 'profiles', routerProfile.id, 'profile.json'),
         profile: routerProfile,
         rpcUrl: 'http://chain.test',
@@ -686,13 +743,12 @@ describe('Earn deployment lifecycle', () => {
         actions: planEarnDeployment(routerProfile).filter(({ id }) => id === 'deploy-zone-router'),
       })
       if (step.kind !== 'foundry') throw new Error(`planned ${step.kind}`)
-      expect(step.root).toBe(join(checkout, 'zone-router'))
+      expect(step.root).toBe(checkout)
       expect(step.arguments.slice(0, 2)).toEqual([
         'script',
-        'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
+        'script/zone/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
       ])
-      // Every project's Forge writes outputs to the same staging path, beside Earn's.
-      expect(step.outputPath.startsWith(join(checkout, 'earn', '.earn'))).toBe(true)
+      expect(step.outputPath.startsWith(checkout)).toBe(true)
     } finally {
       rmSync(checkout, { recursive: true, force: true })
     }
@@ -786,7 +842,7 @@ describe('Earn deployment lifecycle', () => {
     )
     const checkout = mkdtempSync(join(tmpdir(), 'earn-reuse-'))
     try {
-      const root = join(checkout, 'earn')
+      const root = checkout
       const profilePath = join(checkout, 'profiles', routerProfile.id, 'profile.json')
       mkdirSync(join(checkout, 'profiles', routerProfile.id), { recursive: true })
       const pending = loadPendingDeployment(profilePath, routerProfile)
@@ -809,8 +865,8 @@ describe('Earn deployment lifecycle', () => {
         step: {
           kind: 'foundry',
           action: planEarnDeployment(routerProfile).find(({ id }) => id === 'deploy-zone-router')!,
-          root: join(checkout, 'zone-router'),
-          arguments: ['script', 'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript'],
+          root: checkout,
+          arguments: ['script', 'script/zone/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript'],
           environment: {},
           calldata,
           rawGasEstimate: true,
@@ -1612,7 +1668,7 @@ async function interruptedFactoryBroadcast(chainId = 4217) {
   const cleanup = () => rmSync(checkout, { recursive: true, force: true })
   try {
     const options = {
-      root: join(checkout, 'earn'),
+      root: checkout,
       profilePath: join(checkout, 'profiles', profile.id, 'profile.json'),
       profile,
       rpcUrl: 'http://chain.test',

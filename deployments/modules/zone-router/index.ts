@@ -1,4 +1,4 @@
-import { getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
+import { BaseError, getAddress, zeroAddress, type Address, type PublicClient } from 'viem'
 import { Addresses } from 'viem/tempo'
 
 import { zoneRouterAbi, zoneRouterFactoryAbi } from '../../abis/index.js'
@@ -15,7 +15,6 @@ import { stackAddress } from '../../core/stack.js'
 import { transferPolicyId } from '../earn/access-policy/profile.js'
 import { preflightRouterRoute } from '../earn/zone-router/index.js'
 import { inspectRouterReadiness } from '../earn/zone-router/inspection.js'
-import { configuredZone } from '../earn/zone-router/profile.js'
 import { requiredOutput, type CapabilityModule, type CapabilityReadiness } from '../module.js'
 import {
   inspectZoneRouterBinding,
@@ -26,6 +25,12 @@ import {
 } from './inspection.js'
 import { zoneRouterFactory, zoneRouterMode, zoneRouterModeHash } from './profile.js'
 import { spenderReleases } from './releases.js'
+import {
+  enablesEarnShare,
+  missingZoneRouterSeeds,
+  zoneRouterSeedNotes,
+  zoneRouterSeedPlan,
+} from './seeds.js'
 import { zoneRouterTokens } from './steps.js'
 
 /**
@@ -155,6 +160,35 @@ export const zoneRouterModeModule: CapabilityModule = {
         blockers: spenderBlockers,
       }
     }
+    // Seed units and Portal allowances only save callback gas, so their absence never blocks a route,
+    // and neither does a failed read of them.
+    const seedDetails: Record<string, string> = await (async () => {
+      try {
+        const seedPlan = await zoneRouterSeedPlan(client, profile, outputs)
+        const missingSeeds = zoneRouterSeedNotes(
+          seedPlan,
+          await missingZoneRouterSeeds(client, seedPlan),
+        )
+        const details: Record<string, string> = {}
+        if (missingSeeds.length > 0) details.missing = missingSeeds.join('; ')
+        if (seedPlan.notes.length > 0) details.withheld = seedPlan.notes.join('; ')
+        return details
+      } catch (error) {
+        // viem's short message names the failure without the request URL, which may carry credentials.
+        return {
+          unread:
+            error instanceof BaseError
+              ? error.shortMessage
+              : 'seed state could not be read from the chain',
+        }
+      }
+    })()
+    report.zoneRouterSeeds = {
+      label: 'Zone router seeds',
+      status: 'ready',
+      blockers: [],
+      ...(Object.keys(seedDetails).length > 0 ? { details: seedDetails } : {}),
+    }
     if (conversion) {
       report.zoneRouterConversion = {
         label: 'Zone router conversion',
@@ -169,17 +203,6 @@ export const zoneRouterModeModule: CapabilityModule = {
     }
     return report
   },
-}
-
-/**
- * Whether the profile has the router's Portal enable EarnShare: through this mode's Earn binding, or
- * through the single-Zone router on the same Zone. Inspection reads the Portal itself.
- */
-function enablesEarnShare(profile: EarnDeploymentProfile) {
-  const router = profile.zoneRouter
-  return (
-    router !== null && (router.earn !== undefined || configuredZone(profile)?.id === router.zoneId)
-  )
 }
 
 /** Discovered Zone principals of the router's Zone, kept out of the deployment record. */

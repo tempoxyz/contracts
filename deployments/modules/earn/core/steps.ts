@@ -60,7 +60,7 @@ export const deployCore = defineFoundryStep({
     argument: 'earnVault',
     output: 'earnVault',
   }),
-  script: 'script/deploy/DeployEarnCore.s.sol:DeployEarnCoreScript',
+  script: 'script/earn/deploy/DeployEarnCore.s.sol:DeployEarnCoreScript',
   rawGasEstimate: true,
   enabled: () => true,
   input: (profile, outputs, outputPath) =>

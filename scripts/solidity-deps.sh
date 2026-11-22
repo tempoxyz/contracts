@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Installs a Foundry project's Solidity dependencies into <project>/lib/ at the revisions its
-# foundry.lock pins. Each project (earn/, zone-router/, cards/) pins its own; they are not Git submodules.
-# Every project compiles with the solar revision earn/solar.lock pins; cargo installs it into
-# .solar/<rev>/ with a local digest receipt, where earn/solar-solc (every project's compiler) finds it.
+# Installs the Foundry project's Solidity dependencies into lib/ at the revisions foundry.lock pins;
+# they are not Git submodules. The project compiles with the solar revision solar.lock pins; cargo
+# installs it into .solar/<rev>/ with a local digest receipt, where solar-solc (the compiler) finds it.
 # Runs on bash 3.2 (macOS's /bin/bash), so it uses no associative arrays.
-# Usage: scripts/solidity-deps.sh <project>...   (idempotent; a checkout at its pin is kept)
+# Usage: scripts/solidity-deps.sh   (idempotent; a checkout at its pin is kept)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -67,7 +66,15 @@ install_solar() (
   source=$(mktemp -d "$PWD/.solar/.source-$rev.XXXXXX")
   git clone --quiet --filter=blob:none https://github.com/paradigmxyz/solar "$source"
   git -C "$source" -c advice.detachedHead=false checkout --quiet "$rev"
-  cargo install --quiet --locked --path "$source/crates/solar" --root "$temporary"
+  # Build with the Rust release solar declares as its minimum when the default toolchain is older.
+  msrv=$(sed -n 's/^rust-version = "\([0-9.]*\)".*/\1/p' "$source/Cargo.toml" 2>/dev/null || true)
+  toolchain=()
+  if [[ -n "$msrv" ]] && command -v rustup >/dev/null &&
+    [[ "$(printf '%s\n' "$msrv" "$(rustc --version | cut -d' ' -f2)" | sort -V | head -1)" != "$msrv" ]]; then
+    rustup toolchain install "$msrv" --profile minimal --no-self-update >&2
+    toolchain=("+$msrv")
+  fi
+  cargo "${toolchain[@]+"${toolchain[@]}"}" install --quiet --locked --path "$source/crates/solar" --root "$temporary"
   solar_receipt write "$temporary" "$rev" || {
     echo "cargo did not produce an executable solar compiler; no installation published" >&2
     exit 1
@@ -95,23 +102,17 @@ PROMOTE
   echo "solar at $rev (install receipt recorded)"
 )
 
-[[ $# -gt 0 ]] || { echo "usage: $0 <project>..." >&2; exit 2; }
-for project in "$@"; do
-  python3 -c 'import json, sys; [print(p, e.get("tag", e)["rev"]) for p, e in json.load(open(sys.argv[1])).items()]' \
-    "$project/foundry.lock" |
-    while read -r path rev; do
-      name=$(basename "$path")
-      url=$(source_url "$name") || { echo "no source URL for $name in $0" >&2; exit 1; }
-      dir="$project/$path"
-      if [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)" == "$rev" ]]; then continue; fi
-      rm -rf "$dir"
-      git init -q "$dir"
-      git -C "$dir" fetch -q --depth 1 "$url" "$rev"
-      git -C "$dir" checkout -q FETCH_HEAD
-      echo "$dir at $rev"
-    done
-done
-if [[ $# -gt 0 ]]; then
-  rev=$(tr -d '[:space:]' < earn/solar.lock)
-  install_solar "$rev"
-fi
+[[ $# -eq 0 ]] || { echo "usage: $0" >&2; exit 2; }
+python3 -c 'import json, sys; [print(p, e.get("tag", e)["rev"]) for p, e in json.load(open(sys.argv[1])).items()]'   foundry.lock |
+  while read -r path rev; do
+    name=$(basename "$path")
+    url=$(source_url "$name") || { echo "no source URL for $name in $0" >&2; exit 1; }
+    dir="$path"
+    if [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)" == "$rev" ]]; then continue; fi
+    rm -rf "$dir"
+    git init -q "$dir"
+    git -C "$dir" fetch -q --depth 1 "$url" "$rev"
+    git -C "$dir" checkout -q FETCH_HEAD
+    echo "$dir at $rev"
+  done
+install_solar "$(tr -d '[:space:]' < solar.lock)"

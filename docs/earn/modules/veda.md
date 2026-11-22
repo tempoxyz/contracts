@@ -6,7 +6,7 @@ data, deployment, authorities, and tests. The shared engine contract is in
 [yield engines](../integrations/engines.md). The three contracts are in the Sigma Prime PropAMM &
 Earn review and unchanged since ([audits](../audit/README.md)).
 
-`VedaEngine` ([source](../../../earn/src/engines/veda/VedaEngine.sol)) holds BoringVault shares for one
+`VedaEngine` ([source](../../../src/earn/engines/veda/VedaEngine.sol)) holds BoringVault shares for one
 EarnVault and drives the Teller, optional Queue, and Accountant that the BoringVault owner publishes.
 Veda is an `IEarnEngine` backend, not a separate Earn deployment type: the Veda side delivers a
 reviewed, unbound `VedaEngine`, and the profile lifecycle deploys the standard core around it. No
@@ -23,8 +23,8 @@ is set once; `maxRateAge` is nonzero. Construction validates the registry's curr
 `VedaEngineInitialized`; rotations and freshness-policy changes emit `VedaPeripheryUpdated` and
 `MaxRateAgeUpdated`.
 
-The engine advertises `IEarnEngineRedeem`, `IEarnEngineExactWithdraw`, and
-`IEarnEngineFeeValuation`, plus `IEarnEngineAsyncRedeem` only while its active Queue is nonzero. It
+The engine advertises `IEarnEngineRedeem`, `IEarnEngineExactWithdraw`, `IEarnEngineFeeValuation`,
+and `IEarnEngineHeldDeposit`, plus `IEarnEngineAsyncRedeem` only while its active Queue is nonzero. It
 has no in-kind entry, so the EarnVault rejects a queued request before burning EarnShare when the
 engine is immediate-only.
 
@@ -46,7 +46,7 @@ together with the EarnVault operator, the forwarding solver owner, and the Veda 
 
 ### VedaPeripheryRegistry
 
-[`VedaPeripheryRegistry`](../../../earn/src/engines/veda/VedaPeripheryRegistry.sol) is ownerless and
+[`VedaPeripheryRegistry`](../../../src/earn/engines/veda/VedaPeripheryRegistry.sol) is ownerless and
 immutable to one BoringVault and base asset. Only the current `BoringVault.owner()` may publish a
 Teller, optional Queue, and Accountant tuple (`setVedaPeriphery`) and bind the registry exactly once
 to one engine (`bindEngine`). Teller and Accountant are required; a zero Queue selects
@@ -59,11 +59,14 @@ cannot bind its EarnVault until the registry points back to it, and the binding 
 
 ### VedaForwardingSolver
 
-[`VedaForwardingSolver`](../../../earn/src/engines/veda/VedaForwardingSolver.sol) combines the stock Veda
+[`VedaForwardingSolver`](../../../src/earn/engines/veda/VedaForwardingSolver.sol) combines the stock Veda
 solve with Earn finalization. It is immutable to one stock solver, tracking Queue, Teller, and
 engine. `solveAndForward(requestIds, coverDeficit)` is restricted to owner-authorized solvers
-(`setAuthorizedSolver`). It reads each request from its Queue by ID, checks the engine recorded that
-Queue for the ID, requires one output asset, measures the engine's balance across the stock solve,
+(`setAuthorizedSolver`). It reads each request from its Queue by ID and requires the engine as its
+user (`InvalidTrackedRequest`): the Queue returns an empty record for an unknown ID, only the engine
+files requests as their user, and the engine refuses an ID already bound to any Queue, so such a
+request is bound to this Queue. The stock solve dequeues each request by the hash of its fields. It
+requires one output asset, measures the engine's balance across the stock solve,
 and passes the IDs and measured delta to `forwardSolved`, which reverts `SolveUnderfunded` unless
 the delta covers every request in the batch.
 
@@ -139,14 +142,24 @@ and cancellation sequence is in [flows](../architecture/flows.md#async-redemptio
    asset), `discountBps`, `secondsToDeadline`, and a nonzero absolute payout floor
    `minQueuedAssets`. The engine verifies its BoringVault shares decreased by exactly the request,
    reads the request back with `getOnChainWithdraw(requestId)`, checks its ID and engine-owned
-   fields, requires the fixed `amountOfAssets` to meet `minQueuedAssets`, and stores the share and
-   asset amounts. Any failure rolls back the whole request, including the EarnShare burn.
+   fields, and requires the fixed `amountOfAssets` to meet `minQueuedAssets` and fit in `uint88`
+   (`QueuedAssetsTooLarge` above about 3.1e26 base units). It stores one slot per request: the Queue,
+   the claim status, and `amountOfAssets`. Tempo charges 250,000 gas for a slot first written from
+   zero, and a claim is never cleared, so each request pays for one such slot. The open and unresolved
+   claim counters share the active Queue's slot, so a request or close updates one more slot, never a
+   new one. Any failure rolls back the whole request, including the EarnShare burn.
 2. **Solve.** An authorized solver submits request IDs to `VedaForwardingSolver`; the stock solve,
    measured engine credit, and finalization to each stored receiver happen in one transaction. If a
    receiver cannot accept the payout, that request becomes claimable and stays earmarked until anyone
-   calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds.
-3. **Cancel.** The engine calls the originating Queue's `cancelOnChainWithdrawUsingRequestId`.
-   Returned shares re-enter at the current price under the snapshotted fee configuration.
+   calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds. While
+   a batch finalizes, its earmark stays in transient storage, which `settled` and `sweepDust` count;
+   only the amounts of failed payouts are written to the persistent ledger, so a batch whose payouts
+   all succeed writes no ledger slot.
+3. **Cancel.** The engine calls the originating Queue's `cancelOnChainWithdrawUsingRequestId`,
+   checks that the returned request hashes to the request ID, and requires its BoringVault-share
+   balance to rise by exactly that request's `amountOfShares` (`InvalidTrackedRequest`,
+   `UnexpectedVenueSharesReturned`). Returned shares re-enter at the current price under the
+   snapshotted fee configuration.
 
 Each claim records its originating Queue, so a later rotation or Queue removal cannot strand its
 cancellation or settlement, and the engine rejects any reused request ID (`DuplicateRequest`),
@@ -228,6 +241,7 @@ const [request] = parseEventLogs({
 
 - `QueueUnavailable`: no Queue is active. Existing requests stay attached to their Queue.
 - `ZeroMinimumQueuedAssets`: the request omitted the payout floor.
+- `QueuedAssetsTooLarge`: the payout does not fit in `uint88`; split the request.
 - `QueuedAssetsBelowMinimum`: the Queue fixed a payout below the floor; refresh the quote and ask the
   user to authorize a new request.
 - `InvalidAsset`, malformed `engineData`, and Queue deadline or discount failures need corrected
@@ -312,7 +326,9 @@ stock solver boringRedeemSolve accepts the supported request tuple, Teller, and 
 
 For each deficit-covering solve, the authorized solver approves an exact base-asset amount to the
 forwarder immediately before `solveAndForward(requestIds, true)`; never leave a standing allowance.
-Verify the refund and that both allowances return to zero.
+Verify the refund and that both forwarder allowances return to zero. The engine itself keeps a
+one-unit standing allowance of base asset to the BoringVault and of vault shares to the active Queue,
+and its deposits and requests leave exactly that unit.
 
 Before committing the generated `deployment.json`, which does not replace the Veda release record,
 confirm the engine is bound only to the new EarnVault, the registry and periphery are the reviewed
@@ -322,7 +338,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
 
 ## Tests
 
-- Foundry, under [`test/engines/veda/`](../../../earn/test/engines/veda/): accounting, async request,
+- Foundry, under [`test/earn/engines/veda/`](../../../test/earn/engines/veda/): accounting, async request,
   cancellation and settlement, fee freshness, periphery rotation, the forwarding solver, and an
   invariant suite. Rate mutation, periphery rotation, deficit funding, and external-solver recovery
   are covered only here.
@@ -335,7 +351,7 @@ ones, the report is fresh, and the queued E2E case passes. For a queued release 
 ### Test stacks
 
 Tempo-owned test stacks run over Veda-compatible fixtures
-([`LocalVeda.sol`](../../../earn/script/local/contracts/LocalVeda.sol)); they prove nothing about release
+([`LocalVeda.sol`](../../../script/earn/local/contracts/LocalVeda.sol)); they prove nothing about release
 compatibility and never stand in for a production venue. The fixture BoringVault doubles as a
 RolesAuthority that allows every call, the test deployer owns the BoringVault (and so controls the
 ownerless registry), the `VedaEngine`, the `VedaForwardingSolver`, and every fixture, and a hosted

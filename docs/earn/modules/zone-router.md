@@ -6,14 +6,14 @@ integration, failure handling, tests, and the Zone go-live gate. Readers are int
 private deposits and redemptions, operators activating a router, and reviewers.
 
 A profile's separate `zoneRouter` field deploys a different contract beside this one, the
-factory-made [`ZoneRouter`](../../zone-router/zone-router.md).
+factory-made [`ZoneRouter`](../../zone/zone-router.md).
 
 Zones are external infrastructure. Audit coverage is in [audits](../audit/README.md#scope). Hosted Zone stacks are listed in
 [hosted environments](../../deployment/hosted-environments.md).
 
 ## Router contract
 
-[`SingleZoneEarnRouter`](../../../earn/src/router/SingleZoneEarnRouter.sol) lets an account inside a Zone
+[`SingleZoneEarnRouter`](../../../src/earn/router/SingleZoneEarnRouter.sol) lets an account inside a Zone
 deposit into, or redeem from, one EarnVault on the parent chain and receive the result back in the
 same Zone. Each instance is ownerless and immutable to one Zone ID, EarnVault, and private asset;
 the vault asset and EarnShare are read from the EarnVault at construction. The private asset decides
@@ -30,7 +30,7 @@ the mode:
 
 The private asset may never be zero or the EarnShare. Zone ID zero makes every callback revert. The
 router has no owner, registry, setters, public routing method, or rescue; its only state is a
-reentrancy flag, and it holds no user position. Changing the Zone, EarnVault, private asset, or pool
+transient reentrancy flag, and it holds no user position. Changing the Zone, EarnVault, private asset, or pool
 means deploying a new router; an old router stays deployed so callbacks already submitted to it can
 complete or bounce.
 
@@ -43,7 +43,7 @@ Router invariants:
    Portal.
 3. Conversion happens only at the pool oracle's exact par price with measured output equal to input,
    and the router retains no operation balance after success. Its only allowances at rest are standing
-   maximums to its immutable EarnVault and pool, because Tempo charges every zero-to-nonzero allowance
+   maximums to its immutable EarnVault, pool and source Portal, set once at construction, because Tempo charges every zero-to-nonzero allowance
    as a new storage slot; neither can pull a balance the router does not hold.
 
 ## Authentication and callback
@@ -53,18 +53,22 @@ when:
 
 - `msg.sender` is the canonical Zone Messenger (`ZONE_MESSENGER_ADDRESS`);
 - `sourceZoneId` equals `allowedZoneId`;
-- `ZoneFactory.zones(sourceZoneId).portal` equals `sourcePortal`, and
-  `ZoneFactory.isZonePortal(sourcePortal)` is true (`ZONE_FACTORY_ADDRESS`);
+- `sourcePortal` is the Zone's Portal the constructor read from `ZoneFactory.zones(allowedZoneId)`
+  and checked with `ZoneFactory.isZonePortal` (`ZONE_FACTORY_ADDRESS`): a Zone's Portal never changes,
+  so a router for a nonzero Zone without one can't be deployed;
 - the amount is nonzero and the delivered token is the private asset (deposit) or the EarnShare
   (redeem); and
-- the source Portal has the return token (EarnShare for a deposit, the private asset for a
-  redemption) enabled with deposits active, and the refund recipient is nonzero.
+- the refund recipient is nonzero, and the source Portal takes the return token (EarnShare for a
+  deposit, the private asset for a redemption): its `depositEncrypted` reverts while it is paused or
+  for a token it has not enabled or whose deposits are inactive, which rolls back the whole callback.
 
 Callback data (`Abis.earnRouterCallbackData` in `viem/tempo`) carries the flow (`0` deposit, `1`
 redeem), independent `minVaultAssets`, `minEarnShares`, and `minOutputAmount` bounds, an `actionId`,
 and a `ZoneReturn` with the encryption key index, encrypted recipient payload, and refund recipient.
 It has no token, vault, route, Portal, or public recipient, so a caller cannot redirect the
-deployment's route. `supportsFlow` accepts only `0` and `1`. The router ignores the callback
+deployment's route. `supportsFlow` accepts only `0` and `1`. The router reads the tuple in place
+from calldata, so the callback data must end the call's calldata: a callback whose length is not
+whole words reverts `BadFlow`, and the ZoneMessenger's typed call always ends with the callback data. The router ignores the callback
 `senderTag` and never emits, stores, or forwards it: accounting does not need it, and a stable
 public label would make private actions easier to correlate.
 
@@ -91,7 +95,7 @@ sequenceDiagram
     Z->>P: composable withdrawal(privateAsset, amountIn, callbackData)
     P->>M: authenticated callback
     M->>R: onWithdrawalReceived(sourceZoneId, sourcePortal, ..., privateAsset, amountIn, data)
-    R->>R: validate messenger, Zone, Portal, token, flow, return token
+    R->>R: validate messenger, Zone, Portal, token, flow, refund recipient
     opt conversion router
         R->>D: swapExactInput at par
         R->>R: measure vault assets; enforce minVaultAssets
@@ -107,8 +111,8 @@ assets back at par (conversion router only), enforces `minOutputAmount`, and ret
 private-asset output. A same-asset router passes the amount straight through with the same bounds;
 a deposit whose `minVaultAssets` exceeds the withdrawn amount reverts.
 
-Every successful callback keeps a standing maximum approval to the source Portal (set only when the
-current allowance falls short; the Portal moves the router's tokens only inside a
+Every successful callback uses the standing maximum approval to the source Portal that the constructor
+set (a TIP-20 never spends a maximum allowance down; the Portal moves the router's tokens only inside a
 `depositEncrypted` call the router makes), calls `depositEncrypted`, verifies that each touched balance is back at its pre-call
 value, and emits `EarnDeposit` or `EarnRedeem` with the `actionId` and the Portal's deposit hash.
 Success proves the Portal queued the encrypted deposit, not that the Zone has credited it.
@@ -126,16 +130,19 @@ path.
 
 ## Par conversion
 
-`parPrice()` is `10 ** decimals` of the pool oracle; with equal token units it is the only price at
-which input converts to identical output. For each conversion the router:
+`parPrice()` is `10 ** decimals` of the pool oracle, read once at construction: DirectPropAMM keeps its
+oracle's decimals fixed, and a price that no longer matched would only make the zero-tolerance swap
+revert. With equal token units it is the only price at which input converts to identical output. For
+each conversion the router:
 
 1. selects the direction from the flow and the immutable pair;
-2. records its input and output balances;
-3. tops its standing pool allowance up to the maximum if it is below `amountIn`;
+2. records its output balance and, for a redemption, its vault-asset input balance;
+3. relies on the standing maximum pool allowance set at construction;
 4. calls `swapExactInput` with `minAmountOut = amountIn`, the current block as deadline, `actionId` as
    the trade ID, `parPrice()` as the expected price, zero tolerance, and no minimum observation time;
 5. takes `amountOut` from the measured output-balance delta and requires `amountOut == amountIn`; and
-6. requires its input balance to return to the operation baseline.
+6. requires its input balance to return to the operation baseline: a redemption checks its vault-asset
+   input right after the swap, and a deposit's private-asset input is checked when the callback ends.
 
 There are no partial fills. A paused pool, revoked admission or redirected recipient, an off-par or
 (by the pool's own window) stale oracle report, or insufficient inventory reverts the callback and
@@ -176,7 +183,7 @@ external trust boundaries: exact par, measured output, and bounds prevent underd
 repricing but do not make a compromised pool owner or an insolvent token safe.
 
 Test environments that build only Earn's `src/`, such as the Earn Zone integration in
-`tempoxyz/tempo`, can use [`src/demo/DemoParPool.sol`](../../../earn/src/demo/DemoParPool.sol), which
+`tempoxyz/tempo`, can use [`src/demo/DemoParPool.sol`](../../../src/demo/DemoParPool.sol), which
 implements only the pool surface the router calls, acts as its own always-fresh par oracle, and
 converts 1:1 from owner-funded inventory. Earn's localnet uses the
 [pinned DirectPropAMM fixture](propamm.md#pinned-directpropamm-fixture).
@@ -233,13 +240,13 @@ authorization by hand.
 
 Callback failures decode against the router ABI:
 
-| Error                                                                                                                                | Meaning and response                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                |
-| `InvalidReturnToken`                                                                                                                 | The return token is not enabled, or its deposits are inactive, on the source Portal                                          |
-| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool |
-| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, or output bound was missed, or measured conversion output differed from input                      |
-| `ResidualBalance`, `InvalidRoutePair`                                                                                                | Invariant failure; investigate before retrying                                                                               |
+| Error                                                                                                                                | Meaning and response                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                   |
+| Portal `TokenNotEnabled`, `DepositsNotActive`, or a paused Portal                                                                    | The source Portal will not take the return token now (not enabled, deposits inactive, or paused) and reverts the return deposit |
+| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool    |
+| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, or output bound was missed, or measured conversion output differed from input                         |
+| `ResidualBalance`, `InvalidRoutePair`                                                                                                | Invariant failure; investigate before retrying                                                                                  |
 
 When the Portal reports `callbackSuccess: false`, the Zone protocol bounces the withdrawal back and
 the processing fee may still be consumed. Do not issue a second refund from the application; fix the
@@ -263,7 +270,7 @@ core is bound:
 
 | Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                              |
 | ----------------------- | ---------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                      |
+| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/earn/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                 |
 | `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself                                            |
 | `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                         |
 | `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router has callback and return-deposit admission: gateway role when restricted, Account role when gateways are open and access is enforced |
@@ -310,7 +317,7 @@ administrator or pool owner key.
 
 ## Tests
 
-- Foundry, under [`test/router/`](../../../earn/test/router/): callback authentication and flows
+- Foundry, under [`test/earn/router/`](../../../test/earn/router/): callback authentication and flows
   (`SingleZoneEarnRouter.t.sol`), par conversion including off-par and stale-oracle rejection
   (`SingleZoneEarnRouterConversion.t.sol`), custody and residual balances
   (`SingleZoneEarnRouterCustody.t.sol`), the same-asset mode (`SingleZoneEarnRouterSameAsset.t.sol`),

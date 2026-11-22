@@ -21,8 +21,9 @@ import { defineEngine } from './engine.js'
 export const erc4626 = defineEngine({
   label: 'ERC-4626',
   engineContract: 'ERC4626Engine',
-  engineSource: 'src/engines/ERC4626Engine.sol',
+  engineSource: 'src/earn/engines/erc4626/ERC4626Engine.sol',
   venueLabel: 'ERC-4626 vault',
+  idleAssetResidue: true,
   periphery: [],
   capabilities: {
     inKindDeposit: true,
@@ -33,10 +34,10 @@ export const erc4626 = defineEngine({
   },
   factory: {
     contract: 'ERC4626EngineFactory',
-    source: 'src/engines/ERC4626EngineFactory.sol',
+    source: 'src/earn/engines/erc4626/ERC4626EngineFactory.sol',
     releaseKey: 'erc4626Engine',
     creationEvent: getAbiItem({ abi: erc4626EngineFactoryAbi, name: 'ERC4626EngineDeployed' }),
-    deployScript: 'script/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript',
+    deployScript: 'script/earn/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript',
     deployInput: (input) =>
       encodeFunctionData({
         abi: deployERC4626EngineScriptAbi,

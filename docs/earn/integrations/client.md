@@ -268,8 +268,10 @@ allowance on a transfer it makes surfaces under that name rather than as the tok
 The revert table above sets the client response; these notes add only action-specific meaning.
 
 - `deposit(assets, receiver, minEarnShares)`: `ActiveSupplyWithoutBacking` means outstanding
-  EarnShare has zero-valued backing; a user deposit must not recapitalize those holders, so recovery
-  goes through the explicit contribution path. `MaxManagedAssetsExceeded(maximum, actual)` means the
+  EarnShare has zero-valued backing that a restart would make matter (stranded engine shares or
+  dilution above one basis point of the entry);
+  a user deposit must not recapitalize those holders, so recovery goes through the explicit
+  contribution path or a deposit large enough to restart the pool. `MaxManagedAssetsExceeded(maximum, actual)` means the
   post-deposit engine value crosses the configured cap. `ExcessiveConversionLoss` rejects
   conversion-floor loss above one basis point; a larger amount can avoid coarse rounding. Veda's
   `StaleAccountantRate` and PropAMM's `InvalidOracle` block deposits, not exits, until a fresh

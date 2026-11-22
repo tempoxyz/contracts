@@ -194,30 +194,68 @@ export async function spenderProvenanceBlockers(
           ? undefined
           : `Spender ${spender} is not a CardSpender the release CardFactory ${cardFactory} deployed`
       }
-      const [convertVault, pool, customerId] = await Promise.all([
-        readAddress(spender, 'convertVault'),
-        readAddress(spender, 'pool'),
-        read(spender, 'customerId'),
-      ])
-      if (!convertVault || !pool || !isBytes32(customerId)) {
-        return `Spender ${spender} is neither a CardSpender nor a SendSpender`
-      }
-      const release = releaseAddress(() =>
-        releases.sendSpender({
-          routerFactory: factory,
-          convertVault,
-          pool,
-          customerId,
-        }),
-      )
-      if (typeof release !== 'string')
-        return `Spender ${spender} provenance is unknown: ${release.error}`
-      return getAddress(release) === spender
-        ? undefined
-        : `Spender ${spender} is not the release SendSpender for its settings, which is at ${release}`
+      const send = await releaseSendSpender(client, { factory, spender }, releases)
+      return 'blocker' in send ? send.blocker : undefined
     }),
   )
   return blockers.filter((blocker) => blocker !== undefined)
+}
+
+/**
+ * `spender`'s settings when it is the release `SendSpender` for them, bound to the router's `factory`:
+ * its address is the one this checkout's build would have with those constructor arguments, so its code is
+ * that build. Otherwise why it is not, in the words of `spenderProvenanceBlockers`.
+ */
+export async function releaseSendSpender(
+  client: Pick<PublicClient, 'readContract'>,
+  expected: { factory: Address; spender: Address },
+  releases: SpenderReleases,
+): Promise<{ convertVault: Address; pool: Address; customerId: Hex } | { blocker: string }> {
+  const spender = getAddress(expected.spender)
+  const factory = getAddress(expected.factory)
+  const read = (functionName: (typeof spenderAbi)[number]['name']): Promise<unknown> =>
+    client.readContract({ address: spender, abi: spenderAbi, functionName }).catch(missingGetter)
+  const readAddress = async (functionName: (typeof spenderAbi)[number]['name']) => {
+    const value = await read(functionName)
+    return typeof value === 'string' && isAddress(value) ? getAddress(value) : undefined
+  }
+  const [routerFactory, convertVault, pool, customerId] = await Promise.all([
+    readAddress('ROUTER_FACTORY'),
+    readAddress('convertVault'),
+    readAddress('pool'),
+    read('customerId'),
+  ])
+  if (!routerFactory) {
+    return {
+      blocker: `Spender ${spender} reports no ROUTER_FACTORY, so it may take spendFrom from any caller`,
+    }
+  }
+  if (routerFactory !== factory) {
+    return {
+      blocker: `Spender ${spender} takes spendFrom only from routers of ZoneRouterFactory ${routerFactory}, not the router's ${factory}`,
+    }
+  }
+  if (!convertVault || !pool || !isBytes32(customerId)) {
+    return { blocker: `Spender ${spender} is neither a CardSpender nor a SendSpender` }
+  }
+  const release = releaseAddress(() =>
+    releases.sendSpender({ routerFactory: factory, convertVault, pool, customerId }),
+  )
+  if (typeof release !== 'string')
+    return { blocker: `Spender ${spender} provenance is unknown: ${release.error}` }
+  return getAddress(release) === spender
+    ? { convertVault, pool, customerId }
+    : {
+        blocker: `Spender ${spender} is not the release SendSpender for its settings, which is at ${release}`,
+      }
+}
+
+/** Whether `spender` reports a card `PROVIDER`, as every `CardSpender` does and no `SendSpender` does. */
+export async function isCardProgram(client: Pick<PublicClient, 'readContract'>, spender: Address) {
+  const value: unknown = await client
+    .readContract({ address: spender, abi: spenderAbi, functionName: 'PROVIDER' })
+    .catch(missingGetter)
+  return typeof value === 'string' && isAddress(value)
 }
 
 /**
@@ -243,7 +281,8 @@ export async function nonMemberSpenders(
 }
 
 /** Missing getters are contract evidence; transport errors must not become authentication claims. */
-function missingGetter(error: unknown): undefined {
+/** Undefined when a getter reverts or returns no data (the contract lacks it); rethrows anything else. */
+export function missingGetter(error: unknown): undefined {
   if (
     error instanceof BaseError &&
     error.walk(

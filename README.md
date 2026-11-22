@@ -18,33 +18,35 @@
 [![Pull Request](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/pull-request.yml)
 [![Local E2E](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml/badge.svg)](https://github.com/tempoxyz/contracts/actions/workflows/local-zone.yml)
 
-Tempo's contracts and the tooling they share. Each project is a separate Foundry project with its
-own build settings, dependencies, documentation, and audits; they share one deployment lifecycle,
-local Tempo L1 and Zone, E2E harness, and CI.
+Tempo's contracts and the tooling they share, in one Foundry project at the repository root. Its
+Solidity is split into domains, each with its own documentation and audits; they share one build,
+deployment lifecycle, local Tempo L1 and Zone, E2E harness, and CI.
 
-| Project                      | What it is                                                                                                    |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| [earn/](earn/)               | [Tempo Earn](earn/README.md): vault-backed stablecoin yield, the EarnVault and EarnShare                      |
-| [zone-router/](zone-router/) | [Zone router](zone-router/README.md): Zone withdrawal callbacks for Earn and spends, its factory and spenders |
-| [cards/](cards/)             | [Card spend](cards/README.md): provider-agnostic contracts and each card provider's (Bridge, Rain)            |
+| Domain                   | What it is                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| [src/earn/](src/earn/)   | [Tempo Earn](docs/earn/overview.md): vault-backed stablecoin yield, the EarnVault and EarnShare                     |
+| [src/zone/](src/zone/)   | [Zone router](docs/zone/README.md): Zone withdrawal callbacks for Earn and spends, its factory and spenders         |
+| [src/spend/](src/spend/) | [Card spend](docs/spend/README.md): provider-agnostic contracts, each card provider's (Bridge, Rain), card programs |
 
-`earn/` imports neither of the others; `zone-router/` imports Earn's interfaces; `cards/` imports
+`src/earn/` imports neither of the others; `src/zone/` imports Earn's interfaces; `src/spend/` imports
 Earn and the Zone router. Protocol precompiles and system contracts are part of the Tempo node, not
 this repository.
 
 ## Repository layout
 
-| Path                       | Purpose                                                                                                                                               |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `earn/`                    | Tempo Earn Foundry project (solar): contracts, tests, Forge scripts.                                                                                  |
-| `zone-router/`             | Zone router Foundry project: `ZoneRouter`, its factory, `ISpender` and `SendSpender`.                                                                 |
-| `cards/`                   | Card spend Foundry project (solc): our core (`src/core/`) and per-provider contracts (`src/providers/`), providers' vendored code (`vendor/`), tests. |
-| `deployments/`             | Shared deployment lifecycle (`pnpm earn`), releases, ABIs, and modules (`modules/earn/`, `modules/zone-router/`); the `@tempoxyz/contracts` package.  |
-| `profiles/`                | Deployment profiles and generated records.                                                                                                            |
-| `e2e/`                     | Shared local and hosted integration harness and cases, and the card runs (`e2e/cards/`).                                                              |
-| `localnet/`                | Disposable local Tempo L1 and Zone, shared by every E2E run.                                                                                          |
-| `docs/`                    | The [documentation index](docs/README.md); each project's docs (`earn/`, `zone-router/`, `cards/`), and the shared `deployment/` and `development/`.  |
-| `scripts/solidity-deps.sh` | Installs each Foundry project's pinned Solidity dependencies and Earn's solar compiler.                                                               |
+| Path                                         | Purpose                                                                                                                                                                                                   |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `foundry.toml`, `foundry.lock`, `solar.lock` | The Foundry project: profiles, remappings, pinned Solidity dependencies (`lib/`), and the solar compiler (`solar-solc`).                                                                                  |
+| `src/`                                       | Contracts by domain: `earn/`, `zone/`, `spend/` (with `spend/providers/<provider>/` and `spend/programs/`), `demo/` (built, never deployed), and `interfaces/` (`earn/`, `zone/`, `spend/`, `external/`). |
+| `test/`, `script/`                           | Forge tests and scripts by domain (`earn/`, `zone/`, `spend/`).                                                                                                                                           |
+| `vendor/`                                    | Third-party contracts vendored unmodified: card providers' (`bridge/`, `rain/`) and the Zones runtime (`tempo-zones/`).                                                                                   |
+| `snapshots/`                                 | Gas snapshots of the card spend TIP-20 paths and the card programs.                                                                                                                                       |
+| `deployments/`                               | Shared deployment lifecycle (`pnpm earn`), releases, ABIs, and modules (`modules/earn/`, `modules/zone-router/`); the `@tempoxyz/contracts` package.                                                      |
+| `profiles/`                                  | Deployment profiles and generated records.                                                                                                                                                                |
+| `e2e/`                                       | Shared local and hosted integration harness and cases, and the card runs (`e2e/spend/`).                                                                                                                  |
+| `localnet/`                                  | Disposable local Tempo L1 and Zone, shared by every E2E run.                                                                                                                                              |
+| `docs/`                                      | The [documentation index](docs/README.md); each domain's docs (`earn/`, `zone/`, `spend/`), and the shared `deployment/` and `development/`.                                                              |
+| `scripts/solidity-deps.sh`                   | Installs the pinned Solidity dependencies and the solar compiler (`pnpm deps`).                                                                                                                           |
 
 ## Get started
 
@@ -52,7 +54,7 @@ this repository.
 git clone https://github.com/tempoxyz/contracts
 cd contracts
 pnpm install
-pnpm deps     # Solidity dependencies for earn/, zone-router/ and cards/, and Earn's solar compiler
+pnpm deps     # pinned Solidity dependencies and the solar compiler
 pnpm verify
 ```
 
@@ -60,12 +62,13 @@ pnpm verify
 [development](docs/development/README.md) owns the toolchain, checks, and CI, and the
 [documentation index](docs/README.md) names the canonical page for every topic.
 
-## Add a project
+## Add a domain
 
-A new project is its own Foundry directory at the root with its own `foundry.toml`, `foundry.lock`,
-README, and AGENTS.md, an entry in `scripts/solidity-deps.sh` and in the tables above, its own CI
-workflow, and its docs under `docs/<project>/`. It imports another project's contracts through a
-remapping to that project's `src/`, never a copy ([AGENTS.md](AGENTS.md#keep-projects-separate)).
+A new domain gets its own directories in the one Foundry project (`src/<domain>/`,
+`src/interfaces/<domain>/`, `test/<domain>/`, `script/<domain>/`), an AGENTS.md in `src/<domain>/`, an
+entry in the tables above, and its docs under `docs/<domain>/`. It imports another domain's contracts
+by relative path, never a copy, and keeps the one-way import rules
+([AGENTS.md](AGENTS.md#keep-domains-separate)).
 
 ## Security
 

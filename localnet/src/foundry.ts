@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { deployFactoryReleaseScriptAbi, deployLocalEarnScriptAbi } from '@tempoxyz/contracts/abis'
 import {
   assertFoundryProjectEnvironment,
@@ -72,13 +72,13 @@ export function script<const abi extends Abi>(target: string, abi: abi) {
   })
 }
 
-/** Binds Earn's `script/local/<name>.s.sol:<name>Script` fixture. */
+/** Binds Earn's `script/earn/local/<name>.s.sol:<name>Script` fixture. */
 export function fixtureScript<const abi extends Abi>(name: string, abi: abi) {
-  return script(`script/local/${name}.s.sol:${name}Script`, abi)
+  return script(`script/earn/local/${name}.s.sol:${name}Script`, abi)
 }
 
 /** The shared factory release, one CREATE per entry point for Tempo batches. */
-const releaseTarget = 'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
+const releaseTarget = 'script/earn/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
 const releaseScript = script(releaseTarget, deployFactoryReleaseScriptAbi)
 export const release: typeof releaseScript = (functionName, args, options = {}) =>
   releaseScript(functionName, args, { ...options, releaseBuild: true })
@@ -92,26 +92,22 @@ export function releaseAddresses(
   releaseKeys: readonly string[],
   broadcastDirectory: string,
 ): Record<string, Address> {
-  assertFoundryProjectEnvironment(Config.earnRoot)
-  ensureDependencies('earn')
-  const environment = buildEnvironment(
-    foundryProcessEnvironment(process.env),
-    broadcastDirectory,
-    Config.earnRoot,
-  )
+  assertFoundryProjectEnvironment(Config.foundryRoot)
+  ensureDependencies()
+  const environment = buildEnvironment(foundryProcessEnvironment(process.env), broadcastDirectory)
   delete environment.DEPLOYER_PRIVATE_KEY
   const releaseEnvironment = releaseBuildEnvironment(environment)
   // solar's output for a contract depends on the other sources compiled with it, so predict from
   // the same build, over the same sources, that the release script deploys from.
   execFileSync('forge', ['build', releaseTarget.split(':')[0]!], {
-    cwd: Config.earnRoot,
+    cwd: Config.foundryRoot,
     encoding: 'utf8',
     env: releaseEnvironment,
   })
   // Inspection reuses that build's artifacts rather than compiling a narrower source set.
   const creationBytecode = (contract: string) =>
     execFileSync('forge', ['inspect', contract, 'bytecode'], {
-      cwd: Config.earnRoot,
+      cwd: Config.foundryRoot,
       encoding: 'utf8',
       env: releaseEnvironment,
     }).trim() as Hex
@@ -221,7 +217,7 @@ export function runLifecycleStep(step: LifecycleStep, broadcastDirectory: string
     false,
     broadcastDirectory,
     step.rawGasEstimate,
-    projectRoot(step.root, broadcastDirectory),
+    Config.foundryRoot,
   )
   if (forge.error || forge.status !== 0) {
     reportOutput(step.action.id, `Shared ${step.action.id} step failed`, forge)
@@ -229,21 +225,9 @@ export function runLifecycleStep(step: LifecycleStep, broadcastDirectory: string
   }
 }
 
-/**
- * The checkout's Foundry project for a step. The lifecycle runs with this environment's run directory
- * as Earn's root, so its sibling projects resolve beside that directory; map both back into the
- * checkout, where the sources and dependencies are.
- */
-function projectRoot(stepRoot: string, broadcastDirectory: string) {
-  const runRoot = dirname(broadcastDirectory)
-  return resolve(stepRoot) === resolve(runRoot)
-    ? Config.earnRoot
-    : resolve(Config.root, basename(stepRoot))
-}
-
 type LifecycleStep = {
   action: { id: string }
-  /** The step's Foundry project, Earn's or a sibling such as `zone-router/`. */
+  /** The step's Foundry project directory; Forge always runs from the checkout root. */
   root: string
   arguments: string[]
   environment: Record<string, string>
@@ -252,34 +236,34 @@ type LifecycleStep = {
 }
 
 /**
- * Installs a Foundry project's pinned Solidity dependencies the first time a step needs them, so a
- * consumer that holds this repository as a submodule needs no separate install step.
+ * Installs the pinned Solidity dependencies the first time a step needs them, so a consumer that
+ * holds this repository as a submodule needs no separate install step.
  */
-const dependenciesReady = new Set<string>()
-function ensureDependencies(project: string) {
-  if (dependenciesReady.has(project)) return
+let dependenciesReady = false
+function ensureDependencies() {
+  if (dependenciesReady) return
   // The script keeps libraries at their pins and rebuilds solar when its pinned installation
   // receipt is missing or no longer matches the executable.
-  execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), [project], {
+  execFileSync(resolve(Config.root, 'scripts/solidity-deps.sh'), [], {
     cwd: Config.root,
     env: dependencyEnvironment(process.env),
     stdio: 'inherit',
   })
-  dependenciesReady.add(project)
+  dependenciesReady = true
 }
 
-/** Runs Forge from a Foundry project (Earn's by default) with Tempo batch flags and a private broadcast directory. */
+/** Runs Forge from the Foundry project with Tempo batch flags and a private broadcast directory. */
 function spawnForge(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   releaseBuild: boolean | undefined,
   broadcastDirectory: string,
   rawGasEstimate: boolean | undefined,
-  root = Config.earnRoot,
+  root = Config.foundryRoot,
 ) {
-  const built = buildEnvironment(environment, broadcastDirectory, root)
+  const built = buildEnvironment(environment, broadcastDirectory)
   assertFoundryProjectEnvironment(root)
-  ensureDependencies(basename(root))
+  ensureDependencies()
   return spawnSync(
     'forge',
     [
@@ -307,11 +291,10 @@ function spawnForge(
 function buildEnvironment(
   environment: NodeJS.ProcessEnv,
   broadcastDirectory: string,
-  root: string,
 ): NodeJS.ProcessEnv {
   // Both devnet and disposable runs allocate this parent with mkdtemp and remove it in finally.
-  // Inspection and every script share one cache per project, including lifecycle sibling steps.
-  const directory = resolve(broadcastDirectory, '..', 'build', basename(root))
+  // Inspection and every script share the one project's cache, including every lifecycle step.
+  const directory = resolve(broadcastDirectory, '..', 'build')
   return {
     ...environment,
     FOUNDRY_CACHE_PATH: resolve(directory, 'cache'),

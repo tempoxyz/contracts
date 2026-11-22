@@ -137,7 +137,8 @@ export type CapabilityModule = {
   ): Promise<Address[]>
   /** Post-deployment inspection beyond the core stack; binding mismatches throw. */
   inspect?(
-    client: Pick<PublicClient, 'getCode' | 'readContract'> & LatestBlockClient,
+    client: Pick<PublicClient, 'call' | 'getCode' | 'getStorageAt' | 'readContract'> &
+      LatestBlockClient,
     profile: EarnDeploymentProfile,
     outputs: Record<string, Address>,
   ): Promise<InspectionReport | undefined>
@@ -237,13 +238,8 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
     /** Recorded output the factory event must prove was created. */
     output: DeploymentAddressKey
     /** Canonical source admission for an external factory not covered by the deployment's own source targets. */
-    source?: { project: string; contract: string }
+    source?: { contract: string }
   }
-  /**
-   * The Foundry project beside `earn/` that compiles and runs the script and the contract it
-   * creates, such as `zone-router`, which builds with solc; Earn's own project when omitted.
-   */
-  project?: string
   /** `path:Contract` of the script, or the profile's script when it depends on the profile. */
   script: string | ((profile: EarnDeploymentProfile) => string)
   /** Calldata for the script's typed `run(Input)`; Forge receives it with `--sig`. */
@@ -301,6 +297,11 @@ export type AuthorityStep<
   execution: 'authority'
   handoffSummary: string
   handoff(profile: EarnDeploymentProfile, outputs: Record<string, Address>): string
+  /**
+   * Runs `execute` once, when a signer is available, before recording the step even if it is already
+   * satisfied, for best-effort work `satisfied` does not require. Work left undone never blocks.
+   */
+  attemptWhenSatisfied?: true
   /**
    * Whether the configured signer can execute the step; by default, whether the authority's signer
    * key is set. `proven` is the result of `probeSigner`, when the step has one and planning ran it.

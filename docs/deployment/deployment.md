@@ -94,14 +94,14 @@ steps must all complete before the record is published. Activation steps (pool a
 token enablement, gateway registration) are mutable external readiness: each is attempted on every
 run, a handoff on one does not block the others or source verification, and none of them is
 recorded as a completed action.
-Forge writes only where its project's `foundry.toml` allows, so each Forge step writes its outputs
-to a staging copy under the ignored `earn/.earn/external/<id>-<path-hash>/`, which the tooling moves back into
-the profile's `deployment.pending.json` after the step or, if the run stopped, on the next run. A step whose contracts live in a sibling Foundry project, such as the
-Zone router's in `zone-router/`, names it as its `project`: Forge compiles, broadcasts and
-source-verifies from that project, and writes its outputs to the same place as Earn's steps.
+Forge writes only where the repository's `foundry.toml` allows, so each Forge step writes its outputs
+to a staging copy under the ignored `.earn/external/<id>-<path-hash>/`, which the tooling moves back into
+the profile's `deployment.pending.json` after the step or, if the run stopped, on the next run. Every
+step, Earn's and the Zone router's alike, compiles, broadcasts and source-verifies from the one Foundry
+project at the repository root.
 The hash identifies the canonical profile path, so profiles with the same ID in different
 repositories cannot share staging state or Forge receipts. Receipts live under
-`<foundry-project>/broadcast/<id>-<path-hash>/`. An unscoped staging journal at
+`broadcast/<id>-<path-hash>/` at the repository root. An unscoped staging journal at
 `.earn/external/<id>/deployment.pending.json` blocks resume: verify which canonical profile owns it,
 then move it to that profile's hashed staging path. The tool cannot safely assign a shared-ID journal
 automatically.
@@ -176,42 +176,103 @@ ERC-4626 engine hold no base asset between calls, so each deposit recreates thei
 After a new stack is bound, send it a one-time residue that keeps those slots nonzero:
 
 - 1 base unit of the vault asset to the EarnVault
-- 1 base unit to its engine, only for an `erc4626` engine (Veda's settlement checks and PropAMM's
-  idle cash read the engine's whole balance, so those engines hold none)
+- 1 base unit to its engine, for an `erc4626` engine
+- 1 base unit of the quote asset to a `propamm` engine: its idle cash otherwise goes from zero to the
+  trade amount and back on every call. The engine's balance checks are before/after deltas, so the
+  unit stays idle cash it never trades or pays out
+- nothing to a Veda engine, whose settlement checks read its whole base-asset balance
 
-Only an EarnVault from a factory release that includes this change counts up to 1 unit of EarnShare it
-holds as burned (TIP-20 burns only the caller's balance, so every exit moves shares to the vault
-first). Send such a vault 1 unit of EarnShare, from a small first deposit, after confirming from the
-stack's recorded factory release that its EarnVault implementation was built from this change: that
-unit keeps its balance slot without ever counting as supply or claiming backing. EarnShare beyond
-that unit still counts as supply, so transfers to the vault cannot shrink supply to inflate the rate.
+The `seed-engine` activation step sends the engine's unit for `erc4626` and `propamm` stacks: the
+profile's deployer transfers 1 base unit of the stack asset to the bound engine when the engine holds
+none. It is best effort. A run without the deployer key, a deployer holding none of the asset, or a
+token policy that refuses the transfer records the step without sending, and nothing waits on it.
+The EarnVault's unit is still sent by hand.
 
-Never send EarnShare to an EarnVault from an earlier factory release, which includes every stack
-recorded before this change. That vault cannot burn it, so supply could never return to zero: after
-every other holder exits and that unit's backing rounds to zero, deposits and whole-pool migration
-revert.
+The EarnVault also needs 1 unit of EarnShare (TIP-20 burns only the caller's balance, so every exit
+moves shares to the vault first). An EarnVault counts up to 1 unit of EarnShare it holds as burned,
+so that unit keeps its balance slot without ever counting as supply or claiming backing. EarnShare
+beyond that unit still counts as supply, so transfers to the vault cannot shrink supply to inflate
+the rate.
 
-Every EarnVault and ERC-4626 engine balance check is a before/after delta, so the residue never
+- New stacks need no EarnShare step: the EarnVault mints its own unit to itself while the factory
+  initializes it, before the transfer policy applies. An EarnVault from the current release also mints
+  `EarnFees` 1 unit, so a fee recipient's full claim never empties
+  `EarnFees`' balance slot, and it counts exactly those 2 units as burned whatever it holds.
+- An EarnVault from an earlier release that counts the unit as burned (its implementation emits
+  `UnbackedPoolRestarted`) but did not mint it: send it 1 unit of EarnShare, from a small first
+  deposit, after confirming from the stack's recorded factory release which implementation it runs.
+
+Never send EarnShare to anything when its EarnVault does not count the unit as burned, which
+includes every stack recorded before that release. That vault cannot burn it, so supply could never
+return to zero: after every other holder exits and that unit's backing rounds to zero, deposits and
+whole-pool migration revert.
+
+Every EarnVault, ERC-4626 engine and PropAMM engine balance check is a before/after delta, so the residue never
 counts as user assets; it stays with the contract for good. Measured on real TIP-20
-(`cards/test/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and on a
-vault from a release that includes this change the EarnShare unit cuts a redeem from 427k to 173k. The residue is a plain transfer outside the
+(`test/spend/gas/EarnTip20Gas.t.sol`), it cuts a returning deposit from 702k to 203k gas, and the
+EarnShare unit cuts a redeem from 427k to 173k. The base-asset residue is a plain transfer outside the
 recorded deployment actions, so it adds no step to existing deployment records.
 
-Zone routers and card programs (`CardSpender`) hold a token only while a call runs, so each callback
-or spend recreates the balance slot of every token it handles. After one is deployed, send it 1 base
-unit of each token it handles:
+[Reward periphery](../earn/modules/rewards.md) pulls the vault asset from a funder and passes it on in
+the same call, so each funding recreates the funding contract's balance slot. After a contribution
+controller or Merkle distributor is deployed or installed, send it 1 base unit of the vault asset.
+The controller never measures its own balance and the distributor checks only that its balance did
+not grow, so the unit stays with the contract for good; neither has a rescue path, so send no more.
+Measured on real TIP-20 (`test/spend/gas/RewardsTip20Gas.t.sol`), it cuts a controller `fund` from
+670k to 420k gas and a distributor `fundAndPublishRoot` from 710k to 463k; with the EarnVault and
+engine residue above as well, they cost 168k and 211k.
+
+Zone routers, their `SendSpender`s and card programs (`CardSpender`) hold a token only while a call
+runs, so each callback or spend recreates the balance slot of every token it handles. Tempo charges
+250,000 gas for a slot written from zero, unless a TIP-1060 storage credit from a slot the same
+account cleared covers it, and the Zone callback's gas limit, which the user pays, must cover it.
+After one is deployed, send it 1 base unit of each token it handles:
 
 - a Zone router with Earn ops: its vault asset (its private asset too, when it converts through a
   pool), plus each token it spends; then call `warm` for each token it returns to its Zone
+- a `SendSpender` a router lists: each token it receives, the vault asset an EarnShare send redeems
+  to, and, with a conversion binding, that binding's asset and par stablecoin
 - a card program: each token it pays out
 
-Never send either one EarnShare. Their balance checks measure against what they held before the
-call, so they never redeem a residue, and unlike the vault's own, EarnShare they hold counts as active
-supply: if a loss ever rounded its backing to zero, deposits would revert for good. Measured on real
-TIP-20 (`cards/test/gas/RouterTip20Gas.t.sol`, with the vault residue above), a router's deposit
-callback drops from 1.28M to 528k gas and its redeem from 998k to 498k. A card program's router-paid
-spend drops from 621k to 369k and its Earn spend from 1.24M to 990k. Anyone can send the residue and
-call `warm`, so it also applies to routers and programs already deployed.
+For a profile's router the `seed-zone-router` activation step does this. Of the stack's private
+asset, vault asset and EarnShare it seeds what the router's Earn ops handle, warms the allowance each
+Earn op returns to its Zone (EarnShare for Deposit, the private asset for Redeem), and seeds and
+warms what its Portal enables for Spend (it asks the Portal about each of the three, whatever the profile), and
+seeds the same tokens on each listed spender verified as the release `SendSpender` for its
+settings, as `pnpm earn verify` verifies it. A listed card program is left to its
+[runbook](../spend/bridge/deploy.md#6-prepare-the-program-for-low-callback-gas). Any other listed
+spender gets nothing, noted under **Zone router seeds**; **Zone router spenders** blocks it. A `SendSpender`'s conversion asset or par stablecoin is seeded
+only when it is one of the stack's three tokens and the router spends the EarnShare of the vault it
+converts for, the only input that converts. The step sends only what is missing, from
+`DEPLOYER_PRIVATE_KEY`, simulating each transfer and `warm` call from the deployer first: it sends
+those that succeed in batches of at most 48 calls. Only the profile's deployer seeds. The step
+requires only the router's Portal allowances, which stay set once warmed, and every deploy run that
+holds the deployer's key runs its sends once, even when they are already set, without failing the
+deploy if they fail; units it cannot send (it holds too little of a token, or a token's
+TIP-403 transfer policy refuses the deployer or the holder) block nothing and are sent by hand. A
+router release that sets its Portal allowance on each callback refuses `warm` with `OpDisabled`, so
+those allowances are noted rather than required; any other `warm` revert stays required and hands
+off. `pnpm earn verify` notes each missing unit or allowance under **Zone router seeds**, which is
+always ready, even when it cannot read them.
+Tokens outside the stack, such as other stablecoins a Spend router routes, and routers or spenders
+deployed outside a profile, are seeded by hand.
+
+For an EarnVault whose release restarts an unbacked pool (a deposit into a pool whose supply has
+lost all backing prices at the empty-pool rate when that supply is negligible), also send each router
+with Earn ops and each card program that spends Earn positions 1 unit of EarnShare. Their balance
+checks measure against what they held before the call, so the unit is never spent. It counts as
+supply no one can exit, which is why it needs that release: if every other holder exits and its
+backing is lost, the next deposit restarts the pool instead of reverting. Check the vault's recorded
+factory release first, and never send EarnShare to a router, `SendSpender` or card program bound to
+an earlier vault. `seed-zone-router` sends EarnShare only when the vault's implementation emits
+`UnbackedPoolRestarted`; otherwise it still warms the router's EarnShare Portal allowance, which
+moves no EarnShare, and `pnpm earn verify` notes the withheld units.
+
+Measured on real TIP-20 (`test/spend/gas/RouterTip20Gas.t.sol`, with the vault residue above), a
+router's deposit callback drops from 1.28M to 528k gas and its redeem from 998k to 498k, and its
+EarnShare unit takes them to 276k and 244k. A card program's router-paid spend drops from 621k to
+369k; a repeat Earn spend from a program holding its EarnShare unit costs 238k. Anyone can send the
+base-asset residue and call `warm`, so it also applies to routers and programs already deployed.
 
 ## Generated record
 
@@ -368,10 +429,9 @@ evidence passes, a pending record stays pending and funding stays blocked. Never
 
 Source inputs are hashed in a fixed (`en`) collation, so the recorded hash does not depend on the
 operator's locale.
-Hosted completion cannot opt out of source verification. A contract from a sibling project, such
-as `zone-router/`'s `ZoneRouterFactory` and `ZoneRouter`, is submitted from that project with
-its own compiler settings; its sources may include Earn's through `linked/earn/`, and each must resolve
-inside the checkout and match it. The factory-created `ZoneRouter` records the `factory.deploy`
+Hosted completion cannot opt out of source verification. Every contract, Earn's and the Zone
+router's `ZoneRouterFactory` and `ZoneRouter` alike, is submitted from the repository's one Foundry
+project with its compiler settings; each of its sources must resolve inside the checkout and match it. The factory-created `ZoneRouter` records the `factory.deploy`
 transaction that emitted its `RouterDeployed` event as its creation transaction.
 
 The record classifies actual code forms instead of treating every output as an ordinary Solidity
@@ -419,23 +479,25 @@ the reward treasury.
 | `deploy-core`                    | deployment | deployer                                                             | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
 | `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role) | Bind EarnVault and atomically transfer the engine to the configured final owner |
 | `deploy-router`                  | deployment | deployer                                                             | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../zone-router/zone-router.md#deployment)                         |
-| `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../zone-router/zone-router.md#deployment)                         |
+| `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
+| `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
 | `deploy-merkle-distributor`      | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `validate-access`                | deployment | deployer                                                             | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
 | `deploy-contribution-controller` | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
 | `authorize-router`               | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `enable-zone-tokens`             | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
 | `register-zone-gateway`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone-router/zone-router.md#deployment)                         |
-| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
-| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
-| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone-router/zone-router.md#deployment)                         |
+| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone/zone-router.md#deployment)                                |
+| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
+| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
+| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
+| `seed-zone-router`               | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Zone router](../zone/zone-router.md#deployment)                                |
+| `seed-engine`                    | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Gas residue after deployment](#gas-residue-after-deployment)                   |
 
 Deployment scripts receive only `DEPLOYER_PRIVATE_KEY`; Forge never receives another authority
 key. Read-only version, build, provenance, source-verification, and formatting subprocesses receive
-no signing keys. A Foundry project's `.env` is refused, and its effective compiler configuration
-must match its tracked `foundry.toml`; keep credentials in the profile-specific environment file.
+no signing keys. The Foundry project's `.env` is refused, and its effective compiler configuration
+must match the tracked `foundry.toml`; keep credentials in the profile-specific environment file.
 Operational authority and deposit sends pin the final signed calls, chain, pending nonce in
 protocol nonce key `0`, and a locally set 300-second expiry. Explicit fee tokens and chain-configured
 fee tokens stay pinned; otherwise authority sends retain the account or protocol fee preference.
@@ -494,17 +556,17 @@ are ownerless, and their constructors impose no PATHUSD transfer-policy ID. The 
 funded and authorized to pay fees under its chosen fee token's live policy; a custom PATHUSD policy
 does not by itself block a release.
 
-Earn compiles with solar ([`earn/solar.lock`](../../earn/solar.lock)). Tempo's source verifier
+The repository compiles with solar ([`solar.lock`](../../solar.lock)). Tempo's source verifier
 rebuilds only the solar builds it pins in tempo-apps'
 [`solar-builds.json`](https://github.com/tempoxyz/tempo-apps/blob/main/apps/contract-verification/container/solar-builds.json),
 so a new `solar.lock` revision must be added there and deployed before a hosted deployment built
 with it. Source verification passes Forge the solar build (`--compiler-version`, from
-`earn/solar-solc --version`, with `--compilation-profile default`); a manual
+`solar-solc --version`, with `--compilation-profile default`); a manual
 `forge verify-contract` needs the same two flags. Deploy a core release with:
 
 ```bash
 FOUNDRY_PROFILE=deploy forge script \
-  script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript \
+  script/earn/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript \
   --sig 'earnFactoryRelease(uint256)' 4217 \
   --network tempo --rpc-url https://rpc.tempo.xyz --broadcast --slow \
   --gas-estimate-multiplier 100
@@ -514,7 +576,7 @@ FOUNDRY_PROFILE=deploy forge script \
 release entry points; each engine factory's entry point lives in that engine's deploy script. Every
 entry point takes the expected chain ID, refuses another chain or a Foundry profile other than
 `deploy`, and broadcasts with `DEPLOYER_PRIVATE_KEY`. Every release contract is created
-deterministically ([`DeterministicRelease`](../../earn/script/deploy/DeterministicRelease.sol)): through
+deterministically ([`DeterministicRelease`](../../script/DeterministicRelease.sol)): through
 the CREATE2 deployer `0x4e59b44847b379578588920cA78FbF26c0B4956C`, present on every Tempo network and
 in localnet's genesis, with one fixed salt, so the same creation code and constructor arguments land
 at the same address on Moderato and mainnet, and an entry point reuses a contract that already exists
@@ -567,7 +629,7 @@ core already created against an old engine remains tied to that engine.
 
 ```bash
 FOUNDRY_PROFILE=deploy forge script \
-  script/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript \
+  script/earn/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript \
   --sig 'erc4626EngineFactory(uint256)' 42431 \
   --network tempo --rpc-url https://rpc.moderato.tempo.xyz --broadcast --slow
 ```
@@ -586,7 +648,7 @@ verifier entry that differs from the recorded deployment ([repair limits](#sourc
 
 Every step reconciles: existing release contracts are reused, and a profile deploy keeps what its
 record and the chain already hold, so a run on an unchanged `main` sends nothing and a rerun after a
-failure resumes. Each network's profile resume state (`deployment.pending.json`, `earn/.earn/external/`,
+failure resumes. Each network's profile resume state (`deployment.pending.json`, `.earn/external/`,
 and Forge's `broadcast/` receipts) is kept in the Actions cache between runs for that. A profile
 short of `complete` (a handoff to an outside authority, or source verification still pending) fails
 the job after the others run, naming what it waits on; rerun once that is done.
@@ -604,12 +666,12 @@ stack is redeployed: dispatch Deploy after it merges, then merge the record pull
 
 ### Zone router releases
 
-The [Zone router](../zone-router/zone-router.md)'s ownerless contracts release apart from Earn's, through
+The [Zone router](../zone/zone-router.md)'s ownerless contracts release apart from Earn's, through
 the **Zone Router Release** workflow ([`zone-router-release.yml`](../../.github/workflows/zone-router-release.yml))
 and `pnpm zone-router-release <network> <release> [--parameters <json>] [--broadcast]`
 ([`core/zone-router-release.ts`](../../deployments/core/zone-router-release.ts)), which accepts only these
 releases. It runs the same release engine as factory releases, from
-[`zone-router/`](../../zone-router/README.md) with its own solar build and `deploy` profile: the same address,
+the repository root with the shared solar build and `deploy` profile: the same address,
 creation-code, and receipt checks, reconciling a release that already exists, and source
 verification after a broadcast. Its CLI also accepts `--resubmit-verification` with `--broadcast`,
 with the same [repair limits](#source-verification). None has a registry entry, so there is no `all` and nothing is
@@ -621,7 +683,7 @@ and the job summary.
 The workflow runs from `main` only. Choose the networks (`both` runs Moderato, then mainnet only after
 Moderato succeeds), one release and its parameters, and whether to broadcast. Each job's summary and
 its `zone-router-release-<network>-<attempt>` artifact list the addresses, transactions, source matches,
-and parameters, with `zone-router/broadcast/`. As with Deploy, the dispatch is
+and parameters, with the run's `broadcast/` receipts. As with Deploy, the dispatch is
 the approval: each network's job runs in the same `factory-release-<network>` environment, with no
 required reviewer, `main` only, and the same deployer key; the contracts are ownerless, so the key only
 pays fees. It shares the network's
@@ -650,7 +712,7 @@ pnpm zone-router-release moderato zoneRouter \
   --parameters '{"factory": "<ZoneRouterFactory>", "mode": {"zoneId": 7, "enabledOps": 4, "spenders": ["<SendSpender>"]}}'
 ```
 
-[`DeployRouterRelease`](../../zone-router/script/deploy/DeployRouterRelease.s.sol) holds their entry
+[`DeployRouterRelease`](../../script/zone/deploy/DeployRouterRelease.s.sol) holds their entry
 points, with the same chain, profile, and deployer checks as `DeployFactoryRelease`. The factory and
 each spender are created through the CREATE2 deployer with Earn's release salt
 (`DeterministicRelease`), and a router by its factory at `predict(mode)`, salted by the mode's hash.
@@ -661,16 +723,16 @@ records the router as a contract its factory call created; the command matches i
 checks it like any other creation, then source-verifies it with `abi.encode(mode)` as its
 constructor arguments. A release deploys only: the pool owner still admits a converting spender
 or router, and the Zone's Portal administrator a router
-([Zone router deployment](../zone-router/zone-router.md#deployment)).
+([Zone router deployment](../zone/zone-router.md#deployment)).
 
 ### Bridge releases
 
 The **Bridge Release** workflow ([`bridge-release.yml`](../../.github/workflows/bridge-release.yml))
 deploys the card integration's "TS" handler (`SpenderTempoSpend`), or a Bridge card program (its
-`BridgeProvider` and `CardSpender`, through the `CardFactory`) for Bridge's `SpenderFactory` from `main`, at its deterministic address, with [`cards/`](../../cards/README.md)' own build.
+`BridgeProvider` and `CardSpender`, through the `CardFactory`) for Bridge's `SpenderFactory` from `main`, at its deterministic address, with the repository's build of [card spend](../spend/README.md).
 It runs in the same `factory-release-<network>` environment and `hosted-contracts-<network>` queue,
 one network per dispatch, and lists in its summary the calls Bridge's admin and governance submit to
 register and gate the handler; it never submits them. A program also takes `routerFactory`, the Zone
 router release's `ZoneRouterFactory`: only its routers may call the program's `spendFrom`, and the release
-`CardFactory` and the program's address depend on it. [Deploying from CI](../cards/bridge/deploy.md#deploying-from-ci) owns the
+`CardFactory` and the program's address depend on it. [Deploying from CI](../spend/bridge/deploy.md#deploying-from-ci) owns the
 details.

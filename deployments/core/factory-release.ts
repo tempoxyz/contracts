@@ -28,7 +28,6 @@ import { deployFactoryReleaseScriptAbi } from '../abis/index.js'
 import {
   assertFoundryVersion,
   assertFoundryProjectEnvironment,
-  foundryProjectRoot,
   foundryRpcEnvironment,
   foundryProcessEnvironment,
   foundryVerificationEnvironment,
@@ -48,7 +47,7 @@ import {
 } from './parse.js'
 import { verifyContractSource } from './verify.js'
 
-const releaseScript = 'script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
+const releaseScript = 'script/earn/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript'
 
 /**
  * Every shared release one run deploys: the core release (EarnVault and EarnFees implementations
@@ -88,17 +87,12 @@ export type ReleaseContract = {
   createdInReceipt?: (receipt: TransactionReceipt, address: Address) => boolean
 }
 
-/** The Foundry project that compiles, deploys and source-verifies a release. */
-export type FoundryProject = 'earn' | 'zone-router'
-
 /** A release's validated parameters, as its result records them; empty for a kind that takes none. */
 export type ReleaseParameters = Readonly<Record<string, unknown>>
 
 /** One release of the shared engine: its entry point and the contracts it creates. */
 export type ReleasePlan<Kind extends string = string> = {
   kind: Kind
-  /** The Foundry project its script and contracts belong to. */
-  project: FoundryProject
   /** `path:Contract` of the Foundry script. */
   script: string
   parameters: ReleaseParameters
@@ -122,7 +116,6 @@ export function planFactoryRelease(kind: string, chainId: number): FactoryReleas
   if (kind === 'core') {
     return {
       kind,
-      project: 'earn',
       script: releaseScript,
       parameters: {},
       calldata: encodeFunctionData({
@@ -131,11 +124,11 @@ export function planFactoryRelease(kind: string, chainId: number): FactoryReleas
         args: [expectedChainId],
       }),
       contracts: [
-        { name: 'EarnVault', contract: 'src/core/EarnVault.sol:EarnVault' },
-        { name: 'EarnFees', contract: 'src/core/EarnFees.sol:EarnFees' },
+        { name: 'EarnVault', contract: 'src/earn/core/EarnVault.sol:EarnVault' },
+        { name: 'EarnFees', contract: 'src/earn/core/EarnFees.sol:EarnFees' },
         {
           name: 'EarnFactory',
-          contract: 'src/core/EarnFactory.sol:EarnFactory',
+          contract: 'src/earn/core/EarnFactory.sol:EarnFactory',
           constructorArgs: (addresses) =>
             encodeAbiParameters(parseAbiParameters('address, address, address'), [
               Addresses.tip20Factory,
@@ -153,7 +146,6 @@ export function planFactoryRelease(kind: string, chainId: number): FactoryReleas
   if (kind === 'rewards') {
     return {
       kind,
-      project: 'earn',
       script: releaseScript,
       parameters: {},
       calldata: encodeFunctionData({
@@ -164,7 +156,7 @@ export function planFactoryRelease(kind: string, chainId: number): FactoryReleas
       contracts: [
         {
           name: 'EarnRewardsFactory',
-          contract: 'src/rewards/EarnRewardsFactory.sol:EarnRewardsFactory',
+          contract: 'src/earn/rewards/EarnRewardsFactory.sol:EarnRewardsFactory',
         },
       ],
       forgeArguments: [],
@@ -178,7 +170,6 @@ export function planFactoryRelease(kind: string, chainId: number): FactoryReleas
   }
   return {
     kind: factory.releaseKey,
-    project: 'earn',
     script: factory.deployScript,
     parameters: {},
     calldata: factory.releaseInput(expectedChainId),
@@ -512,7 +503,7 @@ export type ReleaseOptions = {
   resubmit?: boolean
   network: string
   broadcast: boolean
-  /** Earn's Foundry project; a plan in another project runs from its sibling (`zone-router/`). */
+  /** The repository root, the Foundry project every release builds and runs in. */
   root: string
   environment: Readonly<Record<string, string | undefined>>
 }
@@ -559,7 +550,7 @@ export async function deployRelease<Kind extends string>(
   if (!options.environment.DEPLOYER_PRIVATE_KEY) throw new Error('DEPLOYER_PRIVATE_KEY is required')
   const rpc = rpcConfiguration('TEMPO', options.environment, network.rpcUrl)
   if (!rpc.authenticatedUrl) throw new Error(`No RPC for ${network.id}`)
-  const root = foundryProjectRoot(options.root, plan.project === 'earn' ? undefined : plan.project)
+  const root = options.root
 
   const client = runtime.client(rpc)
   const actualChainId = await client.getChainId()
@@ -863,7 +854,7 @@ export function registryUpdates(
   values: readonly unknown[],
   compile: (contract: string) => Hex = (contract) =>
     defaultDependencies.creationBytecode(
-      fileURLToPath(new URL('../../earn', import.meta.url)),
+      fileURLToPath(new URL('../..', import.meta.url)),
       contract,
       process.env,
     ),
@@ -1012,7 +1003,7 @@ function registryMain(files: string[], body: string | undefined) {
 /** CLI boundary; reads DEPLOYER_PRIVATE_KEY and the optional TEMPO_RPC_* from the environment. */
 export async function main(
   argv: string[] = process.argv.slice(2),
-  root = resolve(fileURLToPath(new URL('../../earn', import.meta.url))),
+  root = resolve(fileURLToPath(new URL('../..', import.meta.url))),
 ) {
   const { positionals, values } = parseArgs({
     args: argv,

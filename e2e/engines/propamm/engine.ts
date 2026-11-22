@@ -1,7 +1,7 @@
 import { earnFeesAbi, earnVaultAbi } from '@tempoxyz/contracts/abis'
 import { quotePropAMMRoute } from '@tempoxyz/contracts/deployments'
 import type { Abi } from 'viem'
-import fixture from '../../../earn/test/fixtures/propamm/DirectPropAMM.json' with { type: 'json' }
+import fixture from '../../../test/earn/fixtures/propamm/DirectPropAMM.json' with { type: 'json' }
 import type { E2eEngine } from '../index.js'
 
 export const engine: E2eEngine = {

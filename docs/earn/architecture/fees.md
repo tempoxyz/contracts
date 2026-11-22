@@ -41,8 +41,9 @@ configuration:
 
 - only its EarnVault can checkpoint, configure, disable, ratchet baselines, or record and settle
   async-request snapshots;
-- it reads active assets and valuation freshness from its EarnVault and never chooses an engine or
-  moves backing;
+- it takes active EarnShare supply, active assets and valuation freshness from its EarnVault, as
+  arguments to `accrueFees` and `initializeBaselines` and by reading the EarnVault elsewhere, and
+  never chooses an engine or moves backing;
 - it has no issuer role: the EarnVault calls `EarnFees.accrueFees`, then mints the returned
   `totalFeeEarnShares` to `EarnFees`;
 - it credits recipient ledgers and holds the fee EarnShare backing them; recipients claim directly;
@@ -133,6 +134,9 @@ that by checkpointing sub-precision growth repeatedly; rounding never increases 
 
 After a base-asset or in-kind deposit, `EarnFees.initializeBaselines` raises the high-water mark,
 and an excess target, to the post-entry value when that is higher. Baselines never fall on entry.
+When the deposit's checkpoint valued the pool, `accrueFees` also returns the lowest baseline it
+left, and the EarnVault skips `initializeBaselines` (and its `FeeBaselinesInitialized` event) when
+the post-entry value does not exceed it, since the call would change nothing.
 This keeps venue precision that pooling makes representable, for example after a dust-sized first
 position, classified as principal rather than accrual.
 
@@ -158,9 +162,13 @@ value without a liquidity dependency.
 
 Allocations are calculated in asset terms first. Each fee carries its sub-unit remainder in
 `EarnFees` storage per configuration and slot, so checkpoint cadence cannot erase or increase fees
-through rounding. The aggregate converts to EarnShare once, and each nonzero allocation receives its
-proportional share rounded down, except the last nonzero allocation in configured order (the excess
-fee follows the fixed fees), which receives the rounding residual.
+through rounding. A configuration's five remainders share one storage slot, which keeps a marker
+bit once a remainder is carried, so waiving them never returns the slot to zero. Each remainder
+stays within a small multiple of `BPS_DENOMINATOR` (the cap never raises their sum), far inside its
+packed field; a value that would not fit reverts rather than truncating. The aggregate converts to
+EarnShare once, and each nonzero allocation receives its proportional share rounded down, except
+the last nonzero allocation in configured order (the excess fee follows the fixed fees), which
+receives the rounding residual.
 
 Installing a new configuration waives the outgoing configuration's remainders and emits
 `FeeDustWaived`, unless an open request snapshot references that configuration; its remainders are
@@ -203,10 +211,15 @@ treated as non-expiring. `setFeeConfig` and `executeDistributorFeeUpdate` revert
 
 ## Claims
 
-A checkpoint increases `claimableEarnShares[recipient]`; the recipient then calls
+A checkpoint increases `claimableEarnShares(recipient)`; the recipient then calls
 `EarnFees.claim(to, earnShares)`. Only the recorded recipient can spend its ledger, and `to` cannot
 be zero, `EarnFees`, or the EarnVault. Removing a recipient affects only future accrual; earned
 EarnShare stays claimable.
+
+Each recipient's ledger and the total are stored one above their value once first credited, so a
+full claim leaves both slots nonzero. The next checkpoint, paid by whoever deposits or exits,
+rewrites them instead of creating new slots (Tempo charges 250,000 gas for each slot first written
+nonzero).
 
 Recipients are never called during accrual, so a blocked or reverting recipient cannot stop
 deposits, exits, contributions, or other recipients; only its own claim fails. Claimed and unclaimed
@@ -244,8 +257,10 @@ authorities, their handoffs, and every pending update.
 
 `disableFees` is the operator's emergency stop for stacks without a distributor. It does not read
 valuation and waives uncrystallized active-pool and cancellation fees, so exits continue if NAV
-becomes unavailable. Every request records the disable epoch at creation; a later disable
-permanently waives its snapshot, even if fees are re-enabled. On a stack with a distributor,
+becomes unavailable. `EarnFees` records when fees were last disabled, and a disable at or after a
+request's recorded time permanently waives its snapshot, even if fees are re-enabled. A disable and
+re-enable within the same second therefore also waives requests recorded after the re-enable in that
+second, in their favour. On a stack with a distributor,
 including one whose item is zero, `disableFees` reverts with `GlobalFeeDisableUnavailable`, because
 it would let one authority erase the other's items; each removes only its own items through its
 prospective update path. A configuration installed after disablement needs a fresh valuation,
@@ -258,17 +273,17 @@ The request, finalization, and cancellation sequences are in
 [async redemption](flows.md#async-redemption). At request time the EarnVault checkpoints the active
 pool, burns the requester's EarnShare, moves the corresponding engine shares into the engine queue,
 and records the claim. If fees are active and the valuation is fresh, `EarnFees` also stores a
-snapshot: the burned EarnShare, the request's value, the high-water mark and current grown target
-scaled to the burned EarnShare (rounded up), the configuration ID, the request time, and the disable
-epoch.
+snapshot in one storage slot: the high-water mark and current grown target scaled to the burned
+EarnShare (rounded up), the configuration ID, and the request time. The burned EarnShare stays in the
+EarnVault's request record, which passes it back on cancellation.
 
 Active holders keep earning and paying fees while the claim is open. Finalization pays the engine's
 fixed result to the stored receiver and closes the claim and its snapshot with no burn and no fee
 calculation.
 
 Cancellation returns the queued position to the active pool. After checkpointing the active pool,
-the EarnVault measures the returned engine shares. The snapshot is charged only if it exists, no
-disable has occurred since the request, fees are not disabled, and the valuation is fresh. A charged
+the EarnVault measures the returned engine shares. The snapshot is charged only if it exists, fees
+were not disabled at or after its request time, fees are not disabled, and the valuation is fresh. A charged
 snapshot runs the waterfall under its own configuration against the returned value, using the
 snapshot's high-water mark and a target grown from the request time, so only positive queued growth
 pays. The re-entry is:
@@ -283,7 +298,11 @@ The fee portion of the re-entry, `floor(reentry × fee assets / returned value)`
 meet the caller's nonzero `minReceiverEarnShares`. A re-entry into a nonempty pool that leaves more
 than one basis point of the returned engine shares unrepresented reverts. Losses pay no fee and
 re-enter at their returned value. With a chargeable snapshot, queuing does not avoid fees on
-positive queued growth; stale valuation and fee disablement are explicit exceptions.
+positive queued growth; stale valuation and fee disablement are explicit exceptions. After a charged
+re-entry into a nonempty pool, the baselines ratchet up to the pooled value as after a principal
+entry, since everything in the pool was just charged. A small active pool, such as a seed unit whose
+value rounds down, therefore cannot leave the mark low and have the next checkpoint charge the queued
+growth again.
 
 A request filed while the valuation is stale records no snapshot, and a stale cancellation charges
 none, so either remains cancellable and finalizable without the expired NAV. Cancellation closes
@@ -393,7 +412,7 @@ total fee      = $2.625 + $17.375                         = $20
 
 Holders keep exactly the $1,030 target, which becomes the $1.030 high-water mark
 (`testFixedAndExcessReturnFeesFollowWaterfall` in
-[`EarnVaultFees.t.sol`](../../../earn/test/core/EarnVaultFees.t.sol)).
+[`EarnVaultFees.t.sol`](../../../test/earn/core/EarnVaultFees.t.sol)).
 
 ### Depositing during a drawdown
 

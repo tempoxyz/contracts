@@ -67,7 +67,9 @@ function broadcastFile(created: readonly PredictedContract[], status = '0x1') {
 describe('planFactoryRelease', () => {
   test('the core release runs earnFactoryRelease for the chain with the large-creation multiplier', () => {
     const plan = planFactoryRelease('core', 4217)
-    expect(plan.script).toBe('script/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript')
+    expect(plan.script).toBe(
+      'script/earn/deploy/DeployFactoryRelease.s.sol:DeployFactoryReleaseScript',
+    )
     expect(decodeFunctionData({ abi: deployFactoryReleaseScriptAbi, data: plan.calldata })).toEqual(
       {
         functionName: 'earnFactoryRelease',
@@ -85,11 +87,13 @@ describe('planFactoryRelease', () => {
 
   test('every engine factory release runs its own entry point', () => {
     const plan = planFactoryRelease('erc4626Engine', 42431)
-    expect(plan.script).toBe('script/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript')
+    expect(plan.script).toBe(
+      'script/earn/deploy/DeployERC4626Engine.s.sol:DeployERC4626EngineScript',
+    )
     expect(plan.contracts).toEqual([
       {
         name: 'ERC4626EngineFactory',
-        contract: 'src/engines/ERC4626EngineFactory.sol:ERC4626EngineFactory',
+        contract: 'src/earn/engines/erc4626/ERC4626EngineFactory.sol:ERC4626EngineFactory',
       },
     ])
     expect(plan.registryKey).toBe('erc4626Engine')
@@ -99,11 +103,10 @@ describe('planFactoryRelease', () => {
     expect(() => planFactoryRelease('vault', 4217)).toThrow('Unknown factory release vault')
   })
 
-  test("plans only Earn's releases, from Earn's project and without parameters", () => {
+  test("plans only Earn's releases, without parameters", () => {
     for (const kind of factoryReleaseKinds) {
       expect(planFactoryRelease(kind, 4217)).toMatchObject({
         kind,
-        project: 'earn',
         parameters: {},
       })
     }
@@ -230,7 +233,7 @@ describe('deployFactoryRelease', () => {
     network: 'mainnet',
     kind: 'core',
     broadcast: true,
-    root: '/repo/earn',
+    root: '/repo',
     environment: { DEPLOYER_PRIVATE_KEY: '0xkey' },
     ...overrides,
   })
@@ -255,7 +258,7 @@ describe('deployFactoryRelease', () => {
     expect(forgeArguments).toEqual(expect.arrayContaining(['--broadcast', '--slow']))
     expect(forgeArguments).not.toContain('--rpc-url')
     expect(forgeEnvironment.FOUNDRY_ETH_RPC_URL).toContain('rpc.tempo.xyz')
-    expect(cwd).toBe('/repo/earn')
+    expect(cwd).toBe('/repo')
     // Forge receives only the deployer key from the environment allowlist.
     expect(forgeEnvironment).toEqual({
       PATH: '/bin',
@@ -264,13 +267,13 @@ describe('deployFactoryRelease', () => {
       FOUNDRY_ETH_RPC_URL: 'https://rpc.tempo.xyz/',
     })
     expect(dependencies.readFile).toHaveBeenCalledWith(
-      broadcastPath('/repo/earn', planFactoryRelease('core', 4217), 4217, true),
+      broadcastPath('/repo', planFactoryRelease('core', 4217), 4217, true),
     )
     expect(dependencies.verify).toHaveBeenCalledTimes(3)
     expect(dependencies.verify.mock.calls[2]![0]).toMatchObject({
       chainId: 4217,
       address: predicted[2]!.address,
-      contract: 'src/core/EarnFactory.sol:EarnFactory',
+      contract: 'src/earn/core/EarnFactory.sol:EarnFactory',
       constructorArgs: predicted[2]!.constructorArgs,
     })
     expect(result.current).toBeUndefined()
@@ -356,7 +359,7 @@ describe('deployFactoryRelease', () => {
       'forge script failed',
     )
     expect(dependencies.removeScriptCache).toHaveBeenCalledWith(
-      '/repo/earn',
+      '/repo',
       'DeployFactoryRelease.s.sol',
     )
   })
@@ -370,7 +373,7 @@ describe('deployFactoryRelease', () => {
     )
     expect(dependencies.forge.mock.calls[0]![0]).not.toContain('--broadcast')
     expect(dependencies.readFile).toHaveBeenCalledWith(
-      broadcastPath('/repo/earn', planFactoryRelease('core', 42431), 42431, false),
+      broadcastPath('/repo', planFactoryRelease('core', 42431), 42431, false),
     )
     expect(dependencies.verify).not.toHaveBeenCalled()
     expect(result.contracts.every((contract) => contract.match === null)).toBe(true)
@@ -454,13 +457,13 @@ describe('release selection', () => {
 describe('factory release CLI', () => {
   test('refuses a router release and parameters before deploying anything', async () => {
     for (const kind of routerReleaseKinds) {
-      await expect(main(['moderato', kind], '/nonexistent/earn')).rejects.toThrow(
+      await expect(main(['moderato', kind], '/nonexistent')).rejects.toThrow(
         'Zone router contracts release with pnpm zone-router-release',
       )
     }
-    await expect(
-      main(['moderato', 'core', '--parameters', '{}'], '/nonexistent/earn'),
-    ).rejects.toThrow("Unknown option '--parameters'")
+    await expect(main(['moderato', 'core', '--parameters', '{}'], '/nonexistent')).rejects.toThrow(
+      "Unknown option '--parameters'",
+    )
   })
 })
 
@@ -657,9 +660,9 @@ function releaseClient(chainId: number, binding?: Address) {
 
 test('factory release CLI routes verifier repair to its broadcast guard', async () => {
   await expect(
-    main(['moderato', 'core', '--resubmit-verification'], '/nonexistent/earn'),
+    main(['moderato', 'core', '--resubmit-verification'], '/nonexistent'),
   ).rejects.toThrow('--resubmit-verification requires --broadcast')
-  await expect(main(['registry', '--resubmit-verification'], '/nonexistent/earn')).rejects.toThrow(
+  await expect(main(['registry', '--resubmit-verification'], '/nonexistent')).rejects.toThrow(
     '--resubmit-verification is not supported by registry',
   )
 })

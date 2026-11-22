@@ -29,7 +29,7 @@ scope is in [audits](../audit/README.md#scope).
 
 ## EarnFactory
 
-[`EarnFactory`](../../../earn/src/core/EarnFactory.sol) is constructed with the canonical `ITIP20Factory`,
+[`EarnFactory`](../../../src/earn/core/EarnFactory.sol) is constructed with the canonical `ITIP20Factory`,
 one locked `EarnVault` implementation, and one locked `EarnFees` implementation, all immutable.
 
 `deploy(DeployParams)` accepts:
@@ -58,12 +58,13 @@ address. `deploy` returns `(earnShare, earnVault, earnFees)` after:
 4. creating EarnShare through the TIP-20 factory at the predicted address, named
    `"<engine name> (Earn)"`, symbol `"<engine symbol>E"`, with an empty currency;
 5. creating the EarnVault ERC-1967 proxy and the deterministic `EarnFees` clone;
-6. initializing `EarnFees`, then the EarnVault, which requires the engine's base interface and an
-   exit capability and an EarnShare with zero supply;
+6. initializing `EarnFees`;
 7. granting the EarnVault the issuer role;
-8. attaching the transfer policy;
-9. revoking the factory's administrator role without a replacement; and
-10. emitting `EarnStackDeployed`.
+8. initializing the EarnVault, which requires the engine's base interface and an exit capability
+   and an EarnShare with zero supply, then mints itself the one EarnShare unit it counts as burned;
+9. attaching the transfer policy;
+10. revoking the factory's administrator role without a replacement; and
+11. emitting `EarnStackDeployed`.
 
 `computeEarnShareSalt`, `predictEarnShare`, and `predictEarnFees` support deployment planning. The
 factory does not deploy the engine, router, Veda solver, or reward periphery. The engine's setup
@@ -73,7 +74,7 @@ different or missing binding or an unexpected engine owner.
 
 ## EarnVault
 
-[`EarnVault`](../../../earn/src/core/EarnVault.sol) is the persistent public integration point. Its
+[`EarnVault`](../../../src/earn/core/EarnVault.sol) is the persistent public integration point. Its
 `initialize` runs once, from the factory, and emits `EarnVaultInitialized` with the engine,
 EarnShare, fee module, operator, emergency seats, asset limit, migration mode, distributor, update
 delay, and distributor fee. The factory's later `EarnStackDeployed` is the signal that issuer and
@@ -81,49 +82,50 @@ transfer-policy setup completed.
 
 ### Core state
 
-| Read                                          | Meaning                                                                 |
-| --------------------------------------------- | ----------------------------------------------------------------------- |
-| `asset()`                                     | Immutable base asset, read from the initial engine                      |
-| `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                         |
-| `engine()`                                    | Current engine                                                          |
-| `engineMigrationMode()`                       | Deployment-fixed `UserOnly` or `OperatorEnabled`; no setter             |
-| `operator()` / `pendingOperator()`            | Operator and nominated successor                                        |
-| `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                        |
-| `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                                |
-| `engineShares()`                              | Managed engine shares backing active EarnShare, capped at raw custody   |
-| `rawEngineShares()`                           | Raw current-engine custody, including surplus                           |
-| `surplusEngineShares()`                       | Raw shares not recognized as managed backing                            |
-| `totalAssets()`                               | Value of managed backing; surplus excluded                              |
-| `totalEarnShares()`                           | Active supply: EarnShare total supply minus up to 1 vault-held unit     |
-| `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares                |
-| `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability         |
-| `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution   |
-| `rewardRateBaseline()`                        | Rate at initialization or the last empty reset                          |
-| `MAX_REWARD_RATE_MULTIPLIER()`                | Fixed reward-admission ceiling: `100`                                   |
-| `openRedeemRequestCount()`                    | Number of open async claims                                             |
-| `pendingRedeem(requestId)`                    | Stored receiver, requester, burned EarnShare, engine shares, and `open` |
-| `depositsPaused()`                            | New-exposure pause state                                                |
-| `maxManagedAssets()`                          | Managed-assets ceiling; zero means unlimited                            |
-| `remainingDepositCapacity()`                  | Room under the ceiling; `type(uint256).max` when unlimited              |
+| Read                                          | Meaning                                                               |
+| --------------------------------------------- | --------------------------------------------------------------------- |
+| `asset()`                                     | Immutable base asset, read from the initial engine                    |
+| `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                       |
+| `engine()`                                    | Current engine                                                        |
+| `engineMigrationMode()`                       | Deployment-fixed `UserOnly` or `OperatorEnabled`; no setter           |
+| `operator()` / `pendingOperator()`            | Operator and nominated successor                                      |
+| `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                      |
+| `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                              |
+| `engineShares()`                              | Managed engine shares backing active EarnShare, capped at raw custody |
+| `rawEngineShares()`                           | Raw current-engine custody, including surplus                         |
+| `surplusEngineShares()`                       | Raw shares not recognized as managed backing                          |
+| `totalAssets()`                               | Value of managed backing; surplus excluded                            |
+| `totalEarnShares()`                           | Active supply: EarnShare total supply minus up to 1 vault-held unit   |
+| `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares              |
+| `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability       |
+| `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution |
+| `rewardRateBaseline()`                        | Rate at initialization or the last empty reset                        |
+| `MAX_REWARD_RATE_MULTIPLIER()`                | Fixed reward-admission ceiling: `100`                                 |
+| `openRedeemRequestCount()`                    | Number of open async claims                                           |
+| `pendingRedeem(requestId)`                    | Stored receiver, requester, burned EarnShare, and `open`              |
+| `depositsPaused()`                            | New-exposure pause state                                              |
+| `maxManagedAssets()`                          | Managed-assets ceiling; zero means unlimited                          |
+| `remainingDepositCapacity()`                  | Room under the ceiling; `type(uint256).max` when unlimited            |
 
 ### User and accounting API
 
-| Function                                                   | Behavior                                                          |
-| ---------------------------------------------------------- | ----------------------------------------------------------------- |
-| `deposit(assets, receiver, minEarnShares)`                 | Deposit base assets and mint bounded EarnShare                    |
-| `depositVenueShares(venueShares, receiver, minEarnShares)` | Enter with current venue shares through the in-kind capability    |
-| `redeem(earnShares, receiver, minAssets)`                  | Burn EarnShare and immediately redeem bounded assets              |
-| `withdrawExact(assets, receiver, maxEarnShares)`           | Pay exact assets and burn no more than the cap                    |
-| `contribute(assets)`                                       | Permissionlessly add backing without funder EarnShare             |
-| `absorbEngineShareSurplus(engineShares)`                   | Permissionlessly recognize surplus as a reward                    |
-| `requestRedeem(earnShares, receiver, engineData)`          | Bound floor loss, burn, and open a separate claim                 |
-| `requestRedeem(earnShares, engineData, receiver)`          | The same operation with `engineData` before `receiver`            |
-| `cancelRedeem(requestId, minReceiverEarnShares)`           | Requester or janitor returns bounded queued value to the receiver |
-| `finalizeRedeem(requestId, asset, amount)`                 | Current engine only; forward a solved payout and close the claim  |
-| `previewRedeem(earnShares)`                                | Quote assets after pending fee dilution                           |
-| `previewWithdraw(assets)`                                  | Quote required EarnShare, rounded up, after pending fee dilution  |
-| `convertToEngineShares(earnShares)`                        | Convert at the stored anchor, rounding down                       |
-| `convertEngineSharesToEarnShares(engineShares)`            | Convert at the stored anchor, rounding down                       |
+| Function                                                     | Behavior                                                          |
+| ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `deposit(assets, receiver, minEarnShares)`                   | Deposit base assets and mint bounded EarnShare                    |
+| `depositVenueShares(venueShares, receiver, minEarnShares)`   | Enter with current venue shares through the in-kind capability    |
+| `redeem(earnShares, receiver, minAssets)`                    | Burn EarnShare and immediately redeem bounded assets              |
+| `withdrawExact(assets, receiver, maxEarnShares)`             | Pay exact assets and burn no more than the cap                    |
+| `withdrawExactWithCallback(assets, receiver, maxEarnShares)` | Like `withdrawExact`; the caller pays EarnShare from its callback |
+| `contribute(assets)`                                         | Permissionlessly add backing without funder EarnShare             |
+| `absorbEngineShareSurplus(engineShares)`                     | Permissionlessly recognize surplus as a reward                    |
+| `requestRedeem(earnShares, receiver, engineData)`            | Bound floor loss, burn, and open a separate claim                 |
+| `requestRedeem(earnShares, engineData, receiver)`            | The same operation with `engineData` before `receiver`            |
+| `cancelRedeem(requestId, minReceiverEarnShares)`             | Requester or janitor returns bounded queued value to the receiver |
+| `finalizeRedeem(requestId, asset, amount)`                   | Current engine only; forward a solved payout and close the claim  |
+| `previewRedeem(earnShares)`                                  | Quote assets after pending fee dilution                           |
+| `previewWithdraw(assets)`                                    | Quote required EarnShare, rounded up, after pending fee dilution  |
+| `convertToEngineShares(earnShares)`                          | Convert at the stored anchor, rounding down                       |
+| `convertEngineSharesToEarnShares(engineShares)`              | Convert at the stored anchor, rounding down                       |
 
 The five receiver-selecting entry and exit functions also have self-recipient overloads under
 distinct selectors, for [scoped access keys](../integrations/client.md#delegated-self-recipient-calls):
@@ -138,7 +140,7 @@ distinct selectors, for [scoped access keys](../integrations/client.md#delegated
 
 They behave exactly like the explicit-receiver variants with `receiver = msg.sender`. A contract
 receiver of an async claim may implement
-[`IAsyncRedeemReceiver`](../../../earn/src/interfaces/core/IAsyncRedeemReceiver.sol); the EarnVault calls
+[`IAsyncRedeemReceiver`](../../../src/interfaces/earn/IAsyncRedeemReceiver.sol); the EarnVault calls
 `onRedeemFinalized` or `onRedeemCancelled` after paying it and ignores a revert.
 
 ### Fee and role entrypoints
@@ -202,9 +204,9 @@ compatible asset, vault binding, interface, and output bounds. The full
 | Error                                                                                                 | Rule                                                                                         |
 | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `DepositsPaused`                                                                                      | Pause blocks deposits, in-kind entry, contributions, and absorption                          |
-| `ActiveSupplyWithoutBacking`                                                                          | No principal entry into a pool whose supply has zero-value backing                           |
+| `ActiveSupplyWithoutBacking`                                                                          | No principal entry into a pool whose zero-value supply exceeds 1 bps of the entry            |
 | `ExcessiveConversionLoss`                                                                             | Entry, request, or nonempty-pool re-entry loses more than 1 bp to rounding                   |
-| `MaxManagedAssetsExceeded`                                                                            | A voluntary inflow would exceed the managed-assets limit                                     |
+| `MaxManagedAssetsExceeded`, `MaxManagedAssetsTooLarge`                                                | A voluntary inflow would exceed the managed-assets limit, or a limit exceeds 2^96 − 1        |
 | `RewardRateLimitExceeded`                                                                             | A reward would exceed 100× the reward-rate baseline                                          |
 | `NoEarnShares`, `InsufficientEngineShareSurplus`                                                      | A reward needs holders and enough surplus                                                    |
 | `InsufficientOutput`                                                                                  | A conversion or measured delta is zero, or a measured delta differs from the reported amount |
@@ -221,7 +223,7 @@ The complete list is in the source; client handling is in
 
 ## EarnFees
 
-[`EarnFees`](../../../earn/src/core/EarnFees.sol) is an ownerless deterministic clone initialized once with
+[`EarnFees`](../../../src/earn/core/EarnFees.sol) is an ownerless deterministic clone initialized once with
 one EarnVault, one EarnShare, and the initial configuration (ID `1`). `earnVault()` is the only
 caller allowed to mutate fee state, `earnShare()` is the only token it holds for claims, and there is
 no owner, issuer authority, rescue method, or configuration bypass.
@@ -253,8 +255,13 @@ module, or the EarnVault.
 
 `accrueFees`, `setFeeConfig`, `disableFees`, `initializeBaselines`, `recordRedeemRequest`,
 `closeRedeemRequest`, and `settleCancelledRedeem` mutate the fee state machine. The EarnVault
-supplies the accounting context and separately mints any fee EarnShare they return.
-`initializeBaselines` runs after a principal deposit and only raises baselines.
+supplies the accounting context, passing active EarnShare supply, active assets and valuation
+freshness to `accrueFees` and `initializeBaselines`, and separately mints any fee EarnShare they
+return. `accrueFees` returns the fee assets, the fee EarnShare, and the baseline floor and EarnShare
+scale of a checkpoint that valued the pool (both zero otherwise); `recordRedeemRequest` takes the
+request ID and burned EarnShare and trusts the EarnVault's valuation freshness.
+`initializeBaselines` runs after a principal deposit and only raises baselines; the EarnVault skips
+it when the post-entry value is at or below the baseline floor `accrueFees` returned.
 
 ### Events
 
@@ -262,5 +269,5 @@ supplies the accounting context and separately mints any fee EarnShare they retu
 configuration hash and whether it re-enabled fees), `FeeDustWaived`, `FeesDisabled`, and
 `FeeBaselinesInitialized`.
 
-Fee types are in [`EarnFeeTypes.sol`](../../../earn/src/interfaces/core/EarnFeeTypes.sol) and the pure
-waterfall in [`EarnFeeMath.sol`](../../../earn/src/core/EarnFeeMath.sol).
+Fee types are in [`EarnFeeTypes.sol`](../../../src/interfaces/earn/EarnFeeTypes.sol) and the pure
+waterfall in [`EarnFeeMath.sol`](../../../src/earn/core/EarnFeeMath.sol).

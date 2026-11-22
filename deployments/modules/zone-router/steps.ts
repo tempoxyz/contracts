@@ -1,4 +1,13 @@
-import { encodeFunctionData, getAbiItem, getAddress, zeroAddress, type Address } from 'viem'
+import {
+  encodeFunctionData,
+  getAbiItem,
+  getAddress,
+  zeroAddress,
+  type Address,
+  type Hex,
+  isAddressEqual,
+} from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
 import {
   deployZoneRouterFactoryScriptAbi,
@@ -8,6 +17,7 @@ import {
 } from '../../abis/index.js'
 import { requireRouterProvenance } from '../earn/zone-router/provenance.js'
 import { InspectionMismatchError } from '../../chain/inspect.js'
+import { envPrivateKey } from '../../chain/runtime.js'
 import {
   missingZoneTokens,
   zoneCallbackGatewayRegistered,
@@ -33,7 +43,14 @@ import {
   requiredOutput,
   type ChainClient,
 } from '../module.js'
+import { privateKeyMatches, sendAuthorityCalls } from '../signer.js'
 import { inspectZoneRouterBinding } from './inspection.js'
+import {
+  missingZoneRouterSeeds,
+  sendableZoneRouterSeedCalls,
+  zoneRouterWarmed,
+  zoneRouterSeedPlan,
+} from './seeds.js'
 import {
   configuredZoneRouter,
   zoneRouterConstructorArgs,
@@ -52,7 +69,7 @@ const namesFactory = (profile: EarnDeploymentProfile) => profile.zoneRouter?.fac
  */
 const namedFactoryCheck = (profile: EarnDeploymentProfile, outputs: Record<string, Address>) =>
   namesFactory(profile)
-    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as zone-router/src/ZoneRouterFactory.sol. `
+    ? `First confirm that ZoneRouterFactory ${zoneRouterFactory(profile, outputs)} is source verified as src/zone/ZoneRouterFactory.sol. `
     : ''
 
 /** The router's conversion pool, when its Earn binding converts the private asset. */
@@ -62,11 +79,10 @@ export const deployZoneRouterFactory = defineFoundryStep({
   id: 'deploy-zone-router-factory',
   authority: deployerAuthority,
   execution: 'foundry',
-  project: 'zone-router',
   summary: 'Deploy the ownerless ZoneRouterFactory the profile does not name.',
   phase: 'deployment',
   intent: ['zoneRouterFactory'],
-  script: 'script/deploy/DeployZoneRouterFactory.s.sol:DeployZoneRouterFactoryScript',
+  script: 'script/zone/deploy/DeployZoneRouterFactory.s.sol:DeployZoneRouterFactoryScript',
   enabled: (profile) => profile.zoneRouter !== null && profile.zoneRouter.factory === undefined,
   input: (profile, _outputs, outputPath) =>
     encodeFunctionData({
@@ -76,7 +92,7 @@ export const deployZoneRouterFactory = defineFoundryStep({
     }),
   source: {
     output: 'zoneRouterFactory',
-    contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
     constructorArgs: () => '0x',
   },
   async satisfied(client, _profile, outputs) {
@@ -101,7 +117,6 @@ export const deployZoneRouter = defineFoundryStep({
   id: 'deploy-zone-router',
   authority: deployerAuthority,
   execution: 'foundry',
-  project: 'zone-router',
   summary: 'Deploy the ZoneRouter for the profile mode through its ZoneRouterFactory.',
   phase: 'deployment',
   // A new factory deploys the same mode at a new address.
@@ -112,10 +127,10 @@ export const deployZoneRouter = defineFoundryStep({
     argument: 'router',
     output: 'zoneRouter',
     ...(namesFactory(profile)
-      ? { source: { project: 'zone-router', contract: deployZoneRouterFactory.source!.contract } }
+      ? { source: { contract: deployZoneRouterFactory.source!.contract } }
       : {}),
   }),
-  script: 'script/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
+  script: 'script/zone/deploy/DeployZoneRouter.s.sol:DeployZoneRouterScript',
   rawGasEstimate: true,
   enabled: hasZoneRouter,
   input: (profile, outputs, outputPath) =>
@@ -133,7 +148,7 @@ export const deployZoneRouter = defineFoundryStep({
     }),
   source: {
     output: 'zoneRouter',
-    contract: 'src/ZoneRouter.sol:ZoneRouter',
+    contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
     // An Earn mode moves EarnShare; a Spend-only router never holds it, and membership grants it nothing.
     accessMember: true,
     constructorArgs: (profile, outputs) =>
@@ -309,7 +324,7 @@ export const registerZoneRouterGateway = defineAuthorityStep({
     const router = requiredOutput(outputs, 'zoneRouter')
     const factory = zoneRouterFactory(profile, outputs)
     const provenance = profile.zoneRouter?.factory
-      ? `confirm that ZoneRouterFactory ${factory} is source verified as zone-router/src/ZoneRouterFactory.sol, then `
+      ? `confirm that ZoneRouterFactory ${factory} is source verified as src/zone/ZoneRouterFactory.sol, then `
       : ''
     return `Zone ${configuredZoneRouter(profile).zoneId} restricts callback gateways: its Portal administrator should ${provenance}confirm ZoneRouterFactory ${factory}.isRouter(${router}) and the mode in its RouterDeployed event, review every readiness blocker and verify each listed spender implementation and ROUTER_FACTORY binding before granting access, then, if the router holds the account role, call setAllowedAccount(${router}, false), and call setGateway(${router}, true) on ${requiredOutput(outputs, 'zoneRouterPortal')}, in one batch. Re-run the same pnpm earn deploy command; it will verify the registration and continue.`
   },
@@ -379,6 +394,75 @@ export const admitZoneRouterAccount = defineAuthorityStep({
   },
 })
 
+/**
+ * Keeps the router's and its SendSpenders' TIP-20 balance slots, and the router's Portal allowances,
+ * nonzero so no callback pays to create them. Idempotent: it sends only what is missing.
+ */
+export const seedZoneRouter = defineAuthorityStep({
+  id: 'seed-zone-router',
+  authority: deployerAuthority,
+  execution: 'authority',
+  summary:
+    'Send the ZoneRouter and its SendSpenders 1 base unit of each token they route, and warm the router Portal allowances.',
+  handoffSummary:
+    'Verify the router holds its Portal allowances, and emit a deployer handoff if not.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  enabled: hasZoneRouter,
+  signerAvailable: (profile, environment) =>
+    privateKeyMatches(environment, deployerAuthority.signer, profile.deployer),
+  // Only the Portal allowances, which stay set once warmed, are required, so verify stays stable
+  // whatever the deployer later holds. Seed units are sent once by `attemptWhenSatisfied`.
+  async satisfied(client, profile, outputs) {
+    const plan = await zoneRouterSeedPlan(client, profile, outputs)
+    return zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))
+  },
+  attemptWhenSatisfied: true,
+  handoff: (profile, outputs) =>
+    `ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} lacks a Portal allowance. Run pnpm earn verify, then either re-run the same pnpm earn deploy command with the deployer ${profile.deployer}'s DEPLOYER_PRIVATE_KEY, or call warm(token) on the router for each allowance listed under Zone router seeds (anyone may), and re-run; it will verify them and continue. Seed units listed there block nothing: send each holder 1 base unit by hand.`,
+  async execute(options, dependencies) {
+    const key = envPrivateKey(options.environment, deployerAuthority.signer)
+    if (!key) return undefined
+    const account = privateKeyToAccount(key)
+    // Completion is judged by what the profile's deployer can send, so only that account seeds.
+    if (!isAddressEqual(account.address, options.profile.deployer)) return undefined
+    const client = dependencies.authorityClient(options, account)
+    if (!(await zoneRouterBound(client, options.profile, options.outputs)))
+      throw new Error(
+        `ZoneRouter ${requiredOutput(options.outputs, 'zoneRouter')} is not the profile's router; refusing to seed it`,
+      )
+    const plan = await zoneRouterSeedPlan(client, options.profile, options.outputs)
+    const missing = await missingZoneRouterSeeds(client, plan)
+    if (missing.seeds.length === 0 && zoneRouterWarmed(missing)) return { transactions: [] }
+    // Each call is simulated alone first, so a token whose policy refuses one transfer never reverts
+    // the batch: the rest go out, and units left unsent are reported by verify.
+    const sendable = await sendableZoneRouterSeedCalls(client, account.address, plan, missing)
+    // Each seed or warm call can create a slot (about 290,000 gas), so batches stay well under
+    // Tempo's 30M transaction cap however many spenders the router lists.
+    const sent: { transactions: Hex[] } = { transactions: [] }
+    for (let index = 0; index < sendable.calls.length; index += seedBatchSize) {
+      const batch = sendable.calls.slice(index, index + seedBatchSize)
+      const { transactions } = await sendAuthorityCalls(
+        client,
+        dependencies,
+        options.profile,
+        batch,
+      )
+      sent.transactions.push(...transactions)
+    }
+    // Seeds left unsent (refused, unfunded, or newly fundable after a faucet top-up) never block.
+    if (zoneRouterWarmed(await missingZoneRouterSeeds(client, plan))) return sent
+    if (sent.transactions.length === 0) return undefined
+    // Sent batches cannot be recorded against an unsatisfied step, so name them before handing off.
+    throw new Error(
+      `seed-zone-router sent ${sent.transactions.join(', ')} but a Portal allowance is still missing: ${sendable.refused.join('; ')}`,
+    )
+  },
+})
+
+/** Calls per seed transaction: about 14M gas when every call creates a slot. */
+const seedBatchSize = 48
+
 /** The tokens an Earn mode moves in and out of its Zone, labeled for readiness reports. */
 export function zoneRouterTokens(
   profile: EarnDeploymentProfile,
@@ -421,14 +505,12 @@ async function requireModeProvenance(
 ) {
   await requireRouterProvenance(client, {
     address: zoneRouterFactory(profile, outputs),
-    project: 'zone-router',
-    contract: 'src/ZoneRouterFactory.sol:ZoneRouterFactory',
+    contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
     constructorArgs: '0x',
   })
   await requireRouterProvenance(client, {
     address: requiredOutput(outputs, 'zoneRouter'),
-    project: 'zone-router',
-    contract: 'src/ZoneRouter.sol:ZoneRouter',
+    contract: 'src/zone/ZoneRouter.sol:ZoneRouter',
     constructorArgs: zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
   })
 }

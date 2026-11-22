@@ -7,16 +7,15 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
 ## Toolchain
 
 - **Solidity** `0.8.36`, compiled by [solar](https://github.com/paradigmxyz/solar) at the revision
-  [`earn/solar.lock`](../../earn/solar.lock) pins, with **Foundry v1.8.6**. Forge calls solar through
-  [`earn/solar-solc`](../../earn/solar-solc), which presents it as solc `0.8.36`; solar's code
+  [`solar.lock`](../../solar.lock) pins, with **Foundry v1.8.6**. Forge calls solar through
+  [`solar-solc`](../../solar-solc), which presents it as solc `0.8.36`; solar's code
   removes most of solc's stack shuffling, internal jumps and address masking, so the same work costs
   less gas and executes faster. `pnpm deps` builds that revision once with cargo (Rust stable) into
-  the ignored `.solar/`. Forge resolves the wrapper from its working directory: run it from `earn/`,
-  or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. The Zone router and the
-  card integration use the same wrapper (`solc = "../earn/solar-solc"`) and reach Earn's and the
-  router's sources through committed `linked/` symlinks, since solar reads only files inside the
-  project directory. Only the vendored Zones runtime rebuild and Rain's fixture build keep solc,
-  because they reproduce third-party bytecode.
+  the ignored `.solar/`. The repository is one Foundry project at its root, so Earn, the Zone router
+  and card spend share this build. Forge resolves the wrapper from its working directory: run it from
+  the repository root, or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. Only the
+  vendored Zones runtime rebuild, Rain's fixture build, and the PropAMM fixture rebuild keep solc,
+  because they reproduce bytecode built outside this repository.
   CI installs that Foundry version through `.github/actions/setup` and the PropAMM fixture job, and the
   deployment tooling refuses an older Forge (`deployments/chain/foundry.ts`). A record's
   `foundryVersion` is provenance only. Every Foundry profile compiles for Cancun, the EVM version
@@ -26,12 +25,12 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
   `localnet/`, and `e2e/`; viem and test tooling are pinned once in the `pnpm-workspace.yaml` catalog.
 - **Docker**, for local end-to-end runs only.
 
-Each Foundry project (`earn/`, `zone-router/`, `cards/`) pins its Solidity dependencies in its own
-`foundry.lock`; they are not submodules. A fresh clone or Git worktree installs them before working:
+The root [`foundry.lock`](../../foundry.lock) pins the Solidity dependencies; they are not
+submodules. A fresh clone or Git worktree installs them before working:
 
 ```bash
 pnpm install
-pnpm deps   # scripts/solidity-deps.sh earn zone-router cards
+pnpm deps   # scripts/solidity-deps.sh
 ```
 
 Every dependency is public. Contract tests and every
@@ -49,26 +48,26 @@ are in the [localnet reference](localnet.md).
 
 ## Required checks
 
-Run `pnpm verify` before pushing a meaningful change. Its contract checks run in Earn's Foundry
-project (`earn/`), plus a build of `zone-router/` for the generated ABIs. `zone-router/` and `cards/`
-have their own checks ([zone-router/AGENTS.md](../../zone-router/AGENTS.md),
-[cards/AGENTS.md](../../cards/AGENTS.md)), which the `zone-router.yml` and `cards.yml` workflows
-run:
-
-| Project        | Checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `zone-router/` | `forge fmt --check`, `forge lint --deny warnings src`, `forge build --sizes src`, `FOUNDRY_PROFILE=ci forge test`                                                                                                                                                                                                                                                                                                                                                     |
-| `cards/`       | `forge fmt --check src test script`, `forge build`, `forge lint` on our contracts, `FOUNDRY_PROFILE=ci forge test` with `FORGE_SNAPSHOT_CHECK` (the `snapshots/*.json` gas groups), `forge snapshot --check snapshots/auth.gas-snapshot`, `script/rain/build-fixture.sh --check`, the Bridge matrix against [`docs/cards/bridge/matrix.md`](../cards/bridge/matrix.md), `pnpm e2e:cards -- --earn`, `pnpm e2e:bridge -- --earn` and `script/bridge/smoke.sh` (Docker) |
+Run `pnpm verify` before pushing a meaningful change. Its contract checks run from the repository
+root over every domain. The default Foundry profile runs Earn and Zone router tests on the plain EVM
+and skips `test/spend/`; the `spend` and `spend-ci` profiles run `test/spend/` on Tempo's hardfork.
+The Contracts job in `verify.yml` covers the Zone router with Earn. Card spend has its own
+checks ([src/spend/AGENTS.md](../../src/spend/AGENTS.md)), which the `spend.yml` workflow runs:
+`FOUNDRY_PROFILE=spend forge build --sizes src/spend`, `FOUNDRY_PROFILE=spend-ci forge test` with
+`FORGE_SNAPSHOT_CHECK` (the `snapshots/*.json` gas groups), `forge snapshot --check snapshots/auth.gas-snapshot`,
+`script/spend/rain/build-fixture.sh --check`, the Bridge matrix against
+[`docs/spend/bridge/matrix.md`](../spend/bridge/matrix.md), `pnpm e2e:cards -- --earn`,
+`pnpm e2e:bridge -- --earn` and `script/spend/bridge/smoke.sh` (Docker).
 
 `pnpm verify` runs the root
 [`package.json`](../../package.json) `verify:contracts` and `verify:typescript` scripts in parallel, and
 those scripts are the list of checks:
 
 - `verify:contracts`: `forge fmt --check`, `forge lint --deny warnings`, one `forge build` of `src`,
-  `script`, and `test` in `earn/`, a `forge build src script` in `zone-router/`, the generated-ABI check
+  `script`, and `test`, the generated-ABI check
   (`abis:check`), the
-  [EarnVault size check](#contract-size), `pnpm test:contracts` (every Forge test under
-  `FOUNDRY_PROFILE=ci`), and the [gas snapshot](#gas-baseline).
+  [EarnVault size check](#contract-size), `pnpm test:contracts` (the Earn and Zone router tests under
+  `FOUNDRY_PROFILE=ci`, then the spend tests under `FOUNDRY_PROFILE=spend-ci`), and the [gas snapshot](#gas-baseline).
 - `verify:typescript`: `pnpm check` (lint, formatting, and profile validation), `pnpm check:types`,
   `pnpm test` (every workspace's tests, including the documentation link and anchor check in
   `deployments/docs.test.ts`).
@@ -81,7 +80,7 @@ CI also runs the bounded symbolic fee proofs, the PropAMM fixture rebuild, the b
 router fuzz, and local E2E ([continuous integration](#continuous-integration)); `pnpm verify` does
 not. While iterating, use `forge test --match-path <path> -vvv`, then finish with the full suite.
 
-`forge build` does not lint. [`foundry.toml`](../../earn/foundry.toml) excludes a small set of lints, with the
+`forge build` does not lint. [`foundry.toml`](../../foundry.toml) excludes a small set of lints, with the
 reason for each; every other lint, including reentrancy with value, unchecked calls, delegatecall,
 and divide-before-multiply, stays enabled and fails on any new finding. Contracts are not changed to
 fix lints, so a lint category is enabled only when it passes clean.
@@ -97,7 +96,7 @@ transition must still preserve the asserted invariants.
 margin under the EIP-170 limit of 24,576 B, and its initcode is 15,522 B, a 33,630 B margin under the
 EIP-3860 limit of 49,152 B. Every other runtime margin is at least 11,313 B (`EarnFees`).
 
-`FOUNDRY_PROFILE=deploy forge build --sizes src/core/EarnVault.sol` fails only when `EarnVault`
+`FOUNDRY_PROFILE=deploy forge build --sizes src/earn/core/EarnVault.sol` fails only when `EarnVault`
 exceeds either hard limit; no check enforces a margin or sizes the other contracts. After changing
 `src/`, run `FOUNDRY_PROFILE=deploy forge build --sizes src` and read both margin columns. A change
 that would cross a limit moves its logic out of `EarnVault` into `EarnFees`, the engine, or
@@ -108,16 +107,16 @@ hash, which the reviewed factory releases pin: changing any of them, including b
 
 ### Gas baseline
 
-[`.gas-snapshot`](../../earn/.gas-snapshot) records only the `test/gas/` benchmarks: fee checkpointing on
-deposit, redeem, and contribution, and the Veda engine and full-stack paths, including
-queued-request forwarding. `pnpm gas:snapshot` checks it. After a material contract change, run
+[`.gas-snapshot`](../../.gas-snapshot) records only the `test/earn/gas/` and `test/zone/gas/` benchmarks: fee checkpointing on
+deposit, redeem, and contribution, the Veda engine and full-stack paths, including
+queued-request forwarding, and the SingleZoneEarnRouter and ZoneRouter Earn deposit and redeem callbacks. `pnpm gas:snapshot` checks it. After a material contract change, run
 `forge build --force` and `pnpm gas:update` with the [toolchain](#toolchain) Foundry and solar versions. Values
 are whole test-case gas before EIP-3529 refunds: compare the same row across revisions, not against
 production receipts.
 
 ### Coverage
 
-`pnpm coverage` prints a per-contract summary and writes `earn/out/coverage/lcov.info` using the
+`pnpm coverage` prints a per-contract summary and writes `out/coverage/lcov.info` using the
 `coverage` Foundry profile. That profile compiles with `--ir-minimum` and skips only
 `SingleZoneEarnRouterAbiFuzz.t.sol`, whose fuzz entry point is too deep for the stack without the
 optimizer; the router stays covered by its other suites. Tests and deployment scripts are excluded
@@ -137,8 +136,8 @@ that uses them, not in a library or another file. The verifier reads the flatten
 is, with no patches or generated files.
 
 ```bash
-cd earn
-forge flatten src/core/EarnVault.sol -o /tmp/EarnVault.sol
+# from the repository root
+forge flatten src/earn/core/EarnVault.sol -o /tmp/EarnVault.sol
 solar-verify --jobs 8 --timeout 120000 /tmp/EarnVault.sol                         # every function
 solar-verify --timeout 120000 --only EarnVault.contribute /tmp/EarnVault.sol      # one function
 ```
@@ -154,7 +153,7 @@ deployed bytecode. A function or property the verifier can't prove says so in it
 Solidity tests mirror the `src/` domains under `test/`: `core/`, `engines/<kind>/`, `router/`,
 `rewards/`, and the `gas/` benchmarks, with shared mocks in `helpers/` and the PropAMM fixture in
 `fixtures/propamm/`. Fee-enabled and async EarnVault stateful invariants are in
-`test/core/EarnVaultInvariant.t.sol`, and the [core invariant map](../earn/architecture/system.md#enforcing-tests)
+`test/earn/core/EarnVaultInvariant.t.sol`, and the [core invariant map](../earn/architecture/system.md#enforcing-tests)
 lists the tests that assert each core invariant.
 
 E2E cases live in [`e2e/modules/`](../../e2e/modules/), with per-engine behavior in `e2e/engines/`;
@@ -177,38 +176,37 @@ Branch protection on `main` requires `Required / Core` and `Required / Local E2E
 ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Actions` and
 `dependency-scan / Dependency Scan`.
 
-| Workflow                  | Trigger                                                                                                                                | Runs                                                                                                                                                                                                                                                                                                                            |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pull-request.yml`        | Pull request                                                                                                                           | Verify, Actions security, dependency scan, `Required / Core` over those three                                                                                                                                                                                                                                                   |
-| `verify.yml`              | Called by Pull Request and Main; manual                                                                                                | Contracts, PropAMM fixture, Symbolic, TypeScript checks, and TypeScript tests, under `FOUNDRY_PROFILE=ci`                                                                                                                                                                                                                       |
-| `local-zone.yml`          | Pull request; push to `main`                                                                                                           | On a pull request, two shards per engine kind and `Required / Local E2E` over them; on `main`, only a `deploy`-profile build that warms the Forge cache                                                                                                                                                                         |
-| `main.yml`                | Push to `main`                                                                                                                         | Verify                                                                                                                                                                                                                                                                                                                          |
-| `scan-github-actions.yml` | Called by Pull Request; weekly; manual                                                                                                 | The shared GitHub Actions scan                                                                                                                                                                                                                                                                                                  |
-| `pr-audit.yml`            | Pull request label, push, or comment                                                                                                   | The Cyclops audit                                                                                                                                                                                                                                                                                                               |
-| `zones-compatibility.yml` | Push to `main` touching `earn/src/`, `earn/foundry.*`, `earn/solar*`, the deps script, itself, or the remediation-event action; manual | Builds `earn/`'s contracts with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                                                                                                                                                                                               |
-| `deploy.yml`              | Manual (`main` only)                                                                                                                   | The [whole hosted stack](../deployment/deployment.md#deploying-the-hosted-stack-from-ci) on Moderato, mainnet, or both: every factory release, the `ZoneRouterFactory`, and every committed profile, reconciled and idempotent, then a pull request recording what changed                                                      |
-| `zone-router-release.yml` | Manual (`main` only)                                                                                                                   | One of [`zone-router/`](../../zone-router/README.md)'s parameterized [ownerless contracts](../deployment/deployment.md#zone-router-releases), a `SendSpender` or a `ZoneRouter`, with its parameters, on Moderato, mainnet, or both, simulated or broadcast and source verified                                                 |
-| `bridge-release.yml`      | Manual (`main` only)                                                                                                                   | [`cards/`](../../cards/README.md)' ownerless Bridge "TS" handler, or a Bridge program (`BridgeProvider` and `CardSpender`), at its [deterministic address](../cards/bridge/deploy.md#deploying-from-ci) on Moderato or mainnet, simulated or broadcast and source verified, with the calls Bridge's roles submit in its summary |
-| `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                                            | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                                                                                                                                                                                                      |
-| `cards.yml`               | Pull request or push to `main` touching `cards/` or its inputs (`earn/src/`, `zone-router/src/`, `e2e/cards/`, `localnet/`)            | The separate [`cards/`](../../cards/README.md) project's format, build, lint, tests, Rain fixture and Bridge matrix checks, Rain E2E, Bridge Zone E2E, and Bridge smoke run; not a required check                                                                                                                               |
-| `zone-router.yml`         | Pull request or push to `main` touching `zone-router/` or its Earn inputs                                                              | The separate [`zone-router/`](../../zone-router/README.md) project's format, lint, build with sizes, and tests; not a required check                                                                                                                                                                                            |
+| Workflow                  | Trigger                                                                                                                               | Runs                                                                                                                                                                                                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pull-request.yml`        | Pull request                                                                                                                          | Verify, Actions security, dependency scan, `Required / Core` over those three                                                                                                                                                                                                                                                   |
+| `verify.yml`              | Called by Pull Request and Main; manual                                                                                               | Contracts (Earn and the Zone router), PropAMM fixture, Symbolic, TypeScript checks, and TypeScript tests, under `FOUNDRY_PROFILE=ci`                                                                                                                                                                                            |
+| `local-zone.yml`          | Pull request; push to `main`                                                                                                          | On a pull request, two shards per engine kind and `Required / Local E2E` over them; on `main`, only a `deploy`-profile build that warms the Forge cache                                                                                                                                                                         |
+| `main.yml`                | Push to `main`                                                                                                                        | Verify                                                                                                                                                                                                                                                                                                                          |
+| `scan-github-actions.yml` | Called by Pull Request; weekly; manual                                                                                                | The shared GitHub Actions scan                                                                                                                                                                                                                                                                                                  |
+| `pr-audit.yml`            | Pull request label, push, or comment                                                                                                  | The Cyclops audit                                                                                                                                                                                                                                                                                                               |
+| `zones-compatibility.yml` | Push to `main` touching `src/`, the Foundry and solar configuration, the deps script, itself, or the remediation-event action; manual | Builds Earn's contracts (`src/earn/`, `src/demo/`) with Tempo's script and runs Tempo's `earn_zone_e2e` integration tests                                                                                                                                                                                                       |
+| `deploy.yml`              | Manual (`main` only)                                                                                                                  | The [whole hosted stack](../deployment/deployment.md#deploying-the-hosted-stack-from-ci) on Moderato, mainnet, or both: every factory release, the `ZoneRouterFactory`, and every committed profile, reconciled and idempotent, then a pull request recording what changed                                                      |
+| `zone-router-release.yml` | Manual (`main` only)                                                                                                                  | One of the [Zone router](../zone/README.md)'s parameterized [ownerless contracts](../deployment/deployment.md#zone-router-releases), a `SendSpender` or a `ZoneRouter`, with its parameters, on Moderato, mainnet, or both, simulated or broadcast and source verified                                                          |
+| `bridge-release.yml`      | Manual (`main` only)                                                                                                                  | [Card spend](../spend/README.md)'s ownerless Bridge "TS" handler, or a Bridge program (`BridgeProvider` and `CardSpender`), at its [deterministic address](../spend/bridge/deploy.md#deploying-from-ci) on Moderato or mainnet, simulated or broadcast and source verified, with the calls Bridge's roles submit in its summary |
+| `e2e-benchmarks.yml`      | Daily; manual (`main` only)                                                                                                           | Hosted [user-perceived latency benchmarks](../deployment/benchmarks.md#ci)                                                                                                                                                                                                                                                      |
+| `spend.yml`               | Pull request or push to `main` touching card spend or its inputs (`src/`, `vendor/`, `e2e/spend/`, `localnet/`)                       | [Card spend](../spend/README.md)'s build with sizes, tests, Rain fixture and Bridge matrix checks, Rain E2E, Bridge Zone E2E, and Bridge smoke run; not a required check                                                                                                                                                        |
 
 - **Verify jobs.** Contracts runs the same steps as `verify:contracts`, except that its Forge test
-  step skips `test/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
+  step skips `test/earn/gas/` and `test/zone/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
   fuzzes the whole `SingleZoneEarnRouterAbiFuzzTest` contract over brutalized memory at 4,096 runs;
   `main` does not, so `main` never waits on it. Symbolic proves the
   `EarnFeeMathFuzzTest` `prove*` properties with z3 at a loop bound of 32. TypeScript checks and
   build typechecks one workspace at a time (local `pnpm check:types` runs them in parallel).
-- **PropAMM fixture.** The job checks out the
-  [pinned PropAMM commit](../earn/modules/propamm.md#pinned-directpropamm-fixture) with a short-lived
-  read-only token and fails when the committed
-  fixture differs from its build (`earn/test/fixtures/propamm/update.sh --check`).
+- **PropAMM fixture.** The job fetches the
+  [pinned PropAMM commit](../earn/modules/propamm.md#pinned-directpropamm-fixture) from the public
+  source repository without a token and fails when the committed
+  fixture differs from its build (`test/earn/fixtures/propamm/update.sh --check`).
 - **Local E2E scope.** Each shard runs `pnpm e2e:local -- --variant <kind> --all --shard <n>/2` over
   the pinned images and installs only the `e2e` workspace closure. `.github/actions/e2e-scope` runs
-  the shards only when the pull request touches Earn's `src/`, `script/`, `deployments/`,
-  `profiles/`, `localnet/`, or `test/fixtures/propamm/`, the root `e2e/` or `localnet/`,
+  the shards only when the pull request touches `src/`, `script/`, `deployments/`,
+  `profiles/`, `test/earn/fixtures/propamm/`, `e2e/`, `localnet/`,
   `scripts/solidity-deps.sh`, `.github/actions/`, `local-zone.yml`, or the build configuration
-  (`earn/foundry.toml`, `earn/foundry.lock`, `package.json`, `pnpm-lock.yaml`,
+  (`foundry.toml`, `foundry.lock`, `package.json`, `pnpm-lock.yaml`,
   `pnpm-workspace.yaml`, `.nvmrc`). An out-of-scope shard passes without running, so
   `Required / Local E2E` still reports.
 - **Secrets.** Pull Request, Verify, and Local E2E execute contributor code and receive no secrets.
@@ -221,10 +219,8 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 - **Forks.** A pull request from a fork runs the same pull request jobs with no secrets, no OIDC
   token, and a read-only `GITHUB_TOKEN`, and can pass every required check. Without an OIDC token,
   each job's secure runner starts Harden Runner with the inline audit egress policy instead of the
-  StepSecurity policy store and installs no package firewall, with a warning annotation. Two
-  things do not run for a fork: the PropAMM fixture rebuild (the job passes when
-  `test/fixtures/propamm/` is unchanged and fails otherwise, until a maintainer re-verifies the
-  change from a branch in this repository) and the label- and
+  StepSecurity policy store and installs no package firewall, with a warning annotation. One
+  thing does not run for a fork: the label- and
   push-triggered Cyclops audit, which a maintainer starts with a `cyclops audit` comment.
 - **Zones compatibility.** The job checks out Tempo `main` and builds with the Foundry nightly
   Tempo's own CI pins. A failed run on `main` publishes a `zones_compatibility_failure` remediation

@@ -491,7 +491,11 @@ async function deployProfile(
       `Local ${profile.id} deployment stopped at ${result.action.id}: ${result.instructions}`,
     )
   }
-  const resumed = await prepareLifecycleStep(lifecycle)
+  // The first pass already offered each best-effort step once, so the resume must not offer it again.
+  const resumed = await prepareLifecycleStep({
+    ...lifecycle,
+    attempted: new Set(lifecycle.actions.map(({ id }) => id)),
+  })
   if (resumed.kind !== 'complete' || !isDeepStrictEqual(resumed.pending, result.pending)) {
     throw new Error(`Resuming the complete local ${profile.id} deployment planned ${resumed.kind}`)
   }

@@ -7,7 +7,7 @@ description: Integrate, deploy, or troubleshoot onchain Tempo Earn vaults, EarnS
 
 Tempo Earn exposes one application-facing `EarnVault` and a native TIP-20 EarnShare. Its engine
 holds shares in the underlying yield venue. Repository contributors must also follow
-[AGENTS.md](earn/AGENTS.md).
+[AGENTS.md](AGENTS.md).
 
 Start with the [agent guide](docs/earn/integrations/agent-guide.md) and work through it from
 [choosing the entry point](docs/earn/integrations/agent-guide.md#choose-the-entry-point) to

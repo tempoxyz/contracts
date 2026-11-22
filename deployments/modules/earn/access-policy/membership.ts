@@ -22,6 +22,18 @@ import { transferPolicyId } from './profile.js'
 type ReadClient = Pick<PublicClient, 'readContract'>
 type LogClient = Client & ReadClient & Pick<PublicClient, 'getBlockNumber' | 'getLogs'>
 
+/**
+ * `pendingRedeem` decoding only the receiver and requester. Every EarnVault release returns those
+ * two first and differs in the fields after them, so this reads stacks from every factory release;
+ * a nonzero requester marks the claim open.
+ */
+const pendingRedeemPrefixAbi = (() => {
+  const item = getAbiItem({ abi: earnVaultAbi, name: 'pendingRedeem' })
+  const [output] = item.outputs
+  const [receiver, requester] = output.components
+  return [{ ...item, outputs: [{ ...output, components: [receiver, requester] }] }] as const
+})()
+
 const redeemEvents = [
   getAbiItem({ abi: earnVaultAbi, name: 'RedeemRequested' }),
   getAbiItem({ abi: earnVaultAbi, name: 'RedeemFinalized' }),
@@ -241,11 +253,11 @@ async function assertStackRemovalSafe(client: LogClient, deployment: EarnStack, 
       requestIds.slice(offset, offset + readBatchSize).map(async (requestId) => {
         const pending = await client.readContract({
           address: deployment.contracts.earnVault,
-          abi: earnVaultAbi,
+          abi: pendingRedeemPrefixAbi,
           functionName: 'pendingRedeem',
           args: [requestId],
         })
-        if (!pending.open) return
+        if (pending.requester === zeroAddress) return
         // An unregistered alias has no policy identity to remove. RPC errors still fail closed.
         const receiver = await Actions.virtualAddress.resolve(client, { address: pending.receiver })
         if (receiver && getAddress(receiver) === resolvedTarget) {

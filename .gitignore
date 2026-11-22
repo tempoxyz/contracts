@@ -10,7 +10,9 @@ localnet/.local/
 **/.env
 **/.env.*
 !/.env.example
-!/e2e/cards/bridge/.env.example
+!/e2e/spend/bridge/.env.example
 *.log
-/earn/lib/
+/lib/
+/reports/
+/foundry-pp/
 /.solar/

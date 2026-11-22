@@ -97,26 +97,79 @@ export function assertVerifiedCreationTransaction(
   // delimiter, solar's each behind its own. Each trailer names its compiler's version: solc's, or solar's own.
   // Read only this terminal chain from compiler output; never search executable bytes or trust verifier mask offsets.
   const solar = compiler.version?.match(
-    /^\d+\.\d+\.\d+\+commit\.[0-9a-f]+\.solar\.(\d+)\.(\d+)\.(\d+)$/i,
+    /^\d+\.\d+\.\d+\+commit\.([0-9a-f]+)\.solar\.(\d+)\.(\d+)\.(\d+)(-[0-9a-z.]+)?$/i,
   )
-  const version = solar
-    ? [compiler.version!, ...solar.slice(1)]
+  const solc = solar
+    ? undefined
     : compiler.version?.match(/^(\d+)\.(\d+)\.(\d+)\+commit\.[0-9a-f]+$/i)
-  // Each match is one trailer, behind its INVALID delimiter for solar; group 1 is the trailer, group 2 its version.
-  const trailer = solar
-    ? 'fe(a2646970667358221220[0-9a-f]{64}65736f6c617243([0-9a-f]{6})0034)'
-    : '(a2646970667358221220[0-9a-f]{64}64736f6c6343([0-9a-f]{6})0033)'
-  const tail = new RegExp(`${solar ? '' : 'fe'}((?:${trailer})+)$`, 'i').exec(creationBytecode)
-  const trailers = [...(tail?.[1] ?? '').matchAll(new RegExp(trailer, 'gi'))].map((match) => {
-    // Skip solc's one shared delimiter, or the delimiter that opens each solar match.
-    const start = tail!.index + 2 + match.index
-    return {
-      offset: (start - 2) / 2,
-      digestStart: start + 'a2646970667358221220'.length,
-      value: `0x${match[1]}`.toLowerCase(),
-      version: match[2]!,
+  const version = solar ?? solc
+  // Each trailer starts at `start` (a hex index into the bytecode string) and names a compiler version.
+  type Trailer = { start: number; value: string; versionMatches: boolean }
+  const chain = ((): { index: number; trailers: Trailer[] } | undefined => {
+    if (solc) {
+      const pattern = '(a2646970667358221220[0-9a-f]{64}64736f6c6343([0-9a-f]{6})0033)'
+      const tail = new RegExp(`fe((?:${pattern})+)$`, 'i').exec(creationBytecode)
+      if (!tail) return undefined
+      return {
+        index: tail.index,
+        trailers: [...tail[1]!.matchAll(new RegExp(pattern, 'gi'))].map((match) => ({
+          // Skip solc's one shared delimiter.
+          start: tail.index + 2 + match.index,
+          value: `0x${match[1]}`.toLowerCase(),
+          versionMatches: solc
+            .slice(1)
+            .every(
+              (part, index) =>
+                Number(part) === Number.parseInt(match[2]!.slice(index * 2, index * 2 + 2), 16),
+            ),
+        })),
+      }
     }
-  })
+    if (!solar) return undefined
+    // Solar ends each trailer with its byte length, behind its own INVALID delimiter. Its version is a 3-byte
+    // string in releases before 0.3.1 and a text string after; parse the chain backward from the end.
+    const [, commit, major, minor, patch, prerelease] = solar
+    const texts = [`${major}.${minor}.${patch}${prerelease ?? ''}`]
+    texts.push(`${texts[0]}+commit.${commit}`.toLowerCase())
+    const hex = creationBytecode.toLowerCase()
+    const trailers: Trailer[] = []
+    let end = hex.length
+    for (;;) {
+      if (end < 6) break
+      const size = 2 * (2 + Number.parseInt(hex.slice(end - 4, end), 16))
+      const start = end - size
+      if (start < 4 || hex.slice(start - 2, start) !== 'fe') break
+      const body = hex.slice(start, end - 4)
+      const head = /^a2646970667358221220[0-9a-f]{64}65736f6c6172/.exec(body)
+      if (!head) break
+      const item = body.slice(head[0].length)
+      const versionMatches = (() => {
+        if (/^43[0-9a-f]{6}$/.test(item))
+          return (
+            prerelease === undefined &&
+            [major, minor, patch].every(
+              (part, index) =>
+                Number(part) === Number.parseInt(item.slice(2 + index * 2, 4 + index * 2), 16),
+            )
+          )
+        const text = /^(?:(6[0-9a-f]|7[0-7])|78([0-9a-f]{2}))((?:[0-9a-f]{2})*)$/.exec(item)
+        if (!text) return undefined
+        const length = text[1] ? Number.parseInt(text[1], 16) - 0x60 : Number.parseInt(text[2]!, 16)
+        if (text[3]!.length !== 2 * length) return undefined
+        return texts.includes(Buffer.from(text[3]!, 'hex').toString('latin1').toLowerCase())
+      })()
+      if (versionMatches === undefined) break
+      trailers.unshift({ start, value: `0x${hex.slice(start, end)}`, versionMatches })
+      end = start - 2
+    }
+    return trailers.length === 0 ? undefined : { index: end, trailers }
+  })()
+  const trailers = (chain?.trailers ?? []).map(({ start, value, versionMatches }) => ({
+    offset: (start - 2) / 2,
+    digestStart: start + 'a2646970667358221220'.length,
+    value,
+    versionMatches,
+  }))
   const ranges = cborAuxdata == null ? [] : Object.values(Object(cborAuxdata))
   const seen = new Set<number>()
   const validRanges =
@@ -151,16 +204,9 @@ export function assertVerifiedCreationTransaction(
     compiler.name !== 'solc' ||
     compiler.language !== 'Solidity' ||
     !version ||
-    !tail ||
-    tail.index % 2 !== 0 ||
-    trailers.some((trailer) =>
-      version
-        .slice(1)
-        .some(
-          (part, index) =>
-            Number(part) !== Number.parseInt(trailer.version.slice(index * 2, index * 2 + 2), 16),
-        ),
-    ) ||
+    !chain ||
+    chain.index % 2 !== 0 ||
+    trailers.some((trailer) => !trailer.versionMatches) ||
     !validRanges ||
     !/^0x(?:[0-9a-fA-F]{2})+$/.test(creationBytecode) ||
     !/^0x(?:[0-9a-fA-F]{2})*$/.test(constructorArgs) ||
