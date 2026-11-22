@@ -200,7 +200,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
   [pinned PropAMM commits](../earn/modules/propamm.md#pinned-directpropamm-fixture) from the public
   source repository without a token and fails when a committed
   fixture differs from its build (`test/earn/fixtures/propamm/update.sh --check`, and the same with
-  `--source managed.source.json` for the managed pool).
+  `--source managed.source.json` for the managed pool, its factory and its Settler).
 - **Local E2E scope.** Each shard runs `pnpm e2e:local -- --variant <kind> --all --shard <n>/2` over
   the pinned images and installs only the `e2e` workspace closure. `.github/actions/e2e-scope` runs
   the shards only when the pull request touches `src/`, `script/`, `deployments/`,

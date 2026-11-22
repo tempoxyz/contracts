@@ -98,9 +98,11 @@ export const propAMMPoolAbi = parseAbi([
 ])
 
 /**
- * `ManagedDirectPropAMM`, one pool holding many pairs: the pair, access, pause, and quote reads an
- * engine over one of its pairs depends on. `access` is the pair's mode: `None` 0 (no live pair),
- * `Closed` 1, `Listed` 2, `Open` 3. `takerAccess` is 1 when a swap would pass the access check.
+ * `ManagedDirectPropAMM`, one pool holding many pairs: the pair, access, pause, quote, and settler
+ * reads an engine over one of its pairs depends on. `access` is the pair's mode: `None` 0 (no live
+ * pair), `Closed` 1, `Listed` 2, `Open` 3. `takerAccess` is 1 when a swap would pass the access
+ * check. `factory` is zero for a pool no factory created, and `settler` is the one contract whose
+ * fills the pool accepts.
  */
 export const managedPropAMMPoolAbi = parseAbi([
   'struct Pair { address base; address quote; address oracle; uint8 baseDecimals; uint8 quoteDecimals; uint8 oracleDecimals; uint256 priceScale; uint256 maxOracleAge; uint256 maxPriceDeviationBps; uint8 access; }',
@@ -110,6 +112,17 @@ export const managedPropAMMPoolAbi = parseAbi([
   'function quoteExactInputFor(uint16 pairIndex, address taker, bytes32 customerId, bool baseToQuote, uint256 amountIn) view returns (uint256 amountOut, uint256 price, uint256 updatedAt, uint256 creditAfter)',
   'function takerAccess(uint16 pairIndex, address taker, uint64 sponsorId) view returns (uint8)',
   'function takerAllowed(uint16 pairIndex, address taker, uint64 sponsorId) view returns (bool)',
+  'function factory() view returns (address)',
+  'function settler() view returns (address)',
+])
+
+/**
+ * The managed pools' `PoolFactory`: the Settler every pool it creates starts on, and whether it
+ * created a pool, which that Settler requires before it fills.
+ */
+export const managedPropAMMPoolFactoryAbi = parseAbi([
+  'function defaultSettler() view returns (address)',
+  'function isPool(address pool) view returns (bool)',
 ])
 
 /** A conversion pool's price oracle, such as `PushPriceOracle`. */

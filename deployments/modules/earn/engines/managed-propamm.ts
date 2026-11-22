@@ -1,6 +1,7 @@
 import {
   erc20Abi,
   getAddress,
+  isAddressEqual,
   toFunctionSelector,
   zeroAddress,
   zeroHash,
@@ -10,6 +11,7 @@ import {
 import {
   managedPropAMMEngineAbi,
   managedPropAMMPoolAbi,
+  managedPropAMMPoolFactoryAbi,
   priceOracleAbi,
 } from '../../../abis/index.js'
 import { defineEngine, type EngineReadiness } from './engine.js'
@@ -64,6 +66,7 @@ export async function inspectManagedPropAMMEngine(
     asset,
     baseToken,
     pool,
+    settler,
     pairIndex,
     sponsorId,
     oracle,
@@ -75,6 +78,7 @@ export async function inspectManagedPropAMMEngine(
     client.readContract({ ...read, functionName: 'asset' }),
     client.readContract({ ...read, functionName: 'baseToken' }),
     client.readContract({ ...read, functionName: 'pool' }),
+    client.readContract({ ...read, functionName: 'settler' }),
     client.readContract({ ...read, functionName: 'pairIndex' }),
     client.readContract({ ...read, functionName: 'sponsorId' }),
     client.readContract({ ...read, functionName: 'priceOracle' }),
@@ -83,25 +87,36 @@ export async function inspectManagedPropAMMEngine(
     client.readContract({ ...read, functionName: 'shareScale' }),
     client.readContract({ ...read, functionName: 'customerId' }),
   ])
-  for (const [label, address] of Object.entries({ asset, baseToken, pool, oracle })) {
+  for (const [label, address] of Object.entries({ asset, baseToken, pool, settler, oracle })) {
     const code = await client.getCode({ address })
     if (!code || code === '0x') throw new Error(`Managed PropAMM ${label} has no runtime code`)
   }
   const venue = { address: pool, abi: managedPropAMMPoolAbi } as const
-  const [pair, assetDecimals, baseDecimals, oracleDecimals, paused, fresh, interfaces] =
-    await Promise.all([
-      client.readContract({ ...venue, functionName: 'pair', args: [pairIndex] }),
-      client.readContract({ address: asset, abi: erc20Abi, functionName: 'decimals' }),
-      client.readContract({ address: baseToken, abi: erc20Abi, functionName: 'decimals' }),
-      client.readContract({ address: oracle, abi: priceOracleAbi, functionName: 'decimals' }),
-      client.readContract({ ...venue, functionName: 'paused' }),
-      client.readContract({ ...read, functionName: 'isFeeValuationFresh' }),
-      Promise.all(
-        requiredInterfaces.map((id) =>
-          client.readContract({ ...read, functionName: 'supportsInterface', args: [id] }),
-        ),
+  const [
+    pair,
+    factory,
+    poolSettler,
+    assetDecimals,
+    baseDecimals,
+    oracleDecimals,
+    paused,
+    fresh,
+    interfaces,
+  ] = await Promise.all([
+    client.readContract({ ...venue, functionName: 'pair', args: [pairIndex] }),
+    client.readContract({ ...venue, functionName: 'factory' }),
+    client.readContract({ ...venue, functionName: 'settler' }),
+    client.readContract({ address: asset, abi: erc20Abi, functionName: 'decimals' }),
+    client.readContract({ address: baseToken, abi: erc20Abi, functionName: 'decimals' }),
+    client.readContract({ address: oracle, abi: priceOracleAbi, functionName: 'decimals' }),
+    client.readContract({ ...venue, functionName: 'paused' }),
+    client.readContract({ ...read, functionName: 'isFeeValuationFresh' }),
+    Promise.all(
+      requiredInterfaces.map((id) =>
+        client.readContract({ ...read, functionName: 'supportsInterface', args: [id] }),
       ),
-    ])
+    ),
+  ])
   // An unknown or removed pair reads all zero, so it matches no token.
   if (pair.access === 0 || pair.base === zeroAddress)
     throw new Error(`Managed PropAMM pool has no live pair ${pairIndex}`)
@@ -131,6 +146,18 @@ export async function inspectManagedPropAMMEngine(
   if (customerId === zeroHash) throw new Error('Managed PropAMM route identifier is zero')
   if (interfaces.some((supported) => !supported))
     throw new Error('Managed PropAMM engine lacks required synchronous or fee-valuation capability')
+  // The engine swaps only through its immutable settler: the default Settler of the factory that
+  // created the pool, which fills no other pool.
+  if (factory === zeroAddress)
+    throw new Error('Managed PropAMM pool has no factory, so no Settler settles its swaps')
+  const poolFactory = { address: factory, abi: managedPropAMMPoolFactoryAbi } as const
+  const [defaultSettler, created] = await Promise.all([
+    client.readContract({ ...poolFactory, functionName: 'defaultSettler' }),
+    client.readContract({ ...poolFactory, functionName: 'isPool', args: [pool] }),
+  ])
+  if (!created) throw new Error('Managed PropAMM pool was not created by the factory it names')
+  if (!isAddressEqual(defaultSettler, settler))
+    throw new Error('Managed PropAMM engine settler differs from the pool factory default Settler')
   // Only a live pair has a hook and an access outcome to read.
   const [[hook], access] = await Promise.all([
     client.readContract({ ...venue, functionName: 'pairHook', args: [pairIndex] }),
@@ -142,6 +169,8 @@ export async function inspectManagedPropAMMEngine(
   ])
   const blockers: string[] = []
   if (paused) blockers.push('pool is paused')
+  // The pool's owner can move the pool to another settler; the engine then refuses every trade.
+  if (!isAddressEqual(poolSettler, settler)) blockers.push('pool settler is not the engine settler')
   if (access !== 1) blockers.push(accessBlockers[access] ?? 'engine is not admitted as taker')
   // The engine values its base tokens at the oracle price and takes no deposit through a pair with a hook.
   if (hook !== zeroAddress) blockers.push('pair has a hook')
@@ -167,6 +196,7 @@ export async function inspectManagedPropAMMEngine(
     asset,
     baseToken,
     pool,
+    settler,
     pairIndex,
     sponsorId,
     oracle,

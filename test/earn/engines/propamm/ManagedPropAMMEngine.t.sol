@@ -2,19 +2,33 @@
 pragma solidity ^0.8.36;
 
 import { Test } from "forge-std/Test.sol";
-import { PropAMMTestToken, PropAMMTestOracle } from "../../helpers/PropAMMEngineMocks.sol";
-import { ManagedPropAMMTestVenue, ManagedPropAMMTestEarnVault } from "../../helpers/ManagedPropAMMEngineMocks.sol";
+import { PropAMMTestOracle } from "../../helpers/PropAMMEngineMocks.sol";
+import {
+    IManagedPropAMMTestFactory,
+    ManagedPropAMMTestToken,
+    ManagedPropAMMTestVenue,
+    ManagedPropAMMTestEarnVault,
+    ManagedPropAMMUncheckedSettler
+} from "../../helpers/ManagedPropAMMEngineMocks.sol";
 import { ManagedPropAMMEngine } from "../../../../src/earn/engines/propamm/ManagedPropAMMEngine.sol";
-import { IManagedPropAMMVenue } from "../../../../src/interfaces/external/propamm/IManagedPropAMMVenue.sol";
+import {
+    IManagedPropAMMVenue,
+    IManagedPropAMMSettler
+} from "../../../../src/interfaces/external/propamm/IManagedPropAMMVenue.sol";
+import { IEarnEngineHeldDeposit } from "../../../../src/interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 
+/// @dev Runs the engine against a pool the pinned PoolFactory created and the pinned Settler, with the
+/// behavioural venue fixture as the pool's code, so the pool can misbehave where the real one cannot.
 contract ManagedPropAMMEngineTest is Test {
     uint64 constant SPONSOR = 7;
     bytes32 constant ROUTE = bytes32(uint256(1));
 
-    PropAMMTestToken usdc;
-    PropAMMTestToken baseToken;
-    PropAMMTestToken otherBase;
+    ManagedPropAMMTestToken usdc;
+    ManagedPropAMMTestToken baseToken;
+    ManagedPropAMMTestToken otherBase;
     PropAMMTestOracle oracle;
+    IManagedPropAMMTestFactory factory;
+    address settler;
     ManagedPropAMMTestVenue pool;
     ManagedPropAMMEngine engine;
     ManagedPropAMMTestEarnVault vault;
@@ -25,11 +39,17 @@ contract ManagedPropAMMEngineTest is Test {
 
     function setUp() public {
         vm.warp(1_800_000_000);
-        usdc = new PropAMMTestToken("USDC.e");
-        baseToken = new PropAMMTestToken("BASE");
-        otherBase = new PropAMMTestToken("OTHER");
+        usdc = new ManagedPropAMMTestToken("USDC.e");
+        baseToken = new ManagedPropAMMTestToken("BASE");
+        otherBase = new ManagedPropAMMTestToken("OTHER");
         oracle = new PropAMMTestOracle();
-        pool = new ManagedPropAMMTestVenue();
+        // The unmodified pinned factory deploys the pool implementation and the Settler. The venue fixture
+        // replaces the implementation's code, so the pool is still a clone that factory created, which the
+        // Settler proves by its address before it fills.
+        factory = IManagedPropAMMTestFactory(deployCode("test/earn/fixtures/propamm/PoolFactory.json"));
+        settler = factory.defaultSettler();
+        vm.etch(factory.implementation(), address(new ManagedPropAMMTestVenue()).code);
+        pool = ManagedPropAMMTestVenue(factory.createPool(address(this), bytes32(0)));
         // The engine's pair is not the pool's first: a swap that named pair 0 would trade other tokens.
         decoyPair = pool.addPair(otherBase, usdc, new PropAMMTestOracle());
         pairIndex = pool.addPair(baseToken, usdc, oracle);
@@ -73,8 +93,52 @@ contract ManagedPropAMMEngineTest is Test {
         return vault.deposit(assets);
     }
 
-    /// @dev Every engine fund flow reverts with `reason` and moves nothing.
+    /// @dev The engine's standing allowances are the Settler's: one unit of each token, none on the pool, and
+    /// the Settler holds nothing.
+    function _assertSettlerApprovals(ManagedPropAMMEngine target) internal view {
+        assertEq(usdc.allowance(address(target), settler), 1);
+        assertEq(baseToken.allowance(address(target), settler), 1);
+        assertEq(usdc.allowance(address(target), address(pool)), 0);
+        assertEq(baseToken.allowance(address(target), address(pool)), 0);
+        assertEq(usdc.balanceOf(settler), 0);
+        assertEq(baseToken.balanceOf(settler), 0);
+    }
+
+    /// @dev The swap the engine sends the Settler for the first trade of a transaction: the trade ID is the
+    /// block number above the transaction's trade count.
+    function _swap(bool baseToQuote, bool exactInput, uint256 amount, uint256 limit)
+        internal
+        view
+        returns (bytes memory)
+    {
+        return abi.encodeCall(
+            IManagedPropAMMSettler.swap,
+            (
+                address(pool),
+                IManagedPropAMMVenue.SwapParams({
+                    pairIndex: pairIndex,
+                    baseToQuote: baseToQuote,
+                    exactInput: exactInput,
+                    amount: amount,
+                    limit: limit,
+                    sponsorId: 0,
+                    customerId: ROUTE,
+                    tradeId: bytes32((block.number << 128) | 1),
+                    deadline: block.timestamp,
+                    expectedOraclePrice: oracle.price(),
+                    oraclePriceToleranceBps: 0,
+                    minimumOracleUpdatedAt: oracle.updatedAt()
+                })
+            )
+        );
+    }
+
     function _assertEveryFlowReverts(uint256 held, bytes4 reason) internal {
+        _assertEveryFlowReverts(held, abi.encodeWithSelector(reason));
+    }
+
+    /// @dev Every engine fund flow reverts with `reason` and moves nothing.
+    function _assertEveryFlowReverts(uint256 held, bytes memory reason) internal {
         uint256 aliceCash = usdc.balanceOf(alice);
         uint256 poolCash = usdc.balanceOf(address(pool));
         uint256 poolBase = baseToken.balanceOf(address(pool));
@@ -90,8 +154,7 @@ contract ManagedPropAMMEngineTest is Test {
         assertEq(usdc.balanceOf(address(pool)), poolCash);
         assertEq(baseToken.balanceOf(address(pool)), poolBase);
         assertEq(usdc.balanceOf(address(engine)), 0);
-        assertEq(usdc.allowance(address(engine), address(pool)), 1);
-        assertEq(baseToken.allowance(address(engine), address(pool)), 1);
+        _assertSettlerApprovals(engine);
     }
 
     function testConstructorBindsThePairItsTokensAndTheSponsor() public {
@@ -110,8 +173,35 @@ contract ManagedPropAMMEngineTest is Test {
         assertEq(candidate.customerId(), bytes32(uint256(2)));
         assertEq(candidate.earnVault(), address(0));
         assertEq(candidate.owner(), address(this));
-        assertEq(usdc.allowance(address(candidate), address(pool)), 1);
-        assertEq(baseToken.allowance(address(candidate), address(pool)), 1);
+        // The engine's settler is the factory's default one, which the pool fills from.
+        assertTrue(factory.isPool(address(pool)));
+        assertEq(candidate.settler(), settler);
+        assertEq(candidate.settler(), pool.settler());
+        _assertSettlerApprovals(candidate);
+    }
+
+    function testConstructorRejectsAStandalonePool() public {
+        // A pool no factory created names no factory, and no Settler settles it.
+        ManagedPropAMMTestVenue standalone = new ManagedPropAMMTestVenue();
+        uint16 index = standalone.addPair(baseToken, usdc, oracle);
+        assertEq(standalone.factory(), address(0));
+        vm.expectRevert(ManagedPropAMMEngine.StandalonePool.selector);
+        new ManagedPropAMMEngine(
+            address(standalone), index, 0, address(usdc), address(baseToken), address(this), 1 days, ROUTE
+        );
+    }
+
+    function testConstructorRejectsAPoolOnAnotherSettler() public {
+        address other = address(new ManagedPropAMMUncheckedSettler());
+        pool.setSettler(other);
+        vm.expectRevert(abi.encodeWithSelector(ManagedPropAMMEngine.SettlerMismatch.selector, settler, other));
+        _newEngine(pairIndex, 0, ROUTE);
+
+        // A factory that names no Settler binds nothing, whatever the pool reads.
+        pool.setSettler(address(0));
+        vm.mockCall(address(factory), abi.encodeWithSignature("defaultSettler()"), abi.encode(address(0)));
+        vm.expectRevert(abi.encodeWithSelector(ManagedPropAMMEngine.SettlerMismatch.selector, address(0), address(0)));
+        _newEngine(pairIndex, 0, ROUTE);
     }
 
     function testConstructorRejectsAnUnknownOrRemovedPair() public {
@@ -175,10 +265,90 @@ contract ManagedPropAMMEngineTest is Test {
         assertEq(usdc.balanceOf(alice), 1000e6);
         assertEq(sponsored.totalShares(), 0);
         assertEq(usdc.balanceOf(address(sponsored)), 0);
-        assertEq(usdc.allowance(address(sponsored), address(pool)), 1);
-        assertEq(baseToken.allowance(address(sponsored), address(pool)), 1);
+        _assertSettlerApprovals(sponsored);
         // The home-list engine, on the same pair, was not touched.
         assertEq(engine.totalShares(), 0);
+    }
+
+    function testEverySwapSettlesThroughTheSettlerAsTheEngine() public {
+        // Exactly the swap the engine quoted: the amounts, the limit, the ids, the deadline and the observation.
+        vm.expectCall(settler, _swap(false, true, 1e6 + 1, 952_381));
+        uint256 held = buy(alice, 1e6 + 1);
+        assertEq(held, 952_381);
+        // The Settler's caller is the taker: the route credit is the engine's, not the Settler's or the vault's.
+        uint256 credit = pool.roundingCredit(pool.roundingRouteKey(pairIndex, address(engine), ROUTE));
+        assertEq(credit, (1e6 + 1) * 1e8 - held * 105_000_000);
+        assertGt(credit, 0);
+        assertEq(pool.roundingCredit(pool.roundingRouteKey(pairIndex, settler, ROUTE)), 0);
+        assertEq(pool.roundingCredit(pool.roundingRouteKey(pairIndex, address(vault), ROUTE)), 0);
+        assertEq(usdc.balanceOf(address(pool)), 10000e6 + 1e6 + 1);
+        assertEq(baseToken.balanceOf(address(pool)), 10000e6 - held);
+        _assertSettlerApprovals(engine);
+
+        // An exact withdrawal sells the pool's quote for the engine's route, credit included.
+        (uint256 quoted,,,) = pool.quoteExactOutputFor(pairIndex, address(engine), ROUTE, true, 500_000);
+        vm.expectCall(settler, _swap(true, false, 500_000, quoted));
+        assertEq(vault.withdraw(500_000, alice), quoted);
+        assertEq(engine.totalShares(), held - quoted);
+        assertEq(usdc.balanceOf(alice), 1000e6 - (1e6 + 1) + 500_000);
+        _assertSettlerApprovals(engine);
+
+        uint256 rest = held - quoted;
+        vm.expectCall(settler, _swap(true, true, rest, 1));
+        uint256 paid = vault.redeem(rest, alice, 1);
+        assertEq(usdc.balanceOf(alice), 1000e6 - (1e6 + 1) + 500_000 + paid);
+        assertEq(engine.totalShares(), 0);
+        assertEq(usdc.balanceOf(address(engine)), 0);
+        _assertSettlerApprovals(engine);
+    }
+
+    function testReplacedSettlerRevertsEveryFlow() public {
+        uint256 held = buy(alice, 105e6);
+        address other = address(new ManagedPropAMMUncheckedSettler());
+        pool.setSettler(other);
+        // The engine approves and swaps through its own settler alone: it stops rather than follow the pool.
+        _assertEveryFlowReverts(
+            held, abi.encodeWithSelector(ManagedPropAMMEngine.SettlerMismatch.selector, settler, other)
+        );
+        assertEq(usdc.allowance(address(engine), other), 0);
+        assertEq(baseToken.allowance(address(engine), other), 0);
+        (, bool admitted,,,) = engine.liquidityStatus();
+        assertFalse(admitted);
+        // Valuation does not depend on the settler.
+        assertEq(engine.totalAssets(), 105e6);
+
+        pool.setSettler(settler);
+        (, admitted,,,) = engine.liquidityStatus();
+        assertTrue(admitted);
+        assertEq(vault.redeem(held, alice, 105e6), 105e6);
+    }
+
+    function testHeldDepositBuysWhatTheVaultSent() public {
+        assertTrue(engine.supportsInterface(type(IEarnEngineHeldDeposit).interfaceId));
+        vm.expectCall(settler, _swap(false, true, 105e6, 100e6));
+        vm.prank(alice);
+        assertEq(vault.depositHeld(105e6), 100e6);
+        assertEq(engine.totalShares(), 100e6);
+        assertEq(usdc.balanceOf(alice), 895e6);
+        assertEq(usdc.balanceOf(address(engine)), 0);
+        _assertSettlerApprovals(engine);
+
+        // Only the bound vault calls it, for assets the engine already holds, against a fresh observation.
+        vm.prank(alice);
+        vm.expectRevert(ManagedPropAMMEngine.NotEarnVault.selector);
+        engine.depositHeld(1e6);
+        vm.prank(address(vault));
+        vm.expectRevert(ManagedPropAMMEngine.InvalidAmount.selector);
+        engine.depositHeld(0);
+        vm.prank(address(vault));
+        vm.expectRevert(ManagedPropAMMEngine.InexactTransfer.selector);
+        engine.depositHeld(1e6);
+        vm.warp(block.timestamp + 1 days + 1);
+        vm.prank(bob);
+        vm.expectRevert(ManagedPropAMMEngine.InvalidOracle.selector);
+        vault.depositHeld(105e6);
+        assertEq(usdc.balanceOf(bob), 1000e6);
+        assertEq(engine.totalShares(), 100e6);
     }
 
     function testEnginesOnOnePoolKeepSeparateRoundingRoutes() public {
@@ -330,14 +500,26 @@ contract ManagedPropAMMEngineTest is Test {
         assertEq(vault.redeem(held - 20e6, alice, 84e6), 84e6);
         assertEq(engine.totalShares(), 0);
         assertEq(usdc.balanceOf(alice), aliceCash + 105e6);
-        assertEq(usdc.allowance(address(engine), address(pool)), 1);
-        assertEq(baseToken.allowance(address(engine), address(pool)), 1);
+        _assertSettlerApprovals(engine);
     }
 
     function testOutputPaidToAnotherAccountRevertsAtomically() public {
         uint256 held = buy(alice, 105e6);
         pool.setPayee(address(0xbad));
 
+        // The Settler measures its caller's balances around the fill, so it refuses the trade first.
+        bytes4 mismatch = bytes4(keccak256("BalanceMismatch()"));
+        vm.prank(bob);
+        vm.expectRevert(mismatch);
+        vault.deposit(105e6);
+        vm.expectRevert(mismatch);
+        vault.redeem(held, alice, 1);
+        vm.expectRevert(mismatch);
+        vault.withdraw(1e6, alice);
+        _assertNothingPaidElsewhere(held);
+
+        // Behind a settler that checks nothing, the engine's own measured balances refuse the same trades.
+        vm.etch(settler, address(new ManagedPropAMMUncheckedSettler()).code);
         vm.prank(bob);
         vm.expectRevert(ManagedPropAMMEngine.InexactTransfer.selector);
         vault.deposit(105e6);
@@ -345,14 +527,16 @@ contract ManagedPropAMMEngineTest is Test {
         vault.redeem(held, alice, 1);
         vm.expectRevert(ManagedPropAMMEngine.InexactTransfer.selector);
         vault.withdraw(1e6, alice);
+        _assertNothingPaidElsewhere(held);
+    }
 
+    function _assertNothingPaidElsewhere(uint256 held) internal view {
         assertEq(engine.totalShares(), held);
         assertEq(usdc.balanceOf(bob), 1000e6);
         assertEq(usdc.balanceOf(alice), 895e6);
         assertEq(usdc.balanceOf(address(0xbad)), 0);
         assertEq(baseToken.balanceOf(address(0xbad)), 0);
-        assertEq(usdc.allowance(address(engine), address(pool)), 1);
-        assertEq(baseToken.allowance(address(engine), address(pool)), 1);
+        _assertSettlerApprovals(engine);
     }
 
     function testLiquidityStatusReadsThePoolAndTheEnginesAdmission() public {

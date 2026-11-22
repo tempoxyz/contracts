@@ -2,6 +2,10 @@
   "repository": "tempoxyz/tempo-propamm",
   "commit": "bdeb16b6323d8955ccb87764af566687a3003f1c",
   "contract": "contracts/src/managed/ManagedDirectPropAMM.sol:ManagedDirectPropAMM",
+  "companions": [
+    "contracts/src/managed/PoolFactory.sol:PoolFactory",
+    "contracts/src/managed/Settler.sol:Settler"
+  ],
   "solc": "0.8.30",
   "regenerate": "test/earn/fixtures/propamm/update.sh --source managed.source.json [--check] [<tempo-propamm checkout>]; see docs/earn/modules/propamm.md#pinned-directpropamm-fixture"
 }

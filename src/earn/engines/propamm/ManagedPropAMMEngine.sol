@@ -8,12 +8,17 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { IPropAMMPriceOracle } from "../../../interfaces/external/propamm/IPropAMMVenue.sol";
-import { IManagedPropAMMVenue } from "../../../interfaces/external/propamm/IManagedPropAMMVenue.sol";
+import {
+    IManagedPropAMMVenue,
+    IManagedPropAMMPoolFactory,
+    IManagedPropAMMSettler
+} from "../../../interfaces/external/propamm/IManagedPropAMMVenue.sol";
 
 import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineExactWithdraw } from "../../../interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineRedeem } from "../../../interfaces/earn/engines/IEarnEngineRedeem.sol";
 import { IEarnEngineFeeValuation } from "../../../interfaces/earn/engines/IEarnEngineFeeValuation.sol";
+import { IEarnEngineHeldDeposit } from "../../../interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import { IEarnVault } from "../../../interfaces/earn/IEarnVault.sol";
@@ -21,9 +26,11 @@ import { IEarnVault } from "../../../interfaces/earn/IEarnVault.sol";
 /// @notice Single-position PropAMM engine over one pair of a managed pool, denominated in the pair's quote asset.
 /// @dev The managed counterpart of PropAMMEngine, with the same Earn-facing behaviour. A managed pool holds many
 /// pairs, so every swap and quote names this engine's immutable pair, every swap names the immutable access
-/// list the engine trades under, and the pool pays a swap's output to its caller, the engine: there is no
-/// recipient to check. Pool, pair, sponsor, tokens and oracle are immutable. Only the bound EarnVault can move
-/// collateral.
+/// list the engine trades under, and the pool pays a swap's output to its taker, the engine: there is no
+/// recipient to check. Every swap settles through the pool factory's Settler, which the engine approves in
+/// place of the pool: the Settler moves the input from its caller, the engine, straight into the pool and
+/// fills as that caller, so the engine is the taker. Pool, settler, pair, sponsor, tokens and oracle are
+/// immutable. Only the bound EarnVault can move collateral.
 /// The engine values and trades its base tokens at the oracle price, so it refuses a pair with a hook: a hook
 /// can charge an input-token fee, which the oracle valuation would not reflect.
 /// Specs for solar-verify (docs/earn/modules/propamm.md, docs/earn/integrations/engines.md):
@@ -53,6 +60,7 @@ contract ManagedPropAMMEngine is
     IEarnEngineExactWithdraw,
     IEarnEngineRedeem,
     IEarnEngineFeeValuation,
+    IEarnEngineHeldDeposit,
     Ownable2Step
 {
     using SafeERC20 for IERC20;
@@ -68,6 +76,10 @@ contract ManagedPropAMMEngine is
     error QuoteMismatch();
     error ReadDuringSettlement();
     error ReentrantCall();
+    /// @dev The pool has no factory, so no Settler settles its swaps.
+    error StandalonePool();
+    /// @dev The pool's settler is not the one this engine approves: its factory's default Settler.
+    error SettlerMismatch(address expected, address actual);
 
     event EarnVaultInitialized(address indexed earnVault);
     event Deposited(address indexed earnVault, uint256 assets, uint256 engineShares);
@@ -77,6 +89,8 @@ contract ManagedPropAMMEngine is
     address public immutable asset;
     address public immutable baseToken;
     IManagedPropAMMVenue public immutable pool;
+    /// @notice The pool factory's default Settler: the only contract the engine approves and swaps through.
+    address public immutable settler;
     /// @notice The pair of the pool this engine trades. A pair's index and tokens never change.
     uint16 public immutable pairIndex;
     /// @notice The access list the engine trades under: 0 for the pair's home list, or a registered sponsor's.
@@ -90,9 +104,9 @@ contract ManagedPropAMMEngine is
     string public constant name = "Managed PropAMM Engine";
     string public constant symbol = "managed-propAMM-engine";
     address public earnVault;
-    /// @dev Packed beside `earnVault`, which is nonzero before the first trade, so the first trade ID
-    ///      never writes a slot from zero.
-    uint96 private tradeNonce;
+    /// @dev Counts this transaction's trades. A trade ID is the block number above this count: it labels the
+    ///      pool's trade event, distinct within a transaction, and writes no storage.
+    uint256 private transient _tradeCount;
     bool private transient _entered;
 
     modifier onlyEarnVault() {
@@ -107,11 +121,13 @@ contract ManagedPropAMMEngine is
         _entered = false;
     }
 
-    /// @notice Binds the engine to one live pair of a managed pool.
+    /// @notice Binds the engine to one live pair of a managed pool and to the pool factory's default Settler.
     /// @dev Fails closed unless the pool's pair at `pairIndex_` is live, trades exactly `baseToken_`
     /// against `asset_`, records the decimals the tokens and the oracle report, and has no hook. An unknown or
-    /// removed pair reads all zero, so it matches no token.
+    /// removed pair reads all zero, so it matches no token. A pool without a factory reverts `StandalonePool`,
+    /// and a pool whose settler is not its factory's default Settler reverts `SettlerMismatch`.
     /// @custom:ensures address(pool) == pool_ && pairIndex == pairIndex_ && sponsorId == sponsorId_
+    /// @custom:ensures settler != address(0)
     /// @custom:ensures asset == asset_ && baseToken == baseToken_
     /// @custom:ensures maxOracleAge == maxAge_ && customerId == route_ && earnVault == address(0)
     constructor(
@@ -150,9 +166,11 @@ contract ManagedPropAMMEngine is
         ) revert InvalidConfiguration();
         (address hook,) = venue.pairHook(pairIndex_);
         if (hook != address(0)) revert InvalidConfiguration();
+        address settler_ = _defaultSettler(venue);
         asset = asset_;
         baseToken = baseToken_;
         pool = venue;
+        settler = settler_;
         pairIndex = pairIndex_;
         sponsorId = sponsorId_;
         priceOracle = source;
@@ -162,9 +180,19 @@ contract ManagedPropAMMEngine is
         priceScale = scale;
         customerId = route_;
         // One-unit standing allowances keep both allowance slots nonzero between trades. Each swap approves
-        // one unit above its amount, and the measured balance checks keep every pull exact.
-        IERC20(asset_).forceApprove(pool_, 1);
-        IERC20(baseToken_).forceApprove(pool_, 1);
+        // one unit above its amount, and the measured balance checks keep every pull exact. The Settler
+        // pulls the input, so it holds the allowances; the pool holds none.
+        IERC20(asset_).forceApprove(settler_, 1);
+        IERC20(baseToken_).forceApprove(settler_, 1);
+    }
+
+    /// @dev The Settler of the pool's factory, which must be the pool's current settler.
+    function _defaultSettler(IManagedPropAMMVenue venue) private view returns (address settler_) {
+        address factory = venue.factory();
+        if (factory == address(0)) revert StandalonePool();
+        settler_ = IManagedPropAMMPoolFactory(factory).defaultSettler();
+        address current = venue.settler();
+        if (settler_ == address(0) || current != settler_) revert SettlerMismatch(settler_, current);
     }
 
     /// Only the owner binds, once, to an EarnVault with code and the same asset; ownership is unchanged.
@@ -191,17 +219,18 @@ contract ManagedPropAMMEngine is
         emit EarnVaultInitialized(vault_);
     }
 
-    /// Advertises ERC-165, the engine, exact withdraw, redeem and fee valuation, and nothing else.
+    /// Advertises ERC-165, the engine, exact withdraw, redeem, fee valuation and held deposit, and nothing else.
     /// @custom:ensures id == type(IERC165).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngine).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineExactWithdraw).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineRedeem).interfaceId ==> result
     /// @custom:ensures id == type(IEarnEngineFeeValuation).interfaceId ==> result
-    /// @custom:ensures result ==> (id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId || id == type(IEarnEngineFeeValuation).interfaceId)
+    /// @custom:ensures id == type(IEarnEngineHeldDeposit).interfaceId ==> result
+    /// @custom:ensures result ==> (id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId || id == type(IEarnEngineFeeValuation).interfaceId || id == type(IEarnEngineHeldDeposit).interfaceId)
     function supportsInterface(bytes4 id) external pure returns (bool) {
         return id == type(IERC165).interfaceId || id == type(IEarnEngine).interfaceId
             || id == type(IEarnEngineExactWithdraw).interfaceId || id == type(IEarnEngineRedeem).interfaceId
-            || id == type(IEarnEngineFeeValuation).interfaceId;
+            || id == type(IEarnEngineFeeValuation).interfaceId || id == type(IEarnEngineHeldDeposit).interfaceId;
     }
 
     function totalShares() public view returns (uint256) {
@@ -254,7 +283,7 @@ contract ManagedPropAMMEngine is
 
     /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
-    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
     /// A deposit of positive assets credits positive shares, admitted only with a fresh oracle observation.
     /// @custom:ensures assets > 0 && shares > 0
     /// @custom:ensures 0 < lastObservedAt && lastObservedAt <= block.timestamp && block.timestamp - lastObservedAt <= maxOracleAge
@@ -281,9 +310,35 @@ contract ManagedPropAMMEngine is
         emit Deposited(msg.sender, assets, shares);
     }
 
+    /// Only the bound EarnVault calls it, after transferring `assets` here and checking the engine's credit;
+    /// the binding survives, and the trade gets a fresh trade ID.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
+    /// A deposit of positive assets credits positive shares, admitted only with a fresh oracle observation.
+    /// @custom:ensures assets > 0 && shares > 0
+    /// @custom:ensures 0 < lastObservedAt && lastObservedAt <= block.timestamp && block.timestamp - lastObservedAt <= maxOracleAge
+    /// The shares credited are exactly the measured increase in the base tokens the engine holds.
+    /// @custom:ensures heldAfter == heldBefore + shares
+    function depositHeld(uint256 assets) external nonReentrant onlyEarnVault returns (uint256 shares) {
+        if (assets == 0) revert InvalidAmount();
+        (uint256 price, uint256 observedAt) = _price();
+        if (block.timestamp - observedAt > maxOracleAge) revert InvalidOracle();
+        // The EarnVault measured this engine's credit of exactly `assets` before calling; _buy proves the
+        // Settler pulled exactly `assets` of this balance.
+        uint256 cash = IERC20(asset).balanceOf(address(this));
+        if (cash < assets) revert InexactTransfer();
+        uint256 baseBefore = totalShares();
+        /// @custom:ghost heldBefore = baseBefore
+        shares = _buy(assets, price, observedAt, cash, baseBefore);
+        _samePrice(price, observedAt);
+        /// @custom:ghost heldAfter = baseBefore + shares
+        if (shares == 0) revert InvalidAmount();
+        emit Deposited(msg.sender, assets, shares);
+    }
+
     /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
-    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
     /// A redemption burns positive shares and pays positive assets, at least the minimum, to a valid receiver.
     /// @custom:ensures shares > 0 && assets > 0 && assets >= minAssets
     /// The shares redeemed are exactly the measured decrease in the base tokens the engine holds.
@@ -301,22 +356,10 @@ contract ManagedPropAMMEngine is
         (uint256 price, uint256 observedAt) = _price();
         /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
-        // Exact input: the measured holding below proves the pool pulled `shares`, leaving the standing unit.
-        IERC20(baseToken).forceApprove(address(pool), shares + 1);
-        // The pool pays its caller: the measured cash below is what the engine received.
-        pool.swapExactInput(
-            pairIndex,
-            true,
-            shares,
-            minAssets,
-            sponsorId,
-            customerId,
-            bytes32(uint256(++tradeNonce)),
-            block.timestamp,
-            price,
-            0,
-            observedAt
-        );
+        // Exact input: the measured holding below proves the Settler pulled `shares`, leaving the standing unit.
+        IERC20(baseToken).forceApprove(settler, shares + 1);
+        // The pool pays its taker: the measured cash below is what the engine received.
+        _swap(true, true, shares, minAssets, price, observedAt);
         /// @custom:ghost heldAfter = totalShares()
         if (totalShares() != baseBefore - shares) revert InexactTransfer();
         uint256 cashAfter = IERC20(asset).balanceOf(address(this));
@@ -329,7 +372,7 @@ contract ManagedPropAMMEngine is
 
     /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
-    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
     /// An exact withdrawal pays positive assets to a valid receiver for positive shares.
     /// @custom:ensures assets > 0 && shares > 0
     /// @custom:ensures receiver != address(0) && receiver != address(this) && receiver != address(pool)
@@ -346,15 +389,16 @@ contract ManagedPropAMMEngine is
         uint256 baseBefore = totalShares();
         /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
-        IERC20(baseToken).forceApprove(address(pool), maximum + 1);
-        _executeSell(assets, maximum, price, observedAt);
+        IERC20(baseToken).forceApprove(settler, maximum + 1);
+        // Exact output: the Settler pulls the pool's quote for this route, at most `maximum`.
+        _swap(true, false, assets, maximum, price, observedAt);
         shares = baseBefore - totalShares();
         /// @custom:ghost heldAfter = baseBefore - shares
         if (shares == 0 || shares > maximum || IERC20(asset).balanceOf(address(this)) != cashBefore + assets) {
             revert InexactTransfer();
         }
         // Exact output may pull less than `maximum`; bring the leftover back to the standing unit.
-        if (shares != maximum) IERC20(baseToken).forceApprove(address(pool), 1);
+        if (shares != maximum) IERC20(baseToken).forceApprove(settler, 1);
         _samePrice(price, observedAt);
         _pay(assets, receiver, cashBefore + assets);
         emit WithdrewExact(receiver, assets, shares);
@@ -362,14 +406,15 @@ contract ManagedPropAMMEngine is
 
     /// @notice Inventory and admission snapshot, not a guaranteed executable withdrawal limit.
     /// @dev Quotes also depend on oracle freshness, directional price anchors and token policy. The pool's
-    /// inventory of a token is shared by every pair that trades it.
+    /// inventory of a token is shared by every pair that trades it. `admitted` is false while the pool's settler
+    /// is not the engine's.
     function liquidityStatus()
         external
         view
         returns (bool paused, bool admitted, uint256 idleCash, uint256 venueCash, uint256 venueBase)
     {
         paused = pool.paused();
-        admitted = _admitted();
+        admitted = pool.settler() == settler && _admitted();
         idleCash = IERC20(asset).balanceOf(address(this));
         venueCash = IERC20(asset).balanceOf(address(pool));
         venueBase = IERC20(baseToken).balanceOf(address(pool));
@@ -407,10 +452,10 @@ contract ManagedPropAMMEngine is
         (uint256 minimum, uint256 quotedPrice, uint256 quotedAt,) =
             pool.quoteExactInputFor(pairIndex, address(this), customerId, false, assets);
         if (quotedPrice != price || quotedAt != observedAt || minimum == 0) revert QuoteMismatch();
-        // Exact input: the measured cash below proves the pool pulled `assets`, leaving the standing unit.
-        IERC20(asset).forceApprove(address(pool), assets + 1);
-        received = _executeBuy(assets, minimum, price, observedAt);
-        // The pool pays its caller: the measured base holding proves the engine received the output.
+        // Exact input: the measured cash below proves the Settler pulled `assets`, leaving the standing unit.
+        IERC20(asset).forceApprove(settler, assets + 1);
+        received = _swap(false, true, assets, minimum, price, observedAt);
+        // The pool pays its taker: the measured base holding proves the engine received the output.
         if (
             received < minimum || IERC20(asset).balanceOf(address(this)) != cashBefore - assets
                 || IERC20(baseToken).balanceOf(address(this)) != baseBefore + received
@@ -430,39 +475,46 @@ contract ManagedPropAMMEngine is
         ) revert InexactTransfer();
     }
 
-    function _executeBuy(uint256 assets, uint256 minimum, uint256 price, uint256 observedAt) private returns (uint256) {
-        return pool.swapExactInput(
-            pairIndex,
-            false,
-            assets,
-            minimum,
-            sponsorId,
-            customerId,
-            bytes32(uint256(++tradeNonce)),
-            block.timestamp,
-            price,
-            0,
-            observedAt
-        );
-    }
-
-    function _executeSell(uint256 assets, uint256 maximum, uint256 price, uint256 observedAt)
+    /// @dev Settles one swap on the engine's pair through the Settler, as the engine: the Settler pulls the
+    /// input from its caller into the pool and the pool pays that caller. `amount` is the input and `limit`
+    /// the minimum output of an exact input, or the output and the maximum input of an exact output; the
+    /// result is the other side. The swap must execute now, at exactly the observation the engine read.
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
+    function _swap(bool baseToQuote, bool exactInput, uint256 amount, uint256 limit, uint256 price, uint256 observedAt)
         private
         returns (uint256)
     {
-        return pool.swapExactOutput(
-            pairIndex,
-            true,
-            assets,
-            maximum,
-            sponsorId,
-            customerId,
-            bytes32(uint256(++tradeNonce)),
-            block.timestamp,
-            price,
-            0,
-            observedAt
-        );
+        return IManagedPropAMMSettler(settler)
+            .swap(
+                address(pool),
+                IManagedPropAMMVenue.SwapParams({
+                    pairIndex: pairIndex,
+                    baseToQuote: baseToQuote,
+                    exactInput: exactInput,
+                    amount: amount,
+                    limit: limit,
+                    sponsorId: sponsorId,
+                    customerId: customerId,
+                    tradeId: _nextTradeId(),
+                    deadline: block.timestamp,
+                    expectedOraclePrice: price,
+                    oraclePriceToleranceBps: 0,
+                    minimumOracleUpdatedAt: observedAt
+                })
+            );
+    }
+
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
+    function _nextTradeId() private returns (bytes32) {
+        return bytes32((block.number << 128) | ++_tradeCount);
+    }
+
+    /// @dev The pool fills only from its current settler, which its owner can replace. The engine approves
+    /// and swaps through its immutable one alone, whose fills the pool then refuses, so the engine stops
+    /// trading while the pool names another.
+    function _requireSettler() private view {
+        address current = pool.settler();
+        if (current != settler) revert SettlerMismatch(settler, current);
     }
 
     /// @dev The pool admits the engine on its pair under its sponsor. An unknown or removed pair admits nobody.
@@ -479,6 +531,7 @@ contract ManagedPropAMMEngine is
     }
 
     function _routeEntry() private view {
+        _requireSettler();
         if (pool.paused() || !_admitted()) revert InvalidConfiguration();
     }
 
@@ -487,6 +540,7 @@ contract ManagedPropAMMEngine is
     /// a hooked pair pays the pool's fee-inclusive price, bounded by the caller's minimum (redeem) or by the
     /// quoted maximum and the vault's share limit (exact withdrawal).
     function _routeExit() private view {
+        _requireSettler();
         if (pool.paused() || !_listed()) revert InvalidConfiguration();
     }
 }

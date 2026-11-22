@@ -37,6 +37,10 @@ const defaults: Record<string, unknown> = {
   asset: address(2),
   baseToken: address(3),
   pool: address(4),
+  settler: address(11),
+  factory: address(10),
+  defaultSettler: address(11),
+  isPool: true,
   pairIndex: 7,
   sponsorId: 9n,
   priceOracle: address(5),
@@ -73,15 +77,38 @@ test('accepts a fresh admitted pair with the canonical bindings and capabilities
     asset: address(2),
     baseToken: address(3),
     pool: address(4),
+    settler: address(11),
     pairIndex: 7,
     sponsorId: 9n,
     oracle: address(5),
     readiness: { status: 'ready', blockers: [] },
   })
+  const reads = rpc.readContract.mock.calls.map(
+    ([call]) => call as { address: string; functionName: string; args?: unknown[] },
+  )
+  // The settler binding is read from the engine, the pool and the pool's own factory.
+  expect(
+    reads
+      .filter((call) =>
+        ['settler', 'factory', 'defaultSettler', 'isPool'].includes(call.functionName),
+      )
+      .map((call) => [call.address, call.functionName, call.args])
+      .sort(),
+  ).toEqual(
+    [
+      [engine, 'settler', undefined],
+      [address(4), 'settler', undefined],
+      [address(4), 'factory', undefined],
+      [address(10), 'defaultSettler', undefined],
+      [address(10), 'isPool', [address(4)]],
+    ].sort(),
+  )
+  expect(rpc.getCode).toHaveBeenCalledWith({ address: address(11) })
   // Every pool read names the engine's own pair, and access names the engine and its sponsor.
-  const poolReads = rpc.readContract.mock.calls
-    .map(([call]) => call as { address: string; functionName: string; args?: unknown[] })
-    .filter((call) => call.address === address(4) && call.functionName !== 'paused')
+  const poolReads = reads.filter(
+    (call) =>
+      call.address === address(4) && !['paused', 'factory', 'settler'].includes(call.functionName),
+  )
   expect(poolReads.map((call) => call.functionName).sort()).toEqual([
     'pair',
     'pairHook',
@@ -107,6 +134,11 @@ test.each([
   [{ pair: { ...livePair, maxOracleAge: 0n } }, 'must be nonzero'],
   [{ customerId: zeroHash }, 'route identifier'],
   [{ supportsInterface: false }, 'capability'],
+  [{ factory: zeroAddress }, 'no factory'],
+  [{ isPool: false }, 'not created by the factory'],
+  [{ defaultSettler: address(12) }, 'factory default Settler'],
+  [{ [`${engine}:settler`]: address(12) }, 'factory default Settler'],
+  [{ [`${address(4)}:settler`]: address(12) }, 'pool settler is not the engine settler'],
   [{ paused: true }, 'paused'],
   [{ takerAccess: 3 }, 'pair is closed'],
   [{ takerAccess: 4 }, 'deny list'],
@@ -130,12 +162,23 @@ test('rejects absent external runtime code', async () => {
 })
 
 test('reports temporary readiness independently of valid deployment bindings', async () => {
-  const rpc = client({ paused: true, isFeeValuationFresh: false, takerAccess: 3 })
+  const rpc = client({
+    paused: true,
+    isFeeValuationFresh: false,
+    takerAccess: 3,
+    // The pool's owner moved the pool to another settler: the engine's own binding is unchanged.
+    [`${address(4)}:settler`]: address(12),
+  })
   const result = await inspectManagedPropAMMEngine(rpc as never, engine, 'bindings')
   expect(result.readiness).toMatchObject({
     scope: 'deposit',
     status: 'blocked',
-    blockers: ['pool is paused', 'pair is closed', 'fee valuation is stale'],
+    blockers: [
+      'pool is paused',
+      'pool settler is not the engine settler',
+      'pair is closed',
+      'fee valuation is stale',
+    ],
   })
   await expect(inspectManagedPropAMMEngine(rpc as never, engine)).rejects.toThrow(
     'deposits unavailable',
@@ -147,6 +190,17 @@ test('reports temporary readiness independently of valid deployment bindings', a
       'bindings',
     ),
   ).rejects.toThrow('immutable engine oracle')
+  // An engine bound to a settler the pool's factory does not name is a binding failure in either mode.
+  await expect(
+    inspectManagedPropAMMEngine(
+      client({ defaultSettler: address(12) }) as never,
+      engine,
+      'bindings',
+    ),
+  ).rejects.toThrow('factory default Settler')
+  await expect(
+    inspectManagedPropAMMEngine(client({ factory: zeroAddress }) as never, engine, 'bindings'),
+  ).rejects.toThrow('no factory')
   // A removed pair is a binding failure in either mode, never a temporary blocker.
   await expect(
     inspectManagedPropAMMEngine(client({ pair: noPair }) as never, engine, 'bindings'),

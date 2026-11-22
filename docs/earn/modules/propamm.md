@@ -133,15 +133,15 @@ Everything on this page about `PropAMMEngine` holds for it (custody, accounting,
 [pricing](#pricing-and-rounding-credit), [freshness](#freshness), capabilities, events, errors, and
 the absence of setters and of a sweep) except where the pool differs:
 
-| `PropAMMEngine`                                                  | `ManagedPropAMMEngine`                                                                 |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Bound to one pool, which is one pair                             | Bound to one pool and one of its pairs: immutable `pairIndex`                          |
-| Reads its tokens and oracle from the pool                        | Takes its tokens as arguments and requires the pair to trade exactly them              |
-| Trades under the pool's one taker list                           | Trades under an immutable `sponsorId`: 0 for the pair's home list, or a sponsor's list |
-| Names itself as the swap recipient                               | Names no recipient: the pool pays a swap's output to its caller, the engine            |
-| Route credit keyed by taker, recipient, and route                | Route credit keyed by pair, taker, and route                                           |
-| Admitted when taker and recipient are allowed and not redirected | Admitted when the pair's access check passes for the engine and the pair has no hook   |
-| Onchain metadata `PropAMM Engine` / `propAMM-engine`             | `Managed PropAMM Engine` / `managed-propAMM-engine`                                    |
+| `PropAMMEngine`                                                  | `ManagedPropAMMEngine`                                                                                                                                                 |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bound to one pool, which is one pair                             | Bound to one pool and one of its pairs: immutable `pairIndex`                                                                                                          |
+| Reads its tokens and oracle from the pool                        | Takes its tokens as arguments and requires the pair to trade exactly them                                                                                              |
+| Trades under the pool's one taker list                           | Trades under an immutable `sponsorId`: 0 for the pair's home list, or a sponsor's list                                                                                 |
+| Approves the pool and names itself as the swap recipient         | Approves the pool factory's `Settler` (immutable `settler`), never the pool, and names no recipient: the pool pays a swap's output to the Settler's caller, the engine |
+| Route credit keyed by taker, recipient, and route                | Route credit keyed by pair, taker, and route; the taker is the engine, the Settler's caller                                                                            |
+| Admitted when taker and recipient are allowed and not redirected | Admitted when the pair's access check passes for the engine, the pair has no hook, and the pool's settler is the engine's                                              |
+| Onchain metadata `PropAMM Engine` / `propAMM-engine`             | `Managed PropAMM Engine` / `managed-propAMM-engine`                                                                                                                    |
 
 The constructor is
 `ManagedPropAMMEngine(pool, pairIndex, sponsorId, asset, baseToken, owner, maxOracleAge, customerId)`.
@@ -149,22 +149,29 @@ It reads `pool.pair(pairIndex)` and reverts `InvalidConfiguration` unless that p
 `baseToken` and its quote is `asset`. An unknown or removed pair reads all zero, so it matches no
 token; the pool never reuses a pair's index or changes a pair's tokens. On top of the single-pair
 engine's checks, the pair's recorded decimals and price scale must equal the ones the tokens and
-the oracle report, and the pair must have no hook. `sponsorId` is not validated at construction:
-access is checked on every trade.
+the oracle report, the pair must have no hook, the pool must have a factory (`StandalonePool`
+otherwise), and the pool's `settler()` must be that factory's `defaultSettler()`, which becomes the
+engine's immutable `settler` (`SettlerMismatch` otherwise). `sponsorId` is not validated at
+construction: access is checked on every trade.
 
 A pair's access mode is `Closed` (nobody trades), `Listed` (the accounts on a list the pair admits)
-or `Open` (every account the pool does not deny). Before any trade the engine requires the pool to
-be unpaused and `takerAllowed(pairIndex, engine, sponsorId)`, and reverts `InvalidConfiguration`
-otherwise, so a closed pair, a denied engine, the pool-wide pause and, on a `Listed` pair, an
-unlisted engine or a disabled, unregistered or unadmitted sponsor each revert the whole deposit,
-redemption or exact withdrawal with nothing moved. An `Open` pair reads no list, so there the
+or `Open` (every account the pool does not deny). Before any trade the engine requires
+`pool.settler()` to still be its `settler`, reverting `SettlerMismatch` once the pool's owner has
+replaced it, and the pool to be unpaused and `takerAllowed(pairIndex, engine, sponsorId)`, reverting
+`InvalidConfiguration` otherwise, so a replaced settler, a closed pair, a denied engine, the
+pool-wide pause and, on a `Listed` pair, an unlisted engine or a disabled, unregistered or
+unadmitted sponsor each revert the whole deposit, redemption or exact withdrawal with nothing
+moved. An `Open` pair reads no list, so there the
 sponsor's state stops nothing: only the pause, closing the pair and the deny list do. Valuation does
 not depend on access. After a pair is removed its oracle reads zero,
 so valuation and deposits revert `InvalidOracle` and exits revert `InvalidConfiguration`.
 
-Every swap is checked by the engine's own measured balances, as in the single-pair engine: the
-input token falls by exactly the amount sold, and the output the engine reports is its measured
-increase. A pool that paid another account would fail those checks and revert.
+Every swap is `settler.swap(pool, params)`, with the amounts, limit, ids, deadline and oracle bounds
+the engine quoted, and is checked by the engine's own measured balances, as in the single-pair
+engine: the input token falls by exactly the amount sold, and the output the engine reports is its
+measured increase. An exact withdrawal burns exactly the Settler's quote for the engine's route. A
+pool that paid another account would fail the Settler's balance checks, and behind them the
+engine's, and revert.
 
 **Hooks.** A managed pair can carry a hook that charges an input-token fee of up to 10% on quotes
 and swaps. The engine values its base tokens at the oracle price, so a fee would make
@@ -185,14 +192,15 @@ valuation (`ResidualBacking`), which a hook's fee makes the last one do: the las
 redemption. A hook's swap callbacks run inside the engine's settlement, under
 the engine's and the vault's reentrancy guards and the same measured-balance checks.
 
-`liquidityStatus()` returns the same tuple; `venueCash` and `venueBase` are the pool's whole
+`liquidityStatus()` returns the same tuple; `admitted` is also false while the pool's settler is
+not the engine's, and `venueCash` and `venueBase` are the pool's whole
 balances, which every pair trading that token shares, so another pair's trades change them.
 
 The pool operator has more ways to stop execution than a single-pair pool's administrators: the
 pool-wide pause, the pair's access mode, the home list, the deny list, the sponsor's registration,
 admission to the pair and its list (a sponsor's own admin manages that list), a hook, the pair's
-oracle, and the pair's removal. None can move the engine's holdings or change which tokens it
-trades.
+oracle, the pool's settler, and the pair's removal. None can move the engine's holdings or change
+which tokens it trades or which settler it approves.
 
 Removal is the one that cannot be undone. The pool never reuses a pair index and the engine's
 `pairIndex` is immutable, so once its pair is removed the engine can never sell its base tokens:
@@ -201,11 +209,13 @@ has no sweep and no way to name another pair, so its holdings are stranded for g
 pair stops trading and can be reversed; the pool operator must never remove a pair an engine holds
 base tokens on.
 
-Deployment follows the [steps above](#deployment) by hand, with the pair index, sponsor id and both
-token addresses added to the recorded inputs, and the pool operator admitting the engine on the
+Deployment follows the [steps above](#deployment) by hand, with the pair index, sponsor id, both
+token addresses and the pool's factory and Settler added to the recorded inputs, and the pool
+operator admitting the engine on the
 pair under that sponsor. No profile can name the engine until its kind is registered: the
 [engine definition](../../../deployments/modules/earn/engines/managed-propamm.ts) and its inspection
-(pair tokens, oracle, decimals and scales, hook, and the access outcome as deposit readiness) exist
+(pair tokens, oracle, decimals and scales, hook, the settler binding against the pool's factory, and
+the access outcome and the pool's current settler as deposit readiness) exist
 beside the registry, not in it ([adding an engine](../integrations/engines.md#recipe) lists what
 registration needs). Until then tooling refuses a vault whose engine is a managed one: the
 single-pair kind recognizes only an engine whose pool names its own base token, which a managed pool
@@ -225,11 +235,18 @@ decimal configurations, the two freshness windows, rounding credit, donations an
 surplus, illiquidity, revoked admission, pause and recipient blocks,
 price-anchor discontinuity, and repeated tiny round trips.
 
-`ManagedPropAMMEngine.t.sol` and `ManagedPropAMMIntegration.t.sol`, the second against the pinned
-managed pool, repeat those cases and add the constructor's pair checks (unknown, removed, other
-tokens, reversed tokens, differing decimals, a hook), swaps naming the engine's pair and sponsor on
-a pool with other pairs, an output paid to another account, and each refusal reverting every flow
-with nothing moved: a closed pair, an unlisted or denied engine, sponsor refusals, the pool pause,
+`ManagedPropAMMEngine.t.sol` and `ManagedPropAMMIntegration.t.sol`, both on a pool the pinned
+PoolFactory creates and its pinned Settler (the first with a behavioural venue as the pool's code,
+the second against the pinned
+managed pool), repeat those cases and add the constructor's pair checks (unknown, removed, other
+tokens, reversed tokens, differing decimals, a hook) and settler checks (a standalone pool, a pool
+on another settler), swaps naming the engine's pair and sponsor on
+a pool with other pairs, settlement through the Settler with exact balance changes, no pool
+allowance and nothing held by the Settler, route credit on the engine's own route, an exact
+withdrawal burning the Settler's quote, an output paid to another account, and each refusal
+reverting every flow
+with nothing moved: a replaced settler, a closed pair, an unlisted or denied engine, sponsor
+refusals, the pool pause,
 and a removed pair. A hook installed later blocks deposits only: against the pinned pool with a 1%
 fee hook, an exact withdrawal and a redemption settle at the pool's fee-inclusive quotes, a
 redemption demanding the oracle value reverts, fee valuation reads stale, and an exact withdrawal
@@ -262,7 +279,9 @@ Building and testing Earn never needs the PropAMM source repository.
 contract, and compiler of that build.
 
 The managed engine's tests deploy `ManagedDirectPropAMM` the same way, from
-[`ManagedDirectPropAMM.json`](../../../test/earn/fixtures/propamm/ManagedDirectPropAMM.json), built from
+[`ManagedDirectPropAMM.json`](../../../test/earn/fixtures/propamm/ManagedDirectPropAMM.json), with its
+[`PoolFactory.json`](../../../test/earn/fixtures/propamm/PoolFactory.json) and
+[`Settler.json`](../../../test/earn/fixtures/propamm/Settler.json), all three built from
 the commit [`managed.source.json`](../../../test/earn/fixtures/propamm/managed.source.json) records. The
 two pins move independently; pass `--source managed.source.json` to `update.sh` to rebuild or check
 that one. `update.sh` fixes each source file's contract by the file's name, so a source file cannot
@@ -288,15 +307,16 @@ pull request, including those from forks, and `main`
 Review `PropAMMEngine` together with the pinned DirectPropAMM execution behavior, oracle,
 recipient registry, and the actual token implementations; production configuration and
 independent sign-off are outside local CI. Review `ManagedPropAMMEngine` the same way against the
-pinned ManagedDirectPropAMM, with the pair's access configuration, its sponsor and the hook rule in
+pinned ManagedDirectPropAMM, PoolFactory and Settler, with the pair's access configuration, its
+sponsor, the hook rule and the settler binding in
 place of the recipient registry.
 
-Preserve one-vault custody, exact balance-delta accounting, at most one unit of standing pool allowance, pinned
+Preserve one-vault custody, exact balance-delta accounting, at most one unit of standing pool allowance (the Settler's, and none for the pool, in the managed engine), pinned
 oracle and scale consistency, same-price settlement checks, reentrancy guards (including
 `ReadDuringSettlement` for valuation reads mid-trade), and the absence of a privileged sweep.
 
 External administrators can stop execution by pausing, revoking admission, redirecting recipients,
-changing the oracle, or removing inventory. Freshness says nothing about economic price correctness
+changing the oracle, replacing a managed pool's settler, or removing inventory. Freshness says nothing about economic price correctness
 or asset redeemability, and a source match establishes code identity, not economic safety. Inspect
 the oracle's publication and authorization model, the pool's price-deviation settings, token
 transfer behavior, and the chain's live policy, and record the reviewed external release,
