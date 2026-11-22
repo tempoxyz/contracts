@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import { ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
+import { IZonePortal, ZONE_MESSENGER_ADDRESS } from "tempo-zones/interfaces/IZone.sol";
 import { ZoneRouter } from "../../../../src/zone/ZoneRouter.sol";
 
 import { CardSpend } from "../../../../src/spend/CardSpend.sol";
@@ -40,8 +40,8 @@ abstract contract PrivateEarnChangeTest is PrivateSpendFixture {
         _zoneSettle();
 
         assertFalse(lastCallbackResults[0], "callback rejected");
-        // The router refuses change below the portal's deposit fee before it reaches the portal.
-        assertEq(bytes4(lastCallbackErrors[0]), ZoneRouter.ChangeBelowDepositFee.selector);
+        // The portal refuses a deposit below its deposit fee plus bounce-back reserve.
+        assertEq(bytes4(lastCallbackErrors[0]), IZonePortal.DepositTooSmall.selector);
         assertEq(usd.balanceOf(settlement), before, "nothing paid");
         assertEq(
             zoneBefore - _zoneBalance(address(earnShare), alice),

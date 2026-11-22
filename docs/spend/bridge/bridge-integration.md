@@ -286,12 +286,12 @@ only bounces, so they show up when Bridge simulates the callback or traces the s
   `InvalidAmount`, `VaultNotAllowed`, `IncorrectAssetForVault`, `ShareCostExceeded`, and
   `PipelineDisabled` on the pull path.
 - **The router:** `NotZoneMessenger`, `WrongSourceZone`, `InvalidSourcePortal`, `BadFlow`,
-  `OpDisabled`, `UnknownSpender`, `InvalidMaxInput`, `InvalidSpend`, `InvalidReturnToken`,
-  `DepositFeeTooHigh`, `ChangeBelowDepositFee` (change below the portal's deposit and bounce-back
-  fees), `TokenCallFailed` (a token transfer that reverts, such as one a policy blocks),
+  `OpDisabled`, `UnknownSpender`, `InvalidMaxInput`, `InvalidSpend`, `DepositFeeTooHigh`,
+  `TokenCallFailed` (a token transfer that reverts, such as one a policy blocks),
   `ResidualBalance`, `ReentrantCall` and `ZeroAddress` (no refund recipient).
-- **The portal, on the return deposit:** `CallbackDidNotReturnToZone` on an access-enforced portal
-  when nothing comes back.
+- **The portal, on the return deposit:** `DepositTooSmall` (change below the portal's deposit and
+  bounce-back fees), `TokenNotEnabled`, `DepositsNotActive` and a paused portal, and
+  `CallbackDidNotReturnToZone` on an access-enforced portal when nothing comes back.
 - **The keychain, on a public spend:** `SpendingLimitExceeded` and `CallNotAllowed`.
 - **The Zone outbox, before approval:** a callback gas limit above 10M reverts the Zone request,
   so the card is declined rather than bounced.

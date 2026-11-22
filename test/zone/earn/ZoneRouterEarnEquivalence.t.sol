@@ -157,7 +157,7 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
     function testEventsAndErrorsShareSingleZoneEarnRouterSelectors() public pure {
         assertEq(ZoneRouter.EarnDeposit.selector, SingleZoneEarnRouter.EarnDeposit.selector);
         assertEq(ZoneRouter.EarnRedeem.selector, SingleZoneEarnRouter.EarnRedeem.selector);
-        bytes4[18] memory zoneRouterErrors = [
+        bytes4[17] memory zoneRouterErrors = [
             ZoneRouter.AmountOverflow.selector,
             ZoneRouter.BadFlow.selector,
             ZoneRouter.InsufficientOutput.selector,
@@ -165,7 +165,6 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
             ZoneRouter.InvalidEarnVault.selector,
             ZoneRouter.InvalidPool.selector,
             ZoneRouter.InvalidPrivateAsset.selector,
-            ZoneRouter.InvalidReturnToken.selector,
             ZoneRouter.InvalidRoutePair.selector,
             ZoneRouter.InvalidSourcePortal.selector,
             ZoneRouter.NotZoneMessenger.selector,
@@ -177,7 +176,7 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
             ZoneRouter.WrongSourceZone.selector,
             ZoneRouter.ZeroAmount.selector
         ];
-        bytes4[18] memory legacyErrors = [
+        bytes4[17] memory legacyErrors = [
             SingleZoneEarnRouter.AmountOverflow.selector,
             SingleZoneEarnRouter.BadFlow.selector,
             SingleZoneEarnRouter.InsufficientOutput.selector,
@@ -185,7 +184,6 @@ contract ZoneRouterEarnEquivalenceTest is ZoneRouterEarnTestBase {
             SingleZoneEarnRouter.InvalidEarnVault.selector,
             SingleZoneEarnRouter.InvalidPool.selector,
             SingleZoneEarnRouter.InvalidPrivateAsset.selector,
-            SingleZoneEarnRouter.InvalidReturnToken.selector,
             SingleZoneEarnRouter.InvalidRoutePair.selector,
             SingleZoneEarnRouter.InvalidSourcePortal.selector,
             SingleZoneEarnRouter.NotZoneMessenger.selector,

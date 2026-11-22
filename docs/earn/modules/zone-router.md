@@ -58,14 +58,17 @@ when:
   so a router for a nonzero Zone without one can't be deployed;
 - the amount is nonzero and the delivered token is the private asset (deposit) or the EarnShare
   (redeem); and
-- the source Portal has the return token (EarnShare for a deposit, the private asset for a
-  redemption) enabled with deposits active, and the refund recipient is nonzero.
+- the refund recipient is nonzero, and the source Portal takes the return token (EarnShare for a
+  deposit, the private asset for a redemption): its `depositEncrypted` reverts while it is paused or
+  for a token it has not enabled or whose deposits are inactive, which rolls back the whole callback.
 
 Callback data (`Abis.earnRouterCallbackData` in `viem/tempo`) carries the flow (`0` deposit, `1`
 redeem), independent `minVaultAssets`, `minEarnShares`, and `minOutputAmount` bounds, an `actionId`,
 and a `ZoneReturn` with the encryption key index, encrypted recipient payload, and refund recipient.
 It has no token, vault, route, Portal, or public recipient, so a caller cannot redirect the
-deployment's route. `supportsFlow` accepts only `0` and `1`. The router ignores the callback
+deployment's route. `supportsFlow` accepts only `0` and `1`. The router reads the tuple in place
+from calldata, so the callback data must end the call's calldata: a callback whose length is not
+whole words reverts `BadFlow`, and the ZoneMessenger's typed call always ends with the callback data. The router ignores the callback
 `senderTag` and never emits, stores, or forwards it: accounting does not need it, and a stable
 public label would make private actions easier to correlate.
 
@@ -92,7 +95,7 @@ sequenceDiagram
     Z->>P: composable withdrawal(privateAsset, amountIn, callbackData)
     P->>M: authenticated callback
     M->>R: onWithdrawalReceived(sourceZoneId, sourcePortal, ..., privateAsset, amountIn, data)
-    R->>R: validate messenger, Zone, Portal, token, flow, return token
+    R->>R: validate messenger, Zone, Portal, token, flow, refund recipient
     opt conversion router
         R->>D: swapExactInput at par
         R->>R: measure vault assets; enforce minVaultAssets
@@ -127,16 +130,19 @@ path.
 
 ## Par conversion
 
-`parPrice()` is `10 ** decimals` of the pool oracle; with equal token units it is the only price at
-which input converts to identical output. For each conversion the router:
+`parPrice()` is `10 ** decimals` of the pool oracle, read once at construction: DirectPropAMM keeps its
+oracle's decimals fixed, and a price that no longer matched would only make the zero-tolerance swap
+revert. With equal token units it is the only price at which input converts to identical output. For
+each conversion the router:
 
 1. selects the direction from the flow and the immutable pair;
-2. records its input and output balances;
+2. records its output balance and, for a redemption, its vault-asset input balance;
 3. relies on the standing maximum pool allowance set at construction;
 4. calls `swapExactInput` with `minAmountOut = amountIn`, the current block as deadline, `actionId` as
    the trade ID, `parPrice()` as the expected price, zero tolerance, and no minimum observation time;
 5. takes `amountOut` from the measured output-balance delta and requires `amountOut == amountIn`; and
-6. requires its input balance to return to the operation baseline.
+6. requires its input balance to return to the operation baseline: a redemption checks its vault-asset
+   input right after the swap, and a deposit's private-asset input is checked when the callback ends.
 
 There are no partial fills. A paused pool, revoked admission or redirected recipient, an off-par or
 (by the pool's own window) stale oracle report, or insufficient inventory reverts the callback and
@@ -234,13 +240,13 @@ authorization by hand.
 
 Callback failures decode against the router ABI:
 
-| Error                                                                                                                                | Meaning and response                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                |
-| `InvalidReturnToken`                                                                                                                 | The return token is not enabled, or its deposits are inactive, on the source Portal                                          |
-| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool |
-| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, or output bound was missed, or measured conversion output differed from input                      |
-| `ResidualBalance`, `InvalidRoutePair`                                                                                                | Invariant failure; investigate before retrying                                                                               |
+| Error                                                                                                                                | Meaning and response                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `WrongSourceZone`, `InvalidSourcePortal`, `NotZoneMessenger`, `WrongInputToken`, `BadFlow`, `ZeroAmount`, `ZeroAddress`              | Wrong deployment or malformed callback; rebuild from verified deployment data                                                   |
+| Portal `TokenNotEnabled`, `DepositsNotActive`, or a paused Portal                                                                    | The source Portal will not take the return token now (not enabled, deposits inactive, or paused) and reverts the return deposit |
+| Pool `Paused`, `TakerNotAllowed`, `RecipientNotAllowed`, `StaleOraclePrice`, `OraclePriceToleranceExceeded`, `InsufficientInventory` | The pool cannot convert at par now; read `liquidityStatus()` and the oracle age before retrying. Never raised without a pool    |
+| `InsufficientOutput`                                                                                                                 | A vault-asset, EarnShare, or output bound was missed, or measured conversion output differed from input                         |
+| `ResidualBalance`, `InvalidRoutePair`                                                                                                | Invariant failure; investigate before retrying                                                                                  |
 
 When the Portal reports `callbackSuccess: false`, the Zone protocol bounces the withdrawal back and
 the processing fee may still be consumed. Do not issue a second refund from the application; fix the

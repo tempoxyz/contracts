@@ -137,6 +137,10 @@ contract ZoneRouter is IWithdrawalReceiver {
     bytes32 public immutable customerId;
     /// @notice Whether the private asset is the pool's base token; false without a pool.
     bool public immutable privateAssetIsBase;
+    /// @dev The pool's par price, read once at construction; zero without a pool. DirectPropAMM keeps its
+    ///      oracle's decimals fixed (a replacement oracle with other decimals reverts), and a stale price could
+    ///      only make the zero-tolerance swap revert, never convert off par.
+    uint256 private immutable _parPrice;
 
     /// @dev How many spenders are held in immutables.
     uint256 private constant _INLINE_SPENDERS = 4;
@@ -181,9 +185,6 @@ contract ZoneRouter is IWithdrawalReceiver {
 
     error AmountOverflow();
     error BadFlow();
-    /// @notice A Spend's nonzero change is below the Portal's minimum deposit, its deposit fee plus its
-    ///         bounce-back reserve, so its return would revert.
-    error ChangeBelowDepositFee(uint256 change, uint256 fee);
     error DepositFeeTooHigh(uint128 fee);
     error InsufficientOutput();
     error InvalidCustomerId();
@@ -193,7 +194,6 @@ contract ZoneRouter is IWithdrawalReceiver {
     error InvalidOps();
     error InvalidPool();
     error InvalidPrivateAsset();
-    error InvalidReturnToken();
     error InvalidRoutePair();
     error InvalidSpend();
     error InvalidSpenders();
@@ -233,8 +233,9 @@ contract ZoneRouter is IWithdrawalReceiver {
         address vaultAsset_;
         address earnShare_;
         bool privateIsBase;
+        uint256 parPrice_;
         if (mode.enabledOps & (OP_DEPOSIT | OP_REDEEM) != 0) {
-            (vaultAsset_, earnShare_, privateIsBase) =
+            (vaultAsset_, earnShare_, privateIsBase, parPrice_) =
                 _validateEarn(mode.earnVault, mode.privateAsset, mode.pool, mode.customerId);
         } else if (
             mode.earnVault != address(0) || mode.privateAsset != address(0) || mode.pool != address(0)
@@ -249,6 +250,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         pool = IPropAMMVenue(mode.pool);
         customerId = mode.customerId;
         privateAssetIsBase = privateIsBase;
+        _parPrice = parPrice_;
 
         bool spends = mode.enabledOps & OP_SPEND != 0;
         if (spends != (mode.spenders.length != 0)) revert InvalidSpenders();
@@ -339,7 +341,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @custom:ensures address(pool) == address(0) ==> result == 0
     function parPrice() public view returns (uint256) {
         if (!_converts()) return 0;
-        return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
+        return _parPrice;
     }
 
     /// @notice Pool state and output inventory for each Earn op, as SingleZoneEarnRouter reports it.
@@ -431,12 +433,8 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (!isSpender(data.spender)) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        // A maxInput below the amount always leaves change, so its return is checked before the spender pays.
-        // The fee is checked again once it has paid, since the Portal's fee may change while the spender runs.
         /// @custom:assert isSpender(data.spender) && data.zoneReturn.refundRecipient != address(0)
         /// @custom:assert 0 < data.maxInput && data.maxInput <= amount
-        bool returnChecked = data.maxInput < amount;
-        if (returnChecked) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
 
         // A transfer instead of an approval: the spender holds no allowance from the router, so it can
         // never take more than maxInput, and no router -> spender allowance slot is written.
@@ -456,13 +454,12 @@ contract ZoneRouter is IWithdrawalReceiver {
         bytes32 zoneDepositHash;
         if (change != 0) {
             /// @custom:ghost gChangeReturned = change
-            uint128 fee = returnChecked
-                ? _checkDepositFee(sourcePortal, data.zoneReturn.maxDepositFee)
-                : _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
-            // The Portal's depositEncrypted reverts DepositTooSmall below this; named here for the sender.
-            uint256 minimum = uint256(fee) + IZonePortalFees(sourcePortal).calculateBouncebackFee();
-            if (change < minimum) revert ChangeBelowDepositFee(change, minimum);
-            /// @custom:assert change >= minimum && change >= fee && fee <= data.zoneReturn.maxDepositFee
+            // The fee is read once the spender has run, since the Portal's fee may change while it runs. The
+            // Portal enforces everything else about the return itself: its depositEncrypted reverts while it is
+            // paused, for a token it has not enabled or whose deposits are inactive, and for change below its
+            // deposit fee plus bounce-back reserve (DepositTooSmall), and any of these rolls back the spend.
+            uint128 fee = _checkDepositFee(sourcePortal, data.zoneReturn.maxDepositFee);
+            /// @custom:assert fee <= data.zoneReturn.maxDepositFee
             /// @custom:assert sourcePortal == portal && change == amount - used
             _approvePortal(token, sourcePortal, change);
             zoneDepositHash = IZonePortal(sourcePortal)
@@ -479,19 +476,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         returnedChange = change != 0;
     }
 
-    /// @dev Requires the Portal to take `token` back and its deposit fee to be within the sender's cap.
-    /// @custom:ensures fee <= maxDepositFee
-    function _checkChangeReturn(address sourcePortal, address token, uint128 maxDepositFee)
-        private
-        view
-        returns (uint128 fee)
-    {
-        // The Portal's areDepositsActive is false for a token it has not enabled or has paused.
-        if (!IZonePortal(sourcePortal).areDepositsActive(token)) revert InvalidReturnToken();
-        fee = _checkDepositFee(sourcePortal, maxDepositFee);
-    }
-
-    /// @dev Requires the Portal's deposit fee to be within the sender's cap.
+    /// @dev Requires the Portal's deposit fee to be within the sender's cap, which the Portal does not enforce.
     /// @custom:ensures fee <= maxDepositFee
     function _checkDepositFee(address sourcePortal, uint128 maxDepositFee) private view returns (uint128 fee) {
         fee = IZonePortalFees(sourcePortal).calculateDepositFee();
@@ -505,10 +490,17 @@ contract ZoneRouter is IWithdrawalReceiver {
         ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
-        _validateSourceReturn(sourcePortal, earnShare, zoneReturn);
+        _validateSourceReturn(zoneReturn);
         uint256 earnShareBalanceBefore = IERC20Like(earnShare).balanceOf(address(this));
         uint256 vaultAssets = _converts()
-            ? _swap(privateAsset, vaultAsset, amount, operation.minVaultAssets, operation.actionId)
+            ? _swap(
+                privateAsset,
+                vaultAsset,
+                amount,
+                operation.minVaultAssets,
+                operation.actionId,
+                IERC20Like(vaultAsset).balanceOf(address(this))
+            )
             : amount;
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets == amount && vaultAssets >= operation.minVaultAssets
@@ -529,7 +521,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
-        _validateSourceReturn(sourcePortal, privateAsset, zoneReturn);
+        _validateSourceReturn(zoneReturn);
         uint256 outputBalanceBefore = IERC20Like(privateAsset).balanceOf(address(this));
 
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
@@ -537,7 +529,14 @@ contract ZoneRouter is IWithdrawalReceiver {
         /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets
 
         uint256 outputAmount = _converts()
-            ? _swap(vaultAsset, privateAsset, vaultAssets, operation.minOutputAmount, operation.actionId)
+            ? _swap(
+                vaultAsset,
+                privateAsset,
+                vaultAssets,
+                operation.minOutputAmount,
+                operation.actionId,
+                outputBalanceBefore
+            )
             : vaultAssets;
         if (outputAmount == 0 || outputAmount < operation.minOutputAmount) revert InsufficientOutput();
         /// @custom:assert outputAmount == vaultAssets && outputAmount >= operation.minOutputAmount
@@ -548,15 +547,23 @@ contract ZoneRouter is IWithdrawalReceiver {
         emit EarnRedeem(operation.actionId, earnVault, privateAsset, amount, vaultAssets, outputAmount, zoneDepositHash);
     }
 
-    function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, bytes32 actionId)
-        private
-        returns (uint256 amountOut)
-    {
+    /// @param outputBalanceBefore The router's `tokenOut` balance before the swap, read by the caller.
+    function _swap(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        bytes32 actionId,
+        uint256 outputBalanceBefore
+    ) private returns (uint256 amountOut) {
         _requireRoutePair(tokenIn, tokenOut);
         if (minAmountOut > amountIn) revert InsufficientOutput();
 
-        uint256 inputBalanceBefore = IERC20Like(tokenIn).balanceOf(address(this)) - amountIn;
-        uint256 outputBalanceBefore = IERC20Like(tokenOut).balanceOf(address(this));
+        // A deposit's private-asset input is checked once its whole callback settles, in onWithdrawalReceived,
+        // so only a redemption's vault-asset input is checked here.
+        bool checksInput = tokenIn == vaultAsset;
+        uint256 inputBalanceBefore;
+        if (checksInput) inputBalanceBefore = IERC20Like(tokenIn).balanceOf(address(this)) - amountIn;
         bool baseToQuote = (tokenIn == privateAsset) == privateAssetIsBase;
         /// @custom:assert tokenIn == privateAsset && tokenOut == vaultAsset || tokenIn == vaultAsset && tokenOut == privateAsset
         /// @custom:assert minAmountOut <= amountIn && address(pool) != address(0)
@@ -566,7 +573,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         // freshness and deviation guards.
         // The measured output delta below is authoritative, not the pool's reported amount.
         pool.swapExactInput(
-            baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
+            baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, _parPrice, 0, 0
         );
 
         uint256 outputBalanceAfter = IERC20Like(tokenOut).balanceOf(address(this));
@@ -574,13 +581,13 @@ contract ZoneRouter is IWithdrawalReceiver {
         amountOut = outputBalanceAfter - outputBalanceBefore;
         if (amountOut != amountIn) revert InsufficientOutput();
         /// @custom:assert amountOut == amountIn && amountOut == outputBalanceAfter - outputBalanceBefore
-        _requireBalance(tokenIn, inputBalanceBefore);
+        if (checksInput) _requireBalance(tokenIn, inputBalanceBefore);
     }
 
     function _validateEarn(address earnVault_, address privateAsset_, address pool_, bytes32 customerId_)
         private
         view
-        returns (address vaultAsset_, address earnShare_, bool privateIsBase)
+        returns (address vaultAsset_, address earnShare_, bool privateIsBase, uint256 parPrice_)
     {
         if (earnVault_ == address(0) || earnVault_.code.length == 0) revert InvalidEarnVault();
         vaultAsset_ = IEarnVault(earnVault_).asset();
@@ -604,6 +611,7 @@ contract ZoneRouter is IWithdrawalReceiver {
             if (IERC20Metadata(privateAsset_).decimals() != IERC20Metadata(vaultAsset_).decimals()) {
                 revert InvalidRoutePair();
             }
+            parPrice_ = 10 ** uint256(IPropAMMPriceOracle(venue.oracle()).decimals());
         }
     }
 
@@ -615,10 +623,10 @@ contract ZoneRouter is IWithdrawalReceiver {
         /// @custom:assert msg.sender == ZONE_MESSENGER_ADDRESS && sourcePortal == portal && amount != 0
     }
 
-    function _validateSourceReturn(address sourcePortal, address token, ZoneReturn calldata zoneReturn) private view {
+    /// @dev The Portal's depositEncrypted itself rejects a return token it has not enabled, whose deposits
+    ///      are inactive, or while it is paused, and every such revert rolls back the whole callback.
+    function _validateSourceReturn(ZoneReturn calldata zoneReturn) private pure {
         if (zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        // The Portal's areDepositsActive is false for a token it has not enabled or has paused.
-        if (!IZonePortal(sourcePortal).areDepositsActive(token)) revert InvalidReturnToken();
     }
 
     function _depositEncrypted(address sourcePortal, address token, uint128 amount, ZoneReturn calldata zoneReturn)

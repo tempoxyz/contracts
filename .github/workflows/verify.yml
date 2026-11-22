@@ -53,10 +53,10 @@ jobs:
       - name: Check deployable sizes
         run: FOUNDRY_PROFILE=deploy forge build --sizes src/earn/core/EarnVault.sol src/zone
 
-      # The gas snapshot below runs the test/earn/gas benchmarks. A command-line --no-match-path
+      # The gas snapshot below runs the test/earn/gas and test/zone/gas benchmarks. A command-line --no-match-path
       # replaces foundry.toml's, so it repeats the default profile's exclusion of the spend tests.
       - name: Test
-        run: forge test -vvv --no-match-path '{test/earn/gas/*,test/spend/**}'
+        run: forge test -vvv --no-match-path '{test/earn/gas/*,test/zone/gas/*,test/spend/**}'
 
       - name: Check gas snapshot
         run: pnpm gas:snapshot
