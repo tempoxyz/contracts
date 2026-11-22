@@ -250,7 +250,8 @@ contract EarnVaultFeesTest is Test {
 
         uint256 totalClaimable = fees.claimableEarnShares(fixedRecipient);
         assertGt(totalClaimable, expectedYieldFeeShares);
-        assertEq(share.balanceOf(address(fees)), totalClaimable);
+        // EarnFees also keeps the one unit the vault minted it at initialization.
+        assertEq(share.balanceOf(address(fees)), totalClaimable + 1);
 
         vm.prank(fixedRecipient);
         fees.claim(fixedRecipient, totalClaimable);
@@ -271,7 +272,7 @@ contract EarnVaultFeesTest is Test {
         fees.claim(fixedRecipient, claimable);
         assertEq(fees.claimableEarnShares(fixedRecipient), claimable);
         assertEq(fees.totalClaimableEarnShares(), claimable);
-        assertEq(share.balanceOf(address(fees)), claimable);
+        assertEq(share.balanceOf(address(fees)), claimable + 1);
 
         _deposit(secondUser, 100 ether);
         assertGt(share.balanceOf(secondUser), 0);
@@ -466,7 +467,7 @@ contract EarnVaultFeesTest is Test {
         assertEq(secondFeeEarnShares, 1);
         assertEq(fees.claimableEarnShares(thirdFixedRecipient), 1);
         assertEq(fees.totalClaimableEarnShares(), 1);
-        assertEq(share.balanceOf(address(fees)), 1);
+        assertEq(share.balanceOf(address(fees)), 2);
     }
 
     /// @dev Disabling waives every carried remainder, emitting each one, and a later checkpoint carries none.
@@ -590,7 +591,7 @@ contract EarnVaultFeesTest is Test {
         fees.initializeBaselines(1 ether, 1 ether);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.recordRedeemRequest(bytes32(uint256(1)), 1 ether, 1 ether);
+        fees.recordRedeemRequest(bytes32(uint256(1)), 1 ether);
     }
 
     function testProxyCanOnlyInitializeOnce() public {

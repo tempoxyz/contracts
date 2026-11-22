@@ -6,7 +6,6 @@ import { FeeConfig, FeePreview } from "./EarnFeeTypes.sol";
 interface IEarnFees {
     struct PendingFeeSnapshot {
         uint256 burnedEarnShares;
-        uint256 requestValue;
         uint256 highWaterValue;
         uint256 targetValue;
         uint64 feeConfigId;
@@ -18,13 +17,13 @@ interface IEarnFees {
 
     function accrueFees(uint256 activeSupply, uint256 activeAssets, bool valuationFresh)
         external
-        returns (FeePreview memory result, uint256 baselineFloor, uint256 scale);
+        returns (uint256 feeAssets, uint256 feeEarnShares, uint256 baselineFloor, uint256 scale);
     function setFeeConfig(FeeConfig calldata config) external returns (uint64 configId);
     function validateFeeConfig(FeeConfig calldata config) external view;
     function disableFees(address operator) external;
     function initializeBaselines(uint256 activeSupply, uint256 activeAssets) external;
 
-    function recordRedeemRequest(bytes32 requestId, uint256 burnedEarnShares, uint256 requestValue) external;
+    function recordRedeemRequest(bytes32 requestId, uint256 burnedEarnShares) external;
     function closeRedeemRequest(bytes32 requestId) external;
     function settleCancelledRedeem(
         bytes32 requestId,

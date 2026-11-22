@@ -180,7 +180,7 @@ balance changes atomically.
 EarnShare burns when a request is created; the pending entitlement is not active supply or NAV.
 Finalization and cancellation use one stored receiver. The request's fee snapshot pins its
 configuration ID, so active fee changes cannot rewrite prior cancellation terms. Disabling fees
-after the request permanently waives that request's cancellation fees
+at or after the request's recorded time permanently waives that request's cancellation fees
 ([queued withdrawals](fees.md#queued-withdrawals)).
 Cancellation cannot expand the contribution limit
 ([reward-admission limit](system.md#reward-admission-limit)).

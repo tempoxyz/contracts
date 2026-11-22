@@ -206,7 +206,7 @@ compatible asset, vault binding, interface, and output bounds. The full
 | `DepositsPaused`                                                                                      | Pause blocks deposits, in-kind entry, contributions, and absorption                          |
 | `ActiveSupplyWithoutBacking`                                                                          | No principal entry into a pool whose zero-value supply exceeds 1 bps of the entry            |
 | `ExcessiveConversionLoss`                                                                             | Entry, request, or nonempty-pool re-entry loses more than 1 bp to rounding                   |
-| `MaxManagedAssetsExceeded`                                                                            | A voluntary inflow would exceed the managed-assets limit                                     |
+| `MaxManagedAssetsExceeded`, `MaxManagedAssetsTooLarge`                                                | A voluntary inflow would exceed the managed-assets limit, or a limit exceeds 2^96 − 1        |
 | `RewardRateLimitExceeded`                                                                             | A reward would exceed 100× the reward-rate baseline                                          |
 | `NoEarnShares`, `InsufficientEngineShareSurplus`                                                      | A reward needs holders and enough surplus                                                    |
 | `InsufficientOutput`                                                                                  | A conversion or measured delta is zero, or a measured delta differs from the reported amount |
@@ -257,7 +257,9 @@ module, or the EarnVault.
 `closeRedeemRequest`, and `settleCancelledRedeem` mutate the fee state machine. The EarnVault
 supplies the accounting context, passing active EarnShare supply, active assets and valuation
 freshness to `accrueFees` and `initializeBaselines`, and separately mints any fee EarnShare they
-return.
+return. `accrueFees` returns the fee assets, the fee EarnShare, and the baseline floor and EarnShare
+scale of a checkpoint that valued the pool (both zero otherwise); `recordRedeemRequest` takes the
+request ID and burned EarnShare and trusts the EarnVault's valuation freshness.
 `initializeBaselines` runs after a principal deposit and only raises baselines; the EarnVault skips
 it when the post-entry value is at or below the baseline floor `accrueFees` returned.
 

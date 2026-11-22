@@ -382,7 +382,7 @@ contract EarnVaultAsyncTest is Test {
         IEarnFees feeModule = IEarnFees(feeCore.earnFees());
         IEarnFees.PendingFeeSnapshot memory pending = feeModule.pendingFeeSnapshot(requestId);
         assertEq(pending.burnedEarnShares, 4 ether);
-        assertEq(pending.requestValue, 4 ether);
+        assertEq(pending.requestedAt, block.timestamp);
         assertEq(pending.feeConfigId, 1);
         assertTrue(pending.open);
 
@@ -503,7 +503,8 @@ contract EarnVaultAsyncTest is Test {
 
         feeEngine.setRate(1.2 ether);
         feeCore.accrueFees();
-        uint256 activeFeeShares = feeShare.balanceOf(address(feeCore.earnFees()));
+        // Less the unit EarnFees keeps from initialization.
+        uint256 activeFeeShares = feeShare.balanceOf(address(feeCore.earnFees())) - 1;
         assertGt(activeFeeShares, 0);
 
         vm.prank(user);
@@ -589,6 +590,53 @@ contract EarnVaultAsyncTest is Test {
         feeCore.accrueFees();
         assertEq(fees.claimableEarnShares(originalRecipient), 0);
         assertGt(fees.claimableEarnShares(replacementRecipient), 0);
+        assertTrue(feeCore.isAccountingAligned());
+    }
+
+    /// @dev A snapshot is void when fees were disabled at or after its request time, so a request filed in the same
+    ///      second as a disable and re-enable keeps its snapshot but is never charged; one filed a second later is.
+    function testSameSecondReactivationWaivesRequestFiledAfterIt() public {
+        address originalRecipient = address(0xFEE);
+        address replacementRecipient = address(0xBEEF);
+        (CoreMockToken feeAsset, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore) =
+            _newFeeAsync(originalRecipient);
+        IEarnFees fees = IEarnFees(feeCore.earnFees());
+
+        vm.startPrank(user);
+        feeAsset.approve(address(feeCore), type(uint256).max);
+        feeShare.approve(address(feeCore), type(uint256).max);
+        feeCore.deposit(10 ether, user, 10 ether);
+        vm.stopPrank();
+
+        FeeConfig memory replacement;
+        replacement.fixedFeeCount = 1;
+        replacement.fixedFees[0] = FixedFeeRecipient(replacementRecipient, 1_000);
+        vm.startPrank(operator);
+        feeCore.disableFees();
+        feeCore.setFeeConfig(replacement);
+        vm.stopPrank();
+
+        vm.prank(user);
+        bytes32 sameSecond = feeCore.requestRedeem(2 ether, "", receiver);
+        assertTrue(fees.pendingFeeSnapshot(sameSecond).open);
+        assertFalse(fees.shouldChargeRedeem(sameSecond));
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(user);
+        bytes32 later = feeCore.requestRedeem(2 ether, "", receiver);
+        assertTrue(fees.shouldChargeRedeem(later));
+
+        // The active pool's own growth is charged first, so only the cancellations' queued growth is compared.
+        feeEngine.setRate(1.2 ether);
+        feeCore.accrueFees();
+        uint256 activeFees = fees.claimableEarnShares(replacementRecipient);
+        vm.startPrank(user);
+        feeCore.cancelRedeem(sameSecond, 2 ether);
+        assertEq(fees.claimableEarnShares(replacementRecipient), activeFees);
+        feeCore.cancelRedeem(later, 1);
+        vm.stopPrank();
+        assertGt(fees.claimableEarnShares(replacementRecipient), activeFees);
+        assertEq(fees.claimableEarnShares(originalRecipient), 0);
         assertTrue(feeCore.isAccountingAligned());
     }
 

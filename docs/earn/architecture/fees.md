@@ -257,8 +257,10 @@ authorities, their handoffs, and every pending update.
 
 `disableFees` is the operator's emergency stop for stacks without a distributor. It does not read
 valuation and waives uncrystallized active-pool and cancellation fees, so exits continue if NAV
-becomes unavailable. Every request records the disable epoch at creation; a later disable
-permanently waives its snapshot, even if fees are re-enabled. On a stack with a distributor,
+becomes unavailable. `EarnFees` records when fees were last disabled, and a disable at or after a
+request's recorded time permanently waives its snapshot, even if fees are re-enabled. A disable and
+re-enable within the same second therefore also waives requests recorded after the re-enable in that
+second, in their favour. On a stack with a distributor,
 including one whose item is zero, `disableFees` reverts with `GlobalFeeDisableUnavailable`, because
 it would let one authority erase the other's items; each removes only its own items through its
 prospective update path. A configuration installed after disablement needs a fresh valuation,
@@ -271,17 +273,17 @@ The request, finalization, and cancellation sequences are in
 [async redemption](flows.md#async-redemption). At request time the EarnVault checkpoints the active
 pool, burns the requester's EarnShare, moves the corresponding engine shares into the engine queue,
 and records the claim. If fees are active and the valuation is fresh, `EarnFees` also stores a
-snapshot: the burned EarnShare, the request's value, the high-water mark and current grown target
-scaled to the burned EarnShare (rounded up), the configuration ID, the request time, and the disable
-epoch.
+snapshot in one storage slot: the high-water mark and current grown target scaled to the burned
+EarnShare (rounded up), the configuration ID, and the request time. The burned EarnShare stays in the
+EarnVault's request record, which passes it back on cancellation.
 
 Active holders keep earning and paying fees while the claim is open. Finalization pays the engine's
 fixed result to the stored receiver and closes the claim and its snapshot with no burn and no fee
 calculation.
 
 Cancellation returns the queued position to the active pool. After checkpointing the active pool,
-the EarnVault measures the returned engine shares. The snapshot is charged only if it exists, no
-disable has occurred since the request, fees are not disabled, and the valuation is fresh. A charged
+the EarnVault measures the returned engine shares. The snapshot is charged only if it exists, fees
+were not disabled at or after its request time, fees are not disabled, and the valuation is fresh. A charged
 snapshot runs the waterfall under its own configuration against the returned value, using the
 snapshot's high-water mark and a target grown from the request time, so only positive queued growth
 pays. The re-entry is:

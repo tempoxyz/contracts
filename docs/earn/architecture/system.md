@@ -239,13 +239,15 @@ Every economic action ends by restating the anchor from actual state, so after e
 convertToEngineShares(totalEarnShares()) == engineShares()
 ```
 
-`totalEarnShares()` is the active supply: EarnShare total supply minus up to 1 unit the EarnVault
-holds, which counts as burned so a standing residue keeps its balance slot. `initialize` mints that unit
-to the EarnVault, so its balance slot is never empty. When active supply is zero,
+`totalEarnShares()` is the active supply: EarnShare total supply minus the 2 units `initialize` mints,
+1 to the EarnVault and 1 to `EarnFees`, which count as burned so neither balance slot is ever emptied.
+Neither unit leaves: the EarnVault never approves a spender of its EarnShare and moves out only
+EarnShare it took in within the same call, and `EarnFees` pays out only recorded claims. EarnShare
+anyone sends either contract stays active supply. When active supply is zero,
 managed backing is zero too: the next action moves any engine shares left over to surplus.
 
 `isAccountingAligned()` reports this equality and nothing else: the anchor stores active supply, which
-never counts the minted unit, so no other supply needs checking. Deposits and exits change backing and supply
+never counts the minted units, so no other supply needs checking. Deposits and exits change backing and supply
 proportionally. Fee mints add supply without backing; contributions and surplus absorption add
 backing without supply.
 Each restates the anchor against the resulting pair.
@@ -303,7 +305,8 @@ keeps that reset baseline. The reopened rate matches it, so the cycle creates no
 
 When `maxManagedAssets` is nonzero, `deposit`, `depositVenueShares`, `contribute`, and
 `absorbEngineShareSurplus` revert with `MaxManagedAssetsExceeded` if managed backing would end above
-it. The operator may change it at any time; zero means unlimited. A limit below current backing
+it. The operator may change it at any time; zero means unlimited, and a limit above 2^96 − 1 reverts
+with `MaxManagedAssetsTooLarge` at initialization or in `setMaxManagedAssets`. A limit below current backing
 forces no exit; voluntary inflows stop until exits create room or the operator raises or removes
 it. Passive yield may carry backing above the limit. Redemption, exact withdrawal, async requests
 and cancellation never check it. `remainingDepositCapacity()` quotes the room left.
