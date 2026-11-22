@@ -224,8 +224,10 @@ stablecoin), and a customer ID, all set or all zero. Its `spenderData` is
 | Its bound vault | That vault's par stablecoin | Its EarnShare | An exact withdrawal to itself, then the pool at the oracle's exact par price |
 
 An exact withdrawal goes through the vault's callback when the vault reports it by ERC-165 detection:
-it must affirm ERC-165 itself, deny `0xffffffff` and affirm `IEarnVaultWithdrawCallback`, each probe
-capped at 30,000 gas and one return word. The spender then calls
+it must affirm `IEarnVaultWithdrawCallback` and deny `0xffffffff` (so a fallback answering true to
+everything fails), each probe capped at 30,000 gas and one return word. A vault that affirms the
+interface without implementing it cannot settle: the callback must clear the spender's armed vault and
+the payee must be paid. The spender then calls
 `withdrawExactWithCallback(amount, receiver, maxInput)`, and the vault calls `earnWithdrawCallback` back
 with its quote, which the spender pays by transfer, so no allowance slot is written. Only the vault
 being redeemed may call back, once, for at most `maxInput` (`NotVault`, `InsufficientInput`), and a
@@ -246,9 +248,12 @@ registry resolves, redeems to itself and transfers to `to` (Earn's engines measu
 receiver), and reverts for an unregistered one, as the transfer would. It refuses `to`, or the master
 it resolves to, when that is itself or the calling router (`InvalidRecipient`): the router returns
 only the input token, so an output paid to it would stay there. It hands every unused unit
-back to the router and keeps no balance. With a conversion binding it keeps a standing maximum
-`convertAsset` approval to its immutable pool, which Tempo would otherwise charge as a new storage
-slot on every conversion; otherwise it keeps no allowance. Tokens sent to it outside a spend are not
+back to the router and keeps no balance: the input is a token the router's Zone Portal withdrew, which
+is a TIP-20 (a Portal enables only TIP-20s), so the transfer back leaves exactly the baseline. A redemption
+to itself must leave its asset balance, and for a conversion its par stablecoin balance, where they were
+before the spend (`ResidualBalance`); a redemption straight to a plain `to` never pays the spender, so only `to` is measured. With a conversion binding it keeps a standing maximum
+`convertAsset` approval to its immutable pool, set once by its constructor, which Tempo would otherwise
+charge as a new storage slot on a conversion; otherwise it keeps no allowance. Tokens sent to it outside a spend are not
 rescued; only that pool could pull stranded `convertAsset`. Whoever builds the callback picks `to` and
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the spender as a taker and recipient.

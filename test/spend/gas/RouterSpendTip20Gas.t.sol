@@ -73,6 +73,28 @@ contract RouterSpendTip20GasTest is CoreEnv {
         used = before - gasleft();
     }
 
+    function _opToken(address token, uint128 amount, bytes memory data) internal returns (uint256 used) {
+        uint256 before = gasleft();
+        portal.send(token, address(zr), amount);
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        zr.onWithdrawalReceived(ZONE, address(portal), bytes32(0), token, amount, data);
+        used = before - gasleft();
+    }
+
+    /// @dev EarnShare in the Portal for withdrawals, with the router's and the spender's one-unit seeds.
+    function _seedEarn() internal returns (uint128 shares) {
+        usd.mint(alice, 10_000e6);
+        uint256 total = _depositEarn(alice, 10_000e6);
+        vm.startPrank(alice);
+        earnShare.transfer(address(zr), 1);
+        earnShare.transfer(address(sender), 1);
+        earnShare.transfer(address(portal), total - 2);
+        vm.stopPrank();
+        zr.warm(address(earnShare));
+        // A tenth above the live cost leaves change for the router to return.
+        shares = uint128(earnVault.previewWithdraw(60e6) * 11 / 10);
+    }
+
     function _spendData(address spender, uint128 maxInput, bytes memory spenderData)
         internal
         view
@@ -98,6 +120,12 @@ contract RouterSpendTip20GasTest is CoreEnv {
             abi.encode(SendSpender.Send({ to: bob, token: address(usd), amount: amount, vault: address(0), ref: ref }));
     }
 
+    function _earnSend(uint128 amount, bytes32 ref) internal view returns (bytes memory) {
+        return abi.encode(
+            SendSpender.Send({ to: bob, token: address(usd), amount: amount, vault: address(earnVault), ref: ref })
+        );
+    }
+
     function _card(uint256 amount, bytes32 ref) internal view returns (bytes memory) {
         CardSpend memory s;
         s.program = address(card);
@@ -118,6 +146,14 @@ contract RouterSpendTip20GasTest is CoreEnv {
         _op(100e6, _spendData(address(sender), 100e6, _send(60e6, "1")));
         uint256 used = _op(100e6, _spendData(address(sender), 100e6, _send(60e6, "2")));
         vm.snapshotValue("router-spend-tip20", "send.change", used);
+    }
+
+    /// @dev EarnShare redeemed exactly to the recipient through the vault's callback, the unused shares back to the Zone.
+    function test_gasRouterSendEarn() public {
+        uint128 shares = _seedEarn();
+        _opToken(address(earnShare), shares, _spendData(address(sender), shares, _earnSend(60e6, "1")));
+        uint256 used = _opToken(address(earnShare), shares, _spendData(address(sender), shares, _earnSend(60e6, "2")));
+        vm.snapshotValue("router-spend-tip20", "send.earn", used);
     }
 
     function test_gasRouterCardExact() public {
