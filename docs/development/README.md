@@ -106,9 +106,9 @@ hash, which the reviewed factory releases pin: changing any of them, including b
 
 ### Gas baseline
 
-[`.gas-snapshot`](../../.gas-snapshot) records only the `test/earn/gas/` benchmarks: fee checkpointing on
-deposit, redeem, and contribution, and the Veda engine and full-stack paths, including
-queued-request forwarding. `pnpm gas:snapshot` checks it. After a material contract change, run
+[`.gas-snapshot`](../../.gas-snapshot) records only the `test/earn/gas/` and `test/zone/gas/` benchmarks: fee checkpointing on
+deposit, redeem, and contribution, the Veda engine and full-stack paths, including
+queued-request forwarding, and the SingleZoneEarnRouter and ZoneRouter Earn deposit and redeem callbacks. `pnpm gas:snapshot` checks it. After a material contract change, run
 `forge build --force` and `pnpm gas:update` with the [toolchain](#toolchain) Foundry and solar versions. Values
 are whole test-case gas before EIP-3529 refunds: compare the same row across revisions, not against
 production receipts.
@@ -191,7 +191,7 @@ ruleset also requires `Actions security / Scan GitHub Actions / Scan GitHub Acti
 | `spend.yml`               | Pull request or push to `main` touching card spend or its inputs (`src/`, `vendor/`, `e2e/spend/`, `localnet/`)                       | [Card spend](../spend/README.md)'s build with sizes, tests, Rain fixture and Bridge matrix checks, Rain E2E, Bridge Zone E2E, and Bridge smoke run; not a required check                                                                                                                                                        |
 
 - **Verify jobs.** Contracts runs the same steps as `verify:contracts`, except that its Forge test
-  step skips `test/earn/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
+  step skips `test/earn/gas/` and `test/zone/gas/`, which the gas snapshot step runs. A pull request that changes `src/` also
   fuzzes the whole `SingleZoneEarnRouterAbiFuzzTest` contract over brutalized memory at 4,096 runs;
   `main` does not, so `main` never waits on it. Symbolic proves the
   `EarnFeeMathFuzzTest` `prove*` properties with z3 at a loop bound of 32. TypeScript checks and

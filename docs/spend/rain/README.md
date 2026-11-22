@@ -39,7 +39,10 @@ Rain's factory records each collateral contract in its public `collateralProxies
 address lookup, so the spend's `destinationHint` is the collateral's index in that array, and the
 provider requires `collateralProxies(hint)` to be the destination. One read of Rain's factory proves
 provenance without trusting the destination's code. Rain's backend knows each index from the order of
-the factory's `NewRainCollateral` events. The provider also fixes the accepted tokens, Earn vaults and pooled
+the factory's `NewRainCollateral` events. Pooled collateral is proved the same way once, at deployment: the constructor
+takes each one's index and reverts with `NotRainCollateral` unless the factory recorded it there, so a
+spend to pooled collateral reads nothing from the factory and ignores its hint. Rain's factory only
+appends to `collateralProxies`. The provider also fixes the accepted tokens, Earn vaults and pooled
 collateral, and lists them once in its `Configured` event; it has no owner and reports no pause, since
 Rain's contracts have none, and neither has the program. There is no on-chain stop: Rain stops a program
 by revoking its access keys and Zone keys, the only senders of its spends, which can pay only collateral

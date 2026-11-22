@@ -47,7 +47,9 @@ remainder and pays whole units once they accrue. Those valuations omit the credi
 can pay a few quote units more than its preview, depending on earlier trades on the engine's route.
 `previewWithdraw` and the pool's route quotes (`quoteExactInputFor`, `quoteExactOutputFor`) include
 it. Every trade is executed at the price and observation time read at its start, and the engine
-re-reads the oracle afterwards and reverts `QuoteMismatch` if either changed.
+re-reads the oracle afterwards and reverts `QuoteMismatch` if either changed. Each trade's pool trade
+ID is the block number above a count of the engine's trades in that transaction, so IDs label the
+pool's `TradeExecuted` events and are distinct within a transaction, not across transactions.
 
 ### Freshness
 
@@ -105,15 +107,15 @@ simulate each complete transaction before signing.
 
 ## Failure modes
 
-| Signal or error                                                                               | Response                                                                       |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Fee valuation stale; deposit reverts `InvalidOracle`                                          | Restore oracle publication; deposits and contributions stay blocked until then |
-| Pool paused, admission revoked, or recipient redirected (`InvalidConfiguration` on any trade) | Confirm administrator intent before restoring access; exits are blocked too    |
-| Low base-token inventory                                                                      | Replenish before deposits                                                      |
-| Low quote-token inventory                                                                     | Replenish before exits; previews are not liquidity guarantees                  |
-| Pool oracle changed or its decimals changed (`InvalidOracle` on every path)                   | Restore the pinned oracle                                                      |
-| TIP-403 transfer denied                                                                       | Repair the denied path with its policy administrator                           |
-| Source or runtime verification changed                                                        | Stop release promotion and investigate provenance                              |
+| Signal or error                                                                                                                                                   | Response                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Fee valuation stale; deposit reverts `InvalidOracle`                                                                                                              | Restore oracle publication; deposits and contributions stay blocked until then |
+| Pool paused or admission revoked (the pool's `Paused`, `TakerNotAllowed`, or `RecipientNotAllowed` on any trade); recipient redirected (a measured-balance check) | Confirm administrator intent before restoring access; exits are blocked too    |
+| Low base-token inventory                                                                                                                                          | Replenish before deposits                                                      |
+| Low quote-token inventory                                                                                                                                         | Replenish before exits; previews are not liquidity guarantees                  |
+| Pool oracle changed or its decimals changed (`InvalidOracle` on every path)                                                                                       | Restore the pinned oracle                                                      |
+| TIP-403 transfer denied                                                                                                                                           | Repair the denied path with its policy administrator                           |
+| Source or runtime verification changed                                                                                                                            | Stop release promotion and investigate provenance                              |
 
 Choose inventory thresholds from expected deposit and redemption sizes, and monitor both freshness
 windows. Earn's guardian pause cannot unpause the pool, change its permissions, or create exit

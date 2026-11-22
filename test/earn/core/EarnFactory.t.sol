@@ -347,7 +347,8 @@ contract EarnFactoryTest is Test {
         EarnFactory.DeployParams memory params = _baseParams();
         params.deploymentId = deploymentId;
         params.owner = owner;
-        params.controls.maxManagedAssets = maxManagedAssets;
+        // The vault stores the limit in 96 bits and rejects a wider one.
+        params.controls.maxManagedAssets = bound(maxManagedAssets, 0, type(uint96).max);
         params.controls.migrationMode = userOnly ? EngineMigrationMode.UserOnly : EngineMigrationMode.OperatorEnabled;
         address predictedShare = factory.predictEarnShare(params);
         address predictedFees = factory.predictEarnFees(params);
@@ -583,7 +584,7 @@ contract EarnFactoryTest is Test {
 
         vm.prank(address(earnVault));
         share.mint(OWNER, 1);
-        assertEq(share.totalSupply(), 2);
+        assertEq(share.totalSupply(), 3);
         assertEq(share.balanceOf(OWNER), 1);
         assertFalse(share.hasRole(attacker, issuerRole));
     }
@@ -688,9 +689,10 @@ contract EarnFactoryTest is Test {
         FactoryMockShareToken share = FactoryMockShareToken(earnShare);
         uint64 expectedPolicy = params.transferPolicyId == 0 ? ALWAYS_ALLOW_POLICY_ID : params.transferPolicyId;
         assertEq(share.transferPolicyId(), expectedPolicy);
-        // The only EarnShare is the unit the vault minted to itself, which counts as burned.
-        assertEq(share.totalSupply(), 1);
+        // The only EarnShare are the units the vault minted to itself and EarnFees, which count as burned.
+        assertEq(share.totalSupply(), 2);
         assertEq(share.balanceOf(address(earnVault)), 1);
+        assertEq(share.balanceOf(address(earnFees)), 1);
         assertEq(earnVault.totalEarnShares(), 0);
         bytes32 issuerRole = share.ISSUER_ROLE();
         address[3] memory others = [address(factory), params.owner, address(earnFees)];

@@ -347,6 +347,8 @@ contract AsyncEarnVaultHandler is Test {
     EarnVault public immutable core;
     bytes32[] private requestIds;
     mapping(bytes32 => bool) public requestOpen;
+    /// @dev Engine shares each request moved out of the vault's custody, measured when it was filed.
+    mapping(bytes32 => uint256) private requestEngineShares;
     uint256 public openRequests;
     uint256 public pendingEngineShares;
     bool public rewardRateInvariantViolated;
@@ -393,12 +395,14 @@ contract AsyncEarnVaultHandler is Test {
         if (balance == 0) return;
         shares = bound(shares, 1, balance);
         earnShare.approve(address(core), shares);
+        uint256 heldBefore = core.rawEngineShares();
         bytes32 requestId = core.requestRedeem(shares, "", address(this));
-        EarnVault.PendingRedeem memory pending = core.pendingRedeem(requestId);
+        uint256 queued = heldBefore - core.rawEngineShares();
         requestIds.push(requestId);
         requestOpen[requestId] = true;
+        requestEngineShares[requestId] = queued;
         openRequests += 1;
-        pendingEngineShares += pending.engineShares;
+        pendingEngineShares += queued;
     }
 
     function cancelRedeem(uint256 seed) external {
@@ -407,7 +411,7 @@ contract AsyncEarnVaultHandler is Test {
         bool activePoolWasNonempty = core.totalEarnShares() != 0;
         uint256 rateBefore = core.normalizedRewardRate();
         uint256 rewardBaselineBefore = core.rewardRateBaseline();
-        uint256 engineShares = core.pendingRedeem(requestId).engineShares;
+        uint256 engineShares = requestEngineShares[requestId];
         core.cancelRedeem(requestId, 1);
         if (activePoolWasNonempty && core.normalizedRewardRate() > rateBefore) {
             rewardRateInvariantViolated = true;
@@ -421,7 +425,7 @@ contract AsyncEarnVaultHandler is Test {
     function finalizeRedeem(uint256 seed) external {
         bytes32 requestId = _openRequest(seed);
         if (requestId == bytes32(0)) return;
-        uint256 engineShares = core.pendingRedeem(requestId).engineShares;
+        uint256 engineShares = requestEngineShares[requestId];
         engine.settle(requestId);
         requestOpen[requestId] = false;
         openRequests -= 1;
@@ -496,7 +500,8 @@ contract FeeEarnVaultInvariantTest is StdInvariant, Test {
     }
 
     function invariant_feeCustodyEqualsRecordedClaims() public view {
-        assertEq(earnShare.balanceOf(address(fees)), fees.totalClaimableEarnShares());
+        // EarnFees holds every recorded claim plus the unit the vault minted it at initialization.
+        assertEq(earnShare.balanceOf(address(fees)), fees.totalClaimableEarnShares() + 1);
         assertLe(fees.totalClaimableEarnShares(), earnShare.totalSupply());
     }
 

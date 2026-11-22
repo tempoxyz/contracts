@@ -65,7 +65,6 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     error ProgramPaused();
     error Reentrancy();
     error RefundNotCredited();
-    error ResidualBalance(address token);
     error ShareCostExceeded(uint256 required, uint256 maxShares);
     error UnresolvedRecipient();
     error UnsupportedToken(address token);
@@ -120,7 +119,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     ///         from the caller's `s.token` and `s.fromVault` redeemed from the caller's shares in `s.vault`.
     ///         The caller approves this program for both first.
     function spend(CardSpend calldata s) external nonReentrant {
-        address payee = _check(s, msg.sender, false);
+        address payee = _check(s, msg.sender, false, false);
         uint256 destinationBefore = IERC20Like(s.token).balanceOf(payee);
         uint256 sharesUsed = PAYOUT_TARGET == address(0) ? _payDirect(s, payee) : _payThroughPublic(s);
         if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
@@ -149,8 +148,10 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         if (input == address(0) || input != token) revert WrongInputToken(token);
         /// @custom:assert 0 < maxInput && maxInput <= type(uint128).max && input == token && token != address(0)
         /// @custom:assert s.fromVault == 0 ? token == s.token : s.fromVault == s.amount && s.vault != address(0)
-        // A private spend names no cardholder, so the provider gets no payer.
-        address payee = _check(s, address(0), true);
+        // A private spend names no cardholder, so the provider gets no payer. A stablecoin spend's token is the
+        // input, which the router's Zone Portal withdrew: a Portal enables only TIP-20s (`enableToken` checks,
+        // and the Zone factory checks the initial token), so `_check` need not ask again.
+        address payee = _check(s, address(0), true, s.fromVault == 0);
 
         // Whatever else the program holds (a seed) is the baseline, and nothing beyond it may stay behind.
         uint256 balance = IERC20Like(token).balanceOf(address(this));
@@ -185,10 +186,9 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         /// @custom:assert PAYOUT_TARGET != address(0) && s.fromVault != 0 ==> consumed <= expected
         if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
         // With nothing unused the balance read above already equals the baseline, and nothing has moved since.
-        if (unused != 0) {
-            _tokenCall(token, IERC20Like.transfer.selector, msg.sender, unused, TRANSFER_FAILED);
-            if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
-        }
+        // Otherwise the transfer leaves exactly the baseline: `token` is what the router's Zone Portal
+        // withdrew, and a Portal enables only TIP-20s, which debit the sender exactly.
+        if (unused != 0) _tokenCall(token, IERC20Like.transfer.selector, msg.sender, unused, TRANSFER_FAILED);
 
         emit CardSpent(
             s.ref, msg.sender, s.destination, s.token, s.amount, s.fromVault, s.fromVault == 0 ? 0 : consumed, true
@@ -246,13 +246,18 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     // Internals
     // ------------------------------------------------------------------
 
-    /// @dev Checks `s` and returns its payee: who a transfer to `s.destination` credits.
-    function _check(CardSpend calldata s, address payer, bool isPrivate) private view returns (address payee) {
+    /// @dev Checks `s` and returns its payee: who a transfer to `s.destination` credits. `tokenIsTip20` is
+    ///      true only when the caller already knows `s.token` is a TIP-20.
+    function _check(CardSpend calldata s, address payer, bool isPrivate, bool tokenIsTip20)
+        private
+        view
+        returns (address payee)
+    {
         if (s.program != address(this)) revert WrongProgram(s.program);
         if (s.amount == 0 || s.fromVault > s.amount) revert InvalidAmount();
         // Only TIP-20s settle: no transfer callbacks, fees or rebases to upset the exact-credit checks. A vault's
         // asset must equal `s.token`, so this covers redemptions too.
-        if (!StdPrecompiles.TIP20_FACTORY.isTIP20(s.token)) revert UnsupportedToken(s.token);
+        if (!tokenIsTip20 && !StdPrecompiles.TIP20_FACTORY.isTIP20(s.token)) revert UnsupportedToken(s.token);
         payee = _payee(s.destination);
         // The program's own balance is the baseline it measures input against, so it never pays itself.
         if (payee == address(0) || payee == address(this)) revert DestinationNotAuthorized(s.destination);

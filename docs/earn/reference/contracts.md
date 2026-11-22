@@ -82,30 +82,30 @@ transfer-policy setup completed.
 
 ### Core state
 
-| Read                                          | Meaning                                                                 |
-| --------------------------------------------- | ----------------------------------------------------------------------- |
-| `asset()`                                     | Immutable base asset, read from the initial engine                      |
-| `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                         |
-| `engine()`                                    | Current engine                                                          |
-| `engineMigrationMode()`                       | Deployment-fixed `UserOnly` or `OperatorEnabled`; no setter             |
-| `operator()` / `pendingOperator()`            | Operator and nominated successor                                        |
-| `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                        |
-| `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                                |
-| `engineShares()`                              | Managed engine shares backing active EarnShare, capped at raw custody   |
-| `rawEngineShares()`                           | Raw current-engine custody, including surplus                           |
-| `surplusEngineShares()`                       | Raw shares not recognized as managed backing                            |
-| `totalAssets()`                               | Value of managed backing; surplus excluded                              |
-| `totalEarnShares()`                           | Active supply: EarnShare total supply minus up to 1 vault-held unit     |
-| `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares                |
-| `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability         |
-| `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution   |
-| `rewardRateBaseline()`                        | Rate at initialization or the last empty reset                          |
-| `MAX_REWARD_RATE_MULTIPLIER()`                | Fixed reward-admission ceiling: `100`                                   |
-| `openRedeemRequestCount()`                    | Number of open async claims                                             |
-| `pendingRedeem(requestId)`                    | Stored receiver, requester, burned EarnShare, engine shares, and `open` |
-| `depositsPaused()`                            | New-exposure pause state                                                |
-| `maxManagedAssets()`                          | Managed-assets ceiling; zero means unlimited                            |
-| `remainingDepositCapacity()`                  | Room under the ceiling; `type(uint256).max` when unlimited              |
+| Read                                          | Meaning                                                               |
+| --------------------------------------------- | --------------------------------------------------------------------- |
+| `asset()`                                     | Immutable base asset, read from the initial engine                    |
+| `earnShare()` / `earnFees()`                  | Paired EarnShare and fee module                                       |
+| `engine()`                                    | Current engine                                                        |
+| `engineMigrationMode()`                       | Deployment-fixed `UserOnly` or `OperatorEnabled`; no setter           |
+| `operator()` / `pendingOperator()`            | Operator and nominated successor                                      |
+| `emergencyGuardian()` / `asyncJanitor()`      | Emergency seats; zero when empty                                      |
+| `anchorEngineShares()` / `anchorEarnShares()` | Stored conversion anchor                                              |
+| `engineShares()`                              | Managed engine shares backing active EarnShare, capped at raw custody |
+| `rawEngineShares()`                           | Raw current-engine custody, including surplus                         |
+| `surplusEngineShares()`                       | Raw shares not recognized as managed backing                          |
+| `totalAssets()`                               | Value of managed backing; surplus excluded                            |
+| `totalEarnShares()`                           | Active supply: EarnShare total supply minus up to 1 vault-held unit   |
+| `isAccountingAligned()`                       | Whether supply converts exactly to managed engine shares              |
+| `isFeeValuationFresh()`                       | Engine's fee-valuation freshness; `true` without the capability       |
+| `normalizedRewardRate()`                      | Managed engine shares per whole EarnShare, after pending fee dilution |
+| `rewardRateBaseline()`                        | Rate at initialization or the last empty reset                        |
+| `MAX_REWARD_RATE_MULTIPLIER()`                | Fixed reward-admission ceiling: `100`                                 |
+| `openRedeemRequestCount()`                    | Number of open async claims                                           |
+| `pendingRedeem(requestId)`                    | Stored receiver, requester, burned EarnShare, and `open`              |
+| `depositsPaused()`                            | New-exposure pause state                                              |
+| `maxManagedAssets()`                          | Managed-assets ceiling; zero means unlimited                          |
+| `remainingDepositCapacity()`                  | Room under the ceiling; `type(uint256).max` when unlimited            |
 
 ### User and accounting API
 
@@ -206,7 +206,7 @@ compatible asset, vault binding, interface, and output bounds. The full
 | `DepositsPaused`                                                                                      | Pause blocks deposits, in-kind entry, contributions, and absorption                          |
 | `ActiveSupplyWithoutBacking`                                                                          | No principal entry into a pool whose zero-value supply exceeds 1 bps of the entry            |
 | `ExcessiveConversionLoss`                                                                             | Entry, request, or nonempty-pool re-entry loses more than 1 bp to rounding                   |
-| `MaxManagedAssetsExceeded`                                                                            | A voluntary inflow would exceed the managed-assets limit                                     |
+| `MaxManagedAssetsExceeded`, `MaxManagedAssetsTooLarge`                                                | A voluntary inflow would exceed the managed-assets limit, or a limit exceeds 2^96 − 1        |
 | `RewardRateLimitExceeded`                                                                             | A reward would exceed 100× the reward-rate baseline                                          |
 | `NoEarnShares`, `InsufficientEngineShareSurplus`                                                      | A reward needs holders and enough surplus                                                    |
 | `InsufficientOutput`                                                                                  | A conversion or measured delta is zero, or a measured delta differs from the reported amount |
@@ -255,8 +255,13 @@ module, or the EarnVault.
 
 `accrueFees`, `setFeeConfig`, `disableFees`, `initializeBaselines`, `recordRedeemRequest`,
 `closeRedeemRequest`, and `settleCancelledRedeem` mutate the fee state machine. The EarnVault
-supplies the accounting context and separately mints any fee EarnShare they return.
-`initializeBaselines` runs after a principal deposit and only raises baselines.
+supplies the accounting context, passing active EarnShare supply, active assets and valuation
+freshness to `accrueFees` and `initializeBaselines`, and separately mints any fee EarnShare they
+return. `accrueFees` returns the fee assets, the fee EarnShare, and the baseline floor and EarnShare
+scale of a checkpoint that valued the pool (both zero otherwise); `recordRedeemRequest` takes the
+request ID and burned EarnShare and trusts the EarnVault's valuation freshness.
+`initializeBaselines` runs after a principal deposit and only raises baselines; the EarnVault skips
+it when the post-entry value is at or below the baseline floor `accrueFees` returned.
 
 ### Events
 

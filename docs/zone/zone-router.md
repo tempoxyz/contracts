@@ -119,9 +119,12 @@ The router reads the first callback word before decoding, so ops 0 and 1 keep
 | 2 Spend   | Any token the source Portal enables | Transfers `maxInput` to a listed spender, measures what it used | Unused input     |
 
 Every return to the source Zone is an encrypted deposit, with a refund recipient, of a token enabled
-with deposits active. Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn`
-adds `maxDepositFee` and reverts if the Portal's deposit fee is above it. Any revert bounces the whole
-input to the withdrawal's fallback recipient in the Zone.
+with deposits active. The router checks the refund recipient itself and leaves the token checks to
+the Portal: its `depositEncrypted` reverts while it is paused, for a token it has not enabled or whose
+deposits are inactive, and for an amount below its deposit fee plus its bounce-back reserve
+(`DepositTooSmall`). Ops 0 and 1 use `SingleZoneEarnRouter`'s `ZoneReturn`; Spend's `SpendReturn`
+adds `maxDepositFee` and reverts if the Portal's deposit fee is above it, a cap the Portal does not
+enforce. Any revert bounces the whole input to the withdrawal's fallback recipient in the Zone.
 
 The router reads each op's tuple in place from calldata rather than copying it to memory. Its
 member reads are bounded by the end of the call's calldata, so the callback data must end it: a
@@ -135,19 +138,17 @@ ciphertext, a `SendSpender` send is 768 of the outbox's 1,024 bytes and a card s
 words of `CardSpend`) 896; a test pins both. A Spend callback:
 
 1. authenticates as ops 0 and 1, and requires the spender to be listed;
-2. requires `0 < maxInput <= amount`; when `maxInput < amount`, so change is certain, requires the
-   token enabled with deposits active on the source Portal and its deposit fee within
-   `maxDepositFee` before the spender runs;
+2. requires `0 < maxInput <= amount` and a nonzero refund recipient;
 3. transfers exactly `maxInput` to the spender and calls `spendFrom(token, maxInput, spenderData)`;
    the spender hands back what it did not use;
 4. requires `0 < used <= maxInput`, measured from its own balance;
 5. returns the change, `amount - used`, to the source Zone when it is not zero, through a standing
-   approval to that Portal (below), after checking the deposit fee again (the Portal's admin may change it
-   while the spender runs) and, when step 2 skipped them, the token checks. The
-   Portal refuses a deposit below its deposit fee plus its bounce-back reserve
-   (`calculateDepositFee() + calculateBouncebackFee()`), so change below that reverts
-   `ChangeBelowDepositFee(change, minimum)` and the whole input bounces. A sender sizes `maxInput`
-   so the change is either zero or at least that minimum;
+   approval to that Portal (below), after checking the deposit fee against `maxDepositFee` (read once
+   the spender has run, since the Portal's admin may change it meanwhile). The Portal refuses the
+   deposit while it is paused, for a token whose deposits are not active, and below its deposit fee
+   plus its bounce-back reserve (`calculateDepositFee() + calculateBouncebackFee()`, reverting
+   `DepositTooSmall`), so the whole input bounces and the spender's payment rolls back with it. A
+   sender sizes `maxInput` so the change is either zero or at least that minimum;
 6. emits `Spent(spender, token, used, change, zoneDepositHash)`, with a zero hash when there is no
    change, and no `senderTag`, action ID or Zone account. The spender emits its own detail. Neither
    event proves a Zone spend alone: bind it to the source Portal's `WithdrawalProcessed` for the
@@ -223,8 +224,10 @@ stablecoin), and a customer ID, all set or all zero. Its `spenderData` is
 | Its bound vault | That vault's par stablecoin | Its EarnShare | An exact withdrawal to itself, then the pool at the oracle's exact par price |
 
 An exact withdrawal goes through the vault's callback when the vault reports it by ERC-165 detection:
-it must affirm ERC-165 itself, deny `0xffffffff` and affirm `IEarnVaultWithdrawCallback`, each probe
-capped at 30,000 gas and one return word. The spender then calls
+it must affirm `IEarnVaultWithdrawCallback` and deny `0xffffffff` (so a fallback answering true to
+everything fails), each probe capped at 30,000 gas and one return word. A vault that affirms the
+interface without implementing it cannot settle: the callback must clear the spender's armed vault and
+the payee must be paid. The spender then calls
 `withdrawExactWithCallback(amount, receiver, maxInput)`, and the vault calls `earnWithdrawCallback` back
 with its quote, which the spender pays by transfer, so no allowance slot is written. Only the vault
 being redeemed may call back, once, for at most `maxInput` (`NotVault`, `InsufficientInput`), and a
@@ -245,9 +248,12 @@ registry resolves, redeems to itself and transfers to `to` (Earn's engines measu
 receiver), and reverts for an unregistered one, as the transfer would. It refuses `to`, or the master
 it resolves to, when that is itself or the calling router (`InvalidRecipient`): the router returns
 only the input token, so an output paid to it would stay there. It hands every unused unit
-back to the router and keeps no balance. With a conversion binding it keeps a standing maximum
-`convertAsset` approval to its immutable pool, which Tempo would otherwise charge as a new storage
-slot on every conversion; otherwise it keeps no allowance. Tokens sent to it outside a spend are not
+back to the router and keeps no balance: the input is a token the router's Zone Portal withdrew, which
+is a TIP-20 (a Portal enables only TIP-20s), so the transfer back leaves exactly the baseline. A redemption
+to itself must leave its asset balance, and for a conversion its par stablecoin balance, where they were
+before the spend (`ResidualBalance`); a redemption straight to a plain `to` never pays the spender, so only `to` is measured. With a conversion binding it keeps a standing maximum
+`convertAsset` approval to its immutable pool, set once by its constructor, which Tempo would otherwise
+charge as a new storage slot on a conversion; otherwise it keeps no allowance. Tokens sent to it outside a spend are not
 rescued; only that pool could pull stranded `convertAsset`. Whoever builds the callback picks `to` and
 `vault` and spends only their own input, capped at `maxInput`. Conversion needs the pool owner to
 admit the spender as a taker and recipient.

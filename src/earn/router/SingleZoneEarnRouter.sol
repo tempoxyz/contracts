@@ -5,7 +5,6 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 
 import { IEarnVault } from "../../interfaces/earn/IEarnVault.sol";
 import { IERC20Like } from "../../interfaces/external/IERC20Like.sol";
-import { IERC20Allowance } from "../../interfaces/external/IERC20Allowance.sol";
 import { IPropAMMPriceOracle, IPropAMMVenue } from "../../interfaces/external/propamm/IPropAMMVenue.sol";
 import {
     EncryptedDepositPayload,
@@ -13,8 +12,7 @@ import {
     IZoneFactory,
     IZonePortal,
     ZONE_FACTORY_ADDRESS,
-    ZONE_MESSENGER_ADDRESS,
-    ZoneInfo
+    ZONE_MESSENGER_ADDRESS
 } from "../../interfaces/external/tempo/IZone.sol";
 
 /// @title SingleZoneEarnRouter
@@ -26,9 +24,8 @@ import {
 ///      contains no route, token, vault, or destination selection, and every successful result returns
 ///      through the authenticated source Portal.
 /// Specs for solar-verify (docs/earn/modules/zone-router.md, earn/src/AGENTS.md):
-/// The only state-changing entry point, onWithdrawalReceived, is nonReentrant (`locked` is 1 when free, 2 while held).
-/// @custom:reentrancy-guard locked != 1
-/// @custom:invariant locked == 1 || locked == 2
+/// The only state-changing entry point, onWithdrawalReceived, is nonReentrant (`locked` is set while held).
+/// @custom:reentrancy-guard locked
 /// The route is fixed at construction: a nonzero vault, vault asset and EarnShare, and a nonzero private
 /// asset that is never the EarnShare.
 /// @custom:invariant earnVault != address(0) && vaultAsset != address(0) && earnShare != address(0)
@@ -80,6 +77,9 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         bytes32 actionId;
     }
 
+    /// @dev Head size of CallbackData: one word per member, the dynamic ZoneReturn as an offset.
+    uint256 private constant CALLBACK_DATA_HEAD = 6 * 32;
+
     /// @notice The only accepted source Zone. Zero permanently disables callbacks.
     uint32 public immutable allowedZoneId;
     /// @notice The only EarnVault this router can use.
@@ -97,8 +97,15 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     bytes32 public immutable customerId;
     /// @notice Whether the private asset is the pool's base token; false without a pool.
     bool public immutable privateAssetIsBase;
+    /// @dev The allowed Zone's Factory-registered Portal, read once at construction; zero for Zone zero.
+    ///      A Zone's Portal never changes and the Factory never deregisters one.
+    address private immutable zonePortal;
+    /// @dev The pool's par price, read once at construction; zero without a pool. DirectPropAMM keeps its
+    ///      oracle's decimals fixed (a replacement oracle with other decimals reverts), and a stale price could
+    ///      only make the zero-tolerance swap revert, never convert off par.
+    uint256 private immutable _parPrice;
 
-    uint256 private locked = 1;
+    bool private transient locked;
 
     event EarnDeposit(
         bytes32 indexed actionId,
@@ -126,7 +133,6 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     error InvalidEarnVault();
     error InvalidPool();
     error InvalidPrivateAsset();
-    error InvalidReturnToken();
     error InvalidRoutePair();
     error InvalidSourcePortal();
     error NotZoneMessenger();
@@ -140,10 +146,10 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     error ZeroAmount();
 
     modifier nonReentrant() {
-        if (locked != 1) revert ReentrantCall();
-        locked = 2;
+        if (locked) revert ReentrantCall();
+        locked = true;
         _;
-        locked = 1;
+        locked = false;
     }
 
     /// @dev Pass `privateAsset_ == earnVault_.asset()` with a zero pool and customer ID for a router
@@ -155,6 +161,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         if (privateAsset_ == address(0) || privateAsset_ == earnShare_) revert InvalidPrivateAsset();
 
         bool privateIsBase;
+        uint256 parPrice_;
         if (privateAsset_ == vaultAsset_) {
             // Nothing to convert: a pool or route identifier would be an unused, misleading binding. Keep
             // the earlier `InvalidPrivateAsset` rejection for every such input; only the pool-less form is new.
@@ -175,9 +182,19 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
             if (IERC20Metadata(privateAsset_).decimals() != IERC20Metadata(vaultAsset_).decimals()) {
                 revert InvalidRoutePair();
             }
+            parPrice_ = 10 ** uint256(IPropAMMPriceOracle(venue.oracle()).decimals());
+        }
+
+        address zonePortal_;
+        if (allowedZoneId_ != 0) {
+            zonePortal_ = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(allowedZoneId_).portal;
+            if (zonePortal_ == address(0) || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(zonePortal_)) {
+                revert InvalidSourcePortal();
+            }
         }
 
         allowedZoneId = allowedZoneId_;
+        zonePortal = zonePortal_;
         earnVault = earnVault_;
         privateAsset = privateAsset_;
         vaultAsset = vaultAsset_;
@@ -185,6 +202,22 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         pool = IPropAMMVenue(pool_);
         customerId = customerId_;
         privateAssetIsBase = privateIsBase;
+        _parPrice = parPrice_;
+
+        // Every spender is immutable, so the standing maximum approvals are set once here and callbacks never
+        // read an allowance: a TIP-20 never spends down a maximum allowance. A router without a Zone never runs.
+        if (zonePortal_ != address(0)) {
+            _approveStanding(vaultAsset_, earnVault_);
+            _approveStanding(earnShare_, earnVault_);
+            _approveStanding(earnShare_, zonePortal_);
+            if (privateAsset_ != vaultAsset_) {
+                _approveStanding(privateAsset_, zonePortal_);
+                _approveStanding(privateAsset_, pool_);
+                _approveStanding(vaultAsset_, pool_);
+            } else {
+                _approveStanding(vaultAsset_, zonePortal_);
+            }
+        }
     }
 
     /// Only the deposit and redeem flows exist.
@@ -198,7 +231,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @custom:ensures address(pool) == address(0) ==> result == 0
     function parPrice() public view returns (uint256) {
         if (!_converts()) return 0;
-        return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
+        return _parPrice;
     }
 
     /// @notice Pool state and output inventory for each flow, not a guaranteed executable conversion.
@@ -242,7 +275,7 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @custom:ensures lastRefundRecipient != address(0)
     /// Standing approvals go only to the EarnVault, for the vault asset or EarnShare, to the pool, for a route token, or to the source Zone's Portal.
     /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> (spender == earnVault && (t == vaultAsset || t == earnShare)) || (spender == address(pool) && address(pool) != address(0) && (t == privateAsset || t == vaultAsset)) || spender == sourcePortal
-    /// @custom:ensures locked == 1 && result == IWithdrawalReceiver.onWithdrawalReceived.selector
+    /// @custom:ensures !locked && result == IWithdrawalReceiver.onWithdrawalReceived.selector
     function onWithdrawalReceived(
         uint32 sourceZoneId,
         address sourcePortal,
@@ -252,13 +285,13 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         bytes calldata callbackData
     ) external override nonReentrant returns (bytes4) {
         if (allowedZoneId == 0 || sourceZoneId != allowedZoneId) revert WrongSourceZone();
-        _validateWithdrawal(sourceZoneId, sourcePortal, amount);
+        _validateWithdrawal(sourcePortal, amount);
         uint256 inputBalanceBefore = IERC20Like(token).balanceOf(address(this)) - amount;
 
         uint256 rawFlow = _decodeRawFlow(callbackData);
         if (rawFlow > uint256(Flow.Redeem)) revert BadFlow();
         /// @custom:ghost lastFlowWasDeposit = rawFlow == uint256(Flow.Deposit)
-        CallbackData memory data = abi.decode(callbackData, (CallbackData));
+        CallbackData calldata data = _callbackData(callbackData);
         Operation memory operation = Operation({
             minVaultAssets: data.minVaultAssets,
             minEarnShares: data.minEarnShares,
@@ -281,19 +314,25 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         address sourcePortal,
         address token,
         uint128 amount,
-        ZoneReturn memory zoneReturn,
+        ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
-        _validateSourceReturn(sourcePortal, earnShare, zoneReturn);
+        _validateSourceReturn(zoneReturn);
         uint256 earnShareBalanceBefore = IERC20Like(earnShare).balanceOf(address(this));
         uint256 vaultAssets = _converts()
-            ? _swap(privateAsset, vaultAsset, amount, operation.minVaultAssets, operation.actionId)
+            ? _swap(
+                privateAsset,
+                vaultAsset,
+                amount,
+                operation.minVaultAssets,
+                operation.actionId,
+                IERC20Like(vaultAsset).balanceOf(address(this))
+            )
             : amount;
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// The private input converts 1:1 into vault assets (par), within the caller's minimum.
         /// @custom:assert vaultAssets == amount && vaultAssets >= operation.minVaultAssets
 
-        _approveStanding(vaultAsset, earnVault, vaultAssets);
         uint256 earnShares = IEarnVault(earnVault).deposit(vaultAssets, address(this), operation.minEarnShares);
         if (earnShares == 0 || earnShares < operation.minEarnShares) revert InsufficientOutput();
         /// @custom:assert earnShares > 0 && earnShares >= operation.minEarnShares
@@ -307,19 +346,25 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     function _handleRedeemToSourceZone(
         address sourcePortal,
         uint128 amount,
-        ZoneReturn memory zoneReturn,
+        ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
-        _validateSourceReturn(sourcePortal, privateAsset, zoneReturn);
+        _validateSourceReturn(zoneReturn);
         uint256 outputBalanceBefore = IERC20Like(privateAsset).balanceOf(address(this));
 
-        _approveStanding(earnShare, earnVault, amount);
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets
 
         uint256 outputAmount = _converts()
-            ? _swap(vaultAsset, privateAsset, vaultAssets, operation.minOutputAmount, operation.actionId)
+            ? _swap(
+                vaultAsset,
+                privateAsset,
+                vaultAssets,
+                operation.minOutputAmount,
+                operation.actionId,
+                outputBalanceBefore
+            )
             : vaultAssets;
         if (outputAmount == 0 || outputAmount < operation.minOutputAmount) revert InsufficientOutput();
         /// Vault assets convert 1:1 into the private asset (par), within the caller's minimum.
@@ -334,66 +379,68 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// Conversion only at exact par along the bound pair: measured output equals input, the minimum never
     /// exceeds the input. The pool's standing approval is the only one set here.
     /// Callers convert a nonzero amount.
-    /// @custom:requires locked != 1 && address(pool) != address(0) && amountIn > 0
+    /// @param outputBalanceBefore The router's `tokenOut` balance before the swap, read by the caller.
+    /// @custom:requires locked && address(pool) != address(0) && amountIn > 0
     /// @custom:ensures amountOut == amountIn && amountOut >= minAmountOut
     /// @custom:ensures _isRoutePair(tokenIn, tokenOut)
-    /// @custom:ensures locked != 1
+    /// @custom:ensures locked
     /// @custom:ensures portalDeposits == old(portalDeposits) && lastFlowWasDeposit == old(lastFlowWasDeposit)
     /// @custom:ensures forall address t, address spender :: standingGhost[t][spender] && !old(standingGhost[t][spender]) ==> spender == address(pool) && t == tokenIn
-    function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, bytes32 actionId)
-        private
-        returns (uint256 amountOut)
-    {
+    function _swap(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        bytes32 actionId,
+        uint256 outputBalanceBefore
+    ) private returns (uint256 amountOut) {
         _requireRoutePair(tokenIn, tokenOut);
         if (minAmountOut > amountIn) revert InsufficientOutput();
 
-        uint256 inputBalanceBefore = IERC20Like(tokenIn).balanceOf(address(this)) - amountIn;
-        uint256 outputBalanceBefore = IERC20Like(tokenOut).balanceOf(address(this));
+        // A deposit's private-asset input is checked once its whole callback settles, in onWithdrawalReceived,
+        // so only a redemption's vault-asset input is checked here.
+        bool checksInput = tokenIn == vaultAsset;
+        uint256 inputBalanceBefore;
+        if (checksInput) inputBalanceBefore = IERC20Like(tokenIn).balanceOf(address(this)) - amountIn;
         bool baseToQuote = (tokenIn == privateAsset) == privateAssetIsBase;
 
         // Zero tolerance at par rejects any off-par oracle price. The pool still enforces its own
         // freshness and deviation guards, so this route needs no separate observation-time floor.
-        _approveStanding(tokenIn, address(pool), amountIn);
         // The measured output delta below is authoritative, not the pool's reported amount.
         pool.swapExactInput(
-            baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
+            baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, _parPrice, 0, 0
         );
 
         uint256 outputBalanceAfter = IERC20Like(tokenOut).balanceOf(address(this));
         if (outputBalanceAfter <= outputBalanceBefore) revert InsufficientOutput();
         amountOut = outputBalanceAfter - outputBalanceBefore;
         if (amountOut != amountIn) revert InsufficientOutput();
-        _requireBalance(tokenIn, inputBalanceBefore);
+        if (checksInput) _requireBalance(tokenIn, inputBalanceBefore);
     }
 
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS && amount > 0
-    function _validateWithdrawal(uint32 sourceZoneId, address sourcePortal, uint128 amount) private view {
+    function _validateWithdrawal(address sourcePortal, uint128 amount) private view {
         if (msg.sender != ZONE_MESSENGER_ADDRESS) revert NotZoneMessenger();
-        ZoneInfo memory zone = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(sourceZoneId);
-        if (zone.portal != sourcePortal || !IZoneFactory(ZONE_FACTORY_ADDRESS).isZonePortal(sourcePortal)) {
-            revert InvalidSourcePortal();
-        }
-        /// The source Portal is the one the Zone factory records for the source Zone.
-        /// @custom:assert zone.portal == sourcePortal
+        // Callers check sourceZoneId == allowedZoneId first, so zonePortal is that Zone's registered Portal.
+        if (sourcePortal != zonePortal) revert InvalidSourcePortal();
+        /// The source Portal is the one the Zone factory recorded for the source Zone at construction.
+        /// @custom:assert sourcePortal == zonePortal
         if (amount == 0) revert ZeroAmount();
     }
 
+    /// @dev The Portal's depositEncrypted itself rejects a return token it has not enabled, whose deposits
+    ///      are inactive, or while it is paused, and every such revert rolls back the whole callback.
     /// @custom:ensures zoneReturn.refundRecipient != address(0)
-    function _validateSourceReturn(address sourcePortal, address token, ZoneReturn memory zoneReturn) private view {
+    function _validateSourceReturn(ZoneReturn calldata zoneReturn) private pure {
         if (zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        if (!IZonePortal(sourcePortal).isTokenEnabled(token) || !IZonePortal(sourcePortal).areDepositsActive(token)) {
-            revert InvalidReturnToken();
-        }
     }
 
     function _depositEncryptedToSourceZone(
         address sourcePortal,
         address token,
         uint128 amount,
-        ZoneReturn memory zoneReturn
+        ZoneReturn calldata zoneReturn
     ) private returns (bytes32 hash) {
-        // Standing approval: clearing it would recreate the allowance slot on every callback.
-        _approveStanding(token, sourcePortal, amount);
         /// @custom:ghost portalDeposits = portalDeposits + 1
         /// @custom:ghost lastReturnPortal = sourcePortal
         /// @custom:ghost lastReturnToken = token
@@ -409,6 +456,35 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
         asset = IEarnVault(earnVault_).asset();
         share = IEarnVault(earnVault_).earnShare();
         if (asset == address(0) || share == address(0)) revert InvalidEarnVault();
+    }
+
+    /// @dev The callback's tuple, read in place at the offset _decodeRawFlow checked. Its head must fit the
+    ///      callback data, as abi.decode requires; member reads check their own offsets and values.
+    /// Not proved: solar-verify does not model assigning a calldata struct pointer, so callers see an
+    /// arbitrary tuple, as they did from abi.decode.
+    /// @custom:trusted
+    function _callbackData(bytes calldata callbackData) private pure returns (CallbackData calldata data) {
+        uint256 tuple = _tupleStart(callbackData);
+        assembly {
+            data := tuple
+        }
+    }
+
+    /// @dev The calldata position of the callback's tuple, once its head fits.
+    function _tupleStart(bytes calldata callbackData) private pure returns (uint256 tuple) {
+        // Member reads bound offsets by the end of msg.data. The callback data is the last argument, so it
+        // ends msg.data exactly when its length is whole words, as abi.encode output is; requiring that
+        // keeps every read inside the callback data, as abi.decode does.
+        uint256 start;
+        assembly {
+            start := callbackData.offset
+        }
+        if (start + callbackData.length != msg.data.length) revert BadFlow();
+        uint256 tupleOffset = abi.decode(callbackData, (uint256));
+        if (tupleOffset > callbackData.length || callbackData.length - tupleOffset < CALLBACK_DATA_HEAD) {
+            revert BadFlow();
+        }
+        tuple = start + tupleOffset;
     }
 
     function _decodeRawFlow(bytes calldata callbackData) private pure returns (uint256 rawFlow) {
@@ -456,12 +532,9 @@ contract SingleZoneEarnRouter is IWithdrawalReceiver {
     /// @dev A standing maximum allowance for an immutable spender (the EarnVault, pool or Zone Portal): Tempo charges every
     ///      zero-to-nonzero allowance as a new storage slot, and every operation returns this router's touched
     ///      balances to their baseline, so none is left to pull.
-    function _approveStanding(address token, address spender, uint256 amount) private {
+    function _approveStanding(address token, address spender) private {
         /// @custom:ghost standingGhost[token][spender] = true
-        if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
-            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, 0)));
-            _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
-        }
+        _callOptionalReturn(token, abi.encodeCall(IERC20Like.approve, (spender, type(uint256).max)));
     }
 
     function _callOptionalReturn(address token, bytes memory data) private {

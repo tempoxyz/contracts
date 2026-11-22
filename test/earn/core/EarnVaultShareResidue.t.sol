@@ -6,8 +6,8 @@ import { EarnVault } from "../../../src/earn/core/EarnVault.sol";
 import { CoreMockEngine, CoreMockToken, earnVaultTestNoFees } from "../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../helpers/EarnVaultTestDeployer.sol";
 
-/// @notice The vault mints itself one EarnShare unit at initialization and counts it as burned, so that standing
-///         residue never blocks a full exit or re-entry.
+/// @notice The vault mints itself and EarnFees one EarnShare unit each at initialization and counts both as burned,
+///         so that standing residue never blocks a full exit or re-entry.
 contract EarnVaultShareResidueTest is Test {
     CoreMockToken asset;
     CoreMockToken share;
@@ -34,8 +34,9 @@ contract EarnVaultShareResidueTest is Test {
     }
 
     function testInitializeMintsTheResidueToTheVault() public view {
-        assertEq(share.totalSupply(), 1);
+        assertEq(share.totalSupply(), 2);
         assertEq(share.balanceOf(address(core)), 1);
+        assertEq(share.balanceOf(core.earnFees()), 1);
         assertEq(core.totalEarnShares(), 0);
         assertEq(core.engineShares(), 0);
         assertTrue(core.isAccountingAligned());
@@ -51,7 +52,7 @@ contract EarnVaultShareResidueTest is Test {
         core.redeem(minted, user, 1);
         assertEq(core.totalEarnShares(), 0);
         assertEq(core.engineShares(), 0);
-        assertEq(share.totalSupply(), 1);
+        assertEq(share.totalSupply(), 2);
         assertEq(share.balanceOf(address(core)), 1);
         assertTrue(core.isAccountingAligned());
 
@@ -105,7 +106,8 @@ contract EarnVaultShareResidueTest is Test {
         vm.prank(other);
         core.redeem(5 ether, other, 1);
         assertEq(share.balanceOf(address(core)), 1);
-        assertEq(core.totalEarnShares(), share.totalSupply() - 1);
+        assertEq(share.balanceOf(core.earnFees()), 1);
+        assertEq(core.totalEarnShares(), share.totalSupply() - 2);
         assertTrue(core.isAccountingAligned());
     }
 
@@ -127,6 +129,21 @@ contract EarnVaultShareResidueTest is Test {
         uint256 minted2 = core.deposit(1 ether, other, 1);
         assertGt(minted2, 0);
         assertEq(core.totalEarnShares(), minted2 + 1);
+        assertTrue(core.isAccountingAligned());
+    }
+
+    function testDepositsAnchorTheActiveSupplyWhateverTheReceiver() public {
+        vm.prank(user);
+        uint256 minted = core.deposit(10 ether, user, 1);
+        assertEq(core.anchorEarnShares(), core.totalEarnShares());
+        assertEq(core.anchorEarnShares(), minted);
+
+        // EarnShare minted to the vault counts as active supply once its one-unit residue is held.
+        vm.prank(other);
+        uint256 toVault = core.deposit(5 ether, address(core), 1);
+        assertEq(share.balanceOf(address(core)), toVault + 1);
+        assertEq(core.totalEarnShares(), minted + toVault);
+        assertEq(core.anchorEarnShares(), core.totalEarnShares());
         assertTrue(core.isAccountingAligned());
     }
 }

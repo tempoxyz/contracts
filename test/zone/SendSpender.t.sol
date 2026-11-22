@@ -78,6 +78,7 @@ contract CallbackVault {
     Mode public mode;
     bool public deniesErc165;
     bool public probeRunsOutOfGas;
+    bool public affirmsEverything;
 
     constructor(address earnShare_, address asset_) {
         earnShare = earnShare_;
@@ -93,8 +94,13 @@ contract CallbackVault {
         probeRunsOutOfGas = probeRunsOutOfGas_;
     }
 
+    function setAffirmsEverything(bool affirmsEverything_) external {
+        affirmsEverything = affirmsEverything_;
+    }
+
     function supportsInterface(bytes4 id) external view returns (bool) {
         for (uint256 i; probeRunsOutOfGas; ++i) { }
+        if (affirmsEverything) return true;
         return id == type(IEarnVaultWithdrawCallback).interfaceId || (id == 0x01ffc9a7 && !deniesErc165);
     }
 
@@ -617,8 +623,33 @@ contract SendSpenderTest is EarnRouterTestBase {
         _assertEmpty(plainSends);
     }
 
-    function testOnlyAVaultAffirmingErc165WithdrawsThroughTheCallback() public {
-        _expectApprovalPath(true, false);
+    /// @dev Detection asks only for the interface and 0xffffffff, so a vault need not affirm ERC-165 itself.
+    function testAVaultAffirmingTheInterfaceWithdrawsThroughTheCallback() public {
+        CallbackVault vault = _callbackVault(CallbackVault.Mode.Once);
+        vault.setProbe(true, false);
+        vm.expectCall(address(vault), abi.encodeWithSignature("withdrawExact(uint256,address,uint256)"), 0);
+        vm.expectCall(
+            address(vault), abi.encodeWithSelector(IEarnVaultWithdrawCallback.withdrawExactWithCallback.selector), 1
+        );
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.balanceOf(address(vault)), 4 * ONE);
+        assertEq(earnA.allowance(address(plainSends), address(vault)), 0);
+        _assertEmpty(plainSends);
+    }
+
+    /// @dev A fallback answering true to everything affirms 0xffffffff too, so it is paid by approval.
+    function testAVaultAffirmingEveryInterfaceFallsBackToTheApproval() public {
+        CallbackVault vault = _callbackVault(CallbackVault.Mode.Once);
+        vault.setAffirmsEverything(true);
+        vm.expectCall(address(vault), abi.encodeWithSignature("withdrawExact(uint256,address,uint256)"), 1);
+        vm.expectCall(
+            address(vault), abi.encodeWithSelector(IEarnVaultWithdrawCallback.withdrawExactWithCallback.selector), 0
+        );
+        _spendAsRouter(plainSends, address(earnA), 4 * ONE, _send(address(assetA), 3 * ONE, address(vault)));
+        assertEq(assetA.balanceOf(to), 3 * ONE);
+        assertEq(earnA.allowance(address(plainSends), address(vault)), 0);
+        _assertEmpty(plainSends);
     }
 
     function testAProbeThatRunsOutOfGasFallsBackToTheApproval() public {

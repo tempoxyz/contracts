@@ -27,6 +27,7 @@ contract PropAMMIntegrationTest is Test {
     CoreMockToken share;
     PropAMMTestOracle oracle;
     IPropAMMPoolAdmin pool;
+    MockRecipientRegistry recipients;
     PropAMMEngine engine;
     EarnVault vault;
     address alice = makeAddr("alice");
@@ -45,6 +46,7 @@ contract PropAMMIntegrationTest is Test {
         oracle = new PropAMMTestOracle();
         vm.mockCall(address(oracle), abi.encodeWithSignature("decimals()"), abi.encode(oracleDecimals));
         oracle.set(105 * 10 ** uint256(oracleDecimals) / 100, vm.getBlockTimestamp());
+        recipients = new MockRecipientRegistry();
         // PropAMM pins solc 0.8.30; deploy its unmodified artifact alongside Earn's 0.8.36 code.
         pool = IPropAMMPoolAdmin(
             deployCode(
@@ -53,7 +55,7 @@ contract PropAMMIntegrationTest is Test {
                     address(baseToken),
                     address(asset),
                     address(oracle),
-                    address(new MockRecipientRegistry()),
+                    address(recipients),
                     address(this),
                     address(this),
                     1 days,
@@ -247,7 +249,7 @@ contract PropAMMIntegrationTest is Test {
 
     function testRevokedPermissionRollsBackDeposit() public {
         pool.setTakerAllowed(address(engine), false);
-        vm.expectRevert(PropAMMEngine.InvalidConfiguration.selector);
+        vm.expectRevert(abi.encodeWithSignature("TakerNotAllowed(address)", address(engine)));
         _deposit(alice, 105e6);
         assertEq(asset.balanceOf(alice), 1_000e6);
         assertEq(share.balanceOf(alice), 0);
@@ -256,7 +258,7 @@ contract PropAMMIntegrationTest is Test {
     function testPoolPauseRollsBackRedemption() public {
         _deposit(alice, 105e6);
         pool.pause();
-        vm.expectRevert(PropAMMEngine.InvalidConfiguration.selector);
+        vm.expectRevert(abi.encodeWithSignature("Paused()"));
         _redeem(alice, 100e6, 105e6);
         assertEq(share.balanceOf(alice), 100e6);
         assertEq(engine.totalShares(), 100e6);
@@ -284,10 +286,30 @@ contract PropAMMIntegrationTest is Test {
     function testRevokedRecipientRollsBackRedemption() public {
         _deposit(alice, 105e6);
         pool.setRecipientAllowed(address(engine), false);
-        vm.expectRevert(PropAMMEngine.InvalidConfiguration.selector);
+        vm.expectRevert(abi.encodeWithSignature("RecipientNotAllowed(address)", address(engine)));
         _redeem(alice, 100e6, 105e6);
         assertEq(share.balanceOf(alice), 100e6);
         assertEq(engine.totalShares(), 100e6);
+    }
+
+    /// @dev A redirected recipient would receive the pool's output instead of the engine; a measured balance
+    ///      check (the pool's, or else the engine's) refuses the trade on entry and exit.
+    function testRedirectedRecipientRollsBackDepositAndRedemption() public {
+        _deposit(alice, 105e6);
+        address elsewhere = makeAddr("elsewhere");
+        recipients.setRedirect(address(engine), elsewhere);
+        pool.setRecipientAllowed(elsewhere, true);
+
+        vm.expectRevert();
+        _deposit(bob, 105e6);
+        assertEq(asset.balanceOf(bob), 1_000e6);
+
+        vm.expectRevert();
+        _redeem(alice, 100e6, 1);
+        assertEq(share.balanceOf(alice), 100e6);
+        assertEq(engine.totalShares(), 100e6);
+        assertEq(baseToken.balanceOf(elsewhere), 0);
+        assertEq(asset.balanceOf(elsewhere), 0);
     }
 
     function testFuzzUnchangedPriceConservesCash(uint64 first, uint64 second, uint32 fraction) public {

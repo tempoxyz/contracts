@@ -1,15 +1,15 @@
 {
-  "controller.fund": "669860",
-  "controller.fund-batch-exact.2": "681060",
-  "controller.fund.residue": "420457",
-  "controller.fund.residue.vault-residue": "168260",
-  "controller.fund.vault-residue": "422457",
-  "distributor.claim.new-recipient": "563963",
-  "distributor.claim.new-recipient.shared-slot": "314654",
-  "distributor.claim.returning": "65362",
-  "distributor.fund-and-publish": "710141",
-  "distributor.fund-and-publish.residue": "462741",
-  "distributor.fund-and-publish.residue.vault-residue": "210541",
-  "distributor.fund-and-publish.vault-residue": "462741",
-  "distributor.push-batch.2": "585208"
+  "controller.fund": "648627",
+  "controller.fund-batch-exact.2": "659827",
+  "controller.fund.residue": "399224",
+  "controller.fund.residue.vault-residue": "147027",
+  "controller.fund.vault-residue": "401224",
+  "distributor.claim.new-recipient": "561978",
+  "distributor.claim.new-recipient.shared-slot": "312666",
+  "distributor.claim.returning": "63377",
+  "distributor.fund-and-publish": "688082",
+  "distributor.fund-and-publish.residue": "440682",
+  "distributor.fund-and-publish.residue.vault-residue": "188482",
+  "distributor.fund-and-publish.vault-residue": "440682",
+  "distributor.push-batch.2": "583250"
 }

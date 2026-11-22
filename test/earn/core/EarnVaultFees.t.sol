@@ -5,6 +5,7 @@ pragma solidity ^0.8.36;
 import { Test } from "forge-std/Test.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { Clones } from "@openzeppelin/contracts/proxy/Clones.sol";
+import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { Simple4626Vault } from "../../../src/demo/Simple4626Vault.sol";
 import { EarnVault } from "../../../src/earn/core/EarnVault.sol";
@@ -53,6 +54,26 @@ contract EarnVaultFeesTest is Test {
         assertEq(share.balanceOf(user), 100 ether);
         assertEq(share.balanceOf(secondUser), 100 ether);
         assertEq(fees.highWaterMark(), 1 ether);
+    }
+
+    function testSteadyDepositSkipsBaselineRatchetThatWouldChangeNothing() public {
+        _deposit(user, 100 ether);
+        vm.recordLogs();
+        _deposit(secondUser, 100 ether);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != EarnFees.FeeBaselinesInitialized.selector);
+        }
+        assertEq(fees.highWaterMark(), 1 ether);
+
+        // Value above the mark is charged by the next checkpoint, after which the deposit again leaves nothing
+        // to raise; the mark is the post-fee value either way.
+        asset.mint(address(venue), 10 ether);
+        _deposit(user, 100 ether);
+        FeePreview memory preview = fees.previewAccruedFees();
+        assertEq(preview.totalFeeAssets, 0);
+        assertGt(fees.highWaterMark(), 1 ether);
+        assertGt(fees.claimableEarnShares(fixedRecipient), 0);
     }
 
     function testQuarantinedEngineSharesAreNotFeeableUntilAbsorbed() public {
@@ -230,7 +251,8 @@ contract EarnVaultFeesTest is Test {
 
         uint256 totalClaimable = fees.claimableEarnShares(fixedRecipient);
         assertGt(totalClaimable, expectedYieldFeeShares);
-        assertEq(share.balanceOf(address(fees)), totalClaimable);
+        // EarnFees also keeps the one unit the vault minted it at initialization.
+        assertEq(share.balanceOf(address(fees)), totalClaimable + 1);
 
         vm.prank(fixedRecipient);
         fees.claim(fixedRecipient, totalClaimable);
@@ -251,7 +273,7 @@ contract EarnVaultFeesTest is Test {
         fees.claim(fixedRecipient, claimable);
         assertEq(fees.claimableEarnShares(fixedRecipient), claimable);
         assertEq(fees.totalClaimableEarnShares(), claimable);
-        assertEq(share.balanceOf(address(fees)), claimable);
+        assertEq(share.balanceOf(address(fees)), claimable + 1);
 
         _deposit(secondUser, 100 ether);
         assertGt(share.balanceOf(secondUser), 0);
@@ -446,7 +468,7 @@ contract EarnVaultFeesTest is Test {
         assertEq(secondFeeEarnShares, 1);
         assertEq(fees.claimableEarnShares(thirdFixedRecipient), 1);
         assertEq(fees.totalClaimableEarnShares(), 1);
-        assertEq(share.balanceOf(address(fees)), 1);
+        assertEq(share.balanceOf(address(fees)), 2);
     }
 
     /// @dev Disabling waives every carried remainder, emitting each one, and a later checkpoint carries none.
@@ -558,7 +580,7 @@ contract EarnVaultFeesTest is Test {
 
     function testEarnFeesMutationsAreRestrictedToItsImmutableEarnVault() public {
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.accrueFees();
+        fees.accrueFees(1 ether, 1 ether, true);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
         fees.setFeeConfig(_fixedConfig(fixedRecipient, 100));
@@ -567,10 +589,10 @@ contract EarnVaultFeesTest is Test {
         fees.disableFees(address(this));
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.initializeBaselines();
+        fees.initializeBaselines(1 ether, 1 ether);
 
         vm.expectRevert(EarnFees.NotEarnVault.selector);
-        fees.recordRedeemRequest(bytes32(uint256(1)), 1 ether, 1 ether);
+        fees.recordRedeemRequest(bytes32(uint256(1)), 1 ether);
     }
 
     function testProxyCanOnlyInitializeOnce() public {
@@ -692,7 +714,7 @@ contract EarnVaultFeesTest is Test {
 
     /// @dev EarnFees keeps `_feeRemainders` at storage slot 5 (`forge inspect EarnFees storageLayout`).
     function _remaindersSlot(uint64 configId) private pure returns (bytes32) {
-        return keccak256(abi.encode(configId, uint256(5)));
+        return keccak256(abi.encode(configId, uint256(4)));
     }
 }
 
@@ -896,3 +918,71 @@ contract EarnVaultDistributorTest is Test {
         if (operatorRate != 0) config.fixedFees[1] = FixedFeeRecipient(operatorRecipient, operatorRate);
     }
 }
+
+/// @notice Baselines too wide for their half of the shared slot keep their exact value in their wide slots.
+contract EarnFeesWideBaselineTest is Test {
+    EarnFees private fees;
+    FaultyMockToken private share;
+    uint256 private assetsNow;
+
+    function setUp() public {
+        share = new FaultyMockToken("Earn Share", "EARN", 18);
+        fees = EarnFees(Clones.clone(address(new EarnFees())));
+        fees.initialize(address(this), address(share), _config());
+    }
+
+    function testWideBaselinesKeepTheirValueAndNeverChargeTwice() public {
+        // One EarnShare unit backed by 2 ** 150 asset units values each whole EarnShare far above 2 ** 128.
+        uint256 assets = 1 << 150;
+        fees.initializeBaselines(1, assets);
+        uint256 expected = assets * 1e18;
+        assertGt(expected, type(uint128).max);
+        assertEq(fees.highWaterMark(), expected);
+        assertEq(fees.targetBase(), expected);
+
+        // No value above the wide mark charges nothing.
+        (uint256 feeAssets, uint256 feeEarnShares,,) = fees.accrueFees(1, assets, true);
+        assertEq(feeAssets, 0);
+        assertEq(feeEarnShares, 0);
+
+        // Doubled value charges once and moves the wide mark to the post-fee value.
+        (feeAssets, feeEarnShares,,) = fees.accrueFees(1, 2 * assets, true);
+        assertGt(feeAssets, 0);
+        uint256 mark = fees.highWaterMark();
+        assertGt(mark, expected);
+        assertEq(mark, Math.mulDiv(2 * assets, 1e18, 1 + feeEarnShares, Math.Rounding.Ceil));
+        assertEq(fees.targetBase(), mark);
+        (feeAssets,,,) = fees.accrueFees(1 + feeEarnShares, 2 * assets, true);
+        assertEq(feeAssets, 0);
+        assertEq(fees.highWaterMark(), mark);
+    }
+
+    function testNarrowBaselinesReplaceWideOnes() public {
+        fees.initializeBaselines(1, 1 << 150);
+        assertGt(fees.highWaterMark(), type(uint128).max);
+
+        // Re-enabling fees restarts both baselines at the pool's current value, which fits its half again.
+        share.mint(address(this), 1e18 + 2);
+        assetsNow = 3e18;
+        fees.disableFees(address(this));
+        fees.setFeeConfig(_config());
+        assertEq(fees.highWaterMark(), 3e18);
+        assertEq(fees.targetBase(), 3e18);
+    }
+
+    /// @dev EarnFees reads the paired vault's active assets and valuation freshness back from it.
+    function totalAssets() external view returns (uint256) {
+        return assetsNow;
+    }
+
+    function isFeeValuationFresh() external pure returns (bool) {
+        return true;
+    }
+
+    function _config() private pure returns (FeeConfig memory config) {
+        config.fixedFeeCount = 1;
+        config.fixedFees[0] = FixedFeeRecipient(address(0xF1), 1_000);
+        config.excess = ExcessReturnFee(true, address(0xE1), 300, 5_000);
+    }
+}
+

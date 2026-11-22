@@ -351,8 +351,6 @@ contract ZoneRouterTest is EarnRouterTestBase {
         );
     }
 
-    /// @notice With maxInput below the amount there is always change, so a return the Portal would refuse
-    ///         reverts before the spender runs (a re-entering spender would revert otherwise).
     /// @dev The router reads callback members in place, so the callback data must end the call's calldata:
     ///      a callback with a partial trailing word, or calldata running past it, bounces.
     function testSpendCallbackDataMustEndTheCalldata() public {
@@ -381,17 +379,17 @@ contract ZoneRouterTest is EarnRouterTestBase {
         assertEq(alternate.balanceOf(payee), ONE);
     }
 
-    function testSpendChecksTheChangeReturnBeforeTheSpenderPays() public {
+    /// @notice The Portal itself refuses a change return it cannot take (a token whose deposits are inactive,
+    ///         or a paused Portal), and that refusal rolls back the spender's payment with the whole callback.
+    function testSpendChangeThePortalRefusesRollsBackTheSpend() public {
         ZoneRouter zr = _spendRouter();
-        spender.configure(MockSpender.Behavior.Reenter, 0, payee);
+        spender.configure(MockSpender.Behavior.Pay, ONE, payee);
         portalA.setToken(address(alternate), true, false);
-        _expectSpendRevert(zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
-        // The ZonePortal reports deposits inactive for a token it has disabled, or while it is paused.
+        _expectSpendRevert(zr, 2 * ONE, ONE, bytes("TOKEN_DISABLED"));
+        // The ZonePortal's depositEncrypted reverts while it is paused.
         portalA.setToken(address(alternate), true, true);
-        vm.mockCall(
-            address(portalA), abi.encodeCall(IZonePortal.areDepositsActive, (address(alternate))), abi.encode(false)
-        );
-        _expectSpendRevert(zr, 2 * ONE, ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
+        vm.mockCallRevert(address(portalA), abi.encodeWithSelector(IZonePortal.depositEncrypted.selector), "PAUSED");
+        _expectSpendRevert(zr, 2 * ONE, ONE, bytes("PAUSED"));
         vm.clearMockedCalls();
 
         portalA.setDepositFee(100);
@@ -420,11 +418,11 @@ contract ZoneRouterTest is EarnRouterTestBase {
         assertEq(alternate.balanceOf(payee), 2 * ONE);
 
         spender.configure(MockSpender.Behavior.Pay, ONE, payee);
-        _expectSpendRevert(zr, 2 * ONE, 2 * ONE, abi.encodeWithSelector(ZoneRouter.InvalidReturnToken.selector));
+        _expectSpendRevert(zr, 2 * ONE, 2 * ONE, bytes("TOKEN_DISABLED"));
     }
 
-    /// @notice Change below the Portal's minimum deposit (deposit fee plus bounce-back reserve) reverts with
-    ///         both numbers; change at the minimum returns, less the deposit fee.
+    /// @notice Change below the Portal's minimum deposit (deposit fee plus bounce-back reserve) reverts in the
+    ///         Portal's depositEncrypted; change at the minimum returns, less the deposit fee.
     function testSpendChangeMustCoverThePortalMinimum() public {
         ZoneRouter zr = _spendRouter();
         feePortal.setDepositFee(100);
@@ -432,7 +430,7 @@ contract ZoneRouterTest is EarnRouterTestBase {
         spender.configure(MockSpender.Behavior.Pay, 10 * ONE - 149, payee);
         alternate.mint(address(zr), 10 * ONE);
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        vm.expectRevert(abi.encodeWithSelector(ZoneRouter.ChangeBelowDepositFee.selector, 149, 150));
+        vm.expectRevert(ZoneRouterMockPortal.DepositTooSmall.selector);
         zr.onWithdrawalReceived(
             ZONE_A,
             address(portalA),

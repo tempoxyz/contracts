@@ -36,8 +36,9 @@ import {
 /// @custom:ghost uint256 gChangeReturned
 /// @custom:invariant allowedZoneId != 0 && portal != address(0)
 /// @custom:invariant enabledOps != 0 && enabledOps <= ALL_OPS
-/// @custom:invariant forall uint256 i :: i < spenderList.length ==> isSpender[spenderList[i]]
-/// @custom:invariant !isSpender[address(0)]
+/// @custom:invariant forall uint256 i :: i < _moreSpenderList.length ==> _moreSpenders[_moreSpenderList[i]]
+/// @custom:invariant !_moreSpenders[address(0)]
+/// @custom:invariant !_MORE_SPENDERS ==> _moreSpenderList.length == 0
 /// @custom:invariant (enabledOps & (OP_DEPOSIT | OP_REDEEM)) == 0 ==> earnVault == address(0) && privateAsset == address(0)
 /// @custom:invariant (enabledOps & (OP_DEPOSIT | OP_REDEEM)) == 0 ==> vaultAsset == address(0) && earnShare == address(0)
 /// @custom:invariant (enabledOps & (OP_DEPOSIT | OP_REDEEM)) != 0 ==> earnVault != address(0) && privateAsset != address(0)
@@ -136,10 +137,26 @@ contract ZoneRouter is IWithdrawalReceiver {
     bytes32 public immutable customerId;
     /// @notice Whether the private asset is the pool's base token; false without a pool.
     bool public immutable privateAssetIsBase;
+    /// @dev The pool's par price, read once at construction; zero without a pool. DirectPropAMM keeps its
+    ///      oracle's decimals fixed (a replacement oracle with other decimals reverts), and a stale price could
+    ///      only make the zero-tolerance swap revert, never convert off par.
+    uint256 private immutable _parPrice;
 
-    /// @notice Spenders Spend may use, written once by the constructor.
-    mapping(address spender => bool listed) public isSpender;
-    address[] private spenderList;
+    /// @dev How many spenders are held in immutables.
+    uint256 private constant _INLINE_SPENDERS = 4;
+
+    // The first four spenders are immutables, so a Spend and its spender's router check read no storage;
+    // spenders past the fourth, which modes rarely need, are kept in storage read only when there are more.
+    address private immutable _SPENDER_0;
+    address private immutable _SPENDER_1;
+    address private immutable _SPENDER_2;
+    address private immutable _SPENDER_3;
+    bool private immutable _MORE_SPENDERS;
+
+    /// @dev Spenders past the fourth, written once by the constructor.
+    mapping(address spender => bool listed) private _moreSpenders;
+    /// @dev Spenders past the fourth, in deployment order.
+    address[] private _moreSpenderList;
 
     bool private transient locked;
 
@@ -168,9 +185,6 @@ contract ZoneRouter is IWithdrawalReceiver {
 
     error AmountOverflow();
     error BadFlow();
-    /// @notice A Spend's nonzero change is below the Portal's minimum deposit, its deposit fee plus its
-    ///         bounce-back reserve, so its return would revert.
-    error ChangeBelowDepositFee(uint256 change, uint256 fee);
     error DepositFeeTooHigh(uint128 fee);
     error InsufficientOutput();
     error InvalidCustomerId();
@@ -180,7 +194,6 @@ contract ZoneRouter is IWithdrawalReceiver {
     error InvalidOps();
     error InvalidPool();
     error InvalidPrivateAsset();
-    error InvalidReturnToken();
     error InvalidRoutePair();
     error InvalidSpend();
     error InvalidSpenders();
@@ -207,8 +220,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @custom:ensures allowedZoneId == mode.zoneId && enabledOps == mode.enabledOps
     /// @custom:ensures earnVault == mode.earnVault && privateAsset == mode.privateAsset
     /// @custom:ensures address(pool) == mode.pool && customerId == mode.customerId
-    /// @custom:ensures forall uint256 i :: i < spenderList.length ==> spenderList[i] == mode.spenders[i]
-    /// @custom:ensures forall uint256 i, uint256 j :: i < j && j < spenderList.length ==> spenderList[i] != spenderList[j]
+    /// @custom:ensures forall uint256 i :: i < _moreSpenderList.length ==> _moreSpenderList[i] == mode.spenders[i + 4]
+    /// @custom:ensures forall uint256 i, uint256 j :: i < j && j < mode.spenders.length ==> mode.spenders[i] != mode.spenders[j]
     constructor(Mode memory mode) {
         if (mode.zoneId == 0) revert WrongSourceZone();
         address portal_ = IZoneFactory(ZONE_FACTORY_ADDRESS).zones(mode.zoneId).portal;
@@ -220,8 +233,9 @@ contract ZoneRouter is IWithdrawalReceiver {
         address vaultAsset_;
         address earnShare_;
         bool privateIsBase;
+        uint256 parPrice_;
         if (mode.enabledOps & (OP_DEPOSIT | OP_REDEEM) != 0) {
-            (vaultAsset_, earnShare_, privateIsBase) =
+            (vaultAsset_, earnShare_, privateIsBase, parPrice_) =
                 _validateEarn(mode.earnVault, mode.privateAsset, mode.pool, mode.customerId);
         } else if (
             mode.earnVault != address(0) || mode.privateAsset != address(0) || mode.pool != address(0)
@@ -236,20 +250,31 @@ contract ZoneRouter is IWithdrawalReceiver {
         pool = IPropAMMVenue(mode.pool);
         customerId = mode.customerId;
         privateAssetIsBase = privateIsBase;
+        _parPrice = parPrice_;
 
         bool spends = mode.enabledOps & OP_SPEND != 0;
         if (spends != (mode.spenders.length != 0)) revert InvalidSpenders();
-        // Not proved: i <= mode.spenders.length, and so spenderList.length == mode.spenders.length, is not
-        // provable: the loop havocs the length of the memory struct's array (storage push in a loop over it).
-        /// @custom:invariant spenderList.length == i && !isSpender[address(0)]
-        /// @custom:invariant forall uint256 j :: j < i ==> spenderList[j] == mode.spenders[j] && isSpender[spenderList[j]]
-        /// @custom:invariant forall uint256 j, uint256 k :: j < k && k < i ==> spenderList[j] != spenderList[k]
+        // Not proved: i <= mode.spenders.length, and so the stored list's length, is not provable: the loop
+        // havocs the length of the memory struct's array (storage push in a loop over it).
+        /// @custom:invariant !_moreSpenders[address(0)]
+        /// @custom:invariant forall uint256 j :: j < _moreSpenderList.length ==> _moreSpenderList[j] == mode.spenders[j + 4] && _moreSpenders[_moreSpenderList[j]]
+        /// @custom:invariant forall uint256 j, uint256 k :: j < k && k < i ==> mode.spenders[j] != mode.spenders[k]
         for (uint256 i = 0; i < mode.spenders.length; i++) {
             address spender = mode.spenders[i];
-            if (spender == address(0) || spender.code.length == 0 || isSpender[spender]) revert InvalidSpenders();
-            isSpender[spender] = true;
-            spenderList.push(spender);
+            if (spender == address(0) || spender.code.length == 0) revert InvalidSpenders();
+            for (uint256 j = 0; j < i; j++) {
+                if (mode.spenders[j] == spender) revert InvalidSpenders();
+            }
+            if (i >= _INLINE_SPENDERS) {
+                _moreSpenders[spender] = true;
+                _moreSpenderList.push(spender);
+            }
         }
+        _SPENDER_0 = _spenderAt(mode.spenders, 0);
+        _SPENDER_1 = _spenderAt(mode.spenders, 1);
+        _SPENDER_2 = _spenderAt(mode.spenders, 2);
+        _SPENDER_3 = _spenderAt(mode.spenders, 3);
+        _MORE_SPENDERS = mode.spenders.length > _INLINE_SPENDERS;
 
         allowedZoneId = mode.zoneId;
         portal = portal_;
@@ -271,8 +296,28 @@ contract ZoneRouter is IWithdrawalReceiver {
     }
 
     /// @notice The spenders Spend may use, in deployment order.
-    function spenders() external view returns (address[] memory) {
-        return spenderList;
+    function spenders() external view returns (address[] memory list) {
+        uint256 inlineCount = _SPENDER_0 == address(0)
+            ? 0
+            : _SPENDER_1 == address(0) ? 1 : _SPENDER_2 == address(0) ? 2 : _SPENDER_3 == address(0) ? 3 : 4;
+        list = new address[](inlineCount + _moreSpenderList.length);
+        if (inlineCount > 0) list[0] = _SPENDER_0;
+        if (inlineCount > 1) list[1] = _SPENDER_1;
+        if (inlineCount > 2) list[2] = _SPENDER_2;
+        if (inlineCount > 3) list[3] = _SPENDER_3;
+        for (uint256 i = 0; i < _moreSpenderList.length; i++) {
+            list[inlineCount + i] = _moreSpenderList[i];
+        }
+    }
+
+    /// @notice Whether Spend may use `spender`, fixed at deployment.
+    function isSpender(address spender) public view returns (bool) {
+        return spender != address(0)
+            && (spender == _SPENDER_0
+                || spender == _SPENDER_1
+                || spender == _SPENDER_2
+                || spender == _SPENDER_3
+                || (_MORE_SPENDERS && _moreSpenders[spender]));
     }
 
     /// @notice Sets the router's standing approval of `token` to its Zone's Portal, which a spend's
@@ -296,7 +341,7 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @custom:ensures address(pool) == address(0) ==> result == 0
     function parPrice() public view returns (uint256) {
         if (!_converts()) return 0;
-        return 10 ** uint256(IPropAMMPriceOracle(pool.oracle()).decimals());
+        return _parPrice;
     }
 
     /// @notice Pool state and output inventory for each Earn op, as SingleZoneEarnRouter reports it.
@@ -327,8 +372,8 @@ contract ZoneRouter is IWithdrawalReceiver {
     /// @custom:ensures msg.sender == ZONE_MESSENGER_ADDRESS
     /// @custom:ensures sourceZoneId == allowedZoneId && sourcePortal == portal && amount > 0
     /// @custom:ensures result == IWithdrawalReceiver.onWithdrawalReceived.selector
-    /// @custom:ensures forall address a :: isSpender[a] == old(isSpender[a])
-    /// @custom:ensures spenderList.length == old(spenderList.length)
+    /// @custom:ensures forall address a :: _moreSpenders[a] == old(_moreSpenders[a])
+    /// @custom:ensures _moreSpenderList.length == old(_moreSpenderList.length)
     /// @custom:ensures !locked
     function onWithdrawalReceived(
         uint32 sourceZoneId,
@@ -385,15 +430,11 @@ contract ZoneRouter is IWithdrawalReceiver {
         uint256 balanceBefore,
         SpendData calldata data
     ) private returns (bool returnedChange) {
-        if (!isSpender[data.spender]) revert UnknownSpender();
+        if (!isSpender(data.spender)) revert UnknownSpender();
         if (data.maxInput == 0 || data.maxInput > amount) revert InvalidMaxInput();
         if (data.zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        // A maxInput below the amount always leaves change, so its return is checked before the spender pays.
-        // The fee is checked again once it has paid, since the Portal's fee may change while the spender runs.
-        /// @custom:assert isSpender[data.spender] && data.zoneReturn.refundRecipient != address(0)
+        /// @custom:assert isSpender(data.spender) && data.zoneReturn.refundRecipient != address(0)
         /// @custom:assert 0 < data.maxInput && data.maxInput <= amount
-        bool returnChecked = data.maxInput < amount;
-        if (returnChecked) _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
 
         // A transfer instead of an approval: the spender holds no allowance from the router, so it can
         // never take more than maxInput, and no router -> spender allowance slot is written.
@@ -413,13 +454,12 @@ contract ZoneRouter is IWithdrawalReceiver {
         bytes32 zoneDepositHash;
         if (change != 0) {
             /// @custom:ghost gChangeReturned = change
-            uint128 fee = returnChecked
-                ? _checkDepositFee(sourcePortal, data.zoneReturn.maxDepositFee)
-                : _checkChangeReturn(sourcePortal, token, data.zoneReturn.maxDepositFee);
-            // The Portal's depositEncrypted reverts DepositTooSmall below this; named here for the sender.
-            uint256 minimum = uint256(fee) + IZonePortalFees(sourcePortal).calculateBouncebackFee();
-            if (change < minimum) revert ChangeBelowDepositFee(change, minimum);
-            /// @custom:assert change >= minimum && change >= fee && fee <= data.zoneReturn.maxDepositFee
+            // The fee is read once the spender has run, since the Portal's fee may change while it runs. The
+            // Portal enforces everything else about the return itself: its depositEncrypted reverts while it is
+            // paused, for a token it has not enabled or whose deposits are inactive, and for change below its
+            // deposit fee plus bounce-back reserve (DepositTooSmall), and any of these rolls back the spend.
+            uint128 fee = _checkDepositFee(sourcePortal, data.zoneReturn.maxDepositFee);
+            /// @custom:assert fee <= data.zoneReturn.maxDepositFee
             /// @custom:assert sourcePortal == portal && change == amount - used
             _approvePortal(token, sourcePortal, change);
             zoneDepositHash = IZonePortal(sourcePortal)
@@ -436,19 +476,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         returnedChange = change != 0;
     }
 
-    /// @dev Requires the Portal to take `token` back and its deposit fee to be within the sender's cap.
-    /// @custom:ensures fee <= maxDepositFee
-    function _checkChangeReturn(address sourcePortal, address token, uint128 maxDepositFee)
-        private
-        view
-        returns (uint128 fee)
-    {
-        // The Portal's areDepositsActive is false for a token it has not enabled or has paused.
-        if (!IZonePortal(sourcePortal).areDepositsActive(token)) revert InvalidReturnToken();
-        fee = _checkDepositFee(sourcePortal, maxDepositFee);
-    }
-
-    /// @dev Requires the Portal's deposit fee to be within the sender's cap.
+    /// @dev Requires the Portal's deposit fee to be within the sender's cap, which the Portal does not enforce.
     /// @custom:ensures fee <= maxDepositFee
     function _checkDepositFee(address sourcePortal, uint128 maxDepositFee) private view returns (uint128 fee) {
         fee = IZonePortalFees(sourcePortal).calculateDepositFee();
@@ -462,10 +490,17 @@ contract ZoneRouter is IWithdrawalReceiver {
         ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
-        _validateSourceReturn(sourcePortal, earnShare, zoneReturn);
+        _validateSourceReturn(zoneReturn);
         uint256 earnShareBalanceBefore = IERC20Like(earnShare).balanceOf(address(this));
         uint256 vaultAssets = _converts()
-            ? _swap(privateAsset, vaultAsset, amount, operation.minVaultAssets, operation.actionId)
+            ? _swap(
+                privateAsset,
+                vaultAsset,
+                amount,
+                operation.minVaultAssets,
+                operation.actionId,
+                IERC20Like(vaultAsset).balanceOf(address(this))
+            )
             : amount;
         if (vaultAssets == 0 || vaultAssets < operation.minVaultAssets) revert InsufficientOutput();
         /// @custom:assert vaultAssets == amount && vaultAssets >= operation.minVaultAssets
@@ -486,7 +521,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         ZoneReturn calldata zoneReturn,
         Operation memory operation
     ) private {
-        _validateSourceReturn(sourcePortal, privateAsset, zoneReturn);
+        _validateSourceReturn(zoneReturn);
         uint256 outputBalanceBefore = IERC20Like(privateAsset).balanceOf(address(this));
 
         uint256 vaultAssets = IEarnVault(earnVault).redeem(amount, address(this), operation.minVaultAssets);
@@ -494,7 +529,14 @@ contract ZoneRouter is IWithdrawalReceiver {
         /// @custom:assert vaultAssets > 0 && vaultAssets >= operation.minVaultAssets
 
         uint256 outputAmount = _converts()
-            ? _swap(vaultAsset, privateAsset, vaultAssets, operation.minOutputAmount, operation.actionId)
+            ? _swap(
+                vaultAsset,
+                privateAsset,
+                vaultAssets,
+                operation.minOutputAmount,
+                operation.actionId,
+                outputBalanceBefore
+            )
             : vaultAssets;
         if (outputAmount == 0 || outputAmount < operation.minOutputAmount) revert InsufficientOutput();
         /// @custom:assert outputAmount == vaultAssets && outputAmount >= operation.minOutputAmount
@@ -505,15 +547,23 @@ contract ZoneRouter is IWithdrawalReceiver {
         emit EarnRedeem(operation.actionId, earnVault, privateAsset, amount, vaultAssets, outputAmount, zoneDepositHash);
     }
 
-    function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, bytes32 actionId)
-        private
-        returns (uint256 amountOut)
-    {
+    /// @param outputBalanceBefore The router's `tokenOut` balance before the swap, read by the caller.
+    function _swap(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        bytes32 actionId,
+        uint256 outputBalanceBefore
+    ) private returns (uint256 amountOut) {
         _requireRoutePair(tokenIn, tokenOut);
         if (minAmountOut > amountIn) revert InsufficientOutput();
 
-        uint256 inputBalanceBefore = IERC20Like(tokenIn).balanceOf(address(this)) - amountIn;
-        uint256 outputBalanceBefore = IERC20Like(tokenOut).balanceOf(address(this));
+        // A deposit's private-asset input is checked once its whole callback settles, in onWithdrawalReceived,
+        // so only a redemption's vault-asset input is checked here.
+        bool checksInput = tokenIn == vaultAsset;
+        uint256 inputBalanceBefore;
+        if (checksInput) inputBalanceBefore = IERC20Like(tokenIn).balanceOf(address(this)) - amountIn;
         bool baseToQuote = (tokenIn == privateAsset) == privateAssetIsBase;
         /// @custom:assert tokenIn == privateAsset && tokenOut == vaultAsset || tokenIn == vaultAsset && tokenOut == privateAsset
         /// @custom:assert minAmountOut <= amountIn && address(pool) != address(0)
@@ -523,7 +573,7 @@ contract ZoneRouter is IWithdrawalReceiver {
         // freshness and deviation guards.
         // The measured output delta below is authoritative, not the pool's reported amount.
         pool.swapExactInput(
-            baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, parPrice(), 0, 0
+            baseToQuote, amountIn, amountIn, address(this), customerId, actionId, block.timestamp, _parPrice, 0, 0
         );
 
         uint256 outputBalanceAfter = IERC20Like(tokenOut).balanceOf(address(this));
@@ -531,13 +581,13 @@ contract ZoneRouter is IWithdrawalReceiver {
         amountOut = outputBalanceAfter - outputBalanceBefore;
         if (amountOut != amountIn) revert InsufficientOutput();
         /// @custom:assert amountOut == amountIn && amountOut == outputBalanceAfter - outputBalanceBefore
-        _requireBalance(tokenIn, inputBalanceBefore);
+        if (checksInput) _requireBalance(tokenIn, inputBalanceBefore);
     }
 
     function _validateEarn(address earnVault_, address privateAsset_, address pool_, bytes32 customerId_)
         private
         view
-        returns (address vaultAsset_, address earnShare_, bool privateIsBase)
+        returns (address vaultAsset_, address earnShare_, bool privateIsBase, uint256 parPrice_)
     {
         if (earnVault_ == address(0) || earnVault_.code.length == 0) revert InvalidEarnVault();
         vaultAsset_ = IEarnVault(earnVault_).asset();
@@ -561,6 +611,7 @@ contract ZoneRouter is IWithdrawalReceiver {
             if (IERC20Metadata(privateAsset_).decimals() != IERC20Metadata(vaultAsset_).decimals()) {
                 revert InvalidRoutePair();
             }
+            parPrice_ = 10 ** uint256(IPropAMMPriceOracle(venue.oracle()).decimals());
         }
     }
 
@@ -572,10 +623,10 @@ contract ZoneRouter is IWithdrawalReceiver {
         /// @custom:assert msg.sender == ZONE_MESSENGER_ADDRESS && sourcePortal == portal && amount != 0
     }
 
-    function _validateSourceReturn(address sourcePortal, address token, ZoneReturn calldata zoneReturn) private view {
+    /// @dev The Portal's depositEncrypted itself rejects a return token it has not enabled, whose deposits
+    ///      are inactive, or while it is paused, and every such revert rolls back the whole callback.
+    function _validateSourceReturn(ZoneReturn calldata zoneReturn) private pure {
         if (zoneReturn.refundRecipient == address(0)) revert ZeroAddress();
-        // The Portal's areDepositsActive is false for a token it has not enabled or has paused.
-        if (!IZonePortal(sourcePortal).areDepositsActive(token)) revert InvalidReturnToken();
     }
 
     function _depositEncrypted(address sourcePortal, address token, uint128 amount, ZoneReturn calldata zoneReturn)
@@ -645,6 +696,11 @@ contract ZoneRouter is IWithdrawalReceiver {
         if (tokenIn == privateAsset && tokenOut == vaultAsset) return;
         if (tokenIn == vaultAsset && tokenOut == privateAsset) return;
         revert InvalidRoutePair();
+    }
+
+    /// @dev `list`'s entry at `i`, or zero past its end.
+    function _spenderAt(address[] memory list, uint256 i) private pure returns (address) {
+        return i < list.length ? list[i] : address(0);
     }
 
     function _requireBalance(address token, uint256 expected) private view {

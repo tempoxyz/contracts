@@ -78,11 +78,16 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(SingleZoneEarnRouter.InvalidSourcePortal.selector);
         router.onWithdrawalReceived(ZONE_A, address(portalB), bytes32(0), address(alternate), uint128(ONE), data);
+    }
+
+    function testConstructorRequiresRegisteredZonePortal() public {
+        // The Portal is read once at construction: a Zone without a registered Portal can't get a router.
+        vm.expectRevert(SingleZoneEarnRouter.InvalidSourcePortal.selector);
+        new SingleZoneEarnRouter(ZONE_A + 100, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
 
         zoneFactory.setPortal(address(portalA), false);
-        vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(SingleZoneEarnRouter.InvalidSourcePortal.selector);
-        router.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
+        new SingleZoneEarnRouter(ZONE_A, address(earnVaultA), address(alternate), address(pool), CUSTOMER_ID);
     }
 
     function testRejectsDifferentCanonicalZone() public {
@@ -105,6 +110,36 @@ contract SingleZoneEarnRouterTest is EarnRouterTestBase {
         vm.prank(ZONE_MESSENGER_ADDRESS);
         vm.expectRevert(SingleZoneEarnRouter.WrongSourceZone.selector);
         disabledRouter.onWithdrawalReceived(0, address(portalA), bytes32(0), address(alternate), uint128(ONE), data);
+    }
+
+    /// @dev The router reads its tuple in place, so the callback data must end the call's calldata.
+    function testDepositCallbackDataMustEndTheCalldata() public {
+        alternate.mint(address(router), ONE);
+        bytes memory valid = _callback(SingleZoneEarnRouter.Flow.Deposit, uint128(ONE), uint128(ONE), 0);
+        uint256 supply = earnA.totalSupply();
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        vm.expectRevert(SingleZoneEarnRouter.BadFlow.selector);
+        router.onWithdrawalReceived(
+            ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), bytes.concat(valid, hex"00")
+        );
+
+        bytes memory call = abi.encodeCall(
+            router.onWithdrawalReceived, (ZONE_A, address(portalA), bytes32(0), address(alternate), uint128(ONE), valid)
+        );
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        (bool ok, bytes memory reason) = address(router).call(bytes.concat(call, bytes32(0)));
+        assertFalse(ok);
+        assertEq(reason, abi.encodeWithSelector(SingleZoneEarnRouter.BadFlow.selector));
+        assertEq(earnA.totalSupply(), supply);
+
+        _deposit(ONE, ONE, ONE);
+        assertEq(portalA.depositCount(), 1);
+    }
+
+    /// @dev The par price is the pool oracle's `10 ** decimals`, read at construction.
+    function testParPriceIsThePoolOraclePar() public view {
+        assertEq(router.parPrice(), PAR);
     }
 
     function testCannotSelectAnotherEarnVault() public {

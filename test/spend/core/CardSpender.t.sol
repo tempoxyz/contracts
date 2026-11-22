@@ -109,7 +109,9 @@ abstract contract CardSpenderBehavior is CoreEnv {
         program.spend(s);
     }
 
-    /// @dev Only TIP-20s settle, publicly or privately, whichever way the program pays.
+    /// @dev Only TIP-20s settle, whichever way the program pays: a public spend's token and a private Earn
+    ///      spend's asset are checked. A private stablecoin spend's token is the router's input, which its Zone
+    ///      Portal withdrew, and a Portal enables only TIP-20s.
     function test_revert_nonTip20Token() public {
         MintableShare token = new MintableShare();
         token.mint(alice, 10e6);
@@ -120,9 +122,11 @@ abstract contract CardSpenderBehavior is CoreEnv {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.UnsupportedToken.selector, address(token)));
         program.spend(s);
+        s.vault = address(earnVault);
+        s.fromVault = s.amount;
         vm.prank(router);
         vm.expectRevert(abi.encodeWithSelector(CardSpender.UnsupportedToken.selector, address(token)));
-        program.spendFrom(address(token), 1e6, abi.encode(s));
+        program.spendFrom(address(earnShare), 1e6, abi.encode(s));
     }
 
     function testFuzz_publicSpend_split(uint256 amount, uint256 fromVault) public {
@@ -281,27 +285,6 @@ abstract contract CardSpenderBehavior is CoreEnv {
         assertEq(usd.balanceOf(publicWallet), 6e6);
         assertEq(usd.balanceOf(address(program)), 1, "stablecoin seed kept");
         assertEq(earnShare.balanceOf(address(program)), 1, "share seed kept");
-    }
-
-    /// @dev A hand-back that reports success without moving the change leaves it behind, which is refused.
-    function test_revert_residualBalance() public {
-        StuckToken token = new StuckToken();
-        // Stands in for a TIP-20, so the program's own residual check is what refuses it.
-        vm.mockCall(
-            StdPrecompiles.TIP20_FACTORY_ADDRESS,
-            abi.encodeWithSignature("isTIP20(address)", address(token)),
-            abi.encode(true)
-        );
-        mock.setToken(address(token), true);
-        token.mint(router, 10e6);
-        CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "residual");
-        s.token = address(token);
-        vm.prank(router);
-        token.transfer(address(program), 2e6);
-        token.setStuck(address(program), router);
-        vm.prank(router);
-        vm.expectRevert(abi.encodeWithSelector(CardSpender.ResidualBalance.selector, address(token)));
-        program.spendFrom(address(token), 2e6, abi.encode(s));
     }
 
     // Checks -------------------------------------------------------------
@@ -1012,27 +995,5 @@ contract MisreportingVault is ITempoEarnVault {
         SHARE.transferFrom(msg.sender, address(0xdead), cost * BURN_PCT / 100);
         SafeTransferLib.safeTransfer(asset, receiver, assets);
         return cost * REPORT_PCT / 100;
-    }
-}
-
-/// @dev An ERC-20 whose transfers from one account to another report success without moving anything.
-contract StuckToken is ERC20 {
-    address public stuckFrom;
-    address public stuckTo;
-
-    constructor() ERC20("Stuck USD", "SUSD") { }
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-
-    function setStuck(address from, address to) external {
-        stuckFrom = from;
-        stuckTo = to;
-    }
-
-    function _update(address from, address to, uint256 value) internal override {
-        if (from == stuckFrom && to == stuckTo) return;
-        super._update(from, to, value);
     }
 }

@@ -195,7 +195,9 @@ beyond that unit still counts as supply, so transfers to the vault cannot shrink
 the rate.
 
 - New stacks need no EarnShare step: the EarnVault mints its own unit to itself while the factory
-  initializes it, before the transfer policy applies.
+  initializes it, before the transfer policy applies. An EarnVault from the current release also mints
+  `EarnFees` 1 unit, so a fee recipient's full claim never empties
+  `EarnFees`' balance slot, and it counts exactly those 2 units as burned whatever it holds.
 - An EarnVault from an earlier release that counts the unit as burned (its implementation emits
   `UnbackedPoolRestarted`) but did not mint it: send it 1 unit of EarnShare, from a small first
   deposit, after confirming from the stack's recorded factory release which implementation it runs.

@@ -63,8 +63,8 @@ enforces this exit invariant: an engine that only accepts deposits, or adds only
 leave holders no discoverable path to recover backing. An engine without the fee-valuation
 capability is treated as never stale, so an engine backed by timestamped reports must advertise it.
 The EarnVault reads every capability except async redemption once, when it installs the engine, so an
-engine's answers for the others must never change. With `IEarnEngineHeldDeposit` (`HoldEngine` and
-`ERC4626Engine`) the EarnVault transfers a deposit from its caller straight to the engine and calls
+engine's answers for the others must never change. With `IEarnEngineHeldDeposit` (`HoldEngine`,
+`ERC4626Engine`, `VedaEngine` and `PropAMMEngine`) the EarnVault transfers a deposit from its caller straight to the engine and calls
 `depositHeld(assets)`, which saves a transfer and an allowance read.
 
 The EarnVault measures engine-share deltas rather than trusting return values, and uses

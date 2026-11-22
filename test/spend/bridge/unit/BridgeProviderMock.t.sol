@@ -19,7 +19,6 @@ contract SpenderMockToken {
     mapping(address account => uint256) public balanceOf;
     mapping(address owner => mapping(address spender => uint256)) public allowance;
     uint256 public totalSupply;
-    address public stuck;
     bool public refuseApprovals;
 
     function mint(address to, uint256 amount) external {
@@ -30,10 +29,6 @@ contract SpenderMockToken {
     function burn(uint256 amount) external {
         balanceOf[msg.sender] -= amount;
         totalSupply -= amount;
-    }
-
-    function setStuck(address account) external {
-        stuck = account;
     }
 
     function setRefuseApprovals(bool refuse) external {
@@ -47,7 +42,6 @@ contract SpenderMockToken {
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
-        if (msg.sender == stuck) return true;
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
@@ -495,18 +489,6 @@ contract BridgeProviderMockTest is Test {
         spend.fromVault = AMOUNT;
         _expectSpendRevert(
             address(share), 60e6, spend, abi.encodeWithSelector(CardSpender.InputNotConsumed.selector, 50e6 + 1, 50e6)
-        );
-    }
-
-    function testRefusesToKeepAResidualBalance() public {
-        // The hand-back reports success without moving the unused input.
-        clone.configure(AMOUNT, AMOUNT);
-        usd.setStuck(address(program));
-        _expectSpendRevert(
-            address(usd),
-            AMOUNT + 1,
-            _spend(address(usd)),
-            abi.encodeWithSelector(CardSpender.ResidualBalance.selector, address(usd))
         );
     }
 

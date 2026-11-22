@@ -9,6 +9,7 @@ import { IEarnEngine } from "../../../interfaces/earn/engines/IEarnEngine.sol";
 import { IEarnEngineAsyncRedeem } from "../../../interfaces/earn/engines/IEarnEngineAsyncRedeem.sol";
 import { IEarnEngineExactWithdraw } from "../../../interfaces/earn/engines/IEarnEngineExactWithdraw.sol";
 import { IEarnEngineFeeValuation } from "../../../interfaces/earn/engines/IEarnEngineFeeValuation.sol";
+import { IEarnEngineHeldDeposit } from "../../../interfaces/earn/engines/IEarnEngineHeldDeposit.sol";
 import { IEarnEngineRedeem } from "../../../interfaces/earn/engines/IEarnEngineRedeem.sol";
 import {
     IAccountant,
@@ -66,7 +67,7 @@ interface IEarnVaultPause {
 /// Owner calls that stay open under the lock cannot unbind or rebind the EarnVault.
 /// @custom:lock-stable earnVault != address(0)
 /// Only the base asset is ever earmarked; other assets are never settled.
-/// @custom:invariant forall address a :: a != baseAsset ==> settled[a] == 0
+/// @custom:invariant forall address a :: a != baseAsset ==> _settled[a] == 0
 /// Every claim is bound to a nonzero Queue exactly when it exists; the reserved legacy status is never used.
 /// @custom:invariant forall bytes32 id :: _claims[id].status == ClaimStatus.None <==> address(_claims[id].requestQueue) == address(0)
 /// @custom:invariant forall bytes32 id :: _claims[id].status != ClaimStatus.LegacyAwaitingDetails
@@ -83,7 +84,7 @@ interface IEarnVaultPause {
 /// @custom:ghost uint256 measuredReceived
 /// Solvency: an earmark is credited only within the measured base-asset balance (see _creditAndFinalize), a
 /// claim is paid only out of an earmark that covers it (claimRedeem), and a sweep never takes earmarked assets.
-/// Not proved: that settled[baseAsset] stays within the engine's base-asset balance across payouts, which
+/// Not proved: that settled(baseAsset) stays within the engine's base-asset balance across payouts, which
 /// are not measured, and that it covers the sum of every Claimable claim's amountOfAssets; a solved batch's
 /// finalization runs in self-calls the proof cannot follow.
 /// Not proved: that the venue shares the engine holds cover the engine shares the EarnVault records; shares
@@ -94,6 +95,7 @@ contract VedaEngine is
     IEarnEngineExactWithdraw,
     IEarnEngineFeeValuation,
     IEarnEngineAsyncRedeem,
+    IEarnEngineHeldDeposit,
     Ownable2Step
 {
     // The registry is owned through the underlying BoringVault administration. This engine's owner
@@ -101,18 +103,20 @@ contract VedaEngine is
     IVedaPeripheryRegistry public immutable peripheryRegistry;
     IBoringVault public immutable vault;
     ITeller public teller;
+    /// @notice The registry version of the active periphery.
+    /// @dev Packed beside `teller`, which every periphery sync writes with it.
+    uint64 public peripheryVersion;
     IBoringQueue public queue;
-    /// @dev Unresolved claims bound to the active `queue`, packed beside it so the count never sits in a
-    ///      slot written from zero (Tempo charges 250,000 gas for each). Retired Queues' counts are parked in
-    ///      `_retiredQueueOpenClaims`.
-    uint96 private _activeQueueOpenClaims;
+    /// @dev Unresolved claims bound to the active `queue`, and all claims that have not finalized or
+    ///      cancelled, packed beside it: a request or a close writes one slot, which a claim keeps nonzero
+    ///      (Tempo charges 250,000 gas for each slot written from zero). Retired Queues' counts are parked
+    ///      in `_retiredQueueOpenClaims`.
+    uint48 private _activeQueueOpenClaims;
+    uint48 private _unresolvedClaimCount;
     IAccountant public accountant;
     /// @notice Maximum age of the latest Veda Accountant rate report accepted for new deposits.
     /// @dev Packed beside `accountant`, which every read of it pairs with.
     uint64 public maxRateAge;
-    uint64 public peripheryVersion;
-    /// @dev Claims that have not finalized or cancelled, packed beside the never-zero `peripheryVersion`.
-    uint128 private _unresolvedClaimCount;
     /// @dev Transaction-scoped rate checkpoint. Transient storage is cleared automatically after the
     ///      transaction, so unrelated operations in the same block may consume a newly posted rate.
     bool private transient _rateCheckpointed;
@@ -152,18 +156,20 @@ contract VedaEngine is
     mapping(bytes32 requestId => QueueClaim) private _claims;
 
     /// @dev Unresolved claims of each Queue other than the active one; {openClaimsByQueue} reads both.
-    mapping(address requestQueue => uint96 count) private _retiredQueueOpenClaims;
+    mapping(address requestQueue => uint48 count) private _retiredQueueOpenClaims;
 
-    /// @notice Aggregate per-asset funding ledger. A request is finalizable only from assets explicitly
-    ///         earmarked here, never the engine's raw balance. Each measured credit must independently
-    ///         cover its current solved batch; retained amounts belong only to exact requests marked
-    ///         claimable after a failed payout.
-    mapping(address asset => uint256 amount) public settled;
+    /// @dev Persistent part of the funding ledger {settled} reads: amounts retained for requests marked
+    ///      claimable after a failed payout.
+    mapping(address asset => uint256 amount) private _settled;
 
     /// @notice The `VedaForwardingSolver`(s) permitted to credit-and-forward. Owner-managed; NOT custody.
     mapping(address forwarder => bool authorized) public authorizedForwarder;
 
     bool private transient _entered;
+    /// @dev Earmark of the solved batch being finalized. Payouts draw it down without writing {settled},
+    ///      a reverted payout frame rolls its draw back, and only failed payouts' amounts persist.
+    uint256 private transient _batchEarmark;
+    bool private transient _inBatch;
 
     event EarnVaultInitialized(address indexed earnVault);
     /// @notice Initial active periphery and freshness policy captured by this engine.
@@ -291,9 +297,9 @@ contract VedaEngine is
         peripheryRegistry = peripheryRegistry_;
         vault = vault_;
         teller = teller_;
+        peripheryVersion = version_;
         queue = queue_;
         accountant = accountant_;
-        peripheryVersion = version_;
         maxRateAge = maxRateAge_;
         uint8 shareDecimals = vault_.decimals();
         if (shareDecimals > 77) revert InvalidVenueShareDecimals();
@@ -359,7 +365,7 @@ contract VedaEngine is
         ITeller oldTeller = teller;
         IBoringQueue oldQueue = queue;
         IAccountant oldAccountant = accountant;
-        uint96 activeQueueOpenClaims = _activeQueueOpenClaims;
+        uint48 activeQueueOpenClaims = _activeQueueOpenClaims;
         if (address(oldQueue) != address(newQueue)) {
             // Existing claims stay bound to their originating Queue: park the old Queue's count and bring
             // back any count the new Queue left when it was retired.
@@ -371,10 +377,10 @@ contract VedaEngine is
         }
 
         teller = newTeller;
+        peripheryVersion = newVersion;
         queue = newQueue;
         _activeQueueOpenClaims = activeQueueOpenClaims;
         accountant = newAccountant;
-        peripheryVersion = newVersion;
         _checkpointRate(validatedRate);
         emit VedaPeripheryUpdated(
             newVersion,
@@ -462,6 +468,22 @@ contract VedaEngine is
         _requireFreshAccountantRate(accountant, maxRateAge);
         _checkpointRate();
         _pull(baseAsset, msg.sender, assets);
+        engineShares = _depositToVenue(assets);
+    }
+
+    /// Only the bound EarnVault calls it, after transferring `assets` of the base asset here.
+    /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
+    /// A deposit credits a positive measured venue-share delta.
+    /// @custom:ensures engineShares > 0
+    function depositHeld(uint256 assets) external onlyEarnVault nonReentrant returns (uint256 engineShares) {
+        _requireFreshAccountantRate(accountant, maxRateAge);
+        _checkpointRate();
+        engineShares = _depositToVenue(assets);
+    }
+
+    /// @dev Deposits `assets` the engine holds into the venue: the one-unit-over allowance and the standing
+    ///      allowance check bound the Teller's pull to exactly `assets`, so earmarked funds never move.
+    function _depositToVenue(uint256 assets) private returns (uint256 engineShares) {
         // enter() pulls from the engine into the vault, so approve the VAULT (not the teller), one unit
         // above `assets` so an exact pull leaves the standing unit.
         _approve(baseAsset, address(vault), assets + 1);
@@ -685,7 +707,7 @@ contract VedaEngine is
         // should never take this path, but balance-bound any claimed delta exactly as before.
         if (asset_ != baseAsset) {
             if (delta != 0) {
-                uint256 reserved = settled[asset_];
+                uint256 reserved = _settled[asset_];
                 uint256 want = reserved + delta;
                 uint256 aggregateBalance = IERC20Like(asset_).balanceOf(address(this));
                 if (want > aggregateBalance) revert CreditExceedsBalance(asset_, aggregateBalance, want);
@@ -724,15 +746,19 @@ contract VedaEngine is
         private
         returns (uint256 claimed)
     {
+        uint256 reserved = _settled[asset_];
         if (delta != 0) {
             uint256 have = IERC20Like(asset_).balanceOf(address(this));
-            uint256 want = settled[asset_] + delta;
+            uint256 want = reserved + delta;
             if (have < want) revert CreditExceedsBalance(asset_, have, want);
-            settled[asset_] = want;
             /// Solvency: the earmark never exceeds the base-asset balance measured at credit.
-            /// @custom:assert settled[asset_] <= have
+            /// @custom:assert reserved + delta <= have
             emit Settled(asset_, delta, want);
         }
+        // The batch's earmark stays in transient storage while its requests finalize, so a solve whose
+        // payouts all succeed writes no {settled} slot.
+        _batchEarmark = delta;
+        _inBatch = true;
         uint256 consumed;
         uint256 stillOwed; // amounts owed to solved batch requests whose payout failed
         for (uint256 i = 0; i < requestIds.length; i++) {
@@ -751,15 +777,15 @@ contract VedaEngine is
                 emit FinalizeFailed(id, asset_, amt);
             }
         }
+        _inBatch = false;
+        _batchEarmark = 0;
         // NO-CROSS-SOLVE-RESIDUE: un-earmark this batch's own un-consumed surplus back to inert
         // (sweepable) balance so `settled` only ever reflects funds owed to open requests — BUT keep the
         // earmark for `stillOwed` (solved requests whose payout failed) so {claimRedeem} can pay them later.
+        uint256 retained = reserved + stillOwed;
+        if (stillOwed != 0) _settled[asset_] = retained;
         uint256 keep = consumed + stillOwed;
-        if (delta > keep) {
-            uint256 residue = delta - keep;
-            settled[asset_] -= residue;
-            emit Unearmarked(asset_, residue, settled[asset_]);
-        }
+        if (delta > keep) emit Unearmarked(asset_, delta - keep, retained);
     }
 
     /// @notice Self-only finalize shim: performs the asset push + earnVault.finalizeRedeem for ONE
@@ -779,16 +805,16 @@ contract VedaEngine is
     ///         why it is not yet claimable.
     /// No double claim: only a Claimable claim is paid, exactly its tracked amount, out of an earmark that covers it.
     /// @custom:ensures old(_claims[requestId].status) == ClaimStatus.Claimable
-    /// @custom:ensures amount == old(_claims[requestId].amountOfAssets) && old(settled[baseAsset]) >= amount
+    /// @custom:ensures amount == old(_claims[requestId].amountOfAssets) && old(_settled[baseAsset]) >= amount
     /// Not proved: liveness. A Claimable, covered claim also needs the transfer to the EarnVault and its
     /// finalizeRedeem to succeed, outside this contract.
     function claimRedeem(bytes32 requestId) external nonReentrant returns (uint256 amount) {
         QueueClaim storage c = _claims[requestId];
         if (c.status == ClaimStatus.Open) revert ClaimNotClaimable(requestId);
         if (c.status != ClaimStatus.Claimable) revert ClaimNotOpen(requestId);
-        if (settled[baseAsset] < c.amountOfAssets) revert AssetsNotArrived(requestId);
+        if (_settled[baseAsset] < c.amountOfAssets) revert AssetsNotArrived(requestId);
         /// No double claim: only a Claimable claim is paid, from earmarked assets, exactly its tracked amount.
-        /// @custom:assert c.status == ClaimStatus.Claimable && settled[baseAsset] >= c.amountOfAssets
+        /// @custom:assert c.status == ClaimStatus.Claimable && _settled[baseAsset] >= c.amountOfAssets
         amount = c.amountOfAssets;
         _commitFinalize(requestId);
         emit RedeemClaimed(requestId, baseAsset, amount);
@@ -814,8 +840,9 @@ contract VedaEngine is
         uint256 unresolved = _unresolvedClaimCount;
         if (token == baseAsset && unresolved != 0) revert BaseAssetSweepBlocked(unresolved);
         uint256 have = IERC20Like(token).balanceOf(address(this));
-        // Never touch aggregate funds earmarked to request-level claimable failed payouts.
-        uint256 reserved = settled[token];
+        // Never touch aggregate funds earmarked to request-level claimable failed payouts, or the earmark
+        // of a solved batch still finalizing.
+        uint256 reserved = settled(token);
         uint256 available = have > reserved ? have - reserved : 0;
         if (amount > available) revert SweepExceedsAvailableBalance(token, available, amount);
         /// A nonzero sweep leaves at least the earmarked amount on the engine.
@@ -830,6 +857,15 @@ contract VedaEngine is
 
     function rate() external view returns (uint256) {
         return accountant.getRateInQuoteSafe(baseAsset);
+    }
+
+    /// @notice Aggregate per-asset funding ledger. A request is finalizable only from assets explicitly
+    ///         earmarked here, never the engine's raw balance. Each measured credit must independently
+    ///         cover its current solved batch; retained amounts belong only to exact requests marked
+    ///         claimable after a failed payout.
+    /// @dev Includes the earmark of a solved batch still finalizing in this transaction.
+    function settled(address asset) public view returns (uint256 amount) {
+        return _settled[asset] + (asset == baseAsset ? _batchEarmark : 0);
     }
 
     /// @notice Unresolved engine claims grouped by their originating Queue. Operators keep an old
@@ -877,6 +913,7 @@ contract VedaEngine is
             || interfaceId == type(IEarnEngineRedeem).interfaceId
             || interfaceId == type(IEarnEngineExactWithdraw).interfaceId
             || interfaceId == type(IEarnEngineFeeValuation).interfaceId
+            || interfaceId == type(IEarnEngineHeldDeposit).interfaceId
             || (interfaceId == type(IEarnEngineAsyncRedeem).interfaceId && address(queue) != address(0));
     }
 
@@ -973,11 +1010,14 @@ contract VedaEngine is
         if (status != ClaimStatus.Open && status != ClaimStatus.Claimable) revert ClaimNotOpen(requestId);
         uint256 amount = c.amountOfAssets;
         address assetOut = baseAsset;
-        settled[assetOut] -= amount;
+        // A solved batch pays from its transient earmark; {claimRedeem} pays from the persistent ledger.
+        if (_inBatch) _batchEarmark -= amount;
+        else _settled[assetOut] -= amount;
         c.status = ClaimStatus.Paid;
         _closeClaim(c);
         /// The claim is latched Paid and its earmark consumed before any external payout call.
-        /// @custom:assert _claims[requestId].status == ClaimStatus.Paid && settled[baseAsset] == old(settled[baseAsset]) - amount
+        /// @custom:assert _claims[requestId].status == ClaimStatus.Paid
+        /// @custom:assert _settled[baseAsset] + _batchEarmark == old(_settled[baseAsset] + _batchEarmark) - amount
 
         // Hand solved assets to the EarnVault, which pays the stored receiver and closes the claim.
         _push(assetOut, earnVault, amount);

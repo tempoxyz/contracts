@@ -120,8 +120,8 @@ contract EarnVaultAsyncTest is Test {
         assertEq(pending.receiver, receiver);
         assertEq(pending.requester, user);
         assertEq(pending.burnedEarnShares, 4 ether);
-        assertEq(pending.engineShares, 4 ether);
         assertTrue(pending.open);
+        assertEq(engine.requestShares(finalizeId), 4 ether);
 
         // Finalize pays the receiver and closes the already-burned pending claim.
         asset.mint(address(engine), 4 ether);
@@ -145,6 +145,42 @@ contract EarnVaultAsyncTest is Test {
         assertEq(core.openRedeemRequestCount(), 0);
         assertEq(core.engineShares(), 6 ether);
         assertEq(share.balanceOf(receiver), 2 ether);
+        assertTrue(core.isAccountingAligned());
+    }
+
+    function testSelfPayingRequestReadsRequesterAsReceiverThroughFinalizeAndCancel() public {
+        _deposit(10 ether);
+
+        vm.startPrank(user);
+        share.approve(address(core), type(uint256).max);
+        bytes32 finalizeId = core.requestRedeem(4 ether, "", user);
+        vm.stopPrank();
+
+        // A self-paying request reports its requester as the receiver.
+        EarnVault.PendingRedeem memory pending = core.pendingRedeem(finalizeId);
+        assertEq(pending.receiver, user);
+        assertEq(pending.requester, user);
+        assertEq(pending.burnedEarnShares, 4 ether);
+        assertTrue(pending.open);
+
+        // Finalize pays the requester, then the closed request reads as empty.
+        uint256 assetsBefore = asset.balanceOf(user);
+        asset.mint(address(engine), 4 ether);
+        engine.solve(finalizeId, 4 ether);
+        assertEq(asset.balanceOf(user), assetsBefore + 4 ether);
+        pending = core.pendingRedeem(finalizeId);
+        assertEq(pending.receiver, address(0));
+        assertEq(pending.requester, address(0));
+        assertFalse(pending.open);
+
+        // Cancel mints the re-entry to the requester.
+        vm.prank(user);
+        bytes32 cancelId = core.requestRedeem(2 ether, "", user);
+        uint256 sharesBefore = share.balanceOf(user);
+        vm.prank(user);
+        core.cancelRedeem(cancelId, 2 ether);
+        assertEq(share.balanceOf(user), sharesBefore + 2 ether);
+        assertEq(core.openRedeemRequestCount(), 0);
         assertTrue(core.isAccountingAligned());
     }
 
@@ -345,8 +381,10 @@ contract EarnVaultAsyncTest is Test {
 
         IEarnFees feeModule = IEarnFees(feeCore.earnFees());
         IEarnFees.PendingFeeSnapshot memory pending = feeModule.pendingFeeSnapshot(requestId);
-        assertEq(pending.requestValue, 4 ether);
+        assertEq(pending.burnedEarnShares, 4 ether);
+        assertEq(pending.requestedAt, block.timestamp);
         assertEq(pending.feeConfigId, 1);
+        assertTrue(pending.open);
 
         feeEngine.setRate(1.2 ether);
         FeeConfig memory noFees;
@@ -361,6 +399,9 @@ contract EarnVaultAsyncTest is Test {
         assertGt(feeModule.claimableEarnShares(feeRecipient), activeFeeShares);
         assertEq(feeShare.balanceOf(receiver), 4 ether);
         assertFalse(feeCore.pendingRedeem(requestId).open);
+        pending = feeModule.pendingFeeSnapshot(requestId);
+        assertEq(pending.burnedEarnShares, 0);
+        assertFalse(pending.open);
         assertTrue(feeCore.isAccountingAligned());
     }
 
@@ -462,7 +503,8 @@ contract EarnVaultAsyncTest is Test {
 
         feeEngine.setRate(1.2 ether);
         feeCore.accrueFees();
-        uint256 activeFeeShares = feeShare.balanceOf(address(feeCore.earnFees()));
+        // Less the unit EarnFees keeps from initialization.
+        uint256 activeFeeShares = feeShare.balanceOf(address(feeCore.earnFees())) - 1;
         assertGt(activeFeeShares, 0);
 
         vm.prank(user);
@@ -551,6 +593,53 @@ contract EarnVaultAsyncTest is Test {
         assertTrue(feeCore.isAccountingAligned());
     }
 
+    /// @dev A snapshot is void when fees were disabled at or after its request time, so a request filed in the same
+    ///      second as a disable and re-enable keeps its snapshot but is never charged; one filed a second later is.
+    function testSameSecondReactivationWaivesRequestFiledAfterIt() public {
+        address originalRecipient = address(0xFEE);
+        address replacementRecipient = address(0xBEEF);
+        (CoreMockToken feeAsset, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore) =
+            _newFeeAsync(originalRecipient);
+        IEarnFees fees = IEarnFees(feeCore.earnFees());
+
+        vm.startPrank(user);
+        feeAsset.approve(address(feeCore), type(uint256).max);
+        feeShare.approve(address(feeCore), type(uint256).max);
+        feeCore.deposit(10 ether, user, 10 ether);
+        vm.stopPrank();
+
+        FeeConfig memory replacement;
+        replacement.fixedFeeCount = 1;
+        replacement.fixedFees[0] = FixedFeeRecipient(replacementRecipient, 1_000);
+        vm.startPrank(operator);
+        feeCore.disableFees();
+        feeCore.setFeeConfig(replacement);
+        vm.stopPrank();
+
+        vm.prank(user);
+        bytes32 sameSecond = feeCore.requestRedeem(2 ether, "", receiver);
+        assertTrue(fees.pendingFeeSnapshot(sameSecond).open);
+        assertFalse(fees.shouldChargeRedeem(sameSecond));
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(user);
+        bytes32 later = feeCore.requestRedeem(2 ether, "", receiver);
+        assertTrue(fees.shouldChargeRedeem(later));
+
+        // The active pool's own growth is charged first, so only the cancellations' queued growth is compared.
+        feeEngine.setRate(1.2 ether);
+        feeCore.accrueFees();
+        uint256 activeFees = fees.claimableEarnShares(replacementRecipient);
+        vm.startPrank(user);
+        feeCore.cancelRedeem(sameSecond, 2 ether);
+        assertEq(fees.claimableEarnShares(replacementRecipient), activeFees);
+        feeCore.cancelRedeem(later, 1);
+        vm.stopPrank();
+        assertGt(fees.claimableEarnShares(replacementRecipient), activeFees);
+        assertEq(fees.claimableEarnShares(originalRecipient), 0);
+        assertTrue(feeCore.isAccountingAligned());
+    }
+
     function testAsyncRequestRejectsExcessiveFloorLossBeforeBurning() public {
         CoreMockToken coarseAsset = new CoreMockToken("Coarse Asset", "CAST", 6);
         CoreMockToken coarseShare = new CoreMockToken("Coarse Earn Share", "CSH", 18);
@@ -580,7 +669,7 @@ contract EarnVaultAsyncTest is Test {
 
         EarnVault.PendingRedeem memory pending = coarseCore.pendingRedeem(requestId);
         assertEq(pending.burnedEarnShares, 199 ether);
-        assertEq(pending.engineShares, 199);
+        assertEq(coarseEngine.requestShares(requestId), 199);
         assertEq(coarseCore.totalEarnShares(), 100 ether);
         assertEq(coarseCore.engineShares(), 100);
         assertTrue(coarseCore.isAccountingAligned());
@@ -612,7 +701,8 @@ contract EarnVaultAsyncTest is Test {
         vm.stopPrank();
 
         assertTrue(coarseCore.pendingRedeem(requestId).open);
-        assertEq(coarseCore.pendingRedeem(requestId).engineShares, 100);
+        assertEq(coarseCore.pendingRedeem(requestId).burnedEarnShares, 100 ether);
+        assertEq(coarseEngine.requestShares(requestId), 100);
         assertEq(coarseShare.balanceOf(receiver), 0);
         assertEq(coarseCore.totalEarnShares(), 200 ether);
         assertEq(coarseCore.engineShares(), 201);
@@ -635,8 +725,8 @@ contract EarnVaultAsyncTest is Test {
         assertEq(coarseCore.deposit(100_010_000, user, 10_001 ether), 10_001 ether);
 
         bytes32 firstRequest = coarseCore.requestRedeem(10_001 ether - 1, "", receiver);
-        EarnVault.PendingRedeem memory pending = coarseCore.pendingRedeem(firstRequest);
-        assertEq(pending.engineShares, 10_000);
+        assertEq(coarseCore.pendingRedeem(firstRequest).burnedEarnShares, 10_001 ether - 1);
+        assertEq(coarseEngine.requestShares(firstRequest), 10_000);
 
         assertEq(coarseCore.totalEarnShares(), 1);
         assertEq(coarseCore.engineShares(), 1);
@@ -654,6 +744,64 @@ contract EarnVaultAsyncTest is Test {
         assertEq(coarseCore.totalEarnShares(), 0);
         assertEq(coarseCore.engineShares(), 0);
         assertEq(coarseCore.rewardRateBaseline(), 1);
+    }
+
+    function testFinalizeClosesOnlyARecordedFeeSnapshot() public {
+        address feeRecipient = address(0xFEE);
+        (CoreMockToken feeAsset, CoreMockToken feeShare, CoreMockAsyncEngine feeEngine, EarnVault feeCore) =
+            _newFeeAsync(feeRecipient);
+        IEarnFees feeModule = IEarnFees(feeCore.earnFees());
+
+        vm.startPrank(user);
+        feeAsset.approve(address(feeCore), type(uint256).max);
+        feeShare.approve(address(feeCore), type(uint256).max);
+        feeCore.deposit(10 ether, user, 10 ether);
+        bytes32 recorded = feeCore.requestRedeem(4 ether, "", receiver);
+        vm.stopPrank();
+        assertTrue(feeModule.pendingFeeSnapshot(recorded).open);
+
+        // With fees off, a new request records no snapshot.
+        FeeConfig memory noFees;
+        vm.prank(operator);
+        feeCore.setFeeConfig(noFees);
+        vm.prank(user);
+        bytes32 unrecorded = feeCore.requestRedeem(2 ether, "", user);
+        assertFalse(feeModule.pendingFeeSnapshot(unrecorded).open);
+
+        // The request that recorded a snapshot still closes it after fees were turned off.
+        vm.expectCall(address(feeModule), abi.encodeCall(IEarnFees.closeRedeemRequest, (recorded)), 1);
+        feeAsset.mint(address(feeEngine), 4 ether);
+        feeEngine.solve(recorded, 4 ether);
+        assertFalse(feeModule.pendingFeeSnapshot(recorded).open);
+        assertFalse(feeCore.pendingRedeem(recorded).open);
+        assertEq(feeAsset.balanceOf(receiver), 4 ether);
+
+        // The request without one finalizes without calling EarnFees.
+        uint256 assetsBefore = feeAsset.balanceOf(user);
+        vm.expectCall(address(feeModule), abi.encodeCall(IEarnFees.closeRedeemRequest, (unrecorded)), 0);
+        feeAsset.mint(address(feeEngine), 2 ether);
+        feeEngine.solve(unrecorded, 2 ether);
+        assertFalse(feeCore.pendingRedeem(unrecorded).open);
+        assertEq(feeAsset.balanceOf(user), assetsBefore + 2 ether);
+        assertEq(feeCore.openRedeemRequestCount(), 0);
+        assertTrue(feeCore.isAccountingAligned());
+    }
+
+    function testRequestAboveRecordBoundReverts() public {
+        uint256 bound88 = type(uint88).max;
+        asset.mint(user, bound88 + 2);
+        _deposit(bound88 + 2);
+
+        vm.startPrank(user);
+        share.approve(address(core), type(uint256).max);
+        vm.expectRevert(EarnVault.ExceedsMaxEarnShares.selector);
+        core.requestRedeem(bound88 + 1, "", receiver);
+
+        bytes32 requestId = core.requestRedeem(bound88, "", receiver);
+        vm.stopPrank();
+        assertEq(core.pendingRedeem(requestId).burnedEarnShares, bound88);
+        assertEq(engine.requestShares(requestId), bound88);
+        assertTrue(core.isAccountingAligned());
     }
 
     function _deposit(uint256 assets) internal {

@@ -228,6 +228,19 @@ contract VedaEngineGasAudit is VedaAuditFixture {
         assertEq(claimed, 10);
     }
 
+    function testGasEngineSyncPeriphery() public {
+        vm.pauseGasMetering();
+        // Republishing the active tuple raises the registry version without a Queue rotation.
+        registry.setVedaPeriphery(
+            ITeller(address(teller)), IBoringQueue(address(queue)), IAccountant(address(accountant))
+        );
+
+        uint256 gasBefore = _startMeasure();
+        engine.syncVedaPeriphery(1, type(uint256).max);
+        _stopMeasure("engine.syncVedaPeriphery", gasBefore);
+        assertEq(engine.peripheryVersion(), 2);
+    }
+
     function testGasEngineClaimRedeemRecovery() public {
         vm.pauseGasMetering();
         bytes32 requestId = _prepareClaims(1)[0];

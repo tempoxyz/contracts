@@ -75,8 +75,9 @@ contract SingleZoneEarnRouterSameAssetTest is EarnRouterTestBase {
             _callback(SingleZoneEarnRouter.Flow.Redeem, uint128(ONE), 0, uint128(ONE))
         );
 
+        // The Portal's depositEncrypted rejects a return token it has not enabled, rolling back the deposit.
         portalA.setToken(address(earnA), false, false);
-        vm.expectRevert(SingleZoneEarnRouter.InvalidReturnToken.selector);
+        vm.expectRevert(bytes("TOKEN_DISABLED"));
         router.onWithdrawalReceived(ZONE_A, address(portalA), bytes32(0), address(assetA), uint128(ONE), data);
         vm.stopPrank();
 

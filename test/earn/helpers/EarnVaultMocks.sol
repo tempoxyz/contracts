@@ -181,6 +181,8 @@ contract RewardVaultMock {
     bool public depositsPaused;
     uint256 public sharesPerAsset = 1;
 
+    error DepositsPaused();
+
     constructor(CoreMockToken asset_, CoreMockToken share_) {
         assetToken = asset_;
         shareToken = share_;
@@ -203,6 +205,7 @@ contract RewardVaultMock {
     }
 
     function deposit(uint256 assets, address receiver, uint256 minEarnShares) external returns (uint256 shares) {
+        if (depositsPaused) revert DepositsPaused();
         assetToken.transferFrom(msg.sender, address(this), assets);
         shares = assets * sharesPerAsset;
         require(shares >= minEarnShares, "MIN_SHARES");

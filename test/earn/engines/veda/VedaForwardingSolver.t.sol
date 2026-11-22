@@ -65,15 +65,6 @@ contract MockForwardEngine is IForwardingEngine {
     address public lastAsset;
     uint256 public lastDelta;
     uint256 public lastCount;
-    address public requestQueue;
-
-    function setRequestQueue(address requestQueue_) external {
-        requestQueue = requestQueue_;
-    }
-
-    function claimQueue(bytes32) external view returns (address) {
-        return requestQueue;
-    }
 
     function forwardSolved(bytes32[] calldata requestIds, address asset, uint256 delta)
         external
@@ -109,7 +100,6 @@ contract VedaForwardingSolverTest is Test {
             owner,
             owner
         );
-        engine.setRequestQueue(address(queue));
         boringSolver.configure(address(engine), 100);
         fs.setAuthorizedSolver(solver, true);
     }
@@ -228,6 +218,26 @@ contract VedaForwardingSolverTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(VedaForwardingSolver.SolveAssetMismatch.selector, 1, address(asset), address(0xBEEF))
         );
+        fs.solveAndForward(requestIds, false);
+    }
+
+    function testSolveAndForwardRejectsIdTheQueueDoesNotHold() public {
+        bytes32 unknown = keccak256("unknown request");
+
+        vm.prank(solver);
+        vm.expectRevert(abi.encodeWithSelector(VedaForwardingSolver.InvalidTrackedRequest.selector, 0, unknown));
+        fs.solveAndForward(_singleId(unknown), false);
+    }
+
+    function testSolveAndForwardRejectsRequestNotFiledByTheEngine() public {
+        OnChainWithdraw memory foreign = _request(address(asset), 10);
+        foreign.user = address(0xF00D);
+        bytes32[] memory requestIds = new bytes32[](2);
+        requestIds[0] = queue.add(_request(address(asset), 10));
+        requestIds[1] = queue.add(foreign);
+
+        vm.prank(solver);
+        vm.expectRevert(abi.encodeWithSelector(VedaForwardingSolver.InvalidTrackedRequest.selector, 1, requestIds[1]));
         fs.solveAndForward(requestIds, false);
     }
 

@@ -23,8 +23,8 @@ is set once; `maxRateAge` is nonzero. Construction validates the registry's curr
 `VedaEngineInitialized`; rotations and freshness-policy changes emit `VedaPeripheryUpdated` and
 `MaxRateAgeUpdated`.
 
-The engine advertises `IEarnEngineRedeem`, `IEarnEngineExactWithdraw`, and
-`IEarnEngineFeeValuation`, plus `IEarnEngineAsyncRedeem` only while its active Queue is nonzero. It
+The engine advertises `IEarnEngineRedeem`, `IEarnEngineExactWithdraw`, `IEarnEngineFeeValuation`,
+and `IEarnEngineHeldDeposit`, plus `IEarnEngineAsyncRedeem` only while its active Queue is nonzero. It
 has no in-kind entry, so the EarnVault rejects a queued request before burning EarnShare when the
 engine is immediate-only.
 
@@ -62,8 +62,11 @@ cannot bind its EarnVault until the registry points back to it, and the binding 
 [`VedaForwardingSolver`](../../../src/earn/engines/veda/VedaForwardingSolver.sol) combines the stock Veda
 solve with Earn finalization. It is immutable to one stock solver, tracking Queue, Teller, and
 engine. `solveAndForward(requestIds, coverDeficit)` is restricted to owner-authorized solvers
-(`setAuthorizedSolver`). It reads each request from its Queue by ID, checks the engine recorded that
-Queue for the ID, requires one output asset, measures the engine's balance across the stock solve,
+(`setAuthorizedSolver`). It reads each request from its Queue by ID and requires the engine as its
+user (`InvalidTrackedRequest`): the Queue returns an empty record for an unknown ID, only the engine
+files requests as their user, and the engine refuses an ID already bound to any Queue, so such a
+request is bound to this Queue. The stock solve dequeues each request by the hash of its fields. It
+requires one output asset, measures the engine's balance across the stock solve,
 and passes the IDs and measured delta to `forwardSolved`, which reverts `SolveUnderfunded` unless
 the delta covers every request in the batch.
 
@@ -142,12 +145,16 @@ and cancellation sequence is in [flows](../architecture/flows.md#async-redemptio
    fields, and requires the fixed `amountOfAssets` to meet `minQueuedAssets` and fit in `uint88`
    (`QueuedAssetsTooLarge` above about 3.1e26 base units). It stores one slot per request: the Queue,
    the claim status, and `amountOfAssets`. Tempo charges 250,000 gas for a slot first written from
-   zero, and a claim is never cleared, so each request pays for one such slot. Any failure rolls back
-   the whole request, including the EarnShare burn.
+   zero, and a claim is never cleared, so each request pays for one such slot. The open and unresolved
+   claim counters share the active Queue's slot, so a request or close updates one more slot, never a
+   new one. Any failure rolls back the whole request, including the EarnShare burn.
 2. **Solve.** An authorized solver submits request IDs to `VedaForwardingSolver`; the stock solve,
    measured engine credit, and finalization to each stored receiver happen in one transaction. If a
    receiver cannot accept the payout, that request becomes claimable and stays earmarked until anyone
-   calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds.
+   calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds. While
+   a batch finalizes, its earmark stays in transient storage, which `settled` and `sweepDust` count;
+   only the amounts of failed payouts are written to the persistent ledger, so a batch whose payouts
+   all succeed writes no ledger slot.
 3. **Cancel.** The engine calls the originating Queue's `cancelOnChainWithdrawUsingRequestId`,
    checks that the returned request hashes to the request ID, and requires its BoringVault-share
    balance to rise by exactly that request's `amountOfShares` (`InvalidTrackedRequest`,

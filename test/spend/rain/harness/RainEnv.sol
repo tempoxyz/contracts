@@ -59,7 +59,9 @@ abstract contract RainEnv is CoreEnv, RainStack {
         if (vault != address(0)) vaults[0] = vault;
         address[] memory pooled = new address[](1);
         pooled[0] = programCollateral;
-        return new RainProvider(address(rain.factory), tokens, vaults, pooled, pooledAcceptsPublic);
+        uint256[] memory pooledIndexes = new uint256[](1);
+        pooledIndexes[0] = programCollateralIndex;
+        return new RainProvider(address(rain.factory), tokens, vaults, pooled, pooledIndexes, pooledAcceptsPublic);
     }
 
     /// @dev Rain's factory owner (this contract) creates `user`'s collateral contract.
