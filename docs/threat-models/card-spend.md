@@ -596,7 +596,10 @@ Check these. This model assumes them and does not verify them.
 - An allowed vault's `withdrawExact` burns at most the shares asked and sends exactly the assets asked.
 - Bridge's spender factory authorizes destinations per program, pauses every clone, and routes
   `publicCall` to a handler by its 2-byte prefix.
-- TIP-20 tokens revert on failure.
+- TIP-20 tokens revert on failure, and a transfer debits the sender exactly.
+- A Zone Portal enables only TIP-20s: `enableToken` checks, and the Zone factory checks the initial token.
+  A private spend's input is therefore a TIP-20, which `CARDSPEND-PRIVATE-BASELINE` and the program's
+  token check for private stablecoin spends rely on.
 - The vendored contracts match the provenance in [`VENDORED.md`](../../vendor/VENDORED.md).
 
 ## Keeping this model current

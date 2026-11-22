@@ -155,6 +155,12 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
         convertAsset = asset;
         parToken = other;
         assetIsBase = isBase;
+        // A standing maximum allowance for the immutable pool, set once here: Tempo charges every zero-to-nonzero
+        // allowance as a new storage slot, and a TIP-20 never spends a maximum allowance down. The caller-chosen
+        // vault keeps exact, cleared approvals. It sits outside gAllowance, which tracks only temporary allowances.
+        if (converts) {
+            _callOptionalReturn(asset, abi.encodeCall(IERC20Like.approve, (address(pool_), type(uint256).max)));
+        }
     }
 
     /// @inheritdoc ISpender
@@ -187,8 +193,6 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
         if (balance < maxInput) revert InsufficientInput();
         /// @custom:assert balance >= maxInput
         uint256 baseline = balance - maxInput;
-        uint256 outputBaseline = send.token == token ? baseline : IERC20Like(send.token).balanceOf(address(this));
-        /// @custom:assert send.token == token ==> outputBaseline == baseline
         /// @custom:ghost gPaidBefore = gSent[send.token][send.to]
         uint256 paidBefore = IERC20Like(send.token).balanceOf(payee);
 
@@ -218,16 +222,23 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
             } else {
                 // Redeemed here first when it converts, or when `to` is virtual: Earn's engines measure the
                 // literal receiver, which a virtual address never is, so this spender transfers to it instead.
+                // Only this branch holds the output, so only it measures the output's baseline.
                 uint256 assetBefore = IERC20Like(asset).balanceOf(address(this));
+                // Read before the redemption, so the output stays at this baseline for the whole spend.
+                uint256 outBefore = converts ? IERC20Like(parToken).balanceOf(address(this)) : 0;
                 _withdraw(send.vault, token, callback, send.amount, address(this), maxInput);
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore + send.amount) {
                     revert InsufficientInput();
                 }
-                if (converts) _convertAtPar(send.amount);
+                if (converts) _convertAtPar(send.amount, outBefore);
                 _safeTransfer(send.token, send.to, send.amount);
                 /// @custom:assert gSent[send.token][send.to] == gPaidBefore + send.amount
                 /// @custom:assert converts || payee != send.to
                 if (IERC20Like(asset).balanceOf(address(this)) != assetBefore) revert ResidualBalance(asset);
+                // Without conversion the output is the asset, measured just above.
+                if (converts && IERC20Like(parToken).balanceOf(address(this)) != outBefore) {
+                    revert ResidualBalance(parToken);
+                }
             }
             /// @custom:assert gAllowance[token][send.vault] == 0
         }
@@ -239,15 +250,11 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
         if (unused >= maxInput) revert NothingSpent();
         /// @custom:assert unused < maxInput
         /// @custom:ghost gReturnedBefore = gSent[token][msg.sender]
-        // With nothing unused the balance read above already equals the baseline.
-        if (unused != 0) {
-            _safeTransfer(token, msg.sender, unused);
-            if (IERC20Like(token).balanceOf(address(this)) != baseline) revert ResidualBalance(token);
-        }
+        // With nothing unused the balance read above already equals the baseline. Otherwise the transfer
+        // leaves exactly the baseline: the router sends only a token its Zone's Portal enabled, and the
+        // Portal enables only TIP-20s, which debit the sender exactly.
+        if (unused != 0) _safeTransfer(token, msg.sender, unused);
         /// @custom:assert gSent[token][msg.sender] == gReturnedBefore + unused
-        if (send.token != token && IERC20Like(send.token).balanceOf(address(this)) != outputBaseline) {
-            revert ResidualBalance(send.token);
-        }
 
         emit Sent(send.ref, send.to, token, send.token, send.amount, maxInput - unused, unused);
     }
@@ -302,11 +309,12 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
         // forge-lint: disable-end(reentrancy-no-eth)
     }
 
-    /// @dev Whether `vault` reports the callback withdrawal by ERC-165 detection: it affirms ERC-165 itself,
-    ///      denies 0xffffffff (so a fallback answering true to everything fails) and affirms the interface.
+    /// @dev Whether `vault` reports the callback withdrawal by ERC-165: it affirms the interface and denies
+    ///      0xffffffff, so a fallback answering true to everything fails. A vault that affirms it without
+    ///      implementing it cannot settle: the callback must clear `callbackVault` and the payee must be paid.
     function _hasWithdrawCallback(address vault) private view returns (bool) {
-        return _supportsInterface(vault, 0x01ffc9a7) == 1 && _supportsInterface(vault, 0xffffffff) == 0
-            && _supportsInterface(vault, type(IEarnVaultWithdrawCallback).interfaceId) == 1;
+        return _supportsInterface(vault, type(IEarnVaultWithdrawCallback).interfaceId) == 1
+            && _supportsInterface(vault, 0xffffffff) == 0;
     }
 
     /// @dev `vault`'s ERC-165 answer for `interfaceId`: 1 or 0, or 2 for a failed call or any other return.
@@ -369,16 +377,9 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
     }
 
     /// @dev Swaps exactly `amount` of `convertAsset` for exactly `amount` of `parToken` at the oracle's par
-    ///      price, into this spender; any other price or output reverts.
-    function _convertAtPar(uint256 amount) private {
-        uint256 outBefore = IERC20Like(parToken).balanceOf(address(this));
-        // A standing maximum allowance for the immutable pool: Tempo charges every zero-to-nonzero allowance as a new storage slot. The
-        // caller-chosen vault above keeps exact, cleared approvals.
-        // It sits outside gAllowance, which tracks only temporary allowances.
-        if (IERC20Allowance(convertAsset).allowance(address(this), address(pool)) < amount) {
-            _callOptionalReturn(convertAsset, abi.encodeCall(IERC20Like.approve, (address(pool), 0)));
-            _callOptionalReturn(convertAsset, abi.encodeCall(IERC20Like.approve, (address(pool), type(uint256).max)));
-        }
+    ///      price, into this spender, which held `outBefore` of `parToken` before; any other price or output
+    ///      reverts. The pool pulls through the standing allowance the constructor set.
+    function _convertAtPar(uint256 amount, uint256 outBefore) private {
         // spendFrom holds the lock until it returns; earnWithdrawCallback admits only the vault being redeemed.
         // forge-lint: disable-start(reentrancy-no-eth)
         pool.swapExactInput(

@@ -110,7 +110,10 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 - `CardSpend.program` is this program (`WrongProgram`); `amount` is above zero and `fromVault` at most
   `amount` (`InvalidAmount`).
 - `token` is a TIP-20 (`UnsupportedToken`), so no transfer callback, fee or rebase can upset the
-  exact-credit checks. An Earn spend's vault holds `token`, so its asset is a TIP-20 too.
+  exact-credit checks. An Earn spend's vault holds `token`, so its asset is a TIP-20 too. A private
+  stablecoin spend's `token` is the router's input, which its Zone Portal withdrew; a Portal enables only
+  TIP-20s (`enableToken` checks, and the Zone factory checks the initial token), so the program does not
+  ask again.
 - A program that pays directly asks its provider: it has not paused the program (`ProgramPaused`), it
   authorizes the destination for this payer, token and path (`DestinationNotAuthorized`), and an Earn
   spend's vault is allowed and holds `token` (`VaultNotAllowed`, `IncorrectAssetForVault`). A program
@@ -138,7 +141,8 @@ program holds as its baseline and leaves it there, so a spend never creates the 
   (`NotRouter`), so `maxInput` is what a router measured and sent; the input is the stablecoin, or the
   vault's EarnShare when Earn funds all of it (`WrongInputToken`); the program holds at least `maxInput`
   (`InsufficientInput`) and spends from no more than it; the spend consumes some input (`NothingSpent`);
-  the unused input goes back to the caller and the program ends at its baseline (`ResidualBalance`). On
+  the unused input goes back to the caller, which leaves the program at its baseline, since a TIP-20
+  transfer debits the sender exactly. On
   the direct path the vault prices the shares, capped by the lower of `maxInput` and `maxShares`.
 - A payout through the provider's target uses exactly the stablecoin part, and for Earn at most the share
   cost the program quoted before the call (`InputNotConsumed`), so a replaced target can neither keep the

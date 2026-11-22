@@ -365,7 +365,7 @@ are:
   input (`NothingSpent`) and no more than `maxInput` (the balance check reverts): exactly `amount` of a
   stablecoin, and at most the `previewWithdraw(fromVault)` the program quoted before the call for shares
   (`InputNotConsumed`), so a replaced handler cannot keep the rest or over-burn and keep the surplus. The program returns the unused input
-  to the caller and must end at its baseline (`ResidualBalance`). The provider is asked with no payer.
+  to the caller, which leaves it at its baseline (a TIP-20 transfer debits the sender exactly). The provider is asked with no payer.
 - On both paths the destination must get exactly `amount` (`DestinationNotCredited`).
 - `spend` is permissionless. `spendFrom` accepts only a router the program's `ROUTER_FACTORY` deployed
   whose mode lists the program (`NotRouter`). A transient lock stops reentry (`Reentrancy`).

@@ -281,7 +281,7 @@ only bounces, so they show up when Bridge simulates the callback or traces the s
 - **The program:** `WrongProgram`, `InvalidAmount`, `DestinationNotAuthorized` (a destination the program
   itself cannot pay), `DestinationNotCredited`, `InputNotConsumed` (the clone
   kept or skipped part of the input) and `Reentrancy`; on `spendFrom` also `NotRouter`,
-  `WrongInputToken`, `InsufficientInput`, `NothingSpent` and `ResidualBalance`.
+  `WrongInputToken`, `InsufficientInput` and `NothingSpent`.
 - **The handler:** `WrongProgram`, `DestinationNotAuthorized`, `DestinationNotCredited`,
   `InvalidAmount`, `VaultNotAllowed`, `IncorrectAssetForVault`, `ShareCostExceeded`, and
   `PipelineDisabled` on the pull path.
