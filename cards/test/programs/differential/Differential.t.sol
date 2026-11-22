@@ -48,10 +48,7 @@ contract DifferentialTest is CoreInvariants {
 
     /// @notice Every committed trace replays identically on the model, and together they reach every core call's success
     ///         path and every core error at least as often as the generator requires.
-    /// @dev Skipped: the committed traces predate the trimmed core (no protocol debt or stand-in holds) and its state
-    ///      vector; regenerate them with the harness, then remove the skip.
     function test_replayTraces() public {
-        vm.skip(true, "traces predate the trimmed core; regenerate");
         // Replaying thousands of operations exceeds any block gas limit; gas is not what this test measures.
         vm.pauseGasMetering();
         Vm.DirEntry[] memory entries = vm.readDir(TRACES);

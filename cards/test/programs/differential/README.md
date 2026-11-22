@@ -10,9 +10,7 @@ folder proves the model matches the node.
 - `Differential.t.sol` replays every trace against the model and requires the same outcome, revert data, events and
   state after every operation, then checks the core invariants (`CoreInvariants.sol`). Each trace must name the node
   commit it was recorded on, and the traces together must reach every core call's success path and every core error
-  at least as often as `_coverage()` lists, the same minimums the harness's `run.ts` enforces on a run. The committed
-  traces predate the core without protocol debt or stand-in holds, so the replay is skipped until they are
-  regenerated.
+  at least as often as `_coverage()` lists, the same minimums the harness's `run.ts` enforces on a run.
 - `ModelRandom.t.sol` runs the same kind of sequences against the model alone, without a node, checking the
   invariants only.
 
