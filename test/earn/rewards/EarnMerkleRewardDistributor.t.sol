@@ -29,7 +29,7 @@ contract EarnMerkleRewardDistributorTest is Test {
     uint256 private constant carolIndex = 2;
     // Storage slots from the distributor's layout (forge inspect ... storageLayout).
     uint256 private constant totalsSlot = 4;
-    uint256 private constant paidSlot = 6;
+    uint256 private constant paidSlot = 5;
 
     function setUp() public {
         vm.warp(1_000_000);
@@ -279,8 +279,8 @@ contract EarnMerkleRewardDistributorTest is Test {
         assertEq(asset.balanceOf(funder), funderBalance);
     }
 
-    function testEntitlementAboveUint120Reverts() public {
-        uint256 tooLarge = uint256(type(uint120).max) + 1;
+    function testEntitlementAboveUint88Reverts() public {
+        uint256 tooLarge = uint256(type(uint88).max) + 1;
         _fund(tooLarge);
         vm.startPrank(owner);
         vm.expectRevert(abi.encodeWithSelector(EarnMerkleRewardDistributor.EntitlementTooLarge.selector, tooLarge));
@@ -290,10 +290,10 @@ contract EarnMerkleRewardDistributorTest is Test {
             keccak256("settlement"), 0, funder, 1 ether, 1 ether, keccak256("root"), tooLarge, keccak256("statement")
         );
 
-        // The largest uint120 total is accepted.
-        distributor.publishRoot(0, keccak256("root"), type(uint120).max, keccak256("statement"));
+        // The largest uint88 total is accepted.
+        distributor.publishRoot(0, keccak256("root"), type(uint88).max, keccak256("statement"));
         vm.stopPrank();
-        assertEq(distributor.rootTotalEntitlement(), type(uint120).max);
+        assertEq(distributor.rootTotalEntitlement(), type(uint88).max);
     }
 
     function testRootPublicationRejectsStaleExpectedVersion() public {
@@ -554,8 +554,8 @@ contract EarnMerkleRewardDistributorTest is Test {
     {
         uint256 evenIndex = uint256(pair) * 2;
         uint256 oddIndex = evenIndex + 1;
-        uint256 evenAmount = bound(uint256(evenRaw), 1, type(uint120).max - 1);
-        uint256 oddAmount = bound(uint256(oddRaw), 1, type(uint120).max - evenAmount);
+        uint256 evenAmount = bound(uint256(evenRaw), 1, type(uint88).max - 1);
+        uint256 oddAmount = bound(uint256(oddRaw), 1, type(uint88).max - evenAmount);
         uint256 total = evenAmount + oddAmount;
         _fund(total);
         bytes32 evenLeaf = distributor.leaf(evenIndex, alice, evenAmount);
@@ -585,7 +585,10 @@ contract EarnMerkleRewardDistributorTest is Test {
         assertEq(share.balanceOf(bob), oddAmount);
         assertEq(distributor.totalPaid(), total);
         assertEq(uint256(_paidWord(pair)), evenAmount | (oddAmount << 128));
-        assertEq(uint256(vm.load(address(distributor), bytes32(totalsSlot))), total | (total << 120));
+        // The totals slot holds the root total, totalPaid at bit 88 and the root version at bit 184.
+        assertEq(
+            uint256(vm.load(address(distributor), bytes32(totalsSlot))), total | (total << 88) | (uint256(1) << 184)
+        );
         // Neighbouring pairs stay untouched.
         assertEq(distributor.cumulativePaid(evenIndex == 0 ? 2 : evenIndex - 1), 0);
         assertEq(distributor.cumulativePaid(oddIndex + 1), 0);
@@ -593,10 +596,10 @@ contract EarnMerkleRewardDistributorTest is Test {
 
     /// @dev A later root raises one lane of a shared slot to the largest amount a root total allows while the
     ///      other keeps its value.
-    function testLaneIsolationAtUint120Extremes() public {
+    function testLaneIsolationAtUint88Extremes() public {
         uint256 small = 1;
-        uint256 large = type(uint120).max - 1;
-        _fund(type(uint120).max);
+        uint256 large = type(uint88).max - 1;
+        _fund(type(uint88).max);
         bytes32 evenLeaf = distributor.leaf(aliceIndex, alice, small);
         bytes32 oddLeaf = distributor.leaf(bobIndex, bob, small);
         vm.prank(owner);
@@ -609,13 +612,13 @@ contract EarnMerkleRewardDistributorTest is Test {
 
         bytes32 nextOdd = distributor.leaf(bobIndex, bob, large);
         vm.prank(owner);
-        distributor.publishRoot(1, _hashPair(evenLeaf, nextOdd), type(uint120).max, keccak256("second"));
+        distributor.publishRoot(1, _hashPair(evenLeaf, nextOdd), type(uint88).max, keccak256("second"));
         proof[0] = evenLeaf;
         distributor.claim(bobIndex, bob, large, proof);
 
         assertEq(distributor.cumulativePaid(aliceIndex), small);
         assertEq(distributor.cumulativePaid(bobIndex), large);
-        assertEq(distributor.totalPaid(), type(uint120).max);
+        assertEq(distributor.totalPaid(), type(uint88).max);
         assertEq(uint256(_paidWord(0)), small | (large << 128));
         proof[0] = nextOdd;
         vm.expectRevert(EarnMerkleRewardDistributor.NothingOwed.selector);
@@ -699,13 +702,13 @@ contract EarnMerkleRewardDistributorTest is Test {
         vm.prank(owner);
         distributor.setPaused(true);
         uint256 word = uint256(vm.load(address(distributor), bytes32(totalsSlot)));
-        assertEq(word, uint256(100 ether) | (uint256(60 ether) << 120) | (uint256(1) << 240));
+        assertEq(word, uint256(100 ether) | (uint256(60 ether) << 88) | (uint256(1) << 176) | (uint256(1) << 184));
         assertEq(distributor.rootTotalEntitlement(), 100 ether);
         assertEq(distributor.totalPaid(), 60 ether);
 
         vm.prank(owner);
         distributor.setPaused(false);
-        assertEq(uint256(vm.load(address(distributor), bytes32(totalsSlot))), word & ~(uint256(1) << 240));
+        assertEq(uint256(vm.load(address(distributor), bytes32(totalsSlot))), word & ~(uint256(1) << 176));
     }
 
     function testClaimWritesOnlyPayoutStorage() public {
