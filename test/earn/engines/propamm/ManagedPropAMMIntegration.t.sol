@@ -33,6 +33,7 @@ interface IManagedPropAMMPoolAdmin is IManagedPropAMMVenue {
     function pause() external;
     function unpause() external;
     function withdraw(address token, address recipient, uint256 amount, bytes32 memo) external;
+    function settler() external view returns (address);
     function setSettler(address settler) external;
     /// @dev The pool's direct swap, which pulls from its caller. The engine never sends it.
     function swapExactInput(
@@ -438,31 +439,35 @@ contract ManagedPropAMMIntegrationTest is Test {
             deployCode("test/earn/fixtures/propamm/Settler.json", abi.encode(factory.implementation()));
         assertEq(IManagedPropAMMTestSettler(replacement).factory(), address(factory));
         pool.setSettler(replacement);
-        bytes memory mismatch =
-            abi.encodeWithSelector(ManagedPropAMMEngine.SettlerMismatch.selector, settler, replacement);
+        bytes memory notSettler = abi.encodeWithSignature("NotSettler()");
 
-        // The engine approves and swaps through its own settler alone: it stops rather than follow the pool.
-        _assertEveryFlowReverts(mismatch);
+        // The engine approves and swaps through its own settler alone, and the pool now refuses that
+        // settler's fills: the Settler's pull and the fill are one call, so each trade reverts as a whole.
+        _assertEveryFlowReverts(notSettler);
         assertEq(asset.allowance(address(engine), replacement), 0);
         assertEq(baseToken.allowance(address(engine), replacement), 0);
+        // The engine reads no settler from the pool: its admission snapshot is the pool's access alone.
         (bool paused, bool admitted,,,) = engine.liquidityStatus();
         assertFalse(paused);
-        assertFalse(admitted);
+        assertTrue(admitted);
         assertTrue(pool.takerAllowed(pairIndex, address(engine), 0));
         // Valuation does not depend on the settler.
         assertEq(vault.totalAssets(), 105e6);
 
-        // The pool refuses the engine's settler now, so the engine's refusal costs no trade that would settle.
-        _expectSettlerRefusal(0, abi.encodeWithSignature("NotSettler()"));
-        // No new engine binds while the pool is on another settler.
-        vm.expectRevert(mismatch);
-        new ManagedPropAMMEngine(
+        // The refusal is the pool's own: the engine's swap sent straight to its Settler reverts the same way.
+        _expectSettlerRefusal(0, notSettler);
+        // A new engine still binds the factory's default Settler while the pool is on another one.
+        ManagedPropAMMEngine later = new ManagedPropAMMEngine(
             address(pool), pairIndex, 0, address(asset), address(baseToken), address(this), 1 days, ROUTE
         );
+        assertEq(later.settler(), settler);
+        assertEq(pool.settler(), replacement);
+        assertEq(asset.allowance(address(later), settler), 1);
+        assertEq(baseToken.allowance(address(later), settler), 1);
+        assertEq(asset.allowance(address(later), replacement), 0);
+        assertEq(baseToken.allowance(address(later), replacement), 0);
 
         pool.setSettler(settler);
-        (, admitted,,,) = engine.liquidityStatus();
-        assertTrue(admitted);
         vm.prank(alice);
         assertEq(vault.withdrawExact(21e6, alice, 20e6), 20e6);
         assertEq(_redeem(alice, 80e6, 84e6), 84e6);

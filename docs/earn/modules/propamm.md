@@ -140,7 +140,7 @@ the absence of setters and of a sweep) except where the pool differs:
 | Trades under the pool's one taker list                           | Trades under an immutable `sponsorId`: 0 for the pair's home list, or a sponsor's list                                                                                 |
 | Approves the pool and names itself as the swap recipient         | Approves the pool factory's `Settler` (immutable `settler`), never the pool, and names no recipient: the pool pays a swap's output to the Settler's caller, the engine |
 | Route credit keyed by taker, recipient, and route                | Route credit keyed by pair, taker, and route; the taker is the engine, the Settler's caller                                                                            |
-| Admitted when taker and recipient are allowed and not redirected | Admitted when the pair's access check passes for the engine, the pair has no hook, and the pool's settler is the engine's                                              |
+| Admitted when taker and recipient are allowed and not redirected | Admitted when the pair's access check passes for the engine and the pair has no hook                                                                                   |
 | Onchain metadata `PropAMM Engine` / `propAMM-engine`             | `Managed PropAMM Engine` / `managed-propAMM-engine`                                                                                                                    |
 
 The constructor is
@@ -149,19 +149,21 @@ It reads `pool.pair(pairIndex)` and reverts `InvalidConfiguration` unless that p
 `baseToken` and its quote is `asset`. An unknown or removed pair reads all zero, so it matches no
 token; the pool never reuses a pair's index or changes a pair's tokens. On top of the single-pair
 engine's checks, the pair's recorded decimals and price scale must equal the ones the tokens and
-the oracle report, the pair must have no hook, the pool must have a factory (`StandalonePool`
-otherwise), and the pool's `settler()` must be that factory's `defaultSettler()`, which becomes the
-engine's immutable `settler` (`SettlerMismatch` otherwise). `sponsorId` is not validated at
+the oracle report, the pair must have no hook, and the pool must have a factory (`StandalonePool`
+otherwise), whose `defaultSettler()` becomes the engine's immutable `settler`; the pool's current
+`settler()` is not read. `sponsorId` is not validated at
 construction: access is checked on every trade.
 
 A pair's access mode is `Closed` (nobody trades), `Listed` (the accounts on a list the pair admits)
 or `Open` (every account the pool does not deny). Before any trade the engine requires
-`pool.settler()` to still be its `settler`, reverting `SettlerMismatch` once the pool's owner has
-replaced it, and the pool to be unpaused and `takerAllowed(pairIndex, engine, sponsorId)`, reverting
-`InvalidConfiguration` otherwise, so a replaced settler, a closed pair, a denied engine, the
+the pool to be unpaused and `takerAllowed(pairIndex, engine, sponsorId)`, reverting
+`InvalidConfiguration` otherwise, so a closed pair, a denied engine, the
 pool-wide pause and, on a `Listed` pair, an unlisted engine or a disabled, unregistered or
 unadmitted sponsor each revert the whole deposit, redemption or exact withdrawal with nothing
-moved. An `Open` pair reads no list, so there the
+moved. The engine does not read `pool.settler()`: once the pool's owner has replaced it, the pool
+refuses the engine's Settler, so every deposit, redemption and exact withdrawal reverts with the
+pool's `NotSettler` and nothing moves, until the pool returns to the engine's `settler`. An `Open`
+pair reads no list, so there the
 sponsor's state stops nothing: only the pause, closing the pair and the deny list do. Valuation does
 not depend on access. After a pair is removed its oracle reads zero,
 so valuation and deposits revert `InvalidOracle` and exits revert `InvalidConfiguration`.
@@ -192,8 +194,8 @@ valuation (`ResidualBacking`), which a hook's fee makes the last one do: the las
 redemption. A hook's swap callbacks run inside the engine's settlement, under
 the engine's and the vault's reentrancy guards and the same measured-balance checks.
 
-`liquidityStatus()` returns the same tuple; `admitted` is also false while the pool's settler is
-not the engine's, and `venueCash` and `venueBase` are the pool's whole
+`liquidityStatus()` returns the same tuple; `admitted` does not read the pool's settler, so it stays
+true after the pool's owner replaces it, and `venueCash` and `venueBase` are the pool's whole
 balances, which every pair trading that token shares, so another pair's trades change them.
 
 The pool operator has more ways to stop execution than a single-pair pool's administrators: the
@@ -239,13 +241,15 @@ price-anchor discontinuity, and repeated tiny round trips.
 PoolFactory creates and its pinned Settler (the first with a behavioural venue as the pool's code,
 the second against the pinned
 managed pool), repeat those cases and add the constructor's pair checks (unknown, removed, other
-tokens, reversed tokens, differing decimals, a hook) and settler checks (a standalone pool, a pool
-on another settler), swaps naming the engine's pair and sponsor on
+tokens, reversed tokens, differing decimals, a hook) and settler binding (a standalone pool refused,
+a pool on another settler still bound to its factory's default Settler), swaps naming the engine's
+pair and sponsor on
 a pool with other pairs, settlement through the Settler with exact balance changes, no pool
 allowance and nothing held by the Settler, route credit on the engine's own route, an exact
 withdrawal burning the Settler's quote, an output paid to another account, and each refusal
 reverting every flow
-with nothing moved: a replaced settler, a closed pair, an unlisted or denied engine, sponsor
+with nothing moved: a replaced settler (the pool's `NotSettler`), a closed pair, an unlisted or
+denied engine, sponsor
 refusals, the pool pause,
 and a removed pair. A hook installed later blocks deposits only: against the pinned pool with a 1%
 fee hook, an exact withdrawal and a redemption settle at the pool's fee-inclusive quotes, a

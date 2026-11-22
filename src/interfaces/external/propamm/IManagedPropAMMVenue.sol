@@ -50,10 +50,6 @@ interface IManagedPropAMMVenue {
     /// @notice The factory that created the pool; zero for a standalone pool, which no Settler settles.
     function factory() external view returns (address);
 
-    /// @notice The one contract whose fills the pool accepts: its factory's default Settler until the pool's
-    ///         owner replaces it.
-    function settler() external view returns (address);
-
     /// @notice The pair's configuration; all zero for an unknown or removed pair.
     function pair(uint16 pairIndex) external view returns (Pair memory);
 

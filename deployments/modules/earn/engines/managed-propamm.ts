@@ -169,7 +169,9 @@ export async function inspectManagedPropAMMEngine(
   ])
   const blockers: string[] = []
   if (paused) blockers.push('pool is paused')
-  // The pool's owner can move the pool to another settler; the engine then refuses every trade.
+  // The pool's owner can move the pool to another settler. The pool then refuses the engine's Settler,
+  // so every trade reverts with the pool's `NotSettler`; the engine itself does not read the pool's
+  // settler, so only this inspection shows the change before a trade fails.
   if (!isAddressEqual(poolSettler, settler)) blockers.push('pool settler is not the engine settler')
   if (access !== 1) blockers.push(accessBlockers[access] ?? 'engine is not admitted as taker')
   // The engine values its base tokens at the oracle price and takes no deposit through a pair with a hook.

@@ -191,17 +191,16 @@ contract ManagedPropAMMEngineTest is Test {
         );
     }
 
-    function testConstructorRejectsAPoolOnAnotherSettler() public {
+    function testConstructorBindsTheFactorysSettlerOnAPoolOnAnotherSettler() public {
+        // The pool's owner already replaced its settler: construction reads the factory's default one alone.
         address other = address(new ManagedPropAMMUncheckedSettler());
         pool.setSettler(other);
-        vm.expectRevert(abi.encodeWithSelector(ManagedPropAMMEngine.SettlerMismatch.selector, settler, other));
-        _newEngine(pairIndex, 0, ROUTE);
-
-        // A factory that names no Settler binds nothing, whatever the pool reads.
-        pool.setSettler(address(0));
-        vm.mockCall(address(factory), abi.encodeWithSignature("defaultSettler()"), abi.encode(address(0)));
-        vm.expectRevert(abi.encodeWithSelector(ManagedPropAMMEngine.SettlerMismatch.selector, address(0), address(0)));
-        _newEngine(pairIndex, 0, ROUTE);
+        ManagedPropAMMEngine candidate = _newEngine(pairIndex, 0, bytes32(uint256(2)));
+        assertEq(candidate.settler(), settler);
+        assertEq(pool.settler(), other);
+        _assertSettlerApprovals(candidate);
+        assertEq(usdc.allowance(address(candidate), other), 0);
+        assertEq(baseToken.allowance(address(candidate), other), 0);
     }
 
     function testConstructorRejectsAnUnknownOrRemovedPair() public {
@@ -306,20 +305,18 @@ contract ManagedPropAMMEngineTest is Test {
         uint256 held = buy(alice, 105e6);
         address other = address(new ManagedPropAMMUncheckedSettler());
         pool.setSettler(other);
-        // The engine approves and swaps through its own settler alone: it stops rather than follow the pool.
-        _assertEveryFlowReverts(
-            held, abi.encodeWithSelector(ManagedPropAMMEngine.SettlerMismatch.selector, settler, other)
-        );
+        // The engine approves and swaps through its own settler alone, and the pool now refuses that
+        // settler's fills: the Settler's pull and the fill are one call, so each trade reverts as a whole.
+        _assertEveryFlowReverts(held, ManagedPropAMMTestVenue.NotSettler.selector);
         assertEq(usdc.allowance(address(engine), other), 0);
         assertEq(baseToken.allowance(address(engine), other), 0);
+        // The engine reads no settler from the pool: its admission snapshot is the pool's access alone.
         (, bool admitted,,,) = engine.liquidityStatus();
-        assertFalse(admitted);
+        assertTrue(admitted);
         // Valuation does not depend on the settler.
         assertEq(engine.totalAssets(), 105e6);
 
         pool.setSettler(settler);
-        (, admitted,,,) = engine.liquidityStatus();
-        assertTrue(admitted);
         assertEq(vault.redeem(held, alice, 105e6), 105e6);
     }
 

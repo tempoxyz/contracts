@@ -78,8 +78,6 @@ contract ManagedPropAMMEngine is
     error ReentrantCall();
     /// @dev The pool has no factory, so no Settler settles its swaps.
     error StandalonePool();
-    /// @dev The pool's settler is not the one this engine approves: its factory's default Settler.
-    error SettlerMismatch(address expected, address actual);
 
     event EarnVaultInitialized(address indexed earnVault);
     event Deposited(address indexed earnVault, uint256 assets, uint256 engineShares);
@@ -124,10 +122,11 @@ contract ManagedPropAMMEngine is
     /// @notice Binds the engine to one live pair of a managed pool and to the pool factory's default Settler.
     /// @dev Fails closed unless the pool's pair at `pairIndex_` is live, trades exactly `baseToken_`
     /// against `asset_`, records the decimals the tokens and the oracle report, and has no hook. An unknown or
-    /// removed pair reads all zero, so it matches no token. A pool without a factory reverts `StandalonePool`,
-    /// and a pool whose settler is not its factory's default Settler reverts `SettlerMismatch`.
+    /// removed pair reads all zero, so it matches no token. A pool without a factory reverts `StandalonePool`.
+    /// The pool's current settler is not read. The pool fills only from the settler it names, so while its
+    /// owner has it on another one, every swap the engine sends its own Settler reverts with the pool's
+    /// `NotSettler` and moves nothing.
     /// @custom:ensures address(pool) == pool_ && pairIndex == pairIndex_ && sponsorId == sponsorId_
-    /// @custom:ensures settler != address(0)
     /// @custom:ensures asset == asset_ && baseToken == baseToken_
     /// @custom:ensures maxOracleAge == maxAge_ && customerId == route_ && earnVault == address(0)
     constructor(
@@ -186,13 +185,11 @@ contract ManagedPropAMMEngine is
         IERC20(baseToken_).forceApprove(settler_, 1);
     }
 
-    /// @dev The Settler of the pool's factory, which must be the pool's current settler.
-    function _defaultSettler(IManagedPropAMMVenue venue) private view returns (address settler_) {
+    /// @dev The Settler of the pool's factory, which every pool that factory creates starts on.
+    function _defaultSettler(IManagedPropAMMVenue venue) private view returns (address) {
         address factory = venue.factory();
         if (factory == address(0)) revert StandalonePool();
-        settler_ = IManagedPropAMMPoolFactory(factory).defaultSettler();
-        address current = venue.settler();
-        if (settler_ == address(0) || current != settler_) revert SettlerMismatch(settler_, current);
+        return IManagedPropAMMPoolFactory(factory).defaultSettler();
     }
 
     /// Only the owner binds, once, to an EarnVault with code and the same asset; ownership is unchanged.
@@ -406,15 +403,15 @@ contract ManagedPropAMMEngine is
 
     /// @notice Inventory and admission snapshot, not a guaranteed executable withdrawal limit.
     /// @dev Quotes also depend on oracle freshness, directional price anchors and token policy. The pool's
-    /// inventory of a token is shared by every pair that trades it. `admitted` is false while the pool's settler
-    /// is not the engine's.
+    /// inventory of a token is shared by every pair that trades it. `admitted` does not read the pool's
+    /// settler.
     function liquidityStatus()
         external
         view
         returns (bool paused, bool admitted, uint256 idleCash, uint256 venueCash, uint256 venueBase)
     {
         paused = pool.paused();
-        admitted = pool.settler() == settler && _admitted();
+        admitted = _admitted();
         idleCash = IERC20(asset).balanceOf(address(this));
         venueCash = IERC20(asset).balanceOf(address(pool));
         venueBase = IERC20(baseToken).balanceOf(address(pool));
@@ -509,14 +506,6 @@ contract ManagedPropAMMEngine is
         return bytes32((block.number << 128) | ++_tradeCount);
     }
 
-    /// @dev The pool fills only from its current settler, which its owner can replace. The engine approves
-    /// and swaps through its immutable one alone, whose fills the pool then refuses, so the engine stops
-    /// trading while the pool names another.
-    function _requireSettler() private view {
-        address current = pool.settler();
-        if (current != settler) revert SettlerMismatch(settler, current);
-    }
-
     /// @dev The pool admits the engine on its pair under its sponsor. An unknown or removed pair admits nobody.
     function _listed() private view returns (bool) {
         return pool.takerAllowed(pairIndex, address(this), sponsorId);
@@ -531,7 +520,6 @@ contract ManagedPropAMMEngine is
     }
 
     function _routeEntry() private view {
-        _requireSettler();
         if (pool.paused() || !_admitted()) revert InvalidConfiguration();
     }
 
@@ -540,7 +528,6 @@ contract ManagedPropAMMEngine is
     /// a hooked pair pays the pool's fee-inclusive price, bounded by the caller's minimum (redeem) or by the
     /// quoted maximum and the vault's share limit (exact withdrawal).
     function _routeExit() private view {
-        _requireSettler();
         if (pool.paused() || !_listed()) revert InvalidConfiguration();
     }
 }
