@@ -88,6 +88,13 @@ contract AuthGasTest is AuthEnv {
         vm.snapshotGasLastCall("AuthGas", "charge_cash");
     }
 
+    /// @dev A stand-in past the card's 500 per-purchase limit, which a force post would refuse.
+    function test_gas_bookStandIn_pastLimit() public {
+        vm.prank(issuer);
+        cards.bookStandIn(CARD, P1, 600e6, merchant);
+        vm.snapshotGasLastCall("AuthGas", "bookStandIn_pastLimit");
+    }
+
     function test_gas_refund_charge() public {
         vm.prank(issuer);
         cards.charge(CARD, P1, 100e6, merchant);

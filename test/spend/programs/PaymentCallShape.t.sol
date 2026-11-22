@@ -35,6 +35,7 @@ contract PaymentCallCodeTest is Test {
     bytes4 internal constant AUTHORIZE = 0xca89e414;
     bytes4 internal constant CAPTURE = 0x0971ede5;
     bytes4 internal constant CHARGE = 0xbf97396e;
+    bytes4 internal constant BOOK_STAND_IN = 0x57676f56;
     bytes4 internal constant RELEASE = 0x67d42a8b;
     bytes4 internal constant ADJUST = 0xf5f66924;
     bytes4 internal constant REFUND = 0x1bc85bf3;
@@ -154,6 +155,7 @@ contract PaymentCallCodeTest is Test {
         _assertCall(abi.encodeCall(CardAuth.authorize, (id, id, amount, who, type(uint64).max, 3)), AUTHORIZE, 6);
         _assertCall(abi.encodeCall(CardAuth.capture, (id, amount, true)), CAPTURE, 3);
         _assertCall(abi.encodeCall(CardAuth.charge, (id, id, amount, who)), CHARGE, 4);
+        _assertCall(abi.encodeCall(CardAuth.bookStandIn, (id, id, amount, who)), BOOK_STAND_IN, 4);
         _assertCall(abi.encodeCall(CardAuth.release, (id)), RELEASE, 1);
         _assertCall(abi.encodeCall(CardAuth.adjust, (id, amount)), ADJUST, 2);
         _assertCall(abi.encodeCall(CardAuth.refund, (id, amount)), REFUND, 2);
@@ -161,6 +163,7 @@ contract PaymentCallCodeTest is Test {
         assertEq(CardAuth.authorize.selector, AUTHORIZE);
         assertEq(CardAuth.capture.selector, CAPTURE);
         assertEq(CardAuth.charge.selector, CHARGE);
+        assertEq(CardAuth.bookStandIn.selector, BOOK_STAND_IN);
         assertEq(CardAuth.release.selector, RELEASE);
         assertEq(CardAuth.adjust.selector, ADJUST);
         assertEq(CardAuth.refund.selector, REFUND);
@@ -330,6 +333,8 @@ contract PaymentCallGasTest is AuthEnv {
     uint256 internal constant LANE_AUTHORIZE = 1_500_000;
     uint256 internal constant LANE_CAPTURE = 500_000;
     uint256 internal constant LANE_CHARGE = 1_500_000;
+    /// @dev bookStandIn runs charge's path, so a registry template would list it with charge's cap.
+    uint256 internal constant LANE_BOOK_STAND_IN = LANE_CHARGE;
     uint256 internal constant LANE_ADJUST = 1_500_000;
     uint256 internal constant LANE_RELEASE = 500_000;
     uint256 internal constant LANE_REFUND = 500_000;
@@ -473,6 +478,7 @@ contract PaymentCallGasTest is AuthEnv {
         uint256 adjust = _call(abi.encodeCall(cards.adjust, ("p2", 15e6)));
         uint256 release = _call(abi.encodeCall(cards.release, ("p2")));
         uint256 charge = _call(abi.encodeCall(cards.charge, (CARD, "p3", 10e6, merchant)));
+        uint256 standIn = _call(abi.encodeCall(cards.bookStandIn, (CARD, "p4", 10e6, merchant)));
         assertLe(auth, LANE_AUTHORIZE, "authorize");
         assertLe(captureFirst, LANE_CAPTURE, "capture, first");
         assertLe(part, LANE_CAPTURE, "capture partial");
@@ -481,6 +487,7 @@ contract PaymentCallGasTest is AuthEnv {
         assertLe(adjust, LANE_ADJUST, "adjust");
         assertLe(release, LANE_RELEASE, "release");
         assertLe(charge, LANE_CHARGE, "charge");
+        assertLe(standIn, LANE_BOOK_STAND_IN, "bookStandIn");
     }
 
     /// @notice The model prices the one-leg paths at or above the node's measurements, so for those paths a cap the

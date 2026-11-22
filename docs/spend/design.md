@@ -133,8 +133,8 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   owner closes it, lowers its limits and sets the ceiling the issuer may raise them to; the issuer issues,
   replaces and raises within that ceiling. Owners revoke merchants or cap a merchant's monthly spend: a
   purchase's increases, tips and late charges count toward its merchant's cap, and what a release, decrease
-  or refund gives back returns to it. Late charges count toward the card and merchant limits without being
-  refused by them, but a revoked merchant refuses them. Owners grant the program terms across their cards. Limits and operator caps are kept in the
+  or refund gives back returns to it. Late charges and booked stand-ins count toward the card and merchant
+  limits without being refused by them, but a revoked merchant refuses them. Owners grant the program terms across their cards. Limits and operator caps are kept in the
   program's first settlement token, so they survive a change of settlement token. An issuer change ends the previous issuer's operator keys and the settings it
   proposed.
 - **Funding order.** Each owner lists up to four entries, each a source the issuer approved and a
@@ -148,15 +148,21 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   missing; with `PARTIAL` it approves less. Any failure reverts every leg. A purchase is one storage
   slot, never deleted, so a reference never repeats; a leg's id is `keccak256(ref, entry)`. A purchase the
   network approved without asking (a stand-in) is no authorization: the issuer books it after the fact with
-  `charge`, as a late charge on the purchase whose hold ended or as a force post under a new reference.
+  `bookStandIn(card, ref, amount, merchant)`, under a new reference or late on the purchase whose hold ended.
+  It runs `charge`'s path and counts toward the card's and owner's limits and the merchant's mandate without
+  being refused by them, as a tip past the hold counts: the network approved within the issuer's offline
+  policy and has already paid. The authorize key's cap bounds it, a revoked merchant refuses it, and under a
+  new reference a card that cannot start a purchase (frozen, closed, expired, or a revoked grant) refuses it.
+  A force post with `charge` under a new reference is still refused by the limits. Both share `charge`'s
+  static four-word calldata, so a payment-call registry lists `bookStandIn` with `charge`'s gas cap.
 - **Capture, release, refund.** `capture(ref, amount, isFinal)` takes each leg's hold in order, each source
   also taking the owner's free funds there (within the owner's budget for it); the issuer absorbs the rest, which
   counts in the settlement net and so in the program's exposure until acknowledged. A purchase's captures in all stay within its authorized amount plus the owner's
   capture tolerance on it; once a tip took them past the authorized amount, `adjust` no longer moves it.
   `release` frees every leg (the issuer at any time, anyone after expiry). `refund` pays credit legs back up
   to what each captured, in reverse order, and the cash or savings leg the rest, never past what the
-  sources covered. `charge` posts with no hold: the owner's cash sources cover what the owner has free, and
-  the issuer absorbs the rest.
+  sources covered. `charge` and `bookStandIn` post with no hold: the owner's cash sources cover what the owner
+  has free, and the issuer absorbs the rest.
 - **Conversion.** A cash leg in a stablecoin other than the settlement token locks the rate when placed,
   only while the `Conversion` quotes it against a fresh reference rate (`MAX_RATE_AGE`) within its slippage band
   and the owner's maximum cost. Its captures keep that rate for the whole leg, part captures included, and
@@ -206,8 +212,8 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   is set, then only the guard, and the issuer treasury forwards it only from the sponsor that is owed it.
   `exposure()` reports what open purchases hold and the unacknowledged net, which the issuer treasury keeps
   funds behind where the settlement account's free balance falls short of it. With the treasury registered as its exposure guard
-  (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase, charge or
-  capture past the hold that takes held plus unsettled past the sponsor collateral; decreases, captures within
+  (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase, charge, booked
+  stand-in or capture past the hold that takes held plus unsettled past the sponsor collateral; decreases, captures within
   the hold and releases still go through. Once a guard is set only the guard replaces or clears it, at once,
   so the issuer never takes back acknowledging what the sponsor is owed. The treasury hands the guard on
   (`handOffGuard`): the sponsor at any time, the issuer before a sponsor is named or once no collateral is

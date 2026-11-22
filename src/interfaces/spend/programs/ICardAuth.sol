@@ -4,7 +4,7 @@ pragma solidity ^0.8.36;
 /// @title ICardAuthState
 /// @notice The settings a card authorization contract keeps as public state, which companions read.
 interface ICardAuthState {
-    /// @notice Role bits: authorize (authorize, adjust, capture, charge, release), settle (refund, credit back,
+    /// @notice Role bits: authorize (authorize, adjust, capture, charge, bookStandIn, release), settle (refund, credit back,
     ///         reserve settlement), treasury (settlement token and treasury companions' own calls).
     function ROLE_AUTHORIZE() external view returns (uint8);
     function ROLE_SETTLE() external view returns (uint8);

@@ -363,13 +363,13 @@ contract CashSourceTest is AuthEnv {
         _assertSourcesEmpty();
     }
 
-    function test_charge_standInApproval_bookedAfterTheFact_onlyFromFreeCash() public {
+    function test_bookStandIn_bookedAfterTheFact_onlyFromFreeCash() public {
         // The network approved 100 without asking while alice had 30, then 10 more of hers was held by another
-        // purchase: the issuer books it as a force post, which takes only what is free.
+        // purchase: the issuer books it with bookStandIn, which takes only what is free.
         usd.mint(alice, 40e6);
         _authorize(P2, 10e6);
         vm.prank(issuer);
-        cards.charge(CARD, P1, 100e6, merchant);
+        cards.bookStandIn(CARD, P1, 100e6, merchant);
         assertEq(usd.balanceOf(settlement), 30e6);
         assertEq(core.reserved(alice, address(usd)), 10e6, "other holds untouched");
         assertEq(cards.purchaseOf(P1).refunded, 70e6);

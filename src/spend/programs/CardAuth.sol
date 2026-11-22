@@ -174,7 +174,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
     /// @notice Authorizes `amount` on `card` under the new reference `ref`, holding it across the owner's
     ///         sources in order. With PARTIAL it approves what the sources hold. Returns what it approved. A purchase
     ///         the network approved without asking (a stand-in) is no authorization: the issuer books it later with
-    ///         charge, as a force post or a late charge.
+    ///         bookStandIn.
     function authorize(bytes32 card, bytes32 ref, uint128 amount, address merchant, uint64 expiresAt, uint8 flags)
         external
         returns (uint256 approved)
@@ -298,11 +298,25 @@ contract CardAuth is CardAuthBase, ICardAuth {
     }
 
     /// @notice Charges `amount` with no hold: a force post under a new reference, or a late charge on a purchase
-    ///         whose hold ended, such as a purchase the network approved without asking. The owner's cash sources cover
-    ///         what the owner has free, and the issuer absorbs the rest; all of it counts toward settlement. A late charge counts toward the limits without being
-    ///         refused by them, but a merchant the owner revoked refuses it.
+    ///         whose hold ended. The owner's cash sources cover what the owner has free, and the issuer absorbs the
+    ///         rest; all of it counts toward settlement. A force post is refused by the limits; a late charge counts
+    ///         toward them without being refused by them. A merchant the owner revoked refuses both.
     function charge(bytes32 card, bytes32 ref, uint128 amount, address merchant) external {
         _role(ROLE_AUTHORIZE, amount);
+        _charge(card, ref, amount, merchant, true);
+    }
+
+    /// @notice Books a purchase the network approved without asking (a stand-in) once it clears, as charge does: under
+    ///         a new reference, or late on a purchase whose hold ended. It counts toward the limits and the merchant's
+    ///         mandate without being refused by them, since the network already paid; the operator's cap, a merchant
+    ///         the owner revoked, and under a new reference a card that cannot start a purchase still refuse it.
+    function bookStandIn(bytes32 card, bytes32 ref, uint128 amount, address merchant) external {
+        _role(ROLE_AUTHORIZE, amount);
+        _charge(card, ref, amount, merchant, false);
+    }
+
+    /// @dev charge and bookStandIn: `enforce` lets the limits refuse a charge under a new reference.
+    function _charge(bytes32 card, bytes32 ref, uint128 amount, address merchant, bool enforce) private {
         if (amount == 0 || amount > MAX_AMOUNT) revert InvalidAmount();
         uint256 word = _purchases[ref];
         Purchase memory p;
@@ -311,7 +325,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (word == 0) {
             c = _cards[card];
             owner = _admit(c);
-            (uint32 day, uint8 epoch) = _spend(c, owner, merchant, amount, amount, true);
+            (uint32 day, uint8 epoch) = _spend(c, owner, merchant, amount, amount, enforce);
             _track(ref, owner, merchant);
             p = Purchase(c.index, 0, 0, 0, 0, day, epoch, fundingVersion[owner], _state.era, CHARGED);
         } else {
