@@ -100,7 +100,9 @@ program holds as its baseline and leaves it there, so a spend never creates the 
 
 On the reservation core (the precompile at `0x5245…`, gated at T15) a card authorization is a native hold
 rather than an immediate spend. The core keeps only what must be atomic with TIP-20 balances: holds,
-captures, refunds, capped debt and liens. Everything card-specific lives in holder contracts an owner
+captures, charges, refunds, pledges and liens. Every payment out of an owner's balance comes from what a hold
+backs or from the owner's free balance; the core keeps no debt and places no hold the owner cannot back in full.
+Everything card-specific lives in holder contracts an owner
 approves per token with `approveHolder`, whose allowance caps what the holder has outstanding even if
 the program is wrong. Programs read the core through
 [`IReservationCore`](../../cards/src/programs/interfaces/IReservationCore.sol); tests run them on a model
@@ -109,7 +111,7 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
 | Contract                                                            | Admin                     | Function                                                                                                    |
 | ------------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | [`CardAuth`](../../cards/src/programs/CardAuth.sol)                 | The issuer, within owners | Cards, limits, mandates, operators, funding orders and purchases (one slot each); a waterfall over sources. |
-| [`CashSource`](../../cards/src/programs/CashSource.sol)             | None                      | Cash legs: holds on a stablecoin, debt within the owner's caps, stand-ins, conversion at a locked rate.     |
+| [`CashSource`](../../cards/src/programs/CashSource.sol)             | None                      | Cash legs: holds on a stablecoin, free cash past the hold, conversion at a locked rate.                     |
 | [`SavingsSource`](../../cards/src/programs/SavingsSource.sol)       | None (a fixed funder)     | Savings legs: holds on Earn shares, redeemed at capture and paid to the settlement account.                 |
 | [`CreditSource`](../../cards/src/programs/CreditSource.sol)         | Issuer-allowed lenders    | Credit legs: holds on the lender's balance, statements and autopay, optionally secured by locked shares.    |
 | [`IssuerTreasury`](../../cards/src/programs/IssuerTreasury.sol)     | The issuer                | Issuer funds that advance payouts within the program's exposure; the settlement token change.               |
@@ -122,8 +124,8 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   owner closes it, lowers its limits and sets the ceiling the issuer may raise them to; the issuer issues,
   replaces and raises within that ceiling. Owners revoke merchants or cap a merchant's monthly spend: a
   purchase's increases, tips and late charges count toward its merchant's cap, and what a release, decrease
-  or refund gives back returns to it. Stand-ins and late charges count toward the card and merchant limits
-  without being refused by them, but a revoked merchant refuses them. Owners grant the program terms across their cards. Limits and operator caps are kept in the
+  or refund gives back returns to it. Late charges count toward the card and merchant limits without being
+  refused by them, but a revoked merchant refuses them. Owners grant the program terms across their cards. Limits and operator caps are kept in the
   program's first settlement token, so they survive a change of settlement token. An issuer change ends the previous issuer's operator keys and the settings it
   proposed.
 - **Funding order.** Each owner lists up to four entries, each a source the issuer approved and a
@@ -135,17 +137,17 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
 - **Authorize.** `authorize(card, ref, amount, merchant, expiresAt, flags)` checks the card, its windows
   and the merchant's mandate (every new purchase names its merchant) on the amount the sources hold, asking each entry in order to hold what is still
   missing; with `PARTIAL` it approves less. Any failure reverts every leg. A purchase is one storage
-  slot, never deleted, so a reference never repeats; a leg's id is `keccak256(ref, entry)`. A stand-in
-  approved offline is one cash hold: the core reserves what is there and captures the shortfall as debt
-  within the owner's offline cap.
-- **Capture, release, refund.** `capture(ref, amount, isFinal)` takes each leg's hold in order; what the
-  holds lack comes from the first cash leg's free funds and then debt within the owner's caps, and the
-  issuer absorbs the rest. A purchase's captures in all stay within its authorized amount plus the owner's
+  slot, never deleted, so a reference never repeats; a leg's id is `keccak256(ref, entry)`. A purchase the
+  network approved without asking (a stand-in) is no authorization: the issuer books it after the fact with
+  `charge`, as a late charge on the purchase whose hold ended or as a force post under a new reference.
+- **Capture, release, refund.** `capture(ref, amount, isFinal)` takes each leg's hold in order, each source
+  also taking the owner's free funds there (within the owner's budget for it); the issuer absorbs the rest, which
+  counts in the settlement net and so in the program's exposure until acknowledged. A purchase's captures in all stay within its authorized amount plus the owner's
   capture tolerance on it; once a tip took them past the authorized amount, `adjust` no longer moves it.
   `release` frees every leg (the issuer at any time, anyone after expiry). `refund` pays credit legs back up
   to what each captured, in reverse order, and the cash or savings leg the rest, never past what the
-  sources covered; debt the owner owes a source is forgiven first. `charge` posts with no hold: the
-  owner's cash sources cover it, debt included, and the issuer absorbs the rest.
+  sources covered. `charge` posts with no hold: the owner's cash sources cover what the owner has free, and
+  the issuer absorbs the rest.
 - **Conversion.** A cash leg in a stablecoin other than the settlement token locks the rate when placed,
   only while the `Conversion` quotes it against a fresh reference rate (`MAX_RATE_AGE`) within its slippage band
   and the owner's maximum cost. Its captures keep that rate for the whole leg, part captures included, and
@@ -162,7 +164,7 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   longer stalls captures; a venue past that band captures only once the reference rate agrees with it. An
   untrusted source keeps the reference path. A hold that expires keeps its locked rate (in the same slot) for
   a late `charge`, which prices the same way and consumes it; a reversal of a live hold drops it. Refunds pay
-  the token back at the rate its captures and charges paid. Converted legs never create debt.
+  the token back at the rate its captures and charges paid.
 - **Open converted value.** Each open converted hold's settlement value at its locked rate sits in the high half
   of the leg's lock slot, updated on hold, resize, capture and release, and `CashSource` keeps an exact running
   total of it per converted token in one slot per token (`openConvertedOf(token)`; `convertedTokens()` lists
@@ -193,8 +195,8 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   absorbed only rise and together never pass what it captured. `acknowledgeSettlement(throughSeq)` moves a
   settled-through cursor, so what is owed rebuilds from events: the issuer acknowledges until an exposure guard
   is set, then only the guard, and the issuer treasury forwards it only from the sponsor that is owed it.
-  `exposure()` reports what open purchases hold, the stand-in part, and the unacknowledged net, which the
-  issuer treasury keeps funds behind. With the treasury registered as its exposure guard
+  `exposure()` reports what open purchases hold and the unacknowledged net, which the issuer treasury keeps
+  funds behind where the settlement account's free balance falls short of it. With the treasury registered as its exposure guard
   (`setExposureGuard`, after the settings delay), CardAuth refuses an authorization, increase, charge or
   capture past the hold that takes held plus unsettled past the sponsor collateral; decreases, captures within
   the hold and releases still go through. Once a guard is set only the guard replaces or clears it, at once,
@@ -205,9 +207,16 @@ of it, [`MockReservationCore`](../../cards/test/programs/harness/MockReservation
   to seize what is still unsettled), and its slot is free again once it ends. Earn-vault shares count only for a
   sponsor that accepted that vault (`acceptCollateral`), and the sponsor and the asset change only while no
   pledge is live and nothing is seized or exposed. When the settlement account lacks funds for `payOut`, the
-  treasury pays and charges only the advance, which joins what the account already owes it and lapses with it.
+  account's free balance moves to the treasury and the treasury pays the whole amount; the advance joins what
+  the account owes the treasury (`advanceOf`), a receivable of the treasury itself rather than anything on the
+  core, which never lapses and comes back only through `repayAdvance` (the account, the issuer or a treasury
+  key, from the account's free balance). `issuerFunds` counts it out, so the issuer's funds never advance
+  twice; a settlement token change carries it into the new token at the venue's price, rounded up. A dispute
+  the merchant wins takes provisional credit back from the cardholder's free cash and free savings shares; what
+  they lack, or what a revoked desk cannot take, is the desk's receivable (`receivables`), collected later from
+  free funds.
 - **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus
-  the owner's budget, so no share debt arises; it keeps standing approvals to its vault. When the vault
+  the owner's free shares within its budget; it keeps standing approvals to its vault. When the vault
   quotes but cannot redeem, the float pays and the shares wait for the funder.
 - **Secured credit.** A line secured by Earn shares locks shares worth what it owes at its loan-to-value in a
   30-day core hold. Anything that touches the line in the last half of that term (`RENEW_WINDOW`), including

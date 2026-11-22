@@ -21,7 +21,7 @@ src/
     interfaces/               ICardProvider and ICardProviderPayout (the provider engine), the Earn vault subset
   programs/                 Ours, card programs on the reservation core
     CardAuth.sol              An issuer's cards, limits, mandates, operators and purchases over funding sources
-    CashSource.sol            Cash legs: holds on stablecoins, debt within caps, stand-ins, locked-rate conversion
+    CashSource.sol            Cash legs: holds on stablecoins, free cash past the hold, locked-rate conversion
     SavingsSource.sol         Savings legs: holds on Earn shares, redeemed and paid to the settlement account
     CreditSource.sol          Credit legs: holds on lenders' balances, statements, optionally share-secured
     IssuerTreasury.sol        Issuer funds behind the program's exposure; the settlement token change
