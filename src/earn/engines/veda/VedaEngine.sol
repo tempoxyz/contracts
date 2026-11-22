@@ -103,6 +103,9 @@ contract VedaEngine is
     IVedaPeripheryRegistry public immutable peripheryRegistry;
     IBoringVault public immutable vault;
     ITeller public teller;
+    /// @notice The registry version of the active periphery.
+    /// @dev Packed beside `teller`, which every periphery sync writes with it.
+    uint64 public peripheryVersion;
     IBoringQueue public queue;
     /// @dev Unresolved claims bound to the active `queue`, and all claims that have not finalized or
     ///      cancelled, packed beside it: a request or a close writes one slot, which a claim keeps nonzero
@@ -114,7 +117,6 @@ contract VedaEngine is
     /// @notice Maximum age of the latest Veda Accountant rate report accepted for new deposits.
     /// @dev Packed beside `accountant`, which every read of it pairs with.
     uint64 public maxRateAge;
-    uint64 public peripheryVersion;
     /// @dev Transaction-scoped rate checkpoint. Transient storage is cleared automatically after the
     ///      transaction, so unrelated operations in the same block may consume a newly posted rate.
     bool private transient _rateCheckpointed;
@@ -295,9 +297,9 @@ contract VedaEngine is
         peripheryRegistry = peripheryRegistry_;
         vault = vault_;
         teller = teller_;
+        peripheryVersion = version_;
         queue = queue_;
         accountant = accountant_;
-        peripheryVersion = version_;
         maxRateAge = maxRateAge_;
         uint8 shareDecimals = vault_.decimals();
         if (shareDecimals > 77) revert InvalidVenueShareDecimals();
@@ -375,10 +377,10 @@ contract VedaEngine is
         }
 
         teller = newTeller;
+        peripheryVersion = newVersion;
         queue = newQueue;
         _activeQueueOpenClaims = activeQueueOpenClaims;
         accountant = newAccountant;
-        peripheryVersion = newVersion;
         _checkpointRate(validatedRate);
         emit VedaPeripheryUpdated(
             newVersion,

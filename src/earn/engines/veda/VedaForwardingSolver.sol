@@ -12,7 +12,6 @@ interface IForwardingEngine {
     function forwardSolved(bytes32[] calldata requestIds, address asset, uint256 delta)
         external
         returns (uint256 claimed);
-    function claimQueue(bytes32 requestId) external view returns (address);
 }
 
 /// @dev IERC20 balance slice — the FS measures the engine's `assetOut` balance across the solve so it
@@ -78,7 +77,6 @@ contract VedaForwardingSolver is Ownable2Step {
     error InvalidTrackedRequest(uint256 index, bytes32 requestId);
     error QueueTrackingDisabled(address queue);
     error ReentrantCall();
-    error RequestQueueMismatch(uint256 index, address expected, address actual);
     error SolveAssetMismatch(uint256 index, address expected, address got);
     error TokenCallFailed();
     error TreasuryNotSet();
@@ -123,8 +121,8 @@ contract VedaForwardingSolver is Ownable2Step {
     }
 
     /// @notice Solve a batch of matured tracked requests by ID and forward proceeds to end receivers,
-    ///         ALL in one tx. Complete structs are read from the immutable tracking Queue and verified
-    ///         against both their IDs and the originating Queue stored by the engine.
+    ///         ALL in one tx. Complete structs are read from the immutable tracking Queue, and each must
+    ///         name the engine as its user.
     /// Only an authorized solver triggers a non-empty batch; no allowance to the stock solver is left.
     /// @custom:ensures old(isAuthorizedSolver[msg.sender]) && requestIds.length > 0
     /// @custom:ensures old(solverApproval) == 0 ==> solverApproval == 0
@@ -138,16 +136,15 @@ contract VedaForwardingSolver is Ownable2Step {
         if (n == 0) revert NoRequests();
 
         OnChainWithdraw[] memory requests = new OnChainWithdraw[](n);
-        address expectedQueue = address(queue);
         address asset;
         for (uint256 i = 0; i < n; i++) {
             bytes32 requestId = requestIds[i];
-            address actualQueue = engine.claimQueue(requestId);
-            if (actualQueue != expectedQueue) revert RequestQueueMismatch(i, expectedQueue, actualQueue);
+            // The Queue returns an empty record for an ID it does not hold, so the user check rejects it. Only
+            // the engine files requests as their user, and it refuses an ID already bound to any Queue, so a
+            // record held here for the engine is bound to this Queue. The stock solve dequeues each record by
+            // the hash of its fields, so a record that does not match its ID cannot be solved.
             OnChainWithdraw memory request = queue.getOnChainWithdraw(requestId);
-            if (queue.getRequestId(request) != requestId || request.user != address(engine)) {
-                revert InvalidTrackedRequest(i, requestId);
-            }
+            if (request.user != address(engine)) revert InvalidTrackedRequest(i, requestId);
             requests[i] = request;
             if (i == 0) asset = request.assetOut;
             else if (request.assetOut != asset) revert SolveAssetMismatch(i, asset, request.assetOut);

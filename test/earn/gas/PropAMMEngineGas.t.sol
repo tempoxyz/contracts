@@ -32,10 +32,11 @@ contract PropAMMEngineGasTest is Test {
         baseToken.mint(address(pool), 10000e6);
         usdc.mint(address(pool), 10000e6);
         usdc.mint(user, 1000e6);
-        vm.prank(user);
+        vm.startPrank(user);
         usdc.approve(address(earnVault), type(uint256).max);
-        vm.prank(user);
+        earnShare.approve(address(earnVault), type(uint256).max);
         earnVault.deposit(105e6, user, 1);
+        vm.stopPrank();
     }
 
     function testGasPropAMMSteadyDeposit() public {
@@ -43,5 +44,19 @@ contract PropAMMEngineGasTest is Test {
         uint256 g = gasleft();
         earnVault.deposit(105e6, user, 1);
         console2.log("propamm.deposit.steady", g - gasleft());
+    }
+
+    function testGasPropAMMSteadyRedeem() public {
+        vm.prank(user);
+        uint256 g = gasleft();
+        earnVault.redeem(10e6, user, 1);
+        console2.log("propamm.redeem.steady", g - gasleft());
+    }
+
+    function testGasPropAMMSteadyWithdrawExact() public {
+        vm.prank(user);
+        uint256 g = gasleft();
+        earnVault.withdrawExact(10e6, user, type(uint256).max);
+        console2.log("propamm.withdrawExact.steady", g - gasleft());
     }
 }

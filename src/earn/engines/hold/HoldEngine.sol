@@ -158,8 +158,9 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
         onlyEarnVault
         returns (uint256 assets)
     {
-        if (engineShares == 0 || engineShares > totalShares()) revert InvalidAmount();
-        assets = _pay(engineShares, receiver);
+        uint256 held = totalShares();
+        if (engineShares == 0 || engineShares > held) revert InvalidAmount();
+        assets = _pay(engineShares, receiver, held);
         if (assets < minAssets) revert InsufficientAssetsReceived();
         emit Redeemed(receiver, engineShares, assets);
     }
@@ -172,17 +173,17 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
         onlyEarnVault
         returns (uint256 engineShares)
     {
-        if (assets == 0 || assets > totalShares()) revert InvalidAmount();
-        if (_pay(assets, receiver) != assets) revert InexactTransfer();
+        uint256 held = totalShares();
+        if (assets == 0 || assets > held) revert InvalidAmount();
+        if (_pay(assets, receiver, held) != assets) revert InexactTransfer();
         engineShares = assets;
         emit WithdrewExact(receiver, assets, engineShares);
     }
 
     /// Sends `amount` to `receiver` and returns the receiver's measured increase; the engine's holding must fall
-    /// by exactly `amount`.
-    function _pay(uint256 amount, address receiver) private returns (uint256 received) {
+    /// by exactly `amount`. `engineBefore` is the holding the caller measured on entry.
+    function _pay(uint256 amount, address receiver, uint256 engineBefore) private returns (uint256 received) {
         if (receiver == address(0) || receiver == address(this)) revert InvalidReceiver();
-        uint256 engineBefore = totalShares();
         /// @custom:ghost heldBefore = engineBefore
         uint256 receiverBefore = IERC20(asset).balanceOf(receiver);
         IERC20(asset).safeTransfer(receiver, amount);

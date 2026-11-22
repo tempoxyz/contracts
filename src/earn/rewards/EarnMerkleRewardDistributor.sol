@@ -3,7 +3,6 @@ pragma solidity ^0.8.36;
 
 import { IEarnVault } from "../../interfaces/earn/IEarnVault.sol";
 import { IERC20Like } from "../../interfaces/external/IERC20Like.sol";
-import { IERC20Allowance } from "../../interfaces/external/IERC20Allowance.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
@@ -30,7 +29,7 @@ import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerklePr
 /// Measured solvency against entitlement: paid never exceeds the published cumulative root total.
 /// @custom:invariant _totalPaid <= _rootTotalEntitlement
 /// Conservation: totalPaid is the sum of every leaf index's cumulativePaid, so no index has more, and
-/// every record fits its uint128 lane.
+/// every record fits its uint128 lane (the root total fits uint120).
 /// @custom:invariant sumPaid == _totalPaid
 /// @custom:invariant forall uint256 i :: cumulativePaid(i) <= _totalPaid
 /// A root exists exactly when a version was published; before any root nothing is owed.
@@ -79,11 +78,12 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
 
     bytes32 public merkleRoot;
     bytes32 public statementHash;
-    // One slot. Every per-index amount is bounded by the root total, so all of them fit uint128.
-    uint128 private _rootTotalEntitlement;
-    uint128 private _totalPaid;
-    uint64 public rootVersion;
+    // One slot with the pause flag, so a claim's pause check reads the slot its payout updates. Every
+    // per-index amount is bounded by the root total, so all of them fit uint120.
+    uint120 private _rootTotalEntitlement;
+    uint120 private _totalPaid;
     bool public paused;
+    uint64 public rootVersion;
 
     mapping(uint256 slot => PaidLanes lanes) private _paid;
     /// @notice The settlement ID of the latest fundAndPublishRoot; the same ID is refused next time.
@@ -111,6 +111,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
 
     error ClaimsExpired();
     error ClaimsNotExpired();
+    /// @dev Raised by the EarnVault's deposit, which funding calls, while its deposits are paused.
     error DepositsPaused();
     error EntitlementTooLarge(uint256 totalEntitlement);
     error InsufficientFunding(uint256 requiredBalance, uint256 actualBalance);
@@ -168,6 +169,10 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         treasury = treasury_;
         campaignId = campaignId_;
         claimDeadline = claimDeadline_;
+        // A standing maximum allowance for the immutable EarnVault, set once: Tempo charges every zero-to-nonzero
+        // allowance as a new storage slot, and the distributor holds pulled base asset only within a funding
+        // call, which checks that none is retained.
+        _safeApprove(asset_, address(earnVault_), type(uint256).max);
     }
 
     /// @notice Atomically funds a conservatively bounded interval and publishes its solvent root.
@@ -184,9 +189,9 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// @custom:ensures settlementId != bytes32(0) && settlementId != old(lastSettlementId)
     /// @custom:ensures lastSettlementId == settlementId
     /// @custom:ensures old(rootVersion) == expectedRootVersion && rootVersion > old(rootVersion) && version == rootVersion
-    /// The published root, statement and total are the arguments; the total fits uint128 and never decreases.
+    /// The published root, statement and total are the arguments; the total fits uint120 and never decreases.
     /// @custom:ensures merkleRoot == root && statementHash == statementHash_ && _rootTotalEntitlement == totalEntitlement
-    /// @custom:ensures totalEntitlement <= type(uint128).max
+    /// @custom:ensures totalEntitlement <= type(uint120).max
     /// @custom:ensures _rootTotalEntitlement >= old(_rootTotalEntitlement)
     /// Measured solvency: the outstanding liability is covered by the EarnShare balance measured at publication.
     /// @custom:ensures _rootTotalEntitlement - _totalPaid <= measuredBalance
@@ -209,37 +214,35 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         /// @custom:ghost minTotal = _rootTotalEntitlement
         /// @custom:ghost minVersion = rootVersion
         lastSettlementId = settlementId;
-        earnShares = _fundWithAssets(funder, assets, minEarnShares);
-        version = _publishRoot(root, totalEntitlement, statementHash_);
+        uint256 earnShareBalance;
+        (earnShares, earnShareBalance) = _fundWithAssets(funder, assets, minEarnShares);
+        version = _publishRoot(root, totalEntitlement, statementHash_, earnShareBalance);
         emit SettlementPublished(settlementId, version);
     }
 
+    /// @dev Returns the measured mint and the EarnShare balance measured after it. The EarnVault's deposit
+    ///      refuses while its deposits are paused (DepositsPaused), which reverts the pull with it.
     function _fundWithAssets(address funder, uint256 assets, uint256 minEarnShares)
         private
-        returns (uint256 earnShares)
+        returns (uint256 earnShares, uint256 earnShareBalance)
     {
         _requireClaimsActive();
         if (funder == address(0)) revert ZeroAddress();
         if (assets == 0) revert ZeroAmount();
         if (minEarnShares == 0) revert ZeroMinimumEarnShares();
-        if (earnVault.depositsPaused()) revert DepositsPaused();
 
         uint256 assetBalanceBefore = IERC20Like(asset).balanceOf(address(this));
         uint256 earnShareBalanceBefore = IERC20Like(earnShare).balanceOf(address(this));
         _safeTransferFrom(asset, funder, address(this), assets);
-        // A standing maximum allowance for the immutable EarnVault: Tempo charges every zero-to-nonzero allowance as a new storage slot. This
-        // distributor keeps no pulled base asset between calls (checked below).
-        if (IERC20Allowance(asset).allowance(address(this), address(earnVault)) < assets) {
-            _safeApprove(asset, address(earnVault), 0);
-            _safeApprove(asset, address(earnVault), type(uint256).max);
-        }
+        // The EarnVault pulls through the standing maximum allowance set at construction.
         uint256 reportedEarnShares = earnVault.deposit(assets, address(this), minEarnShares);
 
         uint256 assetBalanceAfter = IERC20Like(asset).balanceOf(address(this));
         if (assetBalanceAfter != assetBalanceBefore) {
             revert UnexpectedRetainedAssets(assetBalanceBefore, assetBalanceAfter);
         }
-        earnShares = IERC20Like(earnShare).balanceOf(address(this)) - earnShareBalanceBefore;
+        earnShareBalance = IERC20Like(earnShare).balanceOf(address(this));
+        earnShares = earnShareBalance - earnShareBalanceBefore;
         if (earnShares == 0) revert ZeroAmount();
         if (earnShares != reportedEarnShares) revert UnexpectedEarnShares(reportedEarnShares, earnShares);
         emit AssetsFunded(funder, assets, earnShares);
@@ -250,8 +253,8 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// Only the owner publishes; the expected version matched and the version rose by one.
     /// @custom:ensures old(owner()) == msg.sender
     /// @custom:ensures old(rootVersion) == expectedRootVersion && rootVersion == old(rootVersion) + 1
-    /// The total fits uint128 and never decreases, and while paused it stays the same.
-    /// @custom:ensures totalEntitlement <= type(uint128).max
+    /// The total fits uint120 and never decreases, and while paused it stays the same.
+    /// @custom:ensures totalEntitlement <= type(uint120).max
     /// @custom:ensures _rootTotalEntitlement >= old(_rootTotalEntitlement)
     /// @custom:ensures paused ==> _rootTotalEntitlement == old(_rootTotalEntitlement)
     /// @custom:ensures merkleRoot == root && root != bytes32(0) && _rootTotalEntitlement == totalEntitlement
@@ -265,10 +268,11 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         onlyOwner
     {
         _requireRootVersion(expectedRootVersion);
-        _publishRoot(root, totalEntitlement, statementHash_);
+        _publishRoot(root, totalEntitlement, statementHash_, IERC20Like(earnShare).balanceOf(address(this)));
     }
 
-    function _publishRoot(bytes32 root, uint256 totalEntitlement, bytes32 statementHash_)
+    /// @dev balance is the distributor's EarnShare balance, measured by the caller after any funding.
+    function _publishRoot(bytes32 root, uint256 totalEntitlement, bytes32 statementHash_, uint256 balance)
         private
         returns (uint64 version)
     {
@@ -276,12 +280,11 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         if (block.timestamp > claimDeadline) revert ClaimsExpired();
         if (root == bytes32(0)) revert ZeroRoot();
         if (statementHash_ == bytes32(0)) revert ZeroStatementHash();
-        if (totalEntitlement > type(uint128).max) revert EntitlementTooLarge(totalEntitlement);
+        if (totalEntitlement > type(uint120).max) revert EntitlementTooLarge(totalEntitlement);
         uint256 previousTotal = _rootTotalEntitlement;
         if (totalEntitlement < previousTotal) revert RootTotalDecreased(previousTotal, totalEntitlement);
         if (paused && totalEntitlement != previousTotal) revert PausedLiabilityIncrease();
         uint256 outstanding = totalEntitlement - _totalPaid;
-        uint256 balance = IERC20Like(earnShare).balanceOf(address(this));
         if (balance < outstanding) revert InsufficientFunding(outstanding, balance);
 
         /// @custom:ghost measuredBalance = balance
@@ -290,7 +293,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         statementHash = statementHash_;
         // Checked above to fit.
         // forge-lint: disable-next-line(unsafe-typecast)
-        _rootTotalEntitlement = uint128(totalEntitlement);
+        _rootTotalEntitlement = uint120(totalEntitlement);
         rootVersion += 1;
         version = rootVersion;
         emit RootPublished(version, root, statementHash_, totalEntitlement);
@@ -487,7 +490,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         );
     }
 
-    /// Records a payout: the index's cumulative amount and the new total, each within uint128. Callers hold
+    /// Records a payout: the index's cumulative amount within uint128 and the new total within uint120. Callers hold
     /// the contract invariant that no index's record exceeds totalPaid.
     /// @custom:requires cumulativePaid(index) <= _totalPaid
     /// @custom:requires nextTotalPaid == _totalPaid + (cumulativeAmount - cumulativePaid(index))
@@ -499,7 +502,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// @custom:ensures heldShares == old(heldShares) - (nextTotalPaid - old(_totalPaid))
     function _recordPayout(uint256 index, uint256 cumulativeAmount, uint256 nextTotalPaid) private {
         // The index's record is part of totalPaid, so cumulativeAmount <= nextTotalPaid <= the root total.
-        /// @custom:assert cumulativeAmount <= nextTotalPaid && nextTotalPaid <= type(uint128).max
+        /// @custom:assert cumulativeAmount <= nextTotalPaid && nextTotalPaid <= type(uint120).max
         /// @custom:ghost sumPaid = sumPaid - cumulativePaid(index) + cumulativeAmount
         /// @custom:ghost heldShares = heldShares - (nextTotalPaid - _totalPaid)
         PaidLanes storage lanes = _paid[index / 2];
@@ -508,7 +511,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         // forge-lint: disable-next-line(unsafe-typecast)
         else lanes.lane1 = uint128(cumulativeAmount);
         // forge-lint: disable-next-line(unsafe-typecast)
-        _totalPaid = uint128(nextTotalPaid);
+        _totalPaid = uint120(nextTotalPaid);
     }
 
     function _requireClaimsActive() private view {
