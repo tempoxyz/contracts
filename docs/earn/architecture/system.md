@@ -133,7 +133,8 @@ always-allow policy `1`.
 - checkpoints fees before every economic action;
 - coordinates deposits, in-kind entry, exits, contributions, surplus absorption, and deployment-permitted engine migration;
 - rejects voluntary inflows that would exceed its managed-assets limit;
-- stores each open async claim's requester, receiver, burned EarnShare, and queued engine shares; and
+- stores each open async claim's requester, receiver, burned EarnShare, and whether it recorded a fee
+  snapshot (the engine holds the queued engine shares); and
 - holds the emergency guardian and async janitor seats.
 
 It does not hold venue shares, store route policy, or execute swaps, and between calls it holds no

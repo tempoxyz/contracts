@@ -237,12 +237,15 @@ Optional supply-bounded orchestration around `contribute` is in
    EarnShare unrepresented.
 4. `A` pulls and burns the EarnShare, asks the engine to queue the engine shares with `engineData`,
    and removes them from managed backing.
-5. `A` records the requester, receiver, burned EarnShare, and engine shares under the engine's
-   request ID, rejecting a duplicate ID. The record packs both amounts into `uint128`, so a request
-   above that bound reverts with `ExceedsMaxEarnShares`.
-6. If fees are active and the valuation is fresh, `F.recordRedeemRequest` stores the request's fee
-   snapshot with its disable epoch ([queued withdrawals](fees.md#queued-withdrawals)). The snapshot
-   packs its values into `uint128` and reverts with `InvalidFeeConfiguration` above that bound.
+5. `A` records the requester, receiver, and burned EarnShare under the engine's request ID,
+   rejecting a duplicate ID; the engine, not the record, holds the queued engine shares. The record
+   packs the burned EarnShare into `uint88` beside the requester, so a request above that bound
+   (about 3.09 × 10^26 base units) reverts with `ExceedsMaxEarnShares`. A self-paying request stores
+   no separate receiver.
+6. If fees are active and the valuation is fresh, `A` marks the record and `F.recordRedeemRequest`
+   stores the request's fee snapshot with its disable epoch
+   ([queued withdrawals](fees.md#queued-withdrawals)). The snapshot packs its values into `uint128`
+   and reverts with `InvalidFeeConfiguration` above that bound.
 7. `A` increments `openRedeemRequestCount` and re-anchors; active supply and NAV exclude the claim.
 
 The deposit pause does not block requests. Engine-specific request data and validation, such as
@@ -254,10 +257,10 @@ Veda's tracking-Queue readback and absolute payout floor, are on the
 The venue delivers assets to the engine, which transfers them to the EarnVault and calls
 `finalizeRedeem(requestId, asset, amount)`. The EarnVault requires the caller to be its current
 engine, the asset to be its base asset, and the request to be open. It closes the claim, decrements
-`openRedeemRequestCount`, closes the fee snapshot, forwards `amount` to the stored receiver, and, if
-the receiver has code, calls `onRedeemFinalized` inside a `try`, so a reverting receiver cannot block
-finalization. There is no burn or fee checkpoint. Veda's forwarding solver makes the venue solve,
-measured engine credit, and finalization atomic
+`openRedeemRequestCount`, closes the fee snapshot if the request recorded one, forwards `amount` to
+the stored receiver, and, if the receiver has code, calls `onRedeemFinalized` inside a `try`, so a
+reverting receiver cannot block finalization. There is no burn or fee checkpoint. Veda's forwarding
+solver makes the venue solve, measured engine credit, and finalization atomic
 ([Veda queued exits](../modules/veda.md#queued-exits)).
 
 ### Cancellation
