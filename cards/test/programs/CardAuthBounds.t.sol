@@ -25,7 +25,7 @@ contract CardAuthBoundsTest is AuthEnv {
         _capture(P1, 100e6, true);
         vm.prank(companion);
         cards.creditBack(P1, 10e6, 10e6);
-        (,, uint256 unsettled) = cards.exposure();
+        (, uint256 unsettled) = cards.exposure();
         assertEq(unsettled, 90e6);
         // Up to the 10 refunded adds back, in any number of calls; no more.
         vm.startPrank(companion);
@@ -34,7 +34,7 @@ contract CardAuthBoundsTest is AuthEnv {
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.creditBack(P1, 0, -1);
         vm.stopPrank();
-        (,, unsettled) = cards.exposure();
+        (, unsettled) = cards.exposure();
         assertEq(unsettled, 100e6, "never past what was captured");
         // A later refund widens the bound by exactly what it refunds.
         vm.prank(companion);
@@ -44,7 +44,7 @@ contract CardAuthBoundsTest is AuthEnv {
         vm.prank(companion);
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.creditBack(P1, 0, -1);
-        (,, unsettled) = cards.exposure();
+        (, unsettled) = cards.exposure();
         assertEq(unsettled, 100e6);
         assertEq(cards.purchaseOf(P1).refunded, 15e6);
     }
@@ -78,21 +78,6 @@ contract CardAuthBoundsTest is AuthEnv {
         vm.prank(issuer);
         vm.expectRevert(CardLimits.MerchantRevoked.selector);
         cards.charge(CARD, P1, 10e6, merchant);
-    }
-
-    function test_standIn_revokedMerchantRefusesIt() public {
-        uint8 si = cards.STAND_IN();
-        vm.prank(alice);
-        cards.setMandate(merchant, true, 0);
-        vm.prank(issuer);
-        vm.expectRevert(CardLimits.MerchantRevoked.selector);
-        cards.authorize(CARD, P1, 10e6, merchant, uint64(block.timestamp + 1 days), si);
-        // A stand-in still counts toward the limits without being refused by them.
-        address other = makeAddr("other-merchant");
-        vm.prank(issuer);
-        cards.authorize(CARD, P1, 600e6, other, uint64(block.timestamp + 1 days), si);
-        (,,, uint64 daySpent,) = cards.usageOf(alice);
-        assertEq(daySpent, 600e6);
     }
 
     function test_issuerChange_endsPreviousOperatorsAndProposals() public {

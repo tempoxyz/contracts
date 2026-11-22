@@ -138,7 +138,7 @@ contract FrozenSettlementStressTest is AdverseBase {
         _run();
         _report(t, freezeDays);
         assertEq(m.lapsed, m.lateCharged, "every lapsed purchase charged late");
-        (uint256 held,, uint256 unsettled) = cards.exposure();
+        (uint256 held, uint256 unsettled) = cards.exposure();
         assertEq(held, 0, "nothing held at the end");
         assertEq(unsettled, 0, "everything acknowledged");
         assertEq(m.outageAuths, 0, "nothing approved while the account was frozen");
@@ -167,7 +167,7 @@ contract FrozenSettlementStressTest is AdverseBase {
         _report(t, 3);
         assertEq(m.outageAuths, 0, "nothing authorizes while paused");
         assertEq(m.lapsed, m.lateCharged, "every lapsed purchase charged late");
-        (uint256 held,,) = cards.exposure();
+        (uint256 held,) = cards.exposure();
         assertEq(held, 0, "nothing held at the end");
     }
 
@@ -189,7 +189,7 @@ contract FrozenSettlementStressTest is AdverseBase {
         assertGt(m.frozenHolderCaptures, 0, "frozen cardholders' open holds still captured");
         assertEq(m.lapsed, m.lateCharged, "every lapsed purchase charged late after the unfreeze");
         assertGt(m.refundFails, 0, "refunds to frozen cardholders waited");
-        (uint256 held,,) = cards.exposure();
+        (uint256 held,) = cards.exposure();
         assertEq(held, 0, "nothing held at the end");
     }
 
@@ -470,12 +470,12 @@ contract FrozenSettlementStressTest is AdverseBase {
     }
 
     function _measureUnsettled() internal {
-        (,, uint256 unsettled) = cards.exposure();
+        (, uint256 unsettled) = cards.exposure();
         m.maxUnsettled = _max(m.maxUnsettled, unsettled);
     }
 
     function _measure(uint256 day) internal {
-        (uint256 held,,) = cards.exposure();
+        (uint256 held,) = cards.exposure();
         m.maxHeld = _max(m.maxHeld, held);
         uint256 backlog;
         for (uint256 k = cursor; k < buys.length; ++k) {

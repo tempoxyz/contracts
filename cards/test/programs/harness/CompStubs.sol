@@ -10,7 +10,7 @@ import { IssuerTreasury } from "../../../src/programs/IssuerTreasury.sol";
 import { MerchantReserves } from "../../../src/programs/MerchantReserves.sol";
 import { ICardAuth } from "../../../src/programs/interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "../../../src/programs/interfaces/IReservationCore.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "../../../src/programs/interfaces/ISource.sol";
+import { CAPTURE_FINAL, CAPTURE_FREE, ISource } from "../../../src/programs/interfaces/ISource.sol";
 import { CoreEnv } from "../../core/harness/CoreEnv.sol";
 import { MockReservationCore } from "./MockReservationCore.sol";
 
@@ -35,7 +35,6 @@ contract CompCardAuth is ICardAuth {
     address public conversion;
     uint64 public grantedOwners;
     uint256 internal _held;
-    uint256 internal _standIn;
     uint256 internal _unsettled;
     uint256 public lastScale;
 
@@ -69,8 +68,8 @@ contract CompCardAuth is ICardAuth {
         isCompanion[account] = on;
     }
 
-    function setExposure(uint256 held_, uint256 standIn, uint256 unsettled) external {
-        (_held, _standIn, _unsettled) = (held_, standIn, unsettled);
+    function setExposure(uint256 held_, uint256 unsettled) external {
+        (_held, _unsettled) = (held_, unsettled);
     }
 
     function setGranted(uint64 n) external {
@@ -109,8 +108,8 @@ contract CompCardAuth is ICardAuth {
         usedOf[operator] = used;
     }
 
-    function exposure() external view returns (uint256, uint256, uint256) {
-        return (_held, _standIn, _unsettled);
+    function exposure() external view returns (uint256, uint256) {
+        return (_held, _unsettled);
     }
 
     /// @dev The program approves no cash source here, so the issuer treasury counts no converted holds.
@@ -174,12 +173,12 @@ contract CompCardAuth is ICardAuth {
 
     // Driver: runs a source's legs as the program.
 
-    function hold(ISource source, address owner, bytes32 position, bytes32 legId, uint256 units, bool standIn)
+    function hold(ISource source, address owner, bytes32 position, bytes32 legId, uint256 units)
         external
         returns (uint256)
     {
         // forge-lint: disable-next-line(block-timestamp,unsafe-typecast)
-        return source.hold(owner, position, legId, units, uint64(block.timestamp + 7 days), standIn);
+        return source.hold(owner, position, legId, units, uint64(block.timestamp + 7 days));
     }
 
     function capture(ISource source, address owner, bytes32 legId, uint256 units, bool isFinal, bytes32 ref)
@@ -195,13 +194,6 @@ contract CompCardAuth is ICardAuth {
         }
         // forge-lint: disable-next-line(unsafe-typecast)
         p.captured += uint64(taken);
-    }
-
-    function captureBeyond(ISource source, address owner, bytes32 legId, uint256 units)
-        external
-        returns (uint256 taken)
-    {
-        (taken,) = source.capture(owner, bytes32(0), legId, units, CAPTURE_FINAL | CAPTURE_BEYOND);
     }
 
     function captureFree(ISource source, address owner, bytes32 legId, uint256 units) external returns (uint256 taken) {
@@ -292,27 +284,8 @@ abstract contract CompEnv is CoreEnv {
 
     /// @dev Holds then captures units on lineId for borrower as purchase ref, leg legId.
     function _draw(address borrower, uint64 lineId, bytes32 legId, uint256 units, bytes32 ref) internal {
-        auth.hold(credit, borrower, _pos(lineId), legId, units, false);
+        auth.hold(credit, borrower, _pos(lineId), legId, units);
         auth.capture(credit, borrower, legId, units, true, ref);
-    }
-
-    function _owed(address owner, address token, address creditor) internal view returns (uint128) {
-        IReservationCore.Debt[] memory debts = core.debtOf(owner, token);
-        for (uint256 i; i < debts.length; ++i) {
-            if (debts[i].creditor == creditor) return debts[i].amount;
-        }
-        return 0;
-    }
-
-    function _setDebtCap(address owner, address payee, address token, uint128 debtCap) internal {
-        IReservationCore.PayeeTerms memory t = core.payeeTerms(owner, payee, token);
-        t.debtCap = debtCap;
-        vm.prank(owner);
-        core.setPayeeTerms(payee, token, t);
-    }
-
-    function _repayDebt(address owner, address token) internal {
-        core.notifyCredit(token, owner, ICompToken(token).balanceOf(owner));
     }
 
     function _assertCoreBalanced() internal view {

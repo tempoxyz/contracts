@@ -169,13 +169,8 @@ contract ModelRandomTest is CoreInvariants {
             );
         }
         if (roll < 29) {
-            IReservationCore.PayeeTerms memory terms = IReservationCore.PayeeTerms({
-                debtCap: uint128(_pick([uint256(0), 0, 1 + _below(5000), U64, type(uint128).max])),
-                offlineCap: uint128(_pick([uint256(0), 0, 1 + _below(10_000), U64 + 5, 0])),
-                toleranceBps: uint16(_pick([uint256(0), 0, 100, 1500, 65_535])),
-                debtTerm: uint32(_pick([uint256(0), 60, 86_400, 365 days, 365 days + 1]))
-            });
-            return abi.encodeCall(IReservationCore.setPayeeTerms, (other, token, terms));
+            uint16 tolerance = uint16(_pick([uint256(0), 0, 100, 1500, 65_535]));
+            return abi.encodeCall(IReservationCore.setCaptureTolerance, (other, token, tolerance));
         }
         uint256 owner = roll < 40 ? c : _below(5);
         if (roll < 45) {
@@ -184,8 +179,7 @@ contract ModelRandomTest is CoreInvariants {
                 id: id,
                 amount: _amount(m, owner, k),
                 payee: _chance(3) ? address(0) : other,
-                expiresAt: _expiry(now_, 31 days),
-                standIn: _chance(25)
+                expiresAt: _expiry(now_, 31 days)
             });
             if (roll < 37) return abi.encodeCall(IReservationCore.hold, (request));
             return abi.encodeCall(IReservationCore.holdFrom, (m.accounts[owner], request));
@@ -210,16 +204,11 @@ contract ModelRandomTest is CoreInvariants {
         if (roll < 88) {
             uint256 amount = _amount(m, owner, k);
             if (_chance(30) && amount < U64) amount += _below(3000);
-            return abi.encodeCall(
-                IReservationCore.charge, (m.accounts[owner], token, id, uint128(amount), other, _chance(40))
-            );
+            return abi.encodeCall(IReservationCore.charge, (m.accounts[owner], token, id, uint128(amount), other));
         }
-        if (roll < 96) {
-            return abi.encodeCall(
-                IReservationCore.refund, (m.accounts[owner], token, other, id, _chance(5) ? 0 : _amount(m, c, k))
-            );
-        }
-        return abi.encodeCall(IReservationCore.clearLapsedDebt, (m.accounts[owner], token));
+        return abi.encodeCall(
+            IReservationCore.refund, (m.accounts[owner], token, other, id, _chance(5) ? 0 : _amount(m, c, k))
+        );
     }
 
     /// @dev Adjust, capture or release a live record, or a random key.
@@ -248,7 +237,7 @@ contract ModelRandomTest is CoreInvariants {
         uint256 from = _below(slots);
         for (uint256 j; j < slots; ++j) {
             uint256 s = (from + j) % slots;
-            uint256 i = start + s * 7;
+            uint256 i = start + s * 6;
             if (m.expected[i] == 0 || _chance(10)) continue;
             return (
                 m.accounts[s / (a * m.ids.length)],
@@ -284,16 +273,15 @@ contract ModelRandomTest is CoreInvariants {
         return uint64(1) << 32;
     }
 
-    /// @dev A block time near a stored edge (an expiry, a period end, a debt lapse), or a short step.
+    /// @dev A block time near a stored edge (an expiry, a period end), or a short step.
     function _nextTime(uint256[] memory s) internal returns (uint64) {
         uint64 now_ = uint64(vm.getBlockTimestamp());
         uint256 edge;
-        uint256 base = _iDebt(t, 0, 0);
         if (_chance(60)) {
             uint256 at = _below(s.length);
             for (uint256 j; j < s.length; ++j) {
                 uint256 v = s[(at + j) % s.length];
-                if (v > now_ + 1 && v < now_ + 400 days && (at + j) % s.length >= 1 && (at + j) % s.length != base) {
+                if (v > now_ + 1 && v < now_ + 400 days && (at + j) % s.length >= 1) {
                     edge = v;
                     break;
                 }

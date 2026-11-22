@@ -248,11 +248,34 @@ abstract contract FundingBase is AuthEnv {
         return held > captured ? held - captured : 0;
     }
 
-    /// @dev Pays a holder's wages and lets their debt repay from it, forwarding what the cash source collects.
+    /// @dev Pays a holder's wages.
     function _payday(address h, uint256 amount) internal {
         _mint(h, amount);
-        core.notifyCredit(address(usd), h, amount);
-        cash.sweep(address(usd));
+    }
+
+    /// @dev The settlement account repays what the treasury advanced it, as far as its free balance allows.
+    function _repayAdvance() internal {
+        if (treasury.advanceOf(address(usd)) == 0) return;
+        vm.prank(settlement);
+        treasury.repayAdvance(address(usd), type(uint256).max);
+    }
+
+    /// @dev Books a purchase the network approved without asking (a stand-in) as a force post: the holder's free
+    ///      cash covers what it can and the issuer absorbs the rest. False when the program refuses it (the exposure
+    ///      guard, the holder's limits or a revoked merchant); the issuer then owes the network outside the program.
+    function _forcePost(address h, bytes32 card, bytes32 ref, uint128 amount)
+        internal
+        returns (bool ok, uint256 covered)
+    {
+        address m = merchants[uint256(ref) % merchants.length];
+        vm.prank(issuer);
+        try cards.charge(card, ref, amount, m) {
+            ok = true;
+        } catch { }
+        if (!ok) return (false, 0);
+        authorized[h] += amount;
+        covered = _paid(ref);
+        costCap[h] += _worth(ref);
     }
 
     // Checks.
@@ -279,17 +302,18 @@ abstract contract FundingBase is AuthEnv {
         assertLe(cost, authorized[h] * (10_000 + tolBps) / 10_000, "holder paid past authorized plus tolerance");
     }
 
-    /// @dev What a holder has given up: tokens out of their wallet plus the debt they still owe the cash source.
+    /// @dev What a holder has given up: tokens out of their wallet.
     function _cost(address h) internal view returns (uint256) {
-        return mintedTo[h] - usd.balanceOf(h) + _owed(h, address(usd), address(cash));
+        return mintedTo[h] - usd.balanceOf(h);
     }
 
+    /// @dev What the settlement account owes the treasury for advanced payouts.
     function _issuerDebt() internal view returns (uint256) {
-        return _owed(settlement, address(usd), address(treasury));
+        return treasury.advanceOf(address(usd));
     }
 
     function _unsettled() internal view returns (uint256 u) {
-        (,, u) = cards.exposure();
+        (, u) = cards.exposure();
     }
 
     // Output.

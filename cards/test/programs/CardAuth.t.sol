@@ -25,7 +25,6 @@ contract CardAuthTest is AuthEnv {
     bytes32 internal constant P2 = bytes32("purchase-2");
     bytes32 internal constant P3 = bytes32("purchase-3");
     uint8 internal constant PARTIAL = 1;
-    uint8 internal constant STAND_IN = 2;
     /// @dev Storage slot of CardAuth's _purchases mapping (forge inspect CardAuth storageLayout).
     uint256 internal constant PURCHASES_SLOT = 22;
     uint256 internal constant STATE_SLOT = 6;
@@ -562,16 +561,6 @@ contract CardAuthTest is AuthEnv {
         cards.authorize(CARD, P1, 60e6, merchant, uint64(block.timestamp + 1 days), 0);
     }
 
-    /// @dev A stand-in passed the limits offline: it lands past them and counts against them.
-    function test_terms_perPurchase_standInLandsPastIt() public {
-        usd.mint(alice, 1000e6);
-        _grant(0, 50e6, 0, 0, 0);
-        vm.prank(issuer);
-        cards.authorize(CARD, P1, 60e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
-        assertEq(cards.purchaseOf(P1).held, 60e6);
-        assertEq(cards.cardOf(CARD).window.daySpent, 60e6);
-    }
-
     function test_cardCap() public {
         usd.mint(alice, 1000e6);
         vm.prank(issuer);
@@ -728,70 +717,72 @@ contract CardAuthTest is AuthEnv {
         cards.charge(CARD, P2, 1e6, merchant);
     }
 
-    function test_charge_afterExpiry_paysAndTakesDebtWithinCap() public {
+    function test_charge_afterExpiry_paysOnlyFromFreeCash() public {
         usd.mint(alice, 50e6);
         vm.prank(alice);
         _setFunding(true, false, false);
         _authorize(P1, 50e6);
         vm.warp(vm.getBlockTimestamp() + 8 days);
-        _setDebtCap(alice, address(cash), address(usd), 30e6);
         vm.prank(bob);
         cards.release(P1);
+        // A newer purchase holds 20 of the 50 that came back: the late charge never reaches it.
+        _authorize(P2, 20e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 70e6, merchant);
-        assertEq(usd.balanceOf(settlement), 50e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 20e6);
+        assertEq(usd.balanceOf(settlement), 30e6);
+        assertEq(usd.balanceOf(alice), 0);
+        assertEq(_hold(alice, P2, CASH_LEG).held, 20e6, "other hold untouched");
         ICardAuth.PurchaseView memory p = cards.purchaseOf(P1);
         assertFalse(p.open);
         assertTrue(p.charged);
         assertEq(p.captured, 70e6);
-        assertEq(p.refunded, 0);
-        // A refund repays the debt first; what repaid it is the source's to forward.
+        // The issuer absorbed the 40 the owner did not have free, booked as refunded so it is never refunded.
+        assertEq(p.refunded, 40e6);
+        (uint256 held, uint256 unsettled) = cards.exposure();
+        assertEq(held, 20e6);
+        assertEq(unsettled, 70e6);
+        // A refund pays the owner what it paid, never what the issuer absorbed.
         _refund(P1, 30e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
-        assertEq(usd.balanceOf(alice), 10e6);
-        cash.sweep(address(usd));
-        assertEq(usd.balanceOf(settlement), 70e6);
+        assertEq(usd.balanceOf(alice), 30e6);
+        _fundRefund(1);
+        vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
+        cards.refund(P1, 1);
         _assertSourcesEmpty();
         _assertCoreBalanced();
     }
 
-    function test_charge_pastDebtCap_issuerAbsorbsTheRest() public {
+    function test_charge_pastFreeCash_issuerAbsorbsTheRest() public {
         usd.mint(alice, 50e6);
-        _setDebtCap(alice, address(cash), address(usd), 30e6);
-        // 50 available plus 30 of debt: the issuer carries the other 20.
+        // 50 available: the issuer carries the other 50.
         vm.expectEmit(address(cards));
-        emit CardAuthBase.PurchaseCaptured(P1, 100e6, 80e6, true, true, 1);
+        emit CardAuthBase.PurchaseCaptured(P1, 100e6, 50e6, true, true, 1);
         vm.prank(issuer);
         cards.charge(CARD, P1, 100e6, merchant);
         assertEq(usd.balanceOf(settlement), 50e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 30e6);
+        assertEq(usd.balanceOf(alice), 0);
         // The whole amount counts toward the limits, not just what the owner paid.
         assertEq(cards.cardOf(CARD).window.daySpent, 100e6);
         // What the issuer absorbed is booked as refunded, so it can never be refunded to the owner.
-        assertEq(cards.purchaseOf(P1).refunded, 20e6);
-        // The network settles the whole charge, so the absorbed 20 counts toward settlement with the covered 80.
+        assertEq(cards.purchaseOf(P1).refunded, 50e6);
+        // The network settles the whole charge, so the absorbed 50 counts toward settlement with the covered 50.
         (,, int128 net,) = cards.ledger();
         assertEq(net, 100e6);
         _assertCoreBalanced();
     }
 
-    function test_refund_pastDebtCap_repaysButNeverPaysWhatTheIssuerAbsorbed() public {
+    function test_refund_afterCharge_neverPaysWhatTheIssuerAbsorbed() public {
         usd.mint(alice, 50e6);
-        _setDebtCap(alice, address(cash), address(usd), 30e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 100e6, merchant);
         _fundRefund(101e6);
-        // The sources covered 80; the 20 the issuer absorbed is not refundable.
+        // The sources covered 50; the 50 the issuer absorbed is not refundable.
         vm.prank(issuer);
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
-        cards.refund(P1, 81e6);
-        // The refund repays the debt and restores the cash.
+        cards.refund(P1, 51e6);
         vm.prank(issuer);
-        cards.refund(P1, 80e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
+        cards.refund(P1, 50e6);
         assertEq(core.available(alice, address(usd)), 50e6);
-        // What the issuer absorbed never becomes refundable: the cardholder never paid it.
         vm.prank(issuer);
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
         cards.refund(P1, 1);
@@ -835,44 +826,6 @@ contract CardAuthTest is AuthEnv {
         cards.charge(CARD, P1, 100e6, merchant);
         assertEq(usd.balanceOf(settlement), 100e6);
         assertEq(usd.balanceOf(alice), 900e6);
-    }
-
-    function test_charge_debtToAnotherCreditor_keepsThisSourcesCap() public {
-        address lender = makeAddr("lender");
-        usd.mint(alice, 10e6);
-        _setDebtCap(alice, address(cash), address(usd), 30e6);
-        _setDebtCap(alice, lender, address(usd), 5e6);
-        vm.prank(alice);
-        core.approveHolder(lender, address(usd), 100e6, 0);
-        vm.prank(lender);
-        core.charge(alice, address(usd), bytes32("x"), 15e6, lender, false);
-        // Another creditor's debt leaves this source's cap whole: the charge is owed to the source.
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 20e6, merchant);
-        assertEq(_owed(alice, address(usd), lender), 5e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 20e6);
-        assertEq(usd.balanceOf(settlement), 0);
-        assertEq(cards.purchaseOf(P1).refunded, 0);
-        _assertCoreBalanced();
-    }
-
-    function test_charge_creditorsFull_takesNoDebt() public {
-        _setDebtCap(alice, address(cash), address(usd), 30e6);
-        // The owner owes as many other creditors as the core keeps: there is no slot for this source.
-        for (uint256 i; i < 4; ++i) {
-            address lender = address(uint160(0x1000 + i));
-            _setDebtCap(alice, lender, address(usd), 5e6);
-            vm.prank(alice);
-            core.approveHolder(lender, address(usd), 100e6, 0);
-            vm.prank(lender);
-            core.charge(alice, address(usd), bytes32(i), 1e6, lender, false);
-        }
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 20e6, merchant);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
-        assertEq(cards.purchaseOf(P1).refunded, 20e6);
-        assertEq(usd.balanceOf(settlement), 0);
-        _assertCoreBalanced();
     }
 
     function test_charge_onOpenPurchase_refused() public {
@@ -1190,108 +1143,16 @@ contract CardAuthTest is AuthEnv {
         assertEq(net, 0);
     }
 
-    // Stand-ins, conversion and the settlement cursor.
+    // Conversion and the settlement cursor.
 
-    function test_standIn_adjustDown_keepsWhatIsHeldUpToTheNewAmount() public {
+    /// @dev The old stand-in flag bit is no flag any more: an authorization is held from available funds or declined.
+    function test_authorize_unknownFlagBit_heldOnlyFromAvailableFunds() public {
         usd.mint(alice, 30e6);
-        _setOfflineCap(alice, address(cash), address(usd), 50e6);
         vm.prank(issuer);
-        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
-        assertEq(_hold(alice, P1, CASH_LEG).held, 30e6);
-        // Down to 35: the 30 reserved still fits, so nothing moves on the core.
-        vm.prank(issuer);
-        cards.adjust(P1, 35e6);
-        assertEq(_hold(alice, P1, CASH_LEG).held, 30e6);
-        assertEq(cards.purchaseOf(P1).held, 35e6);
-        assertEq(cards.cardOf(CARD).window.daySpent, 35e6);
-        // Down to 20: the hold gives back 10.
-        vm.prank(issuer);
-        cards.adjust(P1, 20e6);
-        assertEq(_hold(alice, P1, CASH_LEG).held, 20e6);
-        assertEq(usd.balanceOf(alice), 10e6);
-        assertEq(cards.cardOf(CARD).window.daySpent, 20e6);
-        _assertCoreBalanced();
-    }
-
-    /// @dev A stand-in lowered below what then clears captures within the owner's tolerance, the rest as debt up to the
-    ///      offline cap; past the tolerance it refuses.
-    function test_standIn_captureWithinTolerance_afterAdjustDown() public {
-        usd.mint(alice, 30e6);
-        _setOfflineCap(alice, address(cash), address(usd), 50e6);
-        _setTolerance(alice, address(cash), address(usd), 2000);
-        vm.prank(issuer);
-        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
-        vm.prank(issuer);
-        cards.adjust(P1, 35e6);
-        vm.prank(issuer);
-        vm.expectRevert(CardLegs.CaptureLimitExceeded.selector);
-        cards.capture(P1, 43e6, true);
-        _capture(P1, 40e6, true);
-        assertEq(usd.balanceOf(alice), 0);
-        assertEq(core.debtOf(alice, address(usd))[0].amount, 10e6);
-        _assertCoreBalanced();
-    }
-
-    function test_standIn_onFrozenCard_declinedWhenItLands() public {
-        usd.mint(alice, 30e6);
-        vm.prank(alice);
-        cards.setOwnStatus(CARD, 1);
-        vm.prank(issuer);
-        vm.expectRevert(CardLimits.CardNotActive.selector);
-        cards.authorize(CARD, P1, 20e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
+        vm.expectRevert(CardAuthBase.InsufficientAvailable.selector);
+        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), 2);
         assertEq(usd.balanceOf(alice), 30e6);
         assertEq(cards.purchaseOf(P1).owner, address(0));
-    }
-
-    function test_standIn_adjustUp_refused() public {
-        usd.mint(alice, 100e6);
-        vm.prank(issuer);
-        cards.authorize(CARD, P1, 40e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
-        vm.prank(issuer);
-        cards.adjust(P1, 30e6);
-        // Not past the offline approval, and not back up after coming down either.
-        vm.prank(issuer);
-        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
-        cards.adjust(P1, 41e6);
-        vm.prank(issuer);
-        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
-        cards.adjust(P1, 35e6);
-    }
-
-    function test_standIn_reservesWhatIsThereAndForwardsRepaidDebt() public {
-        usd.mint(alice, 50e6);
-        vm.prank(issuer);
-        cards.authorize(CARD, P1, 80e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
-        IReservationCore.HoldRecord memory h = _hold(alice, P1, CASH_LEG);
-        assertTrue(h.standIn);
-        assertEq(h.held, 50e6);
-        assertEq(h.captureLimit, 80e6);
-        assertTrue(cards.purchaseOf(P1).standIn);
-        (, uint256 standIn,) = cards.exposure();
-        assertEq(standIn, 80e6);
-
-        // Without an offline cap the source can't cover the gap with debt: the issuer absorbs it.
-        _capture(P1, 80e6, true);
-        assertEq(usd.balanceOf(settlement), 50e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
-        assertEq(cards.purchaseOf(P1).refunded, 30e6);
-
-        // With one, the gap becomes debt to the cash source, forwarded once repaid.
-        usd.mint(alice, 50e6);
-        _setOfflineCap(alice, address(cash), address(usd), 30e6);
-        vm.prank(issuer);
-        cards.authorize(CARD, P2, 80e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
-        _capture(P2, 80e6, true);
-        assertEq(usd.balanceOf(settlement), 100e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 30e6);
-        assertEq(cards.purchaseOf(P2).refunded, 0);
-
-        usd.mint(alice, 40e6);
-        _repay(alice, address(usd));
-        cash.sweep(address(usd));
-        assertEq(usd.balanceOf(settlement), 130e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
-        _assertSourcesEmpty();
     }
 
     function test_foreignCashToken_convertsAtLockedRate() public {
@@ -1481,7 +1342,7 @@ contract CardAuthTest is AuthEnv {
     // Settlement account and the settlement token's policy.
 
     /// @dev While the settlement token's policy keeps the settlement account from receiving it, nothing new is held:
-    ///      new purchases and increments are declined; decreases, releases and stand-ins approved offline still land.
+    ///      new purchases and increments are declined; decreases and releases still land.
     function test_authorize_declinedWhileTheSettlementAccountCannotReceive() public {
         usd.mint(alice, 1000e6);
         _authorize(P1, 50e6);
@@ -1498,11 +1359,10 @@ contract CardAuthTest is AuthEnv {
         vm.expectRevert(CardAuthBase.SettlementAccountBlocked.selector);
         cards.adjust(P1, 60e6);
         cards.adjust(P1, 40e6);
-        cards.authorize(CARD, P3, 10e6, merchant, uint64(block.timestamp + 1 days), STAND_IN);
         cards.release(P2);
         vm.stopPrank();
         assertEq(cards.purchaseOf(P1).held, 40e6);
-        assertTrue(cards.purchaseOf(P3).open);
+        assertFalse(cards.purchaseOf(P3).open);
         // Unfrozen, purchases are approved again.
         registry.modifyPolicyBlacklist(policy, settlement, false);
         _authorize(bytes32("purchase-4"), 10e6);
@@ -1657,7 +1517,6 @@ contract CardAuthTest is AuthEnv {
         assertEq(p.captured, 0);
         assertEq(p.refunded, 0);
         assertTrue(p.open);
-        assertFalse(p.standIn);
         assertFalse(p.charged);
 
         (address[] memory sources, bytes32[] memory positions, bytes32[] memory ids) = cards.legsOf(P1);

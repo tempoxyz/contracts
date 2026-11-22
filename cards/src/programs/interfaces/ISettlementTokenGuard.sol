@@ -5,7 +5,7 @@ pragma solidity ^0.8.36;
 ///         reserves), which the issuer's treasury asks before that token changes.
 interface ISettlementTokenGuard {
     /// @notice Why the program's settlement token cannot change now, as a reason code (4 open disputes, 5 sponsor
-    ///         collateral, 6 a held settlement balance, 7 credit lines, 8 issuer debt, 9 merchant reserves); zero
-    ///         when it can.
+    ///         collateral, 6 a held settlement balance, 7 credit lines, 9 merchant reserves; 3 and 8 are no longer
+    ///         used); zero when it can.
     function settlementTokenInUse(address program) external view returns (uint8 reason);
 }

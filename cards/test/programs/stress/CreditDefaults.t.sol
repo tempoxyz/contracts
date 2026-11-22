@@ -448,7 +448,7 @@ contract CreditDefaultsStressTest is CompEnv {
             return;
         }
         bytes32 leg = keccak256(abi.encode("leg", i, week));
-        try auth.hold(credit, b.who, _pos(b.lineId), leg, amount, false) returns (uint256 got) {
+        try auth.hold(credit, b.who, _pos(b.lineId), leg, amount) returns (uint256 got) {
             if (got == 0) {
                 ++m.drawRefusals;
                 return;

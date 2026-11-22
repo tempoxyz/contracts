@@ -3,9 +3,8 @@ pragma solidity ^0.8.36;
 
 import { Conversion } from "./Conversion.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
-import { IReservationCore, MAX_CREDITORS, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
-import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
+import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
+import { CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
@@ -13,9 +12,9 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 
 /// @title CashSource
 /// @notice A card program's cash funding source: holds on a cardholder's stablecoin balance in the core, placed and
-///         captured by this contract, which is also their payee. Captures past a hold take the owner's free balance
-///         and then core debt to this contract within the caps the owner set for it (the offline cap for a stand-in);
-///         charges do the same with no hold. A leg in a stablecoin other than the program's settlement token locks
+///         captured by this contract, which is also their payee. Captures past a hold take the owner's free balance,
+///         within the budget the owner gave this contract; charges do the same with no hold. Nothing is taken past the
+///         owner's free balance: the program's issuer absorbs what the owner cannot pay. A leg in a stablecoin other than the program's settlement token locks
 ///         the conversion rate when it is placed (only while the Conversion quotes it against a fresh reference rate
 ///         within the owner's maximum cost) and converts what it captures through the program's Conversion. The owner
 ///         pays the locked price while the venue stays within FX_BAND_BPS of it, the issuer carrying an adverse
@@ -23,15 +22,15 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 ///         the owner's favour. The owner never pays past the hold's capture limit; what it does not buy falls to the
 ///         issuer. A late charge of a purchase whose hold expired prices the same way against the rate it locked.
 ///         The band's tolerance is the one the core fixed into the hold when it was placed, never the owner's terms at
-///         capture. Converted legs never create debt. A refund of a converted leg pays the token back at the rate its
+///         capture. A refund of a converted leg pays the token back at the rate its
 ///         captures and charges paid the settlement account, whatever the market or the reference rates do since.
 /// @dev `position`: the token in its low 160 bits and the owner's maximum conversion cost in basis points in the 16
 ///      bits above. Everything this contract receives in the settlement token is paid on to the settlement account in
-///      the same call; repayments of debt arrive later and `sweep` forwards them. Not upgradeable.
+///      the same call, and `sweep` forwards anything sent to it otherwise. Not upgradeable.
 /// @custom:reentrancy-guard _locked
 // Calls go to the fixed core, the program's own Conversion and its tokens, inside program-driven steps.
 // forge-lint: disable-start(reentrancy-no-eth, calls-loop)
-contract CashSource is ISource, ISettlementTokenGuard {
+contract CashSource is ISource {
     using FixedPointMathLib for uint256;
     using SafeCastLib for uint256;
 
@@ -51,7 +50,6 @@ contract CashSource is ISource, ISettlementTokenGuard {
 
     /// @notice What the source is: cash.
     uint8 public constant KIND = 1;
-    uint8 internal constant IN_USE_DEBT = 3;
     /// @notice The card authorization contract this source serves.
     ICardAuth public immutable PROGRAM;
     /// @notice Where every capture and charge is paid.
@@ -72,11 +70,6 @@ contract CashSource is ISource, ISettlementTokenGuard {
     mapping(bytes32 legId => uint256) private _locks;
     /// @notice What a converted leg paid in each settlement token, which its refunds in that token convert back at.
     mapping(bytes32 legId => mapping(address settlement => Paid)) public paidOf;
-    /// @notice Whether `owner` is among the debtors listed for `token`.
-    mapping(address token => mapping(address owner => bool)) public isDebtor;
-    /// @notice Who may owe this source core debt in each token: everyone a capture or charge left owing it, until
-    ///         pruneDebtors finds they owe nothing.
-    mapping(address token => address[]) public debtors;
     /// @dev Per converted token: the settlement value of its open converted holds at the rates they locked, above
     ///      the low 8 bits, which hold its place in _convertedTokens plus one (zero while it has none). A token keeps
     ///      its place, and so its slot, while its total is zero, until another token needs the place.
@@ -159,27 +152,18 @@ contract CashSource is ISource, ISettlementTokenGuard {
         return rate == 0 ? tokens : tokens.mulDiv(rate, ONE);
     }
 
-    function owed(address owner, bytes32 position) external view returns (uint256) {
-        (address token,) = _decode(position);
-        (uint256 debt,) = _owed(owner, token);
-        address settlement = PROGRAM.settlementToken();
-        if (debt == 0 || token == settlement) return debt;
-        (uint256 rate,) = _rate(token, settlement, BPS);
-        return debt.mulDiv(rate, ONE);
-    }
-
     function refundable(address, bytes32, bytes32) external pure returns (uint256) {
         return type(uint256).max;
     }
 
     function toleranceBps(address owner, bytes32 position) external view returns (uint16) {
         (address token,) = _decode(position);
-        return CORE.payeeTerms(owner, address(this), token).toleranceBps;
+        return CORE.captureTolerance(owner, address(this), token);
     }
 
     // Program.
 
-    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64 expiresAt, bool standIn)
+    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64 expiresAt)
         external
         onlyProgram
         returns (uint256)
@@ -200,9 +184,8 @@ contract CashSource is ISource, ISettlementTokenGuard {
             // Every place taken by another token's open holds: the leg stays as it is.
             if (_placeOf(token) == 0) return live ? uint256(h.held).mulDiv(locked, ONE) : 0;
             // The core fixes a hold's tolerance when it places it, from the owner's terms then; a live hold keeps it.
-            tolerance = live && locked != 0
-                ? lockedTolerance(legId)
-                : CORE.payeeTerms(owner, address(this), token).toleranceBps;
+            tolerance =
+                live && locked != 0 ? lockedTolerance(legId) : CORE.captureTolerance(owner, address(this), token);
             if (live && units <= uint256(h.held).mulDiv(locked, ONE)) {
                 // A smaller leg keeps the rate it locked.
                 rate = locked;
@@ -217,20 +200,6 @@ contract CashSource is ISource, ISettlementTokenGuard {
                 if (tokens > units.mulDivUp(ONE, rate)) rate = units.mulDivUp(ONE, tokens);
             }
         }
-        if (standIn) {
-            // A stand-in reserves what is free and captures the rest as debt within the offline cap.
-            uint256 most = (live ? h.held : 0) + CORE.available(owner, token);
-            if (tokens > most) tokens = most;
-            uint256 placed = h.held;
-            if (live) {
-                if (tokens < placed) _resize(owner, token, legId, placed = tokens);
-            } else {
-                placed = units.mulDivUp(ONE, rate);
-                CORE.holdFrom(owner, _request(token, legId, placed, expiresAt, true));
-            }
-            if (token != settlement) _lock(token, legId, rate, placed, tolerance);
-            return units;
-        }
         uint256 cap = (live ? h.held : 0) + CORE.available(owner, token);
         if (tokens > cap) {
             tokens = cap;
@@ -240,7 +209,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
             if (live) _release(owner, token, legId);
             return 0;
         }
-        if (!live) CORE.holdFrom(owner, _request(token, legId, tokens, expiresAt, false));
+        if (!live) CORE.holdFrom(owner, _request(token, legId, tokens, expiresAt));
         else if (tokens != h.held) _resize(owner, token, legId, tokens);
         if (token != settlement) _lock(token, legId, rate, tokens, tolerance);
         return units;
@@ -255,30 +224,22 @@ contract CashSource is ISource, ISettlementTokenGuard {
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
         if (h.token == address(0)) return (0, 0);
         bool isFinal = flags & CAPTURE_FINAL != 0;
-        bool beyond = flags & CAPTURE_BEYOND != 0;
+        bool free = flags & CAPTURE_FREE != 0;
         address settlement = PROGRAM.settlementToken();
         uint256 rate = lockedRate(legId);
         if (rate == 0) {
             uint256 amount = units < h.held ? units : h.held;
-            // Past the hold: free cash, and with CAPTURE_BEYOND debt within the owner's caps.
-            if (units > h.held && (beyond || flags & CAPTURE_FREE != 0)) {
-                amount = h.held + _excessRoom(owner, token, h.standIn, units - h.held, beyond);
-            }
-            // A short capture of free funds stays live: debt may follow through CAPTURE_BEYOND.
-            if (isFinal && !beyond && amount < units) isFinal = false;
+            // Past the hold, CAPTURE_FREE also takes the owner's free cash.
+            if (units > h.held && free) amount = h.held + _excessRoom(owner, token, units - h.held);
             if (amount != 0 || isFinal) _take(owner, token, legId, h, amount, isFinal);
-            if (amount > h.held) _noteDebtor(owner, token);
             _forward(settlement);
             return (amount, amount);
         }
-        // A converted leg never takes debt: past its hold it takes free tokens either way.
-        (paid, covered) = _captureConverted(
-            owner, token, settlement, legId, h, units, rate, flags & (CAPTURE_BEYOND | CAPTURE_FREE) != 0
-        );
-        if (isFinal && (beyond || covered >= units)) _release(owner, token, legId);
+        (paid, covered) = _captureConverted(owner, token, settlement, legId, h, units, rate, free);
+        if (isFinal) _release(owner, token, legId);
     }
 
-    function charge(address owner, bytes32 position, bytes32 legId, uint256 units, bool standIn)
+    function charge(address owner, bytes32 position, bytes32 legId, uint256 units)
         external
         onlyProgram
         returns (uint256 paid, uint256 covered)
@@ -286,10 +247,9 @@ contract CashSource is ISource, ISettlementTokenGuard {
         (address token, uint256 maxCost) = _decode(position);
         address settlement = PROGRAM.settlementToken();
         if (token == settlement) {
-            paid = _excessRoom(owner, token, standIn, units, true);
+            paid = _excessRoom(owner, token, units);
             if (paid == 0) return (0, 0);
-            CORE.charge(owner, token, legId, paid.toUint128(), address(this), standIn);
-            _noteDebtor(owner, token);
+            CORE.charge(owner, token, legId, paid.toUint128(), address(this));
             _forward(settlement);
             return (paid, paid);
         }
@@ -313,13 +273,13 @@ contract CashSource is ISource, ISettlementTokenGuard {
             cost = c.quoteOut(token, settlement, units);
         }
         uint256 price = rate == 0 ? cost : _bandPrice(units, rate, cost);
-        uint256 most = _excessRoom(owner, token, false, price, false);
+        uint256 most = _excessRoom(owner, token, price);
         // The hold's tolerance on the locked price caps what the owner pays; the issuer pays the rest of the purchase.
         uint256 limit = rate == 0 ? price : units.mulDivUp(ONE, rate).mulDiv(BPS + tolerance, BPS);
         bool capped = most > limit;
         if (capped) most = limit;
         if (most == 0) return (0, 0);
-        CORE.charge(owner, token, legId, most.toUint128(), address(this), false);
+        CORE.charge(owner, token, legId, most.toUint128(), address(this));
         paid = _swap(c, token, settlement, legId, units, most, cost, rate, band);
         // Short of the price, the owner's tokens cover their share of it and the rest falls to later sources.
         covered = capped || most == price ? units : units.mulDiv(most, price);
@@ -369,47 +329,8 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (tokens != 0) CORE.refund(owner, token, address(this), legId, tokens.toUint128());
     }
 
-    /// @notice Core debt anyone owes this source in the settlement token keeps that token from changing (reason 3).
-    ///         It reads the listed debtors until one owes; pruneDebtors keeps the list to those who may.
-    // At most the listed debtors, one core read each.
-    // forge-lint: disable-next-item(calls-loop)
-    function settlementTokenInUse(address) external view returns (uint8) {
-        address token = PROGRAM.settlementToken();
-        address[] storage list = debtors[token];
-        uint256 n = list.length;
-        for (uint256 i; i < n; ++i) {
-            (uint256 owed,) = _owed(list[i], token);
-            if (owed != 0) return IN_USE_DEBT;
-        }
-        return 0;
-    }
-
-    /// @notice Reads up to `count` debtors listed for `token` from index `start` on and drops those who owe this
-    ///         source nothing in it, moving the last listed debtor into each one's place. Anyone may call it.
-    // At most count core reads.
-    // forge-lint: disable-next-item(calls-loop)
-    function pruneDebtors(address token, uint256 start, uint256 count) external returns (uint256 dropped) {
-        address[] storage list = debtors[token];
-        uint256 i = start;
-        for (uint256 k; k < count && i < list.length; ++k) {
-            address owner = list[i];
-            (uint256 owed,) = _owed(owner, token);
-            if (owed != 0) {
-                ++i;
-                continue;
-            }
-            isDebtor[token][owner] = false;
-            list[i] = list[list.length - 1];
-            list.pop();
-            ++dropped;
-        }
-    }
-
-    function debtorCount(address token) external view returns (uint256) {
-        return debtors[token].length;
-    }
-
-    /// @notice Pays what this source holds of `token` (debt repaid to it) on to the settlement account.
+    /// @notice Pays what this source holds of `token` (anything sent to it outside a capture or charge) on to the
+    ///         settlement account.
     function sweep(address token) external {
         if (_locked) revert Reentrancy();
         _forward(token);
@@ -428,7 +349,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         IReservationCore.HoldRecord memory h,
         uint256 units,
         uint256 rate,
-        bool beyond
+        bool free
     ) private returns (uint256 paid, uint256 covered) {
         Conversion c = _conversion();
         uint256 band = _band(lockedTolerance(legId));
@@ -441,7 +362,7 @@ contract CashSource is ISource, ISettlementTokenGuard {
         // What the owner can put toward the band price: its hold and, past it, free tokens.
         uint256 price = _bandPrice(units, rate, cost);
         uint256 tokens = price;
-        if (tokens > h.held) tokens = h.held + (beyond ? _excessRoom(owner, token, false, tokens - h.held, false) : 0);
+        if (tokens > h.held) tokens = h.held + (free ? _excessRoom(owner, token, tokens - h.held) : 0);
         bool capped = tokens > h.captureLimit;
         if (capped) tokens = h.captureLimit;
         if (tokens == 0) return (0, 0);
@@ -577,46 +498,18 @@ contract CashSource is ISource, ISettlementTokenGuard {
         uint256 extra = amount > h.captureLimit ? amount - h.captureLimit : 0;
         amount -= extra;
         if (amount != 0 || isFinal) CORE.capture(owner, address(this), legId, amount.toUint128(), isFinal);
-        if (extra != 0) CORE.charge(owner, token, legId, extra.toUint128(), address(this), h.standIn);
+        if (extra != 0) CORE.charge(owner, token, legId, extra.toUint128(), address(this));
     }
 
-    /// @dev What a capture or charge may take past a hold, up to `want`: the owner's free balance, the owner's budget
-    ///      for this source and, with `debt`, core debt within the owner's cap for this source.
-    function _excessRoom(address owner, address token, bool standIn, uint256 want, bool debt)
-        private
-        view
-        returns (uint256 room)
-    {
+    /// @dev What a capture or charge may take past a hold, up to `want`: the owner's free balance, within the
+    ///      owner's budget for this source.
+    function _excessRoom(address owner, address token, uint256 want) private view returns (uint256 room) {
         room = CORE.available(owner, token);
-        if (debt) {
-            IReservationCore.PayeeTerms memory t = CORE.payeeTerms(owner, address(this), token);
-            uint256 cap = standIn && t.offlineCap > t.debtCap ? t.offlineCap : t.debtCap;
-            (uint256 owed, uint256 creditors) = _owed(owner, token);
-            if (cap > owed && (owed != 0 || creditors < MAX_CREDITORS)) room += cap - owed;
-        }
         IReservationCore.Budget memory b = CORE.budget(owner, address(this), token);
         uint256 used = uint256(b.spent) + b.outstanding;
         uint256 budget = b.limit > used ? b.limit - used : 0;
         if (room > budget) room = budget;
         if (room > want) room = want;
-    }
-
-    /// @dev Lists `owner` among the debtors in `token` once a capture or charge left them owing this source.
-    function _noteDebtor(address owner, address token) private {
-        if (isDebtor[token][owner]) return;
-        (uint256 owed,) = _owed(owner, token);
-        if (owed == 0) return;
-        isDebtor[token][owner] = true;
-        debtors[token].push(owner);
-    }
-
-    /// @dev What `owner` owes this source in `token`, and how many creditors they owe.
-    function _owed(address owner, address token) private view returns (uint256 owed, uint256 creditors) {
-        IReservationCore.Debt[] memory debts = CORE.debtOf(owner, token);
-        creditors = debts.length;
-        for (uint256 i; i < debts.length; ++i) {
-            if (debts[i].creditor == address(this)) return (debts[i].amount, creditors);
-        }
     }
 
     /// @dev Settlement units per token unit now, and whether converting at it costs at most `maxCost`; zero when the
@@ -703,12 +596,12 @@ contract CashSource is ISource, ISettlementTokenGuard {
         if (balance != 0) SafeTransferLib.safeTransfer(token, SETTLEMENT_ACCOUNT, balance);
     }
 
-    function _request(address token, bytes32 legId, uint256 tokens, uint64 expiresAt, bool standIn)
+    function _request(address token, bytes32 legId, uint256 tokens, uint64 expiresAt)
         private
         view
         returns (IReservationCore.HoldRequest memory)
     {
-        return IReservationCore.HoldRequest(token, legId, tokens.toUint128(), expiresAt, address(this), standIn);
+        return IReservationCore.HoldRequest(token, legId, tokens.toUint128(), expiresAt, address(this));
     }
 
     function _conversion() private view returns (Conversion) {

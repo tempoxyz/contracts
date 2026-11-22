@@ -5,7 +5,7 @@ import { IssuerDesk } from "../../src/programs/IssuerDesk.sol";
 import { CompEnv } from "./harness/CompStubs.sol";
 
 /// @notice A merchant win always closes its dispute: what the desk cannot take back from the cardholder, because they
-///         revoked the desk or have neither free funds nor debt room, stays owed as a receivable the desk collects later.
+///         revoked the desk or lack free funds, stays owed as a receivable the desk collects later from free funds.
 contract DisputeReceivablesTest is CompEnv {
     bytes32 internal constant P1 = bytes32("purchase-1");
 
@@ -15,7 +15,6 @@ contract DisputeReceivablesTest is CompEnv {
         core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
         usd.mint(alice, 920e6);
         auth.setPurchase(P1, alice, 80e6, 0);
-        _setDebtCap(alice, settlement, address(usd), 80e6);
         vm.prank(issuer);
         desk.openDispute(P1, 80e6, hex"c1a1");
         usd.mint(settlement, 80e6);
@@ -48,7 +47,6 @@ contract DisputeReceivablesTest is CompEnv {
     function test_resolveDispute_merchantWinClosesWhenTheCardholderHasNothingLeft() public {
         vm.prank(alice);
         usd.transfer(bob, 1000e6);
-        _setDebtCap(alice, settlement, address(usd), 0);
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
         assertEq(desk.openDisputes(), 0);
@@ -58,12 +56,19 @@ contract DisputeReceivablesTest is CompEnv {
     function test_resolveDispute_takesFreeCashAndRecordsOnlyTheRest() public {
         vm.prank(alice);
         usd.transfer(bob, 970e6);
-        _setDebtCap(alice, settlement, address(usd), 0);
         uint256 before = usd.balanceOf(settlement);
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
         assertEq(usd.balanceOf(settlement) - before, 30e6);
         assertEq(desk.receivables(alice, address(usd)), 50e6);
+        // Collecting takes only what is free: nothing until funds arrive, then up to what is owed.
+        vm.prank(issuer);
+        assertEq(desk.collectReceivable(alice, address(usd), 50e6), 0);
+        usd.mint(alice, 20e6);
+        vm.prank(issuer);
+        assertEq(desk.collectReceivable(alice, address(usd), 50e6), 20e6);
+        assertEq(desk.receivables(alice, address(usd)), 30e6);
+        assertEq(usd.balanceOf(settlement) - before, 50e6);
     }
 
     function test_resolveDispute_withRoomRecordsNoReceivable() public {

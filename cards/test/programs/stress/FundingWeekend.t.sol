@@ -36,6 +36,9 @@ contract FundingWeekendStressTest is FundingBase {
         uint256 maxUnsettled;
         uint256 maxIssuerDebt;
         uint256 advanced;
+        uint256 standIns;
+        uint256 standInsRefused;
+        uint256 standInsAbsorbed;
         uint256 shortfalls;
         uint256 maxShortfall;
         uint256 seized;
@@ -92,17 +95,11 @@ contract FundingWeekendStressTest is FundingBase {
         fundsTarget = n * buffer;
         parties.push(network);
         parties.push(bank);
-        vm.startPrank(settlement);
-        core.approveHolder(address(treasury), address(usd), type(uint128).max, 0);
-        vm.stopPrank();
-        _setDebtCap(settlement, address(treasury), address(usd), type(uint64).max);
         vm.prank(issuer);
         usd.approve(address(treasury), type(uint256).max);
         for (uint256 i; i < n; ++i) {
             uint256 balance = _rand(4) == 0 ? 20e6 + _rand(180e6) : 300e6 + _rand(2700e6);
             address h = _holder(i, balance, _cashOnly());
-            _setDebtCap(h, address(cash), address(usd), 150e6);
-            _setOfflineCap(h, address(cash), address(usd), 250e6);
             _setTolerance(h, address(cash), address(usd), uint16(tolBps));
         }
         _mint(bank, n * 10_000e6);
@@ -213,10 +210,16 @@ contract FundingWeekendStressTest is FundingBase {
         uint256 i = _rand(n);
         address h = holders[i];
         uint128 amount = _ticket();
-        bool standIn = _rand(100) < 2;
         bytes32 ref = keccak256(abi.encode("buy", buys.length));
-        (uint256 approved, bytes4 err, uint256 gasUsed) =
-            _try(h, cardIds[i], ref, amount, standIn ? cards.STAND_IN() : 0);
+        // 2% the network approves without asking (a stand-in): the issuer books it as a force post when it clears.
+        if (_rand(100) < 2) {
+            (, uint256 clears) = _fate();
+            buys.push(Buy(ref, uint32(i), uint32(hr + clears), 5, amount));
+            pending.push(buys.length - 1);
+            ++s.standIns;
+            return;
+        }
+        (uint256 approved, bytes4 err, uint256 gasUsed) = _try(h, cardIds[i], ref, amount, 0);
         ++s.auths;
         if (outage) ++s.outageAuths;
         if (approved == 0) {
@@ -277,7 +280,15 @@ contract FundingWeekendStressTest is FundingBase {
 
     function _resolve(Buy memory b) internal {
         address h = holders[b.holder];
-        if (b.fate == 3) {
+        if (b.fate == 5) {
+            (bool posted, uint256 paid) = _forcePost(h, cardIds[b.holder], b.ref, b.amount);
+            if (!posted) {
+                ++s.standInsRefused;
+            } else {
+                s.volume += paid;
+                s.standInsAbsorbed += b.amount - paid;
+            }
+        } else if (b.fate == 3) {
             _releaseBuy(h, b.ref);
         } else {
             uint128 amount = b.fate == 1
@@ -301,15 +312,12 @@ contract FundingWeekendStressTest is FundingBase {
         _checkHolder(h);
     }
 
-    /// @dev Wages land and repay what each holder owes the cash source first; the settlement account's receipts
-    ///      repay what it owes the treasury.
+    /// @dev Wages land; the settlement account repays what it owes the treasury from what it holds.
     function _paydays() internal {
-        uint256 before = usd.balanceOf(settlement);
         for (uint256 i; i < n; ++i) {
             _payday(holders[i], 300e6 + _rand(700e6));
         }
-        uint256 got = usd.balanceOf(settlement) - before;
-        if (got != 0) core.notifyCredit(address(usd), settlement, got);
+        _repayAdvance();
         _checkLedger();
     }
 
@@ -341,7 +349,7 @@ contract FundingWeekendStressTest is FundingBase {
         vm.prank(bank);
         usd.transfer(settlement, want - free);
         s.refilled += want - free;
-        core.notifyCredit(address(usd), settlement, want - free);
+        _repayAdvance();
         _checkLedger();
     }
 
@@ -469,7 +477,7 @@ contract FundingWeekendStressTest is FundingBase {
         } else {
             _settleNetwork();
         }
-        (uint256 held,,) = cards.exposure();
+        (uint256 held,) = cards.exposure();
         assertEq(held, 0, "holds left open");
         assertEq(_unsettled(), 0, "unsettled left");
         for (uint256 j; j < buys.length; ++j) {
@@ -503,6 +511,9 @@ contract FundingWeekendStressTest is FundingBase {
         _logUsd("max_unsettled", s.maxUnsettled);
         _logUsd("max_issuer_debt", s.maxIssuerDebt);
         _logUsd("advanced", s.advanced);
+        _log("stand_ins", s.standIns);
+        _log("stand_ins_refused", s.standInsRefused);
+        _logUsd("stand_ins_absorbed", s.standInsAbsorbed);
         _log("settlement_shortfalls", s.shortfalls);
         _logUsd("max_shortfall", s.maxShortfall);
         _logUsd("sponsor_seized", s.seized);

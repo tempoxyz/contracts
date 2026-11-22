@@ -5,7 +5,7 @@ import { ECDSA } from "solady/utils/ECDSA.sol";
 
 /// @title AccountKeys
 /// @notice The keys that sign cardholder actions for an account, and the guardians that can replace them when a device
-///         is lost. The reservation core keeps no account keys: money, holds, debts and card records stay keyed by the
+///         is lost. The reservation core keeps no account keys: money, holds and card records stay keyed by the
 ///         account, so a recovery changes only who signs. One registry serves every card program that consults it.
 /// @dev An account without keys signs as itself. Once it sets keys, only those keys sign, the account's own key
 ///      included only if it is listed. A guardian recovery waits RECOVERY_DELAY before the new key signs, and until

@@ -5,13 +5,14 @@ folder proves the model matches the node.
 
 - `traces/seed-<n>.json`: random operation sequences recorded on a Tempo dev node. Each operation stores its sender,
   block time, call, outcome (ok or revert data), the core events it emitted, and the changes to the full core state
-  `StateReader` reads (balances, reserved, available, budgets, payee terms, debts and holds over a fixed set of
+  `StateReader` reads (balances, reserved, available, budgets, capture tolerances and holds over a fixed set of
   accounts, tokens and hold ids).
 - `Differential.t.sol` replays every trace against the model and requires the same outcome, revert data, events and
   state after every operation, then checks the core invariants (`CoreInvariants.sol`). Each trace must name the node
-  commit it was recorded on, and the traces together must reach every core call's success path, every core error
-  (`DebtCapExceeded` and `TooManyCreditors` included) and the debt events at least as often as `_coverage()` lists,
-  the same minimums the harness's `run.ts` enforces on a run.
+  commit it was recorded on, and the traces together must reach every core call's success path and every core error
+  at least as often as `_coverage()` lists, the same minimums the harness's `run.ts` enforces on a run. The committed
+  traces predate the core without protocol debt or stand-in holds, so the replay is skipped until they are
+  regenerated.
 - `ModelRandom.t.sol` runs the same kind of sequences against the model alone, without a node, checking the
   invariants only.
 

@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-import {
-    IReservationCore,
-    MAX_CREDITORS,
-    RESERVATION_CORE_ADDRESS
-} from "../../../src/programs/interfaces/IReservationCore.sol";
+import { IReservationCore, RESERVATION_CORE_ADDRESS } from "../../../src/programs/interfaces/IReservationCore.sol";
 
 interface IStateReaderToken {
     function totalSupply() external view returns (uint256);
@@ -19,8 +15,8 @@ contract StateReader {
     IReservationCore private constant CORE = IReservationCore(RESERVATION_CORE_ADDRESS);
 
     /// @notice The state vector: the block time; per token its supply and each account's available and reserved;
-    ///         per (owner, other account, token) the budget and payee terms; per (owner, token) the live debts padded
-    ///         to MAX_CREDITORS; per (owner, placer, id) the hold record.
+    ///         per (owner, other account, token) the budget and capture tolerance; per (owner, placer, id) the hold
+    ///         record.
     function snapshot(address[] calldata accounts, address[] calldata tokens, bytes32[] calldata ids)
         external
         view
@@ -28,9 +24,7 @@ contract StateReader {
     {
         uint256 a = accounts.length;
         uint256 t = tokens.length;
-        out = new uint256[](
-            1 + t * (1 + 2 * a) + a * a * t * 9 + a * t * (1 + 3 * MAX_CREDITORS) + a * a * ids.length * 7
-        );
+        out = new uint256[](1 + t * (1 + 2 * a) + a * a * t * 6 + a * a * ids.length * 6);
         uint256 n;
         out[n++] = block.timestamp;
         for (uint256 i; i < t; ++i) {
@@ -49,26 +43,7 @@ contract StateReader {
                     out[n++] = b.outstanding;
                     out[n++] = b.period;
                     out[n++] = b.periodStart;
-                    IReservationCore.PayeeTerms memory p = CORE.payeeTerms(accounts[o], accounts[h], tokens[i]);
-                    out[n++] = p.debtCap;
-                    out[n++] = p.offlineCap;
-                    out[n++] = p.toleranceBps;
-                    out[n++] = p.debtTerm;
-                }
-            }
-        }
-        for (uint256 o; o < a; ++o) {
-            for (uint256 i; i < t; ++i) {
-                IReservationCore.Debt[] memory debts = CORE.debtOf(accounts[o], tokens[i]);
-                out[n++] = debts.length;
-                for (uint256 d; d < MAX_CREDITORS; ++d) {
-                    if (d < debts.length) {
-                        out[n++] = uint160(debts[d].creditor);
-                        out[n++] = debts[d].amount;
-                        out[n++] = debts[d].lapsesAt;
-                    } else {
-                        n += 3;
-                    }
+                    out[n++] = CORE.captureTolerance(accounts[o], accounts[h], tokens[i]);
                 }
             }
         }
@@ -82,7 +57,6 @@ contract StateReader {
                     out[n++] = r.captureLimit;
                     out[n++] = r.expiresAt;
                     out[n++] = r.kind;
-                    out[n++] = r.standIn ? 1 : 0;
                 }
             }
         }

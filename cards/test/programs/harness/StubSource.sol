@@ -44,10 +44,6 @@ contract StubSource is ISource {
         return limitOf[owner] > used ? limitOf[owner] - used : 0;
     }
 
-    function owed(address, bytes32) external pure returns (uint256) {
-        return 0;
-    }
-
     function held(address owner, bytes32, bytes32 legId) external view returns (uint256) {
         return legs[owner][legId].held;
     }
@@ -61,7 +57,7 @@ contract StubSource is ISource {
         return 0;
     }
 
-    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64, bool)
+    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64)
         external
         onlyProgram
         returns (uint256)
@@ -91,7 +87,7 @@ contract StubSource is ISource {
         return (taken, taken);
     }
 
-    function charge(address, bytes32, bytes32, uint256, bool) external view onlyProgram returns (uint256, uint256) {
+    function charge(address, bytes32, bytes32, uint256) external view onlyProgram returns (uint256, uint256) {
         return (0, 0);
     }
 

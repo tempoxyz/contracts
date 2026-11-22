@@ -7,7 +7,7 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 import {
     IReservationCore,
-    MAX_CREDITORS,
+    KIND_HOLD,
     RESERVATION_CORE_ADDRESS
 } from "../../../src/programs/interfaces/IReservationCore.sol";
 import { ModelEnv } from "./ModelEnv.sol";
@@ -60,7 +60,6 @@ abstract contract CoreInvariants is ModelEnv {
             (ok, ret) = op.kind == KIND_MINT
                 ? token.call(abi.encodeCall(ITIP20.mint, (to, amount)))
                 : token.call(abi.encodeCall(ITIP20.transfer, (to, amount)));
-            if (ok) core.notifyCredit(token, to, amount);
             return (ok, ret);
         }
         if (op.kind == KIND_PAUSE) {
@@ -110,17 +109,13 @@ abstract contract CoreInvariants is ModelEnv {
                     }
                 }
             }
-            for (uint256 k; k < t.tokens.length; ++k) {
-                uint256 base = _iDebt(t, o, k);
-                assertLe(s[base], MAX_CREDITORS, at);
-                for (uint256 d; d < s[base]; ++d) {
-                    uint256 e = base + 1 + d * 3;
-                    if (s[e + 1] <= _owedBefore(before, base, s[e])) continue;
-                    // Debt only grows within the creditor's cap: the higher of the debt and stand-in caps.
-                    uint256 h = _accountIndex(t, address(uint160(s[e])));
-                    uint256 i = _iPair(t, o, h, k);
-                    uint256 cap = s[i + 5] > s[i + 6] ? s[i + 5] : s[i + 6];
-                    assertLe(s[e + 1], cap, string.concat(at, ": debt within cap"));
+            // A live hold never reserves more than its captures may still pay.
+            for (uint256 p; p < a; ++p) {
+                for (uint256 d; d < t.ids.length; ++d) {
+                    uint256 r = _iHold(t, o, p, t.ids[d]);
+                    if (s[r + 5] == KIND_HOLD) {
+                        assertLe(s[r + 2], s[r + 3], string.concat(at, ": held <= capture limit"));
+                    }
                 }
             }
         }
@@ -132,45 +127,40 @@ abstract contract CoreInvariants is ModelEnv {
         bytes memory args = _args(op.data);
         if (selector == uint32(IReservationCore.hold.selector)) {
             IReservationCore.HoldRequest memory request = abi.decode(args, (IReservationCore.HoldRequest));
-            _placement(
-                t, op, before, op.caller, op.caller, request.id, request.token, request.amount, request.standIn, at
-            );
+            _placement(t, op, before, op.caller, op.caller, request.id, request.token, request.amount, at);
         } else if (selector == uint32(IReservationCore.holdFrom.selector)) {
             (address owner, IReservationCore.HoldRequest memory request) =
                 abi.decode(args, (address, IReservationCore.HoldRequest));
-            _placement(t, op, before, owner, op.caller, request.id, request.token, request.amount, request.standIn, at);
+            _placement(t, op, before, owner, op.caller, request.id, request.token, request.amount, at);
         } else if (selector == uint32(IReservationCore.pledge.selector)) {
             (, address token, bytes32 id, uint128 amount,) =
                 abi.decode(args, (address, address, bytes32, uint128, uint64));
-            _placement(t, op, before, op.caller, op.caller, id, token, amount, false, at);
+            _placement(t, op, before, op.caller, op.caller, id, token, amount, at);
         } else if (
             selector == uint32(IReservationCore.pledgeFrom.selector)
                 || selector == uint32(IReservationCore.lien.selector)
         ) {
             (address owner, address token, bytes32 id, uint128 amount,) =
                 abi.decode(args, (address, address, bytes32, uint128, uint64));
-            _placement(t, op, before, owner, op.caller, id, token, amount, false, at);
+            _placement(t, op, before, owner, op.caller, id, token, amount, at);
         } else if (selector == uint32(IReservationCore.refund.selector) && op.ok) {
-            (address owner, address token,,, uint128 amount) =
-                abi.decode(args, (address, address, address, bytes32, uint128));
-            uint128 forgiven;
-            for (uint256 i; i < op.topics.length; ++i) {
-                if (op.topics[i][0] == IReservationCore.Refunded.selector) {
-                    (,,, forgiven) = abi.decode(op.logData[i], (address, bytes32, uint128, uint128));
-                }
-            }
-            uint256 k = _tokenIndex(t, token);
-            uint256 c = _accountIndex(t, op.caller);
-            uint256 i = _iAvailable(t, k, c);
-            // A refund costs its caller exactly what was not forgiven, and forgives at most what the owner owed it.
-            assertEq(before[i] - t.expected[i], amount - forgiven, string.concat(at, ": refund paid by caller"));
-            uint256 base = _iDebt(t, _accountIndex(t, owner), k);
-            assertLe(forgiven, _owedBefore(before, base, uint160(op.caller)), string.concat(at, ": forgiven <= owed"));
+            (, address token,,, uint128 amount) = abi.decode(args, (address, address, address, bytes32, uint128));
+            uint256 i = _iAvailable(t, _tokenIndex(t, token), _accountIndex(t, op.caller));
+            // A refund costs its caller exactly the amount: nothing is forgiven.
+            assertEq(before[i] - t.expected[i], amount, string.concat(at, ": refund paid by caller"));
+        } else if (selector == uint32(IReservationCore.charge.selector) && op.ok) {
+            (address owner, address token,, uint128 amount,) =
+                abi.decode(args, (address, address, bytes32, uint128, address));
+            uint256 o = _accountIndex(t, owner);
+            if (o == type(uint256).max) return;
+            uint256 i = _iAvailable(t, _tokenIndex(t, token), o);
+            // A charge pays exactly the amount, all of it from the owner's free balance.
+            assertEq(before[i] - t.expected[i], amount, string.concat(at, ": charge paid from free balance"));
         }
     }
 
-    /// @dev A key holding a record cannot be placed again until settlement deletes it; a placement that must be backed
-    ///      in full needs that much available, and one refused for lack of it had less.
+    /// @dev A key holding a record cannot be placed again until settlement deletes it; every placement is backed in
+    ///      full, so it needs that much available, and one refused for lack of it had less.
     function _placement(
         Trace memory t,
         Op memory op,
@@ -180,7 +170,6 @@ abstract contract CoreInvariants is ModelEnv {
         bytes32 id,
         address token,
         uint128 amount,
-        bool standIn,
         string memory at
     ) internal view {
         uint256 o = _accountIndex(t, owner);
@@ -191,7 +180,7 @@ abstract contract CoreInvariants is ModelEnv {
         if (before[key] != 0) assertFalse(op.ok, string.concat(at, ": placed over a live record"));
         if (k == type(uint256).max) return;
         uint256 avail = before[_iAvailable(t, k, o)];
-        if (op.ok && !standIn) assertLe(amount, avail, string.concat(at, ": backed in full"));
+        if (op.ok) assertLe(amount, avail, string.concat(at, ": backed in full"));
         if (!op.ok && _selector(op.ret) == uint32(IReservationCore.InsufficientAvailable.selector)) {
             assertGt(amount, avail, string.concat(at, ": refused with enough available"));
         }
@@ -209,12 +198,7 @@ abstract contract CoreInvariants is ModelEnv {
 
     function _iPair(Trace memory t, uint256 o, uint256 h, uint256 k) internal pure returns (uint256) {
         uint256 a = t.accounts.length;
-        return 1 + t.tokens.length * (1 + 2 * a) + ((o * a + h) * t.tokens.length + k) * 9;
-    }
-
-    function _iDebt(Trace memory t, uint256 o, uint256 k) internal pure returns (uint256) {
-        uint256 a = t.accounts.length;
-        return _iPair(t, a, 0, 0) + (o * t.tokens.length + k) * (1 + 3 * MAX_CREDITORS);
+        return 1 + t.tokens.length * (1 + 2 * a) + ((o * a + h) * t.tokens.length + k) * 6;
     }
 
     function _iHold(Trace memory t, uint256 o, uint256 p, bytes32 id) internal pure returns (uint256) {
@@ -223,22 +207,14 @@ abstract contract CoreInvariants is ModelEnv {
         while (t.ids[k] != id) {
             ++k;
         }
-        return _iDebt(t, a, 0) + ((o * a + p) * t.ids.length + k) * 7;
+        return _iPair(t, a, 0, 0) + ((o * a + p) * t.ids.length + k) * 6;
     }
 
     function _name(Trace memory t, uint256 i) internal pure returns (string memory) {
         if (i == 0) return "time";
         if (i < _iPair(t, 0, 0, 0)) return "supply/available/reserved";
-        if (i < _iDebt(t, 0, 0)) return "budget/payeeTerms";
-        if (i < _iDebt(t, t.accounts.length, 0)) return "debtOf";
+        if (i < _iPair(t, t.accounts.length, 0, 0)) return "budget/captureTolerance";
         return "getHold";
-    }
-
-    function _owedBefore(uint256[] memory before, uint256 base, uint256 creditor) internal pure returns (uint256) {
-        for (uint256 d; d < before[base]; ++d) {
-            if (before[base + 1 + d * 3] == creditor) return before[base + 2 + d * 3];
-        }
-        return 0;
     }
 
     function _accountIndex(Trace memory t, address account) internal pure returns (uint256) {

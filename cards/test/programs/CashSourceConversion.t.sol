@@ -185,12 +185,10 @@ contract CashSourceConversionTest is AuthEnv {
         (uint128 tokens, uint128 units) = cash.paidOf(cards.legId(P1, TOKEN_LEG), address(usd));
         assertEq(tokens, cost);
         assertEq(units, 30e6);
-        // A foreign token never becomes debt: past the owner's euros the issuer absorbs the charge.
-        _setDebtCap(alice, address(cash), address(eur), 500e6);
+        // Past the owner's euros the issuer absorbs the charge.
         vm.prank(issuer);
         cards.charge(CARD, P2, 200e6, merchant);
         assertEq(eur.balanceOf(alice), 0);
-        assertEq(_owed(alice, address(eur), address(cash)), 0);
         // Too costly a conversion takes nothing.
         _tokenFirst(20);
         eur.mint(alice, 100e6);
@@ -432,21 +430,18 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(eur.balanceOf(issuer), 0);
     }
 
-    function test_localIssuer_lateChargeIsOwedInItsToken() public {
+    function test_localIssuer_chargeWithoutEuros_issuerAbsorbsItInItsToken() public {
         _localIssuer();
         _tokenFirst(0);
-        _setDebtCap(alice, address(cash), address(eur), 50e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 30e6, merchant);
-        assertEq(_owed(alice, address(eur), address(cash)), 30e6);
-        assertEq(cards.purchaseOf(P1).refunded, 0);
-        // Euros arriving later repay the source, which forwards them to the settlement account.
+        assertEq(cards.purchaseOf(P1).token, address(eur));
+        assertEq(cards.purchaseOf(P1).refunded, 30e6);
+        assertEq(eur.balanceOf(settlement), 0);
+        // Euros arriving later stay the owner's: nothing is owed for the absorbed charge.
         eur.mint(alice, 50e6);
-        _repay(alice, address(eur));
-        assertEq(_owed(alice, address(eur), address(cash)), 0);
-        cash.sweep(address(eur));
-        assertEq(eur.balanceOf(settlement), 30e6);
-        assertEq(eur.balanceOf(alice), 20e6);
+        assertEq(core.available(alice, address(eur)), 50e6);
+        assertEq(eur.balanceOf(address(cash)), 0);
     }
 
     function test_localIssuer_forcePostConvertsCashAndRefundsWhatItTook() public {
@@ -458,7 +453,6 @@ contract CashSourceConversionTest is AuthEnv {
         cards.charge(CARD, P1, 10e6, merchant);
         assertEq(usd.balanceOf(alice), 100e6 - cost);
         assertEq(eur.balanceOf(settlement), 10e6);
-        assertEq(_owed(alice, address(eur), address(cash)), 0);
         _fundRefunds(eur, 10e6);
         vm.prank(issuer);
         cards.refund(P1, 10e6);
@@ -466,28 +460,25 @@ contract CashSourceConversionTest is AuthEnv {
         assertEq(usd.balanceOf(alice), 100e6);
     }
 
-    function test_localIssuer_refundPastDebtCapRepaysAndLandsTheRestInItsToken() public {
+    function test_localIssuer_refundOfAPartlyAbsorbedChargeLandsInItsToken() public {
         _localIssuer();
         _tokenFirst(0);
         eur.mint(alice, 20e6);
-        _setDebtCap(alice, address(cash), address(eur), 50e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 80e6, merchant);
         assertEq(cards.purchaseOf(P1).token, address(eur));
-        assertEq(_owed(alice, address(eur), address(cash)), 50e6);
-        // The issuer absorbed the 10 neither cash nor debt covered, so 70 refunds.
-        assertEq(cards.purchaseOf(P1).refunded, 10e6);
+        assertEq(eur.balanceOf(settlement), 20e6);
+        // The issuer absorbed the 60 the owner's euros did not cover, so 20 refunds.
+        assertEq(cards.purchaseOf(P1).refunded, 60e6);
         _fundRefunds(eur, 80e6);
         vm.prank(issuer);
         vm.expectRevert(CardAuthBase.InvalidAmount.selector);
-        cards.refund(P1, 70e6 + 1);
+        cards.refund(P1, 20e6 + 1);
         vm.prank(issuer);
-        cards.refund(P1, 70e6);
-        assertEq(_owed(alice, address(eur), address(cash)), 0);
+        cards.refund(P1, 20e6);
         assertEq(core.available(alice, address(eur)), 20e6);
-        // The forgiven debt stays with the source until it is swept to the settlement account.
-        assertEq(eur.balanceOf(address(cash)), 50e6);
-        assertEq(eur.balanceOf(issuer), 10e6);
+        assertEq(eur.balanceOf(address(cash)), 0);
+        assertEq(eur.balanceOf(issuer), 60e6);
     }
 
     // Moving the program to another settlement token.
@@ -654,11 +645,6 @@ contract CashSourceConversionTest is AuthEnv {
         vm.prank(key);
         vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
         cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), 0);
-        // A stand-in approval counts too.
-        uint8 standIn = cards.STAND_IN();
-        vm.prank(key);
-        vm.expectRevert(CardAuthBase.OperatorCapExceeded.selector);
-        cards.authorize(CARD, P2, 52.81e6, merchant, uint64(block.timestamp + 7 days), standIn);
         vm.prank(key);
         cards.authorize(CARD, P2, 50e6, merchant, uint64(block.timestamp + 7 days), 0);
         // An increase counts what it adds.

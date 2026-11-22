@@ -10,7 +10,7 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "../../../src/program
 import { MockReservationCore } from "../harness/MockReservationCore.sol";
 
 /// @notice The reservation core model etched at its precompile address over real TIP-20 tokens, with helpers that
-///         credit accounts the way the node's token does (repaying debt from each credit).
+///         credit accounts. Credits never move funds onward.
 abstract contract ModelEnv is Test {
     address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
     MockReservationCore internal core = MockReservationCore(RESERVATION_CORE_ADDRESS);
@@ -33,17 +33,13 @@ abstract contract ModelEnv is Test {
         vm.label(address(token), symbol);
     }
 
-    /// @dev Mints and repays the recipient's debt from the credit, as the node's token does.
     function _mint(ITIP20Token token, address to, uint256 amount) internal {
         token.mint(to, amount);
-        core.notifyCredit(address(token), to, amount);
     }
 
-    /// @dev Transfers and repays the recipient's debt from the credit, as the node's token does.
     function _send(ITIP20Token token, address from, address to, uint256 amount) internal {
         vm.prank(from);
         token.transfer(to, amount);
-        core.notifyCredit(address(token), to, amount);
     }
 
     /// @dev Gives `token` a blacklist policy this contract administers and returns its id.
@@ -52,18 +48,13 @@ abstract contract ModelEnv is Test {
         token.changeTransferPolicyId(policy);
     }
 
-    function _request(address token, bytes32 id, uint128 amount, address payee, uint64 ttl, bool standIn)
+    function _request(address token, bytes32 id, uint128 amount, address payee, uint64 ttl)
         internal
         view
         returns (IReservationCore.HoldRequest memory)
     {
         return IReservationCore.HoldRequest({
-            token: token,
-            id: id,
-            amount: amount,
-            payee: payee,
-            expiresAt: uint64(vm.getBlockTimestamp()) + ttl,
-            standIn: standIn
+            token: token, id: id, amount: amount, payee: payee, expiresAt: uint64(vm.getBlockTimestamp()) + ttl
         });
     }
 

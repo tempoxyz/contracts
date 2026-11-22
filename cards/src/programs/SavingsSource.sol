@@ -4,7 +4,7 @@ pragma solidity ^0.8.36;
 import { Conversion } from "./Conversion.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
+import { CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 import { FixedPointMathLib } from "solady/utils/FixedPointMathLib.sol";
 import { SafeCastLib } from "solady/utils/SafeCastLib.sol";
 import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
@@ -16,7 +16,7 @@ import { IERC20Like } from "tempo-earn/interfaces/external/IERC20Like.sol";
 ///         captured by this contract, which is also their payee. A capture redeems the shares and pays their value to
 ///         the settlement account in the same call, converting through the program's Conversion when the vault's asset
 ///         is not the settlement token. A refund deposits the issuer's cash back into the vault and refunds the shares
-///         it mints. Savings never create debt or take charges.
+///         it mints. Savings never take charges.
 /// @dev Deployed with a fixed vault and funder. When the vault quotes but cannot redeem at once, the float pays the
 ///      settlement account and the shares wait here for the funder's `redeemHeld`. From that first deferred capture
 ///      until a redemption works again, new legs hold only what the float can still pay for past what earlier such
@@ -124,22 +124,18 @@ contract SavingsSource is ISource {
         return _value(CORE.getHold(owner, address(this), legId).held);
     }
 
-    function owed(address, bytes32) external pure returns (uint256) {
-        return 0;
-    }
-
     function refundable(address, bytes32, bytes32 legId) external view returns (uint256) {
         Leg memory l = legs[legId];
         return l.captured - l.refunded;
     }
 
     function toleranceBps(address owner, bytes32) external view returns (uint16) {
-        return CORE.payeeTerms(owner, address(this), SHARE).toleranceBps;
+        return CORE.captureTolerance(owner, address(this), SHARE);
     }
 
     // Program.
 
-    function hold(address owner, bytes32, bytes32 legId, uint256 units, uint64 expiresAt, bool)
+    function hold(address owner, bytes32, bytes32 legId, uint256 units, uint64 expiresAt)
         external
         onlyProgram
         returns (uint256)
@@ -174,7 +170,7 @@ contract SavingsSource is ISource {
             if (!g.placed) g.placed = true;
             if (promised) g.promisedIn = d.epoch;
             CORE.holdFrom(
-                owner, IReservationCore.HoldRequest(SHARE, legId, shares.toUint128(), expiresAt, address(this), false)
+                owner, IReservationCore.HoldRequest(SHARE, legId, shares.toUint128(), expiresAt, address(this))
             );
         } else if (shares != h.held) {
             CORE.adjust(owner, address(this), legId, shares.toUint128());
@@ -195,12 +191,8 @@ contract SavingsSource is ISource {
         bool isFinal = flags & CAPTURE_FINAL != 0;
         uint256 shares = units == 0 ? 0 : _sharesFor(units);
         uint256 most = h.held;
-        bool free = flags & CAPTURE_FREE != 0;
-        if (shares > most && (free || flags & CAPTURE_BEYOND != 0)) {
-            most += _budgetRoom(owner, CORE.available(owner, SHARE));
-            // CAPTURE_BEYOND stays within the hold's tolerance; CAPTURE_FREE grows the hold to what it takes.
-            if (!free && most > h.captureLimit) most = h.captureLimit;
-        }
+        // CAPTURE_FREE grows the hold to what it takes of the owner's free shares.
+        if (shares > most && flags & CAPTURE_FREE != 0) most += _budgetRoom(owner, CORE.available(owner, SHARE));
         Leg storage g = legs[legId];
         Deferral memory d = deferral;
         bool promised = d.active && g.promisedIn == d.epoch;
@@ -225,7 +217,7 @@ contract SavingsSource is ISource {
         return (paid, paid);
     }
 
-    function charge(address, bytes32, bytes32, uint256, bool) external view onlyProgramView returns (uint256, uint256) {
+    function charge(address, bytes32, bytes32, uint256) external view onlyProgramView returns (uint256, uint256) {
         return (0, 0);
     }
 
@@ -355,7 +347,7 @@ contract SavingsSource is ISource {
     /// @dev Shares a promised leg of `owner` may still grow by: what the float pays for past `promised` shares, so
     ///      that its capture limit (the hold plus the owner's tolerance) stays within it.
     function _floatRoom(address owner, uint256 promised) private view returns (uint256) {
-        uint16 tol = CORE.payeeTerms(owner, address(this), SHARE).toleranceBps;
+        uint16 tol = CORE.captureTolerance(owner, address(this), SHARE);
         return _floatShares(promised) * BPS / (BPS + tol);
     }
 

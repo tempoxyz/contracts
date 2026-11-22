@@ -120,7 +120,6 @@ contract RedrawRightsTest is CompEnv {
         auth.setPurchase(P1, alice, 100e6, 0);
         vm.prank(alice);
         usd.transfer(settlement, 40e6);
-        _setDebtCap(alice, settlement, address(usd), 100e6);
         vm.prank(issuer);
         desk.openDispute(P1, 100e6, hex"c1a1");
         vm.prank(settlement);

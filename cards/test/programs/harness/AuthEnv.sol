@@ -159,43 +159,10 @@ abstract contract AuthEnv is CoreEnv {
         }
     }
 
-    /// @dev What `owner` owes `creditor` in `token`.
-    function _owed(address owner, address token, address creditor) internal view returns (uint128) {
-        IReservationCore.Debt[] memory debts = core.debtOf(owner, token);
-        for (uint256 i; i < debts.length; ++i) {
-            if (debts[i].creditor == creditor) return debts[i].amount;
-        }
-        return 0;
-    }
-
-    /// @dev Repays `owner`'s debt in `token` from its whole balance, as the node does from each credit as it lands.
-    function _repay(address owner, address token) internal {
-        core.notifyCredit(token, owner, IMockToken(token).balanceOf(owner));
-    }
-
-    /// @dev Sets `owner`'s debt cap for `payee` in `token`, keeping its other terms.
-    function _setDebtCap(address owner, address payee, address token, uint128 debtCap) internal {
-        IReservationCore.PayeeTerms memory t = core.payeeTerms(owner, payee, token);
-        t.debtCap = debtCap;
-        vm.prank(owner);
-        core.setPayeeTerms(payee, token, t);
-    }
-
-    /// @dev Sets `owner`'s offline cap for `payee` in `token`, keeping its other terms.
-    function _setOfflineCap(address owner, address payee, address token, uint128 offlineCap) internal {
-        IReservationCore.PayeeTerms memory t = core.payeeTerms(owner, payee, token);
-        t.offlineCap = offlineCap;
-        vm.prank(owner);
-        core.setPayeeTerms(payee, token, t);
-    }
-
-    /// @dev Sets `owner`'s capture tolerance for `payee` in `token`, keeping its other terms. Holds placed
-    ///      later take it.
+    /// @dev Sets `owner`'s capture tolerance for `payee` in `token`. Holds placed later take it.
     function _setTolerance(address owner, address payee, address token, uint16 bps) internal {
-        IReservationCore.PayeeTerms memory t = core.payeeTerms(owner, payee, token);
-        t.toleranceBps = bps;
         vm.prank(owner);
-        core.setPayeeTerms(payee, token, t);
+        core.setCaptureTolerance(payee, token, bps);
     }
 
     /// @dev The model holds every reserved token itself, so its balance must equal the total reserved.

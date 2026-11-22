@@ -29,7 +29,7 @@ contract AbsorbedExposureTest is AuthEnv {
         vm.prank(issuer);
         cards.charge(CARD, bytes32("fp-1"), 60e6, merchant);
         assertEq(usd.balanceOf(settlement), 0, "nothing was covered");
-        (uint256 held,, uint256 unsettled) = cards.exposure();
+        (uint256 held, uint256 unsettled) = cards.exposure();
         assertEq(held, 0);
         assertEq(unsettled, 60e6);
         assertEq(treasury.exposure(), 60e6);
@@ -44,25 +44,22 @@ contract AbsorbedExposureTest is AuthEnv {
         assertEq(usd.balanceOf(sponsor) - before, 60e6);
     }
 
-    function test_capturedStandInOnEmptyCard_keepsCountingUntilAcknowledged() public {
-        uint8 si = cards.STAND_IN();
+    function test_absorbedChargeOnEmptyCard_keepsCountingUntilAcknowledged() public {
+        // A purchase the network approved without asking, booked as a force post on an empty card: all absorbed.
         vm.prank(issuer);
-        cards.authorize(CARD, bytes32("si-1"), 100e6, merchant, uint64(block.timestamp + 1 days), si);
-        assertEq(treasury.exposure(), 100e6);
-        vm.prank(issuer);
-        cards.capture(bytes32("si-1"), 100e6, true);
-        assertEq(treasury.exposure(), 100e6, "absorbed capture still owed to the network");
-        // The next stand-in is refused while the first is unsettled.
+        cards.charge(CARD, bytes32("si-1"), 100e6, merchant);
+        assertEq(treasury.exposure(), 100e6, "absorbed charge still owed to the network");
+        // The next one is refused while the first is unsettled.
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 101e6, 100e6));
-        cards.authorize(CARD, bytes32("si-2"), 1e6, merchant, uint64(block.timestamp + 1 days), si);
+        cards.charge(CARD, bytes32("si-2"), 1e6, merchant);
         // Once the sponsor acknowledges settlement, the absorbed amount clears like any captured net.
         (uint64 seq,,,) = cards.ledger();
         vm.prank(sponsor);
         treasury.acknowledgeSettlement(seq, 0);
         assertEq(treasury.exposure(), 0);
         vm.prank(issuer);
-        cards.authorize(CARD, bytes32("si-2"), 1e6, merchant, uint64(block.timestamp + 1 days), si);
+        cards.charge(CARD, bytes32("si-2"), 1e6, merchant);
     }
 
     function test_captureOverageOnEmptyCard_isCheckedByTheGuard() public {

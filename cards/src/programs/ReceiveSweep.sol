@@ -10,9 +10,8 @@ interface ITIP20Memo {
 }
 
 /// @title ReceiveSweep
-/// @notice An owner's receive policy: money paid to it through `pay` first lands as a normal credit, so the core
-///         repays the owner's capped debt from it, and what is left goes into the owner's chosen savings vault as
-///         shares in the owner's name. The owner sets the vault and approves this contract to move the token; a plain
+/// @notice An owner's receive policy: money paid to it through `pay` first lands as a normal credit, then goes into
+///         the owner's chosen savings vault as shares in the owner's name. The owner sets the vault and approves this contract to move the token; a plain
 ///         transfer to the owner skips the policy.
 contract ReceiveSweep {
     using SafeTransferLib for address;
@@ -27,15 +26,15 @@ contract ReceiveSweep {
 
     error InvalidVault();
 
-    /// @notice Sets where the caller's incoming `token` goes after debt; the zero vault turns the sweep off.
+    /// @notice Sets where the caller's incoming `token` goes; the zero vault turns the sweep off.
     function setSweep(address token, IEarnVault vault) external {
         if (address(vault) != address(0) && vault.asset() != token) revert InvalidVault();
         sweepOf[msg.sender][token] = vault;
         emit SweepSet(msg.sender, token, address(vault));
     }
 
-    /// @notice Pays `amount` of `token` from the caller to `owner` with `memo`, then sweeps what the credit left
-    ///         after debt repayment into the owner's vault. A vault that refuses the deposit leaves it with the owner
+    /// @notice Pays `amount` of `token` from the caller to `owner` with `memo`, then sweeps what the credit added
+    ///         to the owner's balance into the owner's vault. A vault that refuses the deposit leaves it with the owner
     ///         as cash. Returns the assets swept.
     function pay(address owner, address token, uint256 amount, bytes32 memo) external returns (uint256 swept) {
         uint256 before = IERC20Like(token).balanceOf(owner);
@@ -43,7 +42,7 @@ contract ReceiveSweep {
         IEarnVault vault = sweepOf[owner][token];
         if (address(vault) == address(0)) return 0;
         uint256 landed = IERC20Like(token).balanceOf(owner);
-        // The core repays debt out of the credit, so only the rise in the owner's balance is the owner's to sweep.
+        // Only the rise in the owner's balance is the payment's to sweep.
         swept = landed > before ? landed - before : 0;
         if (swept == 0) return 0;
         // Moves only what the caller's own payment added, from an owner that opted in, into a vault in its own name.

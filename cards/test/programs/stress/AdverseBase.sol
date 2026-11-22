@@ -81,7 +81,6 @@ abstract contract AdverseBase is AuthEnv {
     /// @dev An explicit mint: the one way the tracked total may grow.
     function _mintUsd(address to, uint256 amount) internal {
         usd.mint(to, amount);
-        core.notifyCredit(address(usd), to, amount);
         expectedUsd += amount;
     }
 

@@ -8,7 +8,7 @@ import { CardAuthBase } from "../../src/programs/CardAuthBase.sol";
 import { CardLimits } from "../../src/programs/CardLimits.sol";
 import { SavingsSource } from "../../src/programs/SavingsSource.sol";
 import { IReservationCore } from "../../src/programs/interfaces/IReservationCore.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL } from "../../src/programs/interfaces/ISource.sol";
+import { CAPTURE_FINAL, CAPTURE_FREE } from "../../src/programs/interfaces/ISource.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 
 /// @notice The savings source over a real EarnVault and the core model, driven directly as its program: holds on
@@ -122,13 +122,13 @@ contract SavingsSourceTest is AuthEnv {
         vm.expectRevert(SavingsSource.NotProgram.selector);
         savings.capture(alice, bytes32(0), ID, 1e6, 0);
         vm.expectRevert(SavingsSource.NotProgram.selector);
-        savings.hold(alice, bytes32(0), ID2, 1e6, _expiry(), false);
+        savings.hold(alice, bytes32(0), ID2, 1e6, _expiry());
         vm.expectRevert(SavingsSource.NotProgram.selector);
         savings.release(alice, bytes32(0), ID);
         vm.expectRevert(SavingsSource.NotProgram.selector);
         savings.refund(alice, bytes32(0), ID, 1e6);
         vm.expectRevert(SavingsSource.NotProgram.selector);
-        savings.charge(alice, bytes32(0), ID, 1e6, false);
+        savings.charge(alice, bytes32(0), ID, 1e6);
         vm.stopPrank();
     }
 
@@ -139,7 +139,7 @@ contract SavingsSourceTest is AuthEnv {
         core.holdFrom(
             alice,
             IReservationCore.HoldRequest({
-                token: address(earnShare), id: ID, amount: 100e6, expiresAt: _expiry(), payee: bob, standIn: false
+                token: address(earnShare), id: ID, amount: 100e6, expiresAt: _expiry(), payee: bob
             })
         );
         vm.prank(address(cards));
@@ -158,22 +158,21 @@ contract SavingsSourceTest is AuthEnv {
         (uint256 got,) = savings.capture(alice, bytes32(0), ID, 150e6, 0);
         assertEq(got, value);
         assertEq(earnShare.balanceOf(alice), shares - leg);
-        // Past the hold it reaches free shares only within the hold's capture limit: the hold itself, with no
-        // tolerance.
+        // With CAPTURE_FREE it grows the hold into the owner's free shares; the program bounds the purchase's tolerance.
         _place(ID2, 100e6);
-        uint256 leg2 = _leg(ID2).held;
         vm.prank(address(cards));
-        savings.capture(alice, bytes32(0), ID2, 150e6, CAPTURE_BEYOND | CAPTURE_FINAL);
-        assertEq(earnShare.balanceOf(alice), shares - leg - leg2);
+        (got,) = savings.capture(alice, bytes32(0), ID2, 150e6, CAPTURE_FREE | CAPTURE_FINAL);
+        assertApproxEqAbs(got, 150e6, 1);
+        assertApproxEqAbs(shares - leg - earnShare.balanceOf(alice), earnVault.previewWithdraw(150e6), 1);
         _assertCoreBalanced();
     }
 
-    function test_capture_beyondTheHold_withinTheOwnersTolerance() public {
+    function test_capture_beyondTheHold_takesFreeShares() public {
         _setTolerance(alice, address(savings), address(earnShare), 5000);
         uint256 before = earnShare.balanceOf(alice);
         _place(ID, 100e6);
         vm.prank(address(cards));
-        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 140e6, CAPTURE_BEYOND | CAPTURE_FINAL);
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID, 140e6, CAPTURE_FREE | CAPTURE_FINAL);
         assertEq(paid, 140e6);
         assertEq(before - earnShare.balanceOf(alice), earnVault.previewWithdraw(140e6));
         _assertCoreBalanced();
@@ -318,7 +317,7 @@ contract SavingsSourceTest is AuthEnv {
         assertEq(_place(bytes32("leg-3"), 10e6), 0);
         // The promised leg captures in full from the float, up to its capture limit.
         vm.prank(address(cards));
-        (uint256 paid,) = savings.capture(alice, bytes32(0), ID2, got * 2, CAPTURE_BEYOND | CAPTURE_FINAL);
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID2, got * 2, CAPTURE_FREE | CAPTURE_FINAL);
         assertEq(paid, earnVault.previewRedeem(limit));
         (,, promised) = savings.deferral();
         assertEq(promised, 0);
@@ -339,7 +338,7 @@ contract SavingsSourceTest is AuthEnv {
         assertLe(earnVault.previewRedeem(limit), floatLeft);
         assertGt(earnVault.previewRedeem(limit), floatLeft - 3);
         vm.prank(address(cards));
-        (uint256 paid,) = savings.capture(alice, bytes32(0), ID2, got * 12 / 10, CAPTURE_BEYOND | CAPTURE_FINAL);
+        (uint256 paid,) = savings.capture(alice, bytes32(0), ID2, got * 12 / 10, CAPTURE_FREE | CAPTURE_FINAL);
         assertApproxEqAbs(paid, got * 12 / 10, 2);
         _assertCoreBalanced();
     }
@@ -436,7 +435,7 @@ contract SavingsSourceTest is AuthEnv {
 
     function _place(bytes32 id, uint256 units) internal returns (uint256) {
         vm.prank(address(cards));
-        return savings.hold(alice, bytes32(0), id, units, _expiry(), false);
+        return savings.hold(alice, bytes32(0), id, units, _expiry());
     }
 
     function _leg(bytes32 id) internal view returns (IReservationCore.HoldRecord memory) {

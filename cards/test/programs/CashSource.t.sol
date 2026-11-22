@@ -12,8 +12,8 @@ import { ISource } from "../../src/programs/interfaces/ISource.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 
 /// @notice Card funding through the cash source: owner-chosen orders across cash and savings, the capture waterfall
-///         (holds, then the first cash leg's free cash and debt within the owner's caps, then the issuer), refunds
-///         that repay the owner's debt to the source first, an impaired savings vault and the program's exposure.
+///         (holds, then the owner's free funds within its budget, then the issuer), refunds to each leg, an impaired
+///         savings vault and the program's exposure.
 contract CashSourceTest is AuthEnv {
     bytes32 internal constant P1 = bytes32("purchase-1");
     bytes32 internal constant P2 = bytes32("purchase-2");
@@ -113,51 +113,41 @@ contract CashSourceTest is AuthEnv {
 
     // Capture waterfall.
 
-    function test_capture_overage_takesFreeCashThenDebtThenAbsorbs() public {
+    function test_capture_overage_takesFreeCashThenAbsorbs() public {
         usd.mint(alice, 100e6);
         _tolerance(10_000);
-        _setDebtCap(alice, address(cash), address(usd), 15e6);
         _authorize(P1, 80e6);
-        // 80 held + 20 free cash + 15 debt; the issuer absorbs the last 5.
+        // 80 held + 20 free cash; the owner has nothing more, so the issuer absorbs the last 20.
         vm.prank(issuer);
         vm.expectEmit(true, false, false, false, address(cards));
-        emit CardAuthBase.PurchaseCaptured(P1, 120e6, 115e6, true, false, 0);
+        emit CardAuthBase.PurchaseCaptured(P1, 120e6, 100e6, true, false, 0);
         cards.capture(P1, 120e6, true);
-        // The debt is the owner's to the cash source: the settlement account receives what the owner had.
         assertEq(usd.balanceOf(settlement), 100e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 15e6);
-        // Debt owed in the settlement token keeps that token from changing until it is repaid.
-        assertTrue(cash.isDebtor(address(usd), alice));
-        assertEq(cash.settlementTokenInUse(address(cards)), 3);
+        assertEq(usd.balanceOf(alice), 0);
+        assertEq(core.reserved(alice, address(usd)), 0);
         ICardAuth.PurchaseView memory v = cards.purchaseOf(P1);
         assertEq(v.captured, 120e6);
         // What the issuer absorbed counts as refunded, so refunds stop at what the sources covered.
-        assertEq(v.refunded, 5e6);
-        (uint256 held,, uint256 unsettled) = cards.exposure();
+        assertEq(v.refunded, 20e6);
+        (uint256 held, uint256 unsettled) = cards.exposure();
         assertEq(held, 0);
-        // The network settles all 120, the absorbed 5 included.
+        // The network settles all 120, the absorbed 20 included: it stays in the program's exposure until acknowledged.
         assertEq(unsettled, 120e6);
         _assertCoreBalanced();
         _assertSourcesEmpty();
-
-        // The repaid debt reaches the source, which forwards it to the settlement account.
-        usd.mint(alice, 15e6);
-        _repay(alice, address(usd));
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
-        assertEq(cash.settlementTokenInUse(address(cards)), 0);
-        cash.sweep(address(usd));
-        assertEq(usd.balanceOf(settlement), 115e6);
     }
 
-    function test_capture_overage_debtNeverPastTheCap() public {
-        // No free cash and no debt cap: the overage is the issuer's, never the owner's debt.
+    function test_capture_overage_noFreeCash_issuerAbsorbsIt() public {
+        // No free cash: the overage is the issuer's, and the capture of the hold still lands.
         usd.mint(alice, 80e6);
         _tolerance(10_000);
         _authorize(P1, 80e6);
         _capture(P1, 150e6, true);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
         assertEq(usd.balanceOf(settlement), 80e6);
         assertEq(cards.purchaseOf(P1).refunded, 70e6);
+        (, uint256 unsettled) = cards.exposure();
+        assertEq(unsettled, 150e6);
+        _assertCoreBalanced();
     }
 
     function test_capture_overage_boundedByTheOwnersBudgetForTheSource() public {
@@ -173,50 +163,9 @@ contract CashSourceTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).refunded, 60e6);
     }
 
-    function test_capture_overage_standIn_debtWithinTheOfflineCap() public {
-        usd.mint(alice, 30e6);
-        _setDebtCap(alice, address(cash), address(usd), 10e6);
-        _setOfflineCap(alice, address(cash), address(usd), 50e6);
-        uint8 standInFlag = cards.STAND_IN();
-        vm.prank(issuer);
-        cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 1 days), standInFlag);
-        assertEq(_hold(alice, P1, CASH_LEG).held, 30e6);
-        // A stand-in has no tolerance.
-        vm.prank(issuer);
-        vm.expectRevert(CardLegs.CaptureLimitExceeded.selector);
-        cards.capture(P1, 100e6 + 1, true);
-        _capture(P1, 100e6, true);
-        // 30 free, 50 debt within the offline cap; the issuer absorbs 20.
-        assertEq(usd.balanceOf(settlement), 30e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 50e6);
-        assertEq(cards.purchaseOf(P1).refunded, 20e6);
-        _assertCoreBalanced();
-    }
-
-    function test_capture_overage_noNewCreditorPastTheCoreLimit() public {
-        _tolerance(10_000);
-        _setDebtCap(alice, address(cash), address(usd), 100e6);
-        // Alice already owes the core's maximum number of other creditors.
-        for (uint256 i; i < 4; ++i) {
-            address creditor = address(uint160(0xC0FFEE + i));
-            vm.prank(alice);
-            core.approveHolder(creditor, address(usd), type(uint128).max, 0);
-            _setDebtCap(alice, creditor, address(usd), 1e6);
-            vm.prank(creditor);
-            core.charge(alice, address(usd), bytes32(i), 1e6, creditor, false);
-        }
-        usd.mint(alice, 50e6);
-        _authorize(P1, 50e6);
-        _capture(P1, 80e6, true);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
-        assertEq(usd.balanceOf(settlement), 50e6);
-        assertEq(cards.purchaseOf(P1).refunded, 30e6);
-    }
-
-    function test_capture_overage_multiLeg_takesTheCashLegsDebtUpToThePurchasesTolerance() public {
-        // Cash holds 1 and savings 99; the owner allows 100% on cash and a 200 debt cap.
+    function test_capture_overage_multiLeg_takesTheCashEntrysFreeCashUpToThePurchasesTolerance() public {
+        // Cash holds 1 and savings 99; the owner allows 100% on cash.
         _setTolerance(alice, address(cash), address(usd), 10_000);
-        _setDebtCap(alice, address(cash), address(usd), 200e6);
         usd.mint(alice, 100e6 + 2);
         _depositEarn(alice, 99e6 + 2);
         uint256 spare = usd.balanceOf(alice) - 1e6;
@@ -224,14 +173,16 @@ contract CashSourceTest is AuthEnv {
         usd.transfer(bob, spare);
         _authorize(P1, 100e6);
         assertEq(_hold(alice, P1, CASH_LEG).held, 1e6);
+        // Cash arrives after the authorization: the capture takes it through the cash leg, past its own hold.
+        usd.mint(alice, 30e6);
         uint256 before = usd.balanceOf(settlement);
         _capture(P1, 150e6, true);
-        // The 50 past the purchase's holds (less the dust of free shares) lands on the cash leg as debt, within the
-        // purchase's tolerance.
-        assertApproxEqAbs(_owed(alice, address(usd), address(cash)), 50e6, 2);
-        assertEq(cards.purchaseOf(P1).refunded, 0, "nothing absorbed");
-        assertApproxEqAbs(usd.balanceOf(settlement) - before, 100e6, 2);
+        // 1 held + 30 free on the cash leg, 99 on savings (and its dust of free shares); the issuer absorbs about 20.
+        assertEq(usd.balanceOf(alice), 0);
+        assertApproxEqAbs(cards.purchaseOf(P1).refunded, 20e6, 2);
+        assertApproxEqAbs(usd.balanceOf(settlement) - before, 130e6, 2);
         _assertCoreBalanced();
+        _assertSourcesEmpty();
     }
 
     function test_capture_overTolerance_refused() public {
@@ -254,13 +205,11 @@ contract CashSourceTest is AuthEnv {
         // The capture walks the order: savings deposited after a cash-only hold cover the overage before any debt.
         usd.mint(alice, 50e6);
         _tolerance(10_000);
-        _setDebtCap(alice, address(cash), address(usd), 100e6);
         _authorize(P1, 50e6);
         _savings(alice, 100e6);
         _capture(P1, 80e6, true);
         assertApproxEqAbs(usd.balanceOf(settlement), 80e6, 2);
         assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice)), 70e6, 2);
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
         assertEq(cards.purchaseOf(P1).refunded, 0);
         assertEq(core.reserved(alice, address(earnShare)), 0);
         _assertCoreBalanced();
@@ -268,16 +217,14 @@ contract CashSourceTest is AuthEnv {
 
     // Refunds.
 
-    function test_refund_repaysDebtFirst() public {
+    function test_refund_eachLegTakesBackWhatItCovered() public {
         usd.mint(alice, 100e6);
         _savings(alice, 100e6);
         _tolerance(10_000);
-        _setDebtCap(alice, address(cash), address(usd), 100e6);
         _authorize(P1, 150e6);
-        // 100 cash, savings worth 100 (50 held, 50 free), then 30 of debt through the cash leg.
+        // 100 cash, savings worth 100 (50 held, 50 free); the issuer absorbs the last 30.
         _capture(P1, 230e6, true);
-        assertApproxEqAbs(_owed(alice, address(usd), address(cash)), 30e6, 2);
-        uint256 debt = _owed(alice, address(usd), address(cash));
+        assertApproxEqAbs(cards.purchaseOf(P1).refunded, 30e6, 2);
         uint256 sharesBefore = earnShare.balanceOf(alice);
         uint256 restored = savings.refundable(alice, bytes32(0), cards.legId(P1, 1));
         assertApproxEqAbs(restored, 100e6, 2);
@@ -285,41 +232,17 @@ contract CashSourceTest is AuthEnv {
         _fundRefunds(100e6 + restored);
         vm.prank(issuer);
         cards.refund(P1, uint128(100e6 + restored));
-        // Savings take back what they captured; the cash leg forgives the debt first and pays the owner the rest.
-        assertEq(_owed(alice, address(usd), address(cash)), 0);
-        assertEq(usd.balanceOf(alice), 100e6 - debt);
+        // Savings take back what they captured; the cash leg pays the owner the rest.
+        assertEq(usd.balanceOf(alice), 100e6);
         assertApproxEqAbs(earnVault.previewRedeem(earnShare.balanceOf(alice) - sharesBefore), restored, 2);
-        // The forgiven part stays with the source until it is swept back to the settlement account.
-        assertEq(usd.balanceOf(address(cash)), debt);
-        uint256 before = usd.balanceOf(settlement);
-        cash.sweep(address(usd));
-        assertEq(usd.balanceOf(settlement), before + debt);
-        (uint256 held,,) = cards.exposure();
-        assertEq(held, 0);
-    }
-
-    function test_refund_withOutstandingDebtToAnotherCreditor_goesToTheOwner() public {
-        usd.mint(alice, 100e6);
-        _authorize(P1, 100e6);
-        _capture(P1, 100e6, true);
-        address creditor = makeAddr("creditor");
-        vm.prank(alice);
-        core.approveHolder(creditor, address(usd), type(uint128).max, 0);
-        _setDebtCap(alice, creditor, address(usd), 10e6);
-        vm.prank(creditor);
-        core.charge(alice, address(usd), bytes32("other"), 10e6, creditor, false);
-        assertEq(_owed(alice, address(usd), creditor), 10e6);
-
-        _fundRefunds(40e6);
-        vm.prank(issuer);
-        cards.refund(P1, 40e6);
-        // The source forgives only its own debt: the whole refund is paid to the owner, and the node repays the
-        // other creditor from that credit as it lands.
-        assertEq(_owed(alice, address(usd), creditor), 0);
-        assertEq(usd.balanceOf(creditor), 10e6);
-        assertEq(usd.balanceOf(alice), 30e6);
         assertEq(usd.balanceOf(address(cash)), 0);
-        assertEq(cards.purchaseOf(P1).refunded, 40e6);
+        (uint256 held,) = cards.exposure();
+        assertEq(held, 0);
+        // What the issuer absorbed is never refunded.
+        _fundRefunds(1);
+        vm.prank(issuer);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
+        cards.refund(P1, 30e6);
     }
 
     function test_refund_neverPastWhatTheSourcesCovered() public {
@@ -370,32 +293,26 @@ contract CashSourceTest is AuthEnv {
 
     // Exposure.
 
-    function test_exposure_countsHeldStandInAndUnsettled() public {
-        usd.mint(alice, 100e6);
+    function test_exposure_countsHeldAndUnsettled() public {
+        usd.mint(alice, 200e6);
         _authorize(P1, 60e6);
-        (uint256 held, uint256 standIn, uint256 unsettled) = cards.exposure();
+        (uint256 held, uint256 unsettled) = cards.exposure();
         assertEq(held, 60e6);
-        assertEq(standIn, 0);
         assertEq(unsettled, 0);
-        uint8 standInFlag = cards.STAND_IN();
-        vm.prank(issuer);
-        cards.authorize(CARD, P2, 70e6, merchant, uint64(block.timestamp + 1 days), standInFlag);
-        (held, standIn,) = cards.exposure();
+        _authorize(P2, 70e6);
+        (held,) = cards.exposure();
         assertEq(held, 130e6);
-        assertEq(standIn, 70e6);
         _capture(P1, 60e6, true);
-        (held, standIn, unsettled) = cards.exposure();
+        (held, unsettled) = cards.exposure();
         assertEq(held, 70e6);
-        assertEq(standIn, 70e6);
         assertEq(unsettled, 60e6);
         vm.prank(issuer);
         cards.release(P2);
         (uint64 seq,,,) = cards.ledger();
         vm.prank(issuer);
         cards.acknowledgeSettlement(seq);
-        (held, standIn, unsettled) = cards.exposure();
+        (held, unsettled) = cards.exposure();
         assertEq(held, 0);
-        assertEq(standIn, 0);
         assertEq(unsettled, 0);
     }
 
@@ -405,11 +322,11 @@ contract CashSourceTest is AuthEnv {
         bytes32 position = _position(address(usd), 0);
         vm.startPrank(bob);
         vm.expectRevert(CashSource.NotProgram.selector);
-        cash.hold(alice, position, P1, 1e6, uint64(block.timestamp + 1 days), false);
+        cash.hold(alice, position, P1, 1e6, uint64(block.timestamp + 1 days));
         vm.expectRevert(CashSource.NotProgram.selector);
         cash.capture(alice, position, P1, 1e6, 0);
         vm.expectRevert(CashSource.NotProgram.selector);
-        cash.charge(alice, position, P1, 1e6, false);
+        cash.charge(alice, position, P1, 1e6);
         vm.expectRevert(CashSource.NotProgram.selector);
         cash.release(alice, position, P1);
         vm.expectRevert(CashSource.NotProgram.selector);
@@ -431,57 +348,35 @@ contract CashSourceTest is AuthEnv {
         assertEq(cash.coverable(alice, position), 20e6);
     }
 
-    function test_pruneDebtors_dropsOnlyThoseWhoOweNothing_andListsThemAgainOnNewDebt() public {
+    function test_charge_forcePost_takesFreeCashThenAbsorbs() public {
         usd.mint(alice, 30e6);
-        _setDebtCap(alice, address(cash), address(usd), 20e6);
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 60e6, merchant);
-        assertEq(cash.debtorCount(address(usd)), 1);
-        // Still owing, alice stays listed and keeps the token in use.
-        assertEq(cash.pruneDebtors(address(usd), 0, 10), 0);
-        assertEq(cash.debtorCount(address(usd)), 1);
-        assertEq(cash.settlementTokenInUse(address(cards)), 3);
-        // Repaid, she leaves the list, so the guard no longer reads her.
-        usd.mint(alice, 20e6);
-        _repay(alice, address(usd));
-        assertEq(cash.settlementTokenInUse(address(cards)), 0);
-        assertEq(cash.pruneDebtors(address(usd), 0, 10), 1);
-        assertEq(cash.debtorCount(address(usd)), 0);
-        assertFalse(cash.isDebtor(address(usd), alice));
-        // New debt lists her again.
-        vm.prank(issuer);
-        cards.charge(CARD, P2, 10e6, merchant);
-        assertEq(_owed(alice, address(usd), address(cash)), 10e6);
-        assertEq(cash.debtors(address(usd), 0), alice);
-        assertEq(cash.settlementTokenInUse(address(cards)), 3);
-    }
-
-    function test_pruneDebtors_readsAtMostCount() public {
-        usd.mint(alice, 30e6);
-        _setDebtCap(alice, address(cash), address(usd), 20e6);
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 60e6, merchant);
-        usd.mint(alice, 20e6);
-        _repay(alice, address(usd));
-        assertEq(cash.pruneDebtors(address(usd), 0, 0), 0);
-        assertEq(cash.pruneDebtors(address(usd), 1, 10), 0);
-        assertEq(cash.debtorCount(address(usd)), 1);
-    }
-
-    function test_charge_forcePost_takesFreeCashThenDebtThenAbsorbs() public {
-        usd.mint(alice, 30e6);
-        _setDebtCap(alice, address(cash), address(usd), 20e6);
         vm.prank(issuer);
         cards.charge(CARD, P1, 60e6, merchant);
         assertEq(usd.balanceOf(settlement), 30e6);
-        assertEq(_owed(alice, address(usd), address(cash)), 20e6);
-        assertEq(cash.debtors(address(usd), 0), alice);
-        assertEq(cash.settlementTokenInUse(address(cards)), 3);
+        assertEq(usd.balanceOf(alice), 0);
         ICardAuth.PurchaseView memory v = cards.purchaseOf(P1);
         assertEq(v.captured, 60e6);
-        assertEq(v.refunded, 10e6);
+        assertEq(v.refunded, 30e6);
         assertTrue(v.charged);
+        (, uint256 unsettled) = cards.exposure();
+        assertEq(unsettled, 60e6);
         _assertSourcesEmpty();
+    }
+
+    function test_charge_standInApproval_bookedAfterTheFact_onlyFromFreeCash() public {
+        // The network approved 100 without asking while alice had 30, then 10 more of hers was held by another
+        // purchase: the issuer books it as a force post, which takes only what is free.
+        usd.mint(alice, 40e6);
+        _authorize(P2, 10e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        assertEq(usd.balanceOf(settlement), 30e6);
+        assertEq(core.reserved(alice, address(usd)), 10e6, "other holds untouched");
+        assertEq(cards.purchaseOf(P1).refunded, 70e6);
+        (uint256 held, uint256 unsettled) = cards.exposure();
+        assertEq(held, 10e6);
+        assertEq(unsettled, 100e6);
+        _assertCoreBalanced();
     }
 
     function test_constructor_rejectsZero() public {

@@ -69,7 +69,6 @@ contract FundingSavingsStressTest is FundingBase {
             address h = _holder(i, dep + 20e6 + _rand(180e6), order);
             sharesIn[h] = _depositEarn(h, dep);
             deposited[h] = dep;
-            _setDebtCap(h, address(cash), address(usd), 100e6);
             _setTolerance(h, address(cash), address(usd), uint16(tolBps));
             _setTolerance(h, address(savings), address(earnShare), uint16(tolBps));
         }
@@ -259,7 +258,7 @@ contract FundingSavingsStressTest is FundingBase {
             assertTrue(_resolve(buys[pending[j]], hr), "capture still fails once the venue redeems");
         }
         delete pending;
-        (uint256 held,,) = cards.exposure();
+        (uint256 held,) = cards.exposure();
         assertEq(held, 0, "holds left open");
         for (uint256 j; j < buys.length; ++j) {
             assertFalse(cards.purchaseOf(buys[j].ref).open, "purchase left open");
@@ -273,7 +272,7 @@ contract FundingSavingsStressTest is FundingBase {
     // Checks.
 
     function _cashOut(address h) internal view returns (uint256) {
-        return mintedTo[h] - deposited[h] - usd.balanceOf(h) + _owed(h, address(usd), address(cash));
+        return mintedTo[h] - deposited[h] - usd.balanceOf(h);
     }
 
     function _sharesOut(address h) internal view returns (uint256) {

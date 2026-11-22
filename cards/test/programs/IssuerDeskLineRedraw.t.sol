@@ -36,9 +36,9 @@ contract IssuerDeskLineRedrawTest is CompEnv {
         // The line stays repaid and can no longer draw for this purchase.
         assertEq(credit.lineOf(lineId).owed, 0);
         assertEq(credit.redrawable(lineId, P1), 0);
-        // The cardholder gives back all 100 of provisional credit: its cash, then debt or a receivable.
+        // The cardholder gives back all 100 of provisional credit: its cash, then a receivable.
         uint256 taken = cash - usd.balanceOf(alice);
-        uint256 owed = _owed(alice, address(usd), settlement) + desk.receivables(alice, address(usd));
+        uint256 owed = desk.receivables(alice, address(usd));
         assertEq(taken + owed, 100e6);
     }
 
@@ -53,7 +53,6 @@ contract IssuerDeskLineRedrawTest is CompEnv {
         vm.prank(alice);
         usd.transfer(settlement, 40e6);
         assertEq(credit.lineOf(lineId).owed, 60e6, "drawn");
-        _setDebtCap(alice, settlement, address(usd), 100e6);
         vm.prank(issuer);
         desk.openDispute(P1, 100e6, hex"c1a1");
         assertEq(desk.disputeOf(P1).creditLeg, bytes32("leg-credit"));

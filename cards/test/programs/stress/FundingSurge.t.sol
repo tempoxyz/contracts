@@ -89,16 +89,12 @@ contract FundingSurgeStressTest is FundingBase {
         fundsTarget = n * 50e6;
         parties.push(network);
         parties.push(elsewhere);
-        vm.startPrank(settlement);
-        core.approveHolder(address(treasury), address(usd), type(uint128).max, 0);
+        vm.prank(settlement);
         core.approveHolder(address(reserves), address(usd), type(uint128).max, 0);
-        vm.stopPrank();
-        _setDebtCap(settlement, address(treasury), address(usd), type(uint64).max);
         vm.prank(issuer);
         usd.approve(address(treasury), type(uint256).max);
         for (uint256 i; i < n; ++i) {
             address h = _holder(i, 300e6 + _rand(2700e6), _cashOnly());
-            _setDebtCap(h, address(cash), address(usd), 100e6);
             _setTolerance(h, address(cash), address(usd), uint16(tolBps));
             vm.prank(h);
             core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
@@ -412,7 +408,7 @@ contract FundingSurgeStressTest is FundingBase {
         if (free >= want) return;
         vm.prank(bank);
         usd.transfer(settlement, want - free);
-        core.notifyCredit(address(usd), settlement, want - free);
+        _repayAdvance();
         _checkAll();
     }
 
@@ -437,7 +433,7 @@ contract FundingSurgeStressTest is FundingBase {
             uint256 back = uint256(-delta);
             vm.prank(network);
             usd.transfer(settlement, back);
-            core.notifyCredit(address(usd), settlement, back);
+            _repayAdvance();
             s.networkPaidBack += back;
             ++s.negativeNetDays;
             if (back > s.maxNegativeNet) s.maxNegativeNet = back;
@@ -474,7 +470,7 @@ contract FundingSurgeStressTest is FundingBase {
         _refill();
         _settleNetwork();
         assertEq(desk.openDisputes(), 0, "disputes left open");
-        (uint256 held,,) = cards.exposure();
+        (uint256 held,) = cards.exposure();
         assertEq(held, 0, "holds left open");
         assertEq(_unsettled(), 0, "unsettled left");
         for (uint256 j; j < buys.length; ++j) {
@@ -507,8 +503,7 @@ contract FundingSurgeStressTest is FundingBase {
     // Checks.
 
     function _lossOf(address h) internal view returns (uint256) {
-        return mintedTo[h] - usd.balanceOf(h) - moved[h] + _owed(h, address(usd), address(cash))
-            + desk.receivables(h, address(usd));
+        return mintedTo[h] - usd.balanceOf(h) - moved[h] + desk.receivables(h, address(usd));
     }
 
     function _checkAll() internal view {

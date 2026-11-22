@@ -410,10 +410,10 @@ contract PaymentCallGasTest is AuthEnv {
         assertLe(last, CAPTURE_CAP, "capture final");
     }
 
-    /// @dev A tip within tolerance past the hold, the excess charged to cash and then debt.
-    function test_gas_capture_tipIntoDebt() public {
+    /// @dev A tip within tolerance past the hold, the excess taken from cash that arrived after the authorization.
+    function test_gas_capture_tipFromFreeCash() public {
         _fourLegs();
-        // USD cash first, so the tip lands on a cash leg that can borrow.
+        // USD cash first, so the tip lands on a cash leg past its hold.
         CardLegs.Funding[] memory order = new CardLegs.Funding[](4);
         order[0] = _cashEntry(address(usd), 100);
         order[1] = _cashEntry(address(eur), 100);
@@ -421,21 +421,20 @@ contract PaymentCallGasTest is AuthEnv {
         order[3] = CardLegs.Funding(ISource(address(line)), bytes32(0));
         vm.prank(alice);
         cards.setFunding(order);
-        _setDebtCap(alice, address(cash), address(usd), 1000e6);
-        _setDebtCap(alice, address(cash), address(eur), 1000e6);
         _setTolerance(alice, address(cash), address(eur), 5000);
         _setTolerance(alice, address(cash), address(usd), 5000);
         _call(abi.encodeCall(cards.authorize, (CARD, "p1", 200e6, merchant, _expiry(), 0)));
+        usd.mint(alice, 80e6);
         uint256 gas = _call(abi.encodeCall(cards.capture, ("p1", 280e6, true)));
-        assertEq(cards.purchaseOf("p1").refunded, 0, "sources covered all of it");
+        // A unit of conversion rounding may fall to the issuer.
+        assertLe(cards.purchaseOf("p1").refunded, 1, "sources covered all of it");
         assertLe(gas, CAPTURE_CAP, "capture past the hold");
     }
 
-    /// @dev A force post the cash legs cover in EURX, USD and debt.
-    function test_gas_charge_convertedIntoDebt() public {
+    /// @dev A force post the cash legs cover from free funds, in EURX and then USD.
+    function test_gas_charge_converted() public {
         _fourLegs();
-        _setDebtCap(alice, address(cash), address(usd), 1000e6);
-        _setDebtCap(alice, address(cash), address(eur), 1000e6);
+        usd.mint(alice, 100e6);
         uint256 gas = _call(abi.encodeCall(cards.charge, (CARD, "p1", 150e6, merchant)));
         assertEq(cards.purchaseOf("p1").refunded, 0, "sources covered all of it");
         assertLe(gas, CHARGE_CAP, "charge");

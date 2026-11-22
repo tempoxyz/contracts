@@ -58,7 +58,7 @@ contract IssuerDesk is ISettlementTokenGuard {
 
     mapping(bytes32 ref => Dispute) internal _disputes;
     /// @notice What a cardholder still owes the settlement account, in a token, from merchant wins the desk could not
-    ///         take back because the cardholder revoked the desk or had neither free funds nor debt room.
+    ///         take back because the cardholder revoked the desk or lacked free funds.
     mapping(address owner => mapping(address token => uint256)) public receivables;
     uint256 public openDisputes;
     uint64 internal _charges;
@@ -66,21 +66,15 @@ contract IssuerDesk is ISettlementTokenGuard {
     bool private transient _locked;
 
     event DisputeOpened(bytes32 indexed ref, address indexed owner, uint128 amount, bytes evidence);
-    /// @notice A step: the provisional credit it gave, what of it repaid a credit line, and what of the cash repaid
-    ///         the cardholder's debt.
+    /// @notice A step: the provisional credit it gave, and what of it repaid a credit line.
     event DisputeStepped(
-        bytes32 indexed ref,
-        uint8 state,
-        uint128 provisional,
-        uint128 onLine,
-        uint128 repaid,
-        bytes evidence,
-        bool byMerchant
+        bytes32 indexed ref, uint8 state, uint128 provisional, uint128 onLine, bytes evidence, bool byMerchant
     );
     /// @notice An end: the refund a cardholder win paid, or minus the provisional credit a merchant win took back, the
-    ///         part of it a credit line drew again, what remains the cardholder's debt, and the network chargeback.
+    ///         part of it a credit line drew again, what the cardholder still owes as a receivable, and the network
+    ///         chargeback.
     event DisputeResolved(
-        bytes32 indexed ref, bool cardholderWins, int256 credit, uint128 redrawn, uint128 debt, uint128 chargeback
+        bytes32 indexed ref, bool cardholderWins, int256 credit, uint128 redrawn, uint128 receivable, uint128 chargeback
     );
     /// @notice A refund while the dispute ran settled this much provisional credit instead of paying it again.
     event DisputeSettled(bytes32 indexed ref, uint128 settled);
@@ -126,7 +120,7 @@ contract IssuerDesk is ISettlementTokenGuard {
 
     /// @notice Moves a dispute forward with evidence, giving provisional credit from the settlement account. Refunds
     ///         and provisional credit together never return more than the purchase, nor provisional credit more than
-    ///         the dispute. The credit leg's share repays its line; cash the cardholder receives repays its debt first.
+    ///         the dispute. The credit leg's share repays its line; the rest lands as cash.
     function disputeStep(bytes32 ref, uint8 state, uint128 provisional, bytes calldata evidence, bool byMerchant)
         external
         nonReentrant
@@ -139,19 +133,18 @@ contract IssuerDesk is ISettlementTokenGuard {
         if (d.provisional + provisional > cap) revert DisputeTooLarge();
         d.state = state;
         uint128 onLine;
-        uint128 repaid;
         if (provisional != 0) {
             onLine = _repayLine(ref, d, provisional, open);
             d.provisional += provisional;
             uint128 cash = provisional - onLine;
-            if (cash != 0) repaid = _credit(ref, d.owner, cash);
+            if (cash != 0) _credit(ref, d.owner, cash);
         }
-        emit DisputeStepped(ref, state, provisional, onLine, repaid, evidence, byMerchant);
+        emit DisputeStepped(ref, state, provisional, onLine, evidence, byMerchant);
     }
 
     /// @notice Ends a dispute. A merchant win takes the provisional credit back: the line draws again what it repaid,
-    ///         then the cardholder's free settlement token, then its free savings shares, and the rest becomes its debt
-    ///         to the settlement account without a fee. A cardholder win counts as a refund of the dispute: the program
+    ///         then the cardholder's free settlement token, then its free savings shares, and the rest stays owed to the
+    ///         settlement account as a receivable, without a fee. A cardholder win counts as a refund of the dispute: the program
     ///         refunds what provisional credit did not cover through the purchase's sources, the credit kept counts as
     ///         refunded, and the network is charged back all of it but what merchant reserves already paid.
     function resolveDispute(bytes32 ref, bool cardholderWins) external nonReentrant {
@@ -162,8 +155,8 @@ contract IssuerDesk is ISettlementTokenGuard {
             _operator(provisional);
             d.state = LOST;
             uint128 redrawn = _redrawLine(ref, d);
-            uint128 debt = provisional > redrawn ? _recover(ref, d.owner, provisional - redrawn) : 0;
-            emit DisputeResolved(ref, false, -int256(uint256(provisional)), redrawn, debt, 0);
+            uint128 owed = provisional > redrawn ? _recover(ref, d.owner, provisional - redrawn) : 0;
+            emit DisputeResolved(ref, false, -int256(uint256(provisional)), redrawn, owed, 0);
             return;
         }
         d.state = WON;
@@ -231,17 +224,22 @@ contract IssuerDesk is ISettlementTokenGuard {
         emit ReserveCollectedFor(ref, amount);
     }
 
-    /// @notice Collects up to amount of what owner owes the settlement account in token: from its free funds, and as
-    ///         its debt within the debt room it gave. Issuer or settle operators.
-    function collectReceivable(address owner, address token, uint128 amount) external nonReentrant {
+    /// @notice Collects up to amount of what owner owes the settlement account in token, from its free funds only.
+    ///         Issuer or settle operators. Returns what it collected.
+    function collectReceivable(address owner, address token, uint128 amount) external nonReentrant returns (uint128) {
         _operator(0);
         uint256 owed = receivables[owner][token];
+        uint256 free = CORE.available(owner, token);
         // Below amount, so it fits.
         // forge-lint: disable-next-line(unsafe-typecast)
         if (amount > owed) amount = uint128(owed);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (amount > free) amount = uint128(free);
+        if (amount == 0) return 0;
         receivables[owner][token] = owed - amount;
-        CORE.charge(owner, token, _chargeId(), amount, PROGRAM.SETTLEMENT_ACCOUNT(), false);
+        CORE.charge(owner, token, _chargeId(), amount, PROGRAM.SETTLEMENT_ACCOUNT());
         emit ReceivableCollected(owner, token, amount);
+        return amount;
     }
 
     function disputeOf(bytes32 ref) external view returns (Dispute memory) {
@@ -345,15 +343,10 @@ contract IssuerDesk is ISettlementTokenGuard {
     }
 
     /// @dev Pays units of ref in today's token to owner from the settlement account (the treasury advancing what it
-    ///      lacks). Returns what repaid owner's debt, in today's token.
-    function _credit(bytes32 ref, address owner, uint128 units) private returns (uint128 repaid) {
+    ///      lacks).
+    function _credit(bytes32 ref, address owner, uint128 units) private {
         (uint256 amount, address token) = _today(ref, units);
-        uint256 before = _debt(owner, token);
         _fromSettlement(token, owner, amount);
-        uint256 later = _debt(owner, token);
-        // Bounded by the owner's 128-bit debt before the payment.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        repaid = before > later ? uint128(before - later) : 0;
     }
 
     /// @dev Refunds units of ref through the program, which takes today's token from this desk, funded by the
@@ -377,31 +370,25 @@ contract IssuerDesk is ISettlementTokenGuard {
     }
 
     /// @dev Takes units of ref back from owner in today's token: its free cash, then its free savings shares redeemed
-    ///      to the settlement account, never a credit line; the rest becomes its debt to the settlement account. What
-    ///      the core refuses (the owner revoked the desk, or has no debt room) stays owed as a receivable, so the
-    ///      dispute still closes. Returns what remains owed either way.
+    ///      to the settlement account, never a credit line. What that leaves, or what the core refuses (the owner
+    ///      revoked the desk), stays owed as a receivable, so the dispute still closes. Returns what remains owed.
     // forge-lint: disable-next-item(unsafe-typecast)
-    function _recover(bytes32 ref, address owner, uint128 units) private returns (uint128 debt) {
+    function _recover(bytes32 ref, address owner, uint128 units) private returns (uint128) {
         (uint256 amount, address token) = _today(ref, units);
-        address account = PROGRAM.SETTLEMENT_ACCOUNT();
         uint256 free = CORE.available(owner, token);
         uint256 cash = free < amount ? free : amount;
         uint256 rest = amount - cash;
         if (rest != 0 && address(SAVINGS) != address(0) && SAVINGS.asset() == token) rest -= _takeShares(owner, rest);
-        debt = uint128(rest);
-        if (cash + rest == 0) return 0;
-        try CORE.charge(owner, token, _chargeId(), uint128(cash + rest), account, false) { }
-        catch {
-            uint256 owed = cash + rest;
-            if (cash != 0) {
-                try CORE.charge(owner, token, _chargeId(), uint128(cash), account, false) {
-                    owed = rest;
-                } catch { }
+        if (cash != 0) {
+            try CORE.charge(owner, token, _chargeId(), uint128(cash), PROGRAM.SETTLEMENT_ACCOUNT()) { }
+            catch {
+                rest += cash;
             }
-            receivables[owner][token] += owed;
-            debt = uint128(owed);
-            emit ReceivableRecorded(ref, owner, token, owed);
         }
+        if (rest == 0) return 0;
+        receivables[owner][token] += rest;
+        emit ReceivableRecorded(ref, owner, token, rest);
+        return uint128(rest);
     }
 
     /// @dev Takes up to need's worth of owner's free savings shares and redeems them to the settlement account.
@@ -418,20 +405,13 @@ contract IssuerDesk is ISettlementTokenGuard {
         }
         if (shares == 0 || value == 0) return 0;
         // The owner may have revoked the desk for its shares; then its cash or a receivable covers the rest.
-        try CORE.charge(owner, share, _chargeId(), uint128(shares), address(this), false) { }
+        try CORE.charge(owner, share, _chargeId(), uint128(shares), address(this)) { }
         catch {
             return 0;
         }
         SafeTransferLib.safeApprove(share, address(vault), shares);
         value = vault.redeem(shares, PROGRAM.SETTLEMENT_ACCOUNT(), value);
         taken = value < need ? value : need;
-    }
-
-    function _debt(address owner, address token) private view returns (uint256 sum) {
-        IReservationCore.Debt[] memory debts = CORE.debtOf(owner, token);
-        for (uint256 i; i < debts.length; ++i) {
-            sum += debts[i].amount;
-        }
     }
 
     function _chargeId() private returns (bytes32) {

@@ -40,15 +40,24 @@ contract AuthGasTest is AuthEnv {
         vm.snapshotGasLastCall("AuthGas", "capture_partialCashLeg");
     }
 
-    function test_gas_capture_beyondHoldIntoDebt() public {
-        _setDebtCap(alice, address(cash), address(usd), 100e6);
+    function test_gas_capture_beyondHoldFromFreeCash() public {
+        _setTolerance(alice, address(cash), address(usd), 5000);
+        _authorize(P1, 100e6);
+        vm.prank(alice);
+        usd.transfer(bob, 800e6);
+        vm.prank(issuer);
+        cards.capture(P1, 140e6, true);
+        vm.snapshotGasLastCall("AuthGas", "capture_beyondHoldFromFreeCash");
+    }
+
+    function test_gas_capture_beyondHoldAbsorbed() public {
         _setTolerance(alice, address(cash), address(usd), 5000);
         _authorize(P1, 100e6);
         vm.prank(alice);
         usd.transfer(bob, 900e6);
         vm.prank(issuer);
         cards.capture(P1, 140e6, true);
-        vm.snapshotGasLastCall("AuthGas", "capture_beyondHoldIntoDebt");
+        vm.snapshotGasLastCall("AuthGas", "capture_beyondHoldAbsorbed");
     }
 
     function test_gas_adjust_upCashLeg() public {
@@ -85,15 +94,6 @@ contract AuthGasTest is AuthEnv {
         vm.prank(issuer);
         cards.refund(P1, 50e6);
         vm.snapshotGasLastCall("AuthGas", "refund_charge");
-    }
-
-    function test_gas_authorize_standIn() public {
-        _setOfflineCap(alice, address(cash), address(usd), 500e6);
-        vm.prank(alice);
-        usd.transfer(bob, 950e6);
-        vm.prank(issuer);
-        cards.authorize(CARD, P1, 100e6, merchant, uint64(block.timestamp + 7 days), 2);
-        vm.snapshotGasLastCall("AuthGas", "authorize_standIn");
     }
 
     function test_gas_authorize_cashAndSavings() public {

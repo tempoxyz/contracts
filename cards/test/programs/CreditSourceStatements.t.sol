@@ -662,12 +662,7 @@ contract CreditSourceStatementsTest is CompEnv {
 
     function _holdRequest(bytes32 id, uint128 amount) internal view returns (IReservationCore.HoldRequest memory) {
         return IReservationCore.HoldRequest({
-            token: address(usd),
-            id: id,
-            amount: amount,
-            expiresAt: uint64(block.timestamp + 1 days),
-            payee: bob,
-            standIn: false
+            token: address(usd), id: id, amount: amount, expiresAt: uint64(block.timestamp + 1 days), payee: bob
         });
     }
 

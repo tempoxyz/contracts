@@ -22,7 +22,7 @@ contract IssuerDeskTest is CompEnv {
         usd.mint(alice, 920e6);
     }
 
-    function test_dispute_lost_takesProvisionalBack_restAsDebt() public {
+    function test_dispute_lost_takesProvisionalBack_restAsAReceivable() public {
         _disputed(80e6);
         usd.mint(settlement, 80e6);
         vm.prank(issuer);
@@ -30,15 +30,19 @@ contract IssuerDeskTest is CompEnv {
         assertEq(usd.balanceOf(alice), 1000e6, "provisional credit paid");
         vm.prank(alice);
         usd.transfer(bob, 990e6);
+        vm.expectEmit(address(desk));
+        emit IssuerDesk.ReceivableRecorded(P1, alice, address(usd), 70e6);
+        vm.expectEmit(address(desk));
+        emit IssuerDesk.DisputeResolved(P1, false, -80e6, 0, 70e6, 0);
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
-        assertEq(_owed(alice, address(usd), settlement), 70e6, "what the cardholder no longer has");
+        assertEq(desk.receivables(alice, address(usd)), 70e6, "what the cardholder no longer has");
         assertEq(usd.balanceOf(alice), 0, "the rest taken at once");
         assertEq(usd.balanceOf(settlement), 10e6);
         assertEq(desk.disputeOf(P1).state, desk.LOST());
     }
 
-    function test_dispute_lost_takesFreeSavingsSharesBeforeDebt() public {
+    function test_dispute_lost_takesFreeSavingsSharesBeforeAReceivable() public {
         _disputed(80e6);
         usd.mint(settlement, 80e6);
         vm.prank(issuer);
@@ -50,7 +54,7 @@ contract IssuerDeskTest is CompEnv {
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
         // Redeeming rounds down, so at most a unit more stays owed.
-        assertApproxEqAbs(_owed(alice, address(usd), settlement), 30e6, 1, "only what neither cash nor savings covered");
+        assertApproxEqAbs(desk.receivables(alice, address(usd)), 30e6, 1, "only what neither cash nor savings covered");
         assertApproxEqAbs(usd.balanceOf(settlement), 50e6, 1);
         assertLe(core.available(alice, address(earnShare)), 1);
         assertEq(usd.balanceOf(address(desk)), 0);
@@ -61,11 +65,11 @@ contract IssuerDeskTest is CompEnv {
     function test_dispute_provisionalPastTheSettlementBalance_advancedByTheTreasury() public {
         _disputed(80e6);
         usd.mint(settlement, 7e6);
-        _fundTreasury(100e6);
+        _fundTreasury();
         vm.prank(issuer);
         desk.disputeStep(P1, 2, 30e6, "", false);
         assertEq(usd.balanceOf(alice), 950e6, "provisional credit paid in full");
-        assertEq(_owed(settlement, address(usd), address(treasury)), 30e6 - 7e6, "what the account lacked");
+        assertEq(treasury.advanceOf(address(usd)), 30e6 - 7e6, "what the account lacked");
     }
 
     function test_dispute_provisionalPastTheIssuersFunds_reverts() public {
@@ -135,11 +139,11 @@ contract IssuerDeskTest is CompEnv {
     function test_dispute_wonPastTheSettlementBalance_advancedByTheTreasury() public {
         _disputed(80e6);
         usd.mint(settlement, 37.6e6);
-        _fundTreasury(100e6);
+        _fundTreasury();
         vm.prank(issuer);
         desk.resolveDispute(P1, true);
         assertEq(usd.balanceOf(alice), 1000e6, "the whole disputed amount comes back");
-        assertEq(_owed(settlement, address(usd), address(treasury)), 80e6 - 37.6e6);
+        assertEq(treasury.advanceOf(address(usd)), 80e6 - 37.6e6);
         assertEq(usd.balanceOf(address(desk)), 0);
     }
 
@@ -161,12 +165,11 @@ contract IssuerDeskTest is CompEnv {
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
         assertEq(usd.balanceOf(alice), 1000e6);
-        assertEq(_owed(alice, address(usd), settlement), 0);
+        assertEq(desk.receivables(alice, address(usd)), 0);
     }
 
     function test_refund_partialDuringADispute_paysOnlyWhatProvisionalCreditDoesNotCover() public {
         auth.setPurchase(P1, alice, 100e6, 0);
-        _setDebtCap(alice, settlement, address(usd), 100e6);
         vm.prank(issuer);
         desk.openDispute(P1, 60e6, "");
         usd.mint(settlement, 200e6);
@@ -291,7 +294,7 @@ contract IssuerDeskTest is CompEnv {
         assertEq(credit.lineOf(lineId).owed, 60e6, "drawn again");
         assertEq(usd.balanceOf(settlement), before + 100e6, "the lender pays the line's share, the cardholder the rest");
         assertEq(usd.balanceOf(alice), 0);
-        assertEq(_owed(alice, address(usd), settlement), 0);
+        assertEq(desk.receivables(alice, address(usd)), 0);
         _assertCoreBalanced();
     }
 
@@ -304,9 +307,9 @@ contract IssuerDeskTest is CompEnv {
         vm.prank(issuer);
         desk.resolveDispute(P1, false);
         assertEq(credit.lineOf(lineId).owed, 25e6, "what the line could fund");
-        // The cardholder owes the other $75: the $40 it holds at once, the rest as debt.
+        // The cardholder owes the other $75: the $40 it holds at once, the rest as a receivable.
         assertEq(usd.balanceOf(alice), 0);
-        assertEq(_owed(alice, address(usd), settlement), 35e6);
+        assertEq(desk.receivables(alice, address(usd)), 35e6);
     }
 
     function test_dispute_creditPurchase_lineClosedBeforeTheMerchantWins_recoversFromTheCardholder() public {
@@ -319,7 +322,7 @@ contract IssuerDeskTest is CompEnv {
         desk.resolveDispute(P1, false);
         assertEq(credit.lineOf(lineId).owed, 0, "a closed line is not drawn again");
         assertEq(usd.balanceOf(alice), 0);
-        assertEq(_owed(alice, address(usd), settlement), 60e6);
+        assertEq(desk.receivables(alice, address(usd)), 60e6);
     }
 
     function test_dispute_creditPurchase_repaidLineTakesItsShareAsCash() public {
@@ -354,7 +357,6 @@ contract IssuerDeskTest is CompEnv {
 
     function _disputed(uint128 amount) internal {
         auth.setPurchase(P1, alice, uint64(amount), 0);
-        _setDebtCap(alice, settlement, address(usd), amount);
         vm.prank(issuer);
         desk.openDispute(P1, amount, hex"c1a1");
     }
@@ -370,7 +372,6 @@ contract IssuerDeskTest is CompEnv {
         vm.prank(alice);
         usd.transfer(settlement, 40e6);
         assertEq(credit.lineOf(lineId).owed, 60e6, "drawn");
-        _setDebtCap(alice, settlement, address(usd), 100e6);
         vm.prank(issuer);
         desk.openDispute(P1, 100e6, hex"c1a1");
         assertEq(desk.disputeOf(P1).creditLeg, bytes32("leg-credit"));
@@ -381,11 +382,7 @@ contract IssuerDeskTest is CompEnv {
         usd.mint(settlement, 100e6);
     }
 
-    function _fundTreasury(uint128 cap) internal {
-        vm.startPrank(settlement);
-        core.approveHolder(address(treasury), address(usd), type(uint128).max, 0);
-        vm.stopPrank();
-        _setDebtCap(settlement, address(treasury), address(usd), cap);
+    function _fundTreasury() internal {
         usd.mint(address(this), 50e6);
         usd.approve(address(treasury), 50e6);
         treasury.fundIssuerDebt(address(usd), 50e6);

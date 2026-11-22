@@ -11,7 +11,7 @@ import { SafeTransferLib } from "solady/utils/SafeTransferLib.sol";
 /// @title Rewards
 /// @notice Card rewards and their claw-back: the issuer pays a purchase's cardholder a reward (cashback) from its funder
 ///         in the token the purchase settled in, and when the purchase is refunded or written off takes it back from
-///         what the cardholder still holds, never past what that purchase's rewards paid and never into debt.
+///         what the cardholder still holds free, never past what that purchase's rewards paid.
 /// @dev A companion of one CardAuth: the settle role pays and claws back, and an operator's payments count against
 ///      its cap. A cardholder approves this contract as a holder of each settlement token so claw-backs can charge it.
 ///      Claw-backs pay the funder. One slot per rewarded purchase. Not upgradeable.
@@ -76,7 +76,7 @@ contract Rewards {
         taken = _min(taken, b.limit > used ? b.limit - used : 0);
         if (taken == 0) return 0;
         rewardOf[ref].clawed = r.clawed + taken.toUint128();
-        CORE.charge(owner, token, keccak256(abi.encode(ref, r.clawed)), taken.toUint128(), address(this), false);
+        CORE.charge(owner, token, keccak256(abi.encode(ref, r.clawed)), taken.toUint128(), address(this));
         SafeTransferLib.safeTransfer(token, FUNDER, taken);
         address current = PROGRAM.settlementToken();
         uint256 today =

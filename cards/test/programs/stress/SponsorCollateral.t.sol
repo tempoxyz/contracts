@@ -293,7 +293,7 @@ contract SponsorCollateralStressTest is AdverseBase {
         if (_weekend()) return;
         (uint64 seq, uint64 through,,) = cards.ledger();
         if (seq == through) return;
-        (,, uint256 unsettled) = cards.exposure();
+        (, uint256 unsettled) = cards.exposure();
         _issuerAlone(seq);
         vm.prank(sponsor);
         usd.transfer(network, unsettled);

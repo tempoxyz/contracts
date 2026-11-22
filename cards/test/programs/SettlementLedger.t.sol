@@ -25,7 +25,7 @@ contract SettlementLedgerTest is AuthEnv {
     }
 
     function _unsettled() internal view returns (uint256 unsettled) {
-        (,, unsettled) = cards.exposure();
+        (, unsettled) = cards.exposure();
     }
 
     function test_creditBack_settleKeyCannotMoveTheLedger() public {

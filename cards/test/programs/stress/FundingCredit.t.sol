@@ -88,7 +88,6 @@ contract FundingCreditStressTest is FundingBase {
             order[0] = CardLegs.Funding(ISource(address(credit)), bytes32(uint256(lineId)));
             order[1] = _cashEntry(address(usd), 0);
             _holder(i, 50e6 + _rand(350e6), order);
-            _setDebtCap(h, address(cash), address(usd), 100e6);
             _setTolerance(h, address(cash), address(usd), uint16(tolBps));
             vm.prank(h);
             usd.approve(address(credit), type(uint256).max);
@@ -297,8 +296,8 @@ contract FundingCreditStressTest is FundingBase {
         _checkAll();
     }
 
-    /// @dev Friday wages land, repay each holder's cash debt, and each holder repays as much of their line as their
-    ///      wallet allows above a $50 float.
+    /// @dev Friday wages land, and each holder repays as much of their line as their wallet allows above a $50
+    ///      float.
     function _repayDay() internal {
         for (uint256 i; i < n; ++i) {
             address h = holders[i];
@@ -321,7 +320,7 @@ contract FundingCreditStressTest is FundingBase {
             _resolve(buys[pending[j]], hr);
         }
         delete pending;
-        (uint256 held,,) = cards.exposure();
+        (uint256 held,) = cards.exposure();
         assertEq(held, 0, "holds left open");
         for (uint256 j; j < buys.length; ++j) {
             assertFalse(cards.purchaseOf(buys[j].ref).open, "purchase left open");
@@ -338,10 +337,10 @@ contract FundingCreditStressTest is FundingBase {
         return usd.balanceOf(lender) + core.reserved(lender, address(usd));
     }
 
-    /// @dev A holder's cash outlay: wallet out (net of wages, not counting what cash legs still hold) plus cash debt,
-    ///      before line repayments.
+    /// @dev A holder's cash outlay: wallet out (net of wages, not counting what cash legs still hold), before line
+    ///      repayments.
     function _cashCost(address h) internal view returns (uint256) {
-        return mintedTo[h] - usd.balanceOf(h) - core.reserved(h, address(usd)) + _owed(h, address(usd), address(cash));
+        return mintedTo[h] - usd.balanceOf(h) - core.reserved(h, address(usd));
     }
 
     function _checkAll() internal view {

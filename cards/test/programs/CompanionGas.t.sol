@@ -20,7 +20,7 @@ contract CompanionGasTest is CompEnv {
     }
 
     function test_gas_credit() public {
-        auth.hold(credit, alice, _pos(lineId), LEG, 100e6, false);
+        auth.hold(credit, alice, _pos(lineId), LEG, 100e6);
         vm.snapshotGasLastCall("CompanionGas", "credit_hold");
         auth.capture(credit, alice, LEG, 100e6, true, REF);
         vm.snapshotGasLastCall("CompanionGas", "credit_captureFinal");
@@ -59,7 +59,6 @@ contract CompanionGasTest is CompEnv {
         usd.approve(address(treasury), type(uint256).max);
         core.approveHolder(address(treasury), address(usd), type(uint128).max, 0);
         vm.stopPrank();
-        _setDebtCap(settlement, address(treasury), address(usd), 100e6);
         usd.mint(address(this), 50e6);
         usd.approve(address(treasury), 50e6);
         treasury.fundIssuerDebt(address(usd), 50e6);
@@ -71,6 +70,10 @@ contract CompanionGasTest is CompEnv {
         vm.prank(operator);
         treasury.payOut(bob, 30e6, bytes32("memo"));
         vm.snapshotGasLastCall("CompanionGas", "treasury_payOutAdvanced");
+        usd.mint(settlement, 20e6);
+        vm.prank(operator);
+        treasury.repayAdvance(address(usd), 20e6);
+        vm.snapshotGasLastCall("CompanionGas", "treasury_repayAdvance");
         usd.mint(settlement, 100e6);
         bytes32 id = treasury.pledgeId(1);
         vm.startPrank(settlement);
@@ -78,7 +81,7 @@ contract CompanionGasTest is CompEnv {
         treasury.post(bob, IEarnVault(address(0)), 1);
         vm.snapshotGasLastCall("CompanionGas", "treasury_postCollateral");
         vm.stopPrank();
-        auth.setExposure(40e6, 0, 0);
+        auth.setExposure(40e6, 0);
         vm.prank(bob);
         treasury.seize(40e6);
         vm.snapshotGasLastCall("CompanionGas", "treasury_seize");
@@ -115,7 +118,6 @@ contract CompanionGasTest is CompEnv {
         // A purchase of 100: 60 on the line, 40 in cash, disputed in full.
         _draw(alice, lineId, LEG, 60e6, REF);
         auth.setPurchase(REF, alice, 100e6, 0);
-        _setDebtCap(alice, settlement, address(usd), 100e6);
         vm.prank(alice);
         core.approveHolder(address(desk), address(usd), type(uint128).max, 0);
         usd.mint(settlement, 200e6);

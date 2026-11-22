@@ -21,7 +21,7 @@ contract CreditSourceTest is CompEnv {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         assertEq(credit.committed(lineId), 1000e6);
         assertEq(credit.coverable(alice, _pos(lineId)), 1000e6);
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 300e6, false), 300e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 300e6), 300e6);
         assertEq(credit.held(alice, _pos(lineId), LEG), 300e6);
         assertEq(credit.lineOf(lineId).pending, 300e6);
         // The commitment gives the leg its room, so the lender's reserved total stays the limit.
@@ -41,21 +41,19 @@ contract CreditSourceTest is CompEnv {
     ///      it holds, and a new leg on a spent line places nothing and records nothing.
     function test_hold_shortLineHoldsWhatItHas() public {
         uint64 lineId = _openLine(alice, 100e6, IEarnVault(address(0)), 0, 0);
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 60e6, false), 60e6);
-        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 80e6, false), 40e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 60e6), 60e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 80e6), 40e6);
         assertEq(credit.availableCredit(lineId), 0);
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 90e6, false), 60e6);
-        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-3"), 1e6, false), 0);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 90e6), 60e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-3"), 1e6), 0);
         assertEq(credit.held(alice, _pos(lineId), bytes32("leg-3")), 0);
         assertEq(credit.lineOf(lineId).pending, 100e6);
         assertEq(core.reserved(lender, address(usd)), 100e6);
-        // A capture still takes only what the leg holds, and past it only within credit the line has.
-        vm.expectRevert(abi.encodeWithSelector(CreditSource.CreditExceeded.selector, 1e6, 0));
-        auth.captureBeyond(credit, alice, bytes32("leg-2"), 41e6);
-        assertEq(auth.capture(credit, alice, bytes32("leg-2"), 41e6, true, REF), 40e6);
+        // A capture still takes only what the leg holds, and past it only within credit the line has: none.
+        assertEq(auth.captureFree(credit, alice, bytes32("leg-2"), 41e6), 40e6);
         assertEq(credit.lineOf(lineId).owed, 40e6);
         // Shrinking a leg still works on a spent line, and gives the credit back.
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 10e6, false), 10e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 10e6), 10e6);
         assertEq(credit.availableCredit(lineId), 50e6);
         _assertCoreBalanced();
     }
@@ -73,12 +71,12 @@ contract CreditSourceTest is CompEnv {
         assertEq(credit.committed(lineId), 300e6);
         assertEq(core.available(lender, address(usd)), 0);
         assertEq(credit.availableCredit(lineId), 300e6);
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 200e6, false), 200e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 200e6), 200e6);
         assertEq(credit.committed(lineId), 100e6);
-        assertEq(auth.captureBeyond(credit, alice, LEG, 250e6), 250e6);
+        assertEq(auth.captureFree(credit, alice, LEG, 250e6), 250e6);
         assertEq(credit.lineOf(lineId).owed, 250e6);
         // Past the lender's balance the leg holds only what is left.
-        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 100e6, false), 50e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 100e6), 50e6);
         assertEq(credit.committed(lineId), 0);
         assertEq(core.reserved(lender, address(usd)), 50e6);
         _assertCoreBalanced();
@@ -106,7 +104,7 @@ contract CreditSourceTest is CompEnv {
     function test_hold_onlyTheProgram() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         vm.expectRevert(CreditSource.NotProgram.selector);
-        credit.hold(alice, _pos(lineId), LEG, 1e6, uint64(block.timestamp + 1 days), false);
+        credit.hold(alice, _pos(lineId), LEG, 1e6, uint64(block.timestamp + 1 days));
         vm.expectRevert(CreditSource.NotProgram.selector);
         credit.capture(alice, _pos(lineId), LEG, 1e6, 1);
     }
@@ -120,35 +118,31 @@ contract CreditSourceTest is CompEnv {
         vm.stopPrank();
         assertEq(credit.coverable(alice, _pos(lineId)), 0);
         // An unaccepted line holds nothing, so the order's later entries hold the purchase.
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 1e6, false), 0);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 1e6), 0);
         assertEq(credit.lineOf(lineId).pending, 0);
         _accept(alice, lineId);
         // Only the borrower's purchases draw it.
         vm.expectRevert(CreditSource.NotBorrower.selector);
-        auth.hold(credit, bob, _pos(lineId), LEG, 1e6, false);
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 1e6, false), 1e6);
+        auth.hold(credit, bob, _pos(lineId), LEG, 1e6);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 1e6), 1e6);
         // Past due, or in a token the program no longer settles in, it draws nothing.
         vm.warp(block.timestamp + 30 days);
-        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 1e6, false), 0);
+        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 1e6), 0);
         assertEq(credit.lineOf(lineId).pending, 1e6);
         vm.expectRevert(CreditSource.InvalidLine.selector);
-        auth.hold(credit, alice, _pos(99), bytes32("leg-2"), 1e6, false);
+        auth.hold(credit, alice, _pos(99), bytes32("leg-2"), 1e6);
     }
 
-    function test_hold_withinTheLimit_standInHoldsWhatIsLeft() public {
+    function test_hold_withinTheLimit_holdsWhatIsLeft() public {
         uint64 lineId = _openLine(alice, 100e6, IEarnVault(address(0)), 0, 0);
-        // Past the line's credit a leg holds what is left, stand-in or not.
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 101e6, false), 100e6);
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 101e6, true), 100e6);
-        // Without CAPTURE_BEYOND a capture takes only what the leg holds; with it, past that it needs credit the line
-        // no longer has.
-        vm.expectRevert(abi.encodeWithSelector(CreditSource.CreditExceeded.selector, 1e6, 0));
-        auth.captureBeyond(credit, alice, LEG, 101e6);
+        // Past the line's credit a leg holds what is left.
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 101e6), 100e6);
+        // A capture takes only what the leg holds: past that it needs credit the line no longer has.
         assertEq(auth.capture(credit, alice, LEG, 101e6, true, REF), 100e6);
         // A settled leg covers nothing more, and releasing it does nothing.
         assertEq(auth.capture(credit, alice, LEG, 1e6, true, REF), 0);
         auth.release(credit, alice, LEG);
-        (uint256 paid, uint256 covered) = credit.charge(alice, _pos(lineId), LEG, 1e6, true);
+        (uint256 paid, uint256 covered) = credit.charge(alice, _pos(lineId), LEG, 1e6);
         assertEq(paid + covered, 0);
         assertEq(credit.KIND(), 4);
         assertEq(credit.toleranceBps(alice, _pos(lineId)), 0);
@@ -203,8 +197,8 @@ contract CreditSourceTest is CompEnv {
 
     function test_capture_beyondTheHoldGrowsItWithinTheCredit() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
-        auth.hold(credit, alice, _pos(lineId), LEG, 100e6, false);
-        assertEq(auth.captureBeyond(credit, alice, LEG, 130e6), 130e6);
+        auth.hold(credit, alice, _pos(lineId), LEG, 100e6);
+        assertEq(auth.captureFree(credit, alice, LEG, 130e6), 130e6);
         assertEq(credit.lineOf(lineId).owed, 130e6);
         assertEq(usd.balanceOf(settlement), 130e6);
         _assertCoreBalanced();
@@ -213,13 +207,13 @@ contract CreditSourceTest is CompEnv {
     function test_capture_pastTheAcceptedDebtBoundCountsOnlyWithinIt() public {
         uint64 lineId = _openLine(alice, 100e6, IEarnVault(address(0)), 0, 0);
         // The lender lowers the limit after a stand-in leg was placed past what the bound leaves.
-        auth.hold(credit, alice, _pos(lineId), LEG, 100e6, false);
+        auth.hold(credit, alice, _pos(lineId), LEG, 100e6);
         auth.capture(credit, alice, LEG, 100e6, true, REF);
         (, uint128 maxDebt) = credit.offerOf(lineId);
         assertEq(maxDebt, 100e6);
         assertEq(credit.lineOf(lineId).owed, 100e6);
         // A second purchase finds no room and holds nothing: the bound holds whatever the lender does.
-        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 1e6, false), 0);
+        assertEq(auth.hold(credit, alice, _pos(lineId), bytes32("leg-2"), 1e6), 0);
         assertEq(credit.lineOf(lineId).pending, 0);
         vm.prank(lender);
         vm.expectRevert(abi.encodeWithSelector(CreditSource.DebtBoundExceeded.selector, 200e6, 100e6));
@@ -228,7 +222,7 @@ contract CreditSourceTest is CompEnv {
 
     function test_revokedLender_liveLegStillSettles() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
-        auth.hold(credit, alice, _pos(lineId), LEG, 200e6, false);
+        auth.hold(credit, alice, _pos(lineId), LEG, 200e6);
         vm.prank(lender);
         core.approveHolder(address(credit), address(usd), 0, 0);
         auth.capture(credit, alice, LEG, 200e6, true, REF);
@@ -238,7 +232,7 @@ contract CreditSourceTest is CompEnv {
 
     function test_release_expiredLegFreesPending() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
-        auth.hold(credit, alice, _pos(lineId), LEG, 200e6, false);
+        auth.hold(credit, alice, _pos(lineId), LEG, 200e6);
         vm.warp(block.timestamp + 8 days);
         auth.release(credit, alice, LEG);
         assertEq(credit.lineOf(lineId).pending, 0);
@@ -284,7 +278,7 @@ contract CreditSourceTest is CompEnv {
         // Past what the collateral secures a leg holds only what it secures.
         uint256 secured = credit.availableCredit(lineId);
         assertLt(secured, 51e6);
-        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 51e6, false), secured);
+        assertEq(auth.hold(credit, alice, _pos(lineId), LEG, 51e6), secured);
         assertEq(credit.availableCredit(lineId), 0);
         assertLe(core.available(alice, address(earnShare)), 1);
     }
@@ -294,7 +288,7 @@ contract CreditSourceTest is CompEnv {
         vm.prank(alice);
         core.approveHolder(address(credit), address(earnShare), 0, 0);
         vm.expectRevert();
-        auth.hold(credit, alice, _pos(lineId), LEG, 10e6, false);
+        auth.hold(credit, alice, _pos(lineId), LEG, 10e6);
     }
 
     function test_locking_repayShrinksTheLock() public {
@@ -337,15 +331,15 @@ contract CreditSourceTest is CompEnv {
     function test_capture_neverGrowsALegOnAClosedLine() public {
         uint64 lineId = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
         bytes32 leg = bytes32("leg-1");
-        auth.hold(credit, alice, _pos(lineId), leg, 10e6, false);
+        auth.hold(credit, alice, _pos(lineId), leg, 10e6);
         vm.prank(lender);
         credit.closeLine(lineId);
-        auth.captureBeyond(credit, alice, leg, 900e6);
+        auth.captureFree(credit, alice, leg, 900e6);
         assertEq(credit.lineOf(lineId).owed, 10e6, "only what the hold reserved");
         // A free capture (a tip, the last leg) neither.
         bytes32 leg2 = bytes32("leg-2");
         uint64 other = _openLine(alice, 1000e6, IEarnVault(address(0)), 0, 0);
-        auth.hold(credit, alice, _pos(other), leg2, 10e6, false);
+        auth.hold(credit, alice, _pos(other), leg2, 10e6);
         vm.prank(lender);
         credit.closeLine(other);
         auth.captureFree(credit, alice, leg2, 900e6);

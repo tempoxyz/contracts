@@ -23,9 +23,8 @@ abstract contract CardAuthBase is ICardAuthState {
     uint8 public constant CASH = 1;
     uint8 public constant SAVINGS = 2;
     uint8 public constant CREDIT = 4;
-    /// @notice authorize flags: approve what the sources hold when they hold less; a stand-in approved offline.
+    /// @notice authorize flags: approve what the sources hold when they hold less.
     uint8 public constant PARTIAL = 1;
-    uint8 public constant STAND_IN = 2;
     uint64 public constant SETTINGS_DELAY = 2 days;
     /// @notice How long after its delay a proposed setting may still apply; past it the proposal lapses.
     uint64 public constant SETTINGS_WINDOW = 7 days;
@@ -38,10 +37,10 @@ abstract contract CardAuthBase is ICardAuthState {
     uint256 internal constant MAX_AMOUNT = type(uint48).max;
     // Purchase word: card number [0,32), amount [32,80), captured [80,128), refunded [128,176), expiresAt [176,208),
     // local day [208,224), grant epoch [224,232), order version [232,240), settlement era [240,248), flags [248,256).
-    // Flags: open, stand-in, charged, then one bit per order entry it drew on.
+    // Flags: open, charged, then one bit per order entry it drew on (LEGS_SHIFT on).
     uint256 internal constant OPEN = 1;
-    uint256 internal constant STANDIN = 2;
-    uint256 internal constant CHARGED = 4;
+    uint256 internal constant CHARGED = 2;
+    uint256 internal constant LEGS_SHIFT = 2;
 
     struct Purchase {
         uint32 index;

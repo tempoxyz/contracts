@@ -10,13 +10,12 @@ import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReserv
 /// @title AccountLifecycle
 /// @notice An account's standing across every card program on one settlement token: active, dormant, closed or an
 ///         estate. Programs read it at authorization and report card activity to it. It pays out what an account
-///         can release (available cash, plus the available shares of the vaults the caller names, redeemed): the
-///         account's debt first, then the payee. The owner closes its own account; the registrar records estates, only
+///         can release (available cash, plus the available shares of the vaults the caller names, redeemed) to the
+///         payee. The owner closes its own account; the registrar records estates, only
 ///         for the executor the owner named, and remits unclaimed property, each only after a notice period the owner
 ///         can end by acting; the executor settles an estate to itself, and pays out what reaches it later.
 /// @dev An account enrolls with its own key and approves this contract to move its cash and shares. Payouts take
-///      only what the reservation core reports available, so holds and liens stay where they are. Debt is repaid
-///      the way the core repays it from any credit: the cash first lands on the account itself.
+///      only what the reservation core reports available, so holds and liens stay where they are.
 ///
 ///      Owner activity the lifecycle sees, which ends a pending notice: the owner's own calls here (enroll, checkIn,
 ///      reactivate, nameExecutor, and closeAccount for a dormant account, signed by the account or a key AccountKeys
@@ -61,7 +60,7 @@ contract AccountLifecycle {
     /// @notice Seconds between an escheat notice and the remittance it allows.
     uint64 public constant ESCHEAT_NOTICE = 90 days;
 
-    /// @notice The settlement token whose balances and debt the lifecycle pays out.
+    /// @notice The settlement token whose balances the lifecycle pays out.
     address public immutable TOKEN;
     /// @notice The registrar: records estates and remits unclaimed property.
     address public immutable REGISTRAR;
@@ -89,11 +88,8 @@ contract AccountLifecycle {
     event NoticeCancelled(address indexed account);
     event EscheatAuthoritySet(address indexed authority);
     event ProgramSet(address indexed program, bool counted);
-    /// @notice One payout: repaid of the account's debt, then amount to the payee, which repaid received of its own
-    ///         debt on landing. Savings is what the redeemed shares added.
-    event PaidOut(
-        address indexed account, address indexed to, uint256 amount, uint256 repaid, uint256 received, uint256 savings
-    );
+    /// @notice One payout: amount to the payee, of which savings is what the redeemed shares added.
+    event PaidOut(address indexed account, address indexed to, uint256 amount, uint256 savings);
 
     error AccountState(Status status);
     error HoldsOpen();
@@ -240,7 +236,7 @@ contract AccountLifecycle {
     }
 
     /// @notice The executor settles the estate to itself once the notice period has passed and no hold is open: the
-    ///         account's debts, then the executor. It closes. Later calls pay out what refunds and releases freed since.
+    ///         executor. It closes. Later calls pay out what refunds and releases freed since.
     function settleEstate(address account, address[] calldata vaults) external returns (uint256 paid) {
         Account storage a = _accounts[account];
         Status status = a.status;
@@ -370,10 +366,7 @@ contract AccountLifecycle {
     function _payOut(address account, address to, address[] calldata vaults) private returns (uint256 paid) {
         if (to == address(0) || to == account) revert InvalidPayee();
         address token = TOKEN;
-        uint256 debt = _totalDebt(account, token);
-        uint256 toDebt = _totalDebt(to, token);
-
-        // Shares redeem to the account itself, so the core repays its debt from them as from any credit.
+        // Shares redeem to the account itself, then pay out with its cash.
         uint256 savings;
         // The caller names a handful of vaults, and one that reverts only stops its own payout.
         // forge-lint: disable-start(calls-loop)
@@ -389,27 +382,10 @@ contract AccountLifecycle {
         }
         // forge-lint: disable-end(calls-loop)
 
-        // Cash moved onto the account itself is a credit the core repays debt from first.
-        uint256 owed = _totalDebt(account, token);
-        uint256 free = CORE.available(account, token);
-        if (owed != 0 && free != 0) token.safeTransferFrom(account, account, owed < free ? owed : free);
         paid = CORE.available(account, token);
         if (paid != 0) token.safeTransferFrom(account, to, paid);
-
-        uint256 debtAfter = _totalDebt(account, token);
-        uint256 toDebtAfter = _totalDebt(to, token);
-        uint256 repaid = debt > debtAfter ? debt - debtAfter : 0;
-        uint256 received = toDebt > toDebtAfter ? toDebt - toDebtAfter : 0;
-        if (paid != 0 || repaid != 0 || savings != 0) emit PaidOut(account, to, paid, repaid, received, savings);
+        if (paid != 0) emit PaidOut(account, to, paid, savings);
     }
 
     // forge-lint: disable-end(arbitrary-send-erc20)
-
-    /// @dev What `owner` owes every creditor in `token`.
-    function _totalDebt(address owner, address token) private view returns (uint256 sum) {
-        IReservationCore.Debt[] memory debts = CORE.debtOf(owner, token);
-        for (uint256 i; i < debts.length; ++i) {
-            sum += debts[i].amount;
-        }
-    }
 }

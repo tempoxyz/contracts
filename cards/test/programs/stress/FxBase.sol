@@ -174,18 +174,12 @@ abstract contract FxBase is AuthEnv {
             core.approveHolder(address(cash), address(lcl), type(uint128).max, 0);
             core.approveHolder(address(cash), address(usd), type(uint128).max, 0);
             cards.setFunding(order);
-            core.setPayeeTerms(address(cash), _converted(), _toleranceTerms(h));
+            core.setCaptureTolerance(address(cash), _converted(), HOLDER_TOLERANCE_BPS);
             cards.grant(CardLimits.Terms({ limit: 0, perPurchase: 0, daily: 0, monthly: 0, utcOffset: 0 }));
             vm.stopPrank();
             if (tokens != 0) ITIP20Token(_converted()).mint(h, tokens);
             if (plain != 0) ITIP20Token(_settlementToken()).mint(h, plain);
         }
-    }
-
-    /// @dev h's payee terms for the cash source on the converted token, with HOLDER_TOLERANCE_BPS.
-    function _toleranceTerms(address h) internal view returns (IReservationCore.PayeeTerms memory t) {
-        t = core.payeeTerms(h, address(cash), _converted());
-        t.toleranceBps = HOLDER_TOLERANCE_BPS;
     }
 
     /// @dev Fixes what lies outside the known parties and gives the issuer refund money, so later checks see anything

@@ -10,8 +10,6 @@ import {
     KIND_HOLD,
     KIND_LIEN,
     KIND_PLEDGE,
-    MAX_CREDITORS,
-    MAX_DEBT_TERM,
     MAX_HOLD_DURATION,
     MAX_PLEDGE_DURATION
 } from "../../../src/programs/interfaces/IReservationCore.sol";
@@ -27,8 +25,8 @@ interface IMockCoreToken {
 /// @notice TEST MODEL ONLY of the reservation core precompile at 0x5245535600000000000000000000000000000000, which
 ///         the test EVM's hardfork predates. Tests etch it at that address and allow it cheatcodes. It follows the
 ///         node's rules: records keyed by (owner, placer, id) and deleted on settlement; hold, pledge and lien kinds;
-///         holder budgets with periods; payee terms; up to four lapsing creditors per owner and token; refunds that
-///         forgive the caller's debt first; and the token's pause and TIP-403 checks on every payment.
+///         holder budgets with periods; capture tolerances; payments only from what a record backs or the owner's
+///         free balance; and the token's pause and TIP-403 checks on every payment.
 /// @dev Where the node moves amounts between an owner's balance slot and its reserved position, this model moves the
 ///      token balance between the owner and this contract by writing the token's balance slots, so an owner's
 ///      `balanceOf` is exactly the node's balance slot (`available`), and this contract's balance of a token equals
@@ -36,9 +34,6 @@ interface IMockCoreToken {
 ///      does not. Other differences, all test-only:
 ///      - It cannot tell a root key from an access key, so "root key only" checks pass for every caller, and access
 ///        key spending limits are not applied.
-///      - Debt is repaid from each credit the core itself makes (captures, charges, refunds). A credit made by the
-///        token directly (a transfer or mint in a test) repays debt only when the test calls `notifyCredit`, as the
-///        node's token does on every credit.
 ///      - Burning reserved balance (the node's unbacked shortfall) is not modeled.
 ///      - Token rewards accounting is untouched by reservations.
 contract MockReservationCore is IReservationCore {
@@ -61,7 +56,6 @@ contract MockReservationCore is IReservationCore {
         uint64 captureLimit;
         uint16 toleranceBps;
         uint8 kind;
-        bool standIn;
     }
 
     struct Hold {
@@ -79,35 +73,13 @@ contract MockReservationCore is IReservationCore {
         uint32 periodStart;
     }
 
-    struct Terms {
-        uint64 debtCap;
-        uint64 offlineCap;
-        uint16 toleranceBps;
-        uint32 debtTerm;
-    }
-
-    struct DebtEntry {
-        address creditor;
-        uint64 amount;
-        uint32 lapsesAt;
-    }
-
     mapping(address owner => mapping(address placer => mapping(bytes32 id => Record))) private _records;
     mapping(address owner => mapping(address token => uint128)) private _reserved;
     mapping(address owner => mapping(address holder => mapping(address token => BudgetState))) private _budgets;
-    mapping(address owner => mapping(address payee => mapping(address token => Terms))) private _terms;
-    mapping(address owner => mapping(address token => DebtEntry[])) private _debts;
+    mapping(address owner => mapping(address payee => mapping(address token => uint16))) private _tolerances;
 
     /// @notice Everything reserved in `token` across owners. Equals this contract's balance of `token`.
     mapping(address token => uint256) public totalReserved;
-
-    // Test hooks.
-
-    /// @notice Repays `to`'s debt in `token` from a credit of `amount` the token made outside the core, as the
-    ///         node's token does on every transfer and mint. Call it after crediting an account that may owe debt.
-    function notifyCredit(address token, address to, uint256 amount) external {
-        _repay(to, token, amount);
-    }
 
     // Owner settings.
 
@@ -127,18 +99,11 @@ contract MockReservationCore is IReservationCore {
         emit HolderApproved(owner, holder, token, b.limit, period);
     }
 
-    function setPayeeTerms(address payee, address token, PayeeTerms calldata terms) external {
+    function setCaptureTolerance(address payee, address token, uint16 toleranceBps) external {
         address owner = msg.sender;
         address resolved = _counterparty(owner, payee, token);
-        if (terms.debtTerm > MAX_DEBT_TERM) revert InvalidExpiry();
-        Terms memory t = Terms({
-            debtCap: _sat64(terms.debtCap),
-            offlineCap: _sat64(terms.offlineCap),
-            toleranceBps: terms.toleranceBps,
-            debtTerm: terms.debtTerm
-        });
-        _terms[owner][resolved][token] = t;
-        emit PayeeTermsSet(owner, resolved, token, _termsAbi(t));
+        _tolerances[owner][resolved][token] = toleranceBps;
+        emit CaptureToleranceSet(owner, resolved, token, toleranceBps);
     }
 
     // Placing.
@@ -179,10 +144,9 @@ contract MockReservationCore is IReservationCore {
             payee: authority,
             captureLimit: amt,
             toleranceBps: 0,
-            kind: KIND_LIEN,
-            standIn: false
+            kind: KIND_LIEN
         });
-        emit HoldPlaced(resolvedOwner, authority, token, id, KIND_LIEN, authority, amt, amt, amt, expiresAt, false);
+        emit HoldPlaced(resolvedOwner, authority, token, id, KIND_LIEN, authority, amt, amt, expiresAt);
     }
 
     // Settling.
@@ -204,7 +168,6 @@ contract MockReservationCore is IReservationCore {
             uint64 increase = amt - held;
             uint64 wanted = _withTolerance(amt, h.r.toleranceBps);
             uint64 raise = wanted > h.r.captureLimit ? wanted - h.r.captureLimit : 0;
-            if (raise != 0 && h.r.standIn) revert InvalidAmount();
             _ensureAllowed(token, owner, h.r.payee, false);
             if (increase > _available(token, owner)) revert InsufficientAvailable();
             if (_budgeted(h)) _drawBudget(owner, h.placer, token, increase, increase, 0);
@@ -241,15 +204,17 @@ contract MockReservationCore is IReservationCore {
         uint64 fromHold = amt < held ? amt : held;
         uint64 excess = amt - fromHold;
         uint64 rest = isFinal ? held - fromHold : 0;
+        // What the hold still backs pays its payee even after the owner is blocked; a payment that also draws on the
+        // free balance is new, so it needs the owner's authorization too.
         bool senderExempt = (k == KIND_HOLD && excess == 0) || k == KIND_LIEN;
         _ensureAllowed(token, owner, payee, senderExempt);
         if (_budgeted(h)) _settleBudget(owner, h.placer, token, fromHold, rest, excess);
         uint128 paid;
-        uint128 debt;
         if (k == KIND_HOLD) {
+            // The hold returns what it backs to the balance first; the excess must be free there, or nothing is paid.
             _unreserve(token, owner, uint128(fromHold) + rest);
-            debt = _pay(token, owner, payee, amt, h.r.standIn, senderExempt);
-            paid = amt - debt;
+            _pay(token, owner, payee, amt, senderExempt);
+            paid = amt;
         } else {
             _unreserve(token, owner, fromHold);
             _transfer(token, owner, payee, fromHold, senderExempt);
@@ -261,7 +226,7 @@ contract MockReservationCore is IReservationCore {
         bool settled = isFinal || (k != KIND_HOLD && h.r.held == 0);
         if (settled) delete _records[owner][h.placer][id];
         else _records[owner][h.placer][id] = h.r;
-        emit HoldCaptured(owner, h.placer, token, id, payee, paid, debt, settled);
+        emit HoldCaptured(owner, h.placer, token, id, payee, paid, settled);
     }
 
     function release(address owner, address placer, bytes32 id) external {
@@ -277,15 +242,15 @@ contract MockReservationCore is IReservationCore {
         _endHold(h, true);
     }
 
-    function charge(address owner, address token, bytes32 id, uint128 amount, address payee, bool standIn) external {
+    function charge(address owner, address token, bytes32 id, uint128 amount, address payee) external {
         address resolved = _payee(payee);
         uint64 amt = _amount64(amount);
         _tip20(token);
-        // A holder's budget is checked before the owner's policy, as the node does.
+        // A holder's budget is checked before the owner's policy and balance, as the node does.
         if (msg.sender != owner) _drawBudget(owner, msg.sender, token, amt, 0, amt);
         _ensureAllowed(token, owner, resolved, false);
-        uint128 debt = _pay(token, owner, resolved, amt, standIn, false);
-        emit Charged(owner, msg.sender, token, id, resolved, amt, debt);
+        _pay(token, owner, resolved, amt, false);
+        emit Charged(owner, msg.sender, token, id, resolved, amt);
     }
 
     function refund(address owner, address token, address placer, bytes32 id, uint128 amount) external {
@@ -293,18 +258,9 @@ contract MockReservationCore is IReservationCore {
         address resolved = _payee(owner);
         _tip20(token);
         _ensureAllowed(token, msg.sender, resolved, false);
-        uint128 forgiven = _forgive(resolved, token, msg.sender, amount);
-        uint128 paid = amount - forgiven;
-        if (paid != 0) {
-            if (paid > _available(token, msg.sender)) revert InsufficientAvailable();
-            _transfer(token, msg.sender, resolved, paid, false);
-        }
-        emit Refunded(resolved, msg.sender, token, placer, id, amount, forgiven);
-    }
-
-    function clearLapsedDebt(address owner, address token) external {
-        if (_debts[owner][token].length == 0) return;
-        _storeDebts(owner, token, _liveDebts(owner, token));
+        if (amount > _available(token, msg.sender)) revert InsufficientAvailable();
+        _transfer(token, msg.sender, resolved, amount, false);
+        emit Refunded(resolved, msg.sender, token, placer, id, amount);
     }
 
     // Views.
@@ -318,8 +274,7 @@ contract MockReservationCore is IReservationCore {
             held: r.held,
             captureLimit: r.captureLimit,
             expiresAt: r.expiresAt,
-            kind: r.kind,
-            standIn: r.standIn
+            kind: r.kind
         });
     }
 
@@ -340,24 +295,9 @@ contract MockReservationCore is IReservationCore {
         });
     }
 
-    function payeeTerms(address owner, address payee, address token) external view returns (PayeeTerms memory) {
+    function captureTolerance(address owner, address payee, address token) external view returns (uint16) {
         address resolved = StdPrecompiles.ADDRESS_REGISTRY.resolveRecipient(payee);
-        return _termsAbi(_terms[owner][resolved][token]);
-    }
-
-    function debtOf(address owner, address token) external view returns (Debt[] memory debts) {
-        DebtEntry[] storage stored = _debts[owner][token];
-        uint64 now_ = _now();
-        uint256 live;
-        for (uint256 i; i < stored.length; ++i) {
-            if (now_ < stored[i].lapsesAt) ++live;
-        }
-        debts = new Debt[](live);
-        uint256 j;
-        for (uint256 i; i < stored.length; ++i) {
-            DebtEntry memory e = stored[i];
-            if (now_ < e.lapsesAt) debts[j++] = Debt({ creditor: e.creditor, amount: e.amount, lapsesAt: e.lapsesAt });
-        }
+        return _tolerances[owner][resolved][token];
     }
 
     // Placement internals.
@@ -373,37 +313,24 @@ contract MockReservationCore is IReservationCore {
         address payee = _payee(request.payee);
         address token = request.token;
         _tip20(token);
-        uint128 free = _available(token, owner);
-        uint64 held = request.standIn && free < amt ? uint64(free) : amt;
         // The placer's budget is checked before the owner's policy and balance, as the node does.
-        if (placer != owner) _drawBudget(owner, placer, token, amt, held, 0);
+        if (placer != owner) _drawBudget(owner, placer, token, amt, amt, 0);
         _ensureAllowed(token, owner, payee, false);
-        if (held > free) revert InsufficientAvailable();
-        uint16 tolerance = _terms[owner][payee][token].toleranceBps;
+        if (amt > _available(token, owner)) revert InsufficientAvailable();
+        uint16 tolerance = _tolerances[owner][payee][token];
         uint64 captureLimit = _withTolerance(amt, tolerance);
-        _reserve(token, owner, held);
+        _reserve(token, owner, amt);
         _records[owner][placer][request.id] = Record({
             token: token,
-            held: held,
+            held: amt,
             expiresAt: _ts32(request.expiresAt),
             payee: payee,
             captureLimit: captureLimit,
             toleranceBps: tolerance,
-            kind: KIND_HOLD,
-            standIn: request.standIn
+            kind: KIND_HOLD
         });
         emit HoldPlaced(
-            owner,
-            placer,
-            token,
-            request.id,
-            KIND_HOLD,
-            payee,
-            request.amount,
-            held,
-            captureLimit,
-            request.expiresAt,
-            request.standIn
+            owner, placer, token, request.id, KIND_HOLD, payee, request.amount, captureLimit, request.expiresAt
         );
     }
 
@@ -435,10 +362,9 @@ contract MockReservationCore is IReservationCore {
             payee: authority,
             captureLimit: amt,
             toleranceBps: 0,
-            kind: KIND_PLEDGE,
-            standIn: false
+            kind: KIND_PLEDGE
         });
-        emit HoldPlaced(owner, placer, token, id, KIND_PLEDGE, authority, amt, amt, amt, expiresAt, false);
+        emit HoldPlaced(owner, placer, token, id, KIND_PLEDGE, authority, amt, amt, expiresAt);
     }
 
     function _ensureVacant(address owner, address placer, bytes32 id) private view {
@@ -517,111 +443,12 @@ contract MockReservationCore is IReservationCore {
         _budgets[owner][holder][token] = b;
     }
 
-    // Payments and debt.
+    // Payments.
 
-    /// @dev Pays `amount` from `owner`'s free balance, recording what it cannot cover as debt to `payee`.
-    function _pay(address token, address owner, address payee, uint64 amount, bool offline, bool senderExempt)
-        private
-        returns (uint128 debt)
-    {
-        uint128 free = _available(token, owner);
-        uint128 paid = amount < free ? amount : free;
-        debt = amount - paid;
-        if (debt != 0) _addDebt(owner, token, payee, debt, offline);
-        _transfer(token, owner, payee, paid, senderExempt);
-    }
-
-    function _addDebt(address owner, address token, address creditor, uint128 amount, bool offline) private {
-        Terms memory t = _terms[owner][creditor][token];
-        uint64 cap = offline && t.offlineCap > t.debtCap ? t.offlineCap : t.debtCap;
-        DebtEntry[] memory entries = _liveDebts(owner, token);
-        bool found;
-        for (uint256 i; i < entries.length; ++i) {
-            if (entries[i].creditor != creditor) continue;
-            uint256 owed = uint256(entries[i].amount) + amount;
-            if (owed > cap) _refuseDebt(cap);
-            entries[i].amount = uint64(owed);
-            found = true;
-            break;
-        }
-        if (!found) {
-            if (amount > cap) _refuseDebt(cap);
-            if (entries.length >= MAX_CREDITORS) revert TooManyCreditors();
-            uint64 term = t.debtTerm == 0 || t.debtTerm > MAX_DEBT_TERM ? MAX_DEBT_TERM : t.debtTerm;
-            DebtEntry[] memory grown = new DebtEntry[](entries.length + 1);
-            for (uint256 i; i < entries.length; ++i) {
-                grown[i] = entries[i];
-            }
-            grown[entries.length] =
-                DebtEntry({ creditor: creditor, amount: uint64(amount), lapsesAt: _ts32(_now() + term) });
-            entries = grown;
-        }
-        _storeDebts(owner, token, entries);
-    }
-
-    function _refuseDebt(uint64 cap) private pure {
-        if (cap == 0) revert InsufficientAvailable();
-        revert DebtCapExceeded();
-    }
-
-    function _forgive(address owner, address token, address creditor, uint128 amount)
-        private
-        returns (uint128 forgiven)
-    {
-        if (_debts[owner][token].length == 0) return 0;
-        DebtEntry[] memory entries = _liveDebts(owner, token);
-        for (uint256 i; i < entries.length; ++i) {
-            if (entries[i].creditor != creditor) continue;
-            uint64 cut = amount < entries[i].amount ? uint64(amount) : entries[i].amount;
-            entries[i].amount -= cut;
-            forgiven = cut;
-            break;
-        }
-        _storeDebts(owner, token, entries);
-    }
-
-    /// @dev The node's repayment on credit: pays `owner`'s creditors in order from a credit of `received`,
-    ///      skipping creditors a payment from `owner` could not reach.
-    function _repay(address owner, address token, uint256 received) private {
-        if (_debts[owner][token].length == 0) return;
-        DebtEntry[] memory entries = _liveDebts(owner, token);
-        uint64 left = received > type(uint64).max ? type(uint64).max : uint64(received);
-        for (uint256 i; i < entries.length && left != 0; ++i) {
-            if (!_paymentAllowed(token, owner, entries[i].creditor, false)) continue;
-            uint64 repaid = left < entries[i].amount ? left : entries[i].amount;
-            left -= repaid;
-            entries[i].amount -= repaid;
-            emit DebtRepaid(owner, entries[i].creditor, token, repaid);
-            _move(token, owner, entries[i].creditor, repaid);
-        }
-        _storeDebts(owner, token, entries);
-    }
-
-    /// @dev The stored entries without lapsed ones, emitting `DebtLapsed` for each one dropped.
-    function _liveDebts(address owner, address token) private returns (DebtEntry[] memory kept) {
-        DebtEntry[] storage stored = _debts[owner][token];
-        uint64 now_ = _now();
-        kept = new DebtEntry[](stored.length);
-        uint256 n;
-        for (uint256 i; i < stored.length; ++i) {
-            DebtEntry memory e = stored[i];
-            if (now_ >= e.lapsesAt) emit DebtLapsed(owner, e.creditor, token, e.amount);
-            else kept[n++] = e;
-        }
-        assembly ("memory-safe") {
-            mstore(kept, n)
-        }
-    }
-
-    /// @dev Stores `entries` in order, dropping settled (zero) ones.
-    function _storeDebts(address owner, address token, DebtEntry[] memory entries) private {
-        DebtEntry[] storage stored = _debts[owner][token];
-        while (stored.length != 0) {
-            stored.pop();
-        }
-        for (uint256 i; i < entries.length; ++i) {
-            if (entries[i].amount != 0) stored.push(entries[i]);
-        }
+    /// @dev Pays `amount` from `owner`'s free balance; nothing is paid beyond it.
+    function _pay(address token, address owner, address payee, uint64 amount, bool senderExempt) private {
+        if (amount > _available(token, owner)) revert InsufficientAvailable();
+        _transfer(token, owner, payee, amount, senderExempt);
     }
 
     // Policy.
@@ -668,12 +495,11 @@ contract MockReservationCore is IReservationCore {
         _move(token, address(this), owner, amount);
     }
 
-    /// @dev A core payment: checks policy, moves the balance and repays the recipient's debt from the credit.
+    /// @dev A core payment: checks policy and moves the balance.
     function _transfer(address token, address from, address to, uint128 amount, bool senderExempt) private {
         _ensureAllowed(token, from, to, senderExempt);
         if (amount == 0) return;
         _move(token, from, to, amount);
-        _repay(to, token, amount);
     }
 
     /// @dev Moves a balance between two accounts' slots, without the token's own checks.
@@ -718,12 +544,6 @@ contract MockReservationCore is IReservationCore {
 
     function _ts32(uint64 timestamp) private pure returns (uint32) {
         return timestamp > type(uint32).max ? type(uint32).max : uint32(timestamp);
-    }
-
-    function _termsAbi(Terms memory t) private pure returns (PayeeTerms memory) {
-        return PayeeTerms({
-            debtCap: t.debtCap, offlineCap: t.offlineCap, toleranceBps: t.toleranceBps, debtTerm: t.debtTerm
-        });
     }
 
     function _now() private view returns (uint64) {

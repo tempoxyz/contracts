@@ -47,10 +47,11 @@ interface ITIP20MemoFrom {
 
 /// @title IssuerTreasury
 /// @notice The issuer's money beside one card authorization contract (PROGRAM): its own funds that advance payouts
-///         when the settlement account runs short (which the account then owes it as core debt), within what those
-///         funds must keep behind the program's exposure; the change of settlement token, after the settings delay;
-///         and the sponsor collateral the settlement account pledges behind the program's exposure. Every advance
-///         comes from funds the issuer put in: a shortfall reverts.
+///         when the settlement account runs short, which the account then owes back here as a receivable
+///         (advanceOf) until it repays it (repayAdvance), within what those funds must keep behind the program's
+///         exposure; the change of settlement token, after the settings delay; and the sponsor collateral the
+///         settlement account pledges behind the program's exposure. Every advance comes from funds the issuer put in:
+///         a shortfall reverts.
 /// @custom:reentrancy-guard _locked
 contract IssuerTreasury is IExposureGuard {
     using FixedPointMathLib for uint256;
@@ -65,7 +66,6 @@ contract IssuerTreasury is IExposureGuard {
     uint8 private constant IN_USE_UNSETTLED = 2;
     uint8 private constant IN_USE_COLLATERAL = 5;
     uint8 private constant IN_USE_HELD = 6;
-    uint8 private constant IN_USE_ISSUER_DEBT = 8;
     uint8 private constant PLEDGE = 2;
     uint256 private constant BPS = 10_000;
     /// @notice The share of a converted token's open holds (their settlement value) the collateral must also cover,
@@ -76,12 +76,13 @@ contract IssuerTreasury is IExposureGuard {
 
     /// @dev What the issuer put in, per token, before what the settlement account owes back.
     mapping(address token => uint256) internal _funds;
+    /// @notice What the settlement account owes the issuer's funds, per token, for payouts they advanced.
+    mapping(address token => uint256) public advanceOf;
     /// @notice Contracts sizing money in the settlement token, asked before it changes.
     address[] public tokenGuards;
     mapping(bytes32 id => uint64 eta) public pendingSetting;
     /// @dev The stress figure the issuer set per converted token, in bps; zero for none (DEFAULT_FX_STRESS_BPS).
     mapping(address token => uint256) internal _fxStress;
-    uint64 internal _charges;
 
     /// @notice The sponsor collateral: who receives what is seized, the pledged token, its Earn vault (zero for
     ///         plain tokens), and which of the MAX_PLEDGES pledge slots hold posted pledges (bit n-1 for pledgeId(n)).
@@ -104,6 +105,10 @@ contract IssuerTreasury is IExposureGuard {
     event IssuerFundsWithdrawn(address indexed token, uint256 amount);
     event IssuerPaid(address indexed to, address indexed token, uint256 amount, uint256 advanced, bytes32 memo);
     event HeldConverted(address indexed token, uint256 amount, uint256 out);
+    /// @notice The settlement account repaid `amount` of what the issuer's funds advanced it in `token`.
+    event AdvanceRepaid(address indexed token, uint256 amount);
+    /// @notice A change of settlement token moved what the account owes the issuer, `owed` in `from`, into `carried`
+    ///         of `to`.
     event IssuerDebtCarried(address indexed from, uint256 owed, address indexed to, uint256 carried);
     event SettingProposed(bytes32 indexed id, bytes data, uint64 eta);
     event SettingCanceled(bytes32 indexed id);
@@ -195,32 +200,21 @@ contract IssuerTreasury is IExposureGuard {
     }
 
     /// @notice Pays amount of the settlement token from the settlement account to to with memo. What the account
-    ///         lacks, the issuer's funds advance, and the account owes it here as core debt within the cap it set; the
-    ///         core repays it first from what the account receives. Only the advance counts against the account's
-    ///         budget for this contract, and it joins what the account already owes here, lapsing with it. With an
-    ///         advance the payment comes from this contract. The settlement account, the issuer or a treasury
-    ///         operator (within its cap) calls it.
+    ///         lacks, the issuer's funds advance: the account's free balance comes here and this contract pays the whole
+    ///         amount, and the advance joins what the account owes back here (advanceOf). The settlement account, the
+    ///         issuer or a treasury operator (within its cap) calls it.
     function payOut(address to, uint256 amount, bytes32 memo) external nonReentrant returns (uint256 advanced) {
-        address account = PROGRAM.SETTLEMENT_ACCOUNT();
-        if (msg.sender != account && msg.sender != PROGRAM.ISSUER()) {
-            if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_TREASURY())) revert NotIssuer();
-            PROGRAM.useOperatorCap(msg.sender, amount);
-        }
+        address account = _treasuryCaller(amount);
         address token = PROGRAM.settlementToken();
         uint256 free = CORE.available(account, token);
         if (amount > free) {
             advanced = amount - free;
             uint256 held = issuerFunds(token);
             if (held < advanced) revert IssuerFundsShort(advanced, held);
-            // What the account holds free comes here first, so the charge finds nothing free and the whole advance,
-            // and only it, becomes the account's debt: never routed through the account, where it would repay old
-            // debt instead. This contract then pays the whole amount, so only the advance leaves its funds.
+            advanceOf[token] += advanced;
             // From the program's own settlement account, which the caller is or acts for above.
             // forge-lint: disable-next-line(arbitrary-send-erc20)
             if (free != 0) SafeTransferLib.safeTransferFrom(token, account, address(this), free);
-            // At most the issuer's funds, which the core's 128-bit debt cap bounds.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            CORE.charge(account, token, _chargeId(), uint128(advanced), address(this), false);
             ITIP20Memo(token).transferWithMemo(to, amount, memo);
         } else {
             // From the program's own settlement account, which the caller is or acts for above.
@@ -230,11 +224,23 @@ contract IssuerTreasury is IExposureGuard {
         emit IssuerPaid(to, token, amount, advanced, memo);
     }
 
+    /// @notice Repays up to amount of what the settlement account owes the issuer's funds in token, from the account's
+    ///         free balance. The settlement account, the issuer or a treasury operator calls it. Returns what it repaid.
+    function repayAdvance(address token, uint256 amount) external nonReentrant returns (uint256 repaid) {
+        address account = _treasuryCaller(0);
+        repaid = _min(_min(amount, advanceOf[token]), CORE.available(account, token));
+        if (repaid == 0) return 0;
+        advanceOf[token] -= repaid;
+        // From the program's own settlement account, which the caller is or acts for above, back to the issuer's funds.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
+        SafeTransferLib.safeTransferFrom(token, account, address(this), repaid);
+        emit AdvanceRepaid(token, repaid);
+    }
+
     /// @notice Settles new purchases in token from now on, after the program's settings delay once it granted anyone.
     ///         Refused while anything is still sized in the old token: what a token guard reports, or posted sponsor
-    ///         collateral, or issuer debt the settlement account cannot owe in the new token. The program refuses it
-    ///         too while its own purchases are open or unsettled. What the account owes the issuer moves into the new
-    ///         token at the venue's price, rounded up.
+    ///         collateral. The program refuses it too while its own purchases are open or unsettled. What the account
+    ///         owes the issuer moves into the new token at the venue's price, rounded up.
     function setSettlementToken(address token) external nonReentrant onlyIssuer {
         address current = PROGRAM.settlementToken();
         if (token == address(0) || token == current) revert TokenNotAccepted(token);
@@ -290,25 +296,23 @@ contract IssuerTreasury is IExposureGuard {
     /// @notice What the issuer holds of token for advancing payouts: its funds less what the settlement account owes.
     function issuerFunds(address token) public view returns (uint256) {
         uint256 funds = _funds[token];
-        if (funds == 0) return 0;
-        uint256 owed = _owedTo(PROGRAM.SETTLEMENT_ACCOUNT(), token);
+        uint256 owed = advanceOf[token];
         return funds > owed ? funds - owed : 0;
     }
 
-    /// @notice What the issuer's own funds of token stand behind and keep for, in the settlement token only: stand-in
-    ///         approvals open purchases hold beyond the cardholders' funds, and what the settlement account still owes
-    ///         the network for captures but cannot pay from its free balance.
+    /// @notice What the issuer's own funds of token stand behind and keep for, in the settlement token only: what the
+    ///         settlement account still owes the network for captures but cannot pay from its free balance.
     function committedIssuerFunds(address token) public view returns (uint256) {
         if (token != PROGRAM.settlementToken()) return 0;
-        (, uint256 standIn, uint256 unsettled) = PROGRAM.exposure();
+        (, uint256 unsettled) = PROGRAM.exposure();
         uint256 free = CORE.available(PROGRAM.SETTLEMENT_ACCOUNT(), token);
-        return standIn + (unsettled > free ? unsettled - free : 0);
+        return unsettled > free ? unsettled - free : 0;
     }
 
     /// @notice What the program may still owe the network: what open purchases hold and unsettled captures. Sponsor
     ///         collateral is released and seized against it.
     function exposure() public view returns (uint256) {
-        (uint256 held,, uint256 unsettled) = PROGRAM.exposure();
+        (uint256 held, uint256 unsettled) = PROGRAM.exposure();
         return held + unsettled;
     }
 
@@ -443,9 +447,9 @@ contract IssuerTreasury is IExposureGuard {
     function acknowledgeSettlement(uint64 throughSeq, uint256 applied) external nonReentrant {
         Collateral storage c = collateral;
         if (msg.sender != (c.sponsor == address(0) ? PROGRAM.ISSUER() : c.sponsor)) revert NotSponsor();
-        (,, uint256 before) = PROGRAM.exposure();
+        (, uint256 before) = PROGRAM.exposure();
         PROGRAM.acknowledgeSettlement(throughSeq);
-        (,, uint256 left) = PROGRAM.exposure();
+        (, uint256 left) = PROGRAM.exposure();
         uint256 cleared = before > left ? before - left : 0;
         uint256 room = seized < cleared ? seized : cleared;
         if (applied > room) revert AboveExposure(applied, room);
@@ -532,7 +536,7 @@ contract IssuerTreasury is IExposureGuard {
     // forge-lint: disable-next-item(calls-loop)
     function _checkUnused() private view {
         // The program's own holds and unsettled steps, which a proposal checks too, so it refuses rather than waiting.
-        (uint256 held,,) = PROGRAM.exposure();
+        (uint256 held,) = PROGRAM.exposure();
         if (held != 0) revert SettlementTokenInUse(IN_USE_HOLDS);
         (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet) = PROGRAM.ledger();
         if (seq != settledThrough || net != settledNet) revert SettlementTokenInUse(IN_USE_UNSETTLED);
@@ -548,27 +552,26 @@ contract IssuerTreasury is IExposureGuard {
     }
 
     /// @dev Moves what the settlement account owes the issuer in current into next: the units of next that buy it back
-    ///      at the venue, rounded up. Reverts when the account cannot owe that in next.
-    // forge-lint: disable-next-item(reentrancy-no-eth)
+    ///      at the venue, rounded up. Nothing moves: the claim in current is dropped with the funds it stood for, so
+    ///      issuerFunds stays the same in both tokens.
     function _carryIssuerDebt(ILineVenue venue, address current, address next) private {
-        address account = PROGRAM.SETTLEMENT_ACCOUNT();
-        uint256 owed = _owedTo(account, current);
+        uint256 owed = advanceOf[current];
         if (owed == 0) return;
         uint256 carried = venue.quoteOut(next, current, owed);
-        if (carried > type(uint128).max) revert SettlementTokenInUse(IN_USE_ISSUER_DEBT);
-        // The debt in current is forgiven, with nothing sent, and charged again in next.
-        bytes32 id = _chargeId();
-        _forgive(account, current, id);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        try CORE.charge(account, next, id, uint128(carried), address(this), false) { }
-        catch {
-            revert SettlementTokenInUse(IN_USE_ISSUER_DEBT);
-        }
-        // The claim moves to next: the funds in current drop by the forgiven debt, so what this holds there for
-        // advancing stays the same.
+        advanceOf[current] = 0;
         _funds[current] -= owed;
+        advanceOf[next] += carried;
         _funds[next] += carried;
         emit IssuerDebtCarried(current, owed, next, carried);
+    }
+
+    /// @dev Requires the settlement account, the issuer or a treasury operator, counting value against the operator's
+    ///      cap, and returns the settlement account.
+    function _treasuryCaller(uint256 value) private returns (address account) {
+        account = PROGRAM.SETTLEMENT_ACCOUNT();
+        if (msg.sender == account || msg.sender == PROGRAM.ISSUER()) return account;
+        if (!PROGRAM.hasRoles(msg.sender, PROGRAM.ROLE_TREASURY())) revert NotIssuer();
+        if (value != 0) PROGRAM.useOperatorCap(msg.sender, value);
     }
 
     function _settle(bool immediate) private returns (bool) {
@@ -589,27 +592,6 @@ contract IssuerTreasury is IExposureGuard {
         if (block.timestamp < eta) revert SettingPending(eta);
         delete pendingSetting[id];
         return true;
-    }
-
-    function _chargeId() private returns (bytes32) {
-        return keccak256(abi.encode("tempo.cards.issuer-debt", address(this), ++_charges));
-    }
-
-    /// @dev Forgives all that account owes this contract in token, through a core refund that pays nothing, and
-    ///      returns it.
-    function _forgive(address account, address token, bytes32 id) private returns (uint256 owed) {
-        owed = _owedTo(account, token);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        if (owed != 0) CORE.refund(account, token, address(this), id, uint128(owed));
-    }
-
-    /// @dev What owner owes this contract in token on the core.
-    function _owedTo(address owner, address token) private view returns (uint256) {
-        IReservationCore.Debt[] memory debts = CORE.debtOf(owner, token);
-        for (uint256 i; i < debts.length; ++i) {
-            if (debts[i].creditor == address(this)) return debts[i].amount;
-        }
-        return 0;
     }
 
     function _inSettlement(address asset, uint256 amount) private view returns (uint256) {

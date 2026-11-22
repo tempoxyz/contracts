@@ -172,10 +172,9 @@ contract CardAuth is CardAuthBase, ICardAuth {
     // Purchases.
 
     /// @notice Authorizes `amount` on `card` under the new reference `ref`, holding it across the owner's
-    ///         sources in order. With PARTIAL it approves what the sources hold; with STAND_IN (approved offline)
-    ///         the owner's first cash source holds all of it, the shortfall becoming debt when captured, and the
-    ///         limits it passed offline count without refusing it; a merchant the owner revoked still refuses it.
-    ///         Returns what it approved.
+    ///         sources in order. With PARTIAL it approves what the sources hold. Returns what it approved. A purchase
+    ///         the network approved without asking (a stand-in) is no authorization: the issuer books it later with
+    ///         charge, as a force post or a late charge.
     function authorize(bytes32 card, bytes32 ref, uint128 amount, address merchant, uint64 expiresAt, uint8 flags)
         external
         returns (uint256 approved)
@@ -183,57 +182,37 @@ contract CardAuth is CardAuthBase, ICardAuth {
         _role(ROLE_AUTHORIZE, amount);
         if (_purchases[ref] != 0) revert PurchaseExists();
         if (amount == 0 || amount > MAX_AMOUNT || expiresAt > type(uint32).max) revert InvalidAmount();
-        bool standIn = flags & STAND_IN != 0;
-        // A stand-in was already approved offline and the network presents it anyway: its hold still counts.
-        if (!standIn) _checkSettlementAccount();
+        _checkSettlementAccount();
         CardLimits.Card storage c = _cards[card];
         address owner = _admit(c);
         uint8 version = fundingVersion[owner];
         CardLegs.Funding[] storage order = _funding[owner][version];
         uint256 legs;
-        (approved, legs) = CardLegs.place(order, sourceKind, ref, owner, c.kinds, amount, expiresAt, standIn);
+        (approved, legs) = CardLegs.place(order, sourceKind, ref, owner, c.kinds, amount, expiresAt);
         if (approved == 0 || (approved < amount && flags & PARTIAL == 0)) revert InsufficientAvailable();
-        // A stand-in already passed the limits offline: it counts against them without being refused.
-        (uint32 day, uint8 epoch) = _spend(c, owner, merchant, approved, approved, !standIn);
+        (uint32 day, uint8 epoch) = _spend(c, owner, merchant, approved, approved, true);
         _track(ref, owner, merchant);
         _purchases[ref] = _pack(
-            Purchase(
-                c.index,
-                approved,
-                0,
-                0,
-                expiresAt,
-                day,
-                epoch,
-                version,
-                _state.era,
-                OPEN | (standIn ? STANDIN : 0) | legs << 3
-            )
+            Purchase(c.index, approved, 0, 0, expiresAt, day, epoch, version, _state.era, OPEN | legs << LEGS_SHIFT)
         );
-        _moveHeld(int256(approved), standIn);
+        _moveHeld(int256(approved));
         emit PurchaseAuthorized(ref, card, owner, approved, legs, _step());
         _checkExposure();
     }
 
     /// @notice Moves an open purchase's amount to `amount`: an increase holds more across the owner's sources in
     ///         order and counts against the limits; a decrease returns cash legs first, then the other legs from the
-    ///         last. A stand-in only decreases. Once captures passed the authorized amount (a tip), it no longer moves:
+    ///         last. Once captures passed the authorized amount (a tip), it no longer moves:
     ///         only a final capture or a release ends the purchase.
     function adjust(bytes32 ref, uint128 amount) external {
         Purchase memory p = _open(ref);
-        bool standIn = p.flags & STANDIN != 0;
         // The authorized amount bounds the captures with the owner's tolerance, so tolerance a tip used never becomes
         // part of a later bound.
-        if (
-            amount == 0 || amount > MAX_AMOUNT || amount < p.captured || p.captured > p.amount
-                || (standIn && amount > p.amount)
-        ) {
-            revert InvalidAmount();
-        }
+        if (amount == 0 || amount > MAX_AMOUNT || amount < p.captured || p.captured > p.amount) revert InvalidAmount();
         _role(ROLE_AUTHORIZE, amount > p.amount ? amount - p.amount : 0);
         (CardLimits.Card storage c, address owner) = _card(p);
         CardLegs.Funding[] storage order = _funding[owner][p.version];
-        uint256 legs = p.flags >> 3;
+        uint256 legs = p.flags >> LEGS_SHIFT;
         bool up = amount > p.amount;
         if (up) {
             if (c.status != CardLimits.Status.Active) revert CardLimits.CardNotActive();
@@ -244,12 +223,12 @@ contract CardAuth is CardAuthBase, ICardAuth {
             _spend(c, owner, mandateMerchant[ref], amount, want, true);
             legs = CardLegs.grow(order, sourceKind, ref, owner, c.kinds, want, legs, p.expiresAt);
         } else {
-            CardLegs.shrink(order, sourceKind, ref, owner, legs, amount - p.captured, standIn, p.expiresAt);
+            CardLegs.shrink(order, sourceKind, ref, owner, legs, amount - p.captured, p.expiresAt);
             _giveBack(c, owner, ref, p, p.amount - amount);
         }
-        _moveHeld(int256(uint256(amount)) - int256(p.amount), standIn);
+        _moveHeld(int256(uint256(amount)) - int256(p.amount));
         p.amount = amount;
-        p.flags = (p.flags & 7) | legs << 3;
+        p.flags = (p.flags & (OPEN | CHARGED)) | legs << LEGS_SHIFT;
         _purchases[ref] = _pack(p);
         emit PurchaseAdjusted(ref, amount, legs, _step());
         // A decrease is never refused, even while the program is past what its guard allows.
@@ -257,8 +236,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
     }
 
     /// @notice Captures `amount` of an open purchase walking the owner's funding order: each source covers what it
-    ///         holds and can still cover, then the first cash source charges the rest, free cash and then debt within
-    ///         the owner's terms; the issuer absorbs the rest. Its captures in all stay within the authorized amount
+    ///         holds and can still cover from the owner's free funds; the issuer absorbs the rest. Its captures in all stay within the authorized amount
     ///         plus the owner's capture tolerance on it, and what passes the hold counts against the operator's cap and
     ///         is checked by the exposure guard. All of it is owed to the network, absorbed or not, so all of it counts
     ///         toward settlement. `isFinal` releases what is left.
@@ -269,8 +247,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (amount == 0 && !isFinal) revert InvalidAmount();
         (CardLimits.Card storage c, address owner) = _card(p);
         CardLegs.Funding[] storage order = _funding[owner][p.version];
-        uint256 legs = p.flags >> 3;
-        bool standIn = p.flags & STANDIN != 0;
+        uint256 legs = p.flags >> LEGS_SHIFT;
         uint256 covered;
         (covered, legs) = CardLegs.capture(
             order,
@@ -279,10 +256,9 @@ contract CardAuth is CardAuthBase, ICardAuth {
             owner,
             legs,
             [uint256(amount), open, p.amount, c.kinds, p.expiresAt, p.captured + open - p.amount],
-            isFinal,
-            standIn
+            isFinal
         );
-        p.flags = (p.flags & 7) | legs << 3;
+        p.flags = (p.flags & (OPEN | CHARGED)) | legs << LEGS_SHIFT;
         p.captured += amount;
         if (p.captured > MAX_AMOUNT) revert InvalidAmount();
         // A tip within tolerance counts against the limits without being checked. The authorized amount stays as it
@@ -293,7 +269,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
             _giveBack(c, owner, ref, p, left);
             (p.amount, p.flags, left) = (p.captured, p.flags & ~OPEN, 0);
         }
-        _moveHeld(int256(left) - int256(open), standIn);
+        _moveHeld(int256(left) - int256(open));
         // What the issuer absorbed is captured toward the limits but never refunded: refunds stop at what was covered.
         p.refunded += amount - covered;
         _purchases[ref] = _pack(p);
@@ -312,18 +288,18 @@ contract CardAuth is CardAuthBase, ICardAuth {
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < p.expiresAt) _role(ROLE_AUTHORIZE, 0);
         (CardLimits.Card storage c, address owner) = _card(p);
-        CardLegs.release(_funding[owner][p.version], ref, owner, p.flags >> 3);
+        CardLegs.release(_funding[owner][p.version], ref, owner, p.flags >> LEGS_SHIFT);
         uint256 released = p.amount > p.captured ? p.amount - p.captured : 0;
         _giveBack(c, owner, ref, p, released);
-        _moveHeld(-int256(released), p.flags & STANDIN != 0);
+        _moveHeld(-int256(released));
         (p.amount, p.flags) = (p.captured, p.flags & ~OPEN);
         _purchases[ref] = _pack(p);
         emit PurchaseReleased(ref, released, _step());
     }
 
     /// @notice Charges `amount` with no hold: a force post under a new reference, or a late charge on a purchase
-    ///         whose hold ended. The owner's cash sources cover what they can, debt included, and the issuer absorbs
-    ///         the rest; all of it counts toward settlement. A late charge counts toward the limits without being
+    ///         whose hold ended, such as a purchase the network approved without asking. The owner's cash sources cover
+    ///         what the owner has free, and the issuer absorbs the rest; all of it counts toward settlement. A late charge counts toward the limits without being
     ///         refused by them, but a merchant the owner revoked refuses it.
     function charge(bytes32 card, bytes32 ref, uint128 amount, address merchant) external {
         _role(ROLE_AUTHORIZE, amount);
@@ -349,14 +325,14 @@ contract CardAuth is CardAuthBase, ICardAuth {
             p.flags |= CHARGED;
         }
         CardLegs.Funding[] storage order = _funding[owner][p.version];
-        uint256 legs = p.flags >> 3;
+        uint256 legs = p.flags >> LEGS_SHIFT;
         uint256 covered;
         if (c.kinds & CASH != 0) (covered, legs) = CardLegs.charge(order, sourceKind, ref, owner, amount, legs);
         p.amount += amount;
         p.captured += amount;
         p.refunded += amount - covered;
         if (p.amount > MAX_AMOUNT) revert InvalidAmount();
-        p.flags = (p.flags & 7) | legs << 3;
+        p.flags = (p.flags & (OPEN | CHARGED)) | legs << LEGS_SHIFT;
         _purchases[ref] = _pack(p);
         _ledger.net += int128(int256(uint256(amount)));
         emit PurchaseCaptured(ref, amount, covered, true, true, _step());
@@ -376,7 +352,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
             _funding[owner][p.version],
             ref,
             owner,
-            p.flags >> 3,
+            p.flags >> LEGS_SHIFT,
             pay,
             _today(p.captured - p.refunded, p.era),
             eras[_state.era].token
@@ -457,13 +433,12 @@ contract CardAuth is CardAuthBase, ICardAuth {
     {
         Purchase memory p = _unpack(_purchases[ref]);
         (, address owner) = _card(p);
-        _return(CardLegs.legsOf(_funding[owner][p.version], ref, p.flags >> 3));
+        _return(CardLegs.legsOf(_funding[owner][p.version], ref, p.flags >> LEGS_SHIFT));
     }
 
-    function exposure() external view returns (uint256 held, uint256 standIn, uint256 unsettled) {
-        CardLegs.State memory s = _state;
+    function exposure() external view returns (uint256 held, uint256 unsettled) {
         CardLegs.Ledger memory l = _ledger;
-        return (s.held, s.standIn, l.net > l.settledNet ? uint256(int256(l.net - l.settledNet)) : 0);
+        return (_state.held, l.net > l.settledNet ? uint256(int256(l.net - l.settledNet)) : 0);
     }
 
     function ledger() external view returns (uint64 seq, uint64 settledThrough, int128 net, int128 settledNet) {
@@ -589,13 +564,12 @@ contract CardAuth is CardAuthBase, ICardAuth {
         }
     }
 
-    function _moveHeld(int256 delta, bool standIn) private {
+    function _moveHeld(int256 delta) private {
         if (delta == 0) return;
         CardLegs.State storage s = _state;
         // Held totals are sums of 48-bit purchase amounts, accounting rather than access control.
         // forge-lint: disable-next-line(missing-events-access-control)
         s.held = uint64(uint256(int256(uint256(s.held)) + delta));
-        if (standIn) s.standIn = uint64(uint256(int256(uint256(s.standIn)) + delta));
     }
 
     function _step() private returns (uint64 seq) {

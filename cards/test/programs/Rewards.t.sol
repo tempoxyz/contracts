@@ -47,8 +47,7 @@ contract RewardsTest is AuthEnv {
         assertEq(usd.balanceOf(address(rewards)), 0);
     }
 
-    function test_clawBack_takesOnlyWhatTheCardholderStillHolds_noDebt() public {
-        _setDebtCap(alice, address(rewards), address(usd), 100e6);
+    function test_clawBack_takesOnlyWhatTheCardholderStillHolds() public {
         vm.prank(issuer);
         rewards.pay(P1, 5e6);
         // The cardholder spent all but 2 of it.
@@ -56,7 +55,6 @@ contract RewardsTest is AuthEnv {
         usd.transfer(bob, 3e6);
         vm.prank(issuer);
         assertEq(rewards.clawBack(P1, 5e6), 2e6);
-        assertEq(_owed(alice, address(usd), address(rewards)), 0);
         assertEq(usd.balanceOf(alice), 0);
         // What is left can be taken once the cardholder holds it again.
         usd.mint(alice, 10e6);

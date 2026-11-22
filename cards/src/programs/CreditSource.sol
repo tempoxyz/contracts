@@ -8,7 +8,7 @@ import { ILineVenue, ProgramVenue } from "./ProgramVenue.sol";
 import { ICardAuth } from "./interfaces/ICardAuth.sol";
 import { IReservationCore, RESERVATION_CORE_ADDRESS } from "./interfaces/IReservationCore.sol";
 import { ISettlementTokenGuard } from "./interfaces/ISettlementTokenGuard.sol";
-import { CAPTURE_BEYOND, CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
+import { CAPTURE_FINAL, CAPTURE_FREE, ISource } from "./interfaces/ISource.sol";
 
 /// @title CreditSource
 /// @notice Lenders' credit lines as one funding source of a card authorization contract (its PROGRAM). Each leg is a
@@ -335,14 +335,8 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @inheritdoc ISource
     /// @dev A line grants no capture tolerance: a capture past what was approved draws more credit only through
-    ///      CAPTURE_FREE or CAPTURE_BEYOND, within the line's room.
+    ///      CAPTURE_FREE, within the line's room.
     function toleranceBps(address, bytes32) external pure returns (uint16) {
-        return 0;
-    }
-
-    /// @inheritdoc ISource
-    /// @dev What a borrower owes a line is the line's, never core debt to this source.
-    function owed(address, bytes32) external pure returns (uint256) {
         return 0;
     }
 
@@ -354,7 +348,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
     /// @inheritdoc ISource
     /// @dev A leg grows by at most the line's available credit, and not at all on a line that is not open or not in
     ///      today's settlement token, so a short line holds what it has and later order entries hold the rest.
-    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64 expiresAt, bool)
+    function hold(address owner, bytes32 position, bytes32 legId, uint256 units, uint64 expiresAt)
         external
         nonReentrant
         onlyProgram
@@ -397,8 +391,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
                     // forge-lint: disable-next-line(unsafe-typecast)
                     amount: uint128(heldUnits),
                     expiresAt: expiresAt,
-                    payee: _payee(l.lender),
-                    standIn: false
+                    payee: _payee(l.lender)
                 })
             );
         } else if (heldUnits != now_) {
@@ -428,14 +421,10 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (r.token == address(0)) return (0, 0);
         uint256 h = r.held;
         // A leg grows past its hold only on an open line in today's settlement token, as hold() requires.
-        if (
-            units > h
-                && (flags & (CAPTURE_BEYOND | CAPTURE_FREE) == 0 || !_open(l) || l.token != PROGRAM.settlementToken())
-        ) units = h;
+        if (units > h && (flags & CAPTURE_FREE == 0 || !_open(l) || l.token != PROGRAM.settlementToken())) units = h;
         // forge-lint: disable-start(reentrancy-no-eth)
         if (units > h) {
-            // Past what the leg holds: grow it within the line's credit first. CAPTURE_FREE takes what the credit
-            // allows; CAPTURE_BEYOND reverts past it.
+            // Past what the leg holds: grow it within the line's credit, taking what the credit allows.
             _accrue(lineId);
             uint256 credit = availableCredit(lineId);
             if (units - h > credit && flags & CAPTURE_FREE != 0) units = h + credit;
@@ -465,7 +454,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
 
     /// @inheritdoc ISource
     /// @dev Credit never charges without a hold.
-    function charge(address, bytes32, bytes32, uint256, bool) external pure returns (uint256, uint256) {
+    function charge(address, bytes32, bytes32, uint256) external pure returns (uint256, uint256) {
         return (0, 0);
     }
 
@@ -589,7 +578,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
             // forge-lint: disable-next-line(unsafe-typecast)
             else CORE.adjust(l.lender, address(this), id, uint128(keep));
         }
-        CORE.charge(l.lender, l.token, _chargeId(), drawn, _payee(l.lender), false);
+        CORE.charge(l.lender, l.token, _chargeId(), drawn, _payee(l.lender));
         _forward(l, drawn);
         // forge-lint: disable-end(reentrancy-no-eth)
         l.owed += drawn;
@@ -971,7 +960,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         (g.held, g.net) = (uint64(h), uint64(net));
         if (excess != 0) {
             // forge-lint: disable-next-line(reentrancy-no-eth)
-            CORE.charge(l.lender, l.token, _chargeId(), excess, l.borrower, false);
+            CORE.charge(l.lender, l.token, _chargeId(), excess, l.borrower);
             emit Overpaid(lineId, id, excess);
         }
         emit Synced(lineId, id, l.owed, l.pending);
@@ -1116,7 +1105,7 @@ contract CreditSource is ISource, ISettlementTokenGuard {
         if (target == 0) return (bytes32(0), true);
         id = keccak256(abi.encode(lineId, ++_holds[lineId]));
         IReservationCore.HoldRequest memory req = IReservationCore.HoldRequest({
-            token: token, id: id, amount: uint128(target), expiresAt: expiresAt, payee: address(this), standIn: false
+            token: token, id: id, amount: uint128(target), expiresAt: expiresAt, payee: address(this)
         });
         if (!bestEffort) {
             CORE.holdFrom(owner, req);
