@@ -13,6 +13,7 @@ import { CardSpender } from "../../../src/spend/CardSpender.sol";
 import { IEarnWithdrawCallback } from "../../../src/interfaces/earn/IEarnWithdrawCallback.sol";
 import { ICardProvider } from "../../../src/interfaces/spend/ICardProvider.sol";
 import { ITempoEarnVault } from "../../../src/interfaces/spend/ITempoEarnVault.sol";
+import { IZoneRouterFactoryRegistry, IZoneRouterSpenders } from "../../../src/zone/spenders/SpenderAuth.sol";
 import { CoreEnv } from "./harness/CoreEnv.sol";
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "../../../src/interfaces/zone/IAddressRegistry.sol";
 
@@ -265,6 +266,37 @@ abstract contract CardSpenderBehavior is CoreEnv {
         vm.expectRevert(CardSpender.NotRouter.selector);
         program.spendFrom(address(usd), 1e6, abi.encode(s));
         assertEq(usd.balanceOf(address(program)), 1e6, "the stray balance stays");
+    }
+
+    /// @dev `warmRouter` records only a router the program's router factory deployed whose mode lists the program.
+    function test_revert_warmRouter_notRouter() public {
+        vm.expectRevert(CardSpender.NotRouter.selector);
+        program.warmRouter(alice);
+
+        MockRouter unlisted = new MockRouter();
+        routerFactory.register(address(unlisted), true);
+        vm.expectRevert(CardSpender.NotRouter.selector);
+        program.warmRouter(address(unlisted));
+
+        MockRouter rogue = new MockRouter();
+        rogue.list(address(program), true);
+        vm.expectRevert(CardSpender.NotRouter.selector);
+        program.warmRouter(address(rogue));
+    }
+
+    /// @dev A warmed router's spends skip the factory and router reads, and other callers are still checked live.
+    function test_warmRouter_skipsTheLiveCheck() public {
+        program.warmRouter(router);
+        CardSpend memory s = _stableSpend(pooledWallet, 0, 1e6, "not.warm");
+        usd.mint(address(program), 1e6);
+        vm.prank(alice);
+        vm.expectRevert(CardSpender.NotRouter.selector);
+        program.spendFrom(address(usd), 1e6, abi.encode(s));
+
+        vm.expectCall(address(routerFactory), abi.encodeWithSelector(IZoneRouterFactoryRegistry.isRouter.selector), 0);
+        vm.expectCall(router, abi.encodeWithSelector(IZoneRouterSpenders.isSpender.selector), 0);
+        _routerSpend(address(usd), 2e6, _stableSpend(pooledWallet, 0, 2e6, "warm.router"));
+        assertEq(usd.balanceOf(pooledWallet), 2e6);
     }
 
     /// @dev A one-unit seed of each token is the baseline every spend leaves untouched, public or private,

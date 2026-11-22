@@ -181,6 +181,10 @@ callback.
 Each spender also authenticates the router: it binds one `ZoneRouterFactory` (`ROUTER_FACTORY`) at
 deployment and accepts `spendFrom` only from a router that factory deployed whose mode lists it
 ([`SpenderAuth`](../../src/zone/spenders/SpenderAuth.sol)), otherwise reverting `NotRouter`.
+Anyone may call `warmRouter(router)` on a spender once both hold for that router: the spender records it
+in one storage slot and reads that slot on later spends instead of the factory and the router, which
+saves about 3,300 gas a spend. Both facts never change (the router has no setters and the factory never
+forgets one), and a router not recorded is still checked live.
 So `maxInput` is always what a router measured out, and nobody can spend a balance a spender holds
 or drive a pool that admitted it outside a router's spend. List a spender only in modes deployed
 through the factory it binds. A router trusts each listed spender up to `maxInput`, so before

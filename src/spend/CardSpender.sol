@@ -42,6 +42,11 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     /// @notice The `ZoneRouterFactory` whose routers may call `spendFrom`, when their mode lists this program.
     address public immutable ROUTER_FACTORY;
 
+    /// @dev Routers already proved to be `ROUTER_FACTORY`'s and to list this program, by {warmRouter}. Both facts are
+    ///      fixed for good (a router has no setters and the factory never forgets one), so a spend reads this one
+    ///      slot instead of asking the factory and the router again.
+    mapping(address router => bool listed) private _warmRouters;
+
     bool private transient _locked;
     /// @dev Set only while a public direct spend waits on {earnWithdrawCallback}: the vault that may call it, the
     ///      payer whose shares it takes, and the share cost cap (zero for none).
@@ -136,7 +141,9 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     ///      withdrawal carries one token: the stablecoin, or the shares of the vault that funds all of it.
     /// @custom:ensures 0 < maxInput && maxInput <= type(uint128).max
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
-        if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
+        if (!_warmRouters[msg.sender] && !SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) {
+            revert NotRouter();
+        }
         CardSpend calldata s = _decodeSpend(data);
         if (maxInput == 0 || maxInput > type(uint128).max) revert InvalidAmount();
         address input;
@@ -211,6 +218,14 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
     ///         program holds nothing between spends but a seed. Does nothing for a program that pays directly.
     function warm(address token) external {
         if (PAYOUT_TARGET != address(0)) _approve(token, PAYOUT_TARGET, type(uint256).max);
+    }
+
+    /// @notice Records that `router` may call `spendFrom` (`ROUTER_FACTORY` deployed it and its mode lists this
+    ///         program), so its spends skip asking the factory and the router. Permissionless: it only caches facts
+    ///         that never change, and a router not recorded is still checked live.
+    function warmRouter(address router) external {
+        if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, router, address(this))) revert NotRouter();
+        _warmRouters[router] = true;
     }
 
     /// @notice Sets the program's standing approval of `vault`'s EarnShare to `vault`, which a program that pays

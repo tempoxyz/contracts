@@ -43,6 +43,7 @@ contract BridgeTip20GasTest is TempoEnv {
         vm.stopPrank();
         program.warm(address(usd));
         program.warm(address(earnShare));
+        program.warmRouter(address(caller));
         _mintUsd(address(caller), 1_000_000e6);
         _depositEarn(address(caller), 500_000e6);
         _mintUsd(alice, 1_000_000e6);

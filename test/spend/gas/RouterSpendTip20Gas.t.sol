@@ -63,6 +63,8 @@ contract RouterSpendTip20GasTest is CoreEnv {
         usd.mint(bob, 1);
         usd.mint(pooledWallet, 1);
         zr.warm(address(usd));
+        sender.warmRouter(address(zr));
+        card.warmRouter(address(zr));
     }
 
     function _op(uint128 amount, bytes memory data) internal returns (uint256 used) {
@@ -191,6 +193,7 @@ contract RouterSpendTip20GasTest is CoreEnv {
         mode.spenders[0] = address(sender);
         zr = ZoneRouter(zrf.deploy(mode));
         usd.mint(address(zr), 1);
+        sender.warmRouter(address(zr));
         _op(100e6, _spendData(address(sender), 100e6, _send(60e6, "1")));
         uint256 used = _op(100e6, _spendData(address(sender), 100e6, _send(60e6, "2")));
         vm.snapshotValue("router-spend-tip20", "send.change.redeem-router", used);

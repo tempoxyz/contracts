@@ -101,7 +101,8 @@ The withdrawal parameters, fees, change and callback gas follow the Bridge desig
 outbox's 1,024. Bridge's callback gas figures were measured on its payout path. `warm` does nothing
 for a program that pays directly (Rain); anyone calls `warmVault(vault)` instead, for a vault the provider
 allows, so its first Earn spend does not create the standing approval to that vault (a new allowance slot,
-TIP-1000). Anyone may also send a program one unit of each token it handles: `spendFrom` treats what the
+TIP-1000). Anyone may call `warmRouter(router)` for a router the program's router factory deployed whose mode
+lists it, so its spends read one recorded slot instead of asking the factory and the router. Anyone may also send a program one unit of each token it handles: `spendFrom` treats what the
 program holds as its baseline and leaves it there, so a spend never creates the program's balance slot
 (about 250k gas). The Rain E2E requests 3,000,000.
 

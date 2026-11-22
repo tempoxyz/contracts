@@ -8,6 +8,7 @@ import { ZoneRouter } from "../../src/zone/ZoneRouter.sol";
 import { ZoneRouterFactory } from "../../src/zone/ZoneRouterFactory.sol";
 import { ADDRESS_REGISTRY_ADDRESS, IAddressRegistry } from "../../src/interfaces/zone/IAddressRegistry.sol";
 import { SendSpender } from "../../src/zone/spenders/SendSpender.sol";
+import { IZoneRouterFactoryRegistry, IZoneRouterSpenders } from "../../src/zone/spenders/SpenderAuth.sol";
 import { ZoneRouterMockPortal } from "./helpers/ZoneRouterMockPortal.sol";
 import { EarnRouterTestBase, IRouterPropAMMPool } from "../earn/helpers/EarnRouterTestBase.sol";
 import { MemoMockToken } from "../earn/helpers/PropAMMEngineMocks.sol";
@@ -359,6 +360,35 @@ contract SendSpenderTest is EarnRouterTestBase {
         vm.prank(address(unlisted));
         vm.expectRevert(SendSpender.NotRouter.selector);
         sends.spendFrom(address(alternate), ONE, _send(address(alternate), ONE, address(0)));
+    }
+
+    /// @notice warmRouter records only a router from the spender's factory whose mode lists the spender.
+    function testWarmRouterRefusesWhatSpendFromRefuses() public {
+        vm.expectRevert(SendSpender.NotRouter.selector);
+        sends.warmRouter(address(this));
+
+        ZoneRouterFactory otherFactory = new ZoneRouterFactory();
+        ZoneRouter other = ZoneRouter(otherFactory.deploy(_mode(address(sends), address(0))));
+        vm.expectRevert(SendSpender.NotRouter.selector);
+        sends.warmRouter(address(other));
+
+        ZoneRouter unlisted = ZoneRouter(factory.deploy(_mode(address(plainSends), address(0))));
+        vm.expectRevert(SendSpender.NotRouter.selector);
+        sends.warmRouter(address(unlisted));
+    }
+
+    /// @notice A warmed router's spends skip the factory and router reads; other callers are still checked live.
+    function testAWarmedRouterSpendsWithoutTheLiveCheck() public {
+        sends.warmRouter(address(sendRouter));
+        alternate.mint(address(sends), 5 * ONE);
+        vm.expectRevert(SendSpender.NotRouter.selector);
+        sends.spendFrom(address(alternate), ONE, _send(address(alternate), ONE, address(0)));
+
+        vm.expectCall(address(factory), abi.encodeWithSelector(IZoneRouterFactoryRegistry.isRouter.selector), 0);
+        vm.expectCall(address(sendRouter), abi.encodeWithSelector(IZoneRouterSpenders.isSpender.selector), 0);
+        _spendAsRouter(sends, address(alternate), 5 * ONE, _send(address(alternate), 3 * ONE, address(0)));
+        assertEq(alternate.balanceOf(to), 3 * ONE);
+        _assertEmpty(sends);
     }
 
     // ---------------------------------------------------------------------------------------------

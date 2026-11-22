@@ -70,6 +70,11 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
     /// @dev EarnVault's error when a burn exceeds its cap; under the callback the cap is the vault's own quote.
     bytes4 private constant EXCEEDS_MAX_EARN_SHARES = 0xee29738d; // ExceedsMaxEarnShares()
 
+    /// @dev Routers already proved to be `ROUTER_FACTORY`'s and to list this spender, by {warmRouter}. Both facts are
+    ///      fixed for good (a router has no setters and the factory never forgets one), so a spend reads this one
+    ///      slot instead of asking the factory and the router again.
+    mapping(address router => bool listed) private warmRouters;
+
     bool private transient locked;
     /// @dev Set only while a redemption waits on {earnWithdrawCallback}: the vault that may call it, the
     ///      EarnShare it pays and the most it may pay.
@@ -170,8 +175,18 @@ contract SendSpender is ISpender, IEarnWithdrawCallback {
     /// @custom:ensures forall address t, address s :: gAllowance[t][s] == 0
     /// @custom:ensures 0 < maxInput && maxInput <= type(uint128).max
     function spendFrom(address token, uint256 maxInput, bytes calldata data) external override nonReentrant {
-        if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) revert NotRouter();
+        if (!warmRouters[msg.sender] && !SpenderAuth.isListedRouter(ROUTER_FACTORY, msg.sender, address(this))) {
+            revert NotRouter();
+        }
         _spendFrom(token, maxInput, _decodeSend(data));
+    }
+
+    /// @notice Records that `router` may call `spendFrom` (`ROUTER_FACTORY` deployed it and its mode lists this
+    ///         spender), so its spends skip asking the factory and the router. Permissionless: it only caches facts
+    ///         that never change, and a router not recorded is still checked live.
+    function warmRouter(address router) external {
+        if (!SpenderAuth.isListedRouter(ROUTER_FACTORY, router, address(this))) revert NotRouter();
+        warmRouters[router] = true;
     }
 
     function _spendFrom(address token, uint256 maxInput, Send calldata send) private {

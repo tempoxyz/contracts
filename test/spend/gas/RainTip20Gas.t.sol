@@ -22,6 +22,7 @@ contract RainTip20GasTest is RainEnv {
         vm.prank(alice);
         earnShare.transfer(address(program), 1);
         program.warmVault(address(earnVault));
+        program.warmRouter(router);
         vm.startPrank(alice);
         usd.approve(address(program), type(uint256).max);
         earnShare.approve(address(program), type(uint256).max);

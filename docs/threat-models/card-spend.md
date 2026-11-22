@@ -119,7 +119,7 @@ events.
 | Zone admin          | Admits gateways and accounts, sets fees, pauses token deposits, manages pause guardians, pauses and resumes the portal. | `vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `setGateway`, `setAllowedAccount`, `setZoneGasRate`, `setBouncebackGas`, `pauseDeposits`, `setPauseGuardian`, `pause`, `resume`          |
 | Zone pause guardian | Pauses the portal while its pause capability remains active.                                                            | `vendor/tempo-zones/src/runtime/tempo/ZonePortal.sol`: `pause`, `_requireCapabilityActive`                                                                                                      |
 | Any Zone user       | Sends a withdrawal to a router with any callback data.                                                                  | `src/zone/ZoneRouter.sol`: `onWithdrawalReceived`                                                                                                                                               |
-| Any L1 account      | Calls `spend`, `warm` and `warmVault` on a program, `deploy` on both factories, and `warm` on a router.                 | `src/spend/CardSpender.sol`: `spend`, `warm`, `warmVault`, `src/spend/CardFactory.sol`: `deploy`, `src/zone/ZoneRouterFactory.sol`: `deploy`                                                    |
+| Any L1 account      | Calls `spend`, `warm`, `warmVault` and `warmRouter` on a program, `deploy` on both factories, and `warm` on a router.   | `src/spend/CardSpender.sol`: `spend`, `warm`, `warmVault`, `warmRouter`, `src/spend/CardFactory.sol`: `deploy`, `src/zone/ZoneRouterFactory.sol`: `deploy`                                      |
 
 ## Trust domains and boundaries
 

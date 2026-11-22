@@ -82,6 +82,7 @@ contract RouterTip20GasTest is CoreEnv {
         uint256 shares = _depositEarn(holder, 100_000e6);
         vm.prank(holder);
         earnShare.transfer(address(portal), shares);
+        program.warmRouter(router);
     }
 
     function _router(bool spends) internal returns (ZoneRouter r) {
