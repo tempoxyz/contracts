@@ -138,6 +138,16 @@ contract EarnVaultCapacityTest is Test {
         assertEq(earnVault.remainingDepositCapacity(), 4 ether);
     }
 
+    function testLimitWiderThanNinetySixBitsReverts() public {
+        earnVault.setMaxManagedAssets(type(uint96).max);
+        assertEq(earnVault.maxManagedAssets(), type(uint96).max);
+
+        uint256 tooLarge = uint256(type(uint96).max) + 1;
+        vm.expectRevert(abi.encodeWithSelector(EarnVault.MaxManagedAssetsTooLarge.selector, tooLarge));
+        earnVault.setMaxManagedAssets(tooLarge);
+        assertEq(earnVault.maxManagedAssets(), type(uint96).max);
+    }
+
     function _controls(uint256 maxManagedAssets) private pure returns (EarnVaultControls memory) {
         return EarnVaultControls({
             emergencyGuardian: address(0),

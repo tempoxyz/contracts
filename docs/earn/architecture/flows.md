@@ -242,10 +242,10 @@ Optional supply-bounded orchestration around `contribute` is in
    packs the burned EarnShare into `uint88` beside the requester, so a request above that bound
    (about 3.09 × 10^26 base units) reverts with `ExceedsMaxEarnShares`. A self-paying request stores
    no separate receiver.
-6. If fees are active and the valuation is fresh, `A` marks the record and `F.recordRedeemRequest`
-   stores the request's fee snapshot with its disable epoch
-   ([queued withdrawals](fees.md#queued-withdrawals)). The snapshot packs its values into `uint128`
-   and reverts with `InvalidFeeConfiguration` above that bound.
+6. If fees are active and the checkpoint found the valuation fresh, `A` marks the record and
+   `F.recordRedeemRequest` stores the request's fee snapshot with its request time
+   ([queued withdrawals](fees.md#queued-withdrawals)). The snapshot packs its high-water and target
+   values into `uint96` each and reverts with `InvalidFeeConfiguration` above that bound.
 7. `A` increments `openRedeemRequestCount` and re-anchors; active supply and NAV exclude the claim.
 
 The deposit pause does not block requests. Engine-specific request data and validation, such as

@@ -247,7 +247,8 @@ contract ERC4626CompositionInvariantTest is StdInvariant, Test {
     }
 
     function invariant_feeCustodyEqualsRecordedClaims() public view {
-        assertEq(earnShare.balanceOf(address(fees)), fees.totalClaimableEarnShares());
+        // EarnFees holds every recorded claim plus the unit the vault minted it at initialization.
+        assertEq(earnShare.balanceOf(address(fees)), fees.totalClaimableEarnShares() + 1);
         assertLe(fees.totalClaimableEarnShares(), earnShare.totalSupply());
     }
 
