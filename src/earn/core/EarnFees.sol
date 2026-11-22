@@ -74,8 +74,11 @@ contract EarnFees is IEarnFees {
     ///      re-enable within one second also voids requests recorded after the re-enable, in their favour.
     uint40 private _lastDisabledAt;
 
-    uint256 public highWaterMark;
-    uint256 public targetBase;
+    /// @dev The high-water mark and target base, which every charging checkpoint reads together, share one slot.
+    ///      A value too wide for its half stores {WIDE_BASELINE} there and itself in its wide slot below, so every
+    ///      value is kept whole; read them through {highWaterMark}, {targetBase} or {_baselines}.
+    uint128 private _highWaterMark;
+    uint128 private _targetBase;
 
     /// @dev Stored form of {ExcessReturnFee}, also carrying the fixed-fee count and the open request count in the
     ///      same slot, so one read answers whether a configuration charges any fee.
@@ -118,7 +121,12 @@ contract EarnFees is IEarnFees {
     ///      full claim leaves the slot nonzero and the next credit rewrites it instead of creating it again.
     mapping(address recipient => uint256 storedEarnShares) private _claimableEarnShares;
     uint256 private _totalClaimableEarnShares;
+    /// @dev The high-water mark and target base while they are at least {WIDE_BASELINE}; read only then.
+    uint256 private _wideHighWaterMark;
+    uint256 private _wideTargetBase;
 
+    /// @dev Marks a baseline half that holds no value of its own: the value is in its wide slot.
+    uint256 private constant WIDE_BASELINE = type(uint128).max;
     uint256 private constant REMAINDER_BITS = 48;
     uint256 private constant REMAINDER_MASK = (1 << REMAINDER_BITS) - 1;
     uint256 private constant REMAINDERS_MARKER = 1 << 255;
@@ -209,6 +217,18 @@ contract EarnFees is IEarnFees {
         return stored == 0 ? 0 : stored - 1;
     }
 
+    /// @notice The high-water mark: the value per EarnShare, at the EarnShare scale, above which fees charge.
+    function highWaterMark() public view returns (uint256) {
+        uint256 mark = _highWaterMark;
+        return mark == WIDE_BASELINE ? _wideHighWaterMark : mark;
+    }
+
+    /// @notice The excess-return target's value per EarnShare when it last restarted, at {targetStartedAt}.
+    function targetBase() public view returns (uint256) {
+        uint256 base = _targetBase;
+        return base == WIDE_BASELINE ? _wideTargetBase : base;
+    }
+
     /// @notice The id of the configuration in force; installed ids count up from 1.
     function currentFeeConfigId() external view returns (uint64) {
         return _currentFeeConfigId;
@@ -270,13 +290,14 @@ contract EarnFees is IEarnFees {
 
         uint64 configId = _currentFeeConfigId;
         StoredFeeConfig storage storedConfig = _feeConfigs[configId];
+        (uint256 mark, uint256 base) = _baselines();
         (result,) = EarnFeeMath.preview(
             EarnFeeMath.Input({
                 activeAssets: _activeAssets(),
                 earnShareSupply: earnShareSupply,
                 earnShareScale: _earnShareScale(),
-                highWaterMark: highWaterMark,
-                targetBase: targetBase,
+                highWaterMark: mark,
+                targetBase: base,
                 targetStartedAt: targetStartedAt,
                 timestamp: block.timestamp
             }),
@@ -314,12 +335,12 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures _specValidConfig(config) && configId == old(_currentFeeConfigId) + 1 && _currentFeeConfigId == configId
     /// @custom:ensures _specStored(configId, config) && !feesDisabled
     /// @custom:ensures totalClaimableEarnShares() == old(totalClaimableEarnShares())
-    /// @custom:ensures !_configHasFees(config) ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
-    /// @custom:ensures (_configHasFees(config) && !config.excess.enabled) ==> targetBase == 0 && targetStartedAt == 0
-    /// @custom:ensures (_configHasFees(config) && old(_specFeesActive())) ==> highWaterMark == old(highWaterMark)
+    /// @custom:ensures !_configHasFees(config) ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
+    /// @custom:ensures (_configHasFees(config) && !config.excess.enabled) ==> targetBase() == 0 && targetStartedAt == 0
+    /// @custom:ensures (_configHasFees(config) && old(_specFeesActive())) ==> highWaterMark() == old(highWaterMark())
     /// @custom:ensures (old(_specFeesActive()) || !_configHasFees(config)) ==> feeBaselinesPending == old(feeBaselinesPending)
     /// @custom:ensures (config.excess.enabled && old(_specFeesActive())) ==> targetStartedAt == uint40(block.timestamp)
-    /// @custom:ensures (config.excess.enabled && old(_specFeesActive() && _feeConfigs[_currentFeeConfigId].excess.enabled)) ==> targetBase == old(_specTargetNow())
+    /// @custom:ensures (config.excess.enabled && old(_specFeesActive() && _feeConfigs[_currentFeeConfigId].excess.enabled)) ==> targetBase() == old(_specTargetNow())
     /// @custom:ensures (old(feesDisabled) || old(_feeConfigs[_currentFeeConfigId].excess.openRequests) == 0) ==> _specRemaindersWaived(old(_currentFeeConfigId))
     /// @custom:ensures forall address a :: claimableEarnShares(a) == old(claimableEarnShares(a))
     /// @custom:ensures _lastDisabledAt == old(_lastDisabledAt)
@@ -339,7 +360,7 @@ contract EarnFees is IEarnFees {
         bool wasActive = _feesActive();
         StoredExcessFee memory oldExcess = _feeConfigs[_currentFeeConfigId].excess;
         uint256 oldTargetNow = oldExcess.enabled
-            ? EarnFeeMath.targetAt(targetBase, oldExcess.annualTargetRateBps, targetStartedAt, block.timestamp)
+            ? EarnFeeMath.targetAt(targetBase(), oldExcess.annualTargetRateBps, targetStartedAt, block.timestamp)
             : 0;
         _waiveCurrentRemainders();
 
@@ -357,17 +378,19 @@ contract EarnFees is IEarnFees {
                 _initializeFeeBaselines(earnShareSupply, earnShareSupply == 0 ? 0 : _activeAssets());
             } else if (config.excess.enabled) {
                 if (oldExcess.enabled) {
-                    targetBase = oldTargetNow;
+                    _setTargetBase(oldTargetNow);
                     targetStartedAt = uint40(block.timestamp);
                 } else {
                     uint256 earnShareSupply = _activeSupply();
-                    targetBase = earnShareSupply == 0
-                        ? 0
-                        : EarnFeeMath.valuePerEarnShareUp(_activeAssets(), _earnShareScale(), earnShareSupply);
+                    _setTargetBase(
+                        earnShareSupply == 0
+                            ? 0
+                            : EarnFeeMath.valuePerEarnShareUp(_activeAssets(), _earnShareScale(), earnShareSupply)
+                    );
                     targetStartedAt = uint40(block.timestamp);
                 }
             } else {
-                targetBase = 0;
+                _setTargetBase(0);
                 targetStartedAt = 0;
             }
         }
@@ -387,7 +410,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
     /// @custom:ensures _currentFeeConfigId == old(_currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
-    /// @custom:ensures feesDisabled && _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
+    /// @custom:ensures feesDisabled && _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
     /// @custom:ensures !old(feesDisabled) ==> !feeBaselinesPending && _lastDisabledAt == uint40(block.timestamp)
     /// @custom:ensures !old(feesDisabled) ==> _specRemaindersWaived(_currentFeeConfigId)
     /// @custom:ensures old(feesDisabled) ==> feeBaselinesPending == old(feeBaselinesPending) && _lastDisabledAt == old(_lastDisabledAt)
@@ -408,10 +431,10 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
     /// @custom:ensures _currentFeeConfigId == old(_currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
-    /// @custom:ensures highWaterMark >= old(highWaterMark)
-    /// @custom:ensures targetBase != old(targetBase) ==> targetBase > old(_specTargetNow()) && targetStartedAt == uint40(block.timestamp)
-    /// @custom:ensures !old(_specFeesActive()) ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
-    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase == old(targetBase) && targetStartedAt == old(targetStartedAt)
+    /// @custom:ensures highWaterMark() >= old(highWaterMark())
+    /// @custom:ensures targetBase() != old(targetBase()) ==> targetBase() > old(_specTargetNow()) && targetStartedAt == uint40(block.timestamp)
+    /// @custom:ensures !old(_specFeesActive()) ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
+    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase() == old(targetBase()) && targetStartedAt == old(targetStartedAt)
     /// @dev The vault passes its active EarnShare supply and active assets after the entry, as for `accrueFees`.
     function initializeBaselines(uint256 activeSupply, uint256 activeAssets) external onlyEarnVault {
         if (_feesActive()) _updateBaselinesAfterPrincipalEntry(activeSupply, activeAssets);
@@ -422,7 +445,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures msg.sender == earnVault
     /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
     /// @custom:ensures _currentFeeConfigId == old(_currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
-    /// @custom:ensures _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
+    /// @custom:ensures _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
     /// @custom:ensures !old(_specFeesActive()) ==> _pendingFeeSnapshots[requestId].feeConfigId == old(_pendingFeeSnapshots[requestId].feeConfigId)
     /// @custom:ensures old(_pendingFeeSnapshots[requestId].feeConfigId) != 0 ==> _pendingFeeSnapshots[requestId].feeConfigId != 0
     /// @custom:ensures _pendingFeeSnapshots[requestId].feeConfigId == old(_pendingFeeSnapshots[requestId].feeConfigId) ==> _feeConfigs[_currentFeeConfigId].excess.openRequests == old(_feeConfigs[_currentFeeConfigId].excess.openRequests)
@@ -435,12 +458,13 @@ contract EarnFees is IEarnFees {
 
         uint24 configId = _currentFeeConfigId;
         uint256 scale = _earnShareScale();
-        uint256 highWaterValue = Math.mulDiv(highWaterMark, burnedEarnShares, scale, Math.Rounding.Ceil);
+        (uint256 mark, uint256 base) = _baselines();
+        uint256 highWaterValue = Math.mulDiv(mark, burnedEarnShares, scale, Math.Rounding.Ceil);
         uint256 targetValue;
         StoredExcessFee memory excess = _feeConfigs[configId].excess;
         if (excess.enabled) {
             uint256 currentTarget =
-                EarnFeeMath.targetAt(targetBase, excess.annualTargetRateBps, targetStartedAt, block.timestamp);
+                EarnFeeMath.targetAt(base, excess.annualTargetRateBps, targetStartedAt, block.timestamp);
             targetValue = Math.mulDiv(currentTarget, burnedEarnShares, scale, Math.Rounding.Ceil);
         }
         // A snapshot too large for the packed record reverts rather than truncating.
@@ -482,7 +506,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures !old(_specChargesPending(requestId)) ==> feeEarnShares == 0
     /// @custom:ensures old(_pendingFeeSnapshots[requestId].feeConfigId) != 0 ==> _specClosed(requestId, old(_pendingFeeSnapshots[requestId].feeConfigId), old(_feeConfigs[_pendingFeeSnapshots[requestId].feeConfigId].excess.openRequests))
     /// @custom:ensures feeEarnShares != 0 ==> (activeSupply == 0 || activeAssets != 0)
-    /// @custom:ensures activeSupply != 0 ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt)) && feeBaselinesPending == old(feeBaselinesPending)
+    /// @custom:ensures activeSupply != 0 ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt)) && feeBaselinesPending == old(feeBaselinesPending)
     /// @custom:ensures feeBaselinesPending != old(feeBaselinesPending) ==> feeBaselinesPending
     /// Not proved: the verifier does not finish this function within its time limit.
     function settleCancelledRedeem(
@@ -560,16 +584,16 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures result.totalFeeEarnShares == EarnFeeMath.allocatedFeeEarnShares(result)
     /// @custom:ensures result.totalFeeAssets <= result.positiveAccrualAssets
     /// @custom:ensures !old(_specFeesActive()) ==> EarnFeeMath.chargesNothing(result) && result.activeAssets == 0
-    /// @custom:ensures !old(_specFeesActive()) ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
+    /// @custom:ensures !old(_specFeesActive()) ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
     /// @custom:ensures feeBaselinesPending ==> old(feeBaselinesPending)
     /// @custom:ensures (old(feeBaselinesPending) && !feeBaselinesPending) ==> EarnFeeMath.chargesNothing(result)
-    /// @custom:ensures feeBaselinesPending == old(feeBaselinesPending) ==> _specHighWaterCheckpointed(result, old(highWaterMark))
+    /// @custom:ensures feeBaselinesPending == old(feeBaselinesPending) ==> _specHighWaterCheckpointed(result, old(highWaterMark()))
     /// @custom:ensures (feeBaselinesPending == old(feeBaselinesPending) && _specTargetRatchets(result)) ==> _specTargetRestartedAt(result.postFeeValuePerEarnShare)
-    /// @custom:ensures (feeBaselinesPending == old(feeBaselinesPending) && !_specTargetRatchets(result)) ==> targetBase == old(targetBase) && targetStartedAt == old(targetStartedAt)
-    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark), old(feeBaselinesPending)) ==> highWaterMark == _specPostFeeValue(result, checkpointSupply)
-    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark), old(feeBaselinesPending)) ==> _specCoversCheckpoint(result, checkpointSupply)
-    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark), old(feeBaselinesPending)) ==> _specAccrualWithinGrowth(result, old(highWaterMark), checkpointSupply)
-    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark), old(feeBaselinesPending)) ==> _specLemmaFeeEarnSharesHolds(result.totalFeeAssets, result.activeAssets, checkpointSupply)
+    /// @custom:ensures (feeBaselinesPending == old(feeBaselinesPending) && !_specTargetRatchets(result)) ==> targetBase() == old(targetBase()) && targetStartedAt == old(targetStartedAt)
+    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark()), old(feeBaselinesPending)) ==> highWaterMark() == _specPostFeeValue(result, checkpointSupply)
+    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark()), old(feeBaselinesPending)) ==> _specCoversCheckpoint(result, checkpointSupply)
+    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark()), old(feeBaselinesPending)) ==> _specAccrualWithinGrowth(result, old(highWaterMark()), checkpointSupply)
+    /// @custom:ensures _specChargingCheckpoint(result, old(highWaterMark()), old(feeBaselinesPending)) ==> _specLemmaFeeEarnSharesHolds(result.totalFeeAssets, result.activeAssets, checkpointSupply)
     /// @custom:requires _feeConfigs[_currentFeeConfigId].excess.fixedFeeCount <= MAX_FIXED_FEE_RECIPIENTS
     /// @dev A charging checkpoint moves the high-water mark to exactly the post-fee value per EarnShare of the
     ///      supply after the mint, for any nonzero supply, dust included, so it never ratchets above realised value.
@@ -611,14 +635,14 @@ contract EarnFees is IEarnFees {
         // the high-water mark. Preserve the target ratchet and observable preview fields while
         // avoiding the full config copy, remainder reads/writes, and allocation loop on the common
         // no-new-yield path.
-        uint256 mark = highWaterMark;
+        (uint256 mark, uint256 base) = _baselines();
         if (result.preFeeValuePerEarnShare <= mark) {
             result.postFeeValuePerEarnShare = EarnFeeMath.valuePerEarnShareUp(activeAssets, scale, earnShareSupply);
             if (excess.enabled) {
                 result.targetValuePerEarnShare =
-                    EarnFeeMath.targetAt(targetBase, excess.annualTargetRateBps, targetStartedAt, block.timestamp);
+                    EarnFeeMath.targetAt(base, excess.annualTargetRateBps, targetStartedAt, block.timestamp);
                 if (result.postFeeValuePerEarnShare > result.targetValuePerEarnShare) {
-                    targetBase = result.postFeeValuePerEarnShare;
+                    _setTargetBase(result.postFeeValuePerEarnShare);
                     targetStartedAt = uint40(block.timestamp);
                 }
             }
@@ -642,14 +666,14 @@ contract EarnFees is IEarnFees {
                 earnShareSupply: earnShareSupply,
                 earnShareScale: scale,
                 highWaterMark: mark,
-                targetBase: targetBase,
+                targetBase: base,
                 targetStartedAt: targetStartedAt,
                 timestamp: block.timestamp
             }),
             _loadFeeConfig(storedConfig),
             _remainders(_currentFeeConfigId, storedConfig)
         );
-        /// @custom:use _specLemmaAccrualWithinGrowth(activeAssets, earnShareSupply, _earnShareScale(), highWaterMark)
+        /// @custom:use _specLemmaAccrualWithinGrowth(activeAssets, earnShareSupply, _earnShareScale(), highWaterMark())
         /// @custom:use _specLemmaFeeEarnShares(result.totalFeeAssets, activeAssets, earnShareSupply)
         /// @custom:use _specLemmaCeilCovers(activeAssets * _earnShareScale(), earnShareSupply + result.totalFeeEarnShares)
         _storeRemainders(_currentFeeConfigId, storedConfig, nextRemainders);
@@ -657,15 +681,13 @@ contract EarnFees is IEarnFees {
         if (result.totalFeeEarnShares != 0) {
             _creditCalculatedAllocations(_currentFeeConfigId, result);
         }
-        if (result.preFeeValuePerEarnShare > mark) {
-            mark = result.postFeeValuePerEarnShare;
-            highWaterMark = mark;
-        }
-
+        if (result.preFeeValuePerEarnShare > mark) mark = result.postFeeValuePerEarnShare;
         if (excess.enabled && result.postFeeValuePerEarnShare > result.targetValuePerEarnShare) {
-            targetBase = result.postFeeValuePerEarnShare;
+            base = result.postFeeValuePerEarnShare;
             targetStartedAt = uint40(block.timestamp);
         }
+        // Both baselines share a slot, so the moved mark and any restarted target are written together.
+        _setBaselines(mark, base);
         // The target, when enabled, is now at least the post-fee value.
         baselineFloor = mark < result.postFeeValuePerEarnShare ? mark : result.postFeeValuePerEarnShare;
 
@@ -792,11 +814,11 @@ contract EarnFees is IEarnFees {
     }
 
     /// @notice A charged reopening restores the snapshot's high-water mark and grown target when they are higher.
-    /// @custom:ensures normalization == 0 ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
-    /// @custom:ensures normalization != 0 ==> highWaterMark >= _specSnapshotHighWater(pending, burnedEarnShares)
-    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase == old(targetBase) && targetStartedAt == old(targetStartedAt)
+    /// @custom:ensures normalization == 0 ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
+    /// @custom:ensures normalization != 0 ==> highWaterMark() >= _specSnapshotHighWater(pending, burnedEarnShares)
+    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase() == old(targetBase()) && targetStartedAt == old(targetStartedAt)
     /// @custom:ensures (normalization != 0 && _feeConfigs[_currentFeeConfigId].excess.enabled) ==> targetStartedAt == uint40(block.timestamp)
-    /// @custom:ensures (normalization != 0 && _feeConfigs[_currentFeeConfigId].excess.enabled) ==> targetBase >= _specSnapshotTargetNow(pending, burnedEarnShares)
+    /// @custom:ensures (normalization != 0 && _feeConfigs[_currentFeeConfigId].excess.enabled) ==> targetBase() >= _specSnapshotTargetNow(pending, burnedEarnShares)
     function _restoreReopenedBaselines(
         StoredFeeSnapshot storage pending,
         uint256 burnedEarnShares,
@@ -806,7 +828,7 @@ contract EarnFees is IEarnFees {
         uint256 scale = _earnShareScale();
         uint256 currentValue = EarnFeeMath.valuePerEarnShareUp(_activeAssets(), scale, normalization);
         uint256 pendingHighWater = Math.mulDiv(pending.highWaterValue, scale, burnedEarnShares, Math.Rounding.Ceil);
-        highWaterMark = currentValue > pendingHighWater ? currentValue : pendingHighWater;
+        _setHighWaterMark(currentValue > pendingHighWater ? currentValue : pendingHighWater);
 
         if (_feeConfigs[_currentFeeConfigId].excess.enabled) {
             uint256 pendingTarget = Math.mulDiv(pending.targetValue, scale, burnedEarnShares, Math.Rounding.Ceil);
@@ -816,73 +838,116 @@ contract EarnFees is IEarnFees {
                 pending.requestedAt,
                 block.timestamp
             );
-            targetBase = currentValue > grownTarget ? currentValue : grownTarget;
+            _setTargetBase(currentValue > grownTarget ? currentValue : grownTarget);
             targetStartedAt = uint40(block.timestamp);
         }
     }
 
-    /// @custom:ensures normalization == 0 ==> _specBaselines(old(highWaterMark), old(targetBase), old(targetStartedAt))
+    /// @custom:ensures normalization == 0 ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
     /// @custom:ensures (normalization != 0 && _feeConfigs[_currentFeeConfigId].excess.enabled) ==> _specTargetRestarted()
-    /// @custom:ensures (normalization != 0 && !_feeConfigs[_currentFeeConfigId].excess.enabled) ==> targetBase == 0 && targetStartedAt == 0
+    /// @custom:ensures (normalization != 0 && !_feeConfigs[_currentFeeConfigId].excess.enabled) ==> targetBase() == 0 && targetStartedAt == 0
     function _initializeReopenedBaselines(uint256 normalization) internal {
         if (normalization == 0) return;
         uint256 currentValue = EarnFeeMath.valuePerEarnShareUp(_activeAssets(), _earnShareScale(), normalization);
-        highWaterMark = currentValue;
-
+        uint256 base;
         if (_feeConfigs[_currentFeeConfigId].excess.enabled) {
-            targetBase = currentValue;
+            base = currentValue;
             targetStartedAt = uint40(block.timestamp);
         } else {
-            targetBase = 0;
             targetStartedAt = 0;
         }
-        emit FeeBaselinesInitialized(highWaterMark, targetBase, targetStartedAt);
+        _setBaselines(currentValue, base);
+        emit FeeBaselinesInitialized(currentValue, base, targetStartedAt);
     }
 
-    /// @custom:ensures _feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase == highWaterMark
-    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase == 0 && targetStartedAt == 0
+    /// @custom:ensures _feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase() == highWaterMark()
+    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase() == 0 && targetStartedAt == 0
     /// @custom:ensures targetStartedAt == 0 || targetStartedAt == uint40(block.timestamp)
-    /// @custom:ensures highWaterMark == 0 || targetBase == 0 || targetStartedAt == uint40(block.timestamp)
+    /// @custom:ensures highWaterMark() == 0 || targetBase() == 0 || targetStartedAt == uint40(block.timestamp)
     function _initializeFeeBaselines(uint256 earnShareSupply, uint256 activeAssets) internal {
         if (earnShareSupply == 0) {
-            highWaterMark = 0;
-            targetBase = 0;
+            _setBaselines(0, 0);
             targetStartedAt = 0;
             return;
         }
         uint256 valuePerShare = EarnFeeMath.valuePerEarnShareUp(activeAssets, _earnShareScale(), earnShareSupply);
-        highWaterMark = valuePerShare;
+        uint256 base;
         if (_feeConfigs[_currentFeeConfigId].excess.enabled) {
-            targetBase = valuePerShare;
+            base = valuePerShare;
             targetStartedAt = uint40(block.timestamp);
         } else {
-            targetBase = 0;
             targetStartedAt = 0;
         }
-        emit FeeBaselinesInitialized(highWaterMark, targetBase, targetStartedAt);
+        _setBaselines(valuePerShare, base);
+        emit FeeBaselinesInitialized(valuePerShare, base, targetStartedAt);
     }
 
     /// @notice Principal entry ratchets the baselines up only: it never charges or lowers them (fees.md).
-    /// @custom:ensures highWaterMark >= old(highWaterMark)
-    /// @custom:ensures targetBase != old(targetBase) ==> targetBase > old(_specTargetNow()) && targetStartedAt == uint40(block.timestamp)
-    /// @custom:ensures targetBase == old(targetBase) ==> targetStartedAt == old(targetStartedAt)
-    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase == old(targetBase)
+    /// @custom:ensures highWaterMark() >= old(highWaterMark())
+    /// @custom:ensures targetBase() != old(targetBase()) ==> targetBase() > old(_specTargetNow()) && targetStartedAt == uint40(block.timestamp)
+    /// @custom:ensures targetBase() == old(targetBase()) ==> targetStartedAt == old(targetStartedAt)
+    /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase() == old(targetBase())
     function _updateBaselinesAfterPrincipalEntry(uint256 earnShareSupply, uint256 activeAssets) internal {
         if (earnShareSupply == 0) return;
 
         uint256 valuePerShare = EarnFeeMath.valuePerEarnShareUp(activeAssets, _earnShareScale(), earnShareSupply);
-        if (valuePerShare > highWaterMark) highWaterMark = valuePerShare;
+        (uint256 mark, uint256 base) = _baselines();
+        if (valuePerShare > mark) mark = valuePerShare;
 
         StoredExcessFee memory excess = _feeConfigs[_currentFeeConfigId].excess;
         if (excess.enabled) {
             uint256 currentTarget =
-                EarnFeeMath.targetAt(targetBase, excess.annualTargetRateBps, targetStartedAt, block.timestamp);
+                EarnFeeMath.targetAt(base, excess.annualTargetRateBps, targetStartedAt, block.timestamp);
             if (valuePerShare > currentTarget) {
-                targetBase = valuePerShare;
+                base = valuePerShare;
                 targetStartedAt = uint40(block.timestamp);
             }
         }
-        emit FeeBaselinesInitialized(highWaterMark, targetBase, targetStartedAt);
+        _setBaselines(mark, base);
+        emit FeeBaselinesInitialized(mark, base, targetStartedAt);
+    }
+
+    /// @dev Both baselines, from their shared slot.
+    /// @custom:ensures mark == highWaterMark() && base == targetBase()
+    function _baselines() internal view returns (uint256 mark, uint256 base) {
+        mark = _highWaterMark;
+        base = _targetBase;
+        if (mark == WIDE_BASELINE) mark = _wideHighWaterMark;
+        if (base == WIDE_BASELINE) base = _wideTargetBase;
+    }
+
+    /// @dev Writes both baselines in their shared slot, sending a value too wide for its half to its wide slot.
+    /// @custom:ensures highWaterMark() == mark && targetBase() == base
+    function _setBaselines(uint256 mark, uint256 base) internal {
+        uint128 markHalf = _baselineHalf(mark);
+        uint128 baseHalf = _baselineHalf(base);
+        if (markHalf == WIDE_BASELINE) _wideHighWaterMark = mark;
+        if (baseHalf == WIDE_BASELINE) _wideTargetBase = base;
+        _highWaterMark = markHalf;
+        _targetBase = baseHalf;
+    }
+
+    /// @custom:ensures highWaterMark() == mark && targetBase() == old(targetBase())
+    function _setHighWaterMark(uint256 mark) internal {
+        uint128 markHalf = _baselineHalf(mark);
+        if (markHalf == WIDE_BASELINE) _wideHighWaterMark = mark;
+        _highWaterMark = markHalf;
+    }
+
+    /// @custom:ensures targetBase() == base && highWaterMark() == old(highWaterMark())
+    function _setTargetBase(uint256 base) internal {
+        uint128 baseHalf = _baselineHalf(base);
+        if (baseHalf == WIDE_BASELINE) _wideTargetBase = base;
+        _targetBase = baseHalf;
+    }
+
+    /// @dev A baseline's half of the shared slot: the value itself, or {WIDE_BASELINE} when it needs its wide slot.
+    /// @custom:ensures value < WIDE_BASELINE ? result == value : result == WIDE_BASELINE
+    function _baselineHalf(uint256 value) internal pure returns (uint128 result) {
+        if (value >= WIDE_BASELINE) return uint128(WIDE_BASELINE);
+        // Below 2 ** 128 - 1 here, so the narrowing conversion cannot truncate.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint128(value);
     }
 
     /// @custom:ensures result == _specFeesActive()
@@ -1196,26 +1261,26 @@ contract EarnFees is IEarnFees {
 
     /// @custom:spec The high-water mark and target are `(highWater, base, startedAt)`.
     function _specBaselines(uint256 highWater, uint256 base, uint40 startedAt) internal view returns (bool) {
-        return highWaterMark == highWater && targetBase == base && targetStartedAt == startedAt;
+        return highWaterMark() == highWater && targetBase() == base && targetStartedAt == startedAt;
     }
 
     /// @custom:spec The current configuration's target, grown to now.
     function _specTargetNow() internal view returns (uint256) {
         return EarnFeeMath.targetFrom(
-            targetBase, _feeConfigs[_currentFeeConfigId].excess.annualTargetRateBps, targetStartedAt, block.timestamp
+            targetBase(), _feeConfigs[_currentFeeConfigId].excess.annualTargetRateBps, targetStartedAt, block.timestamp
         );
     }
 
     /// @custom:spec The target restarts now at the high-water mark.
     function _specTargetRestarted() internal view returns (bool) {
-        return targetBase == highWaterMark && targetStartedAt == uint40(block.timestamp);
+        return targetBase() == highWaterMark() && targetStartedAt == uint40(block.timestamp);
     }
 
     /// @custom:spec A checkpoint moves the high-water mark to the post-fee value when value rose above it (fees.md,
     ///     "High-water mark and target").
     function _specHighWaterCheckpointed(FeePreview memory fees, uint256 oldHighWater) internal view returns (bool) {
         return
-            highWaterMark
+            highWaterMark()
                 == (fees.preFeeValuePerEarnShare > oldHighWater ? fees.postFeeValuePerEarnShare : oldHighWater);
     }
 
@@ -1228,7 +1293,7 @@ contract EarnFees is IEarnFees {
 
     /// @custom:spec The target restarts now at `value`.
     function _specTargetRestartedAt(uint256 value) internal view returns (bool) {
-        return targetBase == value && targetStartedAt == uint40(block.timestamp);
+        return targetBase() == value && targetStartedAt == uint40(block.timestamp);
     }
 
     /// @custom:spec Whether a request's snapshot is still charged when it settles: open, recorded after fees were
@@ -1244,7 +1309,7 @@ contract EarnFees is IEarnFees {
         return _pendingFeeSnapshots[requestId].feeConfigId == _currentFeeConfigId
             && _pendingFeeSnapshots[requestId].requestedAt == uint40(block.timestamp)
             && _pendingFeeSnapshots[requestId].highWaterValue
-                == EarnFeeMath.ceilDiv(highWaterMark * burnedEarnShares, _earnShareScale())
+                == EarnFeeMath.ceilDiv(highWaterMark() * burnedEarnShares, _earnShareScale())
             && (!_feeConfigs[_currentFeeConfigId].excess.enabled
                 || _pendingFeeSnapshots[requestId].targetValue
                     == EarnFeeMath.ceilDiv(_specTargetNow() * burnedEarnShares, _earnShareScale()));
@@ -1352,7 +1417,7 @@ contract EarnFees is IEarnFees {
 
     /// @custom:spec The high-water mark values `supply` plus the fee mint at no less than the checkpointed assets.
     function _specCoversCheckpoint(FeePreview memory fees, uint256 supply) internal view returns (bool) {
-        return highWaterMark * (supply + fees.totalFeeEarnShares) >= fees.activeAssets * _earnShareScale();
+        return highWaterMark() * (supply + fees.totalFeeEarnShares) >= fees.activeAssets * _earnShareScale();
     }
 
     /// @custom:spec The fee base is at most the checkpointed assets above the old high-water mark's value of
