@@ -98,9 +98,9 @@ high 128 bits), so the second recipient of a pair writes no new slot. The root b
 one recipient for the campaign's whole life, so the statement builder assigns indexes insert-only: an
 index never moves to another recipient and a recipient never changes index. A root that aliased one
 recipient under two indexes could pay it twice, but only within the root total, like any other amount
-the trusted publisher commits. Root totals and `totalPaid` fit `uint120`, sharing one slot with the
-pause flag a claim checks, and every cumulative amount, bounded by the root total, fits its 128-bit
-lane; a total above `uint120` reverts `EntitlementTooLarge`.
+the trusted publisher commits. Root totals and `totalPaid` fit `uint88`, sharing one slot with the
+pause flag a claim checks and the root version a publication raises, and every cumulative amount,
+bounded by the root total, fits its 128-bit lane; a total above `uint88` reverts `EntitlementTooLarge`.
 
 Distributors deployed before leaf version 2 (those from the first rewards factory release) keep the
 earlier leaf without an index, `abi.encode(chainId, distributor, campaignId, recipient,

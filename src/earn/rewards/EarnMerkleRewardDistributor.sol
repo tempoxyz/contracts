@@ -29,7 +29,7 @@ import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerklePr
 /// Measured solvency against entitlement: paid never exceeds the published cumulative root total.
 /// @custom:invariant _totalPaid <= _rootTotalEntitlement
 /// Conservation: totalPaid is the sum of every leaf index's cumulativePaid, so no index has more, and
-/// every record fits its uint128 lane (the root total fits uint120).
+/// every record fits its uint128 lane (the root total fits uint88).
 /// @custom:invariant sumPaid == _totalPaid
 /// @custom:invariant forall uint256 i :: cumulativePaid(i) <= _totalPaid
 /// A root exists exactly when a version was published; before any root nothing is owed.
@@ -78,10 +78,11 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
 
     bytes32 public merkleRoot;
     bytes32 public statementHash;
-    // One slot with the pause flag, so a claim's pause check reads the slot its payout updates. Every
-    // per-index amount is bounded by the root total, so all of them fit uint120.
-    uint120 private _rootTotalEntitlement;
-    uint120 private _totalPaid;
+    // One slot with the pause flag, so a claim's pause check reads the slot its payout updates, and with the
+    // root version, so a publication writes that slot once. Every per-index amount is bounded by the root
+    // total, so all of them fit uint88.
+    uint88 private _rootTotalEntitlement;
+    uint88 private _totalPaid;
     bool public paused;
     uint64 public rootVersion;
 
@@ -189,9 +190,9 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// @custom:ensures settlementId != bytes32(0) && settlementId != old(lastSettlementId)
     /// @custom:ensures lastSettlementId == settlementId
     /// @custom:ensures old(rootVersion) == expectedRootVersion && rootVersion > old(rootVersion) && version == rootVersion
-    /// The published root, statement and total are the arguments; the total fits uint120 and never decreases.
+    /// The published root, statement and total are the arguments; the total fits uint88 and never decreases.
     /// @custom:ensures merkleRoot == root && statementHash == statementHash_ && _rootTotalEntitlement == totalEntitlement
-    /// @custom:ensures totalEntitlement <= type(uint120).max
+    /// @custom:ensures totalEntitlement <= type(uint88).max
     /// @custom:ensures _rootTotalEntitlement >= old(_rootTotalEntitlement)
     /// Measured solvency: the outstanding liability is covered by the EarnShare balance measured at publication.
     /// @custom:ensures _rootTotalEntitlement - _totalPaid <= measuredBalance
@@ -253,8 +254,8 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// Only the owner publishes; the expected version matched and the version rose by one.
     /// @custom:ensures old(owner()) == msg.sender
     /// @custom:ensures old(rootVersion) == expectedRootVersion && rootVersion == old(rootVersion) + 1
-    /// The total fits uint120 and never decreases, and while paused it stays the same.
-    /// @custom:ensures totalEntitlement <= type(uint120).max
+    /// The total fits uint88 and never decreases, and while paused it stays the same.
+    /// @custom:ensures totalEntitlement <= type(uint88).max
     /// @custom:ensures _rootTotalEntitlement >= old(_rootTotalEntitlement)
     /// @custom:ensures paused ==> _rootTotalEntitlement == old(_rootTotalEntitlement)
     /// @custom:ensures merkleRoot == root && root != bytes32(0) && _rootTotalEntitlement == totalEntitlement
@@ -280,7 +281,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         if (block.timestamp > claimDeadline) revert ClaimsExpired();
         if (root == bytes32(0)) revert ZeroRoot();
         if (statementHash_ == bytes32(0)) revert ZeroStatementHash();
-        if (totalEntitlement > type(uint120).max) revert EntitlementTooLarge(totalEntitlement);
+        if (totalEntitlement > type(uint88).max) revert EntitlementTooLarge(totalEntitlement);
         uint256 previousTotal = _rootTotalEntitlement;
         if (totalEntitlement < previousTotal) revert RootTotalDecreased(previousTotal, totalEntitlement);
         if (paused && totalEntitlement != previousTotal) revert PausedLiabilityIncrease();
@@ -293,7 +294,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         statementHash = statementHash_;
         // Checked above to fit.
         // forge-lint: disable-next-line(unsafe-typecast)
-        _rootTotalEntitlement = uint120(totalEntitlement);
+        _rootTotalEntitlement = uint88(totalEntitlement);
         rootVersion += 1;
         version = rootVersion;
         emit RootPublished(version, root, statementHash_, totalEntitlement);
@@ -490,7 +491,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         );
     }
 
-    /// Records a payout: the index's cumulative amount within uint128 and the new total within uint120. Callers hold
+    /// Records a payout: the index's cumulative amount within uint128 and the new total within uint88. Callers hold
     /// the contract invariant that no index's record exceeds totalPaid.
     /// @custom:requires cumulativePaid(index) <= _totalPaid
     /// @custom:requires nextTotalPaid == _totalPaid + (cumulativeAmount - cumulativePaid(index))
@@ -502,7 +503,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
     /// @custom:ensures heldShares == old(heldShares) - (nextTotalPaid - old(_totalPaid))
     function _recordPayout(uint256 index, uint256 cumulativeAmount, uint256 nextTotalPaid) private {
         // The index's record is part of totalPaid, so cumulativeAmount <= nextTotalPaid <= the root total.
-        /// @custom:assert cumulativeAmount <= nextTotalPaid && nextTotalPaid <= type(uint120).max
+        /// @custom:assert cumulativeAmount <= nextTotalPaid && nextTotalPaid <= type(uint88).max
         /// @custom:ghost sumPaid = sumPaid - cumulativePaid(index) + cumulativeAmount
         /// @custom:ghost heldShares = heldShares - (nextTotalPaid - _totalPaid)
         PaidLanes storage lanes = _paid[index / 2];
@@ -511,7 +512,7 @@ contract EarnMerkleRewardDistributor is Ownable2Step {
         // forge-lint: disable-next-line(unsafe-typecast)
         else lanes.lane1 = uint128(cumulativeAmount);
         // forge-lint: disable-next-line(unsafe-typecast)
-        _totalPaid = uint120(nextTotalPaid);
+        _totalPaid = uint88(nextTotalPaid);
     }
 
     function _requireClaimsActive() private view {
