@@ -98,8 +98,9 @@ high 128 bits), so the second recipient of a pair writes no new slot. The root b
 one recipient for the campaign's whole life, so the statement builder assigns indexes insert-only: an
 index never moves to another recipient and a recipient never changes index. A root that aliased one
 recipient under two indexes could pay it twice, but only within the root total, like any other amount
-the trusted publisher commits. Root totals, `totalPaid`, and so every cumulative amount fit `uint128`;
-a larger total reverts `EntitlementTooLarge`.
+the trusted publisher commits. Root totals and `totalPaid` fit `uint120`, sharing one slot with the
+pause flag a claim checks, and every cumulative amount, bounded by the root total, fits its 128-bit
+lane; a total above `uint120` reverts `EntitlementTooLarge`.
 
 Distributors deployed before leaf version 2 (those from the first rewards factory release) keep the
 earlier leaf without an index, `abi.encode(chainId, distributor, campaignId, recipient,
@@ -135,8 +136,8 @@ settlement or a `publishRoot` has intervened, callers dedupe older IDs against t
 version it published.
 
 Funding pulls from an explicit funder within its balance and allowance, keeps a standing maximum
-approval to its immutable EarnVault (Tempo charges every zero-to-nonzero allowance as a new storage
-slot), deposits, checks that the distributor's base-asset balance did not grow, and measures the EarnShare minted. Beyond the one-unit
+approval to its immutable EarnVault, set at construction (Tempo charges every zero-to-nonzero allowance
+as a new storage slot), deposits (the EarnVault's `DepositsPaused` reverts the whole call), checks that the distributor's base-asset balance did not grow, and measures the EarnShare minted. Beyond the one-unit
 [gas residue](../../deployment/deployment.md#gas-residue-after-deployment), do not send base assets
 directly to the distributor: it has no base-asset rescue, and `returnUnspent` moves only EarnShare.
 

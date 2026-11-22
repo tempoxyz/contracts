@@ -81,9 +81,9 @@ contract PropAMMEngine is
     string public constant name = "PropAMM Engine";
     string public constant symbol = "propAMM-engine";
     address public earnVault;
-    /// @dev Packed beside `earnVault`, which is nonzero before the first trade, so the first trade ID
-    ///      never writes a slot from zero.
-    uint96 private tradeNonce;
+    /// @dev Counts this transaction's trades. A trade ID is the block number above this count: it labels the
+    ///      pool's trade event, distinct within a transaction, and writes no storage.
+    uint256 private transient _tradeCount;
     bool private transient _entered;
 
     modifier onlyEarnVault() {
@@ -211,7 +211,7 @@ contract PropAMMEngine is
 
     /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
-    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
     /// A deposit of positive assets credits positive shares, admitted only with a fresh oracle observation.
     /// @custom:ensures assets > 0 && shares > 0
     /// @custom:ensures 0 < lastObservedAt && lastObservedAt <= block.timestamp && block.timestamp - lastObservedAt <= maxOracleAge
@@ -241,7 +241,7 @@ contract PropAMMEngine is
     /// Only the bound EarnVault calls it, after transferring `assets` here and checking the engine's credit;
     /// the binding survives, and the trade gets a fresh trade ID.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
-    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
     /// A deposit of positive assets credits positive shares, admitted only with a fresh oracle observation.
     /// @custom:ensures assets > 0 && shares > 0
     /// @custom:ensures 0 < lastObservedAt && lastObservedAt <= block.timestamp && block.timestamp - lastObservedAt <= maxOracleAge
@@ -266,7 +266,7 @@ contract PropAMMEngine is
 
     /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
-    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
     /// A redemption burns positive shares and pays positive assets, at least the minimum, to a valid receiver.
     /// @custom:ensures shares > 0 && assets > 0 && assets >= minAssets
     /// The shares redeemed are exactly the measured decrease in the base tokens the engine holds.
@@ -280,23 +280,13 @@ contract PropAMMEngine is
     {
         uint256 baseBefore = totalShares();
         if (shares == 0 || shares > baseBefore) revert InvalidAmount();
-        _route();
         (uint256 price, uint256 observedAt) = _price();
         /// @custom:ghost heldBefore = baseBefore
         uint256 cashBefore = IERC20(asset).balanceOf(address(this));
         // Exact input: the measured holding below proves the pool pulled `shares`, leaving the standing unit.
         IERC20(baseToken).forceApprove(address(pool), shares + 1);
         pool.swapExactInput(
-            true,
-            shares,
-            minAssets,
-            address(this),
-            customerId,
-            bytes32(uint256(++tradeNonce)),
-            block.timestamp,
-            price,
-            0,
-            observedAt
+            true, shares, minAssets, address(this), customerId, _nextTradeId(), block.timestamp, price, 0, observedAt
         );
         /// @custom:ghost heldAfter = totalShares()
         if (totalShares() != baseBefore - shares) revert InexactTransfer();
@@ -310,7 +300,7 @@ contract PropAMMEngine is
 
     /// Only the bound EarnVault calls it; the binding survives, and each trade gets a fresh trade ID.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault) && earnVault != address(0)
-    /// @custom:ensures tradeNonce == old(tradeNonce) + 1
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
     /// An exact withdrawal pays positive assets to a valid receiver for positive shares.
     /// @custom:ensures assets > 0 && shares > 0
     /// @custom:ensures receiver != address(0) && receiver != address(this) && receiver != address(pool)
@@ -318,7 +308,6 @@ contract PropAMMEngine is
     /// @custom:ensures heldAfter + shares == heldBefore
     function withdraw(uint256 assets, address receiver) external nonReentrant onlyEarnVault returns (uint256 shares) {
         if (assets == 0) revert InvalidAmount();
-        _route();
         (uint256 price, uint256 observedAt) = _price();
         (uint256 maximum, uint256 quotedPrice, uint256 quotedAt,) =
             pool.quoteExactOutputFor(address(this), address(this), customerId, true, assets);
@@ -370,10 +359,13 @@ contract PropAMMEngine is
         }
     }
 
-    /// The oracle observation has not moved since the trade was priced.
+    /// The oracle observation has not moved since the trade was priced. The oracle and its decimals are
+    /// immutable here and `_price` checked them before the trade, so only the observation is read again.
     /// @custom:ensures lastPrice == price && lastObservedAt == observedAt
     function _samePrice(uint256 price, uint256 observedAt) private view {
-        (uint256 currentPrice, uint256 currentObservedAt) = _price();
+        (uint256 currentPrice, uint256 currentObservedAt) = priceOracle.latestPrice();
+        /// @custom:ghost lastPrice = currentPrice
+        /// @custom:ghost lastObservedAt = currentObservedAt
         if (price != currentPrice || observedAt != currentObservedAt) revert QuoteMismatch();
     }
 
@@ -382,7 +374,6 @@ contract PropAMMEngine is
         private
         returns (uint256 received)
     {
-        _route();
         (uint256 minimum, uint256 quotedPrice, uint256 quotedAt,) =
             pool.quoteExactInputFor(address(this), address(this), customerId, false, assets);
         if (quotedPrice != price || quotedAt != observedAt || minimum == 0) revert QuoteMismatch();
@@ -410,16 +401,7 @@ contract PropAMMEngine is
 
     function _executeBuy(uint256 assets, uint256 minimum, uint256 price, uint256 observedAt) private returns (uint256) {
         return pool.swapExactInput(
-            false,
-            assets,
-            minimum,
-            address(this),
-            customerId,
-            bytes32(uint256(++tradeNonce)),
-            block.timestamp,
-            price,
-            0,
-            observedAt
+            false, assets, minimum, address(this), customerId, _nextTradeId(), block.timestamp, price, 0, observedAt
         );
     }
 
@@ -428,23 +410,12 @@ contract PropAMMEngine is
         returns (uint256)
     {
         return pool.swapExactOutput(
-            true,
-            assets,
-            maximum,
-            address(this),
-            customerId,
-            bytes32(uint256(++tradeNonce)),
-            block.timestamp,
-            price,
-            0,
-            observedAt
+            true, assets, maximum, address(this), customerId, _nextTradeId(), block.timestamp, price, 0, observedAt
         );
     }
 
-    function _route() private view {
-        if (
-            pool.paused() || !pool.takerAllowed(address(this)) || !pool.recipientAllowed(address(this))
-                || pool.resolveRecipient(address(this)) != address(this)
-        ) revert InvalidConfiguration();
+    /// @custom:ensures _tradeCount == old(_tradeCount) + 1
+    function _nextTradeId() private returns (bytes32) {
+        return bytes32((block.number << 128) | ++_tradeCount);
     }
 }

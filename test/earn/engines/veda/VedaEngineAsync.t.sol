@@ -11,12 +11,12 @@ import { VedaEngineTestBase } from "../../helpers/VedaEngineTestBase.sol";
 contract VedaEngineAsyncTest is VedaEngineTestBase, IMockFinalizeHook {
     /// @dev Storage slot of VedaEngine's active Queue, which also holds both claim counters.
     uint256 private constant QUEUE_SLOT = 3;
-    /// @dev Storage slot of VedaEngine's `peripheryVersion`.
-    uint256 private constant PERIPHERY_VERSION_SLOT = 5;
+    /// @dev Storage slot of VedaEngine's active Teller, which also holds `peripheryVersion`.
+    uint256 private constant TELLER_SLOT = 2;
     /// @dev Storage slot of VedaEngine's `_claims` mapping.
-    uint256 private constant CLAIMS_SLOT = 9;
+    uint256 private constant CLAIMS_SLOT = 8;
     /// @dev Storage slot of VedaEngine's persistent settled ledger.
-    uint256 private constant SETTLED_SLOT = 11;
+    uint256 private constant SETTLED_SLOT = 10;
 
     event Settled(address indexed asset, uint256 amount, uint256 newTotal);
     event Unearmarked(address indexed asset, uint256 amount, uint256 newTotal);
@@ -394,7 +394,9 @@ contract VedaEngineAsyncTest is VedaEngineTestBase, IMockFinalizeHook {
         assertEq(address(uint160(word)), address(queue));
         assertEq(uint48(word >> 160), 2); // claims open on the active Queue
         assertEq(word >> 208, 2); // unresolved claims
-        assertEq(uint256(vm.load(address(engine), bytes32(PERIPHERY_VERSION_SLOT))), engine.peripheryVersion());
+        uint256 tellerWord = uint256(vm.load(address(engine), bytes32(TELLER_SLOT)));
+        assertEq(address(uint160(tellerWord)), address(engine.teller()));
+        assertEq(tellerWord >> 160, engine.peripheryVersion());
 
         core.cancelRedeem(first);
         word = uint256(vm.load(address(engine), bytes32(QUEUE_SLOT)));

@@ -4,12 +4,12 @@
   "controller.fund.residue": "414191",
   "controller.fund.residue.vault-residue": "161994",
   "controller.fund.vault-residue": "416191",
-  "distributor.claim.new-recipient": "563963",
-  "distributor.claim.new-recipient.shared-slot": "314654",
-  "distributor.claim.returning": "65362",
-  "distributor.fund-and-publish": "704141",
-  "distributor.fund-and-publish.residue": "456741",
-  "distributor.fund-and-publish.residue.vault-residue": "204541",
-  "distributor.fund-and-publish.vault-residue": "456741",
-  "distributor.push-batch.2": "585208"
+  "distributor.claim.new-recipient": "561992",
+  "distributor.claim.new-recipient.shared-slot": "312680",
+  "distributor.claim.returning": "63391",
+  "distributor.fund-and-publish": "702542",
+  "distributor.fund-and-publish.residue": "455142",
+  "distributor.fund-and-publish.residue.vault-residue": "202942",
+  "distributor.fund-and-publish.vault-residue": "455142",
+  "distributor.push-batch.2": "585377"
 }

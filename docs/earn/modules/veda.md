@@ -62,8 +62,11 @@ cannot bind its EarnVault until the registry points back to it, and the binding 
 [`VedaForwardingSolver`](../../../src/earn/engines/veda/VedaForwardingSolver.sol) combines the stock Veda
 solve with Earn finalization. It is immutable to one stock solver, tracking Queue, Teller, and
 engine. `solveAndForward(requestIds, coverDeficit)` is restricted to owner-authorized solvers
-(`setAuthorizedSolver`). It reads each request from its Queue by ID, checks the engine recorded that
-Queue for the ID, requires one output asset, measures the engine's balance across the stock solve,
+(`setAuthorizedSolver`). It reads each request from its Queue by ID and requires the engine as its
+user (`InvalidTrackedRequest`): the Queue returns an empty record for an unknown ID, only the engine
+files requests as their user, and the engine refuses an ID already bound to any Queue, so such a
+request is bound to this Queue. The stock solve dequeues each request by the hash of its fields. It
+requires one output asset, measures the engine's balance across the stock solve,
 and passes the IDs and measured delta to `forwardSolved`, which reverts `SolveUnderfunded` unless
 the delta covers every request in the batch.
 
