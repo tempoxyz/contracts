@@ -5,11 +5,29 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { VedaEngine } from "../../../../src/earn/engines/veda/VedaEngine.sol";
 import { VedaRedeemRequest } from "../../../../src/interfaces/external/veda/VedaTypes.sol";
+import { IMockFinalizeHook } from "../../helpers/VedaEngineMocks.sol";
 import { VedaEngineTestBase } from "../../helpers/VedaEngineTestBase.sol";
 
-contract VedaEngineAsyncTest is VedaEngineTestBase {
+contract VedaEngineAsyncTest is VedaEngineTestBase, IMockFinalizeHook {
+    /// @dev Storage slot of VedaEngine's active Queue, which also holds both claim counters.
+    uint256 private constant QUEUE_SLOT = 3;
+    /// @dev Storage slot of VedaEngine's `peripheryVersion`.
+    uint256 private constant PERIPHERY_VERSION_SLOT = 5;
     /// @dev Storage slot of VedaEngine's `_claims` mapping.
     uint256 private constant CLAIMS_SLOT = 9;
+    /// @dev Storage slot of VedaEngine's persistent settled ledger.
+    uint256 private constant SETTLED_SLOT = 11;
+
+    event Settled(address indexed asset, uint256 amount, uint256 newTotal);
+    event Unearmarked(address indexed asset, uint256 amount, uint256 newTotal);
+    event Finalized(bytes32 indexed requestId, address indexed asset, uint256 amount);
+    event FinalizeFailed(bytes32 indexed requestId, address indexed asset, uint256 amount);
+
+    /// @dev What {onFinalize} saw inside each payout frame of a batch.
+    uint256[] private _settledSeen;
+    uint256 private _sweepAmount;
+    address private _sweepTo;
+    bytes private _sweepRevert;
 
     function testRequestRejectsQueuedPayoutBelowMinimumAtomically() public {
         vault.mint(address(engine), 40);
@@ -47,8 +65,8 @@ contract VedaEngineAsyncTest is VedaEngineTestBase {
     }
 
     function testFirstRequestWritesOnlyItsClaimSlot() public {
-        // The claim counters share slots with the active Queue and the periphery version, and the Queue
-        // allowance keeps its standing unit, so the first request writes no other engine slot from zero.
+        // The claim counters share the active Queue's slot, and the Queue allowance keeps its standing unit,
+        // so the first request writes no other engine slot from zero.
         vault.mint(address(engine), 40);
 
         vm.startStateDiffRecording();
@@ -366,5 +384,195 @@ contract VedaEngineAsyncTest is VedaEngineTestBase {
 
         vm.expectRevert(VedaEngine.NoRecoverableClaims.selector);
         engine.recoverExternalSettlement(_ids(bytes32(uint256(123))));
+    }
+
+    function testClaimCountersShareTheQueueSlot() public {
+        bytes32 first = _request(40);
+        _request(30);
+
+        uint256 word = uint256(vm.load(address(engine), bytes32(QUEUE_SLOT)));
+        assertEq(address(uint160(word)), address(queue));
+        assertEq(uint48(word >> 160), 2); // claims open on the active Queue
+        assertEq(word >> 208, 2); // unresolved claims
+        assertEq(uint256(vm.load(address(engine), bytes32(PERIPHERY_VERSION_SLOT))), engine.peripheryVersion());
+
+        core.cancelRedeem(first);
+        word = uint256(vm.load(address(engine), bytes32(QUEUE_SLOT)));
+        assertEq(uint48(word >> 160), 1);
+        assertEq(word >> 208, 1);
+    }
+
+    function testUnresolvedClaimCounterOverflowReverts() public {
+        uint256 word = uint256(vm.load(address(engine), bytes32(QUEUE_SLOT)));
+        vm.store(address(engine), bytes32(QUEUE_SLOT), bytes32(word | (uint256(type(uint48).max) << 208)));
+        vault.mint(address(engine), 40);
+
+        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        core.requestRedeem(40, address(asset), 0, 3600);
+        assertEq(vault.balanceOf(address(engine)), 40);
+    }
+
+    function testActiveQueueClaimCounterOverflowReverts() public {
+        uint256 word = uint256(vm.load(address(engine), bytes32(QUEUE_SLOT)));
+        vm.store(address(engine), bytes32(QUEUE_SLOT), bytes32(word | (uint256(type(uint48).max) << 160)));
+        vault.mint(address(engine), 40);
+
+        vm.expectRevert(abi.encodeWithSignature("Panic(uint256)", 0x11));
+        core.requestRedeem(40, address(asset), 0, 3600);
+        assertEq(vault.balanceOf(address(engine)), 40);
+    }
+
+    function testForwardSolvedPayingEveryClaimWritesNoSettledSlot() public {
+        bytes32 a = _request(40);
+        bytes32 b = _request(30);
+        asset.mint(address(engine), 80); // 10 over the batch
+        core.setFinalizeHook(this);
+
+        vm.expectEmit(address(engine));
+        emit Settled(address(asset), 80, 80);
+        vm.expectEmit(address(engine));
+        emit Finalized(a, address(asset), 40);
+        vm.expectEmit(address(engine));
+        emit Finalized(b, address(asset), 30);
+        vm.expectEmit(address(engine));
+        emit Unearmarked(address(asset), 10, 0);
+        vm.startStateDiffRecording();
+        assertEq(engine.forwardSolved(_ids2(a, b), address(asset), 80), 2);
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        assertEq(_writesTo(accesses, address(engine), _settledSlot()), 0);
+        assertEq(engine.settled(address(asset)), 0);
+        assertEq(engine.unresolvedClaimCount(), 0);
+        assertEq(asset.balanceOf(address(engine)), 10);
+        // Each payout frame saw the batch earmark drawn down by the payouts so far.
+        assertEq(_settledSeen.length, 2);
+        assertEq(_settledSeen[0], 40);
+        assertEq(_settledSeen[1], 10);
+    }
+
+    function testForwardSolvedRetainsOnlyFailedPayoutsBesidePriorEarmark() public {
+        // An earlier failed payout already holds 40 in the ledger.
+        bytes32 earlier = _request(40);
+        asset.mint(address(engine), 40);
+        core.setRevertFinalizeFor(earlier, true);
+        engine.forwardSolved(_ids(earlier), address(asset), 40);
+        assertEq(engine.settled(address(asset)), 40);
+
+        bytes32 a = _request(20);
+        bytes32 stuck = _request(30);
+        bytes32 c = _request(10);
+        core.setRevertFinalizeFor(stuck, true);
+        core.setFinalizeHook(this);
+        asset.mint(address(engine), 70); // 10 over the batch
+
+        bytes32[] memory ids = new bytes32[](3);
+        (ids[0], ids[1], ids[2]) = (a, stuck, c);
+        vm.expectEmit(address(engine));
+        emit Settled(address(asset), 70, 110);
+        vm.expectEmit(address(engine));
+        emit Finalized(a, address(asset), 20);
+        vm.expectEmit(address(engine));
+        emit FinalizeFailed(stuck, address(asset), 30);
+        vm.expectEmit(address(engine));
+        emit Finalized(c, address(asset), 10);
+        vm.expectEmit(address(engine));
+        emit Unearmarked(address(asset), 10, 70);
+        assertEq(engine.forwardSolved(ids, address(asset), 70), 2);
+
+        // The failed payout's draw rolled back with its frame, so the later claim still paid in full.
+        assertEq(_settledSeen.length, 2);
+        assertEq(_settledSeen[0], 90);
+        assertEq(_settledSeen[1], 80);
+        assertEq(engine.settled(address(asset)), 70);
+        assertEq(uint256(vm.load(address(engine), _settledSlot())), 70);
+        assertEq(asset.balanceOf(address(engine)), 80);
+        assertEq(engine.unresolvedClaimCount(), 2);
+        (VedaEngine.ClaimStatus status,) = engine.getClaim(stuck);
+        assertEq(uint256(status), uint256(VedaEngine.ClaimStatus.Claimable));
+
+        // Only the 10 surplus is sweepable once every claim closes; both failed payouts recover first.
+        core.setFinalizeHook(IMockFinalizeHook(address(0)));
+        core.setRevertFinalizeFor(earlier, false);
+        core.setRevertFinalizeFor(stuck, false);
+        assertEq(engine.claimRedeem(stuck), 30);
+        assertEq(engine.claimRedeem(earlier), 40);
+        assertEq(engine.settled(address(asset)), 0);
+        assertEq(engine.unresolvedClaimCount(), 0);
+        vm.expectRevert(
+            abi.encodeWithSelector(VedaEngine.SweepExceedsAvailableBalance.selector, address(asset), 10, 11)
+        );
+        engine.sweepDust(address(asset), address(this), 11);
+        engine.sweepDust(address(asset), address(this), 10);
+    }
+
+    function testSweepDuringBatchCannotTakeTheInFlightEarmark() public {
+        bytes32 id = _request(40);
+        asset.mint(address(engine), 55); // 10 over the batch, plus 5 inert
+        core.setFinalizeHook(this);
+        // The only claim closes before its payout, so the base asset is sweepable inside the frame, but
+        // the batch's 10 unconsumed earmark is not.
+        (_sweepTo, _sweepAmount) = (address(0xD057), 6);
+
+        assertEq(engine.forwardSolved(_ids(id), address(asset), 50), 1);
+
+        assertEq(_settledSeen.length, 1);
+        assertEq(_settledSeen[0], 10);
+        assertEq(
+            _sweepRevert, abi.encodeWithSelector(VedaEngine.SweepExceedsAvailableBalance.selector, address(asset), 5, 6)
+        );
+        assertEq(asset.balanceOf(address(0xD057)), 0);
+
+        // After the batch the surplus is unearmarked and the whole remainder is inert.
+        assertEq(engine.settled(address(asset)), 0);
+        assertEq(asset.balanceOf(address(engine)), 15);
+        engine.sweepDust(address(asset), address(0xD057), 15);
+        assertEq(asset.balanceOf(address(0xD057)), 15);
+    }
+
+    function testSweepDuringBatchTakesOnlyInertBalance() public {
+        bytes32 id = _request(40);
+        asset.mint(address(engine), 55);
+        core.setFinalizeHook(this);
+        (_sweepTo, _sweepAmount) = (address(0xD057), 5);
+
+        assertEq(engine.forwardSolved(_ids(id), address(asset), 50), 1);
+
+        assertEq(_sweepRevert.length, 0);
+        assertEq(asset.balanceOf(address(0xD057)), 5);
+        assertEq(engine.settled(address(asset)), 0);
+        assertEq(asset.balanceOf(address(engine)), 10);
+    }
+
+    /// @dev Records the ledger inside each payout frame and, when set, tries a sweep as the engine owner.
+    function onFinalize(bytes32) external {
+        _settledSeen.push(engine.settled(address(asset)));
+        if (_sweepTo == address(0)) return;
+        try engine.sweepDust(address(asset), _sweepTo, _sweepAmount) { }
+        catch (bytes memory reason) {
+            _sweepRevert = reason;
+        }
+    }
+
+    function _settledSlot() private view returns (bytes32) {
+        return keccak256(abi.encode(address(asset), SETTLED_SLOT));
+    }
+
+    function _ids2(bytes32 a, bytes32 b) private pure returns (bytes32[] memory ids) {
+        ids = new bytes32[](2);
+        (ids[0], ids[1]) = (a, b);
+    }
+
+    function _writesTo(Vm.AccountAccess[] memory accesses, address account, bytes32 slot)
+        private
+        pure
+        returns (uint256 writes)
+    {
+        for (uint256 i; i < accesses.length; ++i) {
+            Vm.StorageAccess[] memory storageAccesses = accesses[i].storageAccesses;
+            for (uint256 j; j < storageAccesses.length; ++j) {
+                Vm.StorageAccess memory s = storageAccesses[j];
+                if (s.account == account && s.slot == slot && s.isWrite) writes++;
+            }
+        }
     }
 }

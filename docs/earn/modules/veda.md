@@ -142,12 +142,16 @@ and cancellation sequence is in [flows](../architecture/flows.md#async-redemptio
    fields, and requires the fixed `amountOfAssets` to meet `minQueuedAssets` and fit in `uint88`
    (`QueuedAssetsTooLarge` above about 3.1e26 base units). It stores one slot per request: the Queue,
    the claim status, and `amountOfAssets`. Tempo charges 250,000 gas for a slot first written from
-   zero, and a claim is never cleared, so each request pays for one such slot. Any failure rolls back
-   the whole request, including the EarnShare burn.
+   zero, and a claim is never cleared, so each request pays for one such slot. The open and unresolved
+   claim counters share the active Queue's slot, so a request or close updates one more slot, never a
+   new one. Any failure rolls back the whole request, including the EarnShare burn.
 2. **Solve.** An authorized solver submits request IDs to `VedaForwardingSolver`; the stock solve,
    measured engine credit, and finalization to each stored receiver happen in one transaction. If a
    receiver cannot accept the payout, that request becomes claimable and stays earmarked until anyone
-   calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds.
+   calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds. While
+   a batch finalizes, its earmark stays in transient storage, which `settled` and `sweepDust` count;
+   only the amounts of failed payouts are written to the persistent ledger, so a batch whose payouts
+   all succeed writes no ledger slot.
 3. **Cancel.** The engine calls the originating Queue's `cancelOnChainWithdrawUsingRequestId`,
    checks that the returned request hashes to the request ID, and requires its BoringVault-share
    balance to rise by exactly that request's `amountOfShares` (`InvalidTrackedRequest`,
