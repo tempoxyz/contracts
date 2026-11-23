@@ -658,6 +658,8 @@ describe('Earn deployment lifecycle', () => {
             ? core.earnVault
             : (target === core.earnVault ? vault : engine)[functionName as never],
       )
+      // The Veda seed-engine activation inspects the whole deployment, which this fixture does not model.
+      const inspect = vi.spyOn(Inspection, 'inspectEarnDeployment').mockResolvedValue({})
       const root = mkdtempSync(join(tmpdir(), 'earn-recovery-'))
       try {
         const options = {
@@ -709,6 +711,7 @@ describe('Earn deployment lifecycle', () => {
         expect(complete.kind).toBe('complete')
         expect(await prepareLifecycleStep(options)).toEqual(complete)
       } finally {
+        inspect.mockRestore()
         rmSync(root, { recursive: true, force: true })
       }
     },
