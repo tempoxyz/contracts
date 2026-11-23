@@ -8,8 +8,8 @@ import { IssuerTreasury } from "../../../src/spend/programs/IssuerTreasury.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 
 /// @notice The issuer treasury, as the program's exposure guard, hands the guard on: the sponsor at any time, the
-///         issuer only once the sponsor holds no live collateral or seizure and is owed nothing or has not acted for
-///         SPONSOR_SILENCE.
+///         issuer only once the sponsor holds no live collateral and either holds no seizure and is owed nothing or
+///         has not acted for SPONSOR_SILENCE.
 contract IssuerTreasuryGuardHandOffTest is AuthEnv {
     IssuerTreasury internal treasury;
     address internal sponsor = makeAddr("sponsor");
@@ -185,16 +185,92 @@ contract IssuerTreasuryGuardHandOffTest is AuthEnv {
         assertEq(cards.exposureGuard(), address(0));
     }
 
-    function test_handOffGuard_silenceLeavesLiveCollateralAndSeizuresWithTheSponsor() public {
+    /// @dev A sponsor that seized (any amount, here 1 unit against an open hold) and then stopped acting no longer
+    ///      holds the program: once it is silent the issuer hands the guard off, the seizure counts as applied, the
+    ///      issuer's funds come free and the settlement account may name another sponsor.
+    function test_handOffGuard_silentSponsorsSeizureIsAppliedOnHandOff() public {
+        _authorize(P1, 60e6);
+        vm.prank(sponsor);
+        treasury.seize(1);
+        _capture(P1, 60e6, true);
+        vm.prank(settlement);
+        usd.transfer(makeAddr("network"), 59e6);
+        usd.mint(issuer, 100e6);
+        vm.startPrank(issuer);
+        usd.approve(address(treasury), 100e6);
+        treasury.fundIssuerDebt(address(usd), 100e6);
+        vm.stopPrank();
+        assertGt(treasury.committedIssuerFunds(address(usd)), 0);
+        (,,,, uint64 seenAt) = treasury.collateral();
+        uint256 silentFrom = seenAt + treasury.SPONSOR_SILENCE();
+        // While the sponsor may still act, its seizure keeps the guard.
+        vm.warp(silentFrom - 1);
+        assertEq(treasury.unitsOf(), 0);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.GuardInUse.selector);
+        treasury.handOffGuard(address(0));
+        vm.warp(silentFrom);
+        vm.expectEmit(address(treasury));
+        emit IssuerTreasury.SeizedApplied(1);
+        vm.prank(issuer);
+        treasury.handOffGuard(address(0));
+        assertEq(treasury.seized(), 0);
+        assertEq(cards.exposureGuard(), address(0));
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        assertEq(treasury.committedIssuerFunds(address(usd)), 0);
+        vm.prank(issuer);
+        treasury.withdrawIssuerFunds(address(usd), 100e6);
+        // The settlement account names another sponsor, whose silence counts from now.
+        address other = makeAddr("other-sponsor");
+        usd.mint(settlement, 100e6);
+        bytes32 id = treasury.pledgeId(2);
+        vm.startPrank(settlement);
+        core.pledge(
+            address(treasury), address(usd), id, 100e6, uint64(block.timestamp + treasury.COVER_TERM() + 3 days)
+        );
+        treasury.post(other, IEarnVault(address(0)), 2);
+        vm.stopPrank();
+        (address named,,,, uint64 seen) = treasury.collateral();
+        assertEq(named, other);
+        assertEq(seen, uint64(block.timestamp));
+    }
+
+    /// @dev A larger seizure against a hold still open is applied the same way, and the open hold stays exposed.
+    function test_handOffGuard_silentSponsorsSeizureAgainstAnOpenHold() public {
         _authorize(P1, 80e6);
         vm.prank(sponsor);
         treasury.seize(50e6);
         vm.warp(block.timestamp + treasury.SPONSOR_SILENCE());
         assertEq(treasury.unitsOf(), 0);
         vm.prank(issuer);
-        vm.expectRevert(IssuerTreasury.GuardInUse.selector);
-        treasury.handOffGuard(address(0));
-        // Collateral the settlement account pledges again keeps it with the sponsor too.
+        treasury.handOffGuard(next);
+        assertEq(treasury.seized(), 0);
+        assertEq(treasury.exposure(), 80e6);
+        assertEq(cards.exposureGuard(), next);
+    }
+
+    /// @dev The issuer cannot make an active sponsor look silent or restart its clock: the sponsor's keepalive works
+    ///      with nothing new to settle, and the settlement account posting again to the same sponsor leaves seenAt.
+    function test_handOffGuard_issuerCannotRestartOrStarveTheSponsorsClock() public {
+        (,,,, uint64 seen0) = treasury.collateral();
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(settlement);
+        treasury.post(sponsor, IEarnVault(address(0)), 1);
+        (,,,, uint64 seen1) = treasury.collateral();
+        assertEq(seen1, seen0);
+        vm.prank(sponsor);
+        treasury.checkpointSettlement();
+        (,,,, uint64 seen2) = treasury.collateral();
+        assertEq(seen2, uint64(block.timestamp));
+    }
+
+    function test_handOffGuard_silenceLeavesLiveCollateralWithTheSponsor() public {
+        _authorize(P1, 80e6);
+        vm.prank(sponsor);
+        treasury.seize(50e6);
+        // Collateral the settlement account pledges again keeps it with the sponsor, however long it is silent.
         IssuerTreasury other = new IssuerTreasury(cards);
         vm.prank(sponsor);
         treasury.handOffGuard(address(other));

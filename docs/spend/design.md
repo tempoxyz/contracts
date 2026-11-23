@@ -249,11 +249,16 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   (`handOffGuard`): the sponsor at any time, the issuer before a sponsor is named or once no collateral is
   live and nothing is seized or exposed. So that a sponsor that stops acting (gone, insolvent, keys lost) cannot
   hold the program and the issuer's committed funds forever, the issuer may also hand it on while the program is
-  still exposed once the sponsor has not acknowledged, checkpointed, seized or released through the treasury for
-  `SPONSOR_SILENCE` (180 days, past the dispute horizon and a pledge's `COVER_TERM`), no collateral is live and
-  nothing is seized; the next guard, or the issuer with none, then acknowledges the settlement. A sponsor keeps the
-  guard by acting at least that often (`checkpointSettlement` when it has nothing to settle), and its live
-  collateral or an outstanding seizure keeps it whatever the silence.
+  still exposed or something is seized, once the sponsor has not acknowledged, checkpointed, seized or released
+  through the treasury for `SPONSOR_SILENCE` (180 days, past the dispute horizon and a pledge's `COVER_TERM`) and
+  no collateral is live; the next guard, or the issuer with none, then acknowledges the settlement. What the silent
+  sponsor seized and never applied to an acknowledged settlement already paid it that much of the program's
+  exposure, so the hand-off counts it as applied (`seized` returns to zero, `SeizedApplied`) and the settlement
+  account may name another sponsor. Without this, a sponsor that seized any amount and then stopped acting would
+  hold the program and the issuer's committed funds for good. The cost falls on a sponsor that seized and then
+  stayed away for 180 days: it gives up applying that seizure against later settlements, and so any claim past it.
+  A sponsor keeps the guard, and every right over its seizures, by acting at least that often
+  (`checkpointSettlement` when it has nothing to settle), and its live collateral keeps it whatever the silence.
   A pledge counts toward that collateral only while it stands `COVER_TERM` more (the longest hold plus a week
   to seize what is still unsettled), and its slot is free again once it ends. Earn-vault shares count only for a
   sponsor that accepted that vault (`acceptCollateral`), and the sponsor and the asset change only while no

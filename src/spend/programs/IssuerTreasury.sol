@@ -76,8 +76,8 @@ contract IssuerTreasury is IExposureGuard {
     ///         for a move of that token before they capture, while the issuer set no figure for it (fxStressOf).
     uint256 public constant DEFAULT_FX_STRESS_BPS = 1000;
     /// @notice How long a named sponsor may go without acting here (acknowledging, checkpointing, seizing or
-    ///         releasing) before the issuer may hand the guard on while the program is still exposed, once no collateral
-    ///         is live and nothing is seized: past the dispute horizon (about 120 days) and a pledge's COVER_TERM.
+    ///         releasing) before the issuer may hand the guard on while the program is still exposed or something is
+    ///         seized, once no collateral is live: past the dispute horizon (about 120 days) and a pledge's COVER_TERM.
     uint256 public constant SPONSOR_SILENCE = 180 days;
 
     ICardAuth public immutable PROGRAM;
@@ -130,6 +130,9 @@ contract IssuerTreasury is IExposureGuard {
     event CollateralReleased(uint256 value, uint256 units);
     event CollateralSeized(address indexed to, uint256 value, uint256 units);
     event SettlementAcknowledged(uint64 throughSeq, uint256 applied);
+    /// @notice The issuer handed the guard on from a silent sponsor, which still counted `applied` as seized: it is
+    ///         taken as paid toward the program's settlement, so it no longer counts.
+    event SeizedApplied(uint256 applied);
 
     error AboveExposure(uint256 value, uint256 room);
     error BelowExposure(uint256 remaining, uint256 exposure);
@@ -475,8 +478,9 @@ contract IssuerTreasury is IExposureGuard {
 
     /// @notice Hands the program's exposure guard from this contract to next (zero for none). The sponsor may at any
     ///         time, as the party the exposure is owed to; the issuer before a sponsor is named, or once no collateral
-    ///         is live and nothing is seized, and either nothing is exposed or the sponsor has not acted here for
-    ///         SPONSOR_SILENCE. The next guard (or, with none, the issuer) then acknowledges the program's settlement.
+    ///         is live and either nothing is seized or exposed, or the sponsor has not acted here for SPONSOR_SILENCE.
+    ///         A silent sponsor's seizures are then applied (SeizedApplied). The next guard (or, with none, the issuer)
+    ///         then acknowledges the program's settlement.
     function handOffGuard(address next) external nonReentrant {
         Collateral storage c = collateral;
         address sponsor = c.sponsor;
@@ -486,7 +490,14 @@ contract IssuerTreasury is IExposureGuard {
                 // Silence is counted in days; validator skew does not change it.
                 // forge-lint: disable-next-line(block-timestamp)
                 bool silent = block.timestamp >= uint256(c.seenAt) + SPONSOR_SILENCE;
-                if (unitsOf() != 0 || seized != 0 || (!silent && stressedExposure() != 0)) revert GuardInUse();
+                uint256 taken = seized;
+                if (unitsOf() != 0 || (!silent && (taken != 0 || stressedExposure() != 0))) revert GuardInUse();
+                // What the silent sponsor seized already paid it that much of the program's exposure: count it as
+                // applied, so the next guard settles the rest and the settlement account may name another sponsor.
+                if (taken != 0) {
+                    seized = 0;
+                    emit SeizedApplied(taken);
+                }
             }
         }
         IGuardSetting(address(PROGRAM)).setExposureGuard(next);
