@@ -323,8 +323,10 @@ contract CashSource is ISource {
             delete _locks[legId];
             return;
         }
-        _locks[legId] = word & (RATE_MASK | uint256(type(uint16).max) << 112) | LATE << PLACE_SHIFT
-            | uint256(uint120(uint160(token))) << VALUE_SHIFT;
+        // The token's low 120 bits are only a tag a late charge compares, so the truncation is intended.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint256 tag = uint120(uint160(token));
+        _locks[legId] = word & (RATE_MASK | uint256(type(uint16).max) << 112) | LATE << PLACE_SHIFT | tag << VALUE_SHIFT;
     }
 
     /// @dev A converted leg pays back, for what its captures and charges paid in today's settlement token, the tokens
@@ -592,6 +594,8 @@ contract CashSource is ISource {
     /// @dev Whether lock `word` was locked in `token`: by the tag a lock kept late records, else by its place while
     ///      it counts open value. A live lock with nothing open records no token and is taken as the position's.
     function _lockedIn(uint256 word, address token) private view returns (bool) {
+        // The value field above VALUE_SHIFT holds 120 bits, and the tag is the token's low 120 bits by design.
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (word >> PLACE_SHIFT & 0xff == LATE) return uint120(word >> VALUE_SHIFT) == uint120(uint160(token));
         return word >> VALUE_SHIFT == 0 || _placed(word) == token;
     }
