@@ -9,9 +9,6 @@ fs_permissions = [
     { access = "read", path = "./test/spend/bridge/harness/fixtures" },
     { access = "read", path = "./test/spend/rain/fixtures" },
     { access = "read", path = "./test/spend/programs/differential/traces" },
-    # CardAuth and CardAuthAdmin build artifacts, for the code ranges test/spend/programs/PaymentCallShape.t.sol checks.
-    { access = "read", path = "./out/CardAuth.sol" },
-    { access = "read", path = "./out/CardAuthAdmin.sol" },
     { access = "read-write", path = "./.earn" },
     { access = "read-write", path = "./reports" },
     { access = "read-write", path = "./profiles" },

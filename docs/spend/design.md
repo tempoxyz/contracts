@@ -168,9 +168,7 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   the merchant a mandate recorded for the purchase at authorization, whatever the call names, so the
   revocation reaches a late booking only when a mandate limit counted the purchase. A late `charge` books
   the same way. A force post with `charge` under a new reference is the issuer's choice: it is admitted like
-  an authorization and refused by the limits, a revoked merchant and the exposure guard. Both share
-  `charge`'s static four-word calldata, so a payment-call registry lists `bookStandIn` with `charge`'s gas
-  cap.
+  an authorization and refused by the limits, a revoked merchant and the exposure guard.
 - **What an authorize key can book.** Nothing on chain ties a stand-in or late booking to the network's
   approval, so for an authorize key `bookStandIn` is a charge no card limit, mandate limit, card state or
   revoked grant bounds: the key's cumulative operator cap is the bound, and a key can take that much of an
