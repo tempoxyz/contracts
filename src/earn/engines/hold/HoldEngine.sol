@@ -187,8 +187,8 @@ contract HoldEngine is IEarnEngine, IEarnEngineExactWithdraw, IEarnEngineRedeem,
         /// @custom:ghost heldBefore = engineBefore
         uint256 receiverBefore = IERC20(asset).balanceOf(receiver);
         IERC20(asset).safeTransfer(receiver, amount);
-        /// @custom:ghost heldAfter = totalShares()
         if (totalShares() != engineBefore - amount) revert InexactTransfer();
+        /// @custom:ghost heldAfter = engineBefore - amount
         received = IERC20(asset).balanceOf(receiver) - receiverBefore;
     }
 }

@@ -414,7 +414,7 @@ contract EarnFees is IEarnFees {
     /// @custom:ensures !old(feesDisabled) ==> !feeBaselinesPending && _lastDisabledAt == uint40(block.timestamp)
     /// @custom:ensures !old(feesDisabled) ==> _specRemaindersWaived(_currentFeeConfigId)
     /// @custom:ensures old(feesDisabled) ==> feeBaselinesPending == old(feeBaselinesPending) && _lastDisabledAt == old(_lastDisabledAt)
-    /// @custom:ensures old(feesDisabled) ==> forall uint64 c, uint8 k :: _specRemainder(c, k) == old(_specRemainder(c, k))
+    /// @custom:ensures old(feesDisabled) ==> forall uint64 c :: _feeRemainders[c] == old(_feeRemainders[c])
     function disableFees(address operator) external onlyEarnVault {
         if (feesDisabled) return;
         feesDisabled = true;

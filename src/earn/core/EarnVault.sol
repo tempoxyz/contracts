@@ -42,8 +42,8 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 ///      implementation. The implementation is locked against direct initialization.
 /// @dev The `@custom:` specs are checked by solar-verify and state the rules of docs/earn/architecture/system.md
 ///      and flows.md. Spec arithmetic is over mathematical integers. The `fixed*` ghosts record what
-///      `initialize` set, so the invariants below say those fields never change afterwards; `currentEngine`,
-///      `currentOperator` and `currentDistributor` move only where the role handoff or migration writes them.
+///      `initialize` set, so the invariants below say those fields never change afterwards; `trackedEngine`,
+///      `trackedOperator` and `trackedDistributor` move only where the role handoff or migration writes them.
 ///      `openCount` mirrors every write that opens or closes a pending request (a nonzero `requester` marks it
 ///      open). `entered` mirrors the transient
 ///      `_entered` lock flag in ghost state, so invariants that hold only between locked calls can name it.
@@ -53,9 +53,9 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 /// @custom:ghost uint8 fixedEarnShareDecimals
 /// @custom:ghost uint40 fixedDistributorUpdateDelay
 /// @custom:ghost bool fixedOperatorMigration
-/// @custom:ghost address currentEngine
-/// @custom:ghost address currentOperator
-/// @custom:ghost address currentDistributor
+/// @custom:ghost address trackedEngine
+/// @custom:ghost address trackedOperator
+/// @custom:ghost address trackedDistributor
 /// @custom:ghost uint256 openCount
 /// @custom:ghost uint256 feeCheckpoints
 /// @custom:ghost uint256 baselineEntries
@@ -69,7 +69,7 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 /// @custom:invariant initialized ==> asset == fixedAsset && earnShare == fixedEarnShare && earnFees == fixedEarnFees
 /// @custom:invariant initialized ==> _earnShareDecimals == fixedEarnShareDecimals && distributorUpdateDelay == fixedDistributorUpdateDelay
 /// @custom:invariant initialized ==> (engineMigrationMode == EngineMigrationMode.OperatorEnabled) == fixedOperatorMigration
-/// @custom:invariant initialized ==> engine == currentEngine && operator == currentOperator && distributor == currentDistributor
+/// @custom:invariant initialized ==> engine == trackedEngine && operator == trackedOperator && distributor == trackedDistributor
 /// @custom:invariant initialized ==> _anchorEarnShares != 0
 /// @custom:invariant initialized ==> rewardRateBaseline != 0 && _earnShareScale() != 0
 /// @custom:invariant initialized ==> operator != address(0)
@@ -384,9 +384,9 @@ contract EarnVault is IEarnVault {
         /// @custom:ghost fixedEarnShareDecimals = _earnShareDecimals
         /// @custom:ghost fixedDistributorUpdateDelay = distributorUpdateDelay
         /// @custom:ghost fixedOperatorMigration = engineMigrationMode == EngineMigrationMode.OperatorEnabled
-        /// @custom:ghost currentEngine = engine
-        /// @custom:ghost currentOperator = operator
-        /// @custom:ghost currentDistributor = distributor
+        /// @custom:ghost trackedEngine = engine
+        /// @custom:ghost trackedOperator = operator
+        /// @custom:ghost trackedDistributor = distributor
         // The vault keeps one EarnShare unit for good and gives EarnFees one. {_activeSupply} counts both as burned,
         // so they never claim backing, and neither balance slot is ever emptied (EarnFees pays out only recorded
         // claims). The caller grants the issuer role first.
@@ -478,7 +478,7 @@ contract EarnVault is IEarnVault {
         if (msg.sender != pending) revert NotPendingOperator();
 
         address previous = operator;
-        /// @custom:ghost currentOperator = pending
+        /// @custom:ghost trackedOperator = pending
         operator = pending;
         delete pendingOperator;
         emit OperatorTransferred(previous, pending);
@@ -584,7 +584,7 @@ contract EarnVault is IEarnVault {
         if (msg.sender != pending) revert NotPendingDistributor();
 
         address previous = distributor;
-        /// @custom:ghost currentDistributor = pending
+        /// @custom:ghost trackedDistributor = pending
         distributor = pending;
         delete pendingDistributor;
         if (_pendingDistributorFeeUpdate.pending) {
@@ -1453,7 +1453,7 @@ contract EarnVault is IEarnVault {
 
         // The retired engine keeps no standing allowance over the vault's base asset.
         _safeApprove(asset, oldEngine, 0);
-        /// @custom:ghost currentEngine = newEngine
+        /// @custom:ghost trackedEngine = newEngine
         engine = newEngine;
         engineCapabilities = _engineCapabilities(newEngine);
 
