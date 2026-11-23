@@ -53,6 +53,7 @@ export const veda = defineEngine({
   engineContract: 'VedaEngine',
   engineSource: 'src/earn/engines/veda/VedaEngine.sol',
   venueLabel: 'BoringVault',
+  idleAssetResidue: true,
   periphery: vedaPeripheryContracts,
   exitSolver: 'VedaForwardingSolver',
   capabilities: {

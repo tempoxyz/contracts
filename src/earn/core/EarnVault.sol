@@ -71,7 +71,7 @@ import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC16
 /// @custom:invariant initialized ==> (engineMigrationMode == EngineMigrationMode.OperatorEnabled) == fixedOperatorMigration
 /// @custom:invariant initialized ==> engine == trackedEngine && operator == trackedOperator && distributor == trackedDistributor
 /// @custom:invariant initialized ==> _anchorEarnShares != 0
-/// @custom:invariant initialized ==> rewardRateBaseline != 0 && _earnShareScale() != 0
+/// @custom:invariant initialized ==> rewardRateBaseline() != 0 && _earnShareScale() != 0
 /// @custom:invariant initialized ==> operator != address(0)
 /// @custom:invariant (distributor == address(0)) == (distributorUpdateDelay == 0)
 /// @custom:invariant pendingDistributor != address(0) ==> distributor != address(0)
@@ -105,6 +105,8 @@ contract EarnVault is IEarnVault {
     /// @dev Stored EarnShare side of the empty-pool anchor, whose sides are {rewardRateBaseline} and the EarnShare
     ///      scale. A live anchor's EarnShare side is a supply below it ({_setAnchor}).
     uint256 internal constant EMPTY_ANCHOR = type(uint128).max;
+    /// @dev Marks a packed reward-rate baseline that holds no value of its own: the value is in its wide slot.
+    uint256 internal constant WIDE_RATE_BASELINE = type(uint96).max;
     uint8 internal constant CAP_REDEEM = 1;
     uint8 internal constant CAP_EXACT_WITHDRAW = 2;
     uint8 internal constant CAP_IN_KIND = 4;
@@ -142,6 +144,10 @@ contract EarnVault is IEarnVault {
     /// @dev Read through {maxManagedAssets}. Packed beside `earnShare`, which every checkpoint reads anyway.
     uint96 private _maxManagedAssets;
     address public override earnFees;
+    /// @dev Read through {rewardRateBaseline}. Packed beside `earnFees`, which every fee checkpoint reads anyway, so
+    ///      initialization writes no slot of its own for it. A value too wide for it stores {WIDE_RATE_BASELINE} here
+    ///      and itself in `_wideRewardRateBaseline`.
+    uint96 private _rewardRateBaseline;
     /// @notice Current operator seat. Mutable only through its own two-step transfer.
     address public override operator;
     address public override pendingOperator;
@@ -210,9 +216,8 @@ contract EarnVault is IEarnVault {
 
     /// @dev Reentrancy lock held for the duration of each locked call. Transient storage writes no slot.
     bool private transient _entered;
-    /// @notice Normalized engine-share units per whole EarnShare at initialization, the latest migration,
-    ///         or the latest transition back to an empty pool.
-    uint256 public override rewardRateBaseline;
+    /// @dev {rewardRateBaseline} while it is at least {WIDE_RATE_BASELINE}; read only then.
+    uint256 private _wideRewardRateBaseline;
 
     event Contributed(
         address indexed caller,
@@ -323,7 +328,7 @@ contract EarnVault is IEarnVault {
     /// @custom:ensures emergencyGuardian == controlInit_.emergencyGuardian && asyncJanitor == controlInit_.asyncJanitor
     /// @custom:ensures engineMigrationMode == controlInit_.migrationMode
     /// @custom:ensures _openRedeemRequestCount == 0 && pendingOperator == address(0) && pendingDistributor == address(0)
-    /// @custom:ensures rewardRateBaseline != 0 && _specEmptyAnchor() && _managedEngineShares == 0
+    /// @custom:ensures rewardRateBaseline() != 0 && _specEmptyAnchor() && _managedEngineShares == 0
     function initialize(
         address engine_,
         address earnShare_,
@@ -705,9 +710,11 @@ contract EarnVault is IEarnVault {
         // an empty pool is priced at the normalized empty-pool anchor rather than the previous cohort's rate.
         /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
         /// @custom:assert rateEarnShares == currentSupply || rateEarnShares == _earnShareScale()
-        /// @custom:assert currentSupply == 0 ==> rateEarnShares == _earnShareScale() && rateEngineShares == rewardRateBaseline
+        /// @custom:assert currentSupply == 0 ==> rateEarnShares == _earnShareScale() && rateEngineShares == rewardRateBaseline()
 
         (uint256 receivedEngineShares, uint256 rawSharesAfter) = _depositToEngine(assets, c.raw);
+        // Written once, with the anchor below.
+        uint256 managedAfter = _raisedManagedEngineShares(receivedEngineShares);
 
         earnShares = _toEarnShares(receivedEngineShares, rateEngineShares, rateEarnShares);
         if (earnShares == 0) revert InsufficientOutput();
@@ -719,8 +726,9 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         IEarnShare(earnShare).mint(receiver, earnShares);
         // The mint is the only supply change since the checkpoint, wherever it lands.
-        (uint256 supplyAfter, uint256 heldAfter) =
-            _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter, currentSupply + earnShares);
+        (uint256 supplyAfter, uint256 heldAfter) = _reanchorAfterEntryRaw(
+            rateEngineShares, rateEarnShares, rawSharesAfter, currentSupply + earnShares, managedAfter
+        );
         bool reopened = currentSupply == 0 || restarted;
         bool ratchet = c.floorScale != 0 && c.value != 0;
         uint256 heldValue = _entryValue(reopened || ratchet, heldAfter);
@@ -794,12 +802,15 @@ contract EarnVault is IEarnVault {
         // an empty pool is priced at the normalized empty-pool anchor rather than the previous cohort's rate.
         /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
         /// @custom:assert rateEarnShares == currentSupply || rateEarnShares == _earnShareScale()
-        /// @custom:assert currentSupply == 0 ==> rateEarnShares == _earnShareScale() && rateEngineShares == rewardRateBaseline
+        /// @custom:assert currentSupply == 0 ==> rateEarnShares == _earnShareScale() && rateEngineShares == rewardRateBaseline()
 
         _requireEngineCapability(CAP_IN_KIND, type(IEarnEngineInKindDeposit).interfaceId);
         // Nothing since the checkpoint moved engine shares, so its raw read is the count before the entry.
         uint256 reportedEngineShares = IEarnEngineInKindDeposit(engine).depositInKind(venueShares, msg.sender);
-        (uint256 receivedEngineShares, uint256 rawSharesAfter) = _recordEngineShareIncrease(c.raw, reportedEngineShares);
+        (uint256 receivedEngineShares, uint256 rawSharesAfter) =
+            _measureEngineShareIncrease(c.raw, reportedEngineShares);
+        // Written once, with the anchor below.
+        uint256 managedAfter = _raisedManagedEngineShares(receivedEngineShares);
 
         earnShares = _toEarnShares(receivedEngineShares, rateEngineShares, rateEarnShares);
         if (earnShares == 0) revert InsufficientOutput();
@@ -811,8 +822,9 @@ contract EarnVault is IEarnVault {
         /// @custom:assert earnShares == receivedEngineShares * rateEarnShares / rateEngineShares
         IEarnShare(earnShare).mint(receiver, earnShares);
         // As in a deposit, the mint is the only supply change since the checkpoint.
-        (uint256 supplyAfter, uint256 heldAfter) =
-            _reanchorAfterEntryRaw(rateEngineShares, rateEarnShares, rawSharesAfter, currentSupply + earnShares);
+        (uint256 supplyAfter, uint256 heldAfter) = _reanchorAfterEntryRaw(
+            rateEngineShares, rateEarnShares, rawSharesAfter, currentSupply + earnShares, managedAfter
+        );
         bool reopened = currentSupply == 0 || restarted;
         bool ratchet = c.floorScale != 0 && c.value != 0;
         uint256 heldValue = _entryValue(reopened || ratchet, heldAfter);
@@ -840,7 +852,7 @@ contract EarnVault is IEarnVault {
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) && engine == old(engine)
     /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 2
     /// @custom:ensures _managedEngineShares <= cappedManagedShares
-    /// @custom:ensures _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER
+    /// @custom:ensures _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER
     /// @dev The reward-rate limit holds after the final fee checkpoint, and the managed backing at return is
     ///      at most the count that passed the managed-assets limit.
     ///      Not proved: totalAssets() <= maxManagedAssets at return; the engine valuation is read again after
@@ -862,6 +874,7 @@ contract EarnVault is IEarnVault {
         /// @custom:assert feeCheckpoints == old(feeCheckpoints) + 1
         uint256 raw;
         (receivedEngineShares, raw) = _depositToEngine(assets, c.raw);
+        _increaseManagedEngineShares(receivedEngineShares);
         /// @custom:ghost cappedManagedShares = _managedEngineShares
         (uint256 value, bool valued) = _requireWithinManagedAssetsLimitAt(raw);
         // `raw` is the engine's share count just measured, so this is totalAssets().
@@ -885,7 +898,7 @@ contract EarnVault is IEarnVault {
     /// @custom:ensures _openRedeemRequestCount == old(_openRedeemRequestCount) && engine == old(engine)
     /// @custom:ensures feeCheckpoints == old(feeCheckpoints) + 2
     /// @custom:ensures _managedEngineShares <= cappedManagedShares
-    /// @custom:ensures _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER
+    /// @custom:ensures _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER
     function absorbEngineShareSurplus(uint256 engineShares_) external override nonReentrant {
         if (depositsPaused) revert DepositsPaused();
         if (engineShares_ == 0) revert ZeroAmount();
@@ -959,10 +972,11 @@ contract EarnVault is IEarnVault {
         assets = IEarnEngineRedeem(engine).redeem(engineSharesToRedeem, receiver, minAssets);
         if (assets == 0) revert InsufficientOutput();
         if (assets < minAssets) revert MinimumAssetsNotMet(minAssets, assets);
-        _decreaseManagedEngineShares(engineSharesToRedeem);
+        uint256 managedAfter = _loweredManagedEngineShares(engineSharesToRedeem);
 
         // The burn is the only supply change since the checkpoint, and the vault's own balance is back where it was.
-        _reanchorAtRestRaw(rawEngineShares(), supply - earnShares);
+        // The lowered managed count is written once, with the anchor.
+        _reanchorManaged(rawEngineShares(), supply - earnShares, managedAfter);
         emit Redeemed(msg.sender, receiver, earnShares, assets);
     }
 
@@ -1060,7 +1074,8 @@ contract EarnVault is IEarnVault {
 
         uint256 engineSharesBurned = IEarnEngineExactWithdraw(engine).withdraw(assets, receiver);
         if (engineSharesBurned == 0) revert InsufficientOutput();
-        _decreaseManagedEngineShares(engineSharesBurned);
+        // Written once, with the anchor below.
+        uint256 managedAfter = _loweredManagedEngineShares(engineSharesBurned);
         earnSharesBurned = _toEarnSharesUp(engineSharesBurned, rateEngineShares, rateEarnShares);
         if (earnSharesBurned == 0) revert InsufficientOutput();
         if (earnSharesBurned > (callback ? requiredEarnShares : maxEarnShares)) revert ExceedsMaxEarnShares();
@@ -1068,8 +1083,7 @@ contract EarnVault is IEarnVault {
         // Only EarnShare moves from here on, so this raw read also serves the re-anchor.
         uint256 rawAfter = rawEngineShares();
         if (earnSharesBurned == supply) {
-            uint256 managed = _managedEngineShares;
-            if ((rawAfter < managed ? rawAfter : managed) != 0) revert ResidualBacking();
+            if ((rawAfter < managedAfter ? rawAfter : managedAfter) != 0) revert ResidualBacking();
         }
 
         if (!callback) {
@@ -1084,7 +1098,7 @@ contract EarnVault is IEarnVault {
         IEarnShare(earnShare).burn(earnSharesBurned);
 
         // As in a redemption, the burn is the only supply change since the checkpoint.
-        _reanchorAtRestRaw(rawAfter, supply - earnSharesBurned);
+        _reanchorManaged(rawAfter, supply - earnSharesBurned, managedAfter);
         emit WithdrewExact(msg.sender, receiver, assets, earnSharesBurned);
     }
 
@@ -1161,7 +1175,8 @@ contract EarnVault is IEarnVault {
         IEarnShare(earnShare).burn(earnShares);
 
         requestId = IEarnEngineAsyncRedeem(engine_).requestRedeem(engineSharesToRedeem, engineData);
-        _decreaseManagedEngineShares(engineSharesToRedeem);
+        // Written once, with the anchor below.
+        uint256 managedAfter = _loweredManagedEngineShares(engineSharesToRedeem);
 
         // The checkpoint valued the pool exactly when fees are on and the valuation is fresh for a live supply,
         // which the burn just proved; EarnFees snapshots the request only then.
@@ -1176,7 +1191,7 @@ contract EarnVault is IEarnVault {
 
         _openRedeemRequestCount += 1;
         // As in a redemption, the burn is the only supply change since the checkpoint.
-        _reanchorAtRestRaw(rawEngineShares(), supply - earnShares);
+        _reanchorManaged(rawEngineShares(), supply - earnShares, managedAfter);
         emit RedeemRequested(requestId, msg.sender, receiver, earnShares);
     }
 
@@ -1311,7 +1326,7 @@ contract EarnVault is IEarnVault {
             _reanchorAtRestRaw(heldAfter, totalReentryEarnShares);
         } else {
             (uint256 pooledSupply, uint256 pooledBacking) = _reanchorAfterEntryRaw(
-                rateEngineShares, rateEarnShares, heldAfter, activeSupply + totalReentryEarnShares
+                rateEngineShares, rateEarnShares, heldAfter, activeSupply + totalReentryEarnShares, _managedEngineShares
             );
             // The active pool was just checkpointed and the queued growth was just charged, so the mark may
             // only rise to the pooled value. Otherwise a small active pool, such as a seed unit whose value
@@ -1466,7 +1481,7 @@ contract EarnVault is IEarnVault {
             _setAnchor(heldNow, supply);
             // A migration changes raw engine-share denomination. Start a fresh fixed-100x contribution
             // window from the replacement engine's actual post-migration normalized rate.
-            rewardRateBaseline = _normalizedRate(heldNow, supply);
+            _setRewardRateBaseline(_normalizedRate(heldNow, supply));
         }
 
         (uint256 anchorEngine, uint256 anchorEarn) = _anchor();
@@ -1623,7 +1638,7 @@ contract EarnVault is IEarnVault {
     /// @custom:ensures engineShares_ == _specAnchorEngine() && earnShares == _specAnchorEarn()
     function _anchor() internal view returns (uint256 engineShares_, uint256 earnShares) {
         earnShares = _anchorEarnShares;
-        if (earnShares == EMPTY_ANCHOR) return (rewardRateBaseline, _earnShareScale());
+        if (earnShares == EMPTY_ANCHOR) return (rewardRateBaseline(), _earnShareScale());
         engineShares_ = _managedEngineShares;
     }
 
@@ -1765,7 +1780,7 @@ contract EarnVault is IEarnVault {
     /// @dev Moves the worthless managed engine shares to surplus and prices the next entry at the
     ///      empty-pool rate.
     /// @custom:ensures strandedEngineShares == old(_managedEngineShares)
-    /// @custom:ensures _managedEngineShares == 0 && _specEmptyAnchor() && rewardRateBaseline != 0
+    /// @custom:ensures _managedEngineShares == 0 && _specEmptyAnchor() && rewardRateBaseline() != 0
     function _restartEmptyAnchor() internal returns (uint256 strandedEngineShares) {
         strandedEngineShares = _managedEngineShares;
         _resetEmptyAnchor(engine, 0);
@@ -1837,11 +1852,13 @@ contract EarnVault is IEarnVault {
     ///      only that count becomes managed backing. Any unrepresented entry remainder stays raw
     ///      surplus and may be absorbed later through the explicit capped reward path. Takes the engine's raw
     ///      share count and the active supply the caller just read.
-    function _reanchorAfterEntryRaw(uint256 rateEngineShares, uint256 rateEarnShares, uint256 raw, uint256 supply_)
-        internal
-        returns (uint256 supply, uint256 held)
-    {
-        uint256 managed = _managedEngineShares;
+    function _reanchorAfterEntryRaw(
+        uint256 rateEngineShares,
+        uint256 rateEarnShares,
+        uint256 raw,
+        uint256 supply_,
+        uint256 managed
+    ) internal returns (uint256 supply, uint256 held) {
         uint256 represented = Math.mulDiv(supply_, rateEngineShares, rateEarnShares);
         if (managed > represented) managed = represented;
         return _reanchorManaged(raw, supply_, managed);
@@ -1850,11 +1867,11 @@ contract EarnVault is IEarnVault {
     /// @dev Restates the managed count, from `managed` capped at raw custody, and the anchor in their one slot.
     ///      An anchor that is already the empty-pool one keeps its sides: the engine and its share scale have not
     ///      changed since the reset, as only {migrateEngine} changes the engine and it re-anchors.
-    /// @custom:requires managed <= _managedEngineShares
+    /// @custom:requires managed <= type(uint128).max
     /// @custom:ensures held == _managedEngineShares && held <= managed && held <= raw
     /// @custom:ensures (supply != 0 && held != 0) ==> _anchorEarnShares == supply
     /// @custom:ensures (supply == 0 || held == 0) ==> _specEmptyAnchor()
-    /// @custom:ensures (old(rewardRateBaseline) != 0 ==> rewardRateBaseline != 0) && _earnShareDecimals == old(_earnShareDecimals)
+    /// @custom:ensures (old(rewardRateBaseline()) != 0 ==> rewardRateBaseline() != 0) && _earnShareDecimals == old(_earnShareDecimals)
     function _reanchorManaged(uint256 raw, uint256 supply_, uint256 managed)
         internal
         returns (uint256 supply, uint256 held)
@@ -1882,13 +1899,13 @@ contract EarnVault is IEarnVault {
     /// @dev Empty pools use whole-share units instead of a raw-unit 1:1 rate. This keeps the first
     ///      EarnShare mint normalized even when the engine and EarnShare use different decimals. Sets the managed
     ///      count beside it.
-    /// @custom:ensures _specEmptyAnchor() && rewardRateBaseline != 0 && _managedEngineShares == managed
+    /// @custom:ensures _specEmptyAnchor() && rewardRateBaseline() != 0 && _managedEngineShares == managed
     function _resetEmptyAnchor(address engine_, uint256 managed) internal {
         uint256 engineShareScale = IEarnEngine(engine_).shareScale();
         if (engineShareScale == 0) revert InvalidEngineShareScale();
         _setManagedEngineShares(managed);
         _anchorEarnShares = uint128(EMPTY_ANCHOR);
-        rewardRateBaseline = engineShareScale;
+        _setRewardRateBaseline(engineShareScale);
     }
 
     /// @dev Writes a live anchor: the managed count and the supply it backs. A count past uint128, or a supply
@@ -1902,6 +1919,24 @@ contract EarnVault is IEarnVault {
         _managedEngineShares = uint128(engineShares_);
         // forge-lint: disable-next-line(unsafe-typecast)
         _anchorEarnShares = uint128(earnShares_);
+    }
+
+    /// @notice Normalized engine-share units per whole EarnShare at initialization, the latest migration,
+    ///         or the latest transition back to an empty pool.
+    function rewardRateBaseline() public view override returns (uint256) {
+        uint256 baseline = _rewardRateBaseline;
+        return baseline == WIDE_RATE_BASELINE ? _wideRewardRateBaseline : baseline;
+    }
+
+    /// @dev Writes the baseline beside `earnFees`, sending a value too wide for it to its wide slot.
+    function _setRewardRateBaseline(uint256 baseline) internal {
+        if (baseline >= WIDE_RATE_BASELINE) {
+            _wideRewardRateBaseline = baseline;
+            baseline = WIDE_RATE_BASELINE;
+        }
+        // Below the packed width here, so the narrowing conversion cannot truncate.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _rewardRateBaseline = uint96(baseline);
     }
 
     /// @custom:ensures _managedEngineShares == engineShares_
@@ -1918,11 +1953,11 @@ contract EarnVault is IEarnVault {
         _setManagedEngineShares(uint256(_managedEngineShares) + engineShares_);
     }
 
-    /// @notice Measured custody, not the engine's report, is what becomes managed backing; both must agree.
+    /// @notice Measured custody, not the engine's report, is what becomes managed backing; both must agree. The caller
+    ///         records it.
     /// @custom:ensures receivedEngineShares != 0 && receivedEngineShares == reportedEngineShares
     /// @custom:ensures receivedEngineShares == rawSharesAfter - rawSharesBefore
-    /// @custom:ensures _managedEngineShares == old(_managedEngineShares) + receivedEngineShares
-    function _recordEngineShareIncrease(uint256 rawSharesBefore, uint256 reportedEngineShares)
+    function _measureEngineShareIncrease(uint256 rawSharesBefore, uint256 reportedEngineShares)
         internal
         returns (uint256 receivedEngineShares, uint256 rawSharesAfter)
     {
@@ -1930,17 +1965,19 @@ contract EarnVault is IEarnVault {
         if (rawSharesAfter <= rawSharesBefore) revert InsufficientOutput();
         receivedEngineShares = rawSharesAfter - rawSharesBefore;
         if (reportedEngineShares != receivedEngineShares) revert InsufficientOutput();
-        _increaseManagedEngineShares(receivedEngineShares);
     }
 
-    /// @custom:ensures _managedEngineShares == old(_managedEngineShares) - engineShares_
-    /// @custom:succeeds-if engineShares_ <= _managedEngineShares
-    function _decreaseManagedEngineShares(uint256 engineShares_) internal {
+    /// @dev The managed count raised by `engineShares_`, unwritten; past uint128 it reverts as a write would.
+    function _raisedManagedEngineShares(uint256 engineShares_) internal view returns (uint256 managed) {
+        managed = uint256(_managedEngineShares) + engineShares_;
+        if (managed > type(uint128).max) revert ExceedsMaxEarnShares();
+    }
+
+    /// @dev The managed count lowered by `engineShares_`, unwritten; more than it holds reverts.
+    function _loweredManagedEngineShares(uint256 engineShares_) internal view returns (uint256) {
         uint256 managed = _managedEngineShares;
         if (engineShares_ > managed) revert InsufficientOutput();
-        // At most the stored count, so the narrowing conversion cannot truncate.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        _managedEngineShares = uint128(managed - engineShares_);
+        return managed - engineShares_;
     }
 
     /// @custom:ensures result == _specNormalizedRate(engineShareAnchor, supplyAnchor)
@@ -1952,11 +1989,11 @@ contract EarnVault is IEarnVault {
     }
 
     /// @notice Contributions may raise the normalized rate to at most MAX_REWARD_RATE_MULTIPLIER times the baseline.
-    /// @custom:requires rewardRateBaseline != 0 && _specAnchorEarn() != 0
-    /// @custom:ensures _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER
-    /// @custom:succeeds-if _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER && rewardRateBaseline * MAX_REWARD_RATE_MULTIPLIER <= type(uint256).max
+    /// @custom:requires rewardRateBaseline() != 0 && _specAnchorEarn() != 0
+    /// @custom:ensures _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER
+    /// @custom:succeeds-if _specNormalizedRate(_specAnchorEngine(), _specAnchorEarn()) <= rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER && rewardRateBaseline() * MAX_REWARD_RATE_MULTIPLIER <= type(uint256).max
     function _requireRewardRateWithinLimit() internal view {
-        uint256 baseline = rewardRateBaseline;
+        uint256 baseline = rewardRateBaseline();
         (uint256 anchorEngine, uint256 anchorEarn) = _anchor();
         uint256 current = _normalizedRate(anchorEngine, anchorEarn);
         if (!_isRewardRateWithinLimit(current, baseline)) revert RewardRateLimitExceeded(current, baseline);
@@ -2111,7 +2148,7 @@ contract EarnVault is IEarnVault {
         IEarnFees(earnFees).initializeBaselines(supply, value);
     }
 
-    /// @dev Moves `assets` from the caller into the engine and records the measured engine-share increase.
+    /// @dev Moves `assets` from the caller into the engine and measures the engine-share increase; the caller records it.
     ///      An engine with {IEarnEngineHeldDeposit} receives the assets straight from the caller.
     function _depositToEngine(uint256 assets, uint256 rawSharesBefore)
         internal
@@ -2135,7 +2172,6 @@ contract EarnVault is IEarnVault {
         if (rawSharesAfter <= rawSharesBefore) revert InsufficientOutput();
         receivedEngineShares = rawSharesAfter - rawSharesBefore;
         if (reportedEngineShares != receivedEngineShares) revert InsufficientOutput();
-        _increaseManagedEngineShares(receivedEngineShares);
     }
 
     /// @dev Takes `earnShares` of EarnShare from the caller, through its callback when asked for one.
@@ -2294,7 +2330,7 @@ contract EarnVault is IEarnVault {
 
     /// @custom:spec The anchor's engine-share side: the managed count, or the reward baseline for the empty anchor.
     function _specAnchorEngine() internal view returns (uint256) {
-        return _anchorEarnShares == EMPTY_ANCHOR ? rewardRateBaseline : _managedEngineShares;
+        return _anchorEarnShares == EMPTY_ANCHOR ? rewardRateBaseline() : _managedEngineShares;
     }
 
     /// @custom:spec The anchor's EarnShare side: the stored supply, or the EarnShare scale for the empty anchor.

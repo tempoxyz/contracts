@@ -324,9 +324,10 @@ contract EarnFees is IEarnFees {
         onlyEarnVault
         returns (uint256 feeAssets, uint256 feeEarnShares, uint256 baselineFloor, uint256 scale)
     {
-        FeePreview memory result;
-        (result, baselineFloor, scale) = _accrueFees(activeSupply, activeAssets, valuationFresh);
-        return (result.totalFeeAssets, result.totalFeeEarnShares, baselineFloor, scale);
+        // Destructured into a fresh declaration, so no unused FeePreview is allocated before the call.
+        (FeePreview memory result, uint256 floor_, uint256 scale_) =
+            _accrueFees(activeSupply, activeAssets, valuationFresh);
+        return (result.totalFeeAssets, result.totalFeeEarnShares, floor_, scale_);
     }
 
     /// @notice Installs a valid configuration under the next id and re-enables fees (fees.md, "Configuration and authority").
@@ -659,8 +660,8 @@ contract EarnFees is IEarnFees {
             return (result, baselineFloor, scale);
         }
 
-        uint256[5] memory nextRemainders;
-        (result, nextRemainders) = EarnFeeMath.preview(
+        // Declared by destructuring, so no unused remainder array is allocated before the call.
+        (FeePreview memory previewed, uint256[5] memory nextRemainders) = EarnFeeMath.preview(
             EarnFeeMath.Input({
                 activeAssets: activeAssets,
                 earnShareSupply: earnShareSupply,
@@ -673,6 +674,7 @@ contract EarnFees is IEarnFees {
             _loadFeeConfig(storedConfig),
             _remainders(_currentFeeConfigId, storedConfig)
         );
+        result = previewed;
         /// @custom:use _specLemmaAccrualWithinGrowth(activeAssets, earnShareSupply, _earnShareScale(), highWaterMark())
         /// @custom:use _specLemmaFeeEarnShares(result.totalFeeAssets, activeAssets, earnShareSupply)
         /// @custom:use _specLemmaCeilCovers(activeAssets * _earnShareScale(), earnShareSupply + result.totalFeeEarnShares)

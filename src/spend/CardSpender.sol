@@ -122,7 +122,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         address payee = _check(s, msg.sender, false, false);
         uint256 destinationBefore = IERC20Like(s.token).balanceOf(payee);
         uint256 sharesUsed = PAYOUT_TARGET == address(0) ? _payDirect(s, payee) : _payThroughPublic(s);
-        if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
+        if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) _revertNotCredited(s);
         emit CardSpent(s.ref, msg.sender, s.destination, s.token, s.amount, s.fromVault, sharesUsed, false);
     }
 
@@ -184,7 +184,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         /// @custom:assert 0 < consumed && consumed <= maxInput && consumed + unused == maxInput
         /// @custom:assert PAYOUT_TARGET != address(0) && s.fromVault == 0 ==> consumed == s.amount
         /// @custom:assert PAYOUT_TARGET != address(0) && s.fromVault != 0 ==> consumed <= expected
-        if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) revert DestinationNotCredited();
+        if (IERC20Like(s.token).balanceOf(payee) != destinationBefore + s.amount) _revertNotCredited(s);
         // With nothing unused the balance read above already equals the baseline, and nothing has moved since.
         // Otherwise the transfer leaves exactly the baseline: `token` is what the router's Zone Portal
         // withdrew, and a Portal enables only TIP-20s, which debit the sender exactly.
@@ -275,10 +275,9 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         if (!PROVIDER.isAuthorizedDestination(payer, s.destination, s.token, s.destinationHint, isPrivate)) {
             revert DestinationNotAuthorized(s.destination);
         }
-        if (s.fromVault != 0) {
-            if (!PROVIDER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
-            if (ITempoEarnVault(s.vault).asset() != s.token) revert IncorrectAssetForVault();
-        }
+        // A vault whose asset is not `s.token` cannot credit the destination, so the credit check refuses it,
+        // naming it then (_revertNotCredited) instead of reading the vault's asset on every spend.
+        if (s.fromVault != 0 && !PROVIDER.isAllowedVault(s.vault)) revert VaultNotAllowed(s.vault);
     }
 
     /// @dev A direct public spend: stablecoin straight from the payer, shares pulled, redeemed for the
@@ -327,7 +326,7 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         // Measured: what the callback took from the payer, less what came back, whatever the vault reports.
         sharesUsed = _callbackTaken - returned;
         if (receiver != s.destination) {
-            if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) revert DestinationNotCredited();
+            if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) _revertNotCredited(s);
             SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);
         }
     }
@@ -397,9 +396,16 @@ contract CardSpender is ISpender, IEarnWithdrawCallback {
         if (payee == s.destination) return v.withdrawExact(s.fromVault, s.destination, cap);
         uint256 before = IERC20Like(s.token).balanceOf(address(this));
         burned = v.withdrawExact(s.fromVault, address(this), cap);
-        if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) revert DestinationNotCredited();
+        if (IERC20Like(s.token).balanceOf(address(this)) != before + s.fromVault) _revertNotCredited(s);
         SafeTransferLib.safeTransfer(s.token, s.destination, s.fromVault);
         // forge-lint: disable-end(reentrancy-no-eth)
+    }
+
+    /// @dev Refuses a spend whose destination was not credited exactly, naming a vault whose asset is not the
+    ///      spend's token (the check _check leaves to this failure path).
+    function _revertNotCredited(CardSpend calldata s) private view {
+        if (s.fromVault != 0 && ITempoEarnVault(s.vault).asset() != s.token) revert IncorrectAssetForVault();
+        revert DestinationNotCredited();
     }
 
     /// @dev A public spend through the provider's payout target: pulls the stablecoin part and the share quote

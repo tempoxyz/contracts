@@ -180,9 +180,12 @@ After a new stack is bound, send it a one-time residue that keeps those slots no
 - 1 base unit of the quote asset to a `propamm` engine: its idle cash otherwise goes from zero to the
   trade amount and back on every call. The engine's balance checks are before/after deltas, so the
   unit stays idle cash it never trades or pays out
-- nothing to a Veda engine, whose settlement checks read its whole base-asset balance
+- 1 base unit to a `veda` engine: held deposits and solved payouts otherwise take its base-asset balance
+  from zero and back on every call. Its settlement checks bound credits by its whole base-asset balance,
+  so the unit is inert balance of the kind the forwarder trust note already accepts: it pays no claim
+  unless the owner credits it, and the owner may sweep it once no claim is unresolved
 
-The `seed-engine` activation step sends the engine's unit for `erc4626` and `propamm` stacks: the
+The `seed-engine` activation step sends the engine's unit for `erc4626`, `propamm` and `veda` stacks: the
 profile's deployer transfers 1 base unit of the stack asset to the bound engine when the engine holds
 none. It is best effort. A run without the deployer key, a deployer holding none of the asset, or a
 token policy that refuses the transfer records the step without sending, and nothing waits on it.

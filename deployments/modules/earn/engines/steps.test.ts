@@ -184,7 +184,7 @@ describe('seedEngine', () => {
           { deployer, factories: { earn: address('3'), erc4626Engine: address('5') } },
         ),
       ),
-    ).toBe(false)
+    ).toBe(true)
     expect(await step.satisfied({} as never, propammProfile, seeded)).toBe(true)
   })
 
