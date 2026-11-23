@@ -8,7 +8,8 @@ import { IssuerTreasury } from "../../../src/spend/programs/IssuerTreasury.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 
 /// @notice The issuer treasury, as the program's exposure guard, hands the guard on: the sponsor at any time, the
-///         issuer only once the sponsor is owed nothing and holds no live collateral.
+///         issuer only once the sponsor holds no live collateral or seizure and is owed nothing or has not acted for
+///         SPONSOR_SILENCE.
 contract IssuerTreasuryGuardHandOffTest is AuthEnv {
     IssuerTreasury internal treasury;
     address internal sponsor = makeAddr("sponsor");
@@ -129,6 +130,85 @@ contract IssuerTreasuryGuardHandOffTest is AuthEnv {
         vm.prank(settlement);
         vm.expectRevert(IssuerTreasury.NotSponsor.selector);
         treasury.handOffGuard(address(0));
+    }
+
+    // A sponsor that stops acting.
+
+    /// @dev A sponsor silent for SPONSOR_SILENCE, with no collateral live and nothing seized, no longer holds the
+    ///      program: the issuer hands the guard off, acknowledges the settlement itself and frees its own funds.
+    function test_handOffGuard_issuerHandsOffOnceTheSponsorFellSilent() public {
+        _authorize(P1, 60e6);
+        _capture(P1, 60e6, true);
+        vm.prank(settlement);
+        usd.transfer(makeAddr("network"), 60e6);
+        usd.mint(issuer, 100e6);
+        vm.startPrank(issuer);
+        usd.approve(address(treasury), 100e6);
+        treasury.fundIssuerDebt(address(usd), 100e6);
+        vm.stopPrank();
+        assertEq(treasury.committedIssuerFunds(address(usd)), 60e6);
+        (,,,, uint64 seenAt) = treasury.collateral();
+        uint256 silentFrom = seenAt + treasury.SPONSOR_SILENCE();
+        vm.warp(silentFrom - 1);
+        assertEq(treasury.unitsOf(), 0);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.GuardInUse.selector);
+        treasury.handOffGuard(address(0));
+        vm.warp(silentFrom);
+        vm.prank(issuer);
+        treasury.handOffGuard(address(0));
+        assertEq(cards.exposureGuard(), address(0));
+        (uint64 seq,,,) = cards.ledger();
+        vm.prank(issuer);
+        cards.acknowledgeSettlement(seq);
+        assertEq(treasury.exposure(), 0);
+        assertEq(treasury.committedIssuerFunds(address(usd)), 0);
+        vm.prank(issuer);
+        treasury.withdrawIssuerFunds(address(usd), 100e6);
+        _authorize(bytes32("guard-2"), 1e6);
+    }
+
+    function test_handOffGuard_aSponsorThatActsKeepsTheGuard() public {
+        _authorize(P1, 60e6);
+        _capture(P1, 60e6, true);
+        uint256 start = vm.getBlockTimestamp();
+        vm.warp(start + 170 days);
+        vm.prank(sponsor);
+        treasury.checkpointSettlement();
+        vm.warp(start + treasury.SPONSOR_SILENCE() + 1 days);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.GuardInUse.selector);
+        treasury.handOffGuard(address(0));
+        vm.warp(start + 170 days + treasury.SPONSOR_SILENCE());
+        vm.prank(issuer);
+        treasury.handOffGuard(address(0));
+        assertEq(cards.exposureGuard(), address(0));
+    }
+
+    function test_handOffGuard_silenceLeavesLiveCollateralAndSeizuresWithTheSponsor() public {
+        _authorize(P1, 80e6);
+        vm.prank(sponsor);
+        treasury.seize(50e6);
+        vm.warp(block.timestamp + treasury.SPONSOR_SILENCE());
+        assertEq(treasury.unitsOf(), 0);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.GuardInUse.selector);
+        treasury.handOffGuard(address(0));
+        // Collateral the settlement account pledges again keeps it with the sponsor too.
+        IssuerTreasury other = new IssuerTreasury(cards);
+        vm.prank(sponsor);
+        treasury.handOffGuard(address(other));
+        usd.mint(settlement, 100e6);
+        bytes32 id = other.pledgeId(1);
+        vm.startPrank(settlement);
+        core.pledge(address(other), address(usd), id, 100e6, uint64(block.timestamp + 365 days));
+        other.post(sponsor, IEarnVault(address(0)), 1);
+        vm.stopPrank();
+        vm.warp(block.timestamp + other.SPONSOR_SILENCE());
+        assertGt(other.unitsOf(), 0);
+        vm.prank(issuer);
+        vm.expectRevert(IssuerTreasury.GuardInUse.selector);
+        other.handOffGuard(address(0));
     }
 
     /// @dev Ends the collateral pledge: the sponsor had COVER_TERM to seize before it.

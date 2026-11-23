@@ -605,7 +605,7 @@ contract IssuerTreasuryTest is CompEnv {
         vm.prank(sponsor);
         treasury.release(25e6);
         assertEq(treasury.valueOf(), max * 10e6 - 25e6);
-        (,,, uint16 slots) = treasury.collateral();
+        (,,, uint16 slots,) = treasury.collateral();
         assertEq(slots, type(uint16).max >> 2);
         vm.startPrank(settlement);
         core.pledge(address(treasury), address(usd), treasury.pledgeId(max), 30e6, uint64(block.timestamp + 365 days));
@@ -662,7 +662,7 @@ contract IssuerTreasuryTest is CompEnv {
         core.pledge(address(treasury), address(usd), treasury.pledgeId(2), 100e6, uint64(block.timestamp + 365 days));
         treasury.post(bob, IEarnVault(address(0)), 2);
         vm.stopPrank();
-        (address now_,,,) = treasury.collateral();
+        (address now_,,,,) = treasury.collateral();
         assertEq(now_, bob);
     }
 

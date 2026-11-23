@@ -243,7 +243,13 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   guard and the sponsor's seize count; decreases and releases go through too. Once a guard is set only the guard replaces or clears it, at once,
   so the issuer never takes back acknowledging what the sponsor is owed. The treasury hands the guard on
   (`handOffGuard`): the sponsor at any time, the issuer before a sponsor is named or once no collateral is
-  live and nothing is seized or exposed.
+  live and nothing is seized or exposed. So that a sponsor that stops acting (gone, insolvent, keys lost) cannot
+  hold the program and the issuer's committed funds forever, the issuer may also hand it on while the program is
+  still exposed once the sponsor has not acknowledged, checkpointed, seized or released through the treasury for
+  `SPONSOR_SILENCE` (180 days, past the dispute horizon and a pledge's `COVER_TERM`), no collateral is live and
+  nothing is seized; the next guard, or the issuer with none, then acknowledges the settlement. A sponsor keeps the
+  guard by acting at least that often (`checkpointSettlement` when it has nothing to settle), and its live
+  collateral or an outstanding seizure keeps it whatever the silence.
   A pledge counts toward that collateral only while it stands `COVER_TERM` more (the longest hold plus a week
   to seize what is still unsettled), and its slot is free again once it ends. Earn-vault shares count only for a
   sponsor that accepted that vault (`acceptCollateral`), and the sponsor and the asset change only while no

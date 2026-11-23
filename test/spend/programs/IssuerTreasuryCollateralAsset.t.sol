@@ -118,7 +118,7 @@ contract IssuerTreasuryCollateralAssetTest is AuthEnv {
         assertEq(address(treasury.acceptedVault(sponsor)), address(vault));
         vm.prank(settlement);
         treasury.post(sponsor, IEarnVault(address(vault)), 2);
-        (, address token, IEarnVault posted,) = treasury.collateral();
+        (, address token, IEarnVault posted,,) = treasury.collateral();
         assertEq(token, vault.earnShare());
         assertEq(address(posted), address(vault));
     }

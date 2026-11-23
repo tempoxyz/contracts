@@ -75,6 +75,10 @@ contract IssuerTreasury is IExposureGuard {
     /// @notice The share of a converted token's open holds (their settlement value) the collateral must also cover,
     ///         for a move of that token before they capture, while the issuer set no figure for it (fxStressOf).
     uint256 public constant DEFAULT_FX_STRESS_BPS = 1000;
+    /// @notice How long a named sponsor may go without acting here (acknowledging, checkpointing, seizing or
+    ///         releasing) before the issuer may hand the guard on while the program is still exposed, once no collateral
+    ///         is live and nothing is seized: past the dispute horizon (about 120 days) and a pledge's COVER_TERM.
+    uint256 public constant SPONSOR_SILENCE = 180 days;
 
     ICardAuth public immutable PROGRAM;
 
@@ -89,12 +93,14 @@ contract IssuerTreasury is IExposureGuard {
     mapping(address token => uint256) internal _fxStress;
 
     /// @notice The sponsor collateral: who receives what is seized, the pledged token, its Earn vault (zero for
-    ///         plain tokens), and which of the MAX_PLEDGES pledge slots hold posted pledges (bit n-1 for pledgeId(n)).
+    ///         plain tokens), which of the MAX_PLEDGES pledge slots hold posted pledges (bit n-1 for pledgeId(n)), and
+    ///         when the sponsor last acted here or was named, which SPONSOR_SILENCE counts from.
     struct Collateral {
         address sponsor;
         address token;
         IEarnVault vault;
         uint16 slots;
+        uint64 seenAt;
     }
 
     Collateral public collateral;
@@ -393,6 +399,9 @@ contract IssuerTreasury is IExposureGuard {
                 if (token != c.token || vault != c.vault) revert WrongAsset();
             }
             if (address(vault) != address(0)) _toAssets(vault.asset(), 0);
+            // A newly named sponsor's silence counts from now.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            if (sponsor != c.sponsor) c.seenAt = uint64(block.timestamp);
             (c.sponsor, c.token, c.vault, c.slots) = (sponsor, token, vault, 0);
         } else {
             if (c.token != token || address(c.vault) != address(vault)) revert WrongAsset();
@@ -411,6 +420,7 @@ contract IssuerTreasury is IExposureGuard {
     ///         covers it.
     function release(uint256 value) external nonReentrant {
         Collateral storage c = _sponsored();
+        _seen(c);
         uint256 current = valueOf();
         uint256 remaining = current > value ? current - value : 0;
         uint256 due = stressedExposure();
@@ -424,6 +434,7 @@ contract IssuerTreasury is IExposureGuard {
     ///         exposure less what it seized before and has not applied to an acknowledged settlement.
     function seize(uint256 value) external nonReentrant {
         Collateral storage c = _sponsored();
+        _seen(c);
         uint256 due = exposure();
         uint256 taken = seized;
         if (taken + value > due) revert AboveExposure(value, due > taken ? due - taken : 0);
@@ -451,6 +462,7 @@ contract IssuerTreasury is IExposureGuard {
     function acknowledgeSettlement(uint64 throughSeq, uint256 applied) external nonReentrant {
         Collateral storage c = collateral;
         if (msg.sender != (c.sponsor == address(0) ? PROGRAM.ISSUER() : c.sponsor)) revert NotSponsor();
+        _seen(c);
         (, uint256 before) = PROGRAM.exposure();
         PROGRAM.acknowledgeSettlement(throughSeq);
         (, uint256 left) = PROGRAM.exposure();
@@ -463,23 +475,31 @@ contract IssuerTreasury is IExposureGuard {
 
     /// @notice Hands the program's exposure guard from this contract to next (zero for none). The sponsor may at any
     ///         time, as the party the exposure is owed to; the issuer before a sponsor is named, or once no collateral
-    ///         is live and nothing is seized or exposed.
+    ///         is live and nothing is seized, and either nothing is exposed or the sponsor has not acted here for
+    ///         SPONSOR_SILENCE. The next guard (or, with none, the issuer) then acknowledges the program's settlement.
     function handOffGuard(address next) external nonReentrant {
-        address sponsor = collateral.sponsor;
+        Collateral storage c = collateral;
+        address sponsor = c.sponsor;
         if (msg.sender != sponsor) {
             if (msg.sender != PROGRAM.ISSUER()) revert NotSponsor();
-            if (sponsor != address(0) && (unitsOf() != 0 || seized != 0 || stressedExposure() != 0)) {
-                revert GuardInUse();
+            if (sponsor != address(0)) {
+                // Silence is counted in days; validator skew does not change it.
+                // forge-lint: disable-next-line(block-timestamp)
+                bool silent = block.timestamp >= uint256(c.seenAt) + SPONSOR_SILENCE;
+                if (unitsOf() != 0 || seized != 0 || (!silent && stressedExposure() != 0)) revert GuardInUse();
             }
         }
         IGuardSetting(address(PROGRAM)).setExposureGuard(next);
     }
 
     /// @notice Records the program's net as of its latest purchase step (at a network cut-off), for a later
-    ///         acknowledgement through that step, and returns the step. The sponsor, or the issuer before one.
+    ///         acknowledgement through that step, and returns the step. The sponsor, or the issuer before one. Like
+    ///         every sponsor step here it restarts SPONSOR_SILENCE, so a sponsor with nothing to settle calls it.
     function checkpointSettlement() external returns (uint64) {
-        address sponsor = collateral.sponsor;
+        Collateral storage c = collateral;
+        address sponsor = c.sponsor;
         if (msg.sender != (sponsor == address(0) ? PROGRAM.ISSUER() : sponsor)) revert NotSponsor();
+        _seen(c);
         return PROGRAM.checkpointSettlement();
     }
 
@@ -508,6 +528,12 @@ contract IssuerTreasury is IExposureGuard {
     function unitsFor(IEarnVault vault, uint256 value) external view returns (uint256) {
         if (address(vault) == address(0) || value == 0) return value;
         return vault.previewWithdraw(_toAssets(vault.asset(), value));
+    }
+
+    /// @dev Records that the named sponsor acted here now.
+    function _seen(Collateral storage c) private {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (c.sponsor != address(0)) c.seenAt = uint64(block.timestamp);
     }
 
     function _sponsored() private view returns (Collateral storage c) {
