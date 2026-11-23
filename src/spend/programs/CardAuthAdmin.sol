@@ -223,12 +223,17 @@ contract CardAuthAdmin is CardAuthBase {
     }
 
     /// @notice Lists the approved sources the caller's purchases draw on, in order, as a new version. Every purchase
-    ///         keeps the order it was placed under. Refused 256 versions past the oldest one an open purchase may use.
+    ///         keeps the order it was placed under. Refused when it would start a window of 128 versions while a
+    ///         purchase placed in the window two back is still open.
     function setFunding(CardLegs.Funding[] calldata order) external {
         FundingState storage f = fundingState[msg.sender];
         uint32 version = f.version + 1;
-        // An open purchase records its version's low 8 bits, which name it only while versions stay within 256.
-        if (f.open != 0 && version - f.openFrom > type(uint8).max) revert FundingInUse();
+        // An open purchase records its version's low 8 bits, which name it only while versions stay within 256. Open
+        // purchases date from the latest window or the one before, so a new window reuses the count of the one two
+        // back and starts only once none of its purchases is open; the rest of the window adds no check.
+        if (version & (1 << FUNDING_WINDOW_BITS) - 1 == 0) {
+            if ((version >> FUNDING_WINDOW_BITS & 1 == 0 ? f.openEven : f.openOdd) != 0) revert FundingInUse();
+        }
         CardLegs.setOrder(_funding[msg.sender][version], sourceKind, order, version);
         f.version = version;
     }

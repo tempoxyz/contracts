@@ -155,7 +155,8 @@ contract CardAuth is CardAuthBase, ICardAuth {
     }
 
     /// @notice Lists the approved sources the caller's purchases draw on, in order, as a new version. Every purchase
-    ///         keeps the order it was placed under. Refused 256 versions past the oldest one an open purchase may use.
+    ///         keeps the order it was placed under. Refused when it would start a window of 128 versions while a
+    ///         purchase placed in the window two back is still open.
     function setFunding(CardLegs.Funding[] calldata) external {
         _delegate();
     }
@@ -197,8 +198,8 @@ contract CardAuth is CardAuthBase, ICardAuth {
             Purchase(c.index, approved, 0, 0, expiresAt, day, epoch, version, _state.era, OPEN | legs << LEGS_SHIFT)
         );
         _moveHeld(int256(approved));
-        // Counted until it ends, so the owner's versions stay within 256 of the oldest an open purchase may use.
-        (f.openFrom, f.open) = (f.open == 0 ? version : f.openFrom, f.open + 1);
+        // Counted in its version's window until it ends, so setFunding keeps the latest within 256 versions of it.
+        _countOpen(f, version, true);
         emit PurchaseAuthorized(ref, card, owner, approved, legs, _step());
         _checkExposure();
     }
@@ -272,7 +273,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         if (isFinal) {
             _giveBack(c, owner, ref, p, left);
             (p.amount, p.flags, left) = (p.captured, p.flags & ~OPEN, 0);
-            _ended(owner);
+            _ended(owner, p.version);
         }
         _moveHeld(int256(left) - int256(open));
         // What the issuer absorbed is captured toward the limits but never refunded: refunds stop at what was covered.
@@ -297,7 +298,7 @@ contract CardAuth is CardAuthBase, ICardAuth {
         _moveHeld(-int256(released));
         (p.amount, p.flags) = (p.captured, p.flags & ~OPEN);
         _purchases[ref] = _pack(p);
-        _ended(owner);
+        _ended(owner, p.version);
         emit PurchaseReleased(ref, released, _step());
     }
 
@@ -581,9 +582,15 @@ contract CardAuth is CardAuthBase, ICardAuth {
         }
     }
 
-    /// @dev One of the owner's open purchases ended.
-    function _ended(address owner) private {
-        --fundingState[owner].open;
+    /// @dev One of the owner's open purchases, placed at `version`, ended.
+    function _ended(address owner, uint32 version) private {
+        _countOpen(fundingState[owner], version, false);
+    }
+
+    /// @dev Counts a purchase placed at `version` as opened or ended, in its version's window.
+    function _countOpen(FundingState storage f, uint32 version, bool opened) private {
+        if (version >> FUNDING_WINDOW_BITS & 1 == 0) f.openEven = opened ? f.openEven + 1 : f.openEven - 1;
+        else f.openOdd = opened ? f.openOdd + 1 : f.openOdd - 1;
     }
 
     /// @dev Books `amount` of the purchase absorbed by the issuer: refunded, so never refunded again, and recorded

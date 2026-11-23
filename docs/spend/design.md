@@ -143,8 +143,12 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   `setFunding` writes a new version (32 bits, never rewritten), and a purchase keeps the order it was placed
   under for good: an ended purchase records its whole version, in place of its amount (which then equals what
   it captured), while an open one records the version's low 8 bits beside its amount. So the owner's open
-  purchases are counted, with the version the oldest may date from, and `setFunding` refuses (`FundingInUse`)
-  a version 256 past it until those purchases end (anyone may release one once it expired). A source implements
+  purchases are counted by the window of 128 versions they were placed in (two counters, for even and odd
+  windows), and `setFunding` refuses (`FundingInUse`) to start a window while a purchase from the window two
+  back is open, until those purchases end (anyone may release one once it expired). Open purchases then date
+  from the latest window or the one before, within 255 versions of the latest, so the low 8 bits name each
+  exactly. Only the oldest window holds changes back: a busy card whose purchases always overlap changes its
+  order freely, and a purchase allows at least 128 changes after it (up to 255). A source implements
   [`ISource`](../../src/interfaces/spend/programs/ISource.sol) and places, captures, releases and
   refunds its own core holds (it is their placer and payee), paying what it takes to the settlement
   account in the same call.

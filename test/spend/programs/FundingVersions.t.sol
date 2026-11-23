@@ -13,7 +13,8 @@ import { Rates } from "./harness/Rates.sol";
 
 /// @notice Every purchase keeps the funding order it was placed under, however many times its owner changes the
 ///         order: each version is written once, an ended purchase records its whole version, and an open one its low
-///         8 bits, so setFunding refuses a version 256 past the oldest one an open purchase may use.
+///         8 bits. Open purchases are counted by their window of 128 versions, and setFunding refuses to start a window
+///         while a purchase from the one two back is open, so an open purchase stays within 256 of the latest.
 contract FundingVersionsTest is AuthEnv {
     bytes32 internal constant P1 = bytes32("purchase-1");
     bytes32 internal constant P2 = bytes32("purchase-2");
@@ -27,11 +28,14 @@ contract FundingVersionsTest is AuthEnv {
     function test_setFunding_refusedBeforeAnOpenPurchasesVersionRepeats() public {
         _authorize(P1, 100e6);
         (uint32 placedAt,,) = cards.fundingState(alice);
-        _changeFunding(255, new CardLegs.Funding[](0));
-        (uint32 latest, uint32 openFrom, uint32 open) = cards.fundingState(alice);
-        assertEq(latest, placedAt + 255);
-        assertEq(openFrom, placedAt);
-        assertEq(open, 1);
+        // Versions move freely to the end of the window after the purchase's own, at least 128 past it.
+        uint32 lastAllowed = _lastAllowed(placedAt);
+        assertGe(lastAllowed - placedAt, 128);
+        _changeFunding(lastAllowed - placedAt, new CardLegs.Funding[](0));
+        (uint32 latest, uint32 openEven, uint32 openOdd) = cards.fundingState(alice);
+        assertEq(latest, lastAllowed);
+        assertEq(openEven + openOdd, 1);
+        assertEq(placedAt >> 7 & 1 == 0 ? openEven : openOdd, 1, "counted in its own window");
         vm.prank(alice);
         vm.expectRevert(CardAuthBase.FundingInUse.selector);
         cards.setFunding(new CardLegs.Funding[](0));
@@ -44,9 +48,74 @@ contract FundingVersionsTest is AuthEnv {
         assertEq(core.available(alice, address(usd)), 900e6);
         _assertCoreBalanced();
         // With nothing open, versions move on freely.
-        (,, open) = cards.fundingState(alice);
-        assertEq(open, 0);
+        (, openEven, openOdd) = cards.fundingState(alice);
+        assertEq(openEven + openOdd, 0);
         _changeFunding(300, new CardLegs.Funding[](0));
+    }
+
+    /// @dev The widest gap the windows allow: a purchase placed at a window's first version while the latest is 255
+    ///      past it, the last version of the next window. It still resolves its own order, and the next change waits.
+    function test_openPurchase_resolvesItsVersionAtTheWidestGap() public {
+        (uint32 v,,) = cards.fundingState(alice);
+        _changeFunding(256 - v - 1, new CardLegs.Funding[](0));
+        _changeFunding(1, _cashOnly());
+        (uint32 placedAt,,) = cards.fundingState(alice);
+        assertEq(placedAt, 256);
+        _authorize(P1, 100e6);
+        _changeFunding(255, new CardLegs.Funding[](0));
+        (uint32 latest,,) = cards.fundingState(alice);
+        assertEq(latest, placedAt + 255);
+        vm.prank(alice);
+        vm.expectRevert(CardAuthBase.FundingInUse.selector);
+        cards.setFunding(new CardLegs.Funding[](0));
+        (address[] memory sources,,) = cards.legsOf(P1);
+        assertEq(sources.length, 1);
+        assertEq(sources[0], address(cash));
+        _capture(P1, 100e6, true);
+        assertEq(cards.purchaseOf(P1).refunded, 0, "the cash hold covered it");
+        assertEq(usd.balanceOf(settlement), 100e6);
+        _assertCoreBalanced();
+        _changeFunding(1, new CardLegs.Funding[](0));
+    }
+
+    /// @dev A busy card whose purchases always overlap (each authorized before the last one ends) never waits on
+    ///      setFunding, however many times its owner changes the order: only a purchase two windows old holds it.
+    function test_setFunding_overlappingPurchasesNeverHoldItBack() public {
+        CardLegs.Funding[] memory order = _cashOnly();
+        _authorize(_ref(0), 1e6);
+        for (uint256 i = 1; i <= 260; ++i) {
+            vm.prank(alice);
+            cards.setFunding(order);
+            _authorize(_ref(i), 1e6);
+            vm.prank(issuer);
+            cards.release(_ref(i - 1));
+        }
+        (uint32 latest, uint32 openEven, uint32 openOdd) = cards.fundingState(alice);
+        assertEq(openEven + openOdd, 1, "only the newest purchase is open");
+        assertEq(latest >> 7 & 1 == 0 ? openEven : openOdd, 1);
+        // The newest purchase still resolves the order it was placed under and captures from it.
+        assertGt(latest, 256, "past two window boundaries");
+        _capture(_ref(260), 1e6, true);
+        assertEq(cards.purchaseOf(_ref(260)).refunded, 0);
+        _assertCoreBalanced();
+    }
+
+    /// @dev A long-open purchase holds setFunding back only until it ends, whatever newer purchases stay open.
+    function test_setFunding_heldBackOnlyByTheOldestWindow() public {
+        _authorize(P1, 1e6);
+        (uint32 placedAt,,) = cards.fundingState(alice);
+        _changeFunding(_lastAllowed(placedAt) - placedAt - 1, _cashOnly());
+        _authorize(P2, 1e6);
+        _changeFunding(1, new CardLegs.Funding[](0));
+        vm.prank(alice);
+        vm.expectRevert(CardAuthBase.FundingInUse.selector);
+        cards.setFunding(new CardLegs.Funding[](0));
+        vm.prank(issuer);
+        cards.release(P1);
+        // P2, placed in the window just before the new one, does not hold it back.
+        _changeFunding(1, new CardLegs.Funding[](0));
+        (, uint32 openEven, uint32 openOdd) = cards.fundingState(alice);
+        assertEq(openEven + openOdd, 1);
     }
 
     function test_openPurchase_resolvesItsVersionAcrossTheEightBitBoundary() public {
@@ -86,6 +155,15 @@ contract FundingVersionsTest is AuthEnv {
         assertEq(cards.purchaseOf(P2).refunded, 0, "free cash covered it");
         assertEq(usd.balanceOf(alice), 890e6);
         _assertCoreBalanced();
+    }
+
+    /// @dev The last version setFunding reaches while a purchase placed at `placedAt` is open: the end of the next window.
+    function _lastAllowed(uint32 placedAt) internal pure returns (uint32) {
+        return ((placedAt >> 7) + 2 << 7) - 1;
+    }
+
+    function _ref(uint256 i) internal pure returns (bytes32) {
+        return keccak256(abi.encode("purchase", i));
     }
 
     function _changeFunding(uint256 times, CardLegs.Funding[] memory order) internal {
@@ -134,14 +212,17 @@ contract FundingVersionsConvertedTest is AuthEnv {
     }
 
     function test_openConvertedLeg_releasesInItsOwnToken() public {
+        (uint32 placedAt,,) = cards.fundingState(alice);
         _authorize(P1, 100e6);
         assertGt(cash.openConvertedOf(address(eur)), 99e6);
-        // The owner changes the order as often as allowed, ending on dollars at the leg's entry; the next change is
-        // refused while the purchase is open.
+        // The owner changes the order as often as allowed (to the end of the window after the purchase's), ending on
+        // dollars at the leg's entry; the next change is refused while the purchase is open.
         CardLegs.Funding[] memory order = new CardLegs.Funding[](1);
         order[0] = _cashEntry(address(usd), 0);
+        uint256 changes = ((placedAt >> 7) + 2 << 7) - 1 - placedAt;
+        assertGe(changes, 128);
         vm.startPrank(alice);
-        for (uint256 i; i < 254; ++i) {
+        for (uint256 i; i < changes - 1; ++i) {
             cards.setFunding(new CardLegs.Funding[](0));
         }
         cards.setFunding(order);

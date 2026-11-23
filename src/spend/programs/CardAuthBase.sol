@@ -32,6 +32,9 @@ abstract contract CardAuthBase is ICardAuthState {
     uint256 public constant MAX_LEGS = 4;
     /// @dev Most cash sources _cashSources keeps at once.
     uint256 internal constant MAX_CASH_SOURCES = 8;
+    /// @dev log2 of the funding versions in a window: setFunding enters a window only once no purchase from the one
+    ///      two back is open, so open purchases stay within 256 versions of the latest (they record the low 8 bits).
+    uint256 internal constant FUNDING_WINDOW_BITS = 7;
 
     uint256 internal constant ONE = 1e18;
     uint256 internal constant MAX_AMOUNT = type(uint48).max;
@@ -56,12 +59,13 @@ abstract contract CardAuthBase is ICardAuthState {
         uint256 flags;
     }
 
-    /// @notice An owner's latest funding order version, and while any of their purchases is open, how many are and
-    ///         the version the oldest of them may have been placed at.
+    /// @notice An owner's latest funding order version, and how many of their purchases are open, counted by the
+    ///         window of 128 versions each was placed in: windows with an even number (version >> 7) and odd ones.
+    ///         Open purchases date only from the latest version's window and the one before it.
     struct FundingState {
         uint32 version;
-        uint32 openFrom;
-        uint32 open;
+        uint32 openEven;
+        uint32 openOdd;
     }
 
     /// @notice An operator key's roles, the issuer generation that set it, its cap and what it used of it.
@@ -140,7 +144,8 @@ abstract contract CardAuthBase is ICardAuthState {
     event SettingCancelled(bytes32 indexed id);
 
     error CaptureLimitExceeded();
-    /// @notice A new funding version would be 256 past one an open purchase may still use: end those purchases first.
+    /// @notice A new funding version would start a window of 128 versions while a purchase placed in the window two
+    ///         back is still open: end those purchases first.
     error FundingInUse();
     error InsufficientAvailable();
     error InvalidAmount();
