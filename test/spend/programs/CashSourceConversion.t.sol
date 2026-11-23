@@ -12,7 +12,7 @@ import { IssuerTreasury } from "../../../src/spend/programs/IssuerTreasury.sol";
 import { Rewards } from "../../../src/spend/programs/Rewards.sol";
 import { ICardAuth } from "../../../src/interfaces/spend/programs/ICardAuth.sol";
 import { IReservationCore } from "../../../src/interfaces/spend/programs/IReservationCore.sol";
-import { ISource } from "../../../src/interfaces/spend/programs/ISource.sol";
+import { CAPTURE_FINAL, ISource } from "../../../src/interfaces/spend/programs/ISource.sol";
 import { FixedPricePool } from "./venues/FixedPricePool.sol";
 import { AuthEnv } from "./harness/AuthEnv.sol";
 import { Rates } from "./harness/Rates.sol";
@@ -661,6 +661,71 @@ contract CashSourceConversionTest is AuthEnv {
         cards.setOperator(key, 0, 0);
         assertEq(cards.operatorOf(key).cap, 0);
         assertFalse(cards.hasRoles(key, 1));
+    }
+
+    // A leg's own token.
+
+    /// @dev The core ending a converted hold before the program releases it, and a release naming another token for
+    ///      the leg, leave its own token's total to clear: the purchase ends and nothing stays counted.
+    function test_release_coreEndedConvertedHold_clearsItsOwnTokensTotal() public {
+        _tokenFirst(100);
+        eur.mint(alice, 200e6);
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        assertGt(cash.openConvertedOf(address(eur)), 99e6);
+        vm.warp(block.timestamp + 8 days);
+        core.releaseExpired(alice, address(cash), leg);
+        vm.prank(address(cards));
+        cash.release(alice, _position(address(usd), 0), leg);
+        assertEq(cash.openConvertedOf(address(eur)), 0, "the euro total clears");
+        assertEq(cash.openConverted(), 0);
+        assertEq(cash.lockedRate(leg), BID, "the rate stays for a late charge");
+        // The program's own release ends the purchase.
+        cards.release(P1);
+        (uint256 held,) = cards.exposure();
+        assertEq(held, 0);
+        assertEq(cash.lockedRate(leg), BID, "a second release keeps it");
+    }
+
+    function test_capture_convertsTheTokenTheHoldWasPlacedIn() public {
+        _tokenFirst(100);
+        eur.mint(alice, 200e6);
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        uint256 cost = conv.quoteOut(address(eur), address(usd), 100e6);
+        vm.prank(address(cards));
+        (uint256 paid,) = cash.capture(alice, _position(address(usd), 0), leg, 100e6, CAPTURE_FINAL);
+        assertEq(paid, 100e6);
+        assertEq(usd.balanceOf(settlement), 100e6);
+        assertEq(eur.balanceOf(alice), 200e6 - cost, "euros pay, as the hold was placed");
+        assertEq(cash.openConverted(), 0);
+    }
+
+    /// @dev A late charge prices against the rate its leg locked only in the token it locked it in; named in another,
+    ///      it drops the lock and pays the venue's price within the position's maximum cost.
+    function test_lateCharge_locksOnlyTheTokenTheLegLockedIn() public {
+        ITIP20Token gbp = _createToken("Pound", "GBPX");
+        FixedPricePool gbpBid = new FixedPricePool(address(gbp), address(usd), 1.25e18);
+        usd.mint(address(gbpBid), 1_000_000e6);
+        conv.setVenue(address(gbp), address(usd), address(gbpBid), true);
+        _tokenFirst(100);
+        eur.mint(alice, 200e6);
+        _authorize(P1, 100e6);
+        bytes32 leg = cards.legId(P1, TOKEN_LEG);
+        vm.warp(block.timestamp + 8 days);
+        cards.release(P1);
+        assertEq(cash.lockedRate(leg), BID);
+        Rates.set(conv, address(gbp), 1.25e18);
+        gbp.mint(alice, 100e6);
+        vm.prank(alice);
+        core.approveHolder(address(cash), address(gbp), type(uint128).max, 0);
+        uint256 cost = conv.quoteOut(address(gbp), address(usd), 10e6);
+        vm.prank(address(cards));
+        (uint256 paid, uint256 covered) = cash.charge(alice, _position(address(gbp), 100), leg, 10e6);
+        assertEq(paid, 10e6);
+        assertEq(covered, 10e6);
+        assertEq(100e6 - gbp.balanceOf(alice), cost, "the venue's price, not the band around the euro rate");
+        assertEq(cash.lockedRate(leg), 0, "the lock is gone");
     }
 
     // Helpers.

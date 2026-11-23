@@ -38,6 +38,11 @@ contract CashSource is ISource {
     uint256 internal constant ONE = 1e18;
     uint256 internal constant BPS = 10_000;
     uint256 internal constant RATE_MASK = type(uint112).max;
+    /// @dev Where a lock word keeps its token's place, and above it the open value (or, kept late, the token's tag).
+    uint256 private constant PLACE_SHIFT = 128;
+    uint256 private constant VALUE_SHIFT = 136;
+    /// @dev The place byte of a lock kept for a late charge after its hold ended, whose high bits tag its token.
+    uint256 private constant LATE = 0xff;
     /// @notice How far the venue may move from a converted leg's locked rate before its owner shares the move.
     uint256 public constant FX_BAND_BPS = 200;
     /// @dev The widest band around a locked rate this source asks for, tolerance included: Conversion's
@@ -64,9 +69,11 @@ contract CashSource is ISource {
     }
 
     /// @dev A converted leg's locked rate (settlement units per token unit, 18 decimals) in the low 112 bits, the
-    ///      capture tolerance in basis points the core fixed into its hold when it was placed in the 16 above, and, in
-    ///      the high 128, the settlement value its open hold counts toward openConverted. An expired hold keeps its
-    ///      rate and tolerance, valued at zero, for a late charge.
+    ///      capture tolerance in basis points the core fixed into its hold when it was placed in the 16 above, its
+    ///      token's place in _convertedTokens plus one in the 8 above that, and, in the high 120, the settlement value
+    ///      its open hold counts toward openConverted. A token keeps its place while a leg counts value toward it, so
+    ///      the place names the leg's token even once the core ended its hold. An expired hold keeps its rate and
+    ///      tolerance for a late charge, with LATE as its place and its token's low 120 bits above it.
     mapping(bytes32 legId => uint256) private _locks;
     /// @notice What a converted leg paid in each settlement token, which its refunds in that token convert back at.
     mapping(bytes32 legId => mapping(address settlement => Paid)) public paidOf;
@@ -171,6 +178,8 @@ contract CashSource is ISource {
         (address token, uint256 maxCost) = _decode(position);
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
         bool live = h.token != address(0);
+        // A live leg stays in the token its hold was placed in.
+        if (live) token = h.token;
         if (units == 0) {
             if (live) _release(owner, token, legId);
             return 0;
@@ -215,14 +224,14 @@ contract CashSource is ISource {
         return units;
     }
 
-    function capture(address owner, bytes32 position, bytes32 legId, uint256 units, uint8 flags)
+    function capture(address owner, bytes32, bytes32 legId, uint256 units, uint8 flags)
         external
         onlyProgram
         returns (uint256 paid, uint256 covered)
     {
-        (address token,) = _decode(position);
         IReservationCore.HoldRecord memory h = CORE.getHold(owner, address(this), legId);
-        if (h.token == address(0)) return (0, 0);
+        address token = h.token;
+        if (token == address(0)) return (0, 0);
         bool isFinal = flags & CAPTURE_FINAL != 0;
         bool free = flags & CAPTURE_FREE != 0;
         address settlement = PROGRAM.settlementToken();
@@ -254,17 +263,20 @@ contract CashSource is ISource {
             return (paid, paid);
         }
         Conversion c = _conversion();
-        uint256 rate = lockedRate(legId);
+        uint256 word = _locks[legId];
+        uint256 rate = word & RATE_MASK;
         uint256 band;
         uint256 cost;
         uint256 tolerance;
         if (rate != 0) {
             // A late charge consumes the rate its expired hold locked and prices against it as a capture would, the
-            // tolerance the hold was placed with on what that rate promised standing in for the capture limit.
+            // tolerance the hold was placed with on what that rate promised standing in for the capture limit. The
+            // rate applies only to the token the leg locked it in.
             tolerance = lockedTolerance(legId);
-            _setLock(token, legId, 0, 0, 0);
+            if (!_lockedIn(word, token)) (rate, tolerance) = (0, 0);
+            _drop(legId, word);
             band = _band(tolerance);
-            cost = _anchoredCost(c, token, settlement, units, rate, band);
+            if (rate != 0) cost = _anchoredCost(c, token, settlement, units, rate, band);
         }
         if (cost == 0) {
             band = 0;
@@ -297,10 +309,22 @@ contract CashSource is ISource {
         // forge-lint: disable-next-line(block-timestamp)
         bool expired = token == address(0) || block.timestamp >= h.expiresAt;
         if (token != address(0)) CORE.release(owner, address(this), legId);
-        // A hold the core already ended counts toward the token its position names, which placed it.
-        else (token,) = _decode(position);
-        uint256 rate = lockedRate(legId);
-        if (rate != 0) _setLock(token, legId, expired ? rate : 0, 0, lockedTolerance(legId));
+        uint256 word = _locks[legId];
+        if (word & RATE_MASK == 0 || word >> PLACE_SHIFT & 0xff == LATE) return;
+        uint256 open = word >> VALUE_SHIFT;
+        // A hold the core already ended counts toward the token its lock's place records, whatever the position
+        // says now; with nothing open it counts toward none, and the position names the token it was placed in.
+        if (token == address(0)) {
+            if (open != 0) token = _placed(word);
+            else (token,) = _decode(position);
+        }
+        if (open != 0) _converted[token] -= open << 8;
+        if (!expired) {
+            delete _locks[legId];
+            return;
+        }
+        _locks[legId] = word & (RATE_MASK | uint256(type(uint16).max) << 112) | LATE << PLACE_SHIFT
+            | uint256(uint120(uint160(token))) << VALUE_SHIFT;
     }
 
     /// @dev A converted leg pays back, for what its captures and charges paid in today's settlement token, the tokens
@@ -538,15 +562,38 @@ contract CashSource is ISource {
 
     /// @dev Sets a converted leg's locked `rate` (zero drops it) and its hold's `tolerance` with `tokens` open in its
     ///      hold, keeping the open total of its `token` in step. Only hold raises a leg's value, after _place.
+    ///      `token` is the leg's own (its hold's), which holds a place while the leg counts value toward it.
     function _setLock(address token, bytes32 legId, uint256 rate, uint256 tokens, uint256 tolerance) private {
         uint256 word = _locks[legId];
         uint256 value = tokens.mulDiv(rate, ONE);
-        uint256 before = word >> 128;
-        // Both values fit in 128 bits, so shifting them past the place bits loses nothing.
-        if (value != before) _converted[token] = _converted[token] + (value << 8) - (before << 8);
-        uint256 next =
-            rate == 0 ? 0 : rate.toUint112() | uint256(tolerance.toUint16()) << 112 | uint256(value.toUint128()) << 128;
+        uint256 before = word >> PLACE_SHIFT & 0xff == LATE ? 0 : word >> VALUE_SHIFT;
+        uint256 total = _converted[token];
+        // Both values fit in 120 bits, so shifting them past the place bits loses nothing.
+        if (value != before) _converted[token] = total = total + (value << 8) - (before << 8);
+        uint256 next = rate == 0
+            ? 0
+            : rate.toUint112() | uint256(tolerance.toUint16()) << 112 | (total & 0xff) << PLACE_SHIFT
+                | uint256(value.toUint120()) << VALUE_SHIFT;
         if (next != word) _locks[legId] = next;
+    }
+
+    /// @dev Drops a converted leg's lock `word`, taking what it counted off the total of the token its place records.
+    function _drop(bytes32 legId, uint256 word) private {
+        uint256 open = word >> PLACE_SHIFT & 0xff == LATE ? 0 : word >> VALUE_SHIFT;
+        if (open != 0) _converted[_placed(word)] -= open << 8;
+        delete _locks[legId];
+    }
+
+    /// @dev The token a lock word that counts open value has its place for.
+    function _placed(uint256 word) private view returns (address) {
+        return _convertedTokens[(word >> PLACE_SHIFT & 0xff) - 1];
+    }
+
+    /// @dev Whether lock `word` was locked in `token`: by the tag a lock kept late records, else by its place while
+    ///      it counts open value. A live lock with nothing open records no token and is taken as the position's.
+    function _lockedIn(uint256 word, address token) private view returns (bool) {
+        if (word >> PLACE_SHIFT & 0xff == LATE) return uint120(word >> VALUE_SHIFT) == uint120(uint160(token));
+        return word >> VALUE_SHIFT == 0 || _placed(word) == token;
     }
 
     /// @dev Locks a converted leg as _setLock does, first giving its `token` the place _placeOf found unless it has

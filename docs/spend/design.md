@@ -207,7 +207,11 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   every place holding open value a leg in a ninth token is not placed (the purchase falls through to its next
   entry). A hold the core ends at expiry counts until someone releases the purchase (anyone may, after expiry),
   so a total drifts above the truth only by expired holds nobody released yet, the same lag as CardAuth's own
-  held total.
+  held total. The lock slot also records its token's place (a token keeps its place while any leg counts value
+  toward it), so a release after the core ended the hold takes the value off the leg's own token, and a live leg
+  is captured, resized and released in its hold's token, never the token the program's position names. A lock an
+  expired hold keeps for a late charge records its token's low 120 bits instead, and a late charge in another token
+  drops it and prices at the venue within the position's maximum cost.
 - **FX stress share.** `IssuerTreasury.stressedExposure()` adds to `exposure()`, for every converted token every
   cash source holds, that token's stress figure (`fxStressOf(token)`, in bps) of its open converted value, and
   the guard and collateral release check that. The issuer sets a figure per token (`setFxStress`, above zero and
