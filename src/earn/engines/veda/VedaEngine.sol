@@ -671,14 +671,14 @@ contract VedaEngine is
         OnChainWithdraw memory cancelledRequest = requestQueue.cancelOnChainWithdrawUsingRequestId(requestId);
         // The ID hashes the request, so a matching record carries the shares requestRedeem verified.
         if (requestQueue.getRequestId(cancelledRequest) != requestId) revert InvalidTrackedRequest(requestId);
-        uint128 queuedShares = cancelledRequest.amountOfShares;
-        /// @custom:ghost cancelledShares = queuedShares
-        _requireVenueSharesReturned(sharesBefore, queuedShares);
+        uint128 requestShares = cancelledRequest.amountOfShares;
+        /// @custom:ghost cancelledShares = requestShares
+        _requireVenueSharesReturned(sharesBefore, requestShares);
         // Cancellation returns existing shares and must not mutate the transaction's valuation.
         _checkpointRate();
         _closeClaim(c);
-        engineShares = queuedShares;
-        emit RedeemCancelledOnQueue(requestId, queuedShares);
+        engineShares = requestShares;
+        emit RedeemCancelledOnQueue(requestId, requestShares);
     }
 
     /// @notice ATOMIC credit-and-forward, called ONLY by an authorized `VedaForwardingSolver` in the same

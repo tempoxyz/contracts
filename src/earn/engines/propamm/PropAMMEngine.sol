@@ -288,8 +288,8 @@ contract PropAMMEngine is
         pool.swapExactInput(
             true, shares, minAssets, address(this), customerId, _nextTradeId(), block.timestamp, price, 0, observedAt
         );
-        /// @custom:ghost heldAfter = totalShares()
         if (totalShares() != baseBefore - shares) revert InexactTransfer();
+        /// @custom:ghost heldAfter = baseBefore - shares
         uint256 cashAfter = IERC20(asset).balanceOf(address(this));
         assets = cashAfter - cashBefore;
         if (assets == 0 || assets < minAssets) revert InsufficientBacking();

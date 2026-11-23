@@ -71,7 +71,9 @@ contract RainProvider is ICardProvider {
     /// @notice The pooled collaterals and their factory indexes differ in length.
     error LengthMismatch();
 
-    /// @custom:succeeds-if factory_ != address(0) && (forall uint256 i :: i < tokens_.length ==> tokens_[i] != address(0)) && (forall uint256 i :: i < vaults_.length ==> vaults_[i] != address(0)) && (forall uint256 i :: i < programCollaterals_.length ==> programCollaterals_[i] != address(0))
+    /// @dev Pooled collateral also needs Rain's factory to confirm each entry, which a spec cannot read, so the
+    ///      success condition covers deployments without it.
+    /// @custom:succeeds-if factory_ != address(0) && (forall uint256 i :: i < tokens_.length ==> tokens_[i] != address(0)) && (forall uint256 i :: i < vaults_.length ==> vaults_[i] != address(0)) && (forall uint256 i :: i < programCollaterals_.length ==> programCollaterals_[i] != address(0)) && programCollateralIndexes_.length == 0 && programCollaterals_.length == 0
     /// @custom:ensures FACTORY == factory_ && POOLED_ACCEPTS_PUBLIC == pooledAcceptsPublic_
     /// @custom:ensures forall uint256 i :: i < tokens_.length ==> isAcceptedToken(tokens_[i])
     /// @custom:ensures forall uint256 i :: i < vaults_.length ==> isAllowedVault(vaults_[i])
@@ -90,6 +92,7 @@ contract RainProvider is ICardProvider {
         /// @custom:invariant i <= tokens_.length && FACTORY != address(0)
         /// @custom:invariant !_moreTokens[address(0)] && !_moreVaults[address(0)] && !_moreCollaterals[address(0)]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < i ==> _moreTokens[tokens_[j]]
+        /// @custom:invariant forall uint256 j :: j < i ==> tokens_[j] != address(0)
         for (uint256 i; i < tokens_.length; ++i) {
             if (tokens_[i] == address(0)) revert ZeroAddress();
             if (i >= _INLINE) _moreTokens[tokens_[i]] = true;
@@ -103,6 +106,8 @@ contract RainProvider is ICardProvider {
         /// @custom:invariant !_moreTokens[address(0)] && !_moreVaults[address(0)] && !_moreCollaterals[address(0)]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < tokens_.length ==> _moreTokens[tokens_[j]]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < i ==> _moreVaults[vaults_[j]]
+        /// @custom:invariant forall uint256 j :: j < tokens_.length ==> isAcceptedToken(tokens_[j])
+        /// @custom:invariant forall uint256 j :: j < i ==> vaults_[j] != address(0)
         for (uint256 i; i < vaults_.length; ++i) {
             if (vaults_[i] == address(0)) revert ZeroAddress();
             if (i >= _INLINE) _moreVaults[vaults_[i]] = true;
@@ -112,14 +117,17 @@ contract RainProvider is ICardProvider {
         _VAULT_2 = _entry(vaults_, 2);
         _VAULT_3 = _entry(vaults_, 3);
         _MORE_VAULTS = vaults_.length > _INLINE;
+        if (programCollateralIndexes_.length != programCollaterals_.length) {
+            revert LengthMismatch();
+        }
         /// @custom:invariant i <= programCollaterals_.length && FACTORY != address(0)
         /// @custom:invariant !_moreTokens[address(0)] && !_moreVaults[address(0)] && !_moreCollaterals[address(0)]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < tokens_.length ==> _moreTokens[tokens_[j]]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < vaults_.length ==> _moreVaults[vaults_[j]]
         /// @custom:invariant forall uint256 j :: _INLINE <= j && j < i ==> _moreCollaterals[programCollaterals_[j]]
-        if (programCollateralIndexes_.length != programCollaterals_.length) {
-            revert LengthMismatch();
-        }
+        /// @custom:invariant forall uint256 j :: j < tokens_.length ==> isAcceptedToken(tokens_[j])
+        /// @custom:invariant forall uint256 j :: j < vaults_.length ==> isAllowedVault(vaults_[j])
+        /// @custom:invariant forall uint256 j :: j < i ==> programCollaterals_[j] != address(0)
         for (uint256 i; i < programCollaterals_.length; ++i) {
             if (programCollaterals_[i] == address(0)) revert ZeroAddress();
             // Proved once here, so a spend to pooled collateral reads no factory state.
@@ -158,18 +166,21 @@ contract RainProvider is ICardProvider {
 
     /// @notice Whether spends may pay in `token`.
     /// @custom:ensures token == address(0) ==> !result
+    /// @custom:ensures result == ((token != address(0) && (token == _TOKEN_0 || token == _TOKEN_1 || token == _TOKEN_2 || token == _TOKEN_3)) || (_MORE_TOKENS && _moreTokens[token]))
     function isAcceptedToken(address token) public view returns (bool) {
         return _inline(token, _TOKEN_0, _TOKEN_1, _TOKEN_2, _TOKEN_3) || (_MORE_TOKENS && _moreTokens[token]);
     }
 
     /// @inheritdoc ICardProvider
     /// @custom:ensures vault == address(0) ==> !result
+    /// @custom:ensures result == ((vault != address(0) && (vault == _VAULT_0 || vault == _VAULT_1 || vault == _VAULT_2 || vault == _VAULT_3)) || (_MORE_VAULTS && _moreVaults[vault]))
     function isAllowedVault(address vault) public view returns (bool) {
         return _inline(vault, _VAULT_0, _VAULT_1, _VAULT_2, _VAULT_3) || (_MORE_VAULTS && _moreVaults[vault]);
     }
 
     /// @notice Whether `collateral` is one of the program's pooled collateral contracts.
     /// @custom:ensures collateral == address(0) ==> !result
+    /// @custom:ensures result == ((collateral != address(0) && (collateral == _COLLATERAL_0 || collateral == _COLLATERAL_1 || collateral == _COLLATERAL_2 || collateral == _COLLATERAL_3)) || (_MORE_COLLATERALS && _moreCollaterals[collateral]))
     function isProgramCollateral(address collateral) public view returns (bool) {
         return _inline(collateral, _COLLATERAL_0, _COLLATERAL_1, _COLLATERAL_2, _COLLATERAL_3)
             || (_MORE_COLLATERALS && _moreCollaterals[collateral]);
