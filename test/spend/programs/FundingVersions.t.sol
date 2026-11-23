@@ -160,4 +160,31 @@ contract FundingVersionsConvertedTest is AuthEnv {
         vm.prank(alice);
         cards.setFunding(order);
     }
+
+    /// @dev A refund after the owner moved to dollars at the leg's entry, past any number of versions, pays back the
+    ///      euros the capture took and no dollars.
+    function test_endedConvertedLeg_refundsInItsOwnToken() public {
+        _authorize(P1, 100e6);
+        _capture(P1, 100e6, true);
+        uint256 spent = 1000e6 - eur.balanceOf(alice);
+        CardLegs.Funding[] memory order = new CardLegs.Funding[](1);
+        order[0] = _cashEntry(address(usd), 0);
+        vm.startPrank(alice);
+        for (uint256 i; i < 300; ++i) {
+            cards.setFunding(new CardLegs.Funding[](0));
+        }
+        cards.setFunding(order);
+        vm.stopPrank();
+
+        uint256 dollars = usd.balanceOf(alice);
+        usd.mint(issuer, 50e6);
+        vm.startPrank(issuer);
+        usd.approve(address(cards), 50e6);
+        cards.refund(P1, 50e6);
+        vm.stopPrank();
+        assertEq(eur.balanceOf(alice), 1000e6 - spent + spent / 2, "half the euros come back");
+        assertEq(usd.balanceOf(alice), dollars, "no dollars");
+        assertEq(cash.openConverted(), 0);
+        _assertCoreBalanced();
+    }
 }
