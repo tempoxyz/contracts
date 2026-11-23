@@ -31,6 +31,7 @@ contract CardAuthTest is AuthEnv {
     uint256 internal constant LEDGER_SLOT = 7;
     uint256 internal constant CARDS_SLOT = 14;
     uint256 internal constant USAGE_SLOT = 18;
+    uint256 internal constant FUNDING_STATE_SLOT = 20;
 
     function setUp() public {
         _deployPrograms();
@@ -1456,13 +1457,14 @@ contract CardAuthTest is AuthEnv {
         usd.mint(alice, 30e6);
         _savings(alice, 500e6);
         _authorize(P1, 100e6);
-        uint8 placedUnder = cards.fundingVersion(alice);
+        (uint32 placedUnder,,) = cards.fundingState(alice);
 
         // The owner moves to the line alone.
         line.setLimit(alice, 1000e6);
         vm.prank(alice);
         _setFunding(false, false, true);
-        assertEq(cards.fundingVersion(alice), placedUnder + 1);
+        (uint32 latest,,) = cards.fundingState(alice);
+        assertEq(latest, placedUnder + 1);
         (address[] memory sources,,) = cards.legsOf(P1);
         assertEq(sources.length, 2);
         assertEq(sources[0], address(cash));
@@ -1557,16 +1559,18 @@ contract CardAuthTest is AuthEnv {
 
         bytes32 purchase = keccak256(abi.encode(P2, PURCHASES_SLOT));
         bytes32 cardBase = keccak256(abi.encode(CARD, CARDS_SLOT));
-        bytes32[5] memory expected = [
+        // The owner's funding state counts their open purchases.
+        bytes32[6] memory expected = [
             purchase,
             keccak256(abi.encode(alice, USAGE_SLOT)),
             bytes32(uint256(cardBase) + 3),
             bytes32(STATE_SLOT),
-            bytes32(LEDGER_SLOT)
+            bytes32(LEDGER_SLOT),
+            keccak256(abi.encode(alice, FUNDING_STATE_SLOT))
         ];
         // The card has no lifetime cap, so the slot after its window stays empty.
         assertEq(vm.load(address(cards), bytes32(uint256(cardBase) + 4)), 0);
-        for (uint256 i = 1; i < 5; ++i) {
+        for (uint256 i = 1; i < 6; ++i) {
             assertTrue(vm.load(address(cards), expected[i]) != 0, "already non-zero");
         }
         assertEq(vm.load(address(cards), purchase), 0);
@@ -1575,7 +1579,7 @@ contract CardAuthTest is AuthEnv {
         _authorize(P2, 20e6);
         (, bytes32[] memory writes) = vm.accesses(address(cards));
         assertEq(_outside(writes, expected), 0, "authorize writes only the expected slots");
-        assertEq(_distinct(writes), 5, "authorize writes five distinct slots");
+        assertEq(_distinct(writes), 6, "authorize writes six distinct slots");
         uint256 word = uint256(vm.load(address(cards), purchase));
         // The slot packs the card number and the amount.
         assertEq(uint32(word), cards.cardOf(CARD).index);
@@ -1678,10 +1682,10 @@ contract CardAuthTest is AuthEnv {
         }
     }
 
-    function _outside(bytes32[] memory slots, bytes32[5] memory allowed) internal pure returns (uint256 n) {
+    function _outside(bytes32[] memory slots, bytes32[6] memory allowed) internal pure returns (uint256 n) {
         for (uint256 i; i < slots.length; ++i) {
             bool ok;
-            for (uint256 j; j < 5 && !ok; ++j) {
+            for (uint256 j; j < 6 && !ok; ++j) {
                 ok = slots[i] == allowed[j];
             }
             if (!ok) ++n;

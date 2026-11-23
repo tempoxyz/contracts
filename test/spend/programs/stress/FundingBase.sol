@@ -260,16 +260,16 @@ abstract contract FundingBase is AuthEnv {
         treasury.repayAdvance(address(usd), type(uint256).max);
     }
 
-    /// @dev Books a purchase the network approved without asking (a stand-in) as a force post: the holder's free
-    ///      cash covers what it can and the issuer absorbs the rest. False when the program refuses it (the exposure
-    ///      guard, the holder's limits or a revoked merchant); the issuer then owes the network outside the program.
-    function _forcePost(address h, bytes32 card, bytes32 ref, uint128 amount)
+    /// @dev Books a purchase the network approved without asking (a stand-in) with bookStandIn: the holder's free
+    ///      cash covers what it can and the issuer absorbs the rest. False when the program refuses it, which only an
+    ///      operator's cap may; the issuer would then owe the network outside the program.
+    function _bookStandIn(address h, bytes32 card, bytes32 ref, uint128 amount)
         internal
         returns (bool ok, uint256 covered)
     {
         address m = merchants[uint256(ref) % merchants.length];
         vm.prank(issuer);
-        try cards.charge(card, ref, amount, m) {
+        try cards.bookStandIn(card, ref, amount, m) {
             ok = true;
         } catch { }
         if (!ok) return (false, 0);

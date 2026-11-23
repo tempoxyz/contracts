@@ -211,7 +211,7 @@ contract FundingWeekendStressTest is FundingBase {
         address h = holders[i];
         uint128 amount = _ticket();
         bytes32 ref = keccak256(abi.encode("buy", buys.length));
-        // 2% the network approves without asking (a stand-in): the issuer books it as a force post when it clears.
+        // 2% the network approves without asking (a stand-in): the issuer books it with bookStandIn when it clears.
         if (_rand(100) < 2) {
             (, uint256 clears) = _fate();
             buys.push(Buy(ref, uint32(i), uint32(hr + clears), 5, amount));
@@ -281,7 +281,7 @@ contract FundingWeekendStressTest is FundingBase {
     function _resolve(Buy memory b) internal {
         address h = holders[b.holder];
         if (b.fate == 5) {
-            (bool posted, uint256 paid) = _forcePost(h, cardIds[b.holder], b.ref, b.amount);
+            (bool posted, uint256 paid) = _bookStandIn(h, cardIds[b.holder], b.ref, b.amount);
             if (!posted) {
                 ++s.standInsRefused;
             } else {
@@ -479,6 +479,7 @@ contract FundingWeekendStressTest is FundingBase {
         }
         (uint256 held,) = cards.exposure();
         assertEq(held, 0, "holds left open");
+        assertEq(s.standInsRefused, 0, "the network paid every stand-in, so each one books");
         assertEq(_unsettled(), 0, "unsettled left");
         for (uint256 j; j < buys.length; ++j) {
             assertFalse(cards.purchaseOf(buys[j].ref).open, "purchase left open");

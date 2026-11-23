@@ -75,7 +75,7 @@ interface ICardAuth is ICardAuthState {
     /// @notice Captures `amount` of purchase `ref`. Authorize role.
     function capture(bytes32 ref, uint128 amount, bool isFinal) external;
     /// @notice Charges card `card` `amount` with no hold under reference `ref`, or late on a purchase whose hold
-    ///         ended. Authorize role.
+    ///         ended, which the network already paid, so only the operator's cap refuses it. Authorize role.
     function charge(bytes32 card, bytes32 ref, uint128 amount, address merchant) external;
     /// @notice Refunds `amount` of purchase `ref` (in the token it was booked in) to the cardholder's legs,
     ///         paid by the caller in today's settlement token; never past what the cardholder's sources covered.
@@ -83,8 +83,8 @@ interface ICardAuth is ICardAuthState {
     function refund(bytes32 ref, uint128 amount) external;
     /// @notice Gives `amount` back to the cardholder's limits and books it refunded without moving money (the caller
     ///         paid the cardholder itself); settlement counts `settles` of it as a refund, at most `amount`, negative
-    ///         by at most what the purchase refunded when the caller recovered more elsewhere than the network charges
-    ///         back. Registered companions only.
+    ///         by at most what the purchase refunded (never what the issuer absorbed) when the caller recovered more
+    ///         elsewhere than the network charges back. Registered companions only.
     function creditBack(bytes32 ref, uint128 amount, int128 settles) external;
     /// @notice Acknowledges purchase steps through `throughSeq` as settled: the exposure guard once one is set, else
     ///         the issuer.

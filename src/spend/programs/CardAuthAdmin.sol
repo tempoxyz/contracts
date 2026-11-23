@@ -222,15 +222,15 @@ contract CardAuthAdmin is CardAuthBase {
         CardLimits.setMandate(mandates[msg.sender][merchant], merchant, revoked, monthlyLimit, _scale());
     }
 
-    /// @notice Lists the approved sources the caller's purchases draw on, in order. Open purchases keep the order
-    ///         they were placed under. Versions count modulo 256.
+    /// @notice Lists the approved sources the caller's purchases draw on, in order, as a new version. Every purchase
+    ///         keeps the order it was placed under. Refused 256 versions past the oldest one an open purchase may use.
     function setFunding(CardLegs.Funding[] calldata order) external {
-        uint8 version;
-        unchecked {
-            version = fundingVersion[msg.sender] + 1;
-        }
+        FundingState storage f = fundingState[msg.sender];
+        uint32 version = f.version + 1;
+        // An open purchase records its version's low 8 bits, which name it only while versions stay within 256.
+        if (f.open != 0 && version - f.openFrom > type(uint8).max) revert FundingInUse();
         CardLegs.setOrder(_funding[msg.sender][version], sourceKind, order, version);
-        fundingVersion[msg.sender] = version;
+        f.version = version;
     }
 
     /// @notice Grants the program `given` terms across the caller's cards, starting their usage afresh.

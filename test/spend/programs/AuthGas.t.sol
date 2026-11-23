@@ -129,7 +129,8 @@ contract AuthGasTest is AuthEnv {
 
     /// @notice CardAuth's own storage writes per path, for an operator: a new purchase writes one new slot (its
     ///         record) and updates the operator's cap, the program's held total and step counter, and the owner's
-    ///         usage, card window and merchant mandate; later steps update the record, the totals and the limits.
+    ///         usage, card window, merchant mandate and count of open purchases; later steps update the record, the
+    ///         totals and the limits, and a step that ends a purchase that count.
     function test_slots_perPath() public {
         address key = makeAddr("operator");
         vm.prank(issuer);
@@ -144,13 +145,13 @@ contract AuthGasTest is AuthEnv {
         cards.refund("p0", 1e6);
         vm.stopPrank();
 
-        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, P1, 100e6, merchant, _expiry(), 0)), 6, 1, "authorize");
+        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, P1, 100e6, merchant, _expiry(), 0)), 7, 1, "authorize");
         _assertSlots(key, abi.encodeCall(cards.capture, (P1, 40e6, false)), 3, 0, "capture partial");
-        _assertSlots(key, abi.encodeCall(cards.capture, (P1, 60e6, true)), 3, 0, "capture final");
+        _assertSlots(key, abi.encodeCall(cards.capture, (P1, 60e6, true)), 4, 0, "capture final");
         _assertSlots(key, abi.encodeCall(cards.refund, (P1, 50e6)), 4, 0, "refund");
         _assertSlots(key, abi.encodeCall(cards.charge, (CARD, "p2", 10e6, merchant)), 5, 1, "charge");
-        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, "p3", 10e6, merchant, _expiry(), 0)), 6, 1, "auth2");
-        _assertSlots(key, abi.encodeCall(cards.release, ("p3")), 5, 0, "release");
+        _assertSlots(key, abi.encodeCall(cards.authorize, (CARD, "p3", 10e6, merchant, _expiry(), 0)), 7, 1, "auth2");
+        _assertSlots(key, abi.encodeCall(cards.release, ("p3")), 6, 0, "release");
     }
 
     /// @notice A savings leg pays its one slot when the purchase swipes; its captures and refunds create no slot in

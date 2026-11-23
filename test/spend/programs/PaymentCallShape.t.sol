@@ -4,10 +4,13 @@ pragma solidity ^0.8.36;
 import { Test } from "forge-std/Test.sol";
 import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
+import { IEarnVault } from "../../../src/interfaces/earn/IEarnVault.sol";
 import { CardAuth } from "../../../src/spend/programs/CardAuth.sol";
 import { CardAuthAdmin } from "../../../src/spend/programs/CardAuthAdmin.sol";
 import { CardLegs } from "../../../src/spend/programs/CardLegs.sol";
+import { CashSource } from "../../../src/spend/programs/CashSource.sol";
 import { Conversion } from "../../../src/spend/programs/Conversion.sol";
+import { IssuerTreasury } from "../../../src/spend/programs/IssuerTreasury.sol";
 import { ICardAuth } from "../../../src/interfaces/spend/programs/ICardAuth.sol";
 import { ISource } from "../../../src/interfaces/spend/programs/ISource.sol";
 import { FixedPricePool } from "./venues/FixedPricePool.sol";
@@ -25,9 +28,12 @@ contract PaymentCallCodeTest is Test {
         uint256 start;
     }
 
-    /// @dev The compiler's CBOR metadata: a map of an ipfs hash and the compiler version, then its length.
+    /// @dev The compiler's CBOR metadata: a map of an ipfs hash (34 bytes after this head) and the compiler version,
+    ///      then its length in two bytes. The version entry differs between compilers (solar's map is 75 bytes), so the
+    ///      scan reads the length rather than assuming one, up to METADATA_MAX.
     bytes8 internal constant METADATA_HEAD = hex"a264697066735822";
-    uint256 internal constant METADATA_LENGTH = 52;
+    uint256 internal constant METADATA_MIN = 42;
+    uint256 internal constant METADATA_MAX = 128;
     uint8 internal constant CALLCODE = 0xf2;
     uint8 internal constant DELEGATECALL = 0xf4;
     uint8 internal constant SELFDESTRUCT = 0xff;
@@ -142,6 +148,11 @@ contract PaymentCallCodeTest is Test {
         assertFalse(_holds(bytes.concat(hex"7f", bytes32(type(uint256).max), hex"00"), SELFDESTRUCT));
         bytes memory metadata = bytes.concat(METADATA_HEAD, bytes32(type(uint256).max), bytes12(type(uint96).max));
         bytes memory code = bytes.concat(hex"00", metadata, hex"0034", hex"00", metadata, hex"0034");
+        assertFalse(_holds(code, SELFDESTRUCT));
+        assertTrue(_holds(bytes.concat(hex"ff", code), SELFDESTRUCT));
+        // A longer map, as solar writes, is skipped by the length it ends with, embedded or trailing.
+        bytes memory longer = bytes.concat(metadata, bytes23(type(uint184).max));
+        code = bytes.concat(hex"00", longer, hex"004b", hex"00", longer, hex"004b");
         assertFalse(_holds(code, SELFDESTRUCT));
         assertTrue(_holds(bytes.concat(hex"ff", code), SELFDESTRUCT));
     }
@@ -282,8 +293,9 @@ contract PaymentCallCodeTest is Test {
     function _holds(bytes memory code, uint8 op) private pure returns (bool) {
         uint256 end = _end(code);
         for (uint256 i; i < end; ++i) {
-            if (_metadataAt(code, i)) {
-                i += METADATA_LENGTH + 1;
+            uint256 metadata = _metadataAt(code, i);
+            if (metadata != 0) {
+                i += metadata + 1;
                 continue;
             }
             uint8 at = uint8(code[i]);
@@ -293,22 +305,27 @@ contract PaymentCallCodeTest is Test {
         return false;
     }
 
-    /// @dev Whether a CBOR metadata map followed by its two-byte length starts at `i`.
-    function _metadataAt(bytes memory code, uint256 i) private pure returns (bool) {
-        if (i + METADATA_LENGTH + 2 > code.length) return false;
+    /// @dev The length of a CBOR metadata map that starts at `i` and is followed by its two-byte length, or zero.
+    function _metadataAt(bytes memory code, uint256 i) private pure returns (uint256) {
+        if (i + METADATA_MIN + 2 > code.length) return 0;
         bytes8 head;
         assembly ("memory-safe") {
             head := mload(add(add(code, 32), i))
         }
-        uint256 length = uint256(uint8(code[i + METADATA_LENGTH])) << 8 | uint8(code[i + METADATA_LENGTH + 1]);
-        return head == METADATA_HEAD && length == METADATA_LENGTH;
+        if (head != METADATA_HEAD) return 0;
+        for (uint256 length = METADATA_MIN; length <= METADATA_MAX && i + length + 2 <= code.length; ++length) {
+            if ((uint256(uint8(code[i + length])) << 8 | uint8(code[i + length + 1])) == length) return length;
+        }
+        return 0;
     }
 
     /// @dev Where code ends before trailing CBOR metadata, whose length its last two bytes give when it has some.
     function _end(bytes memory code) private pure returns (uint256) {
         uint256 n = code.length;
-        if (n < METADATA_LENGTH + 2 || !_metadataAt(code, n - METADATA_LENGTH - 2)) return n;
-        return n - METADATA_LENGTH - 2;
+        if (n < METADATA_MIN + 2) return n;
+        uint256 length = uint256(uint8(code[n - 2])) << 8 | uint8(code[n - 1]);
+        if (length + 2 > n || _metadataAt(code, n - 2 - length) != length) return n;
+        return n - 2 - length;
     }
 }
 
@@ -488,6 +505,41 @@ contract PaymentCallGasTest is AuthEnv {
         assertLe(release, LANE_RELEASE, "release");
         assertLe(charge, LANE_CHARGE, "charge");
         assertLe(standIn, LANE_BOOK_STAND_IN, "bookStandIn");
+    }
+
+    /// @notice With the issuer treasury armed as exposure guard at its heaviest (16 pledges, 8 cash sources), a steady
+    ///         one-leg authorize and force post still fit the lane caps in the model. Captures, stand-ins and late
+    ///         charges never ask the guard.
+    function test_gas_oneLeg_guardArmed_underLaneCaps() public {
+        _oneLeg();
+        IssuerTreasury treasury = new IssuerTreasury(cards);
+        for (uint256 n = 1; n <= 16; ++n) {
+            usd.mint(settlement, 100e6);
+            vm.startPrank(settlement);
+            core.pledge(
+                address(treasury),
+                address(usd),
+                treasury.pledgeId(n),
+                100e6,
+                uint64(block.timestamp + treasury.COVER_TERM() + 3 days)
+            );
+            treasury.post(makeAddr("sponsor"), IEarnVault(address(0)), n);
+            vm.stopPrank();
+        }
+        for (uint256 i; i < 7; ++i) {
+            _setting(abi.encodeCall(cards.setSource, (address(new CashSource(cards)), true)));
+        }
+        assertEq(cards.cashSources().length, 8);
+        _setting(abi.encodeCall(cards.setExposureGuard, (address(treasury))));
+        _call(abi.encodeCall(cards.authorize, (CARD, "p0", 10e6, merchant, _expiry(), 0)));
+        _call(abi.encodeCall(cards.capture, ("p0", 10e6, true)));
+        uint256 auth = _call(abi.encodeCall(cards.authorize, (CARD, "p1", 10e6, merchant, _expiry(), 0)));
+        uint256 charge = _call(abi.encodeCall(cards.charge, (CARD, "p2", 10e6, merchant)));
+        emit log_named_uint("guarded steady authorize", auth);
+        emit log_named_uint("lane margin, authorize", LANE_AUTHORIZE - auth);
+        emit log_named_uint("guarded force post", charge);
+        assertLe(auth, LANE_AUTHORIZE, "authorize");
+        assertLe(charge, LANE_CHARGE, "charge");
     }
 
     /// @notice The model prices the one-leg paths at or above the node's measurements, so for those paths a cap the

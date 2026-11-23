@@ -19,6 +19,32 @@ contract CardAuthBoundsTest is AuthEnv {
         usd.mint(alice, 10_000e6);
     }
 
+    function test_creditBack_negativeSettlesNeverCountWhatTheIssuerAbsorbed() public {
+        _setting(abi.encodeCall(CardAuth.setCompanion, (companion, true)));
+        // 30 of alice's cash pays, the issuer absorbs 70.
+        vm.prank(alice);
+        usd.transfer(bob, 10_000e6 - 30e6);
+        vm.prank(issuer);
+        cards.charge(CARD, P1, 100e6, merchant);
+        assertEq(cards.purchaseOf(P1).refunded, 70e6);
+        vm.prank(companion);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
+        cards.creditBack(P1, 0, -1);
+        // A refund of what the cash covered widens the bound by exactly that.
+        usd.mint(issuer, 30e6);
+        vm.startPrank(issuer);
+        usd.approve(address(cards), 30e6);
+        cards.refund(P1, 30e6);
+        vm.stopPrank();
+        vm.startPrank(companion);
+        cards.creditBack(P1, 0, -30e6);
+        vm.expectRevert(CardAuthBase.InvalidAmount.selector);
+        cards.creditBack(P1, 0, -1);
+        vm.stopPrank();
+        (, uint256 unsettled) = cards.exposure();
+        assertEq(unsettled, 100e6, "never past what was captured");
+    }
+
     function test_creditBack_negativeSettlesBoundedByRefundedAcrossCalls() public {
         _setting(abi.encodeCall(CardAuth.setCompanion, (companion, true)));
         _authorize(P1, 100e6);
@@ -49,25 +75,21 @@ contract CardAuthBoundsTest is AuthEnv {
         assertEq(cards.purchaseOf(P1).refunded, 15e6);
     }
 
-    function test_lateCharge_countsTowardLimits_andRevokedMerchantRefusesIt() public {
+    function test_lateCharge_countsTowardLimits_unrecordedMerchantPays() public {
         _authorize(P1, 1e6);
         vm.prank(issuer);
         cards.release(P1);
+        // No mandate recorded the purchase's merchant, so revoking a merchant later does not reach it.
         vm.prank(alice);
         cards.setMandate(merchant, true, 0);
         vm.prank(issuer);
-        vm.expectRevert(CardLimits.MerchantRevoked.selector);
         cards.charge(CARD, P1, 300e6, merchant);
-        // Lifting the revocation lets the network's late presentment land; it counts toward the limits.
-        vm.prank(alice);
-        cards.setMandate(merchant, false, 0);
-        vm.prank(issuer);
-        cards.charge(CARD, P1, 300e6, merchant);
+        assertEq(cards.purchaseOf(P1).refunded, 0, "alice's free cash paid it");
         (,,, uint64 daySpent,) = cards.usageOf(alice);
         assertEq(daySpent, 300e6, "the release gave the 1 back");
     }
 
-    function test_lateCharge_revokedMandateWithLimitRefusesIt() public {
+    function test_lateCharge_revokedMandateWithLimit_absorbedByTheIssuer() public {
         vm.prank(alice);
         cards.setMandate(merchant, false, 50e6);
         _authorize(P1, 10e6);
@@ -75,9 +97,14 @@ contract CardAuthBoundsTest is AuthEnv {
         cards.release(P1);
         vm.prank(alice);
         cards.setMandate(merchant, true, 50e6);
+        uint256 before = usd.balanceOf(alice);
         vm.prank(issuer);
-        vm.expectRevert(CardLimits.MerchantRevoked.selector);
         cards.charge(CARD, P1, 10e6, merchant);
+        assertEq(cards.purchaseOf(P1).refunded, 10e6);
+        assertEq(usd.balanceOf(alice), before);
+        (,, uint32 month, uint96 spent) = cards.mandates(alice, merchant);
+        assertGt(month, 0);
+        assertEq(spent, 0, "absorbed, so not counted");
     }
 
     function test_issuerChange_endsPreviousOperatorsAndProposals() public {

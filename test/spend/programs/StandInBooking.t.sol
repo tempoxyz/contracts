@@ -8,8 +8,8 @@ import { AuthEnv } from "./harness/AuthEnv.sol";
 
 /// @notice A purchase the network approved without asking (a stand-in) is booked with bookStandIn once it clears: it
 ///         counts toward the card's limits and the merchant's mandate without being refused by them, while a force
-///         post with charge is still refused by them. The operator's cap, a revoked merchant and a card that cannot
-///         start a purchase still refuse a stand-in.
+///         post with charge is still refused by them. Only the operator's cap refuses a stand-in; the issuer absorbs
+///         one at a merchant the owner revoked, and the card's state never stops the owner's free cash paying it.
 contract StandInBookingTest is AuthEnv {
     bytes32 internal constant P1 = bytes32("purchase-1");
     bytes32 internal constant P2 = bytes32("purchase-2");
@@ -88,23 +88,27 @@ contract StandInBookingTest is AuthEnv {
         assertEq(committed, 0);
     }
 
-    function test_standIn_revokedMerchant_refused() public {
+    function test_standIn_revokedMerchant_absorbedByTheIssuer() public {
         vm.prank(alice);
         cards.setMandate(merchant, true, 0);
         vm.prank(issuer);
-        vm.expectRevert(CardLimits.MerchantRevoked.selector);
         cards.bookStandIn(CARD, P1, 10e6, merchant);
-        // Late on a purchase whose hold ended, too.
+        assertEq(cards.purchaseOf(P1).refunded, 10e6);
+        // Late on a purchase whose hold ended, too, once a mandate recorded its merchant.
         vm.prank(alice);
-        cards.setMandate(merchant, false, 0);
+        cards.setMandate(merchant, false, 1000e6);
         _authorize(P2, 10e6);
         vm.prank(issuer);
         cards.release(P2);
         vm.prank(alice);
         cards.setMandate(merchant, true, 0);
         vm.prank(issuer);
-        vm.expectRevert(CardLimits.MerchantRevoked.selector);
         cards.bookStandIn(CARD, P2, 700e6, merchant);
+        assertEq(cards.purchaseOf(P2).refunded, 700e6);
+        assertEq(usd.balanceOf(alice), 10_000e6, "alice paid neither");
+        assertEq(usd.balanceOf(settlement), 0);
+        (, uint256 unsettled) = cards.exposure();
+        assertEq(unsettled, 710e6);
     }
 
     function test_standIn_lateOnEndedHold_pastLimits_books() public {
@@ -131,18 +135,18 @@ contract StandInBookingTest is AuthEnv {
         cards.bookStandIn(CARD, P1, 100e6, merchant);
     }
 
-    function test_standIn_frozenCard_refused() public {
-        // A card frozen after the network approved offline refuses the booking under a new reference, as a force
-        // post is; the issuer settles it with the network without the program.
+    function test_standIn_frozenCard_booksFromFreeCash() public {
+        // A card frozen after the network approved offline still books the stand-in, which the owner's free cash
+        // pays; a force post is refused.
         vm.prank(alice);
         cards.setOwnStatus(CARD, 1);
         vm.prank(issuer);
         vm.expectRevert(CardLimits.CardNotActive.selector);
-        cards.bookStandIn(CARD, P1, 10e6, merchant);
-        vm.prank(alice);
-        cards.setOwnStatus(CARD, 2);
+        cards.charge(CARD, P1, 10e6, merchant);
         vm.prank(issuer);
         cards.bookStandIn(CARD, P1, 10e6, merchant);
+        assertEq(cards.purchaseOf(P1).refunded, 0);
+        assertEq(usd.balanceOf(settlement), 10e6);
     }
 
     function test_standIn_boundedByTheOperatorCap() public {

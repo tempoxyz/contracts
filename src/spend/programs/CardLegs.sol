@@ -65,7 +65,7 @@ library CardLegs {
     /// @notice Settlement checkpoints kept, the oldest replaced first.
     uint256 internal constant CHECKPOINTS = 8;
 
-    event FundingSet(address indexed owner, uint8 version, Funding[] order);
+    event FundingSet(address indexed owner, uint32 version, Funding[] order);
 
     event SettlementAcknowledged(uint64 throughSeq, uint64 previous);
     event SettlementCheckpointed(uint64 seq, int128 net);
@@ -155,17 +155,14 @@ library CardLegs {
         l.net -= int128(pay);
     }
 
-    /// @notice Replaces `list` with `order`, every entry an approved source.
+    /// @notice Writes `order` to the new version's empty `list`, every entry an approved source.
     function setOrder(
         Funding[] storage list,
         mapping(address => uint8) storage kindOf,
         Funding[] calldata order,
-        uint8 version
+        uint32 version
     ) external {
         if (order.length > MAX_LEGS) revert InvalidOrder();
-        while (list.length != 0) {
-            list.pop();
-        }
         for (uint256 i; i < order.length; ++i) {
             if (kindOf[address(order[i].source)] == 0) revert InvalidOrder();
             list.push(order[i]);

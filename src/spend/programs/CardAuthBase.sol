@@ -36,8 +36,9 @@ abstract contract CardAuthBase is ICardAuthState {
     uint256 internal constant ONE = 1e18;
     uint256 internal constant MAX_AMOUNT = type(uint48).max;
     // Purchase word: card number [0,32), amount [32,80), captured [80,128), refunded [128,176), expiresAt [176,208),
-    // local day [208,224), grant epoch [224,232), order version [232,240), settlement era [240,248), flags [248,256).
-    // Flags: open, charged, then one bit per order entry it drew on (LEGS_SHIFT on).
+    // local day [208,224), grant epoch [224,232), order version's low 8 bits [232,240), settlement era [240,248), flags
+    // [248,256). Flags: open, charged, then one bit per order entry it drew on (LEGS_SHIFT on). Once a purchase is no
+    // longer open its amount equals what it captured, so [32,80) holds its whole order version instead.
     uint256 internal constant OPEN = 1;
     uint256 internal constant CHARGED = 2;
     uint256 internal constant LEGS_SHIFT = 2;
@@ -50,9 +51,17 @@ abstract contract CardAuthBase is ICardAuthState {
         uint64 expiresAt;
         uint32 day;
         uint8 epoch;
-        uint8 version;
+        uint32 version;
         uint8 era;
         uint256 flags;
+    }
+
+    /// @notice An owner's latest funding order version, and while any of their purchases is open, how many are and
+    ///         the version the oldest of them may have been placed at.
+    struct FundingState {
+        uint32 version;
+        uint32 openFrom;
+        uint32 open;
     }
 
     /// @notice An operator key's roles, the issuer generation that set it, its cap and what it used of it.
@@ -88,8 +97,9 @@ abstract contract CardAuthBase is ICardAuthState {
     mapping(address owner => CardLimits.Grant) public grants;
     mapping(address owner => CardLimits.Usage) public usageOf;
     mapping(address owner => mapping(address merchant => CardLimits.Mandate)) public mandates;
-    mapping(address owner => uint8 version) public fundingVersion;
-    mapping(address owner => mapping(uint8 version => CardLegs.Funding[])) internal _funding;
+    mapping(address owner => FundingState) public fundingState;
+    /// @dev Each version is written once, so every purchase keeps the order it was placed under.
+    mapping(address owner => mapping(uint32 version => CardLegs.Funding[])) internal _funding;
     mapping(bytes32 ref => uint256) internal _purchases;
     /// @notice Asked after every step that raises the program's exposure; zero for none.
     address public exposureGuard;
@@ -98,8 +108,9 @@ abstract contract CardAuthBase is ICardAuthState {
     mapping(bytes32 ref => address merchant) public mandateMerchant;
     /// @dev The latest settlement checkpoints (CardLegs.CHECKPOINTS), a ring the ledger's checkpoint count indexes.
     CardLegs.Checkpoint[8] internal _checkpoints;
-    /// @dev What companions' credit backs added back to settlement for a purchase (negative settles), in its token.
-    mapping(bytes32 ref => uint256) internal _reversed;
+    /// @dev For a purchase, in its token: what companions' credit backs added back to settlement (negative settles) in
+    ///      the low 128 bits, and what the issuer absorbed in the high 128 bits.
+    mapping(bytes32 ref => uint256) internal _credits;
     /// @dev The cash sources the issuer approved, the only kind that holds converted tokens, each kept after a stop
     ///      until its converted holds close and another needs its place.
     address[] internal _cashSources;
@@ -129,6 +140,8 @@ abstract contract CardAuthBase is ICardAuthState {
     event SettingCancelled(bytes32 indexed id);
 
     error CaptureLimitExceeded();
+    /// @notice A new funding version would be 256 past one an open purchase may still use: end those purchases first.
+    error FundingInUse();
     error InsufficientAvailable();
     error InvalidAmount();
     error InvalidOrder();

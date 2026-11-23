@@ -62,20 +62,21 @@ contract AbsorbedExposureTest is AuthEnv {
         cards.charge(CARD, bytes32("si-2"), 1e6, merchant);
     }
 
-    function test_captureOverageOnEmptyCard_isCheckedByTheGuard() public {
+    function test_captureOverageOnEmptyCard_booksPastTheGuard() public {
         usd.mint(alice, 80e6);
         _setTolerance(alice, address(cash), address(usd), 5000);
         _authorize(bytes32("tip"), 80e6);
-        // 80 held and up to 40 of tolerance, all of it past the hold absorbed: 120 against 100 is refused.
+        // 80 held and 40 of tolerance past the hold, absorbed: the network took it, so it books past the collateral.
         vm.prank(issuer);
-        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 120e6, 100e6));
         cards.capture(bytes32("tip"), 120e6, true);
-        vm.prank(issuer);
-        cards.capture(bytes32("tip"), 95e6, true);
         assertEq(usd.balanceOf(settlement), 80e6);
         (,, int128 net,) = cards.ledger();
-        assertEq(net, 95e6, "the absorbed 15 counts with the covered 80");
-        assertEq(treasury.exposure(), 95e6);
+        assertEq(net, 120e6, "the absorbed 40 counts with the covered 80");
+        assertEq(treasury.exposure(), 120e6);
+        // New exposure the issuer chooses is refused until it is settled.
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 121e6, 100e6));
+        cards.charge(CARD, bytes32("fp-1"), 1e6, merchant);
     }
 
     function _postCash(uint128 amount) internal {
