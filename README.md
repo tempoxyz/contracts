@@ -2,7 +2,7 @@
 <br>
 
 <p align="center">
-  <a href="https://tempo.xyz">
+  <a href="https://tempo.com">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset=".github/assets/tempo-wordmark-white.svg">
       <img alt="Tempo wordmark" src=".github/assets/tempo-wordmark-black.svg" width="360">
