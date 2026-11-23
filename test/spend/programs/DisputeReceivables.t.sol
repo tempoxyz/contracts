@@ -5,7 +5,8 @@ import { IssuerDesk } from "../../../src/spend/programs/IssuerDesk.sol";
 import { CompEnv } from "./harness/CompStubs.sol";
 
 /// @notice A merchant win always closes its dispute: what the desk cannot take back from the cardholder, because they
-///         revoked the desk or lack free funds, stays owed as a receivable the desk collects later from free funds.
+///         revoked the desk, lack free funds or hold savings the vault cannot redeem at once, stays owed as a
+///         receivable the desk collects later from free funds.
 contract DisputeReceivablesTest is CompEnv {
     bytes32 internal constant P1 = bytes32("purchase-1");
 
@@ -51,6 +52,31 @@ contract DisputeReceivablesTest is CompEnv {
         desk.resolveDispute(P1, false);
         assertEq(desk.openDisputes(), 0);
         assertEq(desk.receivables(alice, address(usd)), 80e6);
+    }
+
+    /// @dev Free savings shares the vault cannot redeem now stay the cardholder's, and their value stays owed.
+    function test_resolveDispute_merchantWinClosesWhileTheVaultCannotRedeem() public {
+        vm.prank(alice);
+        core.approveHolder(address(desk), address(earnShare), type(uint128).max, 0);
+        vm.prank(alice);
+        usd.transfer(bob, 1000e6);
+        usd.mint(alice, 50e6);
+        _depositEarn(alice, 50e6);
+        uint256 shares = earnShare.balanceOf(alice);
+        vm.mockCallRevert(
+            address(earnVault), abi.encodePacked(bytes4(keccak256("redeem(uint256,address,uint256)"))), "illiquid"
+        );
+        uint256 before = usd.balanceOf(settlement);
+        vm.prank(issuer);
+        desk.resolveDispute(P1, false);
+        vm.clearMockedCalls();
+        assertEq(desk.openDisputes(), 0);
+        assertEq(desk.settlementTokenInUse(address(auth)), 0);
+        assertEq(desk.receivables(alice, address(usd)), 80e6, "all of it stays owed");
+        assertEq(usd.balanceOf(settlement), before, "nothing was paid");
+        assertEq(earnShare.balanceOf(alice), shares, "the shares are back with the cardholder");
+        assertEq(core.available(alice, address(earnShare)), shares);
+        assertEq(earnShare.balanceOf(address(desk)), 0);
     }
 
     function test_resolveDispute_takesFreeCashAndRecordsOnlyTheRest() public {

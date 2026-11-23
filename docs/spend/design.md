@@ -254,8 +254,9 @@ of it, [`MockReservationCore`](../../test/spend/programs/harness/MockReservation
   key, from the account's free balance). `issuerFunds` counts it out, so the issuer's funds never advance
   twice; a settlement token change carries it into the new token at the venue's price, rounded up. A dispute
   the merchant wins takes provisional credit back from the cardholder's free cash and free savings shares; what
-  they lack, or what a revoked desk cannot take, is the desk's receivable (`receivables`), collected later from
-  free funds.
+  they lack, what a revoked desk cannot take, or what the savings vault cannot redeem at once (the shares go back
+  to the cardholder) is the desk's receivable (`receivables`), collected later from free funds, so the win
+  always closes.
 - **Savings.** The savings source captures only its own legs, never beyond what the hold reserves plus
   the owner's free shares within its budget; it keeps standing approvals to its vault. When the vault
   quotes but cannot redeem, the float pays and the shares wait for the funder.

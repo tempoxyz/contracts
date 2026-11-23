@@ -370,8 +370,9 @@ contract IssuerDesk is ISettlementTokenGuard {
     }
 
     /// @dev Takes units of ref back from owner in today's token: its free cash, then its free savings shares redeemed
-    ///      to the settlement account, never a credit line. What that leaves, or what the core refuses (the owner
-    ///      revoked the desk), stays owed as a receivable, so the dispute still closes. Returns what remains owed.
+    ///      to the settlement account, never a credit line. What that leaves, what the core refuses (the owner
+    ///      revoked the desk) or what the vault cannot redeem now stays owed as a receivable, so the dispute still
+    ///      closes. Returns what remains owed.
     // forge-lint: disable-next-item(unsafe-typecast)
     function _recover(bytes32 ref, address owner, uint128 units) private returns (uint128) {
         (uint256 amount, address token) = _today(ref, units);
@@ -391,7 +392,8 @@ contract IssuerDesk is ISettlementTokenGuard {
         return uint128(rest);
     }
 
-    /// @dev Takes up to need's worth of owner's free savings shares and redeems them to the settlement account.
+    /// @dev Takes up to need's worth of owner's free savings shares and redeems them to the settlement account. A
+    ///      vault that cannot redeem them now gets nothing: the shares go back to the owner and their value stays owed.
     // forge-lint: disable-next-item(reentrancy-no-eth,unsafe-typecast)
     function _takeShares(address owner, uint256 need) private returns (uint256 taken) {
         IEarnVault vault = SAVINGS;
@@ -404,14 +406,19 @@ contract IssuerDesk is ISettlementTokenGuard {
             if (wanted < shares) (shares, value) = (wanted, vault.previewRedeem(wanted));
         }
         if (shares == 0 || value == 0) return 0;
+        bytes32 id = _chargeId();
         // The owner may have revoked the desk for its shares; then its cash or a receivable covers the rest.
-        try CORE.charge(owner, share, _chargeId(), uint128(shares), address(this)) { }
+        try CORE.charge(owner, share, id, uint128(shares), address(this)) { }
         catch {
             return 0;
         }
         SafeTransferLib.safeApprove(share, address(vault), shares);
-        value = vault.redeem(shares, PROGRAM.SETTLEMENT_ACCOUNT(), value);
-        taken = value < need ? value : need;
+        try vault.redeem(shares, PROGRAM.SETTLEMENT_ACCOUNT(), value) returns (uint256 redeemed) {
+            taken = redeemed < need ? redeemed : need;
+        } catch {
+            SafeTransferLib.safeApprove(share, address(vault), 0);
+            CORE.refund(owner, share, address(this), id, uint128(shares));
+        }
     }
 
     function _chargeId() private returns (bytes32) {
