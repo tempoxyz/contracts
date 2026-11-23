@@ -35,6 +35,10 @@ contract NetworkPaidBookingTest is AuthEnv {
         assertEq(treasury.exposure(), 150e6, "owed to the network, so in exposure");
         (,, int128 net,) = cards.ledger();
         assertEq(net, 150e6);
+        // The sponsor may seize against all of it.
+        vm.prank(sponsor);
+        vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.AboveExposure.selector, 151e6, 150e6));
+        treasury.seize(151e6);
         // What the issuer chooses is still refused past the collateral.
         vm.prank(issuer);
         vm.expectRevert(abi.encodeWithSelector(IssuerTreasury.ExposureAboveCollateral.selector, 151e6, 100e6));
