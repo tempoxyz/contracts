@@ -21,3 +21,7 @@ paths:
       # GitHub supports queued concurrency, but actionlint 1.7.12 does not yet
       # include the `queue` key in its workflow metadata.
       - 'unexpected key "queue" for "concurrency" section'
+  '.github/workflows/hosted-e2e.yml':
+    ignore:
+      # See e2e-benchmarks.yml: actionlint does not yet know queued concurrency.
+      - 'unexpected key "queue" for "concurrency" section'

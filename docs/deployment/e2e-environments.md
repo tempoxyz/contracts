@@ -114,6 +114,15 @@ retains recovery instructions if any restoration fails.
 inspects the profile's live Zone when `TEMPO_API_KEY` or `ZONE_RPC_URL` is set
 ([rechecking deployed profiles](deployment.md#rechecking-deployed-profiles)).
 
+In CI, the manual `Hosted E2E` workflow (`hosted-e2e.yml`, `main` only) runs
+`pnpm e2e:profile` against one committed profile, with an optional `--group` or `--validate-only`.
+It resolves the profile's network with `pnpm profiles --network`, then runs in that network's
+`factory-release-<network>` environment with its `DEPLOYER_PRIVATE_KEY` (withheld from
+`--validate-only`) and `TEMPO_API_KEY`, on the network's public RPC (private RPC credentials could appear in a failure's
+recorded message), in the `hosted-contracts-<network>`
+queue it shares with the deploy and release workflows. Its summary lists each case's status, and
+it uploads `e2e/.results/` as an artifact.
+
 `--local` deploys the profile on the disposable stack through the shared lifecycle, replacing only
 external dependencies (chain, venue or engine, TIP-403 policy, Zone ID, router assets and pool) with
 local equivalents; fees, access kind, principals, the router, and the reward
