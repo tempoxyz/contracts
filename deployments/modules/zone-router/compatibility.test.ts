@@ -183,7 +183,7 @@ describe('router code identity', () => {
     }
   })
 
-  test('drops cached copies of a replaced router but keeps a replacement already deployed', () => {
+  test('drops stale cached routers but resumes a paused replacement that runs this build', () => {
     const root = mkdtempSync(join(tmpdir(), 'zone-router-replaced-cache-'))
     try {
       const path = join(root, 'profile.json')
@@ -209,9 +209,26 @@ describe('router code identity', () => {
         outputs: { ...stale.outputs, zoneRouter: address('b2') },
         actions: { ...stale.actions, 'deploy-zone-router': replacement },
       })
-      const resumed = restorePendingDeployment(path, profile, committed, new Set(['zoneRouter']))
+      // The cached replacement runs this build, so only the recorded router is stale.
+      const resumed = restorePendingDeployment(
+        path,
+        profile,
+        committed,
+        new Set(['zoneRouter']),
+        new Set(),
+      )
       expect(resumed.outputs.zoneRouter).toBe(address('b2'))
       expect(resumed.actions['deploy-zone-router']).toEqual(replacement)
+      // After another router code change the paused replacement is stale too, and is dropped.
+      const superseded = restorePendingDeployment(
+        path,
+        profile,
+        committed,
+        new Set(['zoneRouter']),
+        new Set(['zoneRouter']),
+      )
+      expect(superseded.outputs.zoneRouter).toBeUndefined()
+      expect(superseded.actions['deploy-zone-router']).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

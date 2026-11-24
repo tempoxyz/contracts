@@ -176,12 +176,21 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
     ? changedIntentComponents(committed.componentDeploymentIntentHashes, profile)
     : new Set<IntentComponent>()
   // Immutable periphery built from other code than this checkout's is replaced like changed intent.
+  const compile = (contract: string) =>
+    compiledRuntimeCode(options.root, contract, options.environment)
   const replaced = committed
-    ? await replacedComponents(client, profile, committed, (contract) =>
-        compiledRuntimeCode(options.root, contract, options.environment),
-      )
+    ? await replacedComponents(client, profile, committed, compile)
     : new Set<IntentComponent>()
   for (const component of replaced) reconciling.add(component)
+  // A paused replacement may itself predate this checkout's build, so cached contracts are checked too.
+  const staleCached = committed
+    ? await replacedComponents(
+        client,
+        profile,
+        { addresses: cachedPendingOutputs(options.profilePath, profile) },
+        compile,
+      )
+    : new Set<IntentComponent>()
   syncFoundryOutputs(options.root, options.profilePath)
   let pending: PendingDeployment
   if (committed) {
@@ -197,7 +206,13 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
         committed.source.factoryDeploymentId,
       )
     }
-    pending = restorePendingDeployment(options.profilePath, profile, committed, replaced)
+    pending = restorePendingDeployment(
+      options.profilePath,
+      profile,
+      committed,
+      replaced,
+      staleCached,
+    )
   } else {
     pending = loadPendingDeployment(options.profilePath, profile)
   }
@@ -759,6 +774,15 @@ export function publicFixtureAddresses() {
         : [],
     ),
   )
+}
+
+/** The contracts a resumable pending file holds, or none when there is no usable one. */
+function cachedPendingOutputs(profilePath: string, profile: EarnDeploymentProfile) {
+  try {
+    return loadPendingDeployment(profilePath, profile).outputs as DeploymentAddresses
+  } catch {
+    return {}
+  }
 }
 
 /** Compiles one release contract with the deploy profile and reads its immutable slots. */

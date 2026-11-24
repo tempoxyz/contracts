@@ -9,7 +9,6 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
-import { isDeepStrictEqual } from 'node:util'
 
 import type { Address } from 'viem'
 
@@ -173,6 +172,8 @@ export function restorePendingDeployment(
   >,
   // Components whose recorded contracts are replaced although their intent is unchanged.
   replaced: ReadonlySet<IntentComponent> = new Set(),
+  // Components whose cached pending contracts do not run this checkout's build either.
+  staleCached: ReadonlySet<IntentComponent> = replaced,
 ): PendingDeployment {
   let cached: PendingDeployment
   try {
@@ -201,29 +202,22 @@ export function restorePendingDeployment(
       addressComponentMatches(key as DeploymentAddressKey),
     ),
   )
-  // A cached copy of a replaced contract, or an action completed against it, is the stale code being
-  // replaced; a replacement this run already deployed has a new address and is kept.
-  const replacedAddress = (key: string) => {
+  // A cached contract built from other code, or an action completed against one, is stale; a cached
+  // replacement that runs this checkout's build is resumed.
+  const staleAddress = (key: string) => {
     const component = deploymentAddressComponents[key as DeploymentAddressKey]
-    return (
-      component !== undefined &&
-      replaced.has(component) &&
-      cached.outputs[key] === committed.addresses[key as DeploymentAddressKey]
-    )
+    return component !== undefined && staleCached.has(component)
   }
-  const staleReplacedAction = (id: string) =>
-    deploymentStep(id as EarnDeploymentActionId).intent.some((component) =>
-      replaced.has(component),
-    ) &&
-    isDeepStrictEqual(
-      cached.actions[id as EarnDeploymentActionId],
-      committed.actions[id as EarnDeploymentActionId],
-    )
   const cachedOutputs = Object.fromEntries(
-    Object.entries(cached.outputs).filter(([key]) => !replacedAddress(key)),
+    Object.entries(cached.outputs).filter(([key]) => !staleAddress(key)),
   )
   const cachedActions = Object.fromEntries(
-    Object.entries(cached.actions).filter(([id]) => !staleReplacedAction(id)),
+    Object.entries(cached.actions).filter(
+      ([id]) =>
+        !deploymentStep(id as EarnDeploymentActionId).intent.some((component) =>
+          staleCached.has(component),
+        ),
+    ),
   ) as PendingDeployment['actions']
   const pending: PendingDeployment = {
     ...cached,
