@@ -559,11 +559,16 @@ are ownerless, and their constructors impose no PATHUSD transfer-policy ID. The 
 funded and authorized to pay fees under its chosen fee token's live policy; a custom PATHUSD policy
 does not by itself block a release.
 
-The repository compiles with solar ([`solar.lock`](../../solar.lock)). Tempo's source verifier
-rebuilds only the solar builds it pins in tempo-apps'
-[`solar-builds.json`](https://github.com/tempoxyz/tempo-apps/blob/main/apps/contract-verification/container/solar-builds.json),
-so a new `solar.lock` revision must be added there and deployed before a hosted deployment built
-with it. Source verification passes Forge the solar build (`--compiler-version`, from
+The repository compiles with a published solar release: [`solar.lock`](../../solar.lock) names the
+release by its tag's commit, and [`solar-releases.json`](../../solar-releases.json) records that
+release's version and the SHA-256 of each platform's release archive, which `pnpm deps` checks
+before installing the binary. Tempo's source verifier downloads only the solar releases tempo-apps'
+[`solar-downloads.json`](https://github.com/tempoxyz/tempo-apps/blob/main/apps/contract-verification/container/solar-downloads.json)
+lists, so a new release must be added there and deployed before a hosted deployment built with it.
+The compiler is part of every release's identity: CREATE2 release addresses derive from creation
+code, which embeds the compiler's version, so moving to another solar release moves every release
+address. Move only to a published solar release, and only together with a planned factory release.
+Source verification passes Forge the solar build (`--compiler-version`, from
 `solar-solc --version`, with `--compilation-profile default`); a manual
 `forge verify-contract` needs the same two flags. Deploy a core release with:
 

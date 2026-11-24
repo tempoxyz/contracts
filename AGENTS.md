@@ -1,8 +1,8 @@
 # Working in this repository
 
 This repository holds Tempo's contracts and the tooling they share, in one Foundry project at the
-repository root (`foundry.toml`, `foundry.lock`, `lib/`, and the solar compiler pinned by
-`solar.lock` behind `solar-solc`). Its Solidity is split into domains, each with its own guide:
+repository root (`foundry.toml`, `foundry.lock`, `lib/`, and the solar release pinned by
+`solar.lock` and `solar-releases.json` behind `solar-solc`). Its Solidity is split into domains, each with its own guide:
 
 - [Earn](src/earn/AGENTS.md) (`src/earn/`): Tempo Earn, the EarnVault and EarnShare over replaceable
   yield venues, with the demo contracts it tests against in `src/demo/` (built, never deployed).
