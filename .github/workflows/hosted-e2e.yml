@@ -93,6 +93,8 @@ jobs:
       VALIDATE_ONLY: ${{ inputs.validate-only }}
       # Read-only validation signs nothing, so it never receives the deployer key.
       DEPLOYER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.DEPLOYER_PRIVATE_KEY || '' }}
+      # The third-party user, distinct from the operator; unset, those cases are blocked.
+      END_USER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.END_USER_PRIVATE_KEY || '' }}
       # Reaches the Zone through Tempo API; validation also inspects the live Zone with it.
       TEMPO_API_KEY: ${{ secrets.TEMPO_API_KEY }}
     steps:
