@@ -75,7 +75,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # The environment accepts only main and holds the deployer key the committed profiles share.
+    # The environment accepts only main and holds the deployer key the committed profiles share,
+    # plus the optional third-party end-user key.
     environment: factory-release-${{ needs.network.outputs.network }}
     # Shares the network's hosted-contracts queue with the deploy and release workflows, so the
     # deployer key never sends from two CI jobs at once.
@@ -93,6 +94,8 @@ jobs:
       VALIDATE_ONLY: ${{ inputs.validate-only }}
       # Read-only validation signs nothing, so it never receives the deployer key.
       DEPLOYER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.DEPLOYER_PRIVATE_KEY || '' }}
+      # The third-party user, distinct from the operator; unset, those cases are blocked.
+      END_USER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.END_USER_PRIVATE_KEY || '' }}
       # Reaches the Zone through Tempo API; validation also inspects the live Zone with it.
       TEMPO_API_KEY: ${{ secrets.TEMPO_API_KEY }}
     steps:

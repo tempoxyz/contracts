@@ -20,9 +20,12 @@ describe('hosted E2E workflow', () => {
     expect(workflow.match(/^ {4}if: github\.ref == 'refs\/heads\/main'$/gm)).toHaveLength(2)
     expect(workflow).toContain('environment: factory-release-${{ needs.network.outputs.network }}')
     expect(workflow).toContain('group: hosted-contracts-${{ needs.network.outputs.network }}')
-    // Read-only validation never receives the deployer key.
+    // Read-only validation never receives either signing key.
     expect(workflow).toContain(
       "DEPLOYER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.DEPLOYER_PRIVATE_KEY || '' }}",
+    )
+    expect(workflow).toContain(
+      "END_USER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.END_USER_PRIVATE_KEY || '' }}",
     )
     expect(workflow).toContain('pnpm e2e:profile "$' + '{arguments[@]}"')
   })
