@@ -306,7 +306,10 @@ completed deployment steps derived from the plan. Activation steps are not recor
 always read from the pool and Portal. Changing an optional component (`zone`, `targetYield`,
 `boostRewards`, `zoneRouterFactory`, `zoneRouter`) redeploys only that component's contracts and republishes the record; core and
 engine creation intent never changes in place, so a record whose `core` or `engine` hash differs
-from the profile is refused. The deployment-fixed engine migration mode either permits the operator
+from the profile is refused. The immutable Zone routers and the `ZoneRouterFactory` are also replaced,
+with the steps that configure them, when a recorded one's runtime differs from this checkout's build
+(compiler-declared immutable slots aside), so a source or compiler change redeploys them on the next
+deploy without any profile change. The deployment-fixed engine migration mode either permits the operator
 to move the whole pool to a replacement engine (`OperatorEnabled`) or permanently forbids that
 action (`UserOnly`). A permitted [whole-pool migration](../earn/architecture/system.md#whole-pool-engine-migration)
 does not rewrite creation provenance.

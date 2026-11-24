@@ -26,6 +26,7 @@ import {
   deploymentAddressComponents,
   deploymentAddressKeys,
   type DeploymentAddressKey,
+  type IntentComponent,
 } from './components.js'
 import {
   parseCompletedAction,
@@ -169,6 +170,10 @@ export function restorePendingDeployment(
     EarnDeploymentRecord,
     'addresses' | 'actions' | 'componentDeploymentIntentHashes'
   >,
+  // Components whose recorded contracts are replaced although their intent is unchanged.
+  replaced: ReadonlySet<IntentComponent> = new Set(),
+  // Components whose cached pending contracts do not run this checkout's build either.
+  staleCached: ReadonlySet<IntentComponent> = replaced,
 ): PendingDeployment {
   let cached: PendingDeployment
   try {
@@ -178,10 +183,9 @@ export function restorePendingDeployment(
   }
   const currentComponents = componentDeploymentIntentHashes(profile)
   const recordedComponents = committed.componentDeploymentIntentHashes
-  const componentMatches = (id: EarnDeploymentActionId) =>
-    deploymentStep(id).intent.every(
-      (component) => recordedComponents[component] === currentComponents[component],
-    )
+  const retained = (component: IntentComponent) =>
+    !replaced.has(component) && recordedComponents[component] === currentComponents[component]
+  const componentMatches = (id: EarnDeploymentActionId) => deploymentStep(id).intent.every(retained)
   const committedDeploymentActions = Object.fromEntries(
     deploymentActions(profile).flatMap((action) =>
       committed.actions[action.id] && componentMatches(action.id)
@@ -191,17 +195,34 @@ export function restorePendingDeployment(
   ) as PendingDeployment['actions']
   const addressComponentMatches = (key: DeploymentAddressKey) => {
     const component = deploymentAddressComponents[key]
-    return component !== undefined && recordedComponents[component] === currentComponents[component]
+    return component !== undefined && retained(component)
   }
   const committedAddresses = Object.fromEntries(
     Object.entries(committed.addresses).filter(([key]) =>
       addressComponentMatches(key as DeploymentAddressKey),
     ),
   )
+  // A cached contract built from other code, or an action completed against one, is stale; a cached
+  // replacement that runs this checkout's build is resumed.
+  const staleAddress = (key: string) => {
+    const component = deploymentAddressComponents[key as DeploymentAddressKey]
+    return component !== undefined && staleCached.has(component)
+  }
+  const cachedOutputs = Object.fromEntries(
+    Object.entries(cached.outputs).filter(([key]) => !staleAddress(key)),
+  )
+  const cachedActions = Object.fromEntries(
+    Object.entries(cached.actions).filter(
+      ([id]) =>
+        !deploymentStep(id as EarnDeploymentActionId).intent.some((component) =>
+          staleCached.has(component),
+        ),
+    ),
+  ) as PendingDeployment['actions']
   const pending: PendingDeployment = {
     ...cached,
-    outputs: { ...cached.outputs, ...committedAddresses },
-    actions: { ...cached.actions, ...committedDeploymentActions },
+    outputs: { ...cachedOutputs, ...committedAddresses },
+    actions: { ...cachedActions, ...committedDeploymentActions },
   }
   savePendingDeployment(profilePath, profile, pending)
   return pending

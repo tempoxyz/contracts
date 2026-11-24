@@ -1547,6 +1547,8 @@ function pendingSourceDeployment({
   vi.spyOn(Reconcile, 'preflightEarnDeployment').mockResolvedValue(undefined)
   vi.spyOn(Reconcile, 'verifyEarnDeploymentState').mockResolvedValue({})
   vi.spyOn(Inspection, 'inspectEarnDeployment').mockResolvedValue({})
+  // Router code identity has its own tests; these routers run today's build.
+  vi.spyOn(Provenance, 'replacedComponents').mockResolvedValue(new Set())
   vi.spyOn(Provenance, 'captureDeploymentSource').mockImplementation((options) => ({
     ...record.source,
     contractVerification: options.contractVerification,

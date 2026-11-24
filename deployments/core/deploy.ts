@@ -78,6 +78,7 @@ import {
 import {
   captureDeploymentSource,
   earliestDeploymentBlock,
+  replacedComponents,
   runtimeCodeHashes,
   verifyDeploymentProvenance,
 } from './provenance.js'
@@ -174,6 +175,22 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
   const reconciling = committed
     ? changedIntentComponents(committed.componentDeploymentIntentHashes, profile)
     : new Set<IntentComponent>()
+  // Immutable periphery built from other code than this checkout's is replaced like changed intent.
+  const compile = (contract: string) =>
+    compiledRuntimeCode(options.root, contract, options.environment)
+  const replaced = committed
+    ? await replacedComponents(client, profile, committed, compile)
+    : new Set<IntentComponent>()
+  for (const component of replaced) reconciling.add(component)
+  // A paused replacement may itself predate this checkout's build, so cached contracts are checked too.
+  const staleCached = committed
+    ? await replacedComponents(
+        client,
+        profile,
+        { addresses: cachedPendingOutputs(options.profilePath, profile) },
+        compile,
+      )
+    : new Set<IntentComponent>()
   syncFoundryOutputs(options.root, options.profilePath)
   let pending: PendingDeployment
   if (committed) {
@@ -189,7 +206,13 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
         committed.source.factoryDeploymentId,
       )
     }
-    pending = restorePendingDeployment(options.profilePath, profile, committed)
+    pending = restorePendingDeployment(
+      options.profilePath,
+      profile,
+      committed,
+      replaced,
+      staleCached,
+    )
   } else {
     pending = loadPendingDeployment(options.profilePath, profile)
   }
@@ -257,6 +280,7 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
     const candidate = await buildDeploymentRecord(client, {
       pending: deployed.pending,
       committed,
+      replaced,
       rpcUrl: options.rpcUrl,
       environment: options.environment,
       profile,
@@ -447,6 +471,7 @@ async function buildDeploymentRecord(
   options: {
     pending: PendingDeployment
     committed: EarnDeploymentRecord | undefined
+    replaced: ReadonlySet<IntentComponent>
     rpcUrl: string
     environment: NodeJS.ProcessEnv
     profile: EarnDeploymentProfile
@@ -468,7 +493,10 @@ async function buildDeploymentRecord(
   ) as EarnDeploymentRecord['actions']
   const previous = options.committed
   const changed = previous
-    ? changedIntentComponents(previous.componentDeploymentIntentHashes, profile)
+    ? new Set([
+        ...changedIntentComponents(previous.componentDeploymentIntentHashes, profile),
+        ...options.replaced,
+      ])
     : undefined
   // Carry proof with its creator's unchanged intent, address, and action, not with consumers that may change independently.
   const contracts = Object.fromEntries(
@@ -746,6 +774,15 @@ export function publicFixtureAddresses() {
         : [],
     ),
   )
+}
+
+/** The contracts a resumable pending file holds, or none when there is no usable one. */
+function cachedPendingOutputs(profilePath: string, profile: EarnDeploymentProfile) {
+  try {
+    return loadPendingDeployment(profilePath, profile).outputs as DeploymentAddresses
+  } catch {
+    return {}
+  }
 }
 
 /** Compiles one release contract with the deploy profile and reads its immutable slots. */

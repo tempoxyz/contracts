@@ -40,8 +40,8 @@ export type ZoneRouterFields = { zone: ZoneRouterIntent | null }
 /** The Zone identity a deployment record targets; sequencers are live state, not identity. */
 export type ZoneTarget = Omit<ZoneIdentity, 'sequencers'>
 
-// Bump when the immutable router implementation changes, invalidating pending activation too.
-const routerContractRelease = 2
+// Fixed for existing records' intent hashes: never change it. Code identity decides router replacement.
+const legacyRouterIntent = { routerContractRelease: 2 } as const
 
 type ZoneProfile = SliceProfile<ZoneRouterFields>
 
@@ -132,10 +132,10 @@ export const zoneRouterProfile = {
     return { zone }
   },
   deploymentIntent: (profile: ZoneProfile) =>
-    profile.zone ? { zone: profile.zone, ...routerReleaseIntent() } : { zone: null },
+    profile.zone ? { zone: profile.zone, ...legacyRouterIntent } : { zone: null },
   components: {
     zone: (profile: ZoneProfile, deployment: string) =>
-      profile.zone ? { deployment, zone: profile.zone, ...routerReleaseIntent() } : null,
+      profile.zone ? { deployment, zone: profile.zone, ...legacyRouterIntent } : null,
   },
   externalAddresses: zoneIdentityAddresses,
   addresses: { earnRouter: 'zone' },
@@ -216,9 +216,4 @@ function nonzeroBytes32(value: unknown, path: string): Hex {
   if (!isBytes32(value) || BigInt(value) === 0n)
     throw new Error(`${path} must be a nonzero 32-byte hex string`)
   return value.toLowerCase() as Hex
-}
-
-/** Release 1 retains existing record hashes; subsequent releases invalidate both router intents. */
-export function routerReleaseIntent(release: number = routerContractRelease) {
-  return release === 1 ? {} : { routerContractRelease: release }
 }

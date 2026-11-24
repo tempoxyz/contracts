@@ -94,6 +94,8 @@ export const deployZoneRouterFactory = defineFoundryStep({
     output: 'zoneRouterFactory',
     contract: 'src/zone/ZoneRouterFactory.sol:ZoneRouterFactory',
     constructorArgs: () => '0x',
+    // Ownerless and immutable: a factory built from other code is replaced, not reused.
+    replaceOnCodeChange: () => true,
   },
   async satisfied(client, _profile, outputs) {
     if (!(await deployedOutputs(client, outputs, ['zoneRouterFactory']))) return false
@@ -153,6 +155,8 @@ export const deployZoneRouter = defineFoundryStep({
     accessMember: true,
     constructorArgs: (profile, outputs) =>
       zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
+    // A router from a factory the profile names carries that factory's code, not this checkout's.
+    replaceOnCodeChange: (profile) => !namesFactory(profile),
   },
   async satisfied(client, profile, outputs) {
     if (!(await deployedOutputs(client, outputs, ['zoneRouter']))) return false
