@@ -55,7 +55,7 @@ jobs:
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
-          profile=$(realpath -m --relative-to=. -- "$PROFILE")
+          profile=$(node -e 'console.log(require("node:path").relative(".", process.argv[1]))' -- "$PROFILE")
           # The hosted E2E workflow test asserts this list matches the hosted networks.
           for network in moderato mainnet; do
             listed="$RUNNER_TEMP/profiles-$network"
@@ -95,10 +95,6 @@ jobs:
       DEPLOYER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.DEPLOYER_PRIVATE_KEY || '' }}
       # Reaches the Zone through Tempo API; validation also inspects the live Zone with it.
       TEMPO_API_KEY: ${{ secrets.TEMPO_API_KEY }}
-      # Optional; without it the run uses the network's public RPC.
-      TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
-      TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
-      TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
