@@ -78,8 +78,9 @@ receiver:
    bytes.
 3. It approves the vault for exactly the shares and calls the vault's `requestRedeem` with the new
    receiver. The engine's receipt tokens must fall by exactly the shares, the approval must be used
-   in full, and the vault's queued total for that date and receiver must equal the shares
-   (`UnexpectedQueuedShares`).
+   in full, and the vault's queued total for that date and receiver must be at least the shares
+   (`UnexpectedQueuedShares`). It can be more: a receiver's address is predictable, so a third party
+   can queue shares for it before the request.
 4. It stores the claim as `Open` with the vault's claim date and emits
    `RedeemRequested(requestId, engineShares, claimableEpoch)`.
 
@@ -127,18 +128,18 @@ need no entry.
 
 ## Failure modes
 
-| Condition                                                                 | Effect                                                                                                                                       |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| NAV report older than `maxNavAge`                                         | Deposits revert and fee valuation is stale; exits are unaffected.                                                                            |
-| Vault holds too little idle cash                                          | Immediate redemptions revert. New queued requests are unaffected.                                                                            |
-| Vault withdrawals paused                                                  | Immediate redemptions, new requests, and claims revert. Open requests stay open and cannot be cancelled.                                     |
-| Vault has no redemption lag, or the request is above its withdrawal limit | New requests revert in the vault.                                                                                                            |
-| Engine removed from the vault's sender whitelist                          | Deposits, immediate redemptions, new requests, and claims revert. An open request settles only after the vault's operator pays its receiver. |
-| Stored EarnVault receiver cannot receive the payout                       | `settleRedeem` reverts and the claim stays `Open`; nothing can redirect it.                                                                  |
-| Base asset sent to the engine                                             | Not recoverable: no function moves it.                                                                                                       |
-| Base asset sent to a receiver                                             | Before settlement it is paid to that request. After settlement it is not recoverable.                                                        |
-| Third party queues shares for a request's receiver                        | For the request's claim date they are claimed with it and paid to that request. For another date the engine never claims them.               |
-| Receipt tokens sent to the engine                                         | Raw surplus the EarnVault quarantines ([accounting anchors](../architecture/system.md#accounting-anchors)).                                  |
+| Condition                                                                       | Effect                                                                                                                                                                  |
+| ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NAV report older than `maxNavAge`                                               | Deposits revert and fee valuation is stale; exits are unaffected.                                                                                                       |
+| Vault holds too little idle cash                                                | Immediate redemptions revert. New queued requests are unaffected.                                                                                                       |
+| Vault withdrawals paused                                                        | Immediate redemptions, new requests, and claims revert. Open requests stay open and cannot be cancelled.                                                                |
+| Vault has no redemption lag, or the request is above its withdrawal limit       | New requests revert in the vault.                                                                                                                                       |
+| Engine removed from the vault's sender whitelist                                | Deposits, immediate redemptions, new requests, and claims revert. An open request settles only after its receiver is paid through the vault's `processAllClaimsByDate`. |
+| Stored EarnVault receiver cannot receive the payout                             | `settleRedeem` reverts and the claim stays `Open`; nothing can redirect it.                                                                                             |
+| Base asset sent to the engine                                                   | Not recoverable: no function moves it.                                                                                                                                  |
+| Base asset sent to a receiver                                                   | Before settlement it is paid to that request. After settlement it is not recoverable.                                                                                   |
+| Third party queues shares for a request's receiver, before or after the request | For the request's claim date they are claimed with it and paid to that request. For another date the engine never claims them.                                          |
+| Receipt tokens sent to the engine                                               | Raw surplus the EarnVault quarantines ([accounting anchors](../architecture/system.md#accounting-anchors)).                                                             |
 
 ## Deployment
 

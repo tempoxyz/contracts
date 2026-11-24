@@ -110,6 +110,20 @@ contract UpshiftEngineTest is Test {
         new UpshiftEngine(upshift, address(this), MAX_NAV_AGE, "Upshift", "");
         vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.InvalidUpshiftVault.selector, address(0xdead)));
         new UpshiftEngine(IUpshiftVault(address(0xdead)), address(this), MAX_NAV_AGE, "Upshift", "up");
+
+        vm.mockCall(address(upshift), abi.encodeCall(IUpshiftVault.asset, ()), abi.encode(address(0xbeef)));
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.InvalidUpshiftVault.selector, address(0xbeef)));
+        new UpshiftEngine(upshift, address(this), MAX_NAV_AGE, "Upshift", "up");
+        vm.clearMockedCalls();
+
+        vm.mockCall(address(upshift), abi.encodeCall(IUpshiftVault.lpTokenAddress, ()), abi.encode(address(0xbeef)));
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.InvalidUpshiftVault.selector, address(0xbeef)));
+        new UpshiftEngine(upshift, address(this), MAX_NAV_AGE, "Upshift", "up");
+        vm.clearMockedCalls();
+
+        vm.mockCall(address(receipt), abi.encodeCall(receipt.decimals, ()), abi.encode(uint8(78)));
+        vm.expectRevert(UpshiftEngine.InvalidVenueShareDecimals.selector);
+        new UpshiftEngine(upshift, address(this), MAX_NAV_AGE, "Upshift", "up");
     }
 
     function testBindsOnceToMatchingVault() public {
@@ -235,6 +249,38 @@ contract UpshiftEngineTest is Test {
         vault.deposit(5e6, alice, 1);
     }
 
+    function testDepositPullsFromTheEarnVault() public {
+        asset.mint(address(vault), 5e6);
+        vm.startPrank(address(vault));
+        asset.approve(address(engine), 5e6);
+        assertEq(engine.deposit(5e6), 5e6);
+        vm.stopPrank();
+        assertEq(engine.totalShares(), 5e6);
+        assertEq(asset.balanceOf(address(engine)), 0);
+        assertEq(asset.allowance(address(engine), address(upshift)), 0);
+    }
+
+    function testDepositRevertsWhenVaultLeavesAllowance() public {
+        vm.mockCall(
+            address(asset), abi.encodeCall(asset.allowance, (address(engine), address(upshift))), abi.encode(uint256(1))
+        );
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.UnexpectedAllowance.selector, address(upshift), 1));
+        vault.deposit(5e6, alice, 1);
+    }
+
+    function testFundFlowsCannotBeReentered() public {
+        ReenteringUpshiftVault reentering = new ReenteringUpshiftVault(address(asset), address(receipt));
+        UpshiftEngine other =
+            new UpshiftEngine(IUpshiftVault(address(reentering)), address(this), MAX_NAV_AGE, "Upshift", "up");
+        other.initializeEarnVault(address(vault));
+        reentering.setEngine(other);
+
+        vm.prank(address(vault));
+        vm.expectRevert(UpshiftEngine.ReentrantCall.selector);
+        other.depositHeld(1e6);
+    }
+
     function testVaultWhitelistGatesTheEngine() public {
         upshift.setWhitelist(true, address(engine), false);
         vm.prank(alice);
@@ -260,6 +306,24 @@ contract UpshiftEngineTest is Test {
         assertEq(asset.balanceOf(bob) - before, 39.6e6);
         assertEq(engine.totalShares(), 60e6);
         assertEq(receipt.totalSupply(), 60e6);
+    }
+
+    function testInstantRedeemRejectsZeroReceiver() public {
+        _deposit(alice, 100e6);
+        vm.prank(address(vault));
+        vm.expectRevert(UpshiftEngine.ZeroAddress.selector);
+        engine.redeem(40e6, address(0), 0);
+    }
+
+    function testInstantRedeemRevertsWhenEngineSharesGrow() public {
+        _deposit(alice, 100e6);
+        bytes[] memory balances = new bytes[](2);
+        balances[0] = abi.encode(uint256(100e6));
+        balances[1] = abi.encode(uint256(101e6));
+        vm.mockCalls(address(receipt), abi.encodeCall(receipt.balanceOf, (address(engine))), balances);
+        vm.prank(address(vault));
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.UnexpectedVenueSharesBurned.selector, 40e6, 0));
+        engine.redeem(40e6, alice, 0);
     }
 
     function testInstantRedeemEnforcesMinimum() public {
@@ -321,6 +385,72 @@ contract UpshiftEngineTest is Test {
         vm.prank(alice);
         vm.expectRevert(UpshiftEngine.UnexpectedRequestData.selector);
         vault.requestRedeem(40e6, abi.encode(uint256(1)));
+    }
+
+    function testRequestRejectsZeroAndOversizedShares() public {
+        uint256 oversized = uint256(type(uint128).max) + 1;
+        vm.startPrank(address(vault));
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.InvalidEngineShares.selector, 0));
+        engine.requestRedeem(0, bytes(""));
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.InvalidEngineShares.selector, oversized));
+        engine.requestRedeem(oversized, bytes(""));
+        vm.stopPrank();
+    }
+
+    function testRequestRevertsWhenVaultQueuesFewerShares() public {
+        _deposit(alice, 100e6);
+        vm.mockCall(
+            address(upshift),
+            abi.encodeWithSelector(IUpshiftVault.getBurnableAmountByReceiver.selector),
+            abi.encode(40e6 - 1)
+        );
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.UnexpectedQueuedShares.selector, 40e6, 40e6 - 1));
+        vault.requestRedeem(40e6, bytes(""));
+    }
+
+    function testRequestRejectsAClaimDateThatDoesNotFit() public {
+        _deposit(alice, 100e6);
+        // The vault call is replaced, so the share movement it would have made is replayed on the reads.
+        vm.mockCall(
+            address(upshift),
+            abi.encodeWithSelector(IUpshiftVault.requestRedeem.selector),
+            abi.encode(uint256(0), uint256(70_000), uint256(1), uint256(1))
+        );
+        bytes[] memory balances = new bytes[](2);
+        balances[0] = abi.encode(uint256(100e6));
+        balances[1] = abi.encode(uint256(60e6));
+        vm.mockCalls(address(receipt), abi.encodeCall(receipt.balanceOf, (address(engine))), balances);
+        vm.mockCall(
+            address(receipt), abi.encodeCall(receipt.allowance, (address(engine), address(upshift))), abi.encode(0)
+        );
+        vm.prank(address(vault));
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.UnexpectedClaimDate.selector, 70_000, 1, 1));
+        engine.requestRedeem(40e6, bytes(""));
+    }
+
+    /// A receiver's address is predictable, so shares queued for it first must not block the request.
+    function testSharesQueuedForAReceiverBeforeItsRequestDoNotBlockIt() public {
+        _deposit(alice, 100e6);
+        address next = vm.computeCreateAddress(address(engine), vm.getNonce(address(engine)));
+        vm.startPrank(bob);
+        asset.approve(address(upshift), 10e6);
+        upshift.deposit(address(asset), 10e6, bob);
+        receipt.approve(address(upshift), 10e6);
+        upshift.requestRedeem(10e6, next);
+        vm.stopPrank();
+
+        bytes32 id = _request(alice, 40e6);
+        assertEq(_receiverOf(id), next);
+        (,, uint256 engineShares,,,) = engine.getClaim(id);
+        assertEq(engineShares, 40e6);
+        assertEq(_queued(id), 50e6);
+        _passClaimDate();
+
+        uint256 before = asset.balanceOf(alice);
+        assertEq(engine.settleRedeem(id), 50e6);
+        assertEq(asset.balanceOf(alice) - before, 50e6);
+        assertEq(engine.totalShares(), 60e6);
     }
 
     function testRequestRevertsAtomicallyWhenVaultUnderpullsShares() public {
@@ -413,6 +543,27 @@ contract UpshiftEngineTest is Test {
         engine.settleRedeem(id);
         vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.ClaimNotOpen.selector, bytes32(uint256(1))));
         engine.settleRedeem(bytes32(uint256(1)));
+
+        (UpshiftEngine.ClaimStatus status, address receiver, uint256 engineShares, uint256 year,,) =
+            engine.getClaim(bytes32(uint256(1)));
+        assertEq(uint8(status), uint8(UpshiftEngine.ClaimStatus.None));
+        assertEq(receiver, address(0));
+        assertEq(engineShares, 0);
+        assertEq(year, 0);
+    }
+
+    function testSettleRevertsWhenAClaimLeavesSharesQueued() public {
+        _deposit(alice, 100e6);
+        bytes32 id = _request(alice, 40e6);
+        _passClaimDate();
+        vm.mockCall(
+            address(upshift), abi.encodeWithSelector(IUpshiftVault.getBurnableAmountByReceiver.selector), abi.encode(5)
+        );
+        vm.expectRevert(abi.encodeWithSelector(UpshiftEngine.UnexpectedQueuedShares.selector, 0, 5));
+        engine.settleRedeem(id);
+
+        vm.clearMockedCalls();
+        assertEq(engine.settleRedeem(id), 40e6);
     }
 
     function testSettleStaysOpenWhileTheReceiverCannotBePaid() public {
@@ -526,5 +677,29 @@ contract UpshiftEngineTest is Test {
         assertEq(asset.balanceOf(address(engine)), 0);
         assertEq(asset.balanceOf(_receiverOf(id)), 0);
         assertEq(vault.openRedeemRequestCount(), 0);
+    }
+}
+
+/// @dev A vault whose deposit calls back into the engine.
+contract ReenteringUpshiftVault {
+    address public immutable asset;
+    address public immutable lpTokenAddress;
+    UpshiftEngine engine;
+
+    constructor(address asset_, address lpToken_) {
+        asset = asset_;
+        lpTokenAddress = lpToken_;
+    }
+
+    function setEngine(UpshiftEngine engine_) external {
+        engine = engine_;
+    }
+
+    function assetsUpdatedOn() external view returns (uint256) {
+        return block.timestamp;
+    }
+
+    function deposit(address, uint256, address) external returns (uint256) {
+        return engine.settleRedeem(bytes32(0));
     }
 }

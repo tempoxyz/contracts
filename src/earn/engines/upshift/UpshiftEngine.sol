@@ -33,7 +33,8 @@ interface IEarnVaultFinalize {
 ///
 /// @dev ASYNC. The vault queues redemptions per claim date and receiver, with no request ID and no
 ///      cancellation. `requestRedeem` therefore gives every request its own {UpshiftRedeemReceiver}, whose
-///      address is the request ID, so the vault's total for that receiver is exactly that request. The
+///      address is the request ID, so the vault's total for that receiver is that request plus anything a
+///      third party queued for the same receiver and date. The
 ///      vault prices a queued redemption when it is claimed, not when it is requested. {settleRedeem} claims
 ///      it when the vault has not already paid it, moves whatever the receiver holds to the EarnVault, and
 ///      finalizes the request with that measured amount. {cancelRedeem} always reverts.
@@ -325,9 +326,10 @@ contract UpshiftEngine is
         if (year > type(uint16).max || month > type(uint8).max || day > type(uint8).max) {
             revert UnexpectedClaimDate(year, month, day);
         }
-        // The receiver is new, so the vault's total for it on that date is this request alone.
+        // At least, not exactly: the receiver's address is predictable, so shares a third party queued for
+        // it first must not block the request. They are paid to it at settlement.
         uint256 queued = vault.getBurnableAmountByReceiver(year, month, day, receiver);
-        if (queued != engineShares) revert UnexpectedQueuedShares(engineShares, queued);
+        if (queued < engineShares) revert UnexpectedQueuedShares(engineShares, queued);
 
         // Bounded above, so the downcasts cannot truncate.
         // forge-lint: disable-next-item(unsafe-typecast)
