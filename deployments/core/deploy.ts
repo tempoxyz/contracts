@@ -78,6 +78,7 @@ import {
 import {
   captureDeploymentSource,
   earliestDeploymentBlock,
+  replacedComponents,
   runtimeCodeHashes,
   verifyDeploymentProvenance,
 } from './provenance.js'
@@ -174,6 +175,13 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
   const reconciling = committed
     ? changedIntentComponents(committed.componentDeploymentIntentHashes, profile)
     : new Set<IntentComponent>()
+  // Immutable periphery built from other code than this checkout's is replaced like changed intent.
+  const replaced = committed
+    ? await replacedComponents(client, profile, committed, (contract) =>
+        compiledRuntimeCode(options.root, contract, options.environment),
+      )
+    : new Set<IntentComponent>()
+  for (const component of replaced) reconciling.add(component)
   syncFoundryOutputs(options.root, options.profilePath)
   let pending: PendingDeployment
   if (committed) {
@@ -189,7 +197,7 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
         committed.source.factoryDeploymentId,
       )
     }
-    pending = restorePendingDeployment(options.profilePath, profile, committed)
+    pending = restorePendingDeployment(options.profilePath, profile, committed, replaced)
   } else {
     pending = loadPendingDeployment(options.profilePath, profile)
   }
@@ -257,6 +265,7 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
     const candidate = await buildDeploymentRecord(client, {
       pending: deployed.pending,
       committed,
+      replaced,
       rpcUrl: options.rpcUrl,
       environment: options.environment,
       profile,
@@ -447,6 +456,7 @@ async function buildDeploymentRecord(
   options: {
     pending: PendingDeployment
     committed: EarnDeploymentRecord | undefined
+    replaced: ReadonlySet<IntentComponent>
     rpcUrl: string
     environment: NodeJS.ProcessEnv
     profile: EarnDeploymentProfile
@@ -468,7 +478,10 @@ async function buildDeploymentRecord(
   ) as EarnDeploymentRecord['actions']
   const previous = options.committed
   const changed = previous
-    ? changedIntentComponents(previous.componentDeploymentIntentHashes, profile)
+    ? new Set([
+        ...changedIntentComponents(previous.componentDeploymentIntentHashes, profile),
+        ...options.replaced,
+      ])
     : undefined
   // Carry proof with its creator's unchanged intent, address, and action, not with consumers that may change independently.
   const contracts = Object.fromEntries(

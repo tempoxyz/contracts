@@ -9,7 +9,12 @@ import {
   type DeploymentSource,
   type EarnDeploymentRecord,
 } from './record.js'
-import { runtimeCodeHash } from './releases.js'
+import type { IntentComponent } from './components.js'
+import {
+  normalizeImmutableReferences,
+  runtimeCodeHash,
+  type CompiledRuntimeCode,
+} from './releases.js'
 import { tempoVerifierUrl } from './verify.js'
 import { deploymentSteps } from '../modules/index.js'
 import {
@@ -33,6 +38,35 @@ export async function runtimeCodeHashes(
   return Object.fromEntries(
     keys.map((key, index) => [key, hashes[index]]),
   ) as EarnDeploymentRecord['runtimeCodeHashes']
+}
+
+/**
+ * Intent components whose recorded replaceable contracts no longer run this checkout's build,
+ * compared with immutable slots zeroed; reconciliation replaces them like a changed intent.
+ */
+export async function replacedComponents(
+  client: Pick<PublicClient, 'getCode'>,
+  profile: EarnDeploymentProfile,
+  record: Pick<EarnDeploymentRecord, 'addresses'>,
+  compile: (contract: string) => CompiledRuntimeCode,
+) {
+  const replaced = new Set<IntentComponent>()
+  for (const step of deploymentSteps) {
+    if (step.execution !== 'foundry' || !step.enabled(profile)) continue
+    const source = step.source
+    const recorded = source && record.addresses[source.output]
+    if (!source?.replaceOnCodeChange?.(profile) || !recorded) continue
+    const { bytecode, references } = compile(source.contract)
+    const deployed = await runtimeCodeHash(
+      client,
+      recorded,
+      `addresses.${source.output}`,
+      references,
+    )
+    if (deployed !== keccak256(normalizeImmutableReferences(bytecode, references)))
+      for (const component of step.intent) replaced.add(component)
+  }
+  return replaced
 }
 
 /**

@@ -94,6 +94,8 @@ export const deployRouter = defineFoundryStep({
     output: 'earnRouter',
     contract: 'src/earn/router/SingleZoneEarnRouter.sol:SingleZoneEarnRouter',
     accessMember: true,
+    // The router is immutable, so a router built from other code is replaced, not reused.
+    replaceOnCodeChange: () => true,
     constructorArgs(profile, outputs) {
       const { zoneId, earnVault, privateAsset, route } = routerArgs(profile, outputs)
       return encodeAbiParameters(

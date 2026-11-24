@@ -274,6 +274,11 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
     constructorArgs(profile: EarnDeploymentProfile, outputs: Record<string, Address>): Hex
     /** Set when the contract moves EarnShare or the asset, so a protected EarnShare must whitelist it. */
     accessMember?: AccessMember
+    /**
+     * Whether the contract is immutable periphery identified by this checkout's build: when its
+     * recorded runtime differs, reconciliation replaces it as if the step's intent had changed.
+     */
+    replaceOnCodeChange?(profile: EarnDeploymentProfile): boolean
   }
 }
 

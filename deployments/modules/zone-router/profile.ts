@@ -55,10 +55,6 @@ export type ZoneRouterFields = { zoneRouter: ZoneRouterIntent | null }
 
 type RouterProfile = SliceProfile<ZoneRouterFields>
 
-// Immutable router and factory have no upgrade path. Bump when either's deployed runtime changes so
-// reconciliation deploys a new factory and router instead of reusing the recorded ones.
-const zoneRouterContractRelease = 2
-
 /**
  * The `zoneRouter` slice: a `ZoneRouter` mode from `zone-router/`, the `ZoneRouterFactory` that deploys it
  * unless the profile names one, and the Portal of the Zone it serves. Each is optional periphery, so
@@ -79,16 +75,13 @@ export const zoneRouterModeProfile = {
     profile.zoneRouter ? { zoneRouter: profile.zoneRouter } : {},
   // Absent, it adds nothing, so profiles without a router keep their deployment intent hash.
   deploymentIntent: (profile: RouterProfile) =>
-    profile.zoneRouter ? { zoneRouter: profile.zoneRouter, ...routerReleaseIntent() } : {},
+    profile.zoneRouter ? { zoneRouter: profile.zoneRouter } : {},
   components: {
     zoneRouterFactory: (profile: RouterProfile, deployment: string) =>
-      profile.zoneRouter && profile.zoneRouter.factory === undefined
-        ? { contractRelease: zoneRouterContractRelease, deployment }
-        : null,
+      profile.zoneRouter && profile.zoneRouter.factory === undefined ? { deployment } : null,
     zoneRouter: (profile: RouterProfile, deployment: string) =>
       profile.zoneRouter
         ? {
-            contractRelease: zoneRouterContractRelease,
             deployment,
             earnVault: profile.zoneRouter.earn ? 'derived' : null,
             zoneRouter: profile.zoneRouter,
@@ -202,9 +195,4 @@ function parseEarn(value: Record<string, unknown>, path: string): ZoneRouterEarn
     pool: address(value.pool, `${path}.pool`),
     customerId: value.customerId.toLowerCase() as Hex,
   }
-}
-
-/** Release 1 retains existing record hashes; every later release changes the pending identity. */
-export function routerReleaseIntent(release: number = zoneRouterContractRelease) {
-  return release === 1 ? {} : { zoneRouterContractRelease: release }
 }

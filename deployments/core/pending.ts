@@ -26,6 +26,7 @@ import {
   deploymentAddressComponents,
   deploymentAddressKeys,
   type DeploymentAddressKey,
+  type IntentComponent,
 } from './components.js'
 import {
   parseCompletedAction,
@@ -169,6 +170,8 @@ export function restorePendingDeployment(
     EarnDeploymentRecord,
     'addresses' | 'actions' | 'componentDeploymentIntentHashes'
   >,
+  // Components whose recorded contracts are replaced although their intent is unchanged.
+  replaced: ReadonlySet<IntentComponent> = new Set(),
 ): PendingDeployment {
   let cached: PendingDeployment
   try {
@@ -178,10 +181,9 @@ export function restorePendingDeployment(
   }
   const currentComponents = componentDeploymentIntentHashes(profile)
   const recordedComponents = committed.componentDeploymentIntentHashes
-  const componentMatches = (id: EarnDeploymentActionId) =>
-    deploymentStep(id).intent.every(
-      (component) => recordedComponents[component] === currentComponents[component],
-    )
+  const retained = (component: IntentComponent) =>
+    !replaced.has(component) && recordedComponents[component] === currentComponents[component]
+  const componentMatches = (id: EarnDeploymentActionId) => deploymentStep(id).intent.every(retained)
   const committedDeploymentActions = Object.fromEntries(
     deploymentActions(profile).flatMap((action) =>
       committed.actions[action.id] && componentMatches(action.id)
@@ -191,7 +193,7 @@ export function restorePendingDeployment(
   ) as PendingDeployment['actions']
   const addressComponentMatches = (key: DeploymentAddressKey) => {
     const component = deploymentAddressComponents[key]
-    return component !== undefined && recordedComponents[component] === currentComponents[component]
+    return component !== undefined && retained(component)
   }
   const committedAddresses = Object.fromEntries(
     Object.entries(committed.addresses).filter(([key]) =>

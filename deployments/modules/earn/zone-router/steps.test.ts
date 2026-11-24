@@ -12,13 +12,12 @@ import { zonePortalAbi } from '../../../abis/index.js'
 import { zoneFactoryAddress, zoneMessengerAddress } from '../../../chain/zone.js'
 import { parseEarnDeploymentProfile } from '../../../core/profile.js'
 import { presentEarnDeploymentPlan } from '../../../core/plan.js'
-import {
-  zoneRouterModeProfile,
-  routerReleaseIntent as modeReleaseIntent,
-} from '../../zone-router/profile.js'
-import { zoneRouterProfile, routerReleaseIntent } from './profile.js'
+import { zoneRouterModeProfile } from '../../zone-router/profile.js'
+import { deployZoneRouter, deployZoneRouterFactory } from '../../zone-router/steps.js'
+import { zoneRouterProfile } from './profile.js'
 import {
   canAdministerZone,
+  deployRouter,
   enableZoneTokens,
   registerZoneGateway,
   zoneAdministrator,
@@ -289,31 +288,26 @@ describe('preflightRouterRoute', () => {
   })
 })
 
-describe('router release intent', () => {
-  test('puts the current release in the intent so a bump redeploys the routers', () => {
+describe('router code identity', () => {
+  test('keeps router intent to the profile and replaces routers by their compiled code', () => {
     expect(zoneRouterModeProfile.deploymentIntent(profile)).toEqual({
       zoneRouter: profile.zoneRouter,
-      zoneRouterContractRelease: 2,
     })
-    expect(zoneRouterModeProfile.components.zoneRouter(profile, 'deployment')).toHaveProperty(
+    expect(zoneRouterModeProfile.components.zoneRouter(profile, 'deployment')).not.toHaveProperty(
       'contractRelease',
-      2,
     )
-    expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({
-      zone: profile.zone,
-      routerContractRelease: 2,
-    })
+    expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({ zone: profile.zone })
     expect(zoneRouterProfile.components.zone(profile, 'deployment')).toEqual({
       deployment: 'deployment',
       zone: profile.zone,
-      routerContractRelease: 2,
     })
-    // Release 1 adds nothing, so records written before releases existed keep their hash.
-    expect(modeReleaseIntent(1)).toEqual({})
-    expect(routerReleaseIntent(1)).toEqual({})
-    expect(modeReleaseIntent(2)).toEqual({ zoneRouterContractRelease: 2 })
-    expect(routerReleaseIntent(2)).toEqual({ routerContractRelease: 2 })
-    expect(modeReleaseIntent(3)).not.toEqual(modeReleaseIntent(2))
-    expect(routerReleaseIntent(3)).not.toEqual(routerReleaseIntent(2))
+    expect(deployRouter.source?.replaceOnCodeChange?.(profile)).toBe(true)
+    expect(deployZoneRouterFactory.source?.replaceOnCodeChange?.(profile)).toBe(true)
+    expect(deployZoneRouter.source?.replaceOnCodeChange?.(profile)).toBe(true)
+    const namedFactory = {
+      ...profile,
+      zoneRouter: { ...profile.zoneRouter!, factory: address('f') },
+    }
+    expect(deployZoneRouter.source?.replaceOnCodeChange?.(namedFactory)).toBe(false)
   })
 })
