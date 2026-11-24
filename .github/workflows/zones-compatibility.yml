@@ -47,7 +47,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: contracts/.solar
-          key: solar-receipt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('contracts/solar.lock') }}
+          key: solar-receipt-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('contracts/solar.lock', 'contracts/solar-releases.json') }}
 
       - name: Install Solidity dependencies and solar
         working-directory: contracts

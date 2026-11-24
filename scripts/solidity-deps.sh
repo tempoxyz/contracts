@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs the Foundry project's Solidity dependencies into lib/ at the revisions foundry.lock pins;
-# they are not Git submodules. The project compiles with the solar revision solar.lock pins; cargo
-# installs it into .solar/<rev>/ with a local digest receipt, where solar-solc (the compiler) finds it.
+# they are not Git submodules. The project compiles with the solar release solar.lock pins by its tag's
+# commit; the release's own binary is installed into .solar/<rev>/ with a local digest receipt, where
+# solar-solc (the compiler) finds it.
 # Runs on bash 3.2 (macOS's /bin/bash), so it uses no associative arrays.
 # Usage: scripts/solidity-deps.sh   (idempotent; a checkout at its pin is kept)
 set -euo pipefail
@@ -29,9 +30,8 @@ try:
     binary = root / "bin/solar"
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError("compiler is not executable")
-    # Schema 2 retires installs built before solar's v0.3.1 tag existed: they label themselves -dev, and
-    # that label is written into every contract's metadata.
-    expected = {"schemaVersion": 2, "sourceRevision": revision,
+    # Schema 3 marks installs of solar's published release binary, retiring earlier source builds.
+    expected = {"schemaVersion": 3, "sourceRevision": revision,
                 "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
     path = root / "install-receipt.json"
     if mode == "write":
@@ -50,7 +50,7 @@ install_solar() (
   [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid solar.lock revision" >&2; exit 1; }
   destination="$PWD/.solar/$rev"
   if solar_receipt verify "$destination" "$rev"; then exit 0; fi
-  echo "solar $rev needs a fresh pinned rebuild: missing or mismatched install receipt" >&2
+  echo "solar $rev needs a fresh install: missing or mismatched install receipt" >&2
   mkdir -p "$PWD/.solar"
   lock="$PWD/.solar/.install-$rev.lock"
   mkdir "$lock" 2>/dev/null || {
@@ -62,23 +62,40 @@ install_solar() (
   trap 'if [[ -n "$temporary" ]]; then rm -rf "$temporary"; fi; if [[ -n "$source" ]]; then rm -rf "$source"; fi; rmdir "$lock"' EXIT
   # Another installer may have finished between the initial check and acquiring the lock.
   if solar_receipt verify "$destination" "$rev"; then exit 0; fi
+  # Install solar's published release binary for this platform: solar-releases.json maps each pinned
+  # release commit to its version and the SHA-256 of every platform's release archive.
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) target=x86_64-unknown-linux-musl ;;
+    Linux-aarch64 | Linux-arm64) target=aarch64-unknown-linux-gnu ;;
+    Darwin-arm64) target=aarch64-apple-darwin ;;
+    Darwin-x86_64) target=x86_64-apple-darwin ;;
+    *) echo "no solar release binary for $(uname -s) $(uname -m)" >&2; exit 1 ;;
+  esac
+  read -r version sha256 < <(python3 - solar-releases.json "$rev" "$target" <<'RELEASE'
+import json, sys
+path, revision, target = sys.argv[1:]
+release = json.load(open(path)).get(revision)
+if not release or target not in release["sha256"]:
+    sys.exit(f"solar-releases.json lists no {target} release archive for {revision}")
+print(release["version"], release["sha256"][target])
+RELEASE
+  ) || exit 1
   temporary=$(mktemp -d "$PWD/.solar/.build-$rev.XXXXXX")
-  # Build from a clone with tags: solar labels itself -dev unless its checkout is a release tag, and
-  # that label is written into every contract's metadata. cargo install --git checks out no tags.
   source=$(mktemp -d "$PWD/.solar/.source-$rev.XXXXXX")
-  git clone --quiet --filter=blob:none https://github.com/paradigmxyz/solar "$source"
-  git -C "$source" -c advice.detachedHead=false checkout --quiet "$rev"
-  # Build with the Rust release solar declares as its minimum when the default toolchain is older.
-  msrv=$(sed -n 's/^rust-version = "\([0-9.]*\)".*/\1/p' "$source/Cargo.toml" 2>/dev/null || true)
-  toolchain=()
-  if [[ -n "$msrv" ]] && command -v rustup >/dev/null &&
-    [[ "$(printf '%s\n' "$msrv" "$(rustc --version | cut -d' ' -f2)" | sort -V | head -1)" != "$msrv" ]]; then
-    rustup toolchain install "$msrv" --profile minimal --no-self-update >&2
-    toolchain=("+$msrv")
-  fi
-  cargo "${toolchain[@]+"${toolchain[@]}"}" install --quiet --locked --path "$source/crates/solar" --root "$temporary"
+  archive="$source/solar-$target.tar.gz"
+  curl --fail --silent --show-error --location --output "$archive"     "https://github.com/paradigmxyz/solar/releases/download/v$version/solar-$target.tar.gz"
+  # The archive is checked before anything in it is extracted, let alone run.
+  python3 - "$archive" "$sha256" <<'CHECKSUM' || { echo "solar v$version $target archive does not match solar-releases.json" >&2; exit 1; }
+import hashlib, sys
+path, expected = sys.argv[1:]
+sys.exit(hashlib.sha256(open(path, "rb").read()).hexdigest() != expected)
+CHECKSUM
+  tar -xzf "$archive" -C "$source" "solar-$target/solar"
+  mkdir -p "$temporary/bin"
+  mv "$source/solar-$target/solar" "$temporary/bin/solar"
+  chmod 755 "$temporary/bin/solar"
   solar_receipt write "$temporary" "$rev" || {
-    echo "cargo did not produce an executable solar compiler; no installation published" >&2
+    echo "the solar release archive held no executable compiler; no installation published" >&2
     exit 1
   }
   # Stage both files together; failed builds never touch the installed directory. Roll back a failed promotion.

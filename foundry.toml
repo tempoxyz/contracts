@@ -17,7 +17,7 @@ fs_permissions = [
 # Earn and Zone tests run on the plain EVM with mocked precompiles; spend tests need Tempo's real
 # precompiles, so they run only under the spend profile (FOUNDRY_PROFILE=spend forge test).
 no_match_path = "test/spend/**"
-# Compiled with solar (https://github.com/paradigmxyz/solar) at the revision solar.lock pins, through
+# Compiled with the solar (https://github.com/paradigmxyz/solar) release solar.lock pins, through
 # the solar-solc wrapper, which presents it to Forge as solc 0.8.38. Forge resolves this path from its
 # working directory, so run it from the repository root or set FOUNDRY_SOLC to the wrapper's absolute path.
 # Providers' contracts whose exact pragma does not build here (Rain's 0.8.17, Permit2) are built with

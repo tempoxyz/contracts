@@ -64,7 +64,7 @@ export function captureBuildProvenance(root: string) {
       ) as unknown
       if (
         !isDeepStrictEqual(receipt, {
-          schemaVersion: 2,
+          schemaVersion: 3,
           sourceRevision: requestedSourceRevision,
           sha256: digest,
         })

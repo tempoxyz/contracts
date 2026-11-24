@@ -21,4 +21,4 @@ runs:
           cache
         # Localnet compiles no tests, so test-only changes keep its cache.
         # solar-v2: artifacts compiled before solar's v0.3.1 tag carry a -dev label in their metadata.
-        key: forge-solar-v2-${{ inputs.scope }}-${{ runner.os }}-${{ steps.forge.outputs.version }}-${{ hashFiles('foundry.toml', 'foundry.lock', 'solar.lock', 'solar-solc', 'src/**/*.sol', 'script/**/*.sol', 'vendor/**/*.sol') }}-${{ inputs.scope != 'localnet' && hashFiles('test/**/*.sol') || 'no-tests' }}
+        key: forge-solar-v2-${{ inputs.scope }}-${{ runner.os }}-${{ steps.forge.outputs.version }}-${{ hashFiles('foundry.toml', 'foundry.lock', 'solar.lock', 'solar-releases.json', 'solar-solc', 'src/**/*.sol', 'script/**/*.sol', 'vendor/**/*.sol') }}-${{ inputs.scope != 'localnet' && hashFiles('test/**/*.sol') || 'no-tests' }}

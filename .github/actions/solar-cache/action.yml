@@ -1,14 +1,14 @@
 name: Cache solar
 description: >-
-  Restore and save the solar compiler solar.lock pins (the Foundry project compiles with it through
-  solar-solc). Run before scripts/solidity-deps.sh, which builds solar on a miss and verifies the
-  installation receipt on a hit.
+  Restore and save the solar release binary solar.lock pins (the Foundry project compiles with it
+  through solar-solc). Run before scripts/solidity-deps.sh, which downloads it on a miss and verifies
+  the installation receipt on a hit.
 runs:
   using: composite
   steps:
-    # Building solar takes minutes, so the binary and its installation receipt are cached by revision
-    # and receipt format.
+    # The binary and its installation receipt are cached by release and receipt format, saving a
+    # download per job.
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: .solar
-        key: solar-receipt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('solar.lock') }}
+        key: solar-receipt-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('solar.lock', 'solar-releases.json') }}

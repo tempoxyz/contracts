@@ -152,7 +152,7 @@ describe('captureBuildProvenance', () => {
         writeFileSync(
           receipt,
           JSON.stringify({
-            schemaVersion: 2,
+            schemaVersion: 3,
             sourceRevision: kind === 'revision' ? 'ab'.repeat(20) : solarRevision,
             sha256:
               kind === 'revision'
@@ -458,7 +458,7 @@ function checkout() {
   writeFileSync(
     receipt,
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceRevision: solarRevision,
       sha256: createHash('sha256').update(binary).digest('hex'),
     }),
@@ -498,7 +498,7 @@ try {
 if (!valid) {
   const binary = ${JSON.stringify(freshBinary)};
   writeFileSync(compiler, binary, { mode: 0o700 });
-  writeFileSync(receipt, JSON.stringify({ schemaVersion: 2, sourceRevision: revision, sha256: createHash('sha256').update(binary).digest('hex') }));
+  writeFileSync(receipt, JSON.stringify({ schemaVersion: 3, sourceRevision: revision, sha256: createHash('sha256').update(binary).digest('hex') }));
 }
 `,
     { mode: 0o700 },

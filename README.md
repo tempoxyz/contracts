@@ -34,19 +34,19 @@ this repository.
 
 ## Repository layout
 
-| Path                                         | Purpose                                                                                                                                                                             |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `foundry.toml`, `foundry.lock`, `solar.lock` | The Foundry project: profiles, remappings, pinned Solidity dependencies (`lib/`), and the solar compiler (`solar-solc`).                                                            |
-| `src/`                                       | Contracts by domain: `earn/`, `zone/`, `spend/` (with `spend/providers/<provider>/`), `demo/` (built, never deployed), and `interfaces/` (`earn/`, `zone/`, `spend/`, `external/`). |
-| `test/`, `script/`                           | Forge tests and scripts by domain (`earn/`, `zone/`, `spend/`).                                                                                                                     |
-| `vendor/`                                    | Third-party contracts vendored unmodified: card providers' (`bridge/`, `rain/`) and the Zones runtime (`tempo-zones/`).                                                             |
-| `snapshots/`                                 | Gas snapshots of the card spend TIP-20 paths.                                                                                                                                       |
-| `deployments/`                               | Shared deployment lifecycle (`pnpm earn`), releases, ABIs, and modules (`modules/earn/`, `modules/zone-router/`); the `@tempoxyz/contracts` package.                                |
-| `profiles/`                                  | Deployment profiles and generated records.                                                                                                                                          |
-| `e2e/`                                       | Shared local and hosted integration harness and cases, and the card runs (`e2e/spend/`).                                                                                            |
-| `localnet/`                                  | Disposable local Tempo L1 and Zone, shared by every E2E run.                                                                                                                        |
-| `docs/`                                      | The [documentation index](docs/README.md); each domain's docs (`earn/`, `zone/`, `spend/`), and the shared `deployment/` and `development/`.                                        |
-| `scripts/solidity-deps.sh`                   | Installs the pinned Solidity dependencies and the solar compiler (`pnpm deps`).                                                                                                     |
+| Path                                                                | Purpose                                                                                                                                                                             |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `foundry.toml`, `foundry.lock`, `solar.lock`, `solar-releases.json` | The Foundry project: profiles, remappings, pinned Solidity dependencies (`lib/`), and the solar release (`solar-solc`).                                                             |
+| `src/`                                                              | Contracts by domain: `earn/`, `zone/`, `spend/` (with `spend/providers/<provider>/`), `demo/` (built, never deployed), and `interfaces/` (`earn/`, `zone/`, `spend/`, `external/`). |
+| `test/`, `script/`                                                  | Forge tests and scripts by domain (`earn/`, `zone/`, `spend/`).                                                                                                                     |
+| `vendor/`                                                           | Third-party contracts vendored unmodified: card providers' (`bridge/`, `rain/`) and the Zones runtime (`tempo-zones/`).                                                             |
+| `snapshots/`                                                        | Gas snapshots of the card spend TIP-20 paths.                                                                                                                                       |
+| `deployments/`                                                      | Shared deployment lifecycle (`pnpm earn`), releases, ABIs, and modules (`modules/earn/`, `modules/zone-router/`); the `@tempoxyz/contracts` package.                                |
+| `profiles/`                                                         | Deployment profiles and generated records.                                                                                                                                          |
+| `e2e/`                                                              | Shared local and hosted integration harness and cases, and the card runs (`e2e/spend/`).                                                                                            |
+| `localnet/`                                                         | Disposable local Tempo L1 and Zone, shared by every E2E run.                                                                                                                        |
+| `docs/`                                                             | The [documentation index](docs/README.md); each domain's docs (`earn/`, `zone/`, `spend/`), and the shared `deployment/` and `development/`.                                        |
+| `scripts/solidity-deps.sh`                                          | Installs the pinned Solidity dependencies and the solar compiler (`pnpm deps`).                                                                                                     |
 
 ## Get started
 

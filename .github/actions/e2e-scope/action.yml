@@ -49,6 +49,7 @@ runs:
             'script/DeterministicRelease.sol',
             'solar-solc',
             'solar.lock',
+            'solar-releases.json',
           ])
           // Localnet deploys the committed DirectPropAMM fixture; the rest of `test/` and the spend
           // contracts and scripts (`src/spend/`, `script/spend/`) are outside Local E2E.

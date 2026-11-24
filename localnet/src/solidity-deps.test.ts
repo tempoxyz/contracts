@@ -17,75 +17,57 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const roots: string[] = []
 const revision = 'd8'.repeat(20)
-const installedBytes = '#!/bin/sh\necho fresh-pinned-install\n'
+const target = 'x86_64-unknown-linux-musl'
+const installedBytes = '#!/bin/sh\necho released-solar\n'
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
 describe('solidity-deps solar installation', () => {
-  it('builds with the Rust release solar requires when the default toolchain is older', () => {
-    const fixture = setup()
-    const result = fixture.install(false, [], '1.100')
-    expect(result.status, result.stderr).toBe(0)
-    expect(fixture.rustupCalls()).toEqual([
-      ['toolchain', 'install', '1.100', '--profile', 'minimal', '--no-self-update'],
-    ])
-    expect(fixture.calls()[0]?.[0]).toBe('+1.100')
-
-    const current = setup()
-    const unchanged = current.install(false, [], '1.98')
-    expect(unchanged.status, unchanged.stderr).toBe(0)
-    expect(current.rustupCalls()).toEqual([])
-    expect(current.calls()[0]?.[0]).toBe('install')
-  })
-
-  it('records the digest only after a fresh pinned cargo installation', () => {
+  it('installs the checksummed release binary and records its digest', () => {
     const fixture = setup()
     const result = fixture.install()
     expect(result.status, result.stderr).toBe(0)
     expect(fixture.calls()).toHaveLength(1)
-    // Solar is built from a clone with tags so a release revision reports its release version.
-    const [clone, checkout] = fixture.gitCalls()
-    expect(clone).toEqual([
-      'clone',
-      '--quiet',
-      '--filter=blob:none',
-      'https://github.com/paradigmxyz/solar',
-      expect.any(String),
-    ])
-    const source = clone![4]!
-    expect(source.startsWith(join(fixture.root, '.solar', '.source-'))).toBe(true)
-    expect(checkout).toEqual([
-      '-C',
-      source,
-      '-c',
-      'advice.detachedHead=false',
-      'checkout',
-      '--quiet',
-      revision,
-    ])
-    expect(fixture.calls()[0]).toEqual([
-      'install',
-      '--quiet',
-      '--locked',
-      '--path',
-      join(source, 'crates/solar'),
-      '--root',
-      expect.any(String),
-    ])
-    expect(fixture.calls()[0]![6]).not.toBe(fixture.directory)
-    expect(fixture.calls()[0]![6]!.startsWith(join(fixture.root, '.solar', '.build-'))).toBe(true)
+    expect(fixture.calls()[0]).toContain(
+      `https://github.com/paradigmxyz/solar/releases/download/v9.9.9/solar-${target}.tar.gz`,
+    )
     expect(readFileSync(fixture.binary, 'utf8')).toBe(installedBytes)
     expect(JSON.parse(readFileSync(fixture.receipt, 'utf8'))).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceRevision: revision,
       sha256: createHash('sha256').update(installedBytes).digest('hex'),
     })
     expect(readdirSync(join(fixture.root, '.solar'))).toEqual([revision])
   })
 
+  it('refuses an archive whose checksum differs from solar-releases.json', () => {
+    const fixture = setup({ tampered: true })
+    const result = fixture.install()
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('does not match solar-releases.json')
+    expect(existsSync(fixture.binary)).toBe(false)
+    expect(readdirSync(join(fixture.root, '.solar'))).toEqual([])
+  })
+
+  it('refuses a revision solar-releases.json does not list', () => {
+    const fixture = setup({ listed: false })
+    const result = fixture.install()
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('lists no')
+    expect(fixture.calls()).toEqual([])
+  })
+
+  it('refuses a platform without a release binary', () => {
+    const fixture = setup({ platform: 'Plan9 mips' })
+    const result = fixture.install()
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('no solar release binary')
+    expect(fixture.calls()).toEqual([])
+  })
+
   it.each(['missing', 'malformed', 'revision', 'digest', 'binary'])(
-    'rebuilds rather than adopting an existing compiler with %s receipt evidence',
+    'reinstalls rather than adopting an existing compiler with %s receipt evidence',
     (kind) => {
       const fixture = setup()
       fixture.seed()
@@ -96,7 +78,7 @@ describe('solidity-deps solar installation', () => {
         writeFileSync(
           fixture.receipt,
           JSON.stringify({
-            schemaVersion: 2,
+            schemaVersion: 3,
             sourceRevision: kind === 'revision' ? 'ab'.repeat(20) : revision,
             sha256:
               kind === 'revision'
@@ -108,10 +90,7 @@ describe('solidity-deps solar installation', () => {
       expect(result.status, result.stderr).toBe(0)
       expect(fixture.calls()).toHaveLength(1)
       expect(readFileSync(fixture.binary, 'utf8')).toBe(installedBytes)
-      expect(JSON.parse(readFileSync(fixture.receipt, 'utf8')).sha256).toBe(
-        createHash('sha256').update(installedBytes).digest('hex'),
-      )
-      expect(result.stdout + result.stderr).toContain('rebuild')
+      expect(result.stdout + result.stderr).toContain('fresh install')
     },
   )
 
@@ -125,7 +104,7 @@ describe('solidity-deps solar installation', () => {
   })
 
   it.each(['missing', 'mismatched'])(
-    'preserves the old installation when a %s receipt triggers a failed rebuild',
+    'preserves the old installation when a %s receipt triggers a failed download',
     (kind) => {
       const fixture = setup()
       fixture.seed()
@@ -152,7 +131,6 @@ describe('solidity-deps solar installation', () => {
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('usage: scripts/solidity-deps.sh')
     expect(fixture.calls()).toEqual([])
-    expect(fixture.gitCalls()).toEqual([])
     expect(existsSync(join(fixture.root, '.solar'))).toBe(false)
   })
 
@@ -167,55 +145,53 @@ describe('solidity-deps solar installation', () => {
   })
 })
 
-function setup() {
+function setup(options: { listed?: boolean; platform?: string; tampered?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'solidity-deps-'))
   roots.push(root)
-  for (const path of ['scripts', 'bin']) mkdirSync(join(root, path))
+  for (const path of ['scripts', 'bin', `fixture/solar-${target}`])
+    mkdirSync(join(root, path), { recursive: true })
   copyFileSync(
     new URL('../../scripts/solidity-deps.sh', import.meta.url),
     join(root, 'scripts/solidity-deps.sh'),
   )
   writeFileSync(join(root, 'foundry.lock'), '{}')
   writeFileSync(join(root, 'solar.lock'), `${revision}\n`)
-  const callsFile = join(root, 'cargo-calls.jsonl')
+  // A release archive laid out like solar's: solar-<target>/solar.
+  writeFileSync(join(root, `fixture/solar-${target}/solar`), installedBytes, { mode: 0o755 })
+  const archive = join(root, 'release.tar.gz')
+  spawnSync('tar', ['-czf', archive, '-C', join(root, 'fixture'), `solar-${target}`])
+  const digest = createHash('sha256').update(readFileSync(archive)).digest('hex')
   writeFileSync(
-    join(root, 'bin/cargo'),
+    join(root, 'solar-releases.json'),
+    JSON.stringify(
+      options.listed === false
+        ? {}
+        : {
+            [revision]: {
+              version: '9.9.9',
+              sha256: { [target]: options.tampered ? '00'.repeat(32) : digest },
+            },
+          },
+    ),
+  )
+  const [system, machine] = (options.platform ?? 'Linux x86_64').split(' ')
+  writeFileSync(
+    join(root, 'bin/uname'),
+    `#!/bin/sh\ncase "$1" in -s) echo ${system} ;; -m) echo ${machine} ;; esac\n`,
+  )
+  chmodSync(join(root, 'bin/uname'), 0o700)
+  const callsFile = join(root, 'curl-calls.jsonl')
+  writeFileSync(
+    join(root, 'bin/curl'),
     `#!/usr/bin/env node
 const fs = require('node:fs');
-const path = require('node:path');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n');
-const target = args[args.indexOf('--root') + 1];
-fs.mkdirSync(path.join(target, 'bin'), { recursive: true });
-fs.writeFileSync(path.join(target, 'bin/solar'), ${JSON.stringify(installedBytes)}, { mode: 0o700 });
-if (process.env.TEST_CARGO_FAIL === '1') process.exit(33);
+if (process.env.TEST_CURL_FAIL === '1') process.exit(22);
+fs.copyFileSync(${JSON.stringify(archive)}, args[args.indexOf('--output') + 1]);
 `,
   )
-  chmodSync(join(root, 'bin/cargo'), 0o700)
-  const gitCallsFile = join(root, 'git-calls.jsonl')
-  writeFileSync(
-    join(root, 'bin/git'),
-    `#!/usr/bin/env node
-const fs = require('node:fs');
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(gitCallsFile)}, JSON.stringify(args) + '\\n');
-if (args[0] === 'clone') {
-  fs.mkdirSync(args[args.length - 1], { recursive: true });
-  if (process.env.TEST_SOLAR_MSRV) fs.writeFileSync(args[args.length - 1] + '/Cargo.toml', 'rust-version = "' + process.env.TEST_SOLAR_MSRV + '" # MSRV\\n');
-}
-`,
-  )
-  chmodSync(join(root, 'bin/git'), 0o700)
-  const rustupCallsFile = join(root, 'rustup-calls.jsonl')
-  writeFileSync(join(root, 'bin/rustc'), '#!/bin/sh\necho "rustc 1.99.1 (58cf8f9c3 2026-10-13)"\n')
-  chmodSync(join(root, 'bin/rustc'), 0o700)
-  writeFileSync(
-    join(root, 'bin/rustup'),
-    `#!/usr/bin/env node
-require('node:fs').appendFileSync(${JSON.stringify(rustupCallsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');
-`,
-  )
-  chmodSync(join(root, 'bin/rustup'), 0o700)
+  chmodSync(join(root, 'bin/curl'), 0o700)
   const directory = join(root, '.solar', revision)
   const binary = join(directory, 'bin/solar')
   const receipt = join(directory, 'install-receipt.json')
@@ -231,29 +207,14 @@ require('node:fs').appendFileSync(${JSON.stringify(rustupCallsFile)}, JSON.strin
             .split('\n')
             .map((line) => JSON.parse(line) as string[])
         : [],
-    gitCalls: () =>
-      existsSync(gitCallsFile)
-        ? readFileSync(gitCallsFile, 'utf8')
-            .trim()
-            .split('\n')
-            .map((line) => JSON.parse(line) as string[])
-        : [],
-    rustupCalls: () =>
-      existsSync(rustupCallsFile)
-        ? readFileSync(rustupCallsFile, 'utf8')
-            .trim()
-            .split('\n')
-            .map((line) => JSON.parse(line) as string[])
-        : [],
-    install: (fail = false, args: readonly string[] = [], msrv = '') =>
+    install: (fail = false, args: readonly string[] = []) =>
       spawnSync('bash', ['scripts/solidity-deps.sh', ...args], {
         cwd: root,
         encoding: 'utf8',
         env: {
           HOME: root,
           PATH: `${join(root, 'bin')}:${process.env.PATH}`,
-          TEST_CARGO_FAIL: fail ? '1' : '0',
-          TEST_SOLAR_MSRV: msrv,
+          TEST_CURL_FAIL: fail ? '1' : '0',
         },
       }),
     seed: () => {
@@ -262,7 +223,7 @@ require('node:fs').appendFileSync(${JSON.stringify(rustupCallsFile)}, JSON.strin
       writeFileSync(
         receipt,
         JSON.stringify({
-          schemaVersion: 2,
+          schemaVersion: 3,
           sourceRevision: revision,
           sha256: createHash('sha256').update('existing compiler').digest('hex'),
         }),

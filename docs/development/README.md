@@ -6,12 +6,13 @@ This page owns the toolchain, the checks a change must pass, and continuous inte
 
 ## Toolchain
 
-- **Solidity** `0.8.36`, compiled by [solar](https://github.com/paradigmxyz/solar) at the revision
-  [`solar.lock`](../../solar.lock) pins, with **Foundry v1.8.6**. Forge calls solar through
+- **Solidity** `0.8.36`, compiled by the [solar](https://github.com/paradigmxyz/solar) release
+  [`solar.lock`](../../solar.lock) pins (currently v0.3.1), with **Foundry v1.8.6**. Forge calls solar through
   [`solar-solc`](../../solar-solc), which presents it as solc `0.8.36`; solar's code
   removes most of solc's stack shuffling, internal jumps and address masking, so the same work costs
-  less gas and executes faster. `pnpm deps` builds that revision once with cargo (Rust stable) into
-  the ignored `.solar/`. The repository is one Foundry project at its root, so Earn, the Zone router
+  less gas and executes faster. `pnpm deps` downloads that release's published binary for your
+  platform into the ignored `.solar/`, after checking it against
+  [`solar-releases.json`](../../solar-releases.json). The repository is one Foundry project at its root, so Earn, the Zone router
   and card spend share this build. Forge resolves the wrapper from its working directory: run it from
   the repository root, or set `FOUNDRY_SOLC` to the wrapper's absolute path, as CI does. Only the
   vendored Zones runtime rebuild, Rain's fixture build, and the PropAMM fixture rebuild keep solc,
