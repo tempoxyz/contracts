@@ -29,7 +29,16 @@ try:
     binary = root / "bin/solar"
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError("compiler is not executable")
-    expected = {"schemaVersion": 1, "sourceRevision": revision,
+    # The version the compiler reports goes into every contract's metadata, so a build labeled -dev
+    # before its release tag existed must not satisfy a receipt written after.
+    import subprocess
+    try:
+        reported = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
+                                  env={**os.environ, "SOLC_WRAPPER": "1", "SOLC_WRAPPER_VERSION": "0.8.38"},
+                                  check=True).stdout.strip()
+    except subprocess.SubprocessError as error:
+        raise ValueError("compiler does not report its version") from error
+    expected = {"schemaVersion": 2, "sourceRevision": revision, "version": reported,
                 "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
     path = root / "install-receipt.json"
     if mode == "write":
