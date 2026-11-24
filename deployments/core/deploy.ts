@@ -212,7 +212,7 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
       staleCached,
     )
     // Replaced contracts keep what activation granted them until the revoke steps remove it.
-    const retired = retiredContracts(profile, committed.addresses, replaced, cached, staleCached)
+    const retired = retiredContracts(committed.addresses, reconciling, cached, staleCached)
     if (Object.keys(retired).length > 0) {
       pending = { ...pending, outputs: { ...pending.outputs, ...retired } }
       savePendingDeployment(options.profilePath, profile, pending)
@@ -780,22 +780,23 @@ export function publicFixtureAddresses() {
   )
 }
 
-/** The pending-output entries for replaced contracts: the recorded ones, and stale cached replacements. */
+/**
+ * The pending-output entries for granted contracts this deployment redeploys, whether its intent or its
+ * code changed: the recorded ones, and stale cached replacements.
+ */
 function retiredContracts(
-  profile: EarnDeploymentProfile,
   recorded: DeploymentAddresses,
-  replaced: ReadonlySet<IntentComponent>,
+  reconciling: ReadonlySet<IntentComponent>,
   cached: DeploymentAddresses,
   staleCached: ReadonlySet<IntentComponent>,
 ) {
   const retired: Record<string, Address> = {}
   for (const step of deploymentSteps) {
-    if (step.execution !== 'foundry' || !step.source?.replaceOnCodeChange?.(profile)) continue
+    if (step.execution !== 'foundry' || !step.source?.retireOnReplace) continue
     const { output } = step.source
-    const component = deploymentAddressComponents[output]
     const previous = [
-      replaced.has(component) ? recorded[output] : undefined,
-      staleCached.has(component) ? cached[output] : undefined,
+      step.intent.some((component) => reconciling.has(component)) ? recorded[output] : undefined,
+      step.intent.some((component) => staleCached.has(component)) ? cached[output] : undefined,
     ]
     for (const address of previous)
       if (address) retired[retiredOutputKey(output, address)] = address

@@ -279,6 +279,11 @@ export type FoundryStep<Id extends string = string> = BaseStep<Id, typeof deploy
      * recorded runtime differs, reconciliation replaces it as if the step's intent had changed.
      */
     replaceOnCodeChange?(profile: EarnDeploymentProfile): boolean
+    /**
+     * Set when activation grants the contract authority: a recorded one this deployment redeploys is
+     * kept as retired until revoke steps remove that authority.
+     */
+    retireOnReplace?: true
   }
 }
 
@@ -373,10 +378,10 @@ export function isRetiredOutputKey(key: string, address?: Address) {
   return match !== null && (address === undefined || match[1] === address.toLowerCase())
 }
 
-/** The retired contracts recorded under `output`. */
+/** The retired contracts recorded under `output`, never the live one. */
 export function retiredOutputs(outputs: Record<string, Address>, output: DeploymentAddressKey) {
   return Object.entries(outputs)
-    .filter(([key]) => key.startsWith(`retired.${output}.`))
+    .filter(([key, address]) => key.startsWith(`retired.${output}.`) && address !== outputs[output])
     .map(([, address]) => address)
 }
 

@@ -162,6 +162,7 @@ export const deployZoneRouter = defineFoundryStep({
       zoneRouterConstructorArgs(zoneRouterMode(profile, outputs)),
     // A router from a factory the profile names carries that factory's code, not this checkout's.
     replaceOnCodeChange: (profile) => !namesFactory(profile),
+    retireOnReplace: true,
   },
   async satisfied(client, profile, outputs) {
     if (!(await deployedOutputs(client, outputs, ['zoneRouter']))) return false
@@ -403,6 +404,26 @@ export const admitZoneRouterAccount = defineAuthorityStep({
   },
 })
 
+/** Whether the live ZoneRouter holds every grant activation gives it: pool admission and Portal admission. */
+async function zoneRouterGranted(
+  client: Pick<ChainClient, 'readContract'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address>,
+) {
+  const router = requiredOutput(outputs, 'zoneRouter')
+  const portal = requiredOutput(outputs, 'zoneRouterPortal')
+  const pool = routerPool(profile)
+  const [admission, gateway, deposits] = await Promise.all([
+    pool ? poolAdmission(client, pool, router) : undefined,
+    zoneCallbackGatewayRegistered(client, portal, router),
+    zoneGatewayDepositsAdmitted(client, portal, router),
+  ])
+  const admitted =
+    !admission ||
+    (admission.taker && admission.recipient && getAddress(admission.resolved) === router)
+  return admitted && gateway && deposits
+}
+
 /** Removes pool admission from routers this deployment replaced, once their successor is admitted. */
 export const revokeRetiredZoneRouterPool = defineAuthorityStep({
   id: 'revoke-retired-zone-router-pool',
@@ -421,7 +442,7 @@ export const revokeRetiredZoneRouterPool = defineAuthorityStep({
       retiredOutputs(outputs, 'zoneRouter'),
     ),
   handoff: (profile, outputs) =>
-    `The owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(router, false) and setRecipientAllowed(router, false) for each replaced ZoneRouter still admitted: ${retiredOutputs(outputs, 'zoneRouter').join(', ')}. When a DirectPropAMMRebalanceController owns the pool, its owner makes the calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+    `The owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(router, false) and setRecipientAllowed(router, false) for each replaced ZoneRouter still admitted: ${retiredOutputs(outputs, 'zoneRouter').join(', ')}, once ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} holds its pool and Portal admission. When a DirectPropAMMRebalanceController owns the pool, its owner makes the calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
   signerAvailable: (_profile, environment, proven) =>
     Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) => {
@@ -434,6 +455,7 @@ export const revokeRetiredZoneRouterPool = defineAuthorityStep({
       dependencies,
       required(routerPool(options.profile), 'Zone router conversion pool'),
       retiredOutputs(options.outputs, 'zoneRouter'),
+      (client) => zoneRouterGranted(client, options.profile, options.outputs),
     ),
 })
 
@@ -459,13 +481,14 @@ export const revokeRetiredZoneRouterGateway = defineAuthorityStep({
       retiredOutputs(outputs, 'zoneRouter'),
     ),
   handoff: (profile, outputs) =>
-    `The administrator of Zone ${configuredZoneRouter(profile).zoneId} must call setGateway(router, false) and setAllowedAccount(router, false) on Portal ${requiredOutput(outputs, 'zoneRouterPortal')} for each role a replaced ZoneRouter still holds: ${retiredOutputs(outputs, 'zoneRouter').join(', ')}. Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+    `The administrator of Zone ${configuredZoneRouter(profile).zoneId} must call setGateway(router, false) and setAllowedAccount(router, false) on Portal ${requiredOutput(outputs, 'zoneRouterPortal')} for each role a replaced ZoneRouter still holds: ${retiredOutputs(outputs, 'zoneRouter').join(', ')}, once ZoneRouter ${requiredOutput(outputs, 'zoneRouter')} holds its pool and Portal admission. Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
   execute: (options, dependencies) =>
     revokePortalRouters(
       options,
       dependencies,
       requiredOutput(options.outputs, 'zoneRouterPortal'),
       retiredOutputs(options.outputs, 'zoneRouter'),
+      (client) => zoneRouterGranted(client, options.profile, options.outputs),
     ),
 })
 

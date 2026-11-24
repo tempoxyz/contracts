@@ -77,20 +77,38 @@ const receiptHash = `0x${'a'.repeat(64)}` as const
 
 describe('replaced router revocation', () => {
   const old = address('9')
+  const live = address('d')
   const retired = { [retiredOutputKey('earnRouter', old)]: old }
+  const deployerKey = `0x${'2'.repeat(64)}` as const
+  const deployer = privateKeyToAccount(deployerKey).address
 
-  test('removes every Portal role a replaced router holds, and nothing when it holds none', async () => {
+  /** Chain reads where the live router holds every grant unless `liveGranted` is false. */
+  function chain(options: { liveGranted?: boolean; oldGateway?: boolean; oldPool?: boolean }) {
     const runtime = mockDependencies([])
     runtime.readContract.mockImplementation(async ({ functionName, args }) => {
+      const [account, role] = (args ?? []) as [string, number]
+      const granted = account === live ? options.liveGranted !== false : false
       if (functionName === 'admin') return authorityAccount
-      if (functionName === 'hasRole') return args[0] === old && args[1] === 3
-      throw new Error(`Unexpected Portal read ${functionName}`)
+      if (functionName === 'owner') return deployer
+      if (functionName === 'isGatewayOpen' || functionName === 'isAccessEnforced') return false
+      if (functionName === 'hasRole')
+        return account === old ? role === 3 && options.oldGateway !== false : granted && role === 3
+      if (functionName === 'takerAllowed' || functionName === 'recipientAllowed')
+        return account === old ? options.oldPool !== false : granted
+      if (functionName === 'resolveRecipient') return account
+      throw new Error(`Unexpected read ${functionName}`)
     })
+    return runtime
+  }
+  const stepOutputs = { ...outputs, earnRouter: live, ...retired }
+
+  test('removes every Portal role a replaced router holds, and nothing when it holds none', async () => {
+    const runtime = chain({ oldPool: false })
     const result = await execute(
       profile,
       'revoke-retired-router-gateway',
       { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
-      { ...outputs, earnRouter: address('d'), ...retired },
+      stepOutputs,
       runtime.dependencies,
     )
     expect(result).toEqual({ transactions: [receiptHash] })
@@ -104,16 +122,13 @@ describe('replaced router revocation', () => {
       args: [old, false],
     })
 
-    const none = mockDependencies([])
-    none.readContract.mockImplementation(async ({ functionName }) =>
-      functionName === 'admin' ? authorityAccount : false,
-    )
+    const none = chain({ oldGateway: false })
     await expect(
       execute(
         profile,
         'revoke-retired-router-gateway',
         { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
-        { ...outputs, earnRouter: address('d'), ...retired },
+        stepOutputs,
         none.dependencies,
       ),
     ).resolves.toEqual({ transactions: [] })
@@ -121,20 +136,12 @@ describe('replaced router revocation', () => {
   })
 
   test('removes pool admission from a replaced router as the pool owner', async () => {
-    const deployerKey = `0x${'2'.repeat(64)}` as const
-    const deployer = privateKeyToAccount(deployerKey).address
-    const runtime = mockDependencies([])
-    runtime.readContract.mockImplementation(async ({ functionName }) => {
-      if (functionName === 'owner') return deployer
-      if (functionName === 'takerAllowed' || functionName === 'recipientAllowed') return true
-      if (functionName === 'resolveRecipient') return old
-      throw new Error(`Unexpected pool read ${functionName}`)
-    })
+    const runtime = chain({})
     const result = await execute(
       profile,
       'revoke-retired-router-pool',
       { DEPLOYER_PRIVATE_KEY: deployerKey },
-      { ...outputs, earnRouter: address('d'), ...retired },
+      stepOutputs,
       runtime.dependencies,
     )
     expect(result).toEqual({ transactions: [receiptHash] })
@@ -151,21 +158,37 @@ describe('replaced router revocation', () => {
     ])
   })
 
+  test.each(['revoke-retired-router-pool', 'revoke-retired-router-gateway'])(
+    '%s hands off rather than revoke while the successor lacks a grant',
+    async (id) => {
+      const runtime = chain({ liveGranted: false })
+      await expect(
+        execute(
+          profile,
+          id,
+          { DEPLOYER_PRIVATE_KEY: deployerKey, ZONE_ADMIN_PRIVATE_KEY: authorityKey },
+          stepOutputs,
+          runtime.dependencies,
+        ),
+      ).resolves.toBeUndefined()
+      expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
+    },
+  )
+
   test('is satisfied with nothing retired and names each router still privileged', async () => {
     const step = deploymentStep('revoke-retired-router-gateway')
     const client = {
       readContract: vi.fn(async ({ args }: { args: unknown[] }) => args[0] === old),
     } as never
-    await expect(
-      step.satisfied(client, profile, { ...outputs, earnRouter: address('d') }),
-    ).resolves.toBe(true)
-    await expect(
-      step.satisfied(client, profile, { ...outputs, earnRouter: address('d'), ...retired }),
-    ).resolves.toBe(false)
-    if (step.execution !== 'authority') throw new Error('Expected an authority step')
-    expect(step.handoff(profile, { ...outputs, earnRouter: address('d'), ...retired })).toContain(
-      old,
+    await expect(step.satisfied(client, profile, { ...outputs, earnRouter: live })).resolves.toBe(
+      true,
     )
+    await expect(step.satisfied(client, profile, stepOutputs)).resolves.toBe(false)
+    // The live router is never treated as retired, even if a stale entry names it.
+    const self = { ...outputs, earnRouter: old, ...retired }
+    await expect(step.satisfied(client, profile, self)).resolves.toBe(true)
+    if (step.execution !== 'authority') throw new Error('Expected an authority step')
+    expect(step.handoff(profile, stepOutputs)).toContain(old)
   })
 })
 

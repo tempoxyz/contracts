@@ -98,6 +98,7 @@ export const deployRouter = defineFoundryStep({
     accessMember: true,
     // The router is immutable, so a router built from other code is replaced, not reused.
     replaceOnCodeChange: () => true,
+    retireOnReplace: true,
     constructorArgs(profile, outputs) {
       const { zoneId, earnVault, privateAsset, route } = routerArgs(profile, outputs)
       return encodeAbiParameters(
@@ -185,7 +186,7 @@ export const revokeRetiredRouterPool = defineAuthorityStep({
       retiredOutputs(outputs, 'earnRouter'),
     ),
   handoff: (profile, outputs) =>
-    `The owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(router, false) and setRecipientAllowed(router, false) for each replaced router still admitted: ${retiredOutputs(outputs, 'earnRouter').join(', ')}. When a DirectPropAMMRebalanceController owns the pool, its owner makes the calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+    `The owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(router, false) and setRecipientAllowed(router, false) for each replaced router still admitted: ${retiredOutputs(outputs, 'earnRouter').join(', ')}. When a DirectPropAMMRebalanceController owns the pool, its owner makes the calls through controller.execute(data). Do this only after router ${requiredOutput(outputs, 'earnRouter')} holds its pool and Portal admission. Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
   signerAvailable: (_profile, environment, proven) =>
     Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
   probeSigner: (options) => canAuthorizeRouter(options),
@@ -195,6 +196,7 @@ export const revokeRetiredRouterPool = defineAuthorityStep({
       dependencies,
       required(configuredRouterPool(options.profile), 'router conversion pool').pool,
       retiredOutputs(options.outputs, 'earnRouter'),
+      (client) => routerGranted(client, options.profile, options.outputs),
     ),
 })
 
@@ -282,11 +284,15 @@ export async function revokePoolRouters(
   dependencies: AuthorityDependencies,
   pool: Address,
   routers: readonly Address[],
+  successorReady: (client: Pick<ChainClient, 'readContract'>) => Promise<boolean>,
 ): Promise<{ transactions: Hex[] } | undefined> {
+  if (routers.length === 0) return { transactions: [] }
   const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
   if (!key) return undefined
   const account = privateKeyToAccount(key)
   const client = dependencies.authorityClient(options, account)
+  // Revoking first could leave no router able to serve; wait until the successor holds every grant.
+  if (!(await successorReady(client))) return undefined
   const authority = await poolAuthority(client, pool, account.address)
   if (!authority) return undefined
   const poolCalls: Hex[] = []
@@ -313,6 +319,24 @@ export async function revokePoolRouters(
   return await sendAuthorityCalls(client, dependencies, options.profile, calls)
 }
 
+/** Whether the live Earn router holds every grant activation gives it: pool admission and Portal admission. */
+export async function routerGranted(
+  client: Pick<ChainClient, 'readContract'>,
+  profile: EarnDeploymentProfile,
+  outputs: Record<string, Address>,
+) {
+  const router = requiredOutput(outputs, 'earnRouter')
+  const portal = requiredOutput(outputs, 'zonePortal')
+  const conversion = configuredRouterPool(profile)
+  const [pool, gateway, deposits] = await Promise.all([
+    conversion ? poolAdmission(client, conversion.pool, router) : undefined,
+    zoneCallbackGatewayRegistered(client, portal, router),
+    zoneGatewayDepositsAdmitted(client, portal, router),
+  ])
+  const admitted = !pool || (pool.taker && pool.recipient && getAddress(pool.resolved) === router)
+  return admitted && gateway && deposits
+}
+
 /** Whether no router in `routers` still holds a role on `portal`. */
 export async function portalRoutersRevoked(
   client: Pick<ChainClient, 'readContract'>,
@@ -331,9 +355,13 @@ export async function revokePortalRouters(
   dependencies: AuthorityDependencies,
   portal: Address,
   routers: readonly Address[],
+  successorReady: (client: Pick<ChainClient, 'readContract'>) => Promise<boolean>,
 ): Promise<{ transactions: Hex[] } | undefined> {
+  if (routers.length === 0) return { transactions: [] }
   const administrator = await zoneAdministrator(options, dependencies, portal)
   if (!administrator) return undefined
+  // Revoking first could leave no router able to serve; wait until the successor holds every grant.
+  if (!(await successorReady(administrator.client))) return undefined
   const calls = (
     await Promise.all(
       routers.map((router) => portalRoleRevokeCalls(administrator.client, portal, router)),
@@ -462,13 +490,14 @@ export const revokeRetiredRouterGateway = defineAuthorityStep({
       retiredOutputs(outputs, 'earnRouter'),
     ),
   handoff: (profile, outputs) =>
-    `The administrator of Zone ${configuredZone(profile)?.id} must call setGateway(router, false) and setAllowedAccount(router, false) on Portal ${requiredOutput(outputs, 'zonePortal')} for each role a replaced router still holds: ${retiredOutputs(outputs, 'earnRouter').join(', ')}. Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+    `The administrator of Zone ${configuredZone(profile)?.id} must call setGateway(router, false) and setAllowedAccount(router, false) on Portal ${requiredOutput(outputs, 'zonePortal')} for each role a replaced router still holds: ${retiredOutputs(outputs, 'earnRouter').join(', ')}, once router ${requiredOutput(outputs, 'earnRouter')} holds its pool and Portal admission. Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
   execute: (options, dependencies) =>
     revokePortalRouters(
       options,
       dependencies,
       requiredOutput(options.outputs, 'zonePortal'),
       retiredOutputs(options.outputs, 'earnRouter'),
+      (client) => routerGranted(client, options.profile, options.outputs),
     ),
 })
 
