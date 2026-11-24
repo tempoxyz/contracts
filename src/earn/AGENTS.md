@@ -8,7 +8,8 @@ accounting specification for contracts, tests, and integrations; this file is no
 - Establish authorization, custody changes, supply changes, rounding, and rollback for every
   economic transition. Measured balance deltas are custody evidence; venue return scalars are not.
   Preserve caller output bounds and atomic rollback when the last external call fails.
-- EarnVault owns issuance and the conversion anchor; EarnFees mutates only through its paired vault
+- EarnVault alone issues EarnShare and owns the conversion anchor, and its current engine holds the
+  venue shares; EarnFees mutates only through its paired vault
   and pays only recorded claims. Never add an upgrade entrypoint to the fixed EarnVault proxy, and
   never let a setter broaden a deployment-fixed control or protected fee choice.
 - Keep active managed backing, raw surplus, and queued claims separate. Capacity and reward-admission
@@ -24,7 +25,8 @@ accounting specification for contracts, tests, and integrations; this file is no
   pulls and keep at most one unit standing, never a maximum approval, because Veda's engine holds
   settled payouts. A
   same-asset router binds no pool. Do not add caller-selected tokens, vaults, or destinations.
-- Reward periphery has no issuer authority; preserve measured solvency, domain-separated cumulative
+- Tempo API owns offchain reward policy and operations; this repository owns the reward contracts, so
+  never recreate an offchain reward service here. Reward periphery has no issuer authority; preserve measured solvency, domain-separated cumulative
   entitlements, root-version replay protection, and unpaid entitlement after failed transfers.
 - `src/demo/` is test scaffolding (built, never deployed); label experimental integrations honestly.
 

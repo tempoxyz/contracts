@@ -11,6 +11,9 @@ owns the test fixture bootstrap.
   inside shared case logic.
 - Hosted runs target a deployed profile through `harness/hosted.ts`; local runs consume typed
   `Environment.run` state. E2E owns fixtures and acceptance, not another engine/core/router deployer.
+- Core Zones owns hosted Zone infrastructure, and the Zone administrator and pool owner their
+  admission and inventory. Hosted E2E and benchmarks never hold either key, and never disable
+  policy, admission, or gateway checks or repair Zone infrastructure to pass.
 - Reuse the Zone transport in `harness/context.ts`. API-key runs do not prove caller-token RPC
   isolation.
 - Before blaming Earn code, check canonical Zone identity, protocol compatibility, access controls,
