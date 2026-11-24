@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
 import type { Address } from 'viem'
 
@@ -200,10 +201,34 @@ export function restorePendingDeployment(
       addressComponentMatches(key as DeploymentAddressKey),
     ),
   )
+  // A cached copy of a replaced contract, or an action completed against it, is the stale code being
+  // replaced; a replacement this run already deployed has a new address and is kept.
+  const replacedAddress = (key: string) => {
+    const component = deploymentAddressComponents[key as DeploymentAddressKey]
+    return (
+      component !== undefined &&
+      replaced.has(component) &&
+      cached.outputs[key] === committed.addresses[key as DeploymentAddressKey]
+    )
+  }
+  const staleReplacedAction = (id: string) =>
+    deploymentStep(id as EarnDeploymentActionId).intent.some((component) =>
+      replaced.has(component),
+    ) &&
+    isDeepStrictEqual(
+      cached.actions[id as EarnDeploymentActionId],
+      committed.actions[id as EarnDeploymentActionId],
+    )
+  const cachedOutputs = Object.fromEntries(
+    Object.entries(cached.outputs).filter(([key]) => !replacedAddress(key)),
+  )
+  const cachedActions = Object.fromEntries(
+    Object.entries(cached.actions).filter(([id]) => !staleReplacedAction(id)),
+  ) as PendingDeployment['actions']
   const pending: PendingDeployment = {
     ...cached,
-    outputs: { ...cached.outputs, ...committedAddresses },
-    actions: { ...cached.actions, ...committedDeploymentActions },
+    outputs: { ...cachedOutputs, ...committedAddresses },
+    actions: { ...cachedActions, ...committedDeploymentActions },
   }
   savePendingDeployment(profilePath, profile, pending)
   return pending

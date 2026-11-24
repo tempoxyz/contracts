@@ -14,7 +14,7 @@ import { describe, expect, test, vi } from 'vitest'
 import { zoneRouterAbi } from '../../abis/index.js'
 import { pendingDeploymentPath } from '../../core/bundle.js'
 import { planEarnDeployment } from '../../core/plan.js'
-import { restorePendingDeployment } from '../../core/pending.js'
+import { restorePendingDeployment, savePendingDeployment } from '../../core/pending.js'
 import { replacedComponents } from '../../core/provenance.js'
 import { componentDeploymentIntentHashes, parseEarnDeploymentProfile } from '../../core/profile.js'
 import { prepareLifecycleStep } from '../../core/reconcile.js'
@@ -178,6 +178,40 @@ describe('router code identity', () => {
       expect(restored.outputs.zoneRouter).toBeUndefined()
       expect(restored.outputs.zoneRouterFactory).toBe(outputs.zoneRouterFactory)
       expect(restored.actions).toEqual({ 'deploy-zone-router-factory': completed })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('drops cached copies of a replaced router but keeps a replacement already deployed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zone-router-replaced-cache-'))
+    try {
+      const path = join(root, 'profile.json')
+      const completed = {
+        completedAt: '2026-01-01T00:00:00.000Z',
+        verification: 'chain' as const,
+        transactions: [`0x${'a'.repeat(64)}` as const],
+      }
+      const committed = {
+        componentDeploymentIntentHashes: componentDeploymentIntentHashes(profile),
+        addresses: outputs,
+        actions: { 'deploy-zone-router-factory': completed, 'deploy-zone-router': completed },
+      }
+      // An earlier run restored the old router into pending state, then stopped.
+      restorePendingDeployment(path, profile, committed)
+      const stale = restorePendingDeployment(path, profile, committed, new Set(['zoneRouter']))
+      expect(stale.outputs.zoneRouter).toBeUndefined()
+      expect(stale.actions['deploy-zone-router']).toBeUndefined()
+      // A replacement deployed before the run stopped is not the old code and is resumed.
+      const replacement = { ...completed, transactions: [`0x${'b'.repeat(64)}` as const] }
+      savePendingDeployment(path, profile, {
+        ...stale,
+        outputs: { ...stale.outputs, zoneRouter: address('b2') },
+        actions: { ...stale.actions, 'deploy-zone-router': replacement },
+      })
+      const resumed = restorePendingDeployment(path, profile, committed, new Set(['zoneRouter']))
+      expect(resumed.outputs.zoneRouter).toBe(address('b2'))
+      expect(resumed.actions['deploy-zone-router']).toEqual(replacement)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -55,6 +55,10 @@ export type ZoneRouterFields = { zoneRouter: ZoneRouterIntent | null }
 
 type RouterProfile = SliceProfile<ZoneRouterFields>
 
+// Fixed for existing records' intent hashes: never change them. Code identity decides router replacement.
+const legacyModeIntent = { zoneRouterContractRelease: 2 } as const
+const legacyComponentIntent = { contractRelease: 2 } as const
+
 /**
  * The `zoneRouter` slice: a `ZoneRouter` mode from `zone-router/`, the `ZoneRouterFactory` that deploys it
  * unless the profile names one, and the Portal of the Zone it serves. Each is optional periphery, so
@@ -75,13 +79,16 @@ export const zoneRouterModeProfile = {
     profile.zoneRouter ? { zoneRouter: profile.zoneRouter } : {},
   // Absent, it adds nothing, so profiles without a router keep their deployment intent hash.
   deploymentIntent: (profile: RouterProfile) =>
-    profile.zoneRouter ? { zoneRouter: profile.zoneRouter } : {},
+    profile.zoneRouter ? { zoneRouter: profile.zoneRouter, ...legacyModeIntent } : {},
   components: {
     zoneRouterFactory: (profile: RouterProfile, deployment: string) =>
-      profile.zoneRouter && profile.zoneRouter.factory === undefined ? { deployment } : null,
+      profile.zoneRouter && profile.zoneRouter.factory === undefined
+        ? { ...legacyComponentIntent, deployment }
+        : null,
     zoneRouter: (profile: RouterProfile, deployment: string) =>
       profile.zoneRouter
         ? {
+            ...legacyComponentIntent,
             deployment,
             earnVault: profile.zoneRouter.earn ? 'derived' : null,
             zoneRouter: profile.zoneRouter,

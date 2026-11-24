@@ -7,11 +7,11 @@
     "earn": "0x749a947811764a14CD17fE3C7BcC5c470e2Ac5cC",
     "erc4626Engine": "0x0d57c10249eb3a92b7d81bBA6221F80F2865448A"
   },
-  "deploymentIntentHash": "3520ea4af2272e5a04590245896f0b0dc3670f684b13d9c3701baaac8b80649b",
+  "deploymentIntentHash": "5c3bdd754d7dae0cbe59d2de9e7552f6c89c67962213da2af8959e6fe62a00e1",
   "componentDeploymentIntentHashes": {
     "core": "6d5b200640d99bef9c661d825dc4be0ebbe4fe5930db10b1e8afeeec272219bf",
     "engine": "1201841cf2a91f4560ac453a3c221195d5dc57f68c74104a72d25b055cc491c9",
-    "zone": "58f77a5395c1172af4d76fb7dc59eb835306644be3ec010b65495b4686332c1c",
+    "zone": "bd4688578ee4f6056d7a38fbdcc400999af48c6ca80ba9b8494a7d54e6d1a207",
     "targetYield": null,
     "boostRewards": null,
     "zoneRouterFactory": null,

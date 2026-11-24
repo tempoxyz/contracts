@@ -289,17 +289,24 @@ describe('preflightRouterRoute', () => {
 })
 
 describe('router code identity', () => {
-  test('keeps router intent to the profile and replaces routers by their compiled code', () => {
+  test('keeps existing router intent hashes and replaces routers by their compiled code', () => {
+    // Frozen values: changing them would change every recorded router's intent hash.
     expect(zoneRouterModeProfile.deploymentIntent(profile)).toEqual({
       zoneRouter: profile.zoneRouter,
+      zoneRouterContractRelease: 2,
     })
-    expect(zoneRouterModeProfile.components.zoneRouter(profile, 'deployment')).not.toHaveProperty(
+    expect(zoneRouterModeProfile.components.zoneRouter(profile, 'deployment')).toHaveProperty(
       'contractRelease',
+      2,
     )
-    expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({ zone: profile.zone })
+    expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({
+      zone: profile.zone,
+      routerContractRelease: 2,
+    })
     expect(zoneRouterProfile.components.zone(profile, 'deployment')).toEqual({
       deployment: 'deployment',
       zone: profile.zone,
+      routerContractRelease: 2,
     })
     expect(deployRouter.source?.replaceOnCodeChange?.(profile)).toBe(true)
     expect(deployZoneRouterFactory.source?.replaceOnCodeChange?.(profile)).toBe(true)

@@ -40,6 +40,9 @@ export type ZoneRouterFields = { zone: ZoneRouterIntent | null }
 /** The Zone identity a deployment record targets; sequencers are live state, not identity. */
 export type ZoneTarget = Omit<ZoneIdentity, 'sequencers'>
 
+// Fixed for existing records' intent hashes: never change it. Code identity decides router replacement.
+const legacyRouterIntent = { routerContractRelease: 2 } as const
+
 type ZoneProfile = SliceProfile<ZoneRouterFields>
 
 /** Recorded Zone identity addresses, discovered from the canonical Factory rather than deployed. */
@@ -129,10 +132,10 @@ export const zoneRouterProfile = {
     return { zone }
   },
   deploymentIntent: (profile: ZoneProfile) =>
-    profile.zone ? { zone: profile.zone } : { zone: null },
+    profile.zone ? { zone: profile.zone, ...legacyRouterIntent } : { zone: null },
   components: {
     zone: (profile: ZoneProfile, deployment: string) =>
-      profile.zone ? { deployment, zone: profile.zone } : null,
+      profile.zone ? { deployment, zone: profile.zone, ...legacyRouterIntent } : null,
   },
   externalAddresses: zoneIdentityAddresses,
   addresses: { earnRouter: 'zone' },
