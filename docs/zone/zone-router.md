@@ -74,7 +74,9 @@ contracts:
    router returns funds as an ordinary depositor, so the Portal administrator admits it with
    `setAllowedAccount`; the Portal holds one role per account, so a router needs only one of the
    two, and after the Zone changes gateway mode either step revokes the old role and grants the new
-   one in one batch), then `seed-zone-router` (the deployer sends the router and each listed
+   one in one batch), `revoke-retired-zone-router-pool` and `revoke-retired-zone-router-gateway`
+   (a router the deployment replaced loses its pool admission and Portal roles once its successor
+   holds its own), then `seed-zone-router` (the deployer sends the router and each listed
    spender verified as the release `SendSpender` 1 base unit of each stack token they handle and
    calls `warm` for each token the router returns to its Zone, so no callback creates those slots;
    EarnShare units only when the vault restarts unbacked pools. Each call is simulated first; units a

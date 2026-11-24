@@ -359,6 +359,27 @@ export function stepSignerAvailable(
     : Boolean(environment[step.authority.signer]?.trim())
 }
 
+/**
+ * The pending-output key for a replaced contract that may still hold authority its activation
+ * granted. Kept beside the outputs until the steps that revoke it finish; never recorded.
+ */
+export function retiredOutputKey(output: DeploymentAddressKey, address: Address) {
+  return `retired.${output}.${address.toLowerCase()}`
+}
+
+/** Whether a pending-output key names a retired contract, and `address` when given. */
+export function isRetiredOutputKey(key: string, address?: Address) {
+  const match = /^retired\.[A-Za-z]+\.(0x[0-9a-f]{40})$/.exec(key)
+  return match !== null && (address === undefined || match[1] === address.toLowerCase())
+}
+
+/** The retired contracts recorded under `output`. */
+export function retiredOutputs(outputs: Record<string, Address>, output: DeploymentAddressKey) {
+  return Object.entries(outputs)
+    .filter(([key]) => key.startsWith(`retired.${output}.`))
+    .map(([, address]) => address)
+}
+
 export function requiredOutput(outputs: Record<string, Address>, key: string) {
   const value = outputs[key]
   if (!value) throw new Error(`deployment output ${key} is required`)

@@ -268,12 +268,14 @@ both or neither). The Zone EVM chain ID is derived from the parent chain ID and 
 authored. The [deployment lifecycle](../../deployment/deployment.md) runs these module steps after the
 core is bound:
 
-| Step                    | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                              |
-| ----------------------- | ---------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deploy-router`         | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/earn/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                 |
-| `authorize-router`      | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself                                            |
-| `enable-zone-tokens`    | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                         |
-| `register-zone-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router has callback and return-deposit admission: gateway role when restricted, Account role when gateways are open and access is enforced |
+| Step                            | Phase      | Authority (signer)                                    | Reconciled result                                                                                                                              |
+| ------------------------------- | ---------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deploy-router`                 | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                     | `script/earn/deploy/DeployEarnRouter.s.sol` deploys the router; its bindings match the profile                                                 |
+| `authorize-router`              | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Conversion router only: the pool admits the router as taker and recipient and resolves it to itself                                            |
+| `enable-zone-tokens`            | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The Portal enables the EarnShare and the private asset                                                                                         |
+| `register-zone-gateway`         | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | The router has callback and return-deposit admission: gateway role when restricted, Account role when gateways are open and access is enforced |
+| `revoke-retired-router-pool`    | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` if proven) | Every router the deployment replaced has lost taker and recipient admission on the pool                                                        |
+| `revoke-retired-router-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)  | Every router the deployment replaced holds neither Portal role                                                                                 |
 
 Before any broadcast, preflight requires code at the private asset and pool and, for a conversion
 router, a pool trading exactly the private and vault assets with equal decimals; for a same-asset

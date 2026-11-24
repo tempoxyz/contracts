@@ -11,12 +11,14 @@ import { engineDefinitions, inspectEngineBindings } from '../modules/earn/engine
 import {
   capabilityModules,
   deploymentStep,
+  deploymentSteps,
   executeAvailableAuthority,
 } from '../../deployments/modules/index.js'
-import type {
-  DiscoveryOptions,
-  InspectionReport,
-  PrivilegedPrincipal,
+import {
+  retiredOutputKey,
+  type DiscoveryOptions,
+  type InspectionReport,
+  type PrivilegedPrincipal,
 } from '../../deployments/modules/module.js'
 import {
   assertFoundryVersion,
@@ -183,13 +185,9 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
     : new Set<IntentComponent>()
   for (const component of replaced) reconciling.add(component)
   // A paused replacement may itself predate this checkout's build, so cached contracts are checked too.
+  const cached = cachedPendingOutputs(options.profilePath, profile)
   const staleCached = committed
-    ? await replacedComponents(
-        client,
-        profile,
-        { addresses: cachedPendingOutputs(options.profilePath, profile) },
-        compile,
-      )
+    ? await replacedComponents(client, profile, { addresses: cached }, compile)
     : new Set<IntentComponent>()
   syncFoundryOutputs(options.root, options.profilePath)
   let pending: PendingDeployment
@@ -213,6 +211,12 @@ async function deployEarnProfileLocked(options: LifecycleOptions): Promise<EarnD
       replaced,
       staleCached,
     )
+    // Replaced contracts keep what activation granted them until the revoke steps remove it.
+    const retired = retiredContracts(profile, committed.addresses, replaced, cached, staleCached)
+    if (Object.keys(retired).length > 0) {
+      pending = { ...pending, outputs: { ...pending.outputs, ...retired } }
+      savePendingDeployment(options.profilePath, profile, pending)
+    }
   } else {
     pending = loadPendingDeployment(options.profilePath, profile)
   }
@@ -774,6 +778,29 @@ export function publicFixtureAddresses() {
         : [],
     ),
   )
+}
+
+/** The pending-output entries for replaced contracts: the recorded ones, and stale cached replacements. */
+function retiredContracts(
+  profile: EarnDeploymentProfile,
+  recorded: DeploymentAddresses,
+  replaced: ReadonlySet<IntentComponent>,
+  cached: DeploymentAddresses,
+  staleCached: ReadonlySet<IntentComponent>,
+) {
+  const retired: Record<string, Address> = {}
+  for (const step of deploymentSteps) {
+    if (step.execution !== 'foundry' || !step.source?.replaceOnCodeChange?.(profile)) continue
+    const { output } = step.source
+    const component = deploymentAddressComponents[output]
+    const previous = [
+      replaced.has(component) ? recorded[output] : undefined,
+      staleCached.has(component) ? cached[output] : undefined,
+    ]
+    for (const address of previous)
+      if (address) retired[retiredOutputKey(output, address)] = address
+  }
+  return retired
 }
 
 /** The contracts a resumable pending file holds, or none when there is no usable one. */

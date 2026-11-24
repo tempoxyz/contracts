@@ -150,6 +150,8 @@ describe('Zone router steps', () => {
       'enable-zone-router-tokens',
       'register-zone-router-gateway',
       'admit-zone-router-account',
+      'revoke-retired-zone-router-pool',
+      'revoke-retired-zone-router-gateway',
       'seed-zone-router',
     ])
     // A named factory is used as is; Spend needs no pool admission or Earn tokens.
@@ -157,6 +159,7 @@ describe('Zone router steps', () => {
       'deploy-zone-router',
       'register-zone-router-gateway',
       'admit-zone-router-account',
+      'revoke-retired-zone-router-gateway',
       'seed-zone-router',
     ])
     expect(
@@ -169,6 +172,7 @@ describe('Zone router steps', () => {
       'enable-zone-router-tokens',
       'register-zone-router-gateway',
       'admit-zone-router-account',
+      'revoke-retired-zone-router-gateway',
       'seed-zone-router',
     ])
     expect(routerSteps(profileWith(undefined))).toEqual([])

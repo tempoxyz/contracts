@@ -39,6 +39,7 @@ import {
   recordFoundryAction,
 } from './reconcile.js'
 import { deploymentStep } from '../modules/index.js'
+import { retiredOutputKey } from '../modules/module.js'
 import * as Inspection from './inspection.js'
 import { pendingDeploymentPath } from './bundle.js'
 
@@ -282,6 +283,23 @@ describe('Earn deployment lifecycle', () => {
       })
       expect(restored.latestOutputs).toEqual(cached.latestOutputs)
       expect(loadPendingDeployment(path, profile).latestOutputs).toEqual(cached.latestOutputs)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps retired contracts in pending state only under their own address', () => {
+    const root = mkdtempSync(join(tmpdir(), 'earn-retired-'))
+    try {
+      const path = join(root, 'profile.json')
+      const pending = loadPendingDeployment(path, profile)
+      const retired = address('9')
+      const key = retiredOutputKey('earnRouter', retired)
+      savePendingDeployment(path, profile, { ...pending, outputs: { [key]: retired } })
+      expect(loadPendingDeployment(path, profile).outputs).toEqual({ [key]: retired })
+      expect(() =>
+        savePendingDeployment(path, profile, { ...pending, outputs: { [key]: address('8') } }),
+      ).toThrow('names a different address')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -309,7 +309,9 @@ engine creation intent never changes in place, so a record whose `core` or `engi
 from the profile is refused. The immutable Zone routers and the `ZoneRouterFactory` are also replaced,
 with the steps that configure them, when a recorded one's runtime differs from this checkout's build
 (compiler-declared immutable slots aside), so a source or compiler change redeploys them on the next
-deploy without any profile change. The deployment-fixed engine migration mode either permits the operator
+deploy without any profile change. A replaced router keeps the pool admission and Portal roles its
+activation granted until the `revoke-retired-*` activation steps remove them, after its successor holds
+its own; the profile stays short of `complete`, with a handoff naming each router, until they do. The deployment-fixed engine migration mode either permits the operator
 to move the whole pool to a replacement engine (`OperatorEnabled`) or permanently forbids that
 action (`UserOnly`). A permitted [whole-pool migration](../earn/architecture/system.md#whole-pool-engine-migration)
 does not rewrite creation provenance.
@@ -479,26 +481,30 @@ including one defaulted from the deployer; emergency guardian; async janitor; ev
 fee distributor) and every role a capability slice declares through `privilegedPrincipals`, such as
 the reward treasury.
 
-| Step                             | Phase      | Authority (signer)                                                   | Owner                                                                           |
-| -------------------------------- | ---------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `deploy-engine`                  | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Factory-provisioned engine](../earn/modules/erc4626-engine.md#deployment)      |
-| `deploy-core`                    | deployment | deployer                                                             | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
-| `bind-core`                      | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role) | Bind EarnVault and atomically transfer the engine to the configured final owner |
-| `deploy-router`                  | deployment | deployer                                                             | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `deploy-zone-router-factory`     | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
-| `deploy-zone-router`             | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
-| `deploy-merkle-distributor`      | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
-| `validate-access`                | deployment | deployer                                                             | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
-| `deploy-contribution-controller` | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
-| `authorize-router`               | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `enable-zone-tokens`             | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `register-zone-gateway`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
-| `authorize-zone-router`          | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone/zone-router.md#deployment)                                |
-| `enable-zone-router-tokens`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
-| `register-zone-router-gateway`   | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
-| `admit-zone-router-account`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
-| `seed-zone-router`               | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Zone router](../zone/zone-router.md#deployment)                                |
-| `seed-engine`                    | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Gas residue after deployment](#gas-residue-after-deployment)                   |
+| Step                                 | Phase      | Authority (signer)                                                   | Owner                                                                           |
+| ------------------------------------ | ---------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `deploy-engine`                      | deployment | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Factory-provisioned engine](../earn/modules/erc4626-engine.md#deployment)      |
+| `deploy-core`                        | deployment | deployer                                                             | EarnShare, EarnVault, and EarnFees with the exact configuration                 |
+| `bind-core`                          | deployment | current engine owner (`DEPLOYER_PRIVATE_KEY` when it holds the role) | Bind EarnVault and atomically transfer the engine to the configured final owner |
+| `deploy-router`                      | deployment | deployer                                                             | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `deploy-zone-router-factory`         | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
+| `deploy-zone-router`                 | deployment | deployer                                                             | [Zone router](../zone/zone-router.md#deployment)                                |
+| `deploy-merkle-distributor`          | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
+| `validate-access`                    | deployment | deployer                                                             | [Access policy](../earn/modules/access.md#deployment-and-operations)            |
+| `deploy-contribution-controller`     | deployment | deployer                                                             | [Rewards](../earn/modules/rewards.md#installation)                              |
+| `authorize-router`                   | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `enable-zone-tokens`                 | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `register-zone-gateway`              | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `revoke-retired-router-pool`         | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `revoke-retired-router-gateway`      | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zones](../earn/modules/zone-router.md#deployment-and-activation)               |
+| `authorize-zone-router`              | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone/zone-router.md#deployment)                                |
+| `enable-zone-router-tokens`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
+| `register-zone-router-gateway`       | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
+| `admit-zone-router-account`          | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
+| `revoke-retired-zone-router-pool`    | activation | PropAMM pool owner (`DEPLOYER_PRIVATE_KEY` when it holds the role)   | [Zone router](../zone/zone-router.md#deployment)                                |
+| `revoke-retired-zone-router-gateway` | activation | Zone Portal administrator (`ZONE_ADMIN_PRIVATE_KEY`)                 | [Zone router](../zone/zone-router.md#deployment)                                |
+| `seed-zone-router`                   | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Zone router](../zone/zone-router.md#deployment)                                |
+| `seed-engine`                        | activation | deployer (`DEPLOYER_PRIVATE_KEY`)                                    | [Gas residue after deployment](#gas-residue-after-deployment)                   |
 
 Deployment scripts receive only `DEPLOYER_PRIVATE_KEY`; Forge never receives another authority
 key. Read-only version, build, provenance, source-verification, and formatting subprocesses receive

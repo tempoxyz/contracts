@@ -32,6 +32,7 @@ import { configuredRouterPool, configuredZone, routerArgs } from './profile.js'
 import {
   missingZoneTokens,
   portalRoleCalls,
+  portalRoleRevokeCalls,
   registeredZone,
   zoneCallbackGatewayRegistered,
   zoneGatewayDepositsAdmitted,
@@ -52,6 +53,7 @@ import {
   deployedOutputs,
   required,
   requiredOutput,
+  retiredOutputs,
   type ChainClient,
   type StepAuthority,
 } from '../../../../deployments/modules/module.js'
@@ -165,6 +167,37 @@ export const authorizeRouter = defineAuthorityStep({
     ),
 })
 
+/** Removes pool admission from routers this deployment replaced, once their successor is admitted. */
+export const revokeRetiredRouterPool = defineAuthorityStep({
+  id: 'revoke-retired-router-pool',
+  authority: poolAdministrator,
+  execution: 'authority',
+  summary: 'Remove PropAMM pool admission from routers this deployment replaced.',
+  handoffSummary:
+    'Verify replaced routers lost PropAMM pool admission, or emit a pool-owner handoff.',
+  phase: 'activation',
+  intent: ['zone'],
+  enabled: (profile) => configuredRouterPool(profile) !== undefined,
+  satisfied: (client, profile, outputs) =>
+    poolRoutersRevoked(
+      client,
+      required(configuredRouterPool(profile), 'router conversion pool').pool,
+      retiredOutputs(outputs, 'earnRouter'),
+    ),
+  handoff: (profile, outputs) =>
+    `The owner of PropAMM pool ${configuredZone(profile)?.pool} must call setTakerAllowed(router, false) and setRecipientAllowed(router, false) for each replaced router still admitted: ${retiredOutputs(outputs, 'earnRouter').join(', ')}. When a DirectPropAMMRebalanceController owns the pool, its owner makes the calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) => canAuthorizeRouter(options),
+  execute: (options, dependencies) =>
+    revokePoolRouters(
+      options,
+      dependencies,
+      required(configuredRouterPool(options.profile), 'router conversion pool').pool,
+      retiredOutputs(options.outputs, 'earnRouter'),
+    ),
+})
+
 /**
  * Admits `router` as a taker and recipient on `pool` as the deployer, when it owns the pool directly
  * or through its rebalance controller; `undefined` when it holds neither. `requireProvenance` must
@@ -228,6 +261,86 @@ export async function admitPoolRouter(
       : { to: pool, data },
   )
   return await sendAuthorityCalls(client, dependencies, options.profile, calls)
+}
+
+/** Whether no router in `routers` is still a taker or recipient on `pool`. */
+export async function poolRoutersRevoked(
+  client: Pick<ChainClient, 'readContract'>,
+  pool: Address,
+  routers: readonly Address[],
+) {
+  const admissions = await Promise.all(routers.map((router) => poolAdmission(client, pool, router)))
+  return admissions.every(({ taker, recipient }) => !taker && !recipient)
+}
+
+/**
+ * Removes taker and recipient admission on `pool` from replaced `routers`, as the deployer when it
+ * owns the pool directly or through its rebalance controller; `undefined` when it holds neither.
+ */
+export async function revokePoolRouters(
+  options: AuthorityOptions,
+  dependencies: AuthorityDependencies,
+  pool: Address,
+  routers: readonly Address[],
+): Promise<{ transactions: Hex[] } | undefined> {
+  const key = envPrivateKey(options.environment, 'DEPLOYER_PRIVATE_KEY')
+  if (!key) return undefined
+  const account = privateKeyToAccount(key)
+  const client = dependencies.authorityClient(options, account)
+  const authority = await poolAuthority(client, pool, account.address)
+  if (!authority) return undefined
+  const poolCalls: Hex[] = []
+  for (const router of routers) {
+    const { taker, recipient } = await poolAdmission(client, pool, router)
+    const revoke = (functionName: 'setTakerAllowed' | 'setRecipientAllowed') =>
+      encodeFunctionData({ abi: propAMMPoolAbi, functionName, args: [router, false] })
+    if (taker) poolCalls.push(revoke('setTakerAllowed'))
+    if (recipient) poolCalls.push(revoke('setRecipientAllowed'))
+  }
+  if (poolCalls.length === 0) return { transactions: [] }
+  const calls = poolCalls.map((data) =>
+    authority.controller
+      ? {
+          to: authority.controller,
+          data: encodeFunctionData({
+            abi: propAMMRebalanceControllerAbi,
+            functionName: 'execute',
+            args: [data],
+          }),
+        }
+      : { to: pool, data },
+  )
+  return await sendAuthorityCalls(client, dependencies, options.profile, calls)
+}
+
+/** Whether no router in `routers` still holds a role on `portal`. */
+export async function portalRoutersRevoked(
+  client: Pick<ChainClient, 'readContract'>,
+  portal: Address,
+  routers: readonly Address[],
+) {
+  const calls = await Promise.all(
+    routers.map((router) => portalRoleRevokeCalls(client, portal, router)),
+  )
+  return calls.every((pending) => pending.length === 0)
+}
+
+/** Removes every Portal role replaced `routers` hold, as the Zone administrator. */
+export async function revokePortalRouters(
+  options: AuthorityOptions,
+  dependencies: AuthorityDependencies,
+  portal: Address,
+  routers: readonly Address[],
+): Promise<{ transactions: Hex[] } | undefined> {
+  const administrator = await zoneAdministrator(options, dependencies, portal)
+  if (!administrator) return undefined
+  const calls = (
+    await Promise.all(
+      routers.map((router) => portalRoleRevokeCalls(administrator.client, portal, router)),
+    )
+  ).flat()
+  if (calls.length === 0) return { transactions: [] }
+  return administrator.send(calls)
 }
 
 export const enableZoneTokens = defineAuthorityStep({
@@ -325,6 +438,38 @@ export const registerZoneGateway = defineAuthorityStep({
       await portalRoleCalls(client, portal, router, gateway ? 'account' : 'callbackGateway'),
     )
   },
+})
+
+/** Removes every Portal role from routers this deployment replaced, once their successor holds its own. */
+export const revokeRetiredRouterGateway = defineAuthorityStep({
+  id: 'revoke-retired-router-gateway',
+  authority: zoneAdministratorAuthority,
+  execution: 'authority',
+  summary: 'Remove Portal roles from routers this deployment replaced.',
+  handoffSummary:
+    'Verify replaced routers lost their Portal roles, or emit a Zone administrator handoff.',
+  phase: 'activation',
+  intent: ['zone'],
+  enabled: hasZone,
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) =>
+    canAdministerZone(options, required(configuredZone(options.profile), 'Zone').id),
+  satisfied: (client, _profile, outputs) =>
+    portalRoutersRevoked(
+      client,
+      requiredOutput(outputs, 'zonePortal'),
+      retiredOutputs(outputs, 'earnRouter'),
+    ),
+  handoff: (profile, outputs) =>
+    `The administrator of Zone ${configuredZone(profile)?.id} must call setGateway(router, false) and setAllowedAccount(router, false) on Portal ${requiredOutput(outputs, 'zonePortal')} for each role a replaced router still holds: ${retiredOutputs(outputs, 'earnRouter').join(', ')}. Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+  execute: (options, dependencies) =>
+    revokePortalRouters(
+      options,
+      dependencies,
+      requiredOutput(options.outputs, 'zonePortal'),
+      retiredOutputs(options.outputs, 'earnRouter'),
+    ),
 })
 
 /**

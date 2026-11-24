@@ -7,7 +7,8 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test, vi } from 'vitest'
 
-import { executeAvailableAuthority } from '../../deployments/modules/index.js'
+import { deploymentStep, executeAvailableAuthority } from '../../deployments/modules/index.js'
+import { retiredOutputKey } from './module.js'
 import { authorizeRouter, canAuthorizeRouter } from './earn/zone-router/steps.js'
 import { requireRouterProvenance } from './earn/zone-router/provenance.js'
 import {
@@ -73,6 +74,100 @@ const engineOutputs = {
 const authorityKey = `0x${'3'.repeat(64)}` as const
 const authorityAccount = privateKeyToAccount(authorityKey).address
 const receiptHash = `0x${'a'.repeat(64)}` as const
+
+describe('replaced router revocation', () => {
+  const old = address('9')
+  const retired = { [retiredOutputKey('earnRouter', old)]: old }
+
+  test('removes every Portal role a replaced router holds, and nothing when it holds none', async () => {
+    const runtime = mockDependencies([])
+    runtime.readContract.mockImplementation(async ({ functionName, args }) => {
+      if (functionName === 'admin') return authorityAccount
+      if (functionName === 'hasRole') return args[0] === old && args[1] === 3
+      throw new Error(`Unexpected Portal read ${functionName}`)
+    })
+    const result = await execute(
+      profile,
+      'revoke-retired-router-gateway',
+      { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
+      { ...outputs, earnRouter: address('d'), ...retired },
+      runtime.dependencies,
+    )
+    expect(result).toEqual({ transactions: [receiptHash] })
+    const [call] = runtime.sendTransactionSync.mock.calls[0]![0].calls as Array<{
+      to: string
+      data: `0x${string}`
+    }>
+    expect(call!.to).toBe(outputs.zonePortal)
+    expect(decodeFunctionData({ abi: zonePortalAbi, data: call!.data })).toMatchObject({
+      functionName: 'setGateway',
+      args: [old, false],
+    })
+
+    const none = mockDependencies([])
+    none.readContract.mockImplementation(async ({ functionName }) =>
+      functionName === 'admin' ? authorityAccount : false,
+    )
+    await expect(
+      execute(
+        profile,
+        'revoke-retired-router-gateway',
+        { ZONE_ADMIN_PRIVATE_KEY: authorityKey },
+        { ...outputs, earnRouter: address('d'), ...retired },
+        none.dependencies,
+      ),
+    ).resolves.toEqual({ transactions: [] })
+    expect(none.sendTransactionSync).not.toHaveBeenCalled()
+  })
+
+  test('removes pool admission from a replaced router as the pool owner', async () => {
+    const deployerKey = `0x${'2'.repeat(64)}` as const
+    const deployer = privateKeyToAccount(deployerKey).address
+    const runtime = mockDependencies([])
+    runtime.readContract.mockImplementation(async ({ functionName }) => {
+      if (functionName === 'owner') return deployer
+      if (functionName === 'takerAllowed' || functionName === 'recipientAllowed') return true
+      if (functionName === 'resolveRecipient') return old
+      throw new Error(`Unexpected pool read ${functionName}`)
+    })
+    const result = await execute(
+      profile,
+      'revoke-retired-router-pool',
+      { DEPLOYER_PRIVATE_KEY: deployerKey },
+      { ...outputs, earnRouter: address('d'), ...retired },
+      runtime.dependencies,
+    )
+    expect(result).toEqual({ transactions: [receiptHash] })
+    const calls = runtime.sendTransactionSync.mock.calls[0]![0].calls as Array<{
+      to: string
+      data: `0x${string}`
+    }>
+    expect(calls.map((call) => call.to)).toEqual([address('7'), address('7')])
+    expect(
+      calls.map((call) => decodeFunctionData({ abi: propAMMPoolAbi, data: call.data })),
+    ).toMatchObject([
+      { functionName: 'setTakerAllowed', args: [old, false] },
+      { functionName: 'setRecipientAllowed', args: [old, false] },
+    ])
+  })
+
+  test('is satisfied with nothing retired and names each router still privileged', async () => {
+    const step = deploymentStep('revoke-retired-router-gateway')
+    const client = {
+      readContract: vi.fn(async ({ args }: { args: unknown[] }) => args[0] === old),
+    } as never
+    await expect(
+      step.satisfied(client, profile, { ...outputs, earnRouter: address('d') }),
+    ).resolves.toBe(true)
+    await expect(
+      step.satisfied(client, profile, { ...outputs, earnRouter: address('d'), ...retired }),
+    ).resolves.toBe(false)
+    if (step.execution !== 'authority') throw new Error('Expected an authority step')
+    expect(step.handoff(profile, { ...outputs, earnRouter: address('d'), ...retired })).toContain(
+      old,
+    )
+  })
+})
 
 function mockDependencies(values: unknown[]) {
   const readContract = vi.fn()

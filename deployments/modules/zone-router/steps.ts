@@ -31,6 +31,10 @@ import {
   canAdministerZone,
   poolAdministrator,
   poolAdmission,
+  poolRoutersRevoked,
+  portalRoutersRevoked,
+  revokePoolRouters,
+  revokePortalRouters,
   zoneAdministrator,
   zoneAdministratorAuthority,
 } from '../earn/zone-router/steps.js'
@@ -41,6 +45,7 @@ import {
   deployerAuthority,
   required,
   requiredOutput,
+  retiredOutputs,
   type ChainClient,
 } from '../module.js'
 import { privateKeyMatches, sendAuthorityCalls } from '../signer.js'
@@ -396,6 +401,72 @@ export const admitZoneRouterAccount = defineAuthorityStep({
       await portalRoleCalls(administrator.client, portal, router, 'account'),
     )
   },
+})
+
+/** Removes pool admission from routers this deployment replaced, once their successor is admitted. */
+export const revokeRetiredZoneRouterPool = defineAuthorityStep({
+  id: 'revoke-retired-zone-router-pool',
+  authority: poolAdministrator,
+  execution: 'authority',
+  summary: 'Remove PropAMM pool admission from ZoneRouters this deployment replaced.',
+  handoffSummary:
+    'Verify replaced ZoneRouters lost PropAMM pool admission, or emit a pool-owner handoff.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  enabled: (profile) => routerPool(profile) !== undefined,
+  satisfied: (client, profile, outputs) =>
+    poolRoutersRevoked(
+      client,
+      required(routerPool(profile), 'Zone router conversion pool'),
+      retiredOutputs(outputs, 'zoneRouter'),
+    ),
+  handoff: (profile, outputs) =>
+    `The owner of PropAMM pool ${routerPool(profile)} must call setTakerAllowed(router, false) and setRecipientAllowed(router, false) for each replaced ZoneRouter still admitted: ${retiredOutputs(outputs, 'zoneRouter').join(', ')}. When a DirectPropAMMRebalanceController owns the pool, its owner makes the calls through controller.execute(data). Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.DEPLOYER_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) => {
+    const pool = routerPool(options.profile)
+    return pool ? canAdministerPool(options, pool) : Promise.resolve(false)
+  },
+  execute: (options, dependencies) =>
+    revokePoolRouters(
+      options,
+      dependencies,
+      required(routerPool(options.profile), 'Zone router conversion pool'),
+      retiredOutputs(options.outputs, 'zoneRouter'),
+    ),
+})
+
+/** Removes every Portal role from routers this deployment replaced, once their successor holds its own. */
+export const revokeRetiredZoneRouterGateway = defineAuthorityStep({
+  id: 'revoke-retired-zone-router-gateway',
+  authority: zoneAdministratorAuthority,
+  execution: 'authority',
+  summary: 'Remove Portal roles from ZoneRouters this deployment replaced.',
+  handoffSummary:
+    'Verify replaced ZoneRouters lost their Portal roles, or emit a Zone administrator handoff.',
+  phase: 'activation',
+  intent: ['zoneRouter'],
+  enabled: hasZoneRouter,
+  signerAvailable: (_profile, environment, proven) =>
+    Boolean(environment.ZONE_ADMIN_PRIVATE_KEY?.trim()) && proven,
+  probeSigner: (options) =>
+    canAdministerZone(options, configuredZoneRouter(options.profile).zoneId),
+  satisfied: (client, _profile, outputs) =>
+    portalRoutersRevoked(
+      client,
+      requiredOutput(outputs, 'zoneRouterPortal'),
+      retiredOutputs(outputs, 'zoneRouter'),
+    ),
+  handoff: (profile, outputs) =>
+    `The administrator of Zone ${configuredZoneRouter(profile).zoneId} must call setGateway(router, false) and setAllowedAccount(router, false) on Portal ${requiredOutput(outputs, 'zoneRouterPortal')} for each role a replaced ZoneRouter still holds: ${retiredOutputs(outputs, 'zoneRouter').join(', ')}. Re-run the same pnpm earn deploy command; it will verify the revocation onchain and continue.`,
+  execute: (options, dependencies) =>
+    revokePortalRouters(
+      options,
+      dependencies,
+      requiredOutput(options.outputs, 'zoneRouterPortal'),
+      retiredOutputs(options.outputs, 'zoneRouter'),
+    ),
 })
 
 /**

@@ -16,6 +16,7 @@ import { address, object } from './parse.js'
 
 import { deploymentActions, planEarnDeployment, type EarnDeploymentActionId } from './plan.js'
 import { capabilityModules, deploymentStep } from '../../deployments/modules/index.js'
+import { isRetiredOutputKey } from '../../deployments/modules/module.js'
 import { pendingDeploymentPath } from './bundle.js'
 import {
   componentDeploymentIntentHashes,
@@ -112,7 +113,9 @@ export function loadPendingDeployment(
     'outputs',
     'output',
     (key) =>
-      recordedAddress(key) || capabilityModules.some((module) => module.metadataOutput?.(key)),
+      recordedAddress(key) ||
+      isRetiredOutputKey(key) ||
+      capabilityModules.some((module) => module.metadataOutput?.(key)),
   )
   // Written by the Foundry step the deployment is executing; see `readActionOutputs`.
   const latestOutputs = addresses('latestOutputs', 'latest output', recordedAddress)
@@ -352,10 +355,14 @@ export function parsePendingOutputs(value: unknown, path: string, metadata = fal
     Object.entries(object(value, path)).map(([key, value]) => {
       if (
         !deploymentAddressKeys.includes(key as DeploymentAddressKey) &&
+        !(metadata && isRetiredOutputKey(key)) &&
         !(metadata && capabilityModules.some((module) => module.metadataOutput?.(key)))
       )
         throw new Error(`${path} has unsupported output ${key}`)
-      return [key, address(value, `${path}.${key}`)]
+      const parsed = address(value, `${path}.${key}`)
+      if (isRetiredOutputKey(key) && !isRetiredOutputKey(key, parsed))
+        throw new Error(`${path}.${key} names a different address`)
+      return [key, parsed]
     }),
   )
 }

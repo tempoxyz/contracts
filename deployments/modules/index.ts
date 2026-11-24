@@ -34,6 +34,8 @@ import {
   enableZoneRouterTokens,
   registerZoneRouterGateway,
   admitZoneRouterAccount,
+  revokeRetiredZoneRouterGateway,
+  revokeRetiredZoneRouterPool,
   seedZoneRouter,
 } from './zone-router/steps.js'
 import {
@@ -41,6 +43,8 @@ import {
   deployRouter,
   enableZoneTokens,
   registerZoneGateway,
+  revokeRetiredRouterGateway,
+  revokeRetiredRouterPool,
 } from './earn/zone-router/steps.js'
 
 /**
@@ -60,10 +64,15 @@ const steps = [
   authorizeRouter,
   enableZoneTokens,
   registerZoneGateway,
+  // A replaced router keeps what it was granted until revoked, after its successor is admitted.
+  revokeRetiredRouterPool,
+  revokeRetiredRouterGateway,
   authorizeZoneRouter,
   enableZoneRouterTokens,
   registerZoneRouterGateway,
   admitZoneRouterAccount,
+  revokeRetiredZoneRouterPool,
+  revokeRetiredZoneRouterGateway,
   seedZoneRouter,
   seedEngine,
 ] as const

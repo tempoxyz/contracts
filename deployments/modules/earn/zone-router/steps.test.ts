@@ -152,10 +152,10 @@ describe('Zone admission guards', () => {
     expect(runtime.sendTransactionSync).not.toHaveBeenCalled()
   })
 
-  test('keeps all five Zone administration steps as handoffs until authority is proven', () => {
+  test('keeps all seven Zone administration steps as handoffs until authority is proven', () => {
     const plan = presentEarnDeploymentPlan(profile, options.environment)
     const admin = plan.filter((step) => step.authority === 'zone-administrator')
-    expect(admin).toHaveLength(5)
+    expect(admin).toHaveLength(7)
     expect(admin.every((step) => step.execution === 'handoff')).toBe(true)
     expect(enableZoneTokens.probeSigner).toBeTypeOf('function')
     expect(registerZoneGateway.probeSigner).toBeTypeOf('function')

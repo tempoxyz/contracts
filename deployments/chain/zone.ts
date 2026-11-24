@@ -336,6 +336,30 @@ export async function zoneCallbackGatewayRegistered(
   })
 }
 
+/** The Portal calls that remove every role `account` holds; none when it holds neither. */
+export async function portalRoleRevokeCalls(
+  client: Pick<PublicClient, 'readContract'>,
+  portal: Address,
+  account: Address,
+) {
+  const holds = (role: keyof typeof zonePortalRole) =>
+    client.readContract({
+      address: portal,
+      abi: zonePortalAbi,
+      functionName: 'hasRole',
+      args: [account, zonePortalRole[role]],
+    })
+  const [allowedAccount, gateway] = await Promise.all([holds('account'), holds('callbackGateway')])
+  const call = (functionName: 'setAllowedAccount' | 'setGateway') => ({
+    to: portal,
+    data: encodeFunctionData({ abi: zonePortalAbi, functionName, args: [account, false] }),
+  })
+  return [
+    ...(allowedAccount ? [call('setAllowedAccount')] : []),
+    ...(gateway ? [call('setGateway')] : []),
+  ]
+}
+
 /**
  * The Portal calls that give the router `role`. The Portal holds one role per account and grants
  * one only from none, so a router admitted under the other gateway mode is moved in one batch:
