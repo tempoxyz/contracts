@@ -565,7 +565,15 @@ rebuilds only the solar builds it pins in tempo-apps'
 so a new `solar.lock` revision must be added there and deployed before a hosted deployment built
 with it. Source verification passes Forge the solar build (`--compiler-version`, from
 `solar-solc --version`, with `--compilation-profile default`); a manual
-`forge verify-contract` needs the same two flags. Deploy a core release with:
+`forge verify-contract` needs the same two flags.
+
+The compiler is part of every release's identity: CREATE2 release addresses derive from creation
+code, which embeds the compiler's metadata, so a new `solar.lock` revision moves every release
+address. Pin a commit on solar's `main` that carries the fixes a release needs, whether or not it is
+tagged; a commit names the build as exactly as a tag. Change the pin only together with a planned
+factory release, never on its own or only because a tag appeared on the same code.
+
+Deploy a core release with:
 
 ```bash
 FOUNDRY_PROFILE=deploy forge script \
