@@ -677,6 +677,15 @@ releases take per-deployment parameters and stay with their own workflows.
 A change that bumps a release a committed profile uses leaves that profile's record stale until the
 stack is redeployed: dispatch Deploy after it merges, then merge the record pull request.
 
+### Replaced Zone routers
+
+Deploy replaces a Zone router without revoking the old one: its pool allowlist entries and Portal
+gateway stay until their owners remove them, since a router address can serve more than one
+profile. Once nothing uses the old router, the pool owner calls `setTakerAllowed(old, false)` and
+`setRecipientAllowed(old, false)` on the pool, and the Zone administrator calls
+`setGateway(old, false)` on the Portal. Read all three back, and confirm the replacement keeps
+its own.
+
 ### Zone router releases
 
 The [Zone router](../zone/zone-router.md)'s ownerless contracts release apart from Earn's, through

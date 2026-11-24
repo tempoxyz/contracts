@@ -68,7 +68,7 @@ A new domain gets its own directories in the one Foundry project (`src/<domain>/
 `src/interfaces/<domain>/`, `test/<domain>/`, `script/<domain>/`), an AGENTS.md in `src/<domain>/`, an
 entry in the tables above, and its docs under `docs/<domain>/`. It imports another domain's contracts
 by relative path, never a copy, and keeps the one-way import rules
-([AGENTS.md](AGENTS.md#keep-domains-separate)).
+([AGENTS.md](AGENTS.md#rules-for-every-change)).
 
 ## Security
 

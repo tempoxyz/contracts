@@ -16,6 +16,15 @@ Use [the package reference](README.md), [profiles](../profiles/README.md), and t
   verification failure.
 - Never pass authority keys to Forge. Use the typed authority steps or emit a handoff for the actual
   owner, then verify completion onchain when resuming.
+- The lifecycle owns reconciliation and verified records; the stack a hosted E2E run builds from a
+  profile is a separate projection. Never edit outputs to get past verification.
+- Zone routers are replaced when their recorded runtime differs from this checkout's build; never
+  bump a release number to force one, and keep the frozen legacy intent values that hold existing
+  record hashes. Replacing a router leaves the old one's pool and Portal grants for their owners to
+  [revoke](../docs/deployment/deployment.md#replaced-zone-routers).
+- Never hand-write a contract ABI in TypeScript: import it from `@tempoxyz/contracts/abis` and
+  regenerate after interface changes ([exports](README.md#exports)). Use `viem/tempo` for shared
+  Earn client capabilities.
 - Steps, recorded addresses, profile fields, capability hooks, subcommands, and engine-kind
   behavior each have one declaration site ([extending](README.md#extending)); never add a step-ID,
   per-contract, or `engine.kind` branch to a generic file. Lint limits `core/` and `chain/` to the
