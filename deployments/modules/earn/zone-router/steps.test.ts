@@ -301,12 +301,12 @@ describe('router release intent', () => {
     )
     expect(zoneRouterProfile.deploymentIntent(profile)).toEqual({
       zone: profile.zone,
-      routerContractRelease: 2,
+      routerContractRelease: 3,
     })
     expect(zoneRouterProfile.components.zone(profile, 'deployment')).toEqual({
       deployment: 'deployment',
       zone: profile.zone,
-      routerContractRelease: 2,
+      routerContractRelease: 3,
     })
     // Release 1 adds nothing, so records written before releases existed keep their hash.
     expect(modeReleaseIntent(1)).toEqual({})

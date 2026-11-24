@@ -41,7 +41,7 @@ export type ZoneRouterFields = { zone: ZoneRouterIntent | null }
 export type ZoneTarget = Omit<ZoneIdentity, 'sequencers'>
 
 // Bump when the immutable router implementation changes, invalidating pending activation too.
-const routerContractRelease = 2
+const routerContractRelease = 3
 
 type ZoneProfile = SliceProfile<ZoneRouterFields>
 
