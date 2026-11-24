@@ -629,7 +629,9 @@ holds `DEPLOYER_PRIVATE_KEY` (and optional `TEMPO_RPC_URL`, `TEMPO_RPC_USERNAME`
 deployer key, which is also every committed profile's deployer; releases are ownerless, so for them it
 only pays fees. Rotating it updates both environments. Deploy also passes an optional
 `ZONE_ADMIN_PRIVATE_KEY`: where an environment holds it, a profile on a Zone it administers makes
-the [Zone administrator's grants](#commands) itself instead of stopping at that handoff. The network's `hosted-contracts-<network>`
+the [Zone administrator's grants](#commands) itself instead of stopping at that handoff. Hosted E2E
+also reads an optional `END_USER_PRIVATE_KEY`, the [third-party user](e2e-environments.md) distinct from
+the deployer; without it those cases are blocked. The network's `hosted-contracts-<network>`
 queue orders only CI jobs, so do not broadcast with that key locally while a CI deployment runs. The same command runs locally with `DEPLOYER_PRIVATE_KEY` exported,
 for example from a profile's `.env.<id>`; it does not load dotenv files itself.
 

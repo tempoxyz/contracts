@@ -75,7 +75,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # The environment accepts only main and holds the deployer key the committed profiles share.
+    # The environment accepts only main and holds the deployer key the committed profiles share,
+    # plus the optional third-party end-user key.
     environment: factory-release-${{ needs.network.outputs.network }}
     # Shares the network's hosted-contracts queue with the deploy and release workflows, so the
     # deployer key never sends from two CI jobs at once.
