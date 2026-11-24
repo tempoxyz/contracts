@@ -50,8 +50,8 @@ const canonicalReleases: Readonly<Record<HostedEnvironmentId, CanonicalReleases>
   },
   moderato: {
     factories: {
-      earn: getAddress('0x508E90000De7c1Ac1842F83f24b028a585E9F106'),
-      erc4626Engine: getAddress('0xF468B8cf6B225A94c7bC3D4489B11a94029dbcD9'),
+      earn: getAddress('0x5A73fa91Dc039f9F5B940822A46174a6B5A97717'),
+      erc4626Engine: getAddress('0x176859D2983ff25F095BF767F4F49dDd02a1Be62'),
     },
   },
 }
