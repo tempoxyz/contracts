@@ -18,8 +18,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 const roots: string[] = []
 const revision = 'd8'.repeat(20)
 const installedBytes = '#!/bin/sh\necho fresh-pinned-install\n'
-const existingCompiler = '#!/bin/sh\necho existing-compiler\n'
-const existingVersion = 'existing-compiler'
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -81,13 +79,12 @@ describe('solidity-deps solar installation', () => {
     expect(JSON.parse(readFileSync(fixture.receipt, 'utf8'))).toEqual({
       schemaVersion: 2,
       sourceRevision: revision,
-      version: 'fresh-pinned-install',
       sha256: createHash('sha256').update(installedBytes).digest('hex'),
     })
     expect(readdirSync(join(fixture.root, '.solar'))).toEqual([revision])
   })
 
-  it.each(['missing', 'malformed', 'revision', 'digest', 'version', 'binary'])(
+  it.each(['missing', 'malformed', 'revision', 'digest', 'binary'])(
     'rebuilds rather than adopting an existing compiler with %s receipt evidence',
     (kind) => {
       const fixture = setup()
@@ -101,10 +98,9 @@ describe('solidity-deps solar installation', () => {
           JSON.stringify({
             schemaVersion: 2,
             sourceRevision: kind === 'revision' ? 'ab'.repeat(20) : revision,
-            version: kind === 'version' ? 'stale-dev-label' : existingVersion,
             sha256:
-              kind === 'revision' || kind === 'version'
-                ? createHash('sha256').update(existingCompiler).digest('hex')
+              kind === 'revision'
+                ? createHash('sha256').update('existing compiler').digest('hex')
                 : '00'.repeat(32),
           }),
         )
@@ -262,14 +258,13 @@ require('node:fs').appendFileSync(${JSON.stringify(rustupCallsFile)}, JSON.strin
       }),
     seed: () => {
       mkdirSync(join(directory, 'bin'), { recursive: true })
-      writeFileSync(binary, existingCompiler, { mode: 0o700 })
+      writeFileSync(binary, 'existing compiler', { mode: 0o700 })
       writeFileSync(
         receipt,
         JSON.stringify({
           schemaVersion: 2,
           sourceRevision: revision,
-          version: existingVersion,
-          sha256: createHash('sha256').update(existingCompiler).digest('hex'),
+          sha256: createHash('sha256').update('existing compiler').digest('hex'),
         }),
       )
     },
