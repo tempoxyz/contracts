@@ -1,0 +1,156 @@
+name: Hosted E2E
+
+# Runs the hosted E2E cases against one committed, deployed profile from main, in its network's
+# release environment, whose deployer key is the profile's operator and funds every actor's fees.
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Committed deployed profile (profiles/<id>/profile.json)
+        required: true
+        default: profiles/e2e-moderato/profile.json
+        type: string
+      group:
+        description: Run only this module's cases (--group); empty runs the default acceptance cases
+        required: false
+        default: ''
+        type: string
+      validate-only:
+        description: Run only the read-only validation, with no signer, funding, or cases
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  # The release environment and queue are per network, so resolve the profile's network first,
+  # without secrets. Only committed profiles on a hosted network resolve.
+  network:
+    name: Resolve the profile's network
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      network: ${{ steps.network.outputs.network }}
+      profile: ${{ steps.network.outputs.profile }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          workspace: '@tempoxyz/contracts'
+
+      - name: Resolve the profile's network
+        id: network
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          profile=$(realpath -m --relative-to=. -- "$PROFILE")
+          # The hosted E2E workflow test asserts this list matches the hosted networks.
+          for network in moderato mainnet; do
+            listed="$RUNNER_TEMP/profiles-$network"
+            GITHUB_OUTPUT="$listed" pnpm profiles --network "$network"
+            if sed -n 's/^profiles=//p' "$listed" | jq -e --arg path "$profile" 'any(.[]; .path == $path)' > /dev/null; then
+              echo "profile=$profile" >> "$GITHUB_OUTPUT"
+              echo "network=$network" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error title=Unknown profile::$PROFILE is not a committed profile on a hosted network"
+          exit 1
+
+  e2e:
+    name: ${{ inputs.validate-only && 'Validate' || 'Run' }} ${{ needs.network.outputs.profile }} on ${{ needs.network.outputs.network }}
+    needs: network
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # The environment accepts only main and holds the deployer key the committed profiles share.
+    environment: factory-release-${{ needs.network.outputs.network }}
+    # Shares the network's hosted-contracts queue with the deploy and release workflows, so the
+    # deployer key never sends from two CI jobs at once.
+    concurrency:
+      group: hosted-contracts-${{ needs.network.outputs.network }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      NETWORK: ${{ needs.network.outputs.network }}
+      PROFILE: ${{ needs.network.outputs.profile }}
+      GROUP: ${{ inputs.group }}
+      VALIDATE_ONLY: ${{ inputs.validate-only }}
+      # Read-only validation signs nothing, so it never receives the deployer key.
+      DEPLOYER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.DEPLOYER_PRIVATE_KEY || '' }}
+      # Reaches the Zone through Tempo API; validation also inspects the live Zone with it.
+      TEMPO_API_KEY: ${{ secrets.TEMPO_API_KEY }}
+      # Optional; without it the run uses the network's public RPC.
+      TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+      TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+      TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      # The CLI refuses --group with --validate-only.
+      - name: Run the cases
+        id: run
+        run: |
+          set -euo pipefail
+          arguments=("$PROFILE")
+          if [[ "$VALIDATE_ONLY" == 'true' ]]; then arguments+=(--validate-only); fi
+          if [[ -n "$GROUP" ]]; then arguments+=(--group "$GROUP"); fi
+          pnpm e2e:profile "${arguments[@]}"
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          result=$(find e2e/.results -maxdepth 1 -type f -name '*.json' ! -name '*-benchmark-*' 2>/dev/null | sort | tail -n 1)
+          {
+            echo "## Hosted E2E · ${NETWORK} · \`${PROFILE}\`${GROUP:+ · ${GROUP}} · ${GITHUB_SHA::7}"
+            echo
+            if [[ "$VALIDATE_ONLY" == 'true' ]]; then
+              echo "Read-only validation: ${OUTCOME}."
+              exit 0
+            fi
+            if [[ -z "$result" ]]; then
+              echo "No case result was produced (${OUTCOME}); see the run step's output."
+              exit 0
+            fi
+            echo '| Case | Status | Duration | Failure or blocker |'
+            echo '| --- | --- | ---: | --- |'
+            jq -r '.cases[] | "| `\(.id)` | \(.status) | \(.durationMs / 1000 | floor)s | \((.failure // .blocker // "") | gsub("[\r\n]+"; " ") | gsub("\\|"; "\\|") | .[0:300]) |"' "$result"
+            jq -r '(.selectedCases - [.cases[].id])[] | "| `\(.)` | NOT RUN | | |"' "$result"
+            echo
+            jq -r '.cases | "\(length) cases: \(map(select(.status == "PASS")) | length) passed, \(map(select(.status == "FAIL")) | length) failed, \(map(select(.status == "BLOCKED")) | length) blocked"' "$result"
+            if [[ "$(jq -r '.completed' "$result")" != 'true' ]]; then echo; echo 'The run was interrupted before every selected case ran.'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hosted-e2e-${{ needs.network.outputs.network }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e/.results/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 90
