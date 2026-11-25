@@ -64,6 +64,17 @@ contract VedaEngineAsyncTest is VedaEngineTestBase, IMockFinalizeHook {
         assertEq(engine.unresolvedClaimCount(), 0);
     }
 
+    function testRequestRevertsAtomicallyWhenQueueLeavesNoStandingUnit() public {
+        // The Queue nets exactly the request's shares but spends the standing unit on the way.
+        queue.setSharePullExtra(1);
+        vault.mint(address(engine), 41);
+
+        vm.expectRevert(abi.encodeWithSelector(VedaEngine.UnexpectedAllowance.selector, address(queue), 0));
+        core.requestRedeem(40, address(asset), 0, 3600);
+
+        _assertNoRequestSideEffects(41);
+    }
+
     function testFirstRequestWritesOnlyItsClaimSlot() public {
         // The claim counters share the active Queue's slot, and the Queue allowance keeps its standing unit,
         // so the first request writes no other engine slot from zero.

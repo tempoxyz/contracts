@@ -171,6 +171,11 @@ contract VedaEngine is
     uint256 private transient _batchEarmark;
     bool private transient _inBatch;
 
+    /// @dev Gas each payout in a solved batch may use, the receiver's hook included, so one receiver cannot
+    ///      take the batch's gas. It covers a payout that creates the EarnVault's and the receiver's balance
+    ///      slots (250,000 gas each on Tempo) plus a hook of about a million gas; {claimRedeem} is uncapped.
+    uint256 private constant FINALIZE_GAS = 2_000_000;
+
     event EarnVaultInitialized(address indexed earnVault);
     /// @notice Initial active periphery and freshness policy captured by this engine.
     event VedaEngineInitialized(
@@ -224,6 +229,7 @@ contract VedaEngine is
     error InvalidAsset(address expected, address actual);
     error InvalidMaxRateAge();
     error InvalidRateTimestamp(uint256 updatedAt, uint256 currentTime);
+    error InvalidReceiver();
     error InvalidVedaPeriphery(address account);
     error InvalidVedaPeripheryWiring(address component, address expected, address actual);
     error InvalidTrackedRequest(bytes32 requestId);
@@ -503,7 +509,7 @@ contract VedaEngine is
     ///         Hard-reverts when the buffer is dry (no partial fill).
     /// Only the bound EarnVault calls it.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
-    /// @custom:ensures receiver != address(0) && assets >= minAssets
+    /// @custom:ensures receiver != address(0) && receiver != address(this) && assets >= minAssets
     /// The venue burned exactly the requested engine shares, measured on the engine's balance.
     /// @custom:ensures burnedShares == engineShares
     function redeem(uint256 engineShares, address receiver, uint256 minAssets)
@@ -513,6 +519,9 @@ contract VedaEngine is
         returns (uint256 assets)
     {
         if (receiver == address(0)) revert ZeroAddress();
+        // A payout to the engine would rest as unearmarked balance. The EarnVault stays a valid receiver: a
+        // migration redeems the whole backing to it.
+        if (receiver == address(this)) revert InvalidReceiver();
         _checkpointRate();
         uint256 sharesBefore = vault.balanceOf(address(this));
         uint256 receiverAssetsBefore = IERC20Like(baseAsset).balanceOf(receiver);
@@ -528,7 +537,7 @@ contract VedaEngine is
     ///         forwards EXACTLY `assets` to `receiver` (sub-1-share dust stays on the engine, sweepable).
     /// Only the bound EarnVault calls it.
     /// @custom:ensures old(earnVault) != address(0) && msg.sender == old(earnVault)
-    /// @custom:ensures receiver != address(0)
+    /// @custom:ensures receiver != address(0) && receiver != address(this) && receiver != msg.sender
     /// The venue burned exactly the engine shares charged, which round up in the vault's favour at the
     /// transaction's rate, and the receiver's measured increase is exactly the requested assets.
     /// @custom:ensures burnedShares == engineShares && measuredReceived == assets
@@ -542,6 +551,8 @@ contract VedaEngine is
         returns (uint256 engineShares)
     {
         if (receiver == address(0)) revert ZeroAddress();
+        // Neither the engine nor the EarnVault (the only caller) takes an exact withdrawal for itself.
+        if (receiver == address(this) || receiver == msg.sender) revert InvalidReceiver();
         uint256 currentRate = _checkpointRate();
         engineShares = _engineSharesForAssets(assets, currentRate);
         /// The share burn rounds up, in the protocol's favour: engineShares * rate >= assets * shareScale.
@@ -619,6 +630,7 @@ contract VedaEngine is
             request.assetOut, queueShares, request.discountBps, request.secondsToDeadline
         );
         _requireVenueSharesQueued(sharesBefore, queueShares);
+        _requireStandingAllowance(address(vault), address(requestQueue));
         OnChainWithdraw memory trackedRequest = requestQueue.getOnChainWithdraw(requestId);
         if (
             requestQueue.getRequestId(trackedRequest) != requestId || trackedRequest.user != address(this)
@@ -768,7 +780,7 @@ contract VedaEngine is
             uint256 amt = c.amountOfAssets;
             // DEGRADE-TO-SKIP: finalize in a self-`external` call so a reverting payout is caught and the
             // claim is left open with its funds still earmarked (nothing in this frame commits on revert).
-            try this.finalizeOneExternal(id) {
+            try this.finalizeOneExternal{ gas: FINALIZE_GAS }(id) {
                 consumed += amt;
                 claimed++;
             } catch {

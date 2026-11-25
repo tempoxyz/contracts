@@ -129,8 +129,10 @@ Immediate redemption forwards the user's `minAssets` to the Teller, verifies the
 BoringVault-share decrease, and returns the receiver's measured base-asset increase rather than the
 Teller's return value. Exact withdrawal also verifies the engine's measured Teller delivery and the
 receiver's exact increase. A dishonest return value, redirected payout, or fee-on-transfer
-underdelivery reverts. Immediate exits fail when the Veda liquidity buffer is dry; offer a queued
-request when the engine advertises it.
+underdelivery reverts. Neither exit pays the engine itself, and an exact withdrawal never pays the
+EarnVault (`InvalidReceiver`); a redemption may, because migration redeems the backing to it.
+Immediate exits fail when the Veda liquidity buffer is dry; offer a queued request when the engine
+advertises it.
 
 ## Queued exits
 
@@ -140,10 +142,11 @@ and cancellation sequence is in [flows](../architecture/flows.md#async-redemptio
 
 1. **Request.** `engineData` is an ABI-encoded `VedaRedeemRequest`: `assetOut` (must be the base
    asset), `discountBps`, `secondsToDeadline`, and a nonzero absolute payout floor
-   `minQueuedAssets`. The engine verifies its BoringVault shares decreased by exactly the request,
-   reads the request back with `getOnChainWithdraw(requestId)`, checks its ID and engine-owned
-   fields, and requires the fixed `amountOfAssets` to meet `minQueuedAssets` and fit in `uint88`
-   (`QueuedAssetsTooLarge` above about 3.1e26 base units). It stores one slot per request: the Queue,
+   `minQueuedAssets`. The engine verifies its BoringVault shares decreased by exactly the request and
+   that the Queue's allowance is back to its standing unit (`UnexpectedAllowance`), reads the request
+   back with `getOnChainWithdraw(requestId)`, checks its ID and engine-owned fields, and requires the
+   fixed `amountOfAssets` to meet `minQueuedAssets` and fit in `uint88` (`QueuedAssetsTooLarge` above
+   about 3.1e26 base units). It stores one slot per request: the Queue,
    the claim status, and `amountOfAssets`. Tempo charges 250,000 gas for a slot first written from
    zero, and a claim is never cleared, so each request pays for one such slot. The open and unresolved
    claim counters share the active Queue's slot, so a request or close updates one more slot, never a
@@ -151,7 +154,9 @@ and cancellation sequence is in [flows](../architecture/flows.md#async-redemptio
 2. **Solve.** An authorized solver submits request IDs to `VedaForwardingSolver`; the stock solve,
    measured engine credit, and finalization to each stored receiver happen in one transaction. If a
    receiver cannot accept the payout, that request becomes claimable and stays earmarked until anyone
-   calls `claimRedeem` successfully. An unsolved request cannot draw on another request's funds. While
+   calls `claimRedeem` successfully. Each payout in the batch, the receiver's `onRedeemFinalized` hook
+   included, runs with at most 2,000,000 gas, so one receiver cannot use up the batch's gas;
+   `claimRedeem` has no such limit. An unsolved request cannot draw on another request's funds. While
    a batch finalizes, its earmark stays in transient storage, which `settled` and `sweepDust` count;
    only the amounts of failed payouts are written to the persistent ledger, so a batch whose payouts
    all succeed writes no ledger slot.

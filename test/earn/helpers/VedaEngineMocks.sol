@@ -277,6 +277,7 @@ contract MockQueue {
     uint256 public rateAfterCancel;
     uint16 public sharePullBps = 10_000;
     uint16 public shareReturnBps = 10_000;
+    uint128 public sharePullExtra;
     uint128 public cancelReportedShares;
     mapping(bytes32 => OnChainWithdraw) internal _built;
     mapping(bytes32 => bool) public isActive;
@@ -302,6 +303,11 @@ contract MockQueue {
         sharePullBps = bps;
     }
 
+    /// @dev Pulls this many shares beyond each request and sends them back, so the net share move is unchanged.
+    function setSharePullExtra(uint128 extra) external {
+        sharePullExtra = extra;
+    }
+
     /// @dev Returns only this fraction of a cancelled request's shares.
     function setShareReturnBps(uint16 bps) external {
         shareReturnBps = bps;
@@ -318,6 +324,10 @@ contract MockQueue {
     {
         uint256 sharesToPull = uint256(shares) * sharePullBps / 10_000;
         if (sharesToPull != 0) require(boringVault.transferFrom(msg.sender, address(this), sharesToPull), "PULL");
+        if (sharePullExtra != 0) {
+            require(boringVault.transferFrom(msg.sender, address(this), sharePullExtra), "PULL");
+            require(boringVault.transfer(msg.sender, sharePullExtra), "PULL");
+        }
         OnChainWithdraw memory r = OnChainWithdraw({
             nonce: nonce,
             user: msg.sender,
