@@ -90,7 +90,9 @@ import hashlib, sys
 path, expected = sys.argv[1:]
 sys.exit(hashlib.sha256(open(path, "rb").read()).hexdigest() != expected)
 CHECKSUM
-  tar -xzf "$archive" -C "$source" "solar-$target/solar"
+  # Extract as the current user: the archive records its CI builder's uid, and root without CAP_CHOWN
+  # (Argo pods) cannot restore it.
+  tar --no-same-owner -xzf "$archive" -C "$source" "solar-$target/solar"
   mkdir -p "$temporary/bin"
   mv "$source/solar-$target/solar" "$temporary/bin/solar"
   chmod 755 "$temporary/bin/solar"
