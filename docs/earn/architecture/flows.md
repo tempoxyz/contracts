@@ -58,7 +58,7 @@ sequenceDiagram
     A->>T: mint(receiver, earnShares)
     A->>A: keep only represented shares managed; re-anchor
     A->>A: require totalAssets <= maxManagedAssets, when set
-    A->>F: initializeBaselines(), while fees are active
+    A->>F: initializeBaselines(), or reopenBaselines() into an empty pool, while fees are active
 ```
 
 The EarnVault keeps a copy of `feesActive()`, refreshed by every call that can change it (all of which
@@ -146,7 +146,7 @@ sequenceDiagram
     A->>A: convert; check minEarnShares and 1-bp floor loss
     A->>T: mint(receiver, earnShares)
     A->>A: keep only represented shares managed; re-anchor; check maxManagedAssets
-    A->>F: initializeBaselines()
+    A->>F: initializeBaselines(), or reopenBaselines() into an empty pool
 ```
 
 The rules match a base-asset deposit: the EarnVault checkpoints before principal enters, mints
@@ -202,8 +202,14 @@ sequenceDiagram
 
     U->>A: contribute(assets)
     A->>F: accrueFees()
-    A->>A: transferFrom(U, A, assets)
-    A->>E: deposit(assets)
+    alt engine has IEarnEngineHeldDeposit
+        A->>A: transferFrom(U, E, assets)
+        A->>E: depositHeld(assets)
+    else
+        A->>A: transferFrom(U, A, assets); top up E's standing approval if below assets
+        A->>E: deposit(assets)
+    end
+    A->>A: require reported == measured raw-share increase
     A->>A: add measured engine shares to managed backing
     A->>A: require totalAssets <= maxManagedAssets, when set
     A->>A: re-anchor unchanged EarnShare supply
@@ -230,7 +236,10 @@ Optional supply-bounded orchestration around `contribute` is in
 
 1. The caller approves `earnShares` to the EarnVault and calls
    `requestRedeem(earnShares, receiver, engineData)`; the engine must advertise
-   `IEarnEngineAsyncRedeem`.
+   `IEarnEngineAsyncRedeem`. The payout and any cancellation's re-entry go only to `receiver`, so a
+   receiver that could never take them reverts with `InvalidReceiver`: the EarnVault, its engine, or
+   a TIP-20 token address (the reserved `0x20C000000000000000000000` prefix), as well as zero
+   (`ZeroAddress`).
 2. `A` checkpoints fees.
 3. `A` converts the EarnShare to engine shares, rounding down, and reverts with
    `ExcessiveConversionLoss` if converting them back leaves more than one basis point of the
@@ -259,7 +268,10 @@ The venue delivers assets to the engine, which transfers them to the EarnVault a
 engine, the asset to be its base asset, and the request to be open. It closes the claim, decrements
 `openRedeemRequestCount`, closes the fee snapshot if the request recorded one, forwards `amount` to
 the stored receiver, and, if the receiver has code, calls `onRedeemFinalized` inside a `try`, so a
-reverting receiver cannot block finalization. There is no burn or fee checkpoint. Veda's forwarding
+reverting receiver cannot block finalization. The hook is best-effort: it gets 63/64 of the gas left
+after the payout, and a hook that reverts or runs out of gas is not retried, because the claim is
+already paid. Veda's batch solve caps each payout at 2,000,000 gas, so there the hook gets roughly
+63/64 of what remains of that after the payout. There is no burn or fee checkpoint. Veda's forwarding
 solver makes the venue solve, measured engine credit, and finalization atomic
 ([Veda queued exits](../modules/veda.md#queued-exits)).
 

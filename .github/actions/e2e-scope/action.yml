@@ -3,7 +3,7 @@ description: >-
   The Local E2E path filter. A pull request or push runs the lane only when it changes deployments,
   the E2E runner, localnet, contracts, deployment scripts, or their shared build configuration; any
   other event (or a branch-creating push) always runs it. Requires a checkout of this action and
-  `pull-requests: read` on pull requests.
+  `contents: read`.
 outputs:
   run:
     description: "'true' when the change needs Local E2E."
@@ -16,20 +16,20 @@ runs:
       with:
         script: |
           let files
-          if (context.eventName === 'pull_request') {
-            files = await github.paginate(github.rest.pulls.listFiles, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-              per_page: 100,
-            })
-          } else if (context.eventName === 'push' && !/^0+$/.test(context.payload.before)) {
+          // The commits this run was triggered for (a rerun keeps them), not the pull request's live head.
+          const basehead =
+            context.eventName === 'pull_request'
+              ? `${context.payload.pull_request.base.sha}...${context.payload.pull_request.head.sha}`
+              : context.eventName === 'push' && !/^0+$/.test(context.payload.before)
+                ? `${context.payload.before}...${context.payload.after}`
+                : undefined
+          if (basehead) {
             const { data } = await github.rest.repos.compareCommitsWithBasehead({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              basehead: `${context.payload.before}...${context.payload.after}`,
+              basehead,
             })
-            // The comparison lists at most 300 files; treat a larger push as in scope.
+            // The comparison lists at most 300 files; treat a larger change as in scope.
             files = data.files?.length < 300 ? data.files : undefined
           }
           if (!files) {

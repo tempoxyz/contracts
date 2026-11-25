@@ -219,6 +219,94 @@ export function normalizeImmutableReferences(
   return `0x${normalized.join('')}`
 }
 
+/**
+ * Removes the compiler's CBOR metadata, whose hashes cover the source text, so builds that differ
+ * only in comments compare equal: the trailing tail, then the tail of each child creation code a
+ * factory embeds just before it. Code without a well-formed trailing tail is returned unchanged.
+ */
+export function stripMetadata(bytecode: Hex): Hex {
+  const tail = metadataStart(bytecode.slice(2), false)
+  if (tail === undefined) return bytecode
+  let code = bytecode.slice(2, 2 + tail * 2).toLowerCase()
+  // Embedded child metadata sits directly before (solc) or behind one INVALID byte (solar), and a
+  // child's own children before it. Only CBOR sections and lengths go: the INVALID bytes still compare.
+  let delimiters = ''
+  for (;;) {
+    const adjacent = metadataStart(code, true)
+    if (adjacent !== undefined) {
+      code = code.slice(0, adjacent * 2)
+      continue
+    }
+    const delimited = code.endsWith('fe') ? metadataStart(code.slice(0, -2), true) : undefined
+    if (delimited === undefined) break
+    code = code.slice(0, delimited * 2)
+    delimiters += 'fe'
+  }
+  return `0x${code}${delimiters}`
+}
+
+/**
+ * The byte offset where the CBOR metadata ending `code` starts, or undefined. An embedded
+ * section must also carry a source hash (an `ipfs`, `bzzr0`, or `bzzr1` byte string).
+ */
+function metadataStart(code: string, embedded: boolean) {
+  if (code.length < 4) return undefined
+  // The last two bytes give the CBOR length.
+  const start = code.length / 2 - 2 - Number.parseInt(code.slice(-4), 16)
+  if (start < 0) return undefined
+  const keys = metadataMapKeys(code.slice(start * 2, -4))
+  if (!keys) return undefined
+  if (embedded && !['ipfs', 'bzzr0', 'bzzr1'].some((key) => keys.get(key) === 'bytes'))
+    return undefined
+  return start
+}
+
+/**
+ * The keys of a non-empty CBOR map of text keys to byte strings, text strings, or booleans, filling
+ * `hex` exactly, with each value's kind; undefined for anything else.
+ */
+function metadataMapKeys(hex: string) {
+  const size = hex.length / 2
+  let at = 0
+  // One item head: its major type and argument (up to two bytes), or undefined past the end.
+  const head = () => {
+    if (at >= size) return undefined
+    const first = Number.parseInt(hex.slice(at * 2, at * 2 + 2), 16)
+    at += 1
+    const info = first & 31
+    const extra = info < 24 ? 0 : info === 24 ? 1 : info === 25 ? 2 : -1
+    if (extra < 0 || at + extra > size) return undefined
+    const argument = extra === 0 ? info : Number.parseInt(hex.slice(at * 2, (at + extra) * 2), 16)
+    at += extra
+    return { major: first >> 5, argument }
+  }
+  const map = head()
+  if (map?.major !== 5 || map.argument === 0) return undefined
+  const keys = new Map<string, 'bytes' | 'text' | 'boolean'>()
+  for (let entry = 0; entry < map.argument; entry++) {
+    const key = head()
+    if (key?.major !== 3) return undefined
+    const name = Buffer.from(hex.slice(at * 2, (at + key.argument) * 2), 'hex').toString('latin1')
+    at += key.argument
+    const value = head()
+    if (!value) return undefined
+    if (value.major === 2 || value.major === 3) {
+      at += value.argument
+      keys.set(name, value.major === 2 ? 'bytes' : 'text')
+    }
+    // false and true
+    else if (value.major === 7 && (value.argument === 20 || value.argument === 21))
+      keys.set(name, 'boolean')
+    else return undefined
+  }
+  return at === size ? keys : undefined
+}
+
+/** Runtime code identity: its keccak256 with immutable slots zeroed and its metadata removed. */
+export function runtimeCodeIdentity(bytecode: Hex, references: readonly ImmutableReference[]) {
+  return keccak256(stripMetadata(normalizeImmutableReferences(bytecode, references)))
+}
+
 /** Rejects inconsistent copies of one constructor value before those bytes are normalized away. */
 export function assertConsistentImmutableReferences(
   bytecode: Hex,
@@ -331,13 +419,6 @@ export type ReviewedDeploymentIdentity = {
 
 // These historical identities were reviewed before current release promotion; records cannot enroll themselves.
 const reviewedDeploymentIdentities: Readonly<Record<string, ReviewedDeploymentIdentity>> = {
-  '4217:veda-mainnet': {
-    deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
-    factories: {
-      earn: getAddress('0x3085A8003f340CD51C72D9e1a1298CDafB171B02'),
-      erc4626Engine: getAddress('0xd43D00981222a8db444A528E69f19E3cE5A7D2Ff'),
-    },
-  },
   '42431:veda-moderato': {
     deployer: getAddress('0x20b0Adf5bec8Cd881CC1795A04C1F33888769132'),
     factories: {

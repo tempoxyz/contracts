@@ -523,22 +523,13 @@ since the program pulls the stablecoin before the clone pays it out.
 
 ## Audit scope
 
-### In scope
-
-- [`src/spend/providers/bridge/SpenderTempoSpend.sol`](../../../src/spend/providers/bridge/SpenderTempoSpend.sol)
-- [`src/spend/providers/bridge/BridgeProvider.sol`](../../../src/spend/providers/bridge/BridgeProvider.sol)
-- [`src/spend/CardSpender.sol`](../../../src/spend/CardSpender.sol)
-- [`src/spend/CardFactory.sol`](../../../src/spend/CardFactory.sol)
-- [`src/zone/ZoneRouter.sol`](../../../src/zone/ZoneRouter.sol), focused on the Spend op
-- [`src/zone/ZoneRouterFactory.sol`](../../../src/zone/ZoneRouterFactory.sol)
-
-### Out of scope
-
-- The card spender contracts and the Zones contracts (`ZonePortal`, `ZoneMessenger`, `Verifier`),
-  vendored unchanged at the commits in [`VENDORED.md`](../../../vendor/VENDORED.md).
-- Tempo Earn ([`src/earn/`](../../../src/earn/)), audited separately
-  ([Earn audits](../../earn/audit/README.md)).
-- Tests, fixtures, the deploy scripts, `e2e/` and `localnet/`.
+An audit of a Bridge program covers `SpenderTempoSpend` (the "TS" handler, with the vendored
+`SpenderBase`, `ISpenderHandler` and `IFactory` it compiles in), `BridgeProvider`, `CardSpender`,
+`CardFactory`, `ZoneRouter` and `ZoneRouterFactory`. The [audits page](../../audits.md#coverage)
+owns each contract's audit status; none of these is audited. Out of scope are the rest of Bridge's
+vendored contracts and the Zones contracts, at the commits in
+[`VENDORED.md`](../../../vendor/VENDORED.md), Tempo Earn ([`src/earn/`](../../../src/earn/)), and tests,
+fixtures, the deploy scripts, `e2e/` and `localnet/`.
 
 A bug in how the in-scope code integrates with out-of-scope code is in scope. The threat
 model's [Outside this repository](../../threat-models/card-spend.md#outside-this-repository) lists what the in-scope code assumes

@@ -102,6 +102,43 @@ contract VedaEngineAccountingTest is VedaEngineTestBase {
         assertEq(vault.balanceOf(address(engine)), 100);
     }
 
+    function testRedeemRejectsEngineAsReceiver() public {
+        asset.mint(address(core), 30);
+        core.deposit(30);
+
+        vm.expectRevert(VedaEngine.InvalidReceiver.selector);
+        core.redeem(10, address(engine), 10);
+
+        assertEq(asset.balanceOf(address(engine)), 0);
+        assertEq(vault.balanceOf(address(engine)), 30);
+        assertEq(teller.bulkWithdrawCalls(), 0);
+    }
+
+    /// @dev A migration redeems the whole backing to the EarnVault, so it stays a valid redeem receiver.
+    function testRedeemPaysTheEarnVault() public {
+        asset.mint(address(core), 30);
+        core.deposit(30);
+
+        assertEq(core.redeem(30, address(core), 30), 30);
+        assertEq(asset.balanceOf(address(core)), 30);
+        assertEq(vault.balanceOf(address(engine)), 0);
+    }
+
+    function testExactWithdrawRejectsEngineAndEarnVaultAsReceiver() public {
+        asset.mint(address(core), 30);
+        core.deposit(30);
+
+        vm.expectRevert(VedaEngine.InvalidReceiver.selector);
+        core.withdraw(10, address(engine));
+        vm.expectRevert(VedaEngine.InvalidReceiver.selector);
+        core.withdraw(10, address(core));
+
+        assertEq(asset.balanceOf(address(engine)), 0);
+        assertEq(asset.balanceOf(address(core)), 0);
+        assertEq(vault.balanceOf(address(engine)), 30);
+        assertEq(teller.bulkWithdrawCalls(), 0);
+    }
+
     function testAtomicDepositRateUpdateRedeemReverts() public {
         asset.mint(address(core), 10);
 

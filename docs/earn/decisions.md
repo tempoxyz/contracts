@@ -129,6 +129,6 @@ security boundary rather than being a generic externalization.
 **Decision:** record engine kind and the scoped `earnRouter` on each stack, with no separate product
 records, and expose the operational `EarnStack` through `@tempoxyz/contracts/deployments/operations`.
 
-**Why:** the engine kind (`erc4626`, `veda`, or `propamm`) describes execution, not the asset, so it
+**Why:** the engine kind (`erc4626`, `veda`, or `propamm`; `HoldEngine` has none) describes execution, not the asset, so it
 belongs to the stack rather than a product indirection. Stack-scoped router addresses preserve the immutable Zone and EarnVault
 bindings.

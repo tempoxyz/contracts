@@ -14,6 +14,29 @@ pinned source and update this page (and, for Rain, rebuild the fixture).
 Local modifications: `bridge/pending/spenders/SpenderErc4626.sol`, import paths only, so the
 unmerged file compiles against the pinned `src/`.
 
+Each file under `bridge/` as vendored, by SHA-256.
+[`deployments/vendored.test.ts`](../deployments/vendored.test.ts) fails when a file changes, appears or
+disappears without this table. `src/spenders/SpenderBase.sol`, `src/ISpenderHandler.sol` and
+`src/lib/IFactory.sol` compile into the deployed "TS" handler
+([`SpenderTempoSpend`](../src/spend/providers/bridge/SpenderTempoSpend.sol)); the other files serve only
+tests and E2E runs.
+
+| File                                                      | SHA-256                                                            |
+| --------------------------------------------------------- | ------------------------------------------------------------------ |
+| `bridge/LICENSE`                                          | `42a8aab48c21b922a153eaa87cc1a800e8b38a545590c72c53d001ba1aff13b1` |
+| `bridge/pending/spenders/SpenderErc4626.sol`              | `de351812114a59e4d533958a5dcd1866f73fc14bae797aafad92cf586e27cda8` |
+| `bridge/src/ISpenderHandler.sol`                          | `62a694b95dd65a2ddc7df7fedeaae40909fbae9fca5bb5bae68bd17afc2faa81` |
+| `bridge/src/SpenderDelegator.sol`                         | `f2a3153a987f0a6001f37599732ff2a266fd2569ee77a88cdfe43bff970c4d7b` |
+| `bridge/src/SpenderFactory.sol`                           | `ac375fc56b51ba18c081840e2bf99543302c3a01d5e75989a755eb5d4cdb5575` |
+| `bridge/src/SpenderFactoryErrorsAndEvents.sol`            | `883f09d265960c72706b20af89218075e8694d39953207bffb28f54ba3c567c3` |
+| `bridge/src/lib/IFactory.sol`                             | `247a1fdb954064420c3362184c4b70ca3b42c17a72ff5462d4002869e27e4202` |
+| `bridge/src/lib/SpenderFactoryStorage.sol`                | `cfb9f3aabf502ea28e3da9368157ff6505c7eb4c79bfd9d1dc5269b0022f7639` |
+| `bridge/src/spenders/SpenderBase.sol`                     | `f8494f5b20f1808d297e5de6b102168e72e8bda3ddbab0c10c102df6de80ef4b` |
+| `bridge/src/spenders/SpenderErc20.sol`                    | `a54b391be6e2e05fc61654cae9cbe62462000019f4efab112240dc04b3624d4b` |
+| `bridge/src/spenders/SpenderErc20WithRelayedApproval.sol` | `a5ff10999f618bea5723f2fd69d565b849ce7089ef3cb961ddf7c27969bb123b` |
+| `bridge/src/spenders/SpenderPermit2.sol`                  | `103098163518228bb9688c6d4c14e8da8dc7b27ebafa66b3ec42b2e742feb590` |
+| `bridge/src/spenders/SpenderTempoEarnWithFallback.sol`    | `ebd815702bdf05c89d7167bc8c02237b489880687b96e20ccdd730c24d2fd39a` |
+
 `test/spend/bridge/harness/fixtures/Permit2.json` is Uniswap Permit2's creation code, built from
 `lib/permit2` at `cc56ad0f3439c502c246fc5cfcc3db92bb8b7219` with that repository's own `foundry.toml`
 (solc 0.8.17, `via_ir`, 1,000,000 optimizer runs), because Permit2's exact pragma cannot compile here.

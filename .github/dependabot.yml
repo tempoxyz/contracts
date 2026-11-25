@@ -17,7 +17,8 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
   - package-ecosystem: github-actions
-    directory: /
+    # Composite actions pin their own actions, which the root scan does not reach.
+    directories: ['/', '/.github/actions/*']
     schedule:
       interval: weekly
     cooldown:

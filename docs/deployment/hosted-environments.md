@@ -10,8 +10,8 @@ availability from transaction history.
 
 ## Current availability
 
-These are Tempo-owned test profiles; other stacks are under
-[external deployments](#external-deployments).
+These are Tempo-owned test profiles, all on Moderato; no Tempo-owned profile is deployed on mainnet.
+Other stacks are under [external deployments](#external-deployments).
 
 - [`veda-moderato`](../../profiles/veda-moderato/profile.json) is a public PATHUSD stack over a
   Tempo-owned Veda-compatible fixture ([Veda test stacks](../earn/modules/veda.md#test-stacks)), used for

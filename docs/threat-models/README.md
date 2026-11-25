@@ -4,9 +4,10 @@ Each threat model describes one system: who can attack it, its trust boundaries,
 keep and the risks its design accepts. Each opens with a **Covers** list of the paths it models, and it
 follows Trail of Bits' TRAIL method.
 
-| Model                       | System                                                          | Owner        |
-| :-------------------------- | :-------------------------------------------------------------- | :----------- |
-| [Card spend](card-spend.md) | Card programs, their providers and the Zone router's Spend path | Kartik Patel |
+| Model                         | System                                                                              | Owner        |
+| :---------------------------- | :---------------------------------------------------------------------------------- | :----------- |
+| [Card spend](card-spend.md)   | Card programs, their providers and the Zone router's Spend path                     | Kartik Patel |
+| [Zone router](zone-router.md) | The Zone router's three ops, `SendSpender`, standing approvals and deployment seeds | Kartik Patel |
 
 These paths need no threat model: tests (`**/test/**`), `e2e/`, `localnet/`, `docs/` and `profiles/`.
 Update a model in the same pull request as a change to the paths it covers, as its "Keeping this model

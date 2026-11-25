@@ -19,7 +19,7 @@ import {
 } from "../../../src/interfaces/earn/EarnFeeTypes.sol";
 import { IEarnFees } from "../../../src/interfaces/earn/IEarnFees.sol";
 import { DistributorConfig, DistributorFeeUpdate } from "../../../src/interfaces/earn/EarnVaultTypes.sol";
-import { FaultyMockToken } from "../helpers/EarnVaultMocks.sol";
+import { CoreMockEngine, FaultyMockToken } from "../helpers/EarnVaultMocks.sol";
 import { EarnVaultTestDeployer } from "../helpers/EarnVaultTestDeployer.sol";
 
 contract EarnVaultFeesTest is Test {
@@ -229,6 +229,79 @@ contract EarnVaultFeesTest is Test {
         assertEq(victimShares, 1_000_000);
         assertEq(fees.previewAccruedFees().totalFeeAssets, 0);
         assertEq(earnVault.previewRedeem(victimShares), 100_000_000);
+    }
+
+    function testReopeningDepositRestartsBaselinesAnEmptiedPoolLeftHigh() public {
+        FeeConfig memory config;
+        config.excess = ExcessReturnFee(true, excessRecipient, 0, 5_000);
+        _deployWithDecimals(config, 6);
+        _pinBaselinesAndEmptyPool();
+        assertEq(fees.targetBase(), 100e6);
+
+        // The next deposit reopens the pool at par and restarts both baselines there.
+        vm.warp(block.timestamp + 1 days);
+        _deposit(secondUser, 100e6);
+        assertEq(fees.highWaterMark(), 1e6);
+        assertEq(fees.targetBase(), 1e6);
+        assertEq(fees.targetStartedAt(), block.timestamp);
+        assertFalse(fees.feeBaselinesPending());
+
+        // Growth after the reopen is charged: half of the 10e6 above the target.
+        asset.mint(address(venue), 10e6);
+        (uint256 feeAssets, uint256 feeEarnShares) = earnVault.accrueFees();
+        assertEq(feeAssets, 5e6);
+        assertGt(feeEarnShares, 0);
+        assertEq(fees.claimableEarnShares(excessRecipient), feeEarnShares);
+    }
+
+    function testReopeningVenueShareDepositRestartsBaselinesAnEmptiedPoolLeftHigh() public {
+        _deployWithDecimals(_fixedConfig(fixedRecipient, 1_000), 6);
+        _pinBaselinesAndEmptyPool();
+
+        vm.startPrank(secondUser);
+        asset.approve(address(venue), 100e6);
+        uint256 venueShares = venue.deposit(100e6, secondUser);
+        venue.approve(address(engine), venueShares);
+        earnVault.depositVenueShares(venueShares, secondUser, 1);
+        vm.stopPrank();
+        assertEq(fees.highWaterMark(), 1e6);
+
+        asset.mint(address(venue), 10e6);
+        (uint256 feeAssets,) = earnVault.accrueFees();
+        assertEq(feeAssets, 1e6);
+        assertGt(fees.claimableEarnShares(fixedRecipient), 0);
+    }
+
+    function testReopeningDepositWithStaleValuationDefersBaselines() public {
+        asset = new FaultyMockToken("Asset", "AST", 6);
+        share = new FaultyMockToken("Earn Share", "EARN", 6);
+        CoreMockEngine staleEngine = new CoreMockEngine(asset, 6);
+        staleEngine.setFeeValuation(true, true);
+        earnVault = EarnVaultTestDeployer.deploy(
+            address(staleEngine), address(share), address(this), _fixedConfig(fixedRecipient, 1_000)
+        );
+        fees = IEarnFees(earnVault.earnFees());
+        asset.mint(user, 1_000e6);
+        asset.mint(secondUser, 1_000e6);
+        _pinBaselinesAndEmptyPool();
+
+        // The reopening deposit cannot value the pool, so the baselines wait for a fresh valuation.
+        staleEngine.setFeeValuation(true, false);
+        _deposit(secondUser, 100e6);
+        assertTrue(fees.feeBaselinesPending());
+        assertEq(fees.highWaterMark(), 100e6);
+
+        // The next fresh checkpoint restarts them at the current value without charging it.
+        staleEngine.setFeeValuation(true, true);
+        (uint256 feeAssets, uint256 feeEarnShares) = earnVault.accrueFees();
+        assertEq(feeAssets, 0);
+        assertEq(feeEarnShares, 0);
+        assertFalse(fees.feeBaselinesPending());
+        assertEq(fees.highWaterMark(), 1e6);
+
+        staleEngine.setNavGain(10e6);
+        (feeAssets,) = earnVault.accrueFees();
+        assertEq(feeAssets, 1e6);
     }
 
     function testFixedFeeUsesCombinedYieldAndContributionsAndCanBeClaimed() public {
@@ -666,6 +739,19 @@ contract EarnVaultFeesTest is Test {
         share.approve(address(earnVault), type(uint256).max);
         earnVault.deposit(amount, account, 1);
         vm.stopPrank();
+    }
+
+    /// @dev One unit of principal and a 99-unit contribution leave the baselines at 100 times par; the sole holder
+    ///      then exits and empties the pool.
+    function _pinBaselinesAndEmptyPool() internal {
+        _deposit(user, 1);
+        asset.mint(address(this), 99);
+        asset.approve(address(earnVault), 99);
+        earnVault.contribute(99);
+        assertEq(fees.highWaterMark(), 100e6);
+        vm.prank(user);
+        assertEq(earnVault.redeem(1, user, 1), 100);
+        assertEq(earnVault.totalEarnShares(), 0);
     }
 
     function _fixedConfig(address recipient, uint16 rateBps) internal pure returns (FeeConfig memory config) {

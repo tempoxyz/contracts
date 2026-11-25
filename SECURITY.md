@@ -31,13 +31,16 @@ Out of scope:
   committed fixture artifacts, which are not production code;
 - vendored third-party code, such as the card providers' contracts in `vendor/`, and third-party venues
   such as ERC-4626 vaults, Veda, and PropAMM. Report issues in them to their owners. A bug in how
-  Tempo's contracts integrate with them is in scope.
+  Tempo's contracts integrate with them is in scope, and so are the vendored Bridge files that compile
+  into the deployed "TS" handler (`vendor/bridge/src/spenders/SpenderBase.sol`,
+  `vendor/bridge/src/ISpenderHandler.sol` and `vendor/bridge/src/lib/IFactory.sol`).
 
 Each project documents its trust assumptions, privileged roles, and privacy boundary: Earn's
 [security and privacy model](docs/earn/architecture/security-and-privacy.md), the
 [Zone router](docs/zone/zone-router.md), and card spend's
-[design](docs/spend/design.md). Behavior documented there as trusted or visible is not a
-vulnerability by itself.
+[design](docs/spend/design.md), and the [threat models](docs/threat-models/README.md) list each
+system's accepted risks. Behavior documented there as trusted or visible is not a vulnerability by
+itself.
 
 ## Bug bounty
 
@@ -45,7 +48,6 @@ These contracts have no bug bounty.
 
 ## Audits
 
-Earn's completed audits, their scope, and the contracts changed or added since are listed on its
-[audits page](docs/earn/audit/README.md). Bridge card spend's
-[design](docs/spend/bridge/design.md#audit-scope) gives its audit scope: the "TS" handler, `BridgeProvider`,
-`CardSpender`, `CardFactory`, `ZoneRouter` and `ZoneRouterFactory`.
+The [audits page](docs/audits.md) lists the completed audits and, for every contract the repository
+deploys, its last audit or that it has none, and whether it has changed since. Many deployed
+contracts are not audited, or have changed since their audit.

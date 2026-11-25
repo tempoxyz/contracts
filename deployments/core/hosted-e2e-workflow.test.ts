@@ -11,6 +11,10 @@ const workflow = readFileSync(
   new URL('../../.github/workflows/hosted-e2e.yml', import.meta.url),
   'utf8',
 )
+const setupAction = readFileSync(
+  new URL('../../.github/actions/setup/action.yml', import.meta.url),
+  'utf8',
+)
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
 describe('hosted E2E workflow', () => {
@@ -28,6 +32,35 @@ describe('hosted E2E workflow', () => {
       "END_USER_PRIVATE_KEY: ${{ !inputs.validate-only && secrets.END_USER_PRIVATE_KEY || '' }}",
     )
     expect(workflow).toContain('pnpm e2e:profile "$' + '{arguments[@]}"')
+  })
+
+  test('gives the keys only to the run step, after a setup that restores no cache', () => {
+    const lines = workflow.split('\n')
+    const readers = lines.flatMap((line, index) => {
+      const secret = /^ *[A-Z_]+: .*\bsecrets\.([A-Z_]+)/.exec(line)?.[1]
+      if (!secret) return []
+      const step = lines
+        .slice(0, index)
+        .reverse()
+        .find((previous) => /^ {6}- name: /.test(previous))
+      return [{ secret, step: step?.trim(), indent: /^ */.exec(line)![0].length }]
+    })
+    expect(readers).toEqual(
+      ['DEPLOYER_PRIVATE_KEY', 'END_USER_PRIVATE_KEY', 'TEMPO_API_KEY'].map((secret) => ({
+        secret,
+        step: '- name: Run the cases',
+        indent: 10,
+      })),
+    )
+    // Both jobs: the network job's outputs choose the environment the keys come from.
+    expect(
+      workflow.match(/uses: \.\/\.github\/actions\/setup\n(?: {8,}.*\n)* {10}caches: 'false'\n/g),
+    ).toHaveLength(2)
+    expect(workflow.match(/uses: \.\/\.github\/actions\/setup$/gm)).toHaveLength(2)
+    // With caches: 'false', setup-foundry neither restores nor saves ~/.foundry/cache.
+    expect(setupAction).toMatch(
+      /uses: tempoxyz\/gh-actions\/actions\/setup-foundry@.*\n {6}with:\n(?: {8}.*\n)* {8}cache: \$\{\{ inputs\.caches == 'true' \}\}\n/,
+    )
   })
 
   test('resolves every hosted network', () => {
@@ -63,9 +96,9 @@ describe('hosted E2E workflow', () => {
         network: 'moderato',
         profile: 'profiles/e2e-moderato/profile.json',
       })
-      expect(resolveNetwork('profiles/veda-mainnet/profile.json')).toEqual({
-        network: 'mainnet',
-        profile: 'profiles/veda-mainnet/profile.json',
+      expect(resolveNetwork('profiles/veda-moderato/profile.json')).toEqual({
+        network: 'moderato',
+        profile: 'profiles/veda-moderato/profile.json',
       })
     })
 

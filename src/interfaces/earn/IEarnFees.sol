@@ -22,6 +22,7 @@ interface IEarnFees {
     function validateFeeConfig(FeeConfig calldata config) external view;
     function disableFees(address operator) external;
     function initializeBaselines(uint256 activeSupply, uint256 activeAssets) external;
+    function reopenBaselines(uint256 activeSupply, uint256 activeAssets) external;
 
     function recordRedeemRequest(bytes32 requestId, uint256 burnedEarnShares) external;
     function closeRedeemRequest(bytes32 requestId) external;

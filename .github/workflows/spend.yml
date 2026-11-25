@@ -3,70 +3,107 @@ name: Spend
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-    paths:
-      - 'src/**'
-      - 'test/spend/**'
-      - 'script/spend/**'
-      - 'script/DeterministicRelease.sol'
-      - 'vendor/**'
-      - 'snapshots/**'
-      - 'foundry.toml'
-      - 'foundry.lock'
-      - 'solar.lock'
-      - 'solar-releases.json'
-      - 'solar-solc'
-      - 'scripts/solidity-deps.sh'
-      - 'localnet/**'
-      - 'e2e/spend/**'
-      - 'e2e/harness/**'
-      - 'e2e/package.json'
-      - 'docs/spend/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - '.github/actions/setup/**'
-      - '.github/actions/solar-cache/**'
-      - '.github/workflows/spend.yml'
   push:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'test/spend/**'
-      - 'script/spend/**'
-      - 'script/DeterministicRelease.sol'
-      - 'vendor/**'
-      - 'snapshots/**'
-      - 'foundry.toml'
-      - 'foundry.lock'
-      - 'solar.lock'
-      - 'solar-releases.json'
-      - 'solar-solc'
-      - 'scripts/solidity-deps.sh'
-      - 'localnet/**'
-      - 'e2e/spend/**'
-      - 'e2e/harness/**'
-      - 'e2e/package.json'
-      - 'docs/spend/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - '.github/actions/setup/**'
-      - '.github/actions/solar-cache/**'
-      - '.github/workflows/spend.yml'
 
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A later push to main may be out of scope, so it must neither cancel an earlier push's run nor
+  # replace it while pending: each push gets its own group, and pull requests cancel earlier runs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Card spend on Tempo: the provider-agnostic contracts (src/spend/) and each provider's (Bridge, Rain),
 # which import Earn and the Zone router from the same Foundry project. Its tests and scripts need
 # Tempo's precompiles, so they run under the spend profiles (hardfork tempo:T8); Verify owns the
-# project's format, lint, and build. Not a required check: it runs only when the contracts, the spend
-# scripts, tests, vendored code or docs, e2e/spend/, localnet/ (with its pinned images) or the shared
-# build configuration change.
+# project's format, lint, and build. The jobs run only when the contracts, the spend scripts, tests,
+# vendored code or docs, e2e/spend/, localnet/ (with its pinned images) or the shared build
+# configuration change; Required / Spend reports on every pull request, passing when out of scope.
 jobs:
+  scope:
+    name: Select Spend scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # A pull request or push runs the jobs only when it changes one of these paths; any other event
+      # (or a branch-creating push) always runs them.
+      - id: scope
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            let files
+            // The commits this run was triggered for (a rerun keeps them), not the pull request's live head.
+            const basehead =
+              context.eventName === 'pull_request'
+                ? `${context.payload.pull_request.base.sha}...${context.payload.pull_request.head.sha}`
+                : context.eventName === 'push' && !/^0+$/.test(context.payload.before)
+                  ? `${context.payload.before}...${context.payload.after}`
+                  : undefined
+            if (basehead) {
+              const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                basehead,
+              })
+              // The comparison lists at most 300 files; treat a larger change as in scope.
+              files = data.files?.length < 300 ? data.files : undefined
+            }
+            if (!files) {
+              core.info(`Spend is required for ${context.eventName}`)
+              core.setOutput('run', 'true')
+              return
+            }
+
+            const exactPaths = new Set([
+              '.github/workflows/spend.yml',
+              'e2e/package.json',
+              'foundry.lock',
+              'foundry.toml',
+              'package.json',
+              'pnpm-lock.yaml',
+              'script/DeterministicRelease.sol',
+              'scripts/solidity-deps.sh',
+              'solar-releases.json',
+              'solar-solc',
+              'solar.lock',
+            ])
+            const pathPrefixes = [
+              '.github/actions/setup/',
+              '.github/actions/solar-cache/',
+              'docs/spend/',
+              'e2e/harness/',
+              'e2e/spend/',
+              'localnet/',
+              'script/spend/',
+              'snapshots/',
+              'src/',
+              'test/spend/',
+              'vendor/',
+            ]
+            // A rename lists its old path in `previous_filename`; moving a file out of scope still counts.
+            const inScope = (path) =>
+              exactPaths.has(path) || pathPrefixes.some((prefix) => path.startsWith(prefix))
+            const run = files.some(
+              ({ filename, previous_filename }) =>
+                inScope(filename) || (previous_filename !== undefined && inScope(previous_filename)),
+            )
+
+            core.info(`Spend ${run ? 'is required' : 'is not required'} for this change`)
+            core.setOutput('run', run ? 'true' : 'false')
+
   test:
     name: Test
+    needs: scope
+    if: ${{ needs.scope.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -114,6 +151,8 @@ jobs:
   # provider, on a disposable Tempo L1 and Zone started by the shared localnet.
   e2e:
     name: Rain E2E
+    needs: scope
+    if: ${{ needs.scope.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -155,6 +194,8 @@ jobs:
   # started by the shared localnet, from the images localnet/fixtures/runtime-lock.json pins.
   bridge-zone-e2e:
     name: Bridge Zone E2E
+    needs: scope
+    if: ${{ needs.scope.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -197,6 +238,8 @@ jobs:
   # profile itself.
   bridge-smoke:
     name: Bridge smoke
+    needs: scope
+    if: ${{ needs.scope.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -221,3 +264,30 @@ jobs:
 
       - name: Bridge smoke
         run: bash script/spend/bridge/smoke.sh
+
+  required:
+    name: Required / Spend
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [scope, test, e2e, bridge-zone-e2e, bridge-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # Out of scope, the jobs are skipped and this passes; in scope, every job must pass.
+      - name: Require every Spend job to pass
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          RUN: ${{ needs.scope.outputs.run }}
+          RESULTS: ${{ needs.test.result }} ${{ needs.e2e.result }} ${{ needs.bridge-zone-e2e.result }} ${{ needs.bridge-smoke.result }}
+        run: |
+          set -euo pipefail
+          test "$SCOPE_RESULT" = success
+          if [[ "$RUN" != 'true' ]]; then
+            echo 'Spend is not required for this change'
+            exit 0
+          fi
+          for result in $RESULTS; do test "$result" = success; done

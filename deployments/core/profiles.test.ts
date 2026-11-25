@@ -23,11 +23,6 @@ test.each(['flag', 'environment'])(
       )
       const folder = join(root, 'profiles', 'external-cli')
       cpSync(knownDirectory, folder, { recursive: true })
-      cpSync(
-        fileURLToPath(new URL('../../profiles/veda-mainnet/', import.meta.url)),
-        join(root, 'profiles', 'veda-mainnet'),
-        { recursive: true },
-      )
       const path = join(folder, 'profile.json')
       const authored = JSON.parse(readFileSync(path, 'utf8'))
       authored.id = 'external-cli'
@@ -115,9 +110,7 @@ test.each(['flag', 'environment'])(
         expect.objectContaining({ id: expected.id, path: 'profiles/external-cli/profile.json' }),
       )
       expect(matrix.map((entry) => entry.id)).toEqual(
-        source === 'flag'
-          ? ['external-cli', 'second-external', 'veda-mainnet']
-          : ['external-cli', 'veda-mainnet'],
+        source === 'flag' ? ['external-cli', 'second-external'] : ['external-cli'],
       )
     } finally {
       rmSync(root, { recursive: true, force: true })

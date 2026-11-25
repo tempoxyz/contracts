@@ -6,7 +6,7 @@ owned by [system architecture](../architecture/system.md) and [Earn fees](../arc
 ordering by [flows](../architecture/flows.md), and trust assumptions by
 [security and privacy](../architecture/security-and-privacy.md). TypeScript consumers import the
 ABIs from `@tempoxyz/contracts/abis` ([deployments README](../../../deployments/README.md#exports)). Audit
-scope is in [audits](../audit/README.md#scope).
+scope is in [audits](../../audits.md#coverage).
 
 ## Deployment inventory
 
@@ -23,6 +23,7 @@ scope is in [audits](../audit/README.md#scope).
 | `ERC4626Engine`, `ERC4626EngineFactory`                       | Per stack, network | [ERC-4626](../modules/erc4626-engine.md)                   |
 | `VedaEngine`, `VedaPeripheryRegistry`, `VedaForwardingSolver` | Per Veda stack     | [Veda](../modules/veda.md#contracts)                       |
 | `PropAMMEngine` (experimental)                                | Per stack          | [PropAMM](../modules/propamm.md)                           |
+| `HoldEngine`                                                  | Per stack          | [Hold](../modules/hold.md)                                 |
 | `SingleZoneEarnRouter`                                        | Per Zone route     | [Zones](../modules/zone-router.md#router-contract)         |
 | `EarnContributionController`, `EarnMerkleRewardDistributor`   | Optional per stack | [Rewards](../modules/rewards.md)                           |
 | `EarnRewardsFactory`                                          | Network            | [Rewards installation](../modules/rewards.md#installation) |
@@ -216,6 +217,7 @@ compatible asset, vault binding, interface, and output bounds. The full
 | `MinimumEarnSharesNotMet`, `MinimumAssetsNotMet`, `MinimumEngineSharesNotMet`, `ExceedsMaxEarnShares` | A caller bound is missed                                                                     |
 | `EngineCapabilityUnsupported`, `EngineExitUnsupported`                                                | The engine lacks the called capability, or any exit capability                               |
 | `FeeValuationStale`                                                                                   | A fee configuration change needs a fresh valuation                                           |
+| `InvalidReceiver`                                                                                     | An async request's receiver is the EarnVault, its engine, or a TIP-20 token address          |
 | `GlobalFeeDisableUnavailable`, `InvalidDistributorFeeConfiguration`                                   | The distributor item is protected                                                            |
 
 The complete list is in the source; client handling is in
@@ -253,15 +255,18 @@ module, or the EarnVault.
 
 ### EarnVault-only API
 
-`accrueFees`, `setFeeConfig`, `disableFees`, `initializeBaselines`, `recordRedeemRequest`,
-`closeRedeemRequest`, and `settleCancelledRedeem` mutate the fee state machine. The EarnVault
-supplies the accounting context, passing active EarnShare supply, active assets and valuation
-freshness to `accrueFees` and `initializeBaselines`, and separately mints any fee EarnShare they
-return. `accrueFees` returns the fee assets, the fee EarnShare, and the baseline floor and EarnShare
-scale of a checkpoint that valued the pool (both zero otherwise); `recordRedeemRequest` takes the
-request ID and burned EarnShare and trusts the EarnVault's valuation freshness.
-`initializeBaselines` runs after a principal deposit and only raises baselines; the EarnVault skips
-it when the post-entry value is at or below the baseline floor `accrueFees` returned.
+`accrueFees`, `setFeeConfig`, `disableFees`, `initializeBaselines`, `reopenBaselines`,
+`recordRedeemRequest`, `closeRedeemRequest`, and `settleCancelledRedeem` mutate the fee state
+machine. The EarnVault supplies the accounting context, passing active EarnShare supply, active
+assets and valuation freshness to `accrueFees`, and supply and assets to `initializeBaselines` and
+`reopenBaselines`, and separately mints any fee EarnShare they return. `accrueFees` returns the fee
+assets, the fee EarnShare, and the baseline floor and EarnShare scale of a checkpoint that valued the
+pool (both zero otherwise); `recordRedeemRequest` takes the request ID and burned EarnShare and
+trusts the EarnVault's valuation freshness. `initializeBaselines` runs after a principal deposit
+into a live pool and only raises baselines; the EarnVault skips it when the post-entry value is at or
+below the baseline floor `accrueFees` returned. `reopenBaselines` runs instead after a principal
+entry that reopened an empty pool and restarts the baselines at the entry's value, or marks them
+pending while the valuation is stale.
 
 ### Events
 

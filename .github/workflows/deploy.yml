@@ -19,7 +19,7 @@ on:
         description: Broadcast, source verify, and record; unchecked only simulates and plans
         required: true
         type: boolean
-        default: true
+        default: false
       resubmit-verification:
         description: Resubmit source verification where the verifier's record differs from ours (broadcast only)
         required: true
@@ -57,13 +57,8 @@ jobs:
       BROADCAST: ${{ inputs.broadcast }}
       # Only with broadcast: the commands refuse it otherwise.
       RESUBMIT: ${{ inputs.broadcast && inputs.resubmit-verification }}
-      DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-      # Optional. Where set, profile deploys make the Zone administrator's grants themselves, such as
-      # admitting a new router on its Zone Portal; where unset, they stop at that handoff.
-      ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}
-      TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
-      TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
-      TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
+    # The keys and RPC credentials reach only the three deploy steps, and this job restores no
+    # dependency or build cache, so nothing another job wrote runs beside them.
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -76,8 +71,14 @@ jobs:
         with:
           forge-cache: deploy
           workspace: '@tempoxyz/contracts'
+          caches: 'false'
 
       - name: Deploy the factory releases
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
           arguments=("$NETWORK" all --output "$RUNNER_TEMP/factory-release.json")
@@ -90,6 +91,11 @@ jobs:
           fi
 
       - name: Deploy the ZoneRouterFactory
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -euo pipefail
           arguments=("$NETWORK" zoneRouterFactory --parameters '{}' --output "$RUNNER_TEMP/zone-router-release.json")
@@ -120,6 +126,13 @@ jobs:
       - name: Deploy the profiles
         env:
           PROFILES: ${{ steps.profiles.outputs.profiles }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          # Optional. Where set, profile deploys make the Zone administrator's grants themselves, such as
+          # admitting a new router on its Zone Portal; where unset, they stop at that handoff.
+          ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}
+          TEMPO_RPC_URL: ${{ secrets.TEMPO_RPC_URL }}
+          TEMPO_RPC_USERNAME: ${{ secrets.TEMPO_RPC_USERNAME }}
+          TEMPO_RPC_PASSWORD: ${{ secrets.TEMPO_RPC_PASSWORD }}
         run: |
           set -uo pipefail
           mapfile -t paths < <(jq -r '.[].path' <<<"$PROFILES")
@@ -154,16 +167,6 @@ jobs:
           done
           exit "$incomplete"
 
-      # Forge records the authenticated RPC URL in its script sequences under the profile's cache
-      # directory in cache/, which the forge cache saves for every branch to restore; remove them
-      # whatever the outcome.
-      - name: Remove Forge script sequences
-        if: ${{ always() }}
-        run: |
-          if [[ -d cache ]]; then
-            find cache -mindepth 1 -maxdepth 2 -type d -name '*.s.sol' -exec rm -rf {} +
-          fi
-
       - name: Save profile resume state
         if: ${{ always() && inputs.broadcast }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -182,6 +185,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/changes"
+          # A new profile's first record is untracked: intent-to-add puts it in the diff. Only untracked
+          # records, so an empty match or a deleted record never fails or hides a change.
+          git ls-files -z --others --exclude-standard -- 'profiles/*/deployment.json' | xargs -0 -r git add --intent-to-add --
           git diff --binary -- deployments/core/releases.ts 'profiles/*/deployment.json' > "$RUNNER_TEMP/changes/changes-$NETWORK.patch"
           if [[ -f "$RUNNER_TEMP/registry-pr.md" ]]; then cp "$RUNNER_TEMP/registry-pr.md" "$RUNNER_TEMP/changes/registry-pr-$NETWORK.md"; fi
 
@@ -257,7 +263,9 @@ jobs:
               { echo; echo "## $network"; echo; cat "$body"; } >> "$RUNNER_TEMP/pr.md"
             fi
           done
-          if git diff --quiet -- deployments/core/releases.ts profiles; then
+          # Staged, so a record the patches created (untracked until now) counts as a change.
+          git add --all -- deployments/core/releases.ts profiles
+          if git diff --cached --quiet -- deployments/core/releases.ts profiles; then
             echo 'Nothing to record: the stack already matches main.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"

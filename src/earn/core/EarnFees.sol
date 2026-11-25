@@ -441,6 +441,27 @@ contract EarnFees is IEarnFees {
         if (_feesActive()) _updateBaselinesAfterPrincipalEntry(activeSupply, activeAssets);
     }
 
+    /// @notice Restarts fee baselines at the value of a principal entry that reopened an empty pool.
+    /// @dev Every earlier holder has left, so no earlier baseline protects anyone in the pool. While the valuation
+    ///      is stale it sets `feeBaselinesPending` instead, as a stale cancellation into an empty pool does. The vault
+    ///      passes its active EarnShare supply and active assets after the entry, as for `initializeBaselines`.
+    /// @custom:ensures msg.sender == earnVault
+    /// @custom:ensures earnVault == old(earnVault) && earnShare == old(earnShare) && _earnShareScale() == old(_earnShareScale())
+    /// @custom:ensures _currentFeeConfigId == old(_currentFeeConfigId) && totalClaimableEarnShares() == old(totalClaimableEarnShares())
+    /// @custom:ensures !old(_specFeesActive()) ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt)) && feeBaselinesPending == old(feeBaselinesPending)
+    /// @custom:ensures feeBaselinesPending ==> _specBaselines(old(highWaterMark()), old(targetBase()), old(targetStartedAt))
+    /// @custom:ensures (old(_specFeesActive()) && !feeBaselinesPending && activeSupply != 0) ==> highWaterMark() == EarnFeeMath.ceilDiv(activeAssets * _earnShareScale(), activeSupply)
+    /// @custom:ensures (old(_specFeesActive()) && !feeBaselinesPending && _feeConfigs[_currentFeeConfigId].excess.enabled) ==> targetBase() == highWaterMark()
+    function reopenBaselines(uint256 activeSupply, uint256 activeAssets) external onlyEarnVault {
+        if (!_feesActive()) return;
+        if (!_feeValuationFresh()) {
+            feeBaselinesPending = true;
+            return;
+        }
+        if (feeBaselinesPending) feeBaselinesPending = false;
+        _initializeFeeBaselines(activeSupply, activeAssets);
+    }
+
     /// @notice Snapshots a fee-active request's high-water value and target value for its burned EarnShare.
     /// @dev The vault asks only while its valuation is fresh, as for `accrueFees`, so freshness is not read again.
     /// @custom:ensures msg.sender == earnVault
@@ -864,6 +885,7 @@ contract EarnFees is IEarnFees {
 
     /// @custom:ensures _feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase() == highWaterMark()
     /// @custom:ensures !_feeConfigs[_currentFeeConfigId].excess.enabled ==> targetBase() == 0 && targetStartedAt == 0
+    /// @custom:ensures earnShareSupply != 0 ==> highWaterMark() == EarnFeeMath.ceilDiv(activeAssets * _earnShareScale(), earnShareSupply)
     /// @custom:ensures targetStartedAt == 0 || targetStartedAt == uint40(block.timestamp)
     /// @custom:ensures highWaterMark() == 0 || targetBase() == 0 || targetStartedAt == uint40(block.timestamp)
     function _initializeFeeBaselines(uint256 earnShareSupply, uint256 activeAssets) internal {

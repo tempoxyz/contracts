@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +9,10 @@ import { hostedEnvironment, hostedEnvironments } from '../chain/tempo.js'
 
 const workflow = readFileSync(
   new URL('../../.github/workflows/deploy.yml', import.meta.url),
+  'utf8',
+)
+const setupAction = readFileSync(
+  new URL('../../.github/actions/setup/action.yml', import.meta.url),
   'utf8',
 )
 
@@ -39,6 +43,51 @@ describe('deploy workflow', () => {
     expect(workflow).toContain('ZONE_ADMIN_PRIVATE_KEY: ${{ secrets.ZONE_ADMIN_PRIVATE_KEY }}')
   })
 
+  test('only simulates unless broadcast is chosen', () => {
+    expect(/^ {6}broadcast:\n(?: {8}.*\n)*? {8}default: (\w+)$/m.exec(workflow)?.[1]).toBe('false')
+  })
+
+  test('gives the keys and RPC credentials only to the steps that send', () => {
+    const deploySteps = [
+      'Deploy the factory releases',
+      'Deploy the ZoneRouterFactory',
+      'Deploy the profiles',
+    ]
+    const readers = secretReaders(workflow)
+    expect(readers.every(({ indent }) => indent === 10)).toBe(true)
+    const stepsReading = (secret: string) =>
+      readers.filter((reader) => reader.secret === secret).map(({ step }) => step)
+    for (const secret of [
+      'DEPLOYER_PRIVATE_KEY',
+      'TEMPO_RPC_URL',
+      'TEMPO_RPC_USERNAME',
+      'TEMPO_RPC_PASSWORD',
+    ])
+      expect(stepsReading(secret), secret).toEqual(deploySteps)
+    expect(stepsReading('ZONE_ADMIN_PRIVATE_KEY')).toEqual(['Deploy the profiles'])
+    expect(new Set(readers.map(({ secret }) => secret)).size).toBe(5)
+  })
+
+  test('restores no dependency or build cache before the keys are used', () => {
+    expect(workflow).toMatch(
+      /uses: \.\/\.github\/actions\/setup\n(?: {8,}.*\n)* {10}caches: 'false'\n/,
+    )
+    expect(workflow).not.toMatch(/uses: \.\/\.github\/actions\/(?:solar|forge)-cache/)
+    // Every cache the setup action restores or saves is off with caches: 'false'.
+    const cacheSteps = setupAction
+      .split('\n  steps:\n')[1]!
+      .split(/\n(?= {4}- )/)
+      .filter((step) =>
+        /^ {6}uses: .*(?:actions\/cache|solar-cache|forge-cache)|^ {8}cache: /m.test(step),
+      )
+    expect(cacheSteps).toHaveLength(6)
+    for (const step of cacheSteps) expect(step).toContain("inputs.caches == 'true'")
+    // setup-foundry restores and saves ~/.foundry/cache unless its cache input is false.
+    expect(cacheSteps.find((step) => step.includes('/setup-foundry@'))).toContain(
+      "cache: ${{ inputs.caches == 'true' }}",
+    )
+  })
+
   test('runs only from main, in the release environment and hosted-contracts queue', () => {
     expect(workflow).not.toMatch(/^ {2}(?:pull_request|push|schedule|workflow_run)/m)
     expect(workflow.match(/^ {4}if: .*github\.ref == 'refs\/heads\/main'/gm)).toHaveLength(2)
@@ -60,19 +109,125 @@ describe('deploy workflow', () => {
   })
 })
 
+describe('deploy record', () => {
+  // The collect and apply commands, as the workflow runs them.
+  const line = (pattern: RegExp) => {
+    const match = pattern.exec(workflow)?.[0]
+    if (!match) throw new Error(`No line matching ${pattern}`)
+    return match.trim()
+  }
+  const intentToAdd = line(/^ +git ls-files -z --others .*$/m)
+  const diff = line(/^ +git diff --binary .*$/m).replace(/ > .*$/, ' > "$PATCH"')
+  const stage = line(/^ +git add --all -- deployments.*$/m)
+  const check = line(/^ +if git diff --cached --quiet .*; then$/m).replace(/^if (.*); then$/, '$1')
+
+  // Fixture repositories ignore the caller's Git config and repository.
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+  )
+  const run = (cwd: string, script: string, variables: Record<string, string> = {}) =>
+    execFileSync('bash', ['-euo', 'pipefail', '-c', script], {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...environment,
+        ...variables,
+        GIT_AUTHOR_EMAIL: 'test@example.com',
+        GIT_AUTHOR_NAME: 'test',
+        GIT_COMMITTER_EMAIL: 'test@example.com',
+        GIT_COMMITTER_NAME: 'test',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
+      },
+    })
+  const status = (cwd: string, script: string) => {
+    try {
+      run(cwd, script)
+      return 0
+    } catch (error) {
+      return (error as { status: number }).status
+    }
+  }
+
+  const withRepos = (body: (repo: (name: string) => string, root: string) => void) => {
+    const root = mkdtempSync(join(tmpdir(), 'deploy record '))
+    try {
+      body((name) => {
+        const dir = join(root, name)
+        run(root, 'git init -q "$NAME"', { NAME: name })
+        run(dir, 'mkdir -p deployments/core profiles/old profiles/new')
+        writeFileSync(join(dir, '.gitignore'), '**/deployment.pending.json\n')
+        writeFileSync(join(dir, 'deployments/core/releases.ts'), 'export {}\n')
+        writeFileSync(join(dir, 'profiles/old/profile.json'), '{}\n')
+        writeFileSync(join(dir, 'profiles/old/deployment.json'), '{"v":1}\n')
+        writeFileSync(join(dir, 'profiles/new/profile.json'), '{}\n')
+        run(dir, 'git add -A && git commit -qm init')
+        return dir
+      }, root)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+
+  const collect = (network: string, patch: string) =>
+    run(network, `${intentToAdd}\n${diff}`, { PATCH: patch })
+  const apply = (record: string, patch: string) =>
+    run(record, `git apply "$PATCH"\n${stage}`, { PATCH: patch })
+
+  test("carries a new profile's first record to the record job", () => {
+    withRepos((repo, root) => {
+      const network = repo('network')
+      writeFileSync(join(network, 'profiles/new/deployment.json'), '{"v":1}\n')
+      writeFileSync(join(network, 'profiles/new/deployment.pending.json'), '{}\n')
+      const patch = join(root, 'changes.patch')
+      collect(network, patch)
+      const record = repo('record')
+      apply(record, patch)
+      expect(status(record, check)).toBe(1)
+      expect(run(record, 'git diff --cached --name-only').trim()).toBe(
+        'profiles/new/deployment.json',
+      )
+    })
+  })
+
+  test('carries a release change when no record changed, and reports nothing on an unchanged tree', () => {
+    withRepos((repo, root) => {
+      const network = repo('network')
+      run(network, 'git rm -q profiles/old/deployment.json && git commit -qm "no records"')
+      writeFileSync(join(network, 'deployments/core/releases.ts'), 'export const changed = 1\n')
+      const patch = join(root, 'changes.patch')
+      collect(network, patch)
+      const record = repo('record')
+      apply(record, patch)
+      expect(status(record, check)).toBe(1)
+      expect(run(record, 'git diff --cached --name-only').trim()).toBe(
+        'deployments/core/releases.ts',
+      )
+      const unchanged = repo('unchanged')
+      expect(status(unchanged, `${stage}\n${check}`)).toBe(0)
+    })
+  })
+})
+
 describe('profiles --network', () => {
   test.each(Object.keys(hostedEnvironments))(
-    'lists only the %s profiles',
+    'lists exactly the %s profiles',
     { timeout: 30_000 },
     (network) => {
+      // A network may have no committed profile; its listing is then empty, not an error.
+      const committed = readdirSync(new URL('../../profiles/', import.meta.url), {
+        withFileTypes: true,
+      })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => `profiles/${entry.name}/profile.json`)
+        .filter((path) => {
+          const { chainId } = JSON.parse(
+            readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8'),
+          ) as { chainId: number }
+          return hostedEnvironment(chainId)?.id === network
+        })
       const listed = JSON.parse(profiles('--network', network)) as { path: string }[]
-      expect(listed.length).toBeGreaterThan(0)
-      for (const { path } of listed) {
-        const { chainId } = JSON.parse(
-          readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8'),
-        ) as { chainId: number }
-        expect(hostedEnvironment(chainId)?.id).toBe(network)
-      }
+      expect(listed.map(({ path }) => path).sort()).toEqual(committed.sort())
     },
   )
 
@@ -109,3 +264,19 @@ describe('profiles --network', () => {
     expect(() => profiles('--matrix', '--network', 'moderato')).toThrow('separate modes')
   })
 })
+
+/** Every secret the workflow reads, with its line's indent and the step whose env holds it. */
+function secretReaders(text: string) {
+  const lines = text.split('\n')
+  return lines.flatMap((line, index) => {
+    const match = /^( *)[A-Z_]+: .*\bsecrets\.([A-Z_]+)/.exec(line)
+    if (!match) return []
+    const step = lines
+      .slice(0, index)
+      .reverse()
+      .find((previous) => /^ {6}- name: /.test(previous))
+    return [
+      { indent: match[1]!.length, secret: match[2]!, step: step?.trim().slice('- name: '.length) },
+    ]
+  })
+}
