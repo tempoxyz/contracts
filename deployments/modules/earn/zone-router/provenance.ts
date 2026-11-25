@@ -6,6 +6,7 @@ import {
   assertFoundryProjectEnvironment,
   foundryVerificationEnvironment,
 } from '../../../chain/foundry.js'
+import { stripMetadata } from '../../../core/releases.js'
 
 const repository = fileURLToPath(new URL('../../../../', import.meta.url))
 const builds = new Map<string, Hex>()
@@ -18,7 +19,8 @@ type Contract = {
 }
 
 /**
- * Requires exact runtime from the reviewed constructor before granting independent authority.
+ * Requires the reviewed constructor's runtime before granting independent authority: every byte,
+ * immutables included, apart from compiler metadata, which replacement ignores too.
  * Contract-creation eth_call is read-only and includes every constructor-bound immutable, not masked slots.
  */
 export async function requireRouterProvenance(
@@ -37,7 +39,7 @@ export async function requireRouterProvenance(
     actual === '0x' ||
     !expected.data ||
     expected.data === '0x' ||
-    actual.toLowerCase() !== expected.data.toLowerCase()
+    stripMetadata(actual.toLowerCase() as Hex) !== stripMetadata(expected.data.toLowerCase() as Hex)
   )
     throw new Error(
       `Router admission requires canonical implementation provenance for ${options.address} (${options.contract})`,

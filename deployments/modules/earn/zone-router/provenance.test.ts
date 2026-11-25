@@ -40,6 +40,24 @@ describe('requireRouterProvenance', () => {
     },
   )
 
+  test('admits runtime that differs from the build only in compiler metadata', async () => {
+    // Solar's tail: {ipfs: <34-byte multihash>, solar: <version>}, then its two-byte length.
+    const tail = (hash: string) => `a2646970667358221220${hash.repeat(32)}65736f6c6172430003010034`
+    const deployed = `0x60011234${tail('aa')}` as const
+    const built = `0x60011234${tail('bb')}` as const
+    const client = { getCode: async () => deployed, call: async () => ({ data: built }) }
+    await expect(
+      requireRouterProvenance(client as never, options, () => code),
+    ).resolves.toBeUndefined()
+    const altered = {
+      getCode: async () => `0x60011235${tail('aa')}`,
+      call: async () => ({ data: built }),
+    }
+    await expect(requireRouterProvenance(altered as never, options, () => code)).rejects.toThrow(
+      'canonical implementation provenance',
+    )
+  })
+
   test('propagates RPC and compiler failure instead of admitting unverified code', async () => {
     const error = new Error('verification unavailable')
     const client = {
