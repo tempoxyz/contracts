@@ -185,8 +185,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/changes"
-          # A new profile's first record is untracked: intent-to-add puts it in the diff.
-          git add --intent-to-add -- 'profiles/*/deployment.json'
+          # A new profile's first record is untracked: intent-to-add puts it in the diff. Only untracked
+          # records, so an empty match or a deleted record never fails or hides a change.
+          git ls-files -z --others --exclude-standard -- 'profiles/*/deployment.json' | xargs -0 -r git add --intent-to-add --
           git diff --binary -- deployments/core/releases.ts 'profiles/*/deployment.json' > "$RUNNER_TEMP/changes/changes-$NETWORK.patch"
           if [[ -f "$RUNNER_TEMP/registry-pr.md" ]]; then cp "$RUNNER_TEMP/registry-pr.md" "$RUNNER_TEMP/changes/registry-pr-$NETWORK.md"; fi
 

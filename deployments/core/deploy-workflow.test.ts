@@ -112,54 +112,96 @@ describe('deploy record', () => {
     if (!match) throw new Error(`No line matching ${pattern}`)
     return match.trim()
   }
-  const intentToAdd = line(/^ +git add --intent-to-add .*$/m)
-  const diff = line(/^ +git diff --binary .*$/m).replace(/ > .*$/, '')
+  const intentToAdd = line(/^ +git ls-files -z --others .*$/m)
+  const diff = line(/^ +git diff --binary .*$/m).replace(/ > .*$/, ' > "$PATCH"')
   const stage = line(/^ +git add --all -- deployments.*$/m)
   const check = line(/^ +if git diff --cached --quiet .*; then$/m).replace(/^if (.*); then$/, '$1')
 
-  const run = (cwd: string, script: string) =>
+  // Fixture repositories ignore the caller's Git config and repository.
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+  )
+  const run = (cwd: string, script: string, variables: Record<string, string> = {}) =>
     execFileSync('bash', ['-euo', 'pipefail', '-c', script], {
       cwd,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...environment,
+        ...variables,
         GIT_AUTHOR_EMAIL: 'test@example.com',
         GIT_AUTHOR_NAME: 'test',
         GIT_COMMITTER_EMAIL: 'test@example.com',
         GIT_COMMITTER_NAME: 'test',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
       },
     })
-
-  test("carries a new profile's first record to the record job", () => {
-    const root = mkdtempSync(join(tmpdir(), 'deploy-record-'))
+  const status = (cwd: string, script: string) => {
     try {
-      const repo = (name: string) => {
+      run(cwd, script)
+      return 0
+    } catch (error) {
+      return (error as { status: number }).status
+    }
+  }
+
+  const withRepos = (body: (repo: (name: string) => string, root: string) => void) => {
+    const root = mkdtempSync(join(tmpdir(), 'deploy record '))
+    try {
+      body((name) => {
         const dir = join(root, name)
-        run(root, `git init -q ${name}`)
+        run(root, 'git init -q "$NAME"', { NAME: name })
         run(dir, 'mkdir -p deployments/core profiles/old profiles/new')
+        writeFileSync(join(dir, '.gitignore'), '**/deployment.pending.json\n')
         writeFileSync(join(dir, 'deployments/core/releases.ts'), 'export {}\n')
         writeFileSync(join(dir, 'profiles/old/profile.json'), '{}\n')
         writeFileSync(join(dir, 'profiles/old/deployment.json'), '{"v":1}\n')
         writeFileSync(join(dir, 'profiles/new/profile.json'), '{}\n')
         run(dir, 'git add -A && git commit -qm init')
         return dir
-      }
-      const network = repo('network')
-      writeFileSync(join(network, 'profiles/old/deployment.json'), '{"v":2}\n')
-      writeFileSync(join(network, 'profiles/new/deployment.json'), '{"v":1}\n')
-      writeFileSync(join(network, 'profiles/new/deployment.pending.json'), '{}\n')
-      const patch = join(root, 'changes.patch')
-      run(network, `${intentToAdd}\n${diff} > ${patch}`)
-      const record = repo('record')
-      run(record, `git apply ${patch}\n${stage}`)
-      expect(() => run(record, check)).toThrow()
-      expect(run(record, 'git diff --cached --name-only').trim().split('\n')).toEqual([
-        'profiles/new/deployment.json',
-        'profiles/old/deployment.json',
-      ])
+      }, root)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  }
+
+  const collect = (network: string, patch: string) =>
+    run(network, `${intentToAdd}\n${diff}`, { PATCH: patch })
+  const apply = (record: string, patch: string) =>
+    run(record, `git apply "$PATCH"\n${stage}`, { PATCH: patch })
+
+  test("carries a new profile's first record to the record job", () => {
+    withRepos((repo, root) => {
+      const network = repo('network')
+      writeFileSync(join(network, 'profiles/new/deployment.json'), '{"v":1}\n')
+      writeFileSync(join(network, 'profiles/new/deployment.pending.json'), '{}\n')
+      const patch = join(root, 'changes.patch')
+      collect(network, patch)
+      const record = repo('record')
+      apply(record, patch)
+      expect(status(record, check)).toBe(1)
+      expect(run(record, 'git diff --cached --name-only').trim()).toBe(
+        'profiles/new/deployment.json',
+      )
+    })
+  })
+
+  test('carries a release change when no record changed, and reports nothing on an unchanged tree', () => {
+    withRepos((repo, root) => {
+      const network = repo('network')
+      run(network, 'git rm -q profiles/old/deployment.json && git commit -qm "no records"')
+      writeFileSync(join(network, 'deployments/core/releases.ts'), 'export const changed = 1\n')
+      const patch = join(root, 'changes.patch')
+      collect(network, patch)
+      const record = repo('record')
+      apply(record, patch)
+      expect(status(record, check)).toBe(1)
+      expect(run(record, 'git diff --cached --name-only').trim()).toBe(
+        'deployments/core/releases.ts',
+      )
+      const unchanged = repo('unchanged')
+      expect(status(unchanged, `${stage}\n${check}`)).toBe(0)
+    })
   })
 })
 
