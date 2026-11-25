@@ -567,7 +567,7 @@ contract EarnVaultAsyncTest is Test {
         core.cancelRedeem(requestId, 10 ether);
 
         IEarnFees fees = IEarnFees(core.earnFees());
-        assertEq(fees.highWaterMark(), 1 ether);
+        assertEq(fees.highWaterMark(), 1 ether * 1e18);
         (uint256 feeAssets, uint256 feeEarnShares) = core.accrueFees();
         assertEq(feeAssets, 0);
         assertEq(feeEarnShares, 0);

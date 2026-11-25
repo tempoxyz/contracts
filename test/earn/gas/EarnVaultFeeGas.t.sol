@@ -116,8 +116,8 @@ contract EarnVaultFeeGasAudit is Test {
 
 /// @dev Models the six-decimal EarnShare denomination used by current deployments. With a
 ///      100-asset pool, a 5% annualized one-minute contribution is approximately nine raw asset
-///      units and does not advance the integer value-per-EarnShare checkpoint. A 100-raw-unit
-///      contribution advances it by one raw EarnShare unit.
+///      units, less than one step (one raw asset unit per whole EarnShare), so it waits above the
+///      high-water mark. A 100-raw-unit contribution is one step and is charged.
 contract EarnVaultContributionFeeGasAudit is Test {
     uint256 private constant INITIAL_DEPOSIT = 100e6;
     uint256 private constant ACTION_AMOUNT = 10e6;

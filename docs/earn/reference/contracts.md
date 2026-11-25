@@ -239,7 +239,7 @@ no owner, issuer authority, rescue method, or configuration bypass.
 | `validateFeeConfig(config)`          | Revert unless a complete configuration is structurally valid  |
 | `feesActive()` / `feesDisabled()`    | Whether fees are charging, and whether they are disabled      |
 | `feeBaselinesPending()`              | A stale empty-pool cancellation awaits fresh baselines        |
-| `highWaterMark()`                    | Post-fee value per EarnShare                                  |
+| `highWaterMark()`                    | Post-fee value per EarnShare, times 10^18                     |
 | `targetBase()` / `targetStartedAt()` | Excess-return target base and its start time                  |
 | `feeRemainder(configId, slot)`       | Carried sub-unit remainder; slots 0–3 fixed, 4 excess         |
 | `previewAccruedFees()`               | Current `FeePreview`, including per-recipient allocations     |
@@ -260,7 +260,7 @@ module, or the EarnVault.
 machine. The EarnVault supplies the accounting context, passing active EarnShare supply, active
 assets and valuation freshness to `accrueFees`, and supply and assets to `initializeBaselines` and
 `reopenBaselines`, and separately mints any fee EarnShare they return. `accrueFees` returns the fee
-assets, the fee EarnShare, and the baseline floor and EarnShare scale of a checkpoint that valued the
+assets, the fee EarnShare, and the baseline floor and value scale of a checkpoint that valued the
 pool (both zero otherwise); `recordRedeemRequest` takes the request ID and burned EarnShare and
 trusts the EarnVault's valuation freshness. `initializeBaselines` runs after a principal deposit
 into a live pool and only raises baselines; the EarnVault skips it when the post-entry value is at or
